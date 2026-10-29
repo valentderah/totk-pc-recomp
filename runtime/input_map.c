@@ -325,6 +325,42 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
     out[1] = (int32_t)lrint(y);
 }
 
+static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+#define MOUSE_DEG_PER_COUNT 0.022   // at sensitivity 1
+#define MOUSE_PITCH_RATE 0.7237     // the pitch rate at full deflection over the yaw rate (the sibling game's 61.8 / 85.39)
+#define MOUSE_MAX_CARRY_DEG 12.0
+
+void input_mouse_camera(MouseCamState *st, int32_t dx, int32_t dy, double dt_s, const MouseCamCfg *c, int32_t out[2]) {
+    out[0] = out[1] = 0;
+    if (!st || !c) return;
+    if (!(dt_s > 0) || !(c->sens > 0)) {
+        st->carry[0] = st->carry[1] = 0;
+        return;
+    }
+    const double sens = c->sens, curve = clampd(c->curve, 1.0, 3.0), dz = clampd(c->deadzone, 0.0, 0.5);
+    const double rate = c->rate >= 1 ? c->rate : 85.0;
+    const double yaw = dx * MOUSE_DEG_PER_COUNT * sens + st->carry[0];                                  // right +
+    const double pitch = -dy * MOUSE_DEG_PER_COUNT * sens * clampd(c->y_ratio, 0.25, 4.0) + st->carry[1];   // up +
+    // the post-curve amount of full rate that turns that angle in dt_s; past full deflection the direction is kept
+    double ux = yaw / dt_s / rate, uy = pitch / dt_s / (rate * MOUSE_PITCH_RATE);
+    double m = sqrt(ux * ux + uy * uy);
+    if (m > 1.0) {
+        ux /= m;
+        uy /= m;
+        m = 1.0;
+    }
+    st->carry[0] = clampd(yaw - ux * rate * dt_s, -MOUSE_MAX_CARRY_DEG, MOUSE_MAX_CARRY_DEG);
+    st->carry[1] = clampd(pitch - uy * rate * MOUSE_PITCH_RATE * dt_s, -MOUSE_MAX_CARRY_DEG, MOUSE_MAX_CARRY_DEG);
+    if (fabs(st->carry[0]) < 1e-6) st->carry[0] = 0;
+    if (fabs(st->carry[1]) < 1e-6) st->carry[1] = 0;
+    if (m < 1e-9) return;
+    // the inverse of the game's response: raw = dead zone + amount^(1/curve) * (1 - dead zone), along the same direction
+    const double raw = dz + pow(m, 1.0 / curve) * (1.0 - dz);
+    out[0] = (int32_t)lrint(ux / m * raw * STICK_MAX);
+    out[1] = (int32_t)lrint(uy / m * raw * STICK_MAX);
+}
+
 // Minus and Plus held together open or close the menu. *held: latched from the poll where both go down until neither is
 // down (the caller keeps it). Every poll of the latch reports neither to the game, so releasing one button first does not
 // leak the other; Minus alone before Plus reaches the game unchanged. With the menu open the game sees a neutral pad.

@@ -401,6 +401,7 @@ static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 // The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`.
 static void mouse_camera(int32_t out[2]) {
+    static MouseCamState cam_state;
     static uint64_t frame = ~0ull;
     static LARGE_INTEGER t0;
     static int32_t held[2];
@@ -411,13 +412,23 @@ static void mouse_camera(int32_t out[2]) {
         InterlockedExchange(&mouse_dx, 0);
         InterlockedExchange(&mouse_dy, 0);
         held[0] = held[1] = 0;
+        cam_state.carry[0] = cam_state.carry[1] = 0;
         frame = ~0ull;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         double age = frame == ~0ull ? 0 : (double)(now.QuadPart - t0.QuadPart) / (double)f.QuadPart;
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
-            input_mouse_stick(InterlockedExchange(&mouse_dx, 0), InterlockedExchange(&mouse_dy, 0), dt, mouse_sens_get(), held);
+            const int32_t mdx = InterlockedExchange(&mouse_dx, 0), mdy = InterlockedExchange(&mouse_dy, 0);
+            const char *mode = cfg_value("TOTK_MOUSE_MODE");
+            if (mode && !strcmp(mode, "linear")) {   // the old mapping: speed to deflection, through the game's curve
+                cam_state.carry[0] = cam_state.carry[1] = 0;
+                input_mouse_stick(mdx, mdy, dt, mouse_sens_get(), held);
+            } else {
+                MouseCamCfg cc = {mouse_sens_get(), (float)cfg_double("TOTK_MOUSE_Y_RATIO"), (float)cfg_double("TOTK_MOUSE_CURVE"),
+                                  (float)cfg_double("TOTK_MOUSE_DEADZONE"), (float)cfg_double("TOTK_MOUSE_RATE")};
+                input_mouse_camera(&cam_state, mdx, mdy, dt, &cc, held);
+            }
             frame = fr;
             t0 = now;
         } else if (age > 0.1) {

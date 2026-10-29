@@ -149,6 +149,14 @@
 # pad_layout = auto
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# Mouse camera (docs/controls.md, "Mouse camera"): native = the angle you move the mouse (the stick set through the
+# inverse of the game's response), linear = the older speed-to-deflection mapping. The next four tune the inverse:
+# the game's response exponent and dead zone, the camera's degrees per second at full deflection, and vertical speed.
+# mouse_mode = native
+# mouse_curve = 2
+# mouse_deadzone = 0.2
+# mouse_rate = 85
+# mouse_y_ratio = 1
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
