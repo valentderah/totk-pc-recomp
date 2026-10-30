@@ -1,0 +1,37 @@
+name: Linux host
+
+# No game files here, by design: the generated C needs a dump, the runtime does not, so the compile gate is the check a
+# public CI runner can run. It compiles inside tools/linux/Dockerfile, the same pinned image the release AppImage is
+# built in, so CI cannot pass on a toolchain that the release does not use.
+
+on:
+  push:
+    branches: [main, linux-port]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the pinned build image
+        run: docker build -f tools/linux/Dockerfile -t totk-linux-build .
+
+      - name: Platform uses
+        run: docker run --rm -v "$PWD:/src" -w /src totk-linux-build python3 tools/check_platform.py
+
+      - name: Compile every runtime translation unit
+        run: docker run --rm -v "$PWD:/src" -w /src totk-linux-build python3 tools/ci/compile_gate.py --undefined
+
+      - name: Tests that need no game files
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src totk-linux-build bash -c '
+            set -e
+            python3 tests/flags_check.py
+            python3 tests/excl_mt.py
+            python3 tests/diff/simd.py
+            python3 tests/diff/atomic.py
+          '
