@@ -227,6 +227,42 @@ well: the shadow copies are chosen for the measured cost above, not for a missin
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
 `TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
 
+### Verifying without a dump
+
+The generated C needs the game; the runtime does not. `tools/ci/compile_gate.py` compiles every runtime translation
+unit of this OS with the build's own flags, which is what CI runs:
+
+```sh
+python tools/ci/compile_gate.py --undefined
+```
+
+- The file set and the per-OS exclusions come from `tools/build_game.py` itself (`other_os()`, `INSTALL_SIDE`), not from
+  a copy, so the gate cannot drift from the build.
+- `romfs.c`, `patches.c` and `ov_zstd.c` are skipped, and say why: they include headers generated from the dump.
+- `runtime/memory.c`, `frame_rate.c`, `loader.c` and `nvn_procs.c` include the generated `layout.h`. Without `--gen` the
+  gate writes a stub holding `MOD_COUNT`, `MOD_MAIN_BASE` and `MOD_LIST`, which is all the runtime reads from it.
+- `--undefined` fails when a `plat_`/`os_` symbol is used and no object defines it: the check that catches a platform
+  function added to `platform.h` and implemented on one OS only.
+
+Both workflows run it (`.github/workflows/linux-host.yml`, `windows-host.yml`), the Linux one inside
+`tools/linux/Dockerfile`, the pinned image the release AppImage is built in. Keep `-D_GNU_SOURCE` out of the gate: glibc's
+`__USE_GNU` turns `bsearch` into a five-argument macro and `nvn_procs.c` stops compiling, which is a header argument
+mismatch a real build does not have.
+
+### The Steam Deck
+
+A build made on a rolling distribution does not run on the Deck. Its glibc is older than the build's (2.41 against 2.43
+at the time of writing) and its `libvpx` has another soname (`.so.9` against `.so.12`), so a copied build stops at
+`GLIBC_2.43 not found` before it draws anything. Ship it the way a player gets it: `tools/make_release_linux.py` builds
+the setup AppImage against the sniper sysroot (glibc 2.29), and its installer compiles the game on the device, about an
+hour on the Deck's 8 threads with the shader seed.
+
+`tools/profile_deck.sh --install <folder> --seconds 60` measures it, and prints what makes the number mean something:
+the GPU clock sampled during the run, the power supply, and the runtime's own lines about device profile, frame-rate
+limit, present mode and internal resolution. Each of those moves the frame rate by a factor without any code changing: a
+Deck that drops a power state, a `fifo` present mode that quantises to 20 or 30 fps, or a scene resolution that grew. Put
+them next to a frame rate or the frame rate is not evidence.
+
 ## Checks
 
 Before a commit:
