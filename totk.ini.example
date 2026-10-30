@@ -163,6 +163,10 @@
 # Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
 # the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
 # shadow_range = 100
+# Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
+# short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
+# shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
+# contact_shadows = 0
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.

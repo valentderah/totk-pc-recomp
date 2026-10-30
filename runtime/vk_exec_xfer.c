@@ -596,6 +596,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
 }
 
 void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {
+    if (op != OP_RENDER_ENABLE && op != OP_SIGNAL_EVENT) vk_contact_flush(ex);
     switch (op) {
     case OP_COPY_B2B: copy_b2b(ex, payload); break;
     case OP_COPY_B2T: copy_buffer_image(ex, payload, 1); break;
