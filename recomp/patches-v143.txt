@@ -73,6 +73,18 @@ site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
 
+# Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
+# aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
+# switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
+# (update and setup) load the camera's copy of DefaultAspect 1.777778, two viewport routines divide width by height.
+# The replacement loads the ratio from the page instead, so a 21:9 output shows more of the world at the sides with
+# the vertical view kept (Hor+). x10 is kept on the stack, so no register liveness is assumed.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main 628c74 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x19, #0x140] (camera update)
+site aspect main b43460 bd406ac0 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x22, #0x68] (camera setup)
+site aspect main 1ff04f4 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+site aspect main 253fbb0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of
 # its wrapper ZSTD_decompress_usingDDict (main+0x3a1e0, which tail-branches to it) goes to a host function on the patch

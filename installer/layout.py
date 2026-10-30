@@ -72,7 +72,7 @@ class Layout:
     def missing(self):
         """Paths the steps need that do not exist."""
         need = [self.python, self.tools / 'extract.py', self.tools / 'build_game.py', self.tools / 'prepare_shaders.py',
-                self.tools / 'make_romfs_patches.py', self.recomp / 'gen.py', self.clang,
+                self.tools / 'make_romfs_patches.py', self.tools / 'ultrawide_layout.py', self.recomp / 'gen.py', self.clang,
                 self.deps / 'include', self.deps / 'lib', self.runtime, self.runtime_lib, self.ninja, self.hactool,
                 self.xlate, *self.dlls, *(f(v) for v in SUPPORTED for f in (self.patches, self.expected))]
         if self.shader_list:

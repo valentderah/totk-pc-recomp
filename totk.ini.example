@@ -109,7 +109,9 @@
 # gpu_index = 0
 # gpu_name = NVIDIA
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
-# game's texture heap and memory pool grow with it. Read at start.
+# game's texture heap and memory pool grow with it. A size wider than 16:9, such as 3440x1440 on a 21:9 monitor, widens
+# the camera's view to that shape and lays the HUD out for it (1.4.3; the installer prepares the UI for 2560x1080,
+# 3440x1440, 3840x1600 and 5120x2160). Read at start.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
@@ -118,6 +120,10 @@
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
 # sharpness = 80
+# Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen
+# window): fit keeps it, with black bars at the sides or above and below; stretch fills the window. Changes while the
+# game runs take effect at once.
+# aspect = fit
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.

@@ -11,12 +11,18 @@ captured at once (upstream checked weapon, shield, material and ability wheel at
 The game-over flow fix of the same upstream script is 1.0.0 only (1.2.1 and 1.4.3 run DmF_SY_GameOver.110) and is
 left out.
 
+--aspect <w>x<h> (a game resolution wider than 16:9, such as 3440x1440) also lays the UI out for that shape
+(tools/ultrawide_layout.py): menus stay 16:9 in the middle, full-screen backgrounds cover the width and the HUD moves
+to the screen's corners. totk.exe loads that overlay from romfs-patches-<w>x<h> when the game resolution is that size
+(runtime/romfs.c overlay_init); the camera's side of it is the patch set aspect (recomp/patches-v143.txt).
+
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default, and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
 """
 import argparse
 import compression.zstd as zstd
 import hashlib
+import importlib.util
 import json
 import struct
 from pathlib import Path
@@ -26,6 +32,7 @@ ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--version', choices=('v121', 'v143'), default='v121')
 ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/romfs')
 ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches')
+ap.add_argument('--aspect', help='<w>x<h> of a game resolution wider than 16:9: also lay the UI out for it')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
 args.out = args.out or root / 'build' / args.version / 'romfs-patches'
@@ -115,8 +122,16 @@ for member, panes in MEMBERS.items():
         changed.append(name)
     assert sorted(changed) == sorted(panes), (member, changed)
     patched[member] = changed
+layout = []
+if args.aspect:
+    width, height = (int(v) for v in args.aspect.lower().split('x'))
+    spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).with_name('ultrawide_layout.py'))
+    ultrawide = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ultrawide)
+    layout = ultrawide.apply(blarc, members, width, height)
 diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in MEMBERS)) for i in diff), diff
+touched = [members[m] for m in (*MEMBERS, *layout)]
+assert diff and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
 data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary)
 assert zstd.decompress(data, zstd_dict=dictionary) == bytes(blarc)
 assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id
@@ -126,4 +141,5 @@ target.write_bytes(data)
 line = '\t'.join([ARCHIVE, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()])
 (args.out / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
                                        + line + '\n')
-print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, size=len(data), changed_bytes=len(diff))))
+print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, size=len(data), changed_bytes=len(diff),
+                      ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None)))
