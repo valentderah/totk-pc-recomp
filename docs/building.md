@@ -87,11 +87,11 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
+   `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
+   `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
    For Xbox button prompts, run `make_romfs_patches.py` once more with `--xbox-prompts`: it writes
    `build\<ver>\romfs-patches-xbox` ([controls.md](controls.md), "Xbox button prompts"); `build_game.py` copies it next
    to `totk.exe` like `romfs-patches`.
-   `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
-   `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:

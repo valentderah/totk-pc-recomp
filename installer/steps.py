@@ -595,7 +595,6 @@ class Prepare(Step):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
         return ((dest / 'shader-prepared.bin').is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
-                and (dest / 'romfs-patches-xbox' / 'manifest.tsv').is_file()
                 and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
 
     def run(self, ctx):
@@ -613,15 +612,22 @@ class Prepare(Step):
             remove(xlate.with_suffix('.id'))
 
         rep.progress('prepare', 'romfs_patches', force=True)
-        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (always written,
-        # so the menu setting works without another run of the setup).
-        for name, extra in (('romfs-patches', []), ('romfs-patches-xbox', ['--xbox-prompts'])):
-            remove(dest / name)
-            code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                                  dest / name] + extra)
-            if code:
-                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        remove(dest / 'romfs-patches')
+        code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
+                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                              dest / 'romfs-patches'])
+        if code:
+            raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (written on
+        # every install, so the menu choice works without another run of the setup). Optional: when it fails, the game
+        # keeps the Switch prompts and the menu says the files are missing, so the setup warns and goes on.
+        remove(dest / 'romfs-patches-xbox')
+        code, log = run_tool(ctx, 'prepare-xbox', layout.tools / 'make_romfs_patches.py',
+                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                              dest / 'romfs-patches-xbox', '--xbox-prompts'])
+        if code:
+            remove(dest / 'romfs-patches-xbox')
+            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
 
         shader_list = layout.shader_list
         if not shader_list:

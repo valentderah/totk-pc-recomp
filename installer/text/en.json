@@ -79,6 +79,7 @@
 
  "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts, which the installer does not extract; some text may not show.",
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
+ "warn.xbox_prompts_failed": "The Xbox button prompts could not be prepared (exit code {code}); the game keeps the Switch prompts. Details: {log}",
 
  "ui.title": "TotK Setup",
  "ui.version": "version {version}",
