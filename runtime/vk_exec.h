@@ -35,6 +35,7 @@ typedef struct {
     uint32_t width, height, samples;     // extent of that level; with blocks, in blocks
     int32_t nvn_format;                  // NVNformat of the view (VkPipeState.color_fmt / depth_fmt)
     const VkTexImage *img;               // the image (fb_usage, fb_learned)
+    uint8_t scale;                       // VkTexImage.scale
 } VkExecTarget;
 
 // The replay state. One instance lives for the run: NVN state is queue state and carries over from one submission to
@@ -52,6 +53,8 @@ typedef struct VkExec {
     int rt_resolved;                   // color[] and depth hold this command buffer's images for rt
     VkExecTarget color[8], depth;        // resolved targets
     uint32_t pass_w, pass_h, pass_layers;            // render area and layer count of the open (or next) pass
+    uint32_t pass_scale;                             // its targets' VkTexImage.scale: game viewports and scissors
+                                                     // are multiplied by it
     int pass_noatt;                                   // the pass has no attachment: its size follows the draws (vk_exec_noatt_dims)
     VkFormat pass_color[8], pass_depth, pass_stencil; // attachment formats of the pass (VkPipelineRenderingCreateInfo);
                                                       // VK_FORMAT_UNDEFINED: none
@@ -173,6 +176,9 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 // vk_exec_xfer.c: OP_COPY_B2B, OP_COPY_B2T, OP_COPY_T2B, OP_COPY_T2T, OP_CLEAR_TEX, OP_SIGNAL_EVENT, OP_REPORT_COUNTER,
 // OP_RESET_COUNTER, OP_RENDER_ENABLE, OP_RENDER_COND, OP_CLEAR_BUF.
 void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
+// vk_contact.c: a pass about to begin (its targets resolved, no pass open), and a dispatch or copy about to be recorded
+void vk_contact_pass_begin(VkExec *ex);
+void vk_contact_flush(VkExec *ex);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

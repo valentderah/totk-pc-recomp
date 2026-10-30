@@ -1,0 +1,67 @@
+#version 450
+// Screen-space contact shadows (runtime/vk_contact.c). Each pixel of the game's lit scene colour marches a short way
+// toward the sun through the linear depth target; when the ray passes behind something close in front of it, the pixel
+// is in a contact shadow the shadow maps are too coarse to show, and its colour is darkened.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D lin_depth;                // the game's linear depth: view distance / far
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;      // the lit scene colour, darkened in place
+
+layout(push_constant) uniform Params {
+    vec4 proj;    // projection x scale, y scale, far plane, strength (0..1)
+    vec4 light;   // view-space direction toward the sun (xyz), march length in metres at 10 m (w)
+    vec4 size;    // width, height, 1/width, 1/height
+    vec4 opt;     // x: debug (1: write the shadow factor as grey)
+} pc;
+
+vec3 view_pos(vec2 uv, float z) {   // z: distance in front of the camera
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+}
+
+vec2 to_uv(vec3 p) {
+    float z = -p.z;
+    return vec2(0.5 + 0.5 * p.x * pc.proj.x / z, 0.5 - 0.5 * p.y * pc.proj.y / z);
+}
+
+float ign(vec2 px) {   // interleaved gradient noise: a per-pixel start offset that hides the step pattern
+    return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(pc.size.x) || px.y >= int(pc.size.y)) return;
+    float d = texelFetch(lin_depth, px, 0).x;
+    if (d <= 0.0 || d >= 0.999) return;   // nothing drawn, or the sky
+    float z = d * pc.proj.z;
+    if (z > 80.0) return;
+    vec2 uv = (vec2(px) + 0.5) * pc.size.zw;
+    vec3 p = view_pos(uv, z);
+    // the march grows with distance, as one pixel covers more ground; thickness keeps thin blades from hiding the sky
+    float len = pc.light.w * clamp(z / 10.0, 0.4, 3.0);
+    float thick = 0.15 + z * 0.01;
+    const int STEPS = 16;
+    float step_len = len / float(STEPS), t = step_len * (0.25 + ign(vec2(px)));
+    float occ = 0.0;
+    for (int i = 0; i < STEPS; i++, t += step_len) {
+        vec3 q = p + pc.light.xyz * t;
+        if (q.z >= -0.05) break;
+        vec2 quv = to_uv(q);
+        if (any(lessThan(quv, vec2(0.0))) || any(greaterThan(quv, vec2(1.0)))) break;
+        float sz = texelFetch(lin_depth, ivec2(quv * pc.size.xy), 0).x * pc.proj.z;
+        float delta = -q.z - sz;   // how far the scene at that pixel is in front of the ray point
+        if (delta > 0.02 + z * 0.002 && delta < thick) {
+            occ = 1.0 - float(i) / float(STEPS);   // a hit close to the pixel shadows more than one at the end
+            break;
+        }
+    }
+    float fade = 1.0 - smoothstep(40.0, 80.0, z);
+    float k = 1.0 - pc.proj.w * occ * fade;
+    if (pc.opt.x > 0.5) {
+        imageStore(scene, px, vec4(k, k, k, 1.0));
+        return;
+    }
+    if (k >= 0.999) return;
+    vec4 c = imageLoad(scene, px);
+    imageStore(scene, px, vec4(c.rgb * k, c.a));
+}

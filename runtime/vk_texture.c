@@ -273,6 +273,33 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
     }
 }
 
+// TOTK_SHADOW_SCALE (1 to 4): the game's shadow maps are made this many times larger on each side. TotK renders its
+// sun cascades into a 960x960 DEPTH16 2D array of 4 layers and its static shadows into 1440x1440 and 720x720 arrays of 2,
+// whatever the output resolution, and shrinks the cascades under load (872, 848, 800, 480 and so on). Those are made
+// larger here: render passes into them scale the game's viewports and scissors (vk_exec.c resolve_rt, pass_scale),
+// copies scale their regions (vk_exec_xfer.c sub_resolve), and shaders sample them with normalised coordinates, so the
+// game sees nothing of it. A map whose storage the CPU writes (mirrored) or that aliases pool memory keeps its size,
+// as its texels must match the guest layout.
+static int shadow_scale(void) {
+    static int scale = -1;
+    if (scale < 0) {
+        int s = cfg_int("TOTK_SHADOW_SCALE");
+        s = s < 1 ? 1 : s > 4 ? 4 : s;
+        rt_log("vk: shadow map scale %d", s);
+        scale = s;
+    }
+    return scale;
+}
+
+static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t samples, int mirrored) {
+    int scale = shadow_scale();
+    if (scale == 1 || mirrored || samples > 1 || d->format != NVN_FORMAT_DEPTH16 || !f->depth) return 1;
+    if (d->target != NVN_TEXTURE_TARGET_2D_ARRAY || d->width != d->height || d->width < 256 || d->depth < 2 || d->depth > 4)
+        return 1;
+    uint32_t most = vk_ctx()->props.limits.maxImageDimension2D;
+    return d->width * (uint32_t)scale <= most ? scale : 1;
+}
+
 // defer_init: the caller records the image's first transition (init_image or alias_copy).
 static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     static volatile long n_unmapped, n_unsupported, n_failed, n_unbound;
@@ -300,6 +327,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     case NVN_TEXTURE_TARGET_CUBEMAP: case NVN_TEXTURE_TARGET_CUBEMAP_ARRAY: layers = L.layers; break;
     default: break;
     }
+    int scale = shadow_scale_of(d, &f, d->samples > 1 ? (uint32_t)d->samples : 1, tex_mirrored(t));
+    w *= (uint32_t)scale, h *= (uint32_t)scale;
     uint32_t levels = umax(d->levels, 1), most = 1;
     for (uint32_t s = umax(umax(w, h), depth); s > 1; s >>= 1) most++;
     if (levels > most) levels = most;
@@ -311,6 +340,10 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (ds && (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if (!ds && (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && samples == 1)
+        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    // contact shadows (vk_contact.c) darken the game's B10G11R11 scene colour in place from a compute shader
+    if (f.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && samples == 1 &&
+        (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && w >= 640 && vk_contact_strength())
         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageCreateFlags flags = ds ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // format-reinterpreting views
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && w == h && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -342,7 +375,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     e->f = f;
     e->pub.addr = k->addr;
     VkImage img = VK_NULL_HANDLE;
-    if (nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
+    if (scale == 1 && nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
         if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS && !bind_pool_memory(c, e, img)) {
             vkDestroyImage(c->device, img, NULL);
             img = VK_NULL_HANDLE;
@@ -384,6 +417,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     p->bound = e->bound_to != NULL;
     p->block_views = (uint8_t)block_views;
     p->fb_usage = (uint8_t)fb_usage;
+    p->scale = (uint8_t)scale;
 
     if (!defer_init) {
         init_image(e, vk_upload_begin());
@@ -1421,6 +1455,7 @@ static VkCompareOp compare_op(uint32_t f) {
 }
 
 static struct { int init, mirror_clamp_edge, minmax, border_no_format; } sf;
+static float aniso_force;   // TOTK_ANISO: 0 = the game's level, else the least level of mipmapped colour samplers
 
 static void sampler_features(VkCtx *c) {
     if (sf.init) return;
@@ -1432,6 +1467,9 @@ static void sampler_features(VkCtx *c) {
     sf.mirror_clamp_edge = f12.samplerMirrorClampToEdge;
     sf.minmax = f12.samplerFilterMinmax;
     sf.border_no_format = c->has_custom_border_color && cbf.customBorderColors && cbf.customBorderColorWithoutFormat;
+    const char *an = cfg_value("TOTK_ANISO");
+    aniso_force = strcmp(an, "game") ? (float)atoi(an) : 0;
+    rt_log("vk: anisotropic filtering: %s", aniso_force > 1 ? an : "the game's");
     sf.init = 1;
 }
 
@@ -1466,13 +1504,23 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias;
     si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
-    if (d->aniso > 1) {
+    float aniso = d->aniso;
+    // TOTK_ANISO raises the level for filtered, mipmapped colour samplers only: depth-compare (shadow) samplers and
+    // nearest or unmipmapped ones (data maps, LUTs) keep what the game set.
+    if (aniso_force > 1 && !d->cmp_mode && si.magFilter == VK_FILTER_LINEAR && si.minFilter == VK_FILTER_LINEAR &&
+        (mf == NVN_MIN_FILTER_LINEAR_MIPMAP_NEAREST || mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR) && aniso < aniso_force)
+        aniso = aniso_force;
+    if (aniso > 1) {
         si.anisotropyEnable = VK_TRUE;
-        si.maxAnisotropy = fminf(d->aniso, c->props.limits.maxSamplerAnisotropy);
+        si.maxAnisotropy = fminf(aniso, c->props.limits.maxSamplerAnisotropy);
     }
     if (d->cmp_mode) {
         si.compareEnable = VK_TRUE;
         si.compareOp = compare_op(d->cmp_func);
+        // A depth-compare sampler set to nearest returns 0 or 1 per tap, and the game's shaders smooth shadow edges by
+        // a few taps spaced for its own shadow map texels. With TOTK_SHADOW_SCALE those taps cover a fraction of the
+        // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead.
+        if (shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     VkSamplerReductionModeCreateInfo rm = {.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};

@@ -191,7 +191,25 @@ void res_heapdef_served(void) { R.heapdef_ok = 1; }
 // ---- start: the patch page and the sets
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
+// TOTK_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m.
+// Other values multiply those distances through the cascade patch set (recomp/patches-v143.txt), so the sharp first
+// cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
+// texels per metre (TOTK_SHADOW_SCALE pays that back).
+static void res_shadow_range(void) {
+    int pct = cfg_int("TOTK_SHADOW_RANGE"), set = rt_patch_set("cascade");
+    if (pct == 100) return;
+    if (set < 0) {
+        rt_log("resolution: the generated C has no cascade patch set; shadow_range stays 100");
+        return;
+    }
+    float k = (float)(pct < 50 ? 50 : pct > 400 ? 400 : pct) / 100.0f, d[4] = {20 * k, 40 * k, 80 * k, 160 * k};
+    memcpy((uint8_t *)rt_patch_page() + 64, d, sizeof d);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: shadow cascades end at %g, %g, %g and %g m", d[0], d[1], d[2], d[3]);
+}
+
 void res_init(void) {
+    res_shadow_range();
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         return;

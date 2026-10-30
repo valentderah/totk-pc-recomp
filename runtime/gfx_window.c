@@ -920,6 +920,7 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_contact_release();
         free_capture();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {
