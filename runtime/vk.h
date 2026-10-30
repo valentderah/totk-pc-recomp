@@ -302,6 +302,9 @@ typedef struct {
     uint8_t fb_usage;              // created with ATTACHMENT_FEEDBACK_LOOP usage (VK_FEEDBACK_LAYOUT, attachable images)
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
+    uint8_t scale;                 // 1, or TOTK_SHADOW_SCALE for a shadow map made larger than the game's (vk_texture.c
+                                   // shadow_scale_of): width and height above are the larger ones, the game's regions
+                                   // are multiplied by it
 } VkTexImage;
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).

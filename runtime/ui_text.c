@@ -86,6 +86,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_SATURATION_DESC] = "Colour strength against grey; 100 % leaves it.",
     [UI_MENU_COLOR_GAMMA] = "Gamma",
     [UI_MENU_COLOR_GAMMA_DESC] = "Below 1 brightens dark and middle tones, above 1 darkens them; 1 leaves them.",
+    [UI_MENU_ANISO] = "Anisotropic filtering",
+    [UI_MENU_ANISO_DESC] = "Keeps ground and walls seen at a steep angle sharp. The game's own level is the Switch's; "
+                           "16x costs little on a desktop GPU.",
+    [UI_MENU_ANISO_GAME] = "The game's",
+    [UI_MENU_SHADOW_SCALE] = "Shadow resolution",
+    [UI_MENU_SHADOW_SCALE_DESC] = "Draws the sun's shadow maps this many times larger on each side than the game's 960x960: "
+                                  "sharper shadow edges and leaf shadows. Takes effect at the next start.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -347,6 +354,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_COLOR_SATURATION_DESC] = "Сила цвета относительно серого; 100 % — без изменений.",
     [UI_MENU_COLOR_GAMMA] = "Гамма",
     [UI_MENU_COLOR_GAMMA_DESC] = "Ниже 1 осветляет тёмные и средние тона, выше 1 затемняет их; 1 — без изменений.",
+    [UI_MENU_ANISO] = "Анизотропная фильтрация",
+    [UI_MENU_ANISO_DESC] = "Сохраняет чёткость земли и стен под острым углом. Уровень самой игры — как на Switch; "
+                           "16x почти ничего не стоит настольной видеокарте.",
+    [UI_MENU_ANISO_GAME] = "Как в игре",
+    [UI_MENU_SHADOW_SCALE] = "Разрешение теней",
+    [UI_MENU_SHADOW_SCALE_DESC] = "Карты теней от солнца рисуются во столько раз больше по каждой стороне, чем 960x960 "
+                                  "самой игры: края теней и тени листвы чётче. Действует после перезапуска.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "

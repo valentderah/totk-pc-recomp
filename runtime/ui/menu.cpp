@@ -505,6 +505,19 @@ static void row_render_scale(void) {
     opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC);
 }
 
+static void row_aniso(void) {
+    static const char *const vals[] = {"game", "2", "4", "8", "16"};
+    static const char *names[] = {NULL, "2x", "4x", "8x", "16x"};
+    names[0] = menu_text(UI_MENU_ANISO_GAME);
+    opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, vals, names, 5, UI_MENU_ANISO_DESC);
+}
+
+static void row_shadow_scale(void) {
+    static const char *const vals[] = {"1", "2", "3", "4"};
+    static const char *const names[] = {"960 (1x)", "1920 (2x)", "2880 (3x)", "3840 (4x)"};
+    opt_choice_list("TOTK_SHADOW_SCALE", UI_MENU_SHADOW_SCALE, vals, names, 4, UI_MENU_SHADOW_SCALE_DESC);
+}
+
 static void row_gpu(void) {
     const char *vals[MAX_GPUS + 1], *names[MAX_GPUS + 1];
     char idx[MAX_GPUS][4];
@@ -629,6 +642,8 @@ static void tab_screen(float scale) {
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    row_aniso();
+    row_shadow_scale();
     rows_color();
     opt_end();
 }
