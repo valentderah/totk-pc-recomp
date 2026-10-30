@@ -167,6 +167,10 @@
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
 # contact_shadows = 0
+# Soft sun shadows (PCSS), percent of the default penumbra width (0 to 200; 0 = the game's own four-tap filter): sharp
+# where an object meets the ground and softer the further its shadow falls. Done in the translated shaders (translator
+# patch 0010), so the shader cache is rebuilt once after an update. Read at start.
+# pcss = 0
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
