@@ -5,7 +5,7 @@ name: Windows host
 
 on:
   push:
-    branches: [main, linux-port]
+    branches: [main, linux-port, ci-container]
   pull_request:
   workflow_dispatch:
 
