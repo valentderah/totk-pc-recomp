@@ -1,6 +1,10 @@
 // ASTC textures on the GPU: the TOTK_ASTC knob, a compute decoder that turns raw blocks into the RGBA8 image the CPU
 // decoder (tex_astc.c) would have written, and the native ASTC formats where the device samples them itself.
 //
+// TOTK_ASTC_BC = 1 (gpu mode only, default 0): a second pass (runtime/shaders/bc3_encode.comp) encodes the decoded
+// texels to BC3 and the image is BC3, 8 bits per texel instead of 32. For GPUs with little video memory, at the cost of
+// BC3's quality: textures look slightly blockier, and data textures (normal maps) lose some precision.
+//
 // TOTK_ASTC = auto (default): native when the device reports textureCompressionASTC_LDR and the format's features,
 // else gpu. gpu: compute decode into RGBA8 (runtime/shaders/astc_decode.comp). native: like auto, but logs when the
 // device cannot. cpu: astc_decode_ldr_mt on the uploading thread, as before. check: gpu, and every upload is also
@@ -17,6 +21,7 @@
 #include <windows.h>
 
 #include "astc_decode_spv.h"
+#include "bc3_encode_spv.h"
 #include "cfg.h"
 #include "host.h"
 #include "tex.h"
@@ -99,6 +104,8 @@ static struct {
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkPipeline pipe;
+    VkPipeline bc_pipe;           // the BC3 encoder (TOTK_ASTC_BC): the decoder's layout, bindings 0 and 1
+    int bc;                       // 1: ASTC images are BC3 (vk_astc_bc)
     PFN_vkCmdPushDescriptorSetKHR push;
     VkBuffer tab;                 // device-local copy of the tables
     VmaAllocation tab_alloc;
@@ -293,6 +300,36 @@ static int create_pipeline(VkCtx *c) {
     return 1;
 }
 
+// TOTK_ASTC_BC=1: the BC3 encoder, when the device samples BC3 (every desktop GPU does); 0 leaves ASTC as RGBA8.
+static int create_bc_pipeline(VkCtx *c) {
+    const char *e = cfg_get("TOTK_ASTC_BC");
+    if (!e || !*e || *e == '0') return 0;
+    VkFormatProperties p;
+    vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_BC3_SRGB_BLOCK, &p);
+    VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((p.optimalTilingFeatures & need) != need) {
+        rt_log("vk: TOTK_ASTC_BC: the device does not sample BC3; ASTC stays RGBA8");
+        return 0;
+    }
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof bc3_encode_spv,
+                                   .pCode = bc3_encode_spv};
+    VkShaderModule m = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS) return 0;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"},
+                                      .layout = G.layout};
+    VkResult r = vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &G.bc_pipe);
+    vkDestroyShaderModule(c->device, m, NULL);
+    if (r != VK_SUCCESS) {
+        G.bc_pipe = VK_NULL_HANDLE;
+        rt_log("vk: TOTK_ASTC_BC: the BC3 encoder pipeline failed (%d); ASTC stays RGBA8", (int)r);
+        return 0;
+    }
+    rt_log("vk: ASTC textures are encoded to BC3 after the decode (TOTK_ASTC_BC)");
+    return 1;
+}
+
 static int native_device(VkCtx *c) { return c->has_astc_ldr; }
 
 static const char *mode_name(int m) {
@@ -324,6 +361,7 @@ int vk_astc_mode(void) {
             rt_log("vk: ASTC compute decoder unavailable on %s: ASTC decodes on the CPU", c->props.deviceName);
         }
         if (G.failed && m != VK_ASTC_NATIVE) m = VK_ASTC_CPU;
+        G.bc = m == VK_ASTC_GPU && G.pipe && create_bc_pipeline(c);
         G.mode = m;
         rt_log("vk: ASTC textures: %s (textureCompressionASTC_LDR %d)", mode_name(m), native_device(c));
     }
@@ -352,6 +390,15 @@ int vk_astc_gpu(void) {
     return ok;
 }
 
+int vk_astc_bc(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || vk_astc_mode() != VK_ASTC_GPU) return 0;
+    AcquireSRWLockShared(&g_lock);
+    int on = G.dev == c->device && G.bc;
+    ReleaseSRWLockShared(&g_lock);
+    return on;
+}
+
 static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAccessFlags2 sa, VkPipelineStageFlags2 dst,
                         VkAccessFlags2 da) {
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = src, .srcAccessMask = sa,
@@ -368,30 +415,47 @@ static VkDeviceSize region_out(const VkAstcRegion *r) { return (VkDeviceSize)r->
 static VkDeviceSize region_in(const VkAstcRegion *r, uint32_t bw, uint32_t bh) {
     return (VkDeviceSize)((r->w + bw - 1) / bw) * ((r->h + bh - 1) / bh) * r->slices * 16;
 }
+static VkDeviceSize region_bc(const VkAstcRegion *r) { return region_in(r, 4, 4); }   // BC3: 16 bytes per 4x4 block
+
+typedef struct { uint32_t in_base, out_base, width, height, bx, bslice; } BcPush;   // bc3_encode.comp Params
 
 int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, const VkAstcRegion *rg, int n, uint32_t bw,
-                   uint32_t bh, int srgb, VkImage img, VkImageAspectFlags aspect, VkBuffer readback) {
-    static volatile long n_fail;
+                   uint32_t bh, int srgb, int bc, VkImage img, VkImageAspectFlags aspect, VkBuffer readback) {
+    static volatile long n_fail, n_unaligned;
     (void)src_size;
     VkCtx *c = vk_ctx();
     if (!c || !vk_astc_gpu() || bw < 4 || bh < 4 || bw > 12 || bh > 12) return 0;
     AcquireSRWLockShared(&g_lock);
-    VkPipeline pipe = G.dev == c->device ? G.pipe : VK_NULL_HANDLE;
+    VkPipeline pipe = G.dev == c->device ? G.pipe : VK_NULL_HANDLE, bc_pipe = G.dev == c->device ? G.bc_pipe : VK_NULL_HANDLE;
     ReleaseSRWLockShared(&g_lock);
-    if (!pipe) return 0;
-    // chunks of consecutive regions; scratch = the largest chunk's blocks, then its texels
-    VkDeviceSize out_total = 0, cap_in = 0, cap_out = 0, ci = 0, co = 0;
+    if (!pipe || (bc && !bc_pipe)) return 0;
+    if (bc) {
+        readback = VK_NULL_HANDLE;
+        for (int i = 0; i < n; i++)   // a BC copy starts on a block corner; a WriteTexels region of a 5x5 or 6x6 footprint may not
+            if ((rg[i].offset.x & 3) || (rg[i].offset.y & 3)) {
+                if (InterlockedIncrement(&n_unaligned) <= 16)
+                    rt_log("vk: ASTC to BC3: region at %d,%d is not on a 4x4 block corner: texture left as it was",
+                           rg[i].offset.x, rg[i].offset.y);
+                return 0;
+            }
+    }
+    // chunks of consecutive regions; scratch = the largest chunk's blocks, then its texels, then (bc) its BC3 blocks
+    VkDeviceSize out_total = 0, cap_in = 0, cap_out = 0, cap_bc = 0, ci = 0, co = 0, cb3 = 0;
     for (int i = 0; i < n; i++) {
         VkDeviceSize o = region_out(&rg[i]), b = region_in(&rg[i], bw, bh);
-        if (co && co + o > CHUNK_OUT) ci = co = 0;
-        ci += b, co += o, out_total += o;
+        if (co && co + o > CHUNK_OUT) ci = co = cb3 = 0;
+        ci += b, co += o, cb3 += region_bc(&rg[i]), out_total += o;
         if (ci > cap_in) cap_in = ci;
         if (co > cap_out) cap_out = co;
+        if (cb3 > cap_bc) cap_bc = cb3;
     }
     if (!out_total) return 1;
-    VkDeviceSize al = c->props.limits.minStorageBufferOffsetAlignment;   // the texels bind at cap_in
-    if (al > 1) cap_in = (cap_in + al - 1) / al * al;
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap_in + cap_out,
+    VkDeviceSize al = c->props.limits.minStorageBufferOffsetAlignment;   // the texels bind at cap_in, the BC3 blocks after them
+    if (al < 16) al = 16;
+    cap_in = (cap_in + al - 1) / al * al;
+    cap_out = (cap_out + al - 1) / al * al;
+    if (!bc) cap_bc = 0;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap_in + cap_out + cap_bc,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -484,6 +548,30 @@ int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, cons
         }
         if (slot >= 0)
             vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, tpool, 2 * (uint32_t)slot + 1);
+        if (bc) {   // the chunk's texels to BC3 blocks behind them; the image copy then takes the blocks
+            mem_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+            VkDescriptorBufferInfo bdi[2] = {{sb, cap_in, cap_out}, {sb, cap_in + cap_out, cap_bc}};
+            VkWriteDescriptorSet bw2[2];
+            for (int k = 0; k < 2; k++)
+                bw2[k] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = (uint32_t)k,
+                                                .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                .pBufferInfo = &bdi[k]};
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bc_pipe);
+            rec_push(G.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, G.layout, 0, 2, bw2);
+            VkDeviceSize to = 0, bo = 0;
+            for (int i = i0; i < i1; i++) {
+                const VkAstcRegion *r = &rg[i];
+                uint32_t bx4 = (r->w + 3) / 4, by4 = (r->h + 3) / 4;
+                BcPush pc = {.in_base = (uint32_t)(to / 4), .out_base = (uint32_t)(bo / 16), .width = r->w, .height = r->h,
+                             .bx = bx4, .bslice = bx4 * by4};
+                vkCmdPushConstants(cb, G.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+                vkCmdDispatch(cb, (bx4 + 7) / 8, (by4 + 7) / 8, r->slices);
+                VkBufferImageCopy *cp = &copies[i - i0];
+                cp->bufferOffset = cap_in + cap_out + bo, cp->bufferRowLength = bx4 * 4, cp->bufferImageHeight = by4 * 4;
+                to += region_out(r), bo += region_bc(r);
+            }
+        }
         mem_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         vkCmdCopyBufferToImage(cb, sb, img, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)(i1 - i0), copies);
@@ -524,6 +612,7 @@ void vk_astc_release(void) {
     AcquireSRWLockExclusive(&g_lock);
     if (c && G.dev == c->device) {
         if (G.pipe) vkDestroyPipeline(c->device, G.pipe, NULL);
+        if (G.bc_pipe) vkDestroyPipeline(c->device, G.bc_pipe, NULL);
         if (G.layout) vkDestroyPipelineLayout(c->device, G.layout, NULL);
         if (G.dsl) vkDestroyDescriptorSetLayout(c->device, G.dsl, NULL);
         if (G.tab) vmaDestroyBuffer(c->vma, G.tab, G.tab_alloc);

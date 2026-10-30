@@ -132,7 +132,7 @@ static int gpu_decode(VkCtx *c, const uint8_t *blk, size_t n0, size_t n1, uint32
     VkAstcRegion ar[2] = {{.src = 0, .w = w0, .h = h0, .slices = 1, .level = 0},
                           {.src = n0 * 16, .w = w1, .h = h1, .slices = 1, .level = 1}};
     barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    int ok = vk_astc_record(cb, sb, (n0 + n1) * 16, ar, 2, bw, bh, srgb, im.img, VK_IMAGE_ASPECT_COLOR_BIT, rb);
+    int ok = vk_astc_record(cb, sb, (n0 + n1) * 16, ar, 2, bw, bh, srgb, 0, im.img, VK_IMAGE_ASPECT_COLOR_BIT, rb);
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
     VkBufferImageCopy cp[2] = {{.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w0, h0, 1}},
                                {.bufferOffset = t0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, 1}, .imageExtent = {w1, h1, 1}}};
