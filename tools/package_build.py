@@ -91,6 +91,8 @@ def main():
         else:
             print(f'package_build: {f} not in {build}, skipped')
     n = copy_tree(build / 'romfs-patches', out / 'romfs-patches')
+    if (build / 'romfs-patches-xbox').is_dir():   # pad_layout = xbox_prompts (make_romfs_patches.py --xbox-prompts)
+        n += copy_tree(build / 'romfs-patches-xbox', out / 'romfs-patches-xbox')
     n += copy_tree(exefs, out / 'exefs')
     n += copy_tree(fonts, out / 'shared-fonts')
     if not a.no_shader_cache and (build / 'shader-cache').is_dir():

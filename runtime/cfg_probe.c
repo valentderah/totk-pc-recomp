@@ -266,6 +266,9 @@ int probe_cfg(void) {
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
     CHECK(input_pad_layout_pick("Xbox", 1) == PAD_LAYOUT_XBOX && input_pad_layout_pick("nintendo", 0) == PAD_LAYOUT_NINTENDO,
           "pad layout: a set layout wins over the labels");
+    CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
+              input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
+          "pad layout: Xbox prompts keep the Nintendo positions (only the prompts change, romfs.c overlay_init)");
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;
     CHECK(input_map_pad_buttons(pd, PAD_LAYOUT_NINTENDO) == (1ull << B_B | 1ull << B_X) &&

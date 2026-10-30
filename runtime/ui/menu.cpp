@@ -38,6 +38,9 @@ void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
+// fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
+int romfs_xbox_prompts_ready(void);
+int romfs_xbox_prompts_active(void);
 extern const char rt_port_version[];
 }
 
@@ -555,8 +558,14 @@ static void tab_sound(float scale) {
     opt_end();
 }
 
-// "in use: Xbox" under the layout when it is Automatic and a gamepad is connected; NULL otherwise.
+// The note under the layout. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
+// overlay_init) change the buttons at once but the prompts only at the next start: "files missing" without
+// romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
+// gamepad connected: "in use: Xbox". NULL otherwise.
 static const char *pad_layout_note(void) {
+    bool want = !_stricmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
+    if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
+    if (want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
     int got = input_pad_layout();
     if (got < 0 || strcmp(cfg_value("TOTK_PAD_LAYOUT"), "auto")) return nullptr;
     static char note[96];
@@ -567,8 +576,9 @@ static const char *pad_layout_note(void) {
 
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
-    static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
-    opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 3, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
+                                      UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
+    opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");

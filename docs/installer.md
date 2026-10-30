@@ -50,7 +50,8 @@ keeps `profile/`. Saves carry over both ways: 1.4.3 converts a 1.2.1 save on loa
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library into `totk.exe` (`build_game.py --runtime-lib`; about 3 min on 24 cores).
 5. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
-   `totk.exe --prepare-shaders`) in the install folder.
+   `totk.exe --prepare-shaders`) in the install folder. The patches are written twice: `romfs-patches` and
+   `romfs-patches-xbox` (`--xbox-prompts`, the A/B and X/Y prompts swapped for `pad_layout = xbox_prompts`).
 6. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).

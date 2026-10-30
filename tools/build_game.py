@@ -174,16 +174,18 @@ def write_if_changed(path, text):
 def copy_romfs_patches(version, out):
     """totk.exe loads romfs-patches beside romfs-index.bin (runtime/romfs.c overlay_init). tools/make_romfs_patches.py
     writes them into build/<version> only, so a build in another directory ran without the 60 fps overlay (the quick
-    menus' captured background turned black). Copies them when their manifest differs."""
-    src = ROOT / 'build' / version / 'romfs-patches'
-    dst = out / 'romfs-patches'
-    if src.resolve() == dst.resolve() or not (src / 'manifest.tsv').is_file():
-        return
-    if (dst / 'manifest.tsv').is_file() and (dst / 'manifest.tsv').read_bytes() == (src / 'manifest.tsv').read_bytes():
-        return
-    shutil.rmtree(dst, ignore_errors=True)
-    shutil.copytree(src, dst)
-    print(f'romfs patches: copied from {src}')
+    menus' captured background turned black). Copies them when their manifest differs; romfs-patches-xbox (the same with
+    the A/B and X/Y prompts swapped, pad_layout = xbox_prompts) the same way when it was made."""
+    for name in ('romfs-patches', 'romfs-patches-xbox'):
+        src = ROOT / 'build' / version / name
+        dst = out / name
+        if src.resolve() == dst.resolve() or not (src / 'manifest.tsv').is_file():
+            continue
+        if (dst / 'manifest.tsv').is_file() and (dst / 'manifest.tsv').read_bytes() == (src / 'manifest.tsv').read_bytes():
+            continue
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst)
+        print(f'romfs patches: copied {name} from {src}')
 
 
 def c_string(s):

@@ -407,10 +407,32 @@ static void heapdef_overlay(void) {
     res_heapdef_served();
 }
 
+static int xbox_prompts_ready;    // romfs-patches-xbox/manifest.tsv was next to romfs-index.bin at start
+static int xbox_prompts_active;   // and overlay_init loaded it
+
+int romfs_xbox_prompts_ready(void) { return xbox_prompts_ready; }
+int romfs_xbox_prompts_active(void) { return xbox_prompts_active; }
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
-    char def[2100];
+    // With pad_layout = xbox_prompts, romfs-patches-xbox in its place: the same patches with the A/B and X/Y prompts
+    // swapped (make_romfs_patches.py --xbox-prompts). The game reads the archives once at boot, so the prompts stay
+    // until restart even though the layout itself changes live.
+    char def[2100], xbox[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES");
+    xbox_prompts_ready =
+        snprintf(xbox, sizeof xbox, "%s/romfs-patches-xbox/manifest.tsv", index_dir) < (int)sizeof xbox &&
+        GetFileAttributesA(xbox) != INVALID_FILE_ATTRIBUTES;
+    int want_xbox = !_stricmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
+    if (!patches && want_xbox && xbox_prompts_ready) {
+        xbox[strlen(xbox) - strlen("/manifest.tsv")] = 0;
+        patches = xbox;
+        xbox_prompts_active = 1;
+        rt_log("RomFS overlay: Xbox button prompts (%s)", xbox);
+    } else if (want_xbox) {
+        rt_log("RomFS overlay: pad_layout = xbox_prompts, but %s; Switch prompts stay",
+               patches ? "TOTK_ROMFS_PATCHES is set" : "romfs-patches-xbox has no manifest.tsv (run the setup again)");
+    }
     if (!patches && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
         GetFileAttributesA(def) != INVALID_FILE_ATTRIBUTES) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;

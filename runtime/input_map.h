@@ -77,8 +77,10 @@ int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
 
-// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); anything else ("auto", NULL) picks Nintendo
-// when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox otherwise.
+// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
+// the A/B and X/Y prompts swapped (runtime/romfs.c overlay_init), so the buttons map as "nintendo". Anything else
+// ("auto", NULL) picks Nintendo when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox
+// otherwise.
 int input_pad_layout_pick(const char *setting, int east_labelled_a);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);

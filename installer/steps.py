@@ -6,7 +6,8 @@ tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and
 here: the host check is a small C program built with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
+romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
+totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
@@ -594,6 +595,7 @@ class Prepare(Step):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
         return ((dest / 'shader-prepared.bin').is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
+                and (dest / 'romfs-patches-xbox' / 'manifest.tsv').is_file()
                 and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
 
     def run(self, ctx):
@@ -611,12 +613,15 @@ class Prepare(Step):
             remove(xlate.with_suffix('.id'))
 
         rep.progress('prepare', 'romfs_patches', force=True)
-        remove(dest / 'romfs-patches')
-        code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
-                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                              dest / 'romfs-patches'])
-        if code:
-            raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (always written,
+        # so the menu setting works without another run of the setup).
+        for name, extra in (('romfs-patches', []), ('romfs-patches-xbox', ['--xbox-prompts'])):
+            remove(dest / name)
+            code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                                  dest / name] + extra)
+            if code:
+                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
 
         shader_list = layout.shader_list
         if not shader_list:
