@@ -160,6 +160,9 @@
 # Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game
 # resolution; 2 to 4 draws them that many times larger on each side, for sharper shadows. 1 = the game's. Read at start.
 # shadow_scale = 1
+# Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
+# the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
+# shadow_range = 100
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
