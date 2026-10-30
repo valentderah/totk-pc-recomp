@@ -1,0 +1,50 @@
+name: Windows host
+
+# The Windows file set compiles here; it cannot link without the generated modules, which need a dump. MSYS2 UCRT64
+# with the package list from docs/building.md, because a different clang is a different set of warnings-as-behaviour.
+
+on:
+  push:
+    branches: [main, linux-port]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile-gate:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            git
+            unzip
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-libvpx
+            mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-vulkan-devel
+            mingw-w64-ucrt-x86_64-vulkan-memory-allocator
+            mingw-w64-ucrt-x86_64-vulkan-validation-layers
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-tools
+
+      - name: Platform uses
+        run: python tools/check_platform.py
+
+      - name: Compile every Windows runtime translation unit
+        run: python tools/ci/compile_gate.py --undefined
