@@ -37,9 +37,28 @@ def compiler():
     return shutil.which('clang')
 
 
+def argv_path(flag, suffix=''):
+    """A path from the command line, because vma_include() is asked before argparse has run."""
+    argv = sys.argv
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return Path(argv[i + 1]) / suffix if suffix else Path(argv[i + 1])
+    return None
+
+
+def args_sysroot_include():
+    """The sysroot's own /usr/include, when one was asked for: it carries the SDL3 headers."""
+    return argv_path('--sysroot', 'usr/include') or Path('/nonexistent')
+
+
 def vma_include():
-    for d in (Path('C:/msys64/ucrt64/include/vma'), ROOT / 'toolchain' / 'vma' / 'include',
-              ROOT / 'toolchain' / 'vma', Path('/usr/include/vma')):
+    deps = argv_path('--deps', 'include')
+    for d in ((deps / 'vma') if deps else Path('/nonexistent'),
+              Path('C:/msys64/ucrt64/include/vma'), Path('C:/msys64/ucrt64/include'),
+              ROOT / 'toolchain' / 'vma' / 'include', ROOT / 'toolchain' / 'vma',
+              Path('/usr/local/include/vma'), Path('/usr/include/vma'), Path('/usr/include'),
+              args_sysroot_include()):
         if (d / 'vk_mem_alloc.h').is_file():
             return d
     return None
@@ -64,16 +83,27 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--undefined', action='store_true', help='also fail on undefined platform symbols')
     ap.add_argument('--gen', help='a generated/ folder, if one exists: its layout.h is used instead of a stub')
+    ap.add_argument('--cc', help='the compiler to use (the release pins LLVM; a distro clang compiles the gate too, '
+                                'until a file uses something only a newer clang has)')
+    ap.add_argument('--deps', type=Path, help='runtime/deps of a release toolchain: its include/ carries zstd.h')
+    ap.add_argument('--sysroot', type=Path,
+                    help='Linux: compile against this sysroot instead of the host headers, as the release does '
+                         '(tools/make_release_linux.py --fetch-sysroot prints the path)')
     ap.add_argument('--keep', action='store_true', help='keep the object folder')
     args = ap.parse_args()
 
-    cc = compiler()
+    cc = args.cc or compiler()
     if not cc:
         sys.exit('compile gate: no clang found')
     flags = list(build_game.RT_FLAGS)
     # No -D_GNU_SOURCE: glibc's __USE_GNU turns bsearch into a five-argument macro and breaks nvn_procs.c. The
     # project's own flags are what a real build uses, and this gate exists to reproduce that build.
+    if args.sysroot:
+        root = args.sysroot.resolve()
+        flags[:0] = ['--target=x86_64-linux-gnu', f'--sysroot={root}']
     inc = [f'-I{RUNTIME}', f'-I{RUNTIME / "third_party" / "imgui"}']
+    if args.deps:
+        inc.insert(0, f'-I{Path(args.deps).resolve() / "include"}')
     vma = vma_include()
     if vma:
         inc.append(f'-I{vma}')
