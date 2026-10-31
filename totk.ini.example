@@ -150,6 +150,9 @@
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # pad_layout = auto
+# Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
+# the stick reads centred, and the rest of its travel is scaled to start there.
+# stick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.

@@ -9,6 +9,9 @@
 // single-producer single-consumer ring. The SDL audio thread drains that ring without taking any lock: an empty ring
 // plays silence and never blocks the render thread or the guest. TOTK_AUDIO=none (or TOTK_AUDIO_OFF) mixes without a
 // device; TOTK_AUDIO_PREFILL_MS (0..500, default 20) is the queued audio the output waits for after start or underrun.
+// The render thread runs on the host clock and the device on its own, and after a stall the render thread catches up in
+// a burst, so audio can pile up in the ring; the SDL thread skips what is queued beyond the prefill plus QUEUE_SLACK_MS,
+// which keeps the delay from the game to the speakers at prefill plus one device period instead of up to the ring size.
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -26,6 +29,7 @@
 
 #define MAX_FRAME 1024
 #define RING_FRAMES 16384            // stereo frames, about 340 ms at 48 kHz
+#define QUEUE_SLACK_MS 40            // queued audio above prefill plus the device's request that ring_pull skips
 #define SPLITTER_UNUSED 0xffffffffu
 #define dm_guest_write_prepare(p, n) ((void)(p), (void)(n))   // guest memory is plain host memory on Windows
 
@@ -43,7 +47,7 @@ typedef struct Mixer {
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
     SDL_AudioStream *stream; int device_ok, rate;
     float ring[RING_FRAMES * 2];
-    _Atomic uint64_t wr, rd, underruns, overruns, missing_frames, callback_frames, callback_nonzero;
+    _Atomic uint64_t wr, rd, underruns, overruns, missing_frames, callback_frames, callback_nonzero, skipped_frames;
     _Atomic int playing; int ready;                // ready: the callback's own state
     _Atomic uint64_t flush_until; _Atomic unsigned stop_epoch; unsigned callback_epoch;
     EffectState *effect; int *effect_order; unsigned effect_reported;
@@ -107,15 +111,21 @@ static void ring_pull(Mixer *m, float *out, uint32_t frames) {
         atomic_store_explicit(&m->rd, wr, memory_order_release);
         return;
     }
+    uint64_t prefill = (uint64_t)m->frame * (uint64_t)m->prefill;
+    if (prefill < frames) prefill = frames;
+    if (prefill > RING_FRAMES) prefill = RING_FRAMES;
     if (!m->ready) {
-        uint64_t prefill = (uint64_t)m->frame * (uint64_t)m->prefill;
-        if (prefill < frames) prefill = frames;
-        if (prefill > RING_FRAMES) prefill = RING_FRAMES;
         if (have < prefill) {
             memset(out, 0, (size_t)frames * 2 * sizeof(float));
             return;
         }
         m->ready = 1;
+    }
+    uint64_t keep = prefill + frames, slack = (uint64_t)m->rate * QUEUE_SLACK_MS / 1000;
+    if (have > keep + slack) {   // audio piled up (render burst, clock drift): skip the oldest, keep prefill + request
+        atomic_fetch_add(&m->skipped_frames, have - keep);
+        rd = wr - keep;
+        have = keep;
     }
     uint32_t n = frames < have ? frames : (uint32_t)have;
     uint64_t nonzero = 0;
@@ -209,12 +219,14 @@ static void level_note(AudioRenderer *r, Mixer *m, const float *lr, int frames) 
         rt_log("audio: first nonzero output after %llu frames", (unsigned long long)r->elapsed_frames);
     }
     if (m->level_frames >= (uint64_t)r->param.sample_rate * 5) {
+        uint64_t wr = atomic_load(&m->wr), queued = wr - atomic_load(&m->rd);
         rt_log("audio: level rms %.4f peak %.4f over %.1f s; written %llu frames, underruns %llu, overruns %llu, "
-               "missing frames %llu, callback frames %llu (nonzero %llu)",
+               "missing frames %llu, callback frames %llu (nonzero %llu), queued %.1f ms, skipped %llu frames",
                sqrt(m->level_sum / (double)m->level_count), m->level_peak, m->level_frames / (double)r->param.sample_rate,
-               (unsigned long long)atomic_load(&m->wr), (unsigned long long)atomic_load(&m->underruns),
+               (unsigned long long)wr, (unsigned long long)atomic_load(&m->underruns),
                (unsigned long long)atomic_load(&m->overruns), (unsigned long long)atomic_load(&m->missing_frames),
-               (unsigned long long)atomic_load(&m->callback_frames), (unsigned long long)atomic_load(&m->callback_nonzero));
+               (unsigned long long)atomic_load(&m->callback_frames), (unsigned long long)atomic_load(&m->callback_nonzero),
+               queued * 1000.0 / r->param.sample_rate, (unsigned long long)atomic_load(&m->skipped_frames));
         m->level_sum = m->level_peak = 0;
         m->level_count = m->level_frames = 0;
     }

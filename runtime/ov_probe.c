@@ -552,17 +552,21 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
           near3(ms[0].dir + 3, -1, 0, 0, 0.01) && near3(ms[0].dir + 6, 0, 0, 1, 0.01),
           "fusion quarter turn: %d states, sampling %lld, angle %.4f rev, x axis (%.3f %.3f %.3f)", n,
           (long long)ms[0].sampling, (double)ms[0].angle[2], (double)ms[0].dir[0], (double)ms[0].dir[1], (double)ms[0].dir[2]);
+    double quarter = ms[0].angle[2];
     CHECK(motion_read(m, ms, 16, t + 300000000ull) == 0, "fusion states 300 ms after the last sample");
-    printf("hid feedback: vibration handles %#x %#x, six-axis %#x, at rest when stopped; fusion quarter turn %.4f rev\n",
-           vh[0], vh[1], sh[0], (double)ms[0].angle[2]);
-    // A restart drops the previous session's states: none until the next sample, which starts the count and angle over
+    // StartSixAxisSensor again in the middle of the turn (the bow drawn again): the states from before it are gone, and
+    // the first one after it starts a fresh angle in a fresh frame; sampling numbers go on.
+    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000);
     motion_restart(m);
-    int before = motion_read(m, ms, 16, t + 1000000);
+    int same = motion_read(m, ms, 16, t + 1000000);
     motion_feed(m, down, turn, t += 4000000);
-    n = motion_read(m, ms, 16, t + 1000000);
-    CHECK(before == 0 && n == 1 && ms[0].sampling == 1 && fabs(ms[0].angle[2]) < 0.002 && near3(ms[0].dir, 1, 0, 0, 0.01),
-          "fusion restart: %d states before the next sample, %d after, sampling %lld, angle %.4f rev", before, n,
-          (long long)ms[0].sampling, (double)ms[0].angle[2]);
+    int next = motion_read(m, ms, 16, t + 1000000);
+    CHECK(same == 0 && next == 1 && ms[0].sampling == 502 && fabs(ms[0].angle[2]) < 0.002 &&
+          near3(ms[0].dir, 1, 0, 0, 0.01),
+          "fusion restart: %d states in the frame of the Start, %d after one sample (sampling %lld, angle %.4f rev)", same,
+          next, (long long)ms[0].sampling, (double)ms[0].angle[2]);
+    printf("hid feedback: vibration handles %#x %#x, six-axis %#x, at rest when stopped; fusion quarter turn %.4f rev\n",
+           vh[0], vh[1], sh[0], quarter);
 }
 
 static void probe_input(void) {
