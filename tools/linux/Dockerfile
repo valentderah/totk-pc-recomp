@@ -15,7 +15,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl git python3 python3-venv python3-pip \
         build-essential clang lld ninja-build pkg-config binutils file \
-        zsync imagemagick desktop-file-utils python3-pil \
+        zsync imagemagick desktop-file-utils python3-pil python3-capstone \
         libvulkan1 mesa-vulkan-drivers xvfb \
     && rm -rf /var/lib/apt/lists/*
 
