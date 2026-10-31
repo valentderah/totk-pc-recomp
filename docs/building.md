@@ -100,9 +100,9 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
-   For Xbox button prompts, run `make_romfs_patches.py` once more with `--xbox-prompts`: it writes
-   `build\<ver>\romfs-patches-xbox` ([controls.md](controls.md), "Xbox button prompts"); `build_game.py` copies it next
-   to `totk.exe` like `romfs-patches`.
+   For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
+   they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
+   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`.
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:
@@ -181,6 +181,10 @@ Before a commit:
 - `python tools/check_content.py --staged`: nothing game-derived is staged. CI runs the same check;
   `git config core.hooksPath .githooks` runs it before each local commit.
 - `build\<ver>\totk.exe --selftest`: layout, dispatch table and host-function registry, without game files.
+
+A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
+`.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
+files); a change to the settings passes `totk.exe --probe-cfg`.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

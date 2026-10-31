@@ -385,3 +385,11 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err);
 void plat_child_stop(PlatChild *c);                       // kills the child and frees c
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
+
+// ---- restart: this program again, in a new process that starts once this one is gone
+// Starts this executable again with the same command line, environment and working folder, and no handle of this
+// process. 1 when it started; the caller then exits.
+int plat_restart(void);
+// In a process plat_restart started: waits, at most timeout_ms, until the process that started it has exited. 1 after
+// the wait, -1 on timeout, 0 when there is nothing to wait for (not started by plat_restart, or that process is gone).
+int plat_restart_wait(uint32_t timeout_ms);

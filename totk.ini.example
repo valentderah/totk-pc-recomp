@@ -170,10 +170,13 @@
 # rumble_triggers = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
-# labels, xbox for the others). xbox_prompts: the buttons as nintendo, and the game's prompts swapped to the Xbox
-# labels (A with B, X with Y; it loads romfs-patches-xbox, docs/controls.md, "Xbox button prompts"). The bind_ lines
-# below apply on top. Changes while the game runs take effect at once; the xbox_prompts prompts at the next start.
+# labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
+# 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
+# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
+# (docs/controls.md, "Xbox button prompts").
+# prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
 # stick_deadzone = 8

@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "cfg.h"
+#include "fs.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -38,9 +39,6 @@ void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
-// fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
-int romfs_xbox_prompts_ready(void);
-int romfs_xbox_prompts_active(void);
 extern const char rt_port_version[];
 }
 
@@ -566,14 +564,11 @@ static void tab_sound(float scale) {
     opt_end();
 }
 
-// The note under the layout. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
-// overlay_init) change the buttons at once but the prompts only at the next start: "files missing" without
-// romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
-// gamepad connected: "in use: Xbox". NULL otherwise.
+// A confirmation is open (Controls: restart, Advanced: reset): B and Esc close it, not the menu; L / R stay on the page.
+static bool g_modal;
+
+// The note under the layout: Automatic with a gamepad connected, the layout it picked ("in use: Xbox"). NULL otherwise.
 static const char *pad_layout_note(void) {
-    bool want = !strcasecmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
-    if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
-    if (want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
     int got = input_pad_layout();
     if (got < 0 || strcmp(cfg_value("TOTK_PAD_LAYOUT"), "auto")) return nullptr;
     static char note[96];
@@ -582,11 +577,70 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
+// The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
+// layout, as a layout that puts A on the right button needs the face buttons named the other way round), but the game
+// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: "files
+// missing" when the setup did not write the one asked for, why it was left out at start (damaged, a game resolution
+// that is not 16:9, a RomFS mod with the same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then
+// *restart is set: a restart would bring the prompts asked for. NULL when they match.
+static const char *prompts_note(bool *restart) {
+    *restart = false;
+    const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
+    const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+    if (want == used || (want && used && !strcmp(want, used))) return nullptr;
+    if (want && !romfs_prompts_ready(want)) return menu_text(UI_MENU_PROMPTS_MISSING);
+    switch (romfs_prompts_off(want)) {
+    case ROMFS_PROMPTS_FAILED: return menu_text(UI_MENU_PROMPTS_FAILED);
+    case ROMFS_PROMPTS_SHAPE: return menu_text(UI_MENU_PROMPTS_OFF_SHAPE);
+    case ROMFS_PROMPTS_MODS: return menu_text(UI_MENU_PROMPTS_OFF_MODS);
+    case ROMFS_PROMPTS_PATCHES: return menu_text(UI_MENU_PROMPTS_OFF_PATCHES);
+    default: *restart = true; return menu_text(UI_MENU_PROMPTS_RESTART);
+    }
+}
+
+// The confirmation of "Restart now", over the menu; Cancel has the cursor first. Restart writes totk.ini, then closes
+// the game as Quit does and starts it again (gfx_window_request_restart). It waits while the game writes a save, and
+// the game stays when totk.ini cannot be written, as the new prompts would not come back.
+static void restart_confirm(void) {
+    g_modal = false;
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##restart_confirm", nullptr,
+                                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    g_modal = true;
+    ImGui::TextUnformatted(menu_text(UI_MENU_RESTART_CONFIRM));
+    bool saving = fs_save_busy() != 0;
+    if (saving || !cfg_last_save_ok())
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s",
+                           menu_text(saving ? UI_MENU_RESTART_SAVING : UI_MENU_SAVE_FAILED));
+    ImGui::Spacing();
+    const char *yes = menu_text(UI_MENU_RESTART_YES), *no = menu_text(UI_MENU_RESET_NO);
+    const ImGuiStyle &st = ImGui::GetStyle();
+    float bw = fmaxf(ImGui::CalcTextSize(yes).x, ImGui::CalcTextSize(no).x) + st.FramePadding.x * 4;
+    bool close = ImGui::Button(no, ImVec2(bw, 0));
+    if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(saving);
+    if (ImGui::Button(yes, ImVec2(bw, 0)) && cfg_save()) gfx_window_request_restart();
+    ImGui::EndDisabled();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
+        close = true;
+    if (close) {
+        ImGui::CloseCurrentPopup();
+        opt_focus_key("##restart");   // back on the row it came from
+    }
+    ImGui::EndPopup();
+}
+
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
-    static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
-                                      UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
-    opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
+    opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 3, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    static const UiTextId prompts[] = {UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX};
+    bool restart;
+    const char *note = prompts_note(&restart);
+    opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 2, UI_MENU_PROMPTS_DESC, note);
+    bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
@@ -596,6 +650,8 @@ static void tab_controls(float scale) {
     binds_rows(scale);
     opt_end();
     binds_after_page();
+    if (ask) ImGui::OpenPopup("##restart_confirm");   // at the level BeginPopupModal looks it up
+    restart_confirm();
 }
 
 static void tab_menu(float scale) {
@@ -606,7 +662,6 @@ static void tab_menu(float scale) {
 }
 
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
-static bool g_modal;   // the reset confirmation is open: B and Esc close it, not the menu; L / R stay on the page
 
 // A thread count with no fixed default: Automatic (unset), then the common counts.
 static void row_threads(const char *key, UiTextId label, UiTextId desc) {
@@ -839,7 +894,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED) g_modal = false;
+    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

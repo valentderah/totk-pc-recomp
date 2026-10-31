@@ -279,7 +279,30 @@ int probe_cfg(void) {
           "pad layout: a set layout wins over the labels");
     CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
               input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
-          "pad layout: Xbox prompts keep the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+          "pad layout: 0.1.9's xbox_prompts keeps the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+    // Button prompts (input_map.c)
+    CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
+              input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
+          "prompts: the game's own unless set to Xbox");
+    CHECK(input_prompts_pick(NULL, "xbox_prompts") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox_prompts") == PROMPTS_NINTENDO,
+          "prompts: 0.1.9's pad_layout = xbox_prompts means Xbox while prompts is unset");
+    CHECK(!input_prompts_folder(PROMPTS_NINTENDO, "nintendo") && !input_prompts_folder(PROMPTS_NINTENDO, "xbox"),
+          "prompts: the game's own need no folder");
+    CHECK(EQ(input_prompts_folder(PROMPTS_XBOX, "nintendo"), "romfs-patches-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "xbox_prompts"), "romfs-patches-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "xbox"), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
+          "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
+    // where the layout puts A on the east button, which an Xbox pad labels B.
+    input_map_reset();
+    static const char *const layouts[] = {"nintendo", "xbox", "auto", "xbox_prompts"};
+    for (int i = 0; i < 4; i++) {
+        int a_east = input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_EAST] = 1}, input_pad_layout_pick(layouts[i], 0)) == 1ull << B_A;
+        CHECK(a_east == EQ(input_prompts_folder(PROMPTS_XBOX, layouts[i]), "romfs-patches-xbox"),
+              "prompts: the folder names A as B exactly when the layout puts A on the button labelled B");
+    }
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;
     CHECK(input_map_pad_buttons(pd, PAD_LAYOUT_NINTENDO) == (1ull << B_B | 1ull << B_X) &&
@@ -370,6 +393,24 @@ int probe_cfg(void) {
     plat_setenv("TOTK_FREE_CORES", "1");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 1, "free_cores 1: on");
     plat_setenv("TOTK_FREE_CORES", NULL);
+    // 0.1.9's pad_layout = xbox_prompts (cfg.c migrate): read as the Nintendo layout with the Xbox prompts, saved so
+    plat_setenv("TOTK_PAD_LAYOUT", NULL);
+    plat_setenv("TOTK_PROMPTS", NULL);
+    static const char old_layout[] = "[input]\r\npad_layout = xbox_prompts\r\n";
+    CHECK(plat_file_write(path, old_layout, sizeof old_layout - 1) && cfg_load(path) == 1 &&
+              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "xbox"),
+          "0.1.9's pad_layout = xbox_prompts reads as nintendo with prompts = xbox");
+    CHECK(cfg_save_to(path) == 1, "the read pad layout and prompts save");
+    uint64_t saved_n = 0;
+    char *saved = (char *)plat_file_read(path, &saved_n);
+    CHECK(saved && strstr(saved, "pad_layout = nintendo") && strstr(saved, "prompts = xbox") && !strstr(saved, "xbox_prompts"),
+          "the next save writes the pad layout and the prompts");
+    free(saved);
+    static const char old_layout_own[] = "[input]\r\npad_layout = xbox_prompts\r\nprompts = nintendo\r\n";
+    CHECK(plat_file_write(path, old_layout_own, sizeof old_layout_own - 1) && cfg_load(path) == 1 &&
+              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "nintendo"),
+          "a prompts line of the file's own wins over 0.1.9's pad_layout = xbox_prompts");
+    plat_file_delete(path);
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
     for (int i = 0; cfg_meta_at(i); i++) {

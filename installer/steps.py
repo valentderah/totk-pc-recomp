@@ -6,8 +6,8 @@ tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and
 here: the host check is a small C program built with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
-totk-install.json.
+romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the shader state of totk.exe
+--prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
@@ -638,7 +638,7 @@ class Prepare(Step):
         layout = ctx.layout
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
-                                            'pack_shader_cache.py', 'ultrawide_layout.py')]
+                                            'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
         return fingerprint('prepare-1', ctx.keys['compile'], layout.xlate, xlate_id, shader_list_text(layout), *tools)
 
     def current(self, ctx, record):
@@ -678,16 +678,23 @@ class Prepare(Step):
                                   dest / f'romfs-patches-{size}', '--aspect', size])
             if code:
                 raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (written on
-        # every install, so the menu choice works without another run of the setup). Optional: when it fails, the game
-        # keeps the Switch prompts and the menu says the files are missing, so the setup warns and goes on.
-        remove(dest / 'romfs-patches-xbox')
-        code, log = run_tool(ctx, 'prepare-xbox', layout.tools / 'make_romfs_patches.py',
-                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                              dest / 'romfs-patches-xbox', '--xbox-prompts'])
-        if code:
-            remove(dest / 'romfs-patches-xbox')
-            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
+        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
+        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
+        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
+        # files are missing, so the setup warns once and goes on.
+        failed = None
+        for style in ('xbox', 'xbox-label'):
+            out = dest / f'romfs-patches-{style}'
+            remove(out)
+            code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
+                                  '--prompts', style])
+            if code:
+                remove(out)
+                failed = failed or (code, log)
+        if failed:
+            rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
 
         shader_list = layout.shader_list
         if not shader_list:

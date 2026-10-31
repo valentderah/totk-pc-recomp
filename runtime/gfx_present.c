@@ -23,9 +23,9 @@
 #include "gfx.h"
 #include "gfx_wsys.h"
 #include "nvn_api.h"
+#include "platform/platform.h"
 #include "ui/menu.h"
 #include "vk.h"
-#include "platform/platform.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -40,6 +40,7 @@ void vk_queue_unlock(void) { plat_rmutex_unlock(&g_ql); }
 // ---- window state shared with the back end
 static VkSurfaceKHR g_surface;
 static volatile int32_t g_dirty;               // the window was resized; swapchain stale
+static volatile int32_t g_restart;             // gfx_window_request_restart: closing the window starts the game again
 static volatile int32_t g_focused = 1;
 static volatile int32_t g_focus_msgs;
 static PlatRMutex g_start_lock;       // gfx_window_start / vsync start
@@ -57,13 +58,25 @@ void gfx_window_focus_changed(int in) {
 }
 
 // The window was closed: the process ends with it, as in MNG, once a save Commit still running in the background is
-// done.
+// done. After gfx_window_request_restart the executable then starts again with the same command line and environment
+// (plat_restart), and the new process waits until this one is gone (main.c) before it moves the log and opens the
+// RomFS and the saves.
 void gfx_window_closed(void) {
-    rt_log("gfx: window closed; exiting");
+    int restart = plat_cas32(&g_restart, 0, 0) != 0;
+    rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
     fs_save_flush();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
+    if (restart) {
+        plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
+        if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
+    }
     plat_exit(0);
+}
+
+void gfx_window_request_restart(void) {
+    plat_xchg32(&g_restart, 1);
+    gfx_window_request_close();
 }
 
 // TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the

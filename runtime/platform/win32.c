@@ -1340,3 +1340,44 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     if (!ReadFile(c->out, buf, (DWORD)cap, &got, NULL)) return -1;
     return (long)got;
 }
+
+// ---- restart
+// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
+// reused the id is not waited for. Waiting keeps the new process off the old one's files (the log it moves at start,
+// the saves) until the old one is gone; no handle is inherited, so none of them stays open in the new one either.
+#define RESTART_WAIT "TOTK_RESTART_WAIT"
+
+static uint64_t process_created(HANDLE h) {
+    FILETIME c, e, k, u;
+    return GetProcessTimes(h, &c, &e, &k, &u) ? ft64(c) : 0;
+}
+
+int plat_restart(void) {
+    char wait[48];
+    snprintf(wait, sizeof wait, "%lu.%llu", GetCurrentProcessId(), (unsigned long long)process_created(GetCurrentProcess()));
+    plat_setenv(RESTART_WAIT, wait);
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    wchar_t *cmd = _wcsdup(GetCommandLineW());   // CreateProcessW may write its command line
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(cmd);
+    plat_setenv(RESTART_WAIT, NULL);
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
+}
+
+int plat_restart_wait(uint32_t timeout_ms) {
+    char v[48];
+    if (!plat_getenv(RESTART_WAIT, v, sizeof v)) return 0;
+    plat_setenv(RESTART_WAIT, NULL);   // the processes this one starts do not wait again
+    unsigned long pid = 0;
+    unsigned long long created = 0;
+    if (sscanf(v, "%lu.%llu", &pid, &created) != 2) return 0;
+    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return 0;   // already gone
+    int r = process_created(h) != created ? 0 : WaitForSingleObject(h, timeout_ms) == WAIT_OBJECT_0 ? 1 : -1;
+    CloseHandle(h);
+    return r;
+}
