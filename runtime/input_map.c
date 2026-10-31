@@ -334,6 +334,16 @@ void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
     out[1] = (int32_t)lrint(fmax(-1, fmin(1, fy * k)) * STICK_MAX);
 }
 
+float input_pad_deadzone(int stick) {
+    const char *own = stick ? "TOTK_RSTICK_DEADZONE" : "TOTK_LSTICK_DEADZONE", *set = cfg_get(own);
+    double v = cfg_double(set && *set ? own : "TOTK_STICK_DEADZONE");
+    return (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
+}
+
+double input_stick_percent(int32_t x, int32_t y) {
+    return sqrt((double)x * x + (double)y * y) * 100.0 / STICK_MAX;
+}
+
 // Minus and Plus held together open or close the menu. *held: latched from the poll where both go down until neither is
 // down (the caller keeps it). Every poll of the latch reports neither to the game, so releasing one button first does not
 // leak the other; Minus alone before Plus reaches the game unchanged. With the menu open the game sees a neutral pad.

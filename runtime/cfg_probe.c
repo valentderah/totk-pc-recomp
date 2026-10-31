@@ -1,4 +1,5 @@
 // --probe-cfg: totk.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -272,6 +273,22 @@ int probe_cfg(void) {
           "pad stick: a square gate's corner stays on the unit circle");
     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
+    _putenv_s("TOTK_STICK_DEADZONE", "12");
+    _putenv_s("TOTK_LSTICK_DEADZONE", "");
+    _putenv_s("TOTK_RSTICK_DEADZONE", "");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
+          "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
+    _putenv_s("TOTK_RSTICK_DEADZONE", "20");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
+          "pad dead zone: rstick_deadzone sets the right stick alone");
+    _putenv_s("TOTK_LSTICK_DEADZONE", "80");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
+    _putenv_s("TOTK_STICK_DEADZONE", "");
+    _putenv_s("TOTK_LSTICK_DEADZONE", "");
+    _putenv_s("TOTK_RSTICK_DEADZONE", "");
+    CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
+              input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
+          "stick percent: an axis's end is 100%, the centre 0%, round in between");
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");

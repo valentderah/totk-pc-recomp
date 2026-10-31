@@ -23,6 +23,10 @@ int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
+// How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
+// deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
+// read off. 0 (and both 0) without a connected gamepad. Any thread.
+int input_pad_stick_percent(double pct[2]);
 // The label on a face button of the open gamepad (input_map.h PAD_SOUTH..PAD_NORTH, as SDL reports it); PAD_LABEL_NONE for another
 // button, an unknown label or no gamepad. Any thread.
 enum { PAD_LABEL_NONE, PAD_LABEL_A, PAD_LABEL_B, PAD_LABEL_X, PAD_LABEL_Y, PAD_LABEL_CROSS, PAD_LABEL_CIRCLE,

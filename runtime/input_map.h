@@ -95,6 +95,12 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
 // 0..0.5): inside the circle the stick reads 0, and the rest of the travel is scaled to start at 0 at the edge, so a
 // drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]);
+// The dead zone of gamepad stick 0 (left) or 1 (right) for input_pad_stick, as a fraction of full deflection:
+// TOTK_LSTICK_DEADZONE or TOTK_RSTICK_DEADZONE when set, else TOTK_STICK_DEADZONE (both sticks), percent clamped to 0..50.
+float input_pad_deadzone(int stick);
+// How far a stick (x, y in -32768..32767) is from the centre, in percent of full deflection (100 at an axis's end; a
+// square gate's corner reads more).
+double input_stick_percent(int32_t x, int32_t y);
 
 // ---- the remapping rows' edits, on a copy of input_map. Pure.
 // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.
