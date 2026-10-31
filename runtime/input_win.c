@@ -316,6 +316,43 @@ static float mouse_sens_get(void) {
     return mouse_sens;
 }
 
+// ---- walk key: the keyboard's stick samples scaled down while a key is held (TOTK_WALK_KEY, TOTK_WALK_SCALE)
+// A keyboard key is all or nothing, so every keyboard-driven stick sample is +/-32767 and the game only ever sees a full
+// tilt. Holding this key scales those two samples, which gives the half tilt a gamepad gets from its analog range, so the
+// keyboard can walk as well as run. yuzu and eden do the same with their modifier and modifier_scale settings. Only the
+// keyboard is scaled: the gamepad's axes and the mouse camera sample their own values.
+static int walk_vk;                    // key_vk of TOTK_WALK_KEY, 0 = off; live (cfg_version)
+static float walk_scale = 0.51f;       // TOTK_WALK_SCALE, 0.2 to 0.9; live (cfg_version)
+static unsigned walk_seen = ~0u;
+
+static void walk_get(void) {
+    unsigned ver = cfg_version();
+    if (ver == walk_seen) return;
+    walk_seen = ver;
+    const char *name = cfg_value("TOTK_WALK_KEY");   // "none" (the default) turns the key off
+    int vk = 0;
+    if (*name && _stricmp(name, "none")) {
+        int id = KEY_NONE;
+        for (int k = KEY_A; k < KEY_COUNT && !id; k++)
+            if (input_key_name(k) && !_stricmp(input_key_name(k), name)) id = k;
+        vk = id ? key_vk(id) : 0;
+        if (!vk) rt_log("input: walk_key: unknown key '%s', the keyboard sticks keep their full tilt", name);
+    }
+    // 0.51 rather than 0.5: a keyboard sample is 32767, and 32767 * 0.5 = 16383 falls one short of stick_bits'
+    // STICK_DIR (16384), which would leave the game's stick-direction bits clear while the walk key is held. The value
+    // in the settings table carries that default; this code only rejects what the table's range does not allow.
+    const char *sv = cfg_value("TOTK_WALK_SCALE");
+    char *end;
+    double d = strtod(sv, &end);
+    double s = end == sv || *end || !(d >= 0.2 && d <= 0.9) ? strtod(cfg_meta("TOTK_WALK_SCALE")->def, NULL) : d;
+    if (vk != walk_vk || (float)s != walk_scale) {
+        walk_vk = vk;
+        walk_scale = (float)s;
+        rt_log("input: walk key %s, keyboard sticks at %.0f%% of their tilt (mouse and gamepad unchanged)", vk ? name : "off",
+               s * 100);
+    }
+}
+
 // Hide the cursor and confine it to the client area while the window is focused, not suspended, not behind a text entry
 // or the menu, and the mouse camera is on; release it otherwise. Safe from any thread.
 static void cursor_update(HWND h) {
@@ -625,9 +662,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             was_captured = cap;
             b |= input_map_buttons(down);
             int32_t k[2];
+            walk_get();
+            int walk = walk_vk && key_down(walk_vk);
             input_map_stick(down, 0, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sl[0], &sl[1], k[0], k[1]);
             input_map_stick(down, 1, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sr[0], &sr[1], k[0], k[1]);
             mouse_camera(k);
             pick(&sr[0], &sr[1], k[0], k[1]);
@@ -663,15 +704,20 @@ void input_menu(int open) {
     cursor_update(gfx_window_handle());
 }
 
-// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held.
-static int blocked(volatile LONG *flag, uint64_t buttons) {
+// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held. A stick
+// axis counts as held as well: with the walk key the keyboard's sticks move without setting a direction bit, so a gate
+// that watched the buttons alone would let that movement through the moment the menu or the text entry closes.
+static int blocked(volatile LONG *flag, uint64_t buttons, const int32_t *axes) {
     LONG k = *flag;
-    return k && !(k == 2 && !buttons && InterlockedCompareExchange(flag, 0, 2) == 2);
+    int held = buttons != 0;
+    for (int i = 0; i < 4; i++) held |= axes[i] != 0;
+    return k && !(k == 2 && !held && InterlockedCompareExchange(flag, 0, 2) == 2);
 }
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    int text = blocked(&g_block, *buttons), menu = blocked(&g_menu, *buttons);
+    const int32_t axes[4] = {*lx, *ly, *rx, *ry};
+    int text = blocked(&g_block, *buttons, axes), menu = blocked(&g_menu, *buttons, axes);
     if (!text && !menu) return;
     *buttons = 0; *lx = *ly = *rx = *ry = 0;
 }
