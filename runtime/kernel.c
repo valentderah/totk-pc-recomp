@@ -88,6 +88,8 @@ struct RtThread {
     int st;                    // S_* state since st_since
     uint64_t st_since, st_ns[S_N], nblk, npre, pre_since, cpu_last;
     uint64_t wobj;             // what the current wait is on: owner handle, key, address or first handle
+    const uint32_t *whs;       // W_SYNC: the handles the WaitSynchronization waits on, in the guest memory of its SVC
+    int wnh;
     uint32_t waker;            // the thread whose signal ended the last wait (0: a host thread or a timeout)
     uint64_t wake_at, grant_at;   // when a wait was signalled and a core granted, until the thread runs again
     uint64_t lw_ns, lw_n, lw_max, lg_ns, lg_n, lg_max, sl_n, sl_req, sl_act;   // those latencies; SleepThread asked/took
@@ -242,10 +244,20 @@ static void wake(RtThread *t, uint32_t res) {
     plat_cond_signal(&t->cv);
 }
 
+static int sig_obj(uint32_t h, int *bad);
+
+// Wakes the WaitSynchronization waiters that one of their handles now satisfies (sig_obj), or whose handle went bad,
+// and no other: the audio renderer signals its event about 200 times a second and the vsync thread 60 times, and
+// each signal used to wake every waiting thread, which took a virtual core (block, core_take), found nothing of its
+// own signalled and slept again.
 static void wake_sync_waiters(void) {
     for (RtThread *w = g_wait; w;) {
         RtThread *n = w->next;
-        if (w->wkind == W_SYNC) wake(w, (uint32_t)-1);
+        if (w->wkind == W_SYNC) {
+            int bad = 0, ready = 0;
+            for (int i = 0; i < w->wnh && !ready; i++) ready = sig_obj(w->whs[i], &bad) || bad;
+            if (ready) wake(w, (uint32_t)-1);
+        }
         w = n;
     }
 }
@@ -1970,6 +1982,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 left = ns - (int64_t)spent;
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
+            t->whs = hs, t->wnh = n;
             g_sync_blocks++;
             if (block(t, W_SYNC, left) == R_TIMEOUT) {
                 r = R_TIMEOUT;
