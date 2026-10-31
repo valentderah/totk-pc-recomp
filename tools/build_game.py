@@ -196,11 +196,12 @@ def vma_include():
 
 
 # --toolchain: an llvm-mingw tree. The libraries, headers and DLLs MSYS2 supplies come from the deps directory instead.
-# FSR 3.1 (vk_fsr3.c): FSR-Vulkan's bridge to the FidelityFX SDK 2.3 FSR 3.1.5 upscaler, static, built with the same
-# llvm-mingw (C++ against libc++).
 LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lvulkan-1', '-lSDL3', '-lopus',
-                  '-l:libvpx.a', '-l:libzstd.a', '-l:libffx_vulkan_fsr3_vk_backend_3_1_5.a',
-                  '-l:libffx_vulkan_fsr3_blobs.a', '-l:libffx_vulkan_portable.a', '-l:libc++.a', '-l:libc++abi.a', '-l:libunwind.a', '-l:libwinpthread.a']
+                  '-l:libvpx.a', '-l:libzstd.a', '-l:libc++.a', '-l:libc++abi.a', '-l:libunwind.a', '-l:libwinpthread.a']
+# FSR 3.1 (vk_fsr3.c): UniversalScalers-Vulkan's bridge to the FidelityFX SDK 2.3 FSR 3.1.5 upscaler, static, built
+# with the same llvm-mingw (C++ against libc++; tools/make_release.py build_ffx, tools/ffx/README.md). Linked when the
+# deps folder has them; vk_fsr3.c leaves FSR out when its header is missing.
+FFX_LIBS = ['libffx_vulkan_fsr3_vk_backend_3_1_5.a', 'libffx_vulkan_fsr3_blobs.a', 'libffx_vulkan_portable.a']
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
@@ -490,6 +491,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
+    if DEPS and WIN and all((DEPS / 'lib' / f).is_file() for f in FFX_LIBS):
+        libs = libs[:-4] + [f'-l:{f}' for f in FFX_LIBS] + libs[-4:]   # before the C++ runtime they need
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',

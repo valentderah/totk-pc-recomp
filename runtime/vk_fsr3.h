@@ -7,6 +7,9 @@
 
 typedef struct Fsr3 Fsr3;
 
+// 1 when this build has FSR 3.1 (the libraries were in its deps folder; tools/ffx/README.md).
+int fsr3_available(void);
+
 // One context per scene size w x h and output size ow x oh, kept by vk_dlaa.c with that size's work images: mv (RG16F
 // motion vectors at the scene size, render pixels, this frame's position to last frame's) and out (RGBA16F at the
 // output size), both in VK_IMAGE_LAYOUT_GENERAL. NULL when the context cannot be made; the reason is logged.
