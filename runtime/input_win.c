@@ -19,7 +19,7 @@
 #include "ui/menu.h"
 #include "vk.h"
 
-enum { STICK_MAX = 32767, STICK_DEAD = 2500, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
+enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
 static SRWLOCK lock = SRWLOCK_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
@@ -428,9 +428,32 @@ static void mouse_camera(int32_t out[2]) {
     out[1] = held[1];
 }
 
-static int32_t axis(int16_t v) {
-    int32_t a = v < -STICK_MAX ? -STICK_MAX : v;
-    return a > -STICK_DEAD && a < STICK_DEAD ? 0 : a;
+static float stick_dead = -1;              // TOTK_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
+static unsigned stick_dead_seen;
+
+static float stick_dead_get(void) {
+    unsigned ver = cfg_version();
+    if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
+    stick_dead_seen = ver;
+    double v = cfg_double("TOTK_STICK_DEADZONE");
+    float was = stick_dead;
+    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100;
+    if (stick_dead != was) rt_log("input: stick dead zone %.0f%%", stick_dead * 100.0);
+    return stick_dead;
+}
+
+static int32_t stick_clamp(double v) { return (int32_t)lround(v < -STICK_MAX ? -STICK_MAX : v > STICK_MAX ? STICK_MAX : v); }
+
+// One gamepad stick, y up. The dead zone is radial and scaled: a deflection inside it reads 0, so a stick that rests
+// off centre (drift) stays still, and past it the length is mapped from the edge of the dead zone to full deflection,
+// so a slight tilt beyond it is a slight tilt to the game at any setting. The direction is kept, so a diagonal does not
+// snap to an axis. At 0 the stick goes through unchanged.
+static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, int32_t out[2]) {
+    double x = SDL_GetGamepadAxis(pad, ax), y = -(double)SDL_GetGamepadAxis(pad, ay);
+    double len = sqrt(x * x + y * y), dead = stick_dead_get() * STICK_MAX;
+    double k = len <= dead ? 0 : (len - dead) / (STICK_MAX - dead) * STICK_MAX / len;
+    out[0] = stick_clamp(x * k);
+    out[1] = stick_clamp(y * k);
 }
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
@@ -545,10 +568,8 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    sl[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
-    sl[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-    sr[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
-    sr[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, sr);
     return 1;
 }
 
