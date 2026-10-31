@@ -231,7 +231,7 @@ static struct {
         VkImageView out_view, mv_view;
         NgxHandle *feat;
         uint64_t used;           // evals count when it last ran
-    } sizes[3], *last;           // last: the one the previous DLAA frame ran with
+    } sizes[5], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     NgxParam *params;
     int failed, reset;
@@ -299,7 +299,7 @@ static void free_size(struct Size *e) {
 // goes for a new one.
 static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
     struct Size *e = NULL, *lru = &D.sizes[0];
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
         if (D.sizes[i].w == w && D.sizes[i].h == h && D.sizes[i].ow == ow && D.sizes[i].oh == oh) return &D.sizes[i];
         if (!D.sizes[i].out && !e) e = &D.sizes[i];
         if (D.sizes[i].used < lru->used) lru = &D.sizes[i];
@@ -613,7 +613,23 @@ void vk_dlaa_pass(VkExec *ex) {
     }
 }
 
+// TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
+// texture bias that goes with it while DLSS runs.
+static void dlss_mode(void) {
+    static char mode[16];
+    static int bias_on = -1;
+    const char *m = cfg_value("TOTK_DLSS");
+    if (strcmp(m, mode)) {
+        snprintf(mode, sizeof mode, "%s", m);
+        res_dlss_mode(m);
+        bias_on = -1;
+    }
+    int b = dl_active();
+    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
+}
+
 void vk_dlaa_frame(void) {
+    dlss_mode();
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
