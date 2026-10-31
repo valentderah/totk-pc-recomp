@@ -150,7 +150,7 @@ WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v111': '1.1.1', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
