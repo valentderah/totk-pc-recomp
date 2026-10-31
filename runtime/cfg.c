@@ -106,7 +106,7 @@ static const CfgMeta metas[] = {
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE},
     {"MOUSE_MODE", "native", "native|linear", LIVE}, {"MOUSE_Y_RATIO", "1", "0.25..4", LIVE},
-    {"MOUSE_CURVE", "2", "1..3", LIVE}, {"MOUSE_DEADZONE", "0.2", "0..0.5", LIVE}, {"MOUSE_RATE", "85", "20..300", LIVE},
+    {"MOUSE_CURVE", "2", "1..3", LIVE}, {"MOUSE_DEADZONE", "0.02", "0..0.5", LIVE}, {"MOUSE_RATE", "86", "20..300", LIVE},
     {"MENU_LANG", "", "en|ru", LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},

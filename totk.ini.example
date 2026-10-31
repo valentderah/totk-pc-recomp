@@ -154,8 +154,8 @@
 # the game's response exponent and dead zone, the camera's degrees per second at full deflection, and vertical speed.
 # mouse_mode = native
 # mouse_curve = 2
-# mouse_deadzone = 0.2
-# mouse_rate = 85
+# mouse_deadzone = 0.02
+# mouse_rate = 86
 # mouse_y_ratio = 1
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
