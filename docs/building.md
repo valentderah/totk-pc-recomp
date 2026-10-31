@@ -97,6 +97,9 @@ of them.
    `runtime/fma.c`, a correctly rounded software fma the FP lowering needs, and runs slower.
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
+
+   `--cheats cheats` adds the Atmosphere cheats of `cheats/<build id>.txt` as switches in the settings menu's Cheats
+   tab (`cheats/README.md`, `recomp/cheats.py`); gen.py prints each cheat it converts or skips.
    A compiler cache in front of clang shortens it further: with `SCCACHE` set to an sccache executable, `build_game.py`
    writes it into the ninja file ahead of `cc`, and every lift rewrites the generated chunks with the same contents, so
    a second build of the same version hits all of their objects:

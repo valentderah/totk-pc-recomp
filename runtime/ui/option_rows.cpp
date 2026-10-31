@@ -40,8 +40,8 @@ struct Desc { char text[UI_DESC_BYTES]; };
 static Desc g_hover, g_focus, g_first, g_shown;
 
 // disabled: the note of a row opt_disable_next greyed out, else NULL.
-static void desc_set(Desc &d, UiTextId desc, const char *key, const CfgMeta *m, const char *disabled) {
-    int n = snprintf(d.text, sizeof d.text, "%s", menu_text(desc));
+static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *m, const char *disabled) {
+    int n = snprintf(d.text, sizeof d.text, "%s", desc);
     if (n < 0 || n >= (int)sizeof d.text) return;
     if (disabled)
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
@@ -110,7 +110,8 @@ struct RowView {
 
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right) or
 // 0; always 0 for a row the environment fixes (greyed out, still selectable so its description shows).
-static int row(const char *key, UiTextId label, UiTextId desc, const RowView &v) {
+// label and desc: the text itself (menu_text of the catalog rows; a cheat's name).
+static int row(const char *key, const char *label, const char *desc, const RowView &v) {
     const CfgMeta *m = cfg_meta(key);
     const char *disabled = g_disable_next ? menu_text(g_disable_note) : NULL;
     g_disable_next = false;
@@ -188,7 +189,7 @@ static int row(const char *key, UiTextId label, UiTextId desc, const RowView &v)
     }
     // the label and its note, clipped before the value
     ImVec4 clip(p.x, p.y, value_left - fs * 0.6f, p.y + h);
-    dl->AddText(font, fs, ImVec2(p.x + pad, ty), off ? kGrey : IM_COL32(240, 236, 224, 255), menu_text(label), NULL, 0,
+    dl->AddText(font, fs, ImVec2(p.x + pad, ty), off ? kGrey : IM_COL32(240, 236, 224, 255), label, NULL, 0,
                 &clip);
     const char *note = disabled        ? disabled
                      : off             ? menu_text(UI_MENU_SET_BY_ENV)
@@ -232,14 +233,19 @@ bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted) {
     bool set = cfg_bool(key) != 0, def = m && strcmp(m->def, "0") != 0;
     bool on = set != inverted;   // what the row shows
     RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), set == def, false, NULL};
-    if (!row(key, label, desc, v)) return false;   // any step flips it
+    if (!row(key, menu_text(label), menu_text(desc), v)) return false;   // any step flips it
     apply(key, set ? "0" : "1");
     return true;
 }
 
+bool opt_toggle_text(const char *id, const char *label, const char *desc, bool on) {
+    RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), !on, false, NULL};
+    return row(id, label, desc, v) != 0;   // any step flips it; the caller changes the state
+}
+
 bool opt_button(const char *id, UiTextId label, UiTextId desc, const char *value) {
     RowView v = {value ? value : "", false, false, NULL};
-    return row(id, label, desc, v) == 2;   // A or a click; left and right do nothing
+    return row(id, menu_text(label), menu_text(desc), v) == 2;   // A or a click; left and right do nothing
 }
 
 void opt_group(UiTextId title) {
@@ -265,7 +271,7 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
     for (int i = 0; m && i < n; i++)
         if (!strcmp(values[i], m->def)) def = i;
     RowView v = {cur >= 0 ? names[cur] : now, cur == def, true, note};
-    int step = row(key, label, desc, v);
+    int step = row(key, menu_text(label), menu_text(desc), v);
     if (!step || n <= 0) return false;
     int nv;
     if (cur < 0) nv = 0;
@@ -304,7 +310,7 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
     char shown[48];
     snprintf(shown, sizeof shown, fmt, v);
     RowView rv = {shown, fabs(v - def) < step * 0.01, true, note};
-    int s = row(key, label, desc, rv);
+    int s = row(key, menu_text(label), menu_text(desc), rv);
     if (!s) return false;
     int steps = g_held && (hi - lo) > 40 * step ? 10 : 1;   // held: ten steps at a time over a long range
     double n = round(v / step) * step + (s == 2 ? step : s * step * steps);
@@ -404,9 +410,9 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
     }
     char k[64];
     snprintf(k, sizeof k, "TOTK_%s", key);
-    if (row_foc) desc_set(g_focus, desc, k, NULL, NULL);
-    if (row_hov) desc_set(g_hover, desc, k, NULL, NULL);
-    if (!g_first.text[0]) desc_set(g_first, desc, k, NULL, NULL);
+    if (row_foc) desc_set(g_focus, menu_text(desc), k, NULL, NULL);
+    if (row_hov) desc_set(g_hover, menu_text(desc), k, NULL, NULL);
+    if (!g_first.text[0]) desc_set(g_first, menu_text(desc), k, NULL, NULL);
     if (note && (row_foc || row_hov)) {   // e.g. what moved here, after the description
         Desc &d = row_hov ? g_hover : g_focus;
         size_t n = strlen(d.text);

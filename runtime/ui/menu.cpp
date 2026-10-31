@@ -37,6 +37,7 @@ static int g_font_bad;
 extern "C" {
 #include "amiibo.h"
 #include "cfg.h"
+#include "cheats.h"
 #include "fs.h"
 #include "input.h"
 #include "input_map.h"
@@ -370,7 +371,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_CHEATS, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -693,6 +694,25 @@ static void tab_game(float scale) {
     opt_end();
 }
 
+// The cheats this build has (runtime/patches.c, gen.py --cheats), one toggle each; they switch at once.
+static void tab_cheats(float scale) {
+    opt_begin("##cheats", scale);
+    int n = rt_cheat_count();
+    opt_text(n ? UI_MENU_CHEATS_INTRO : UI_MENU_CHEATS_NONE);
+    bool env = cfg_from_env("TOTK_CHEATS") != 0;
+    for (int i = 0; i < n; i++) {
+        char id[96], desc[512];
+        snprintf(id, sizeof id, "##cheat_%s", rt_cheat_id(i));
+        snprintf(desc, sizeof desc, menu_text(UI_MENU_CHEAT_DESC), rt_cheat_sites(i), rt_cheat_id(i));
+        if (env) opt_disable_next(UI_MENU_SET_BY_ENV);
+        if (opt_toggle_text(id, rt_cheat_name(i), desc, rt_cheat_on(i)) && !env) {
+            rt_cheat_toggle(i);
+            opt_save_soon();
+        }
+    }
+    opt_end();
+}
+
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
     opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
@@ -1002,9 +1022,9 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
-                                              UI_MENU_TAB_ADVANCED};
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_CHEATS,
+                                              UI_MENU_TAB_SOUND,    UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO,
+                                              UI_MENU_TAB_MENU,     UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -1053,6 +1073,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             switch (k) {
             case TAB_SCREEN: tab_screen(scale); break;
             case TAB_GAME: tab_game(scale); break;
+            case TAB_CHEATS: tab_cheats(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
             case TAB_AMIIBO: tab_amiibo(scale); break;
@@ -1339,6 +1360,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     *shot = NULL;
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
+    rt_cheats_sync();   // every frame, menu open or not: the cheats follow TOTK_CHEATS (a row, Reset, a test hook)
     if (g_perf_save.exchange(0)) cfg_save();
     perf_tick(plat_now_ns(), t);
     amiibo_tick();

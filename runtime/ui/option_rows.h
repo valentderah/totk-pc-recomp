@@ -35,6 +35,9 @@ void opt_text(UiTextId text, bool warn = false);
 // The return value of every row: true when it changed the setting this frame.
 // inverted: the row shows "on" while the key is 0 (a setting whose key names the opposite).
 bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted = false);
+// A toggle whose state the caller keeps (a cheat): id is unique on the page and not a setting ("##cheat_<id>"), label
+// and desc are the text itself. Shows on / off, "default" while off; true when the player flipped it this frame.
+bool opt_toggle_text(const char *id, const char *label, const char *desc, bool on);
 // One name per value of the key's cfg_meta values list, in its order. When the key has no fixed default (an empty
 // def), names[0] is the automatic choice (the key unset) and names[1..] follow the values. note: a short line under
 // the value in place of the "default" mark (NULL: none).

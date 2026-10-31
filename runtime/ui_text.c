@@ -31,6 +31,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_TITLE] = "Settings",
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
     [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
+    [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
@@ -147,6 +148,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrects physics that misbehave above 30 frames per second, and objects that stay see-through or invisible above 60.",
+    [UI_MENU_CHEATS_INTRO] = "Cheats take effect at once, also in the middle of a game.",
+    [UI_MENU_CHEATS_NONE] = "This build has no cheats. Put an Atmosphere cheat file named after the game's build id in "
+                            "the source tree's cheats folder and build again (cheats/README.md).",
+    [UI_MENU_CHEAT_DESC] = "A cheat from the cheat file: it changes %d instruction(s) of the game. Takes effect at once; "
+                           "totk.ini keeps it as %s in the cheats line.",
     [UI_MENU_GAME_LANG] = "Game language", [UI_MENU_GAME_LANG_DESC] = "Language of the game's text and voices.",
     [UI_MENU_GAME_LANG_AUTO] = "Automatic",
     [UI_MENU_OPERATION_MODE] = "Console mode",
@@ -392,6 +398,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_TITLE] = "Настройки",
     [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
     [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
+    [UI_MENU_TAB_CHEATS] = "Читы",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
     [UI_MENU_DEFAULT_MARK] = "по умолчанию",
@@ -510,6 +517,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Исправляет физику, которая ломается при частоте выше 30 кадров в секунду, и объекты, которые выше 60 остаются полупрозрачными или невидимыми.",
+    [UI_MENU_CHEATS_INTRO] = "Читы действуют сразу, в том числе посреди игры.",
+    [UI_MENU_CHEATS_NONE] = "В этой сборке нет читов. Положите файл читов Atmosphere с именем по build id игры в папку "
+                            "cheats исходников и соберите заново (cheats/README.md).",
+    [UI_MENU_CHEAT_DESC] = "Чит из файла читов: меняет инструкций игры: %d. Действует сразу; в totk.ini он записан как "
+                           "%s в строке cheats.",
     [UI_MENU_GAME_LANG] = "Язык игры", [UI_MENU_GAME_LANG_DESC] = "Язык текста и озвучки игры.",
     [UI_MENU_GAME_LANG_AUTO] = "Автоматически",
     [UI_MENU_OPERATION_MODE] = "Режим консоли",
@@ -761,6 +773,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_TITLE] = "Configurações",
     [UI_MENU_TAB_SCREEN] = "Tela", [UI_MENU_TAB_GAME] = "Jogo", [UI_MENU_TAB_SOUND] = "Som",
     [UI_MENU_TAB_CONTROLS] = "Controles", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Avançado",
+    [UI_MENU_TAB_CHEATS] = "Trapaças",
     [UI_MENU_CONTINUE] = "Continuar", [UI_MENU_QUIT] = "Sair do jogo",
     [UI_MENU_ON] = "Ligado", [UI_MENU_OFF] = "Desligado", [UI_MENU_AUTO] = "Automático",
     [UI_MENU_DEFAULT_MARK] = "padrão",
@@ -822,6 +835,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Avança tecidos e cabelos pelo tempo real também.",
     [UI_MENU_HIGHFPS_FIX] = "Correções para alta taxa de quadros",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrige a física que se comporta mal acima de 30 quadros por segundo e objetos que ficam transparentes ou invisíveis acima de 60.",
+    [UI_MENU_CHEATS_INTRO] = "As trapaças valem na hora, também no meio de uma partida.",
+    [UI_MENU_CHEATS_NONE] = "Esta build não tem trapaças. Coloque um arquivo de trapaças do Atmosphere com o nome do build id "
+                            "do jogo na pasta cheats do código-fonte e compile de novo (cheats/README.md).",
+    [UI_MENU_CHEAT_DESC] = "Uma trapaça do arquivo de trapaças: altera %d instrução(ões) do jogo. Vale na hora; o totk.ini "
+                           "a guarda como %s na linha cheats.",
     [UI_MENU_GAME_LANG] = "Idioma do jogo", [UI_MENU_GAME_LANG_DESC] = "Idioma dos textos e das vozes do jogo.",
     [UI_MENU_GAME_LANG_AUTO] = "Automático",
     [UI_MENU_OPERATION_MODE] = "Modo do console",
@@ -1164,6 +1182,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_AMIIBO] = "amiibo",
     [UI_MENU_TAB_MENU] = "菜单",
     [UI_MENU_TAB_ADVANCED] = "高级",
+    [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CONTINUE] = "继续",
     [UI_MENU_QUIT] = "退出游戏",
     [UI_MENU_ON] = "开",
@@ -1259,6 +1278,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX] = "高帧率修正",
     [UI_MENU_HIGHFPS_FIX_DESC] = "修正帧率高于 30 时出现异常的物理效果，"
                                  "以及帧率高于 60 时一直半透明或不可见的物体。",
+    [UI_MENU_CHEATS_INTRO] = "金手指立即生效，游戏进行中也可以切换。",
+    [UI_MENU_CHEATS_NONE] = "此版本没有金手指。将以游戏 build id 命名的 Atmosphere 金手指文件放入源码的 cheats 文件夹，"
+                            "然后重新构建（cheats/README.md）。",
+    [UI_MENU_CHEAT_DESC] = "来自金手指文件：修改游戏的 %d 条指令。立即生效；totk.ini 的 cheats 行中记为 %s。",
     [UI_MENU_GAME_LANG] = "游戏语言",
     [UI_MENU_GAME_LANG_DESC] = "游戏文本和语音的语言。",
     [UI_MENU_GAME_LANG_AUTO] = "自动",

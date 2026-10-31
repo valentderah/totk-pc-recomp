@@ -3,6 +3,7 @@
 
 Usage: gen.py --exefs build/extracted/v121/exefs --out generated/v121 [--modules main,subsdk0,sdk] [--jobs N]
               [--limit N] [--chunk-fns N] [--chunk-bytes B] [--big-fn B] [--patches FILE]
+              [--cheats FILE|DIR]
 
 Output, under --out:
   layout.h, layout.json        module bases (recomp/layout.py)
@@ -41,6 +42,7 @@ sys.path.insert(0, str(ROOT / 'recomp'))
 import flags  # noqa: E402
 import hostmem  # noqa: E402
 import jumptables  # noqa: E402
+import cheats  # noqa: E402
 import patches  # noqa: E402
 import regs  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
@@ -617,6 +619,8 @@ def main():
     ap.add_argument('--big-fn', type=int, default=300000, help='estimated bytes of C from which a function gets '
                                                                'its own chunk')
     ap.add_argument('--patches', type=Path, help='code patch table (recomp/patches.py)')
+    ap.add_argument('--cheats', type=Path, help='Atmosphere cheat file, or a folder with <build id>.txt, as menu '
+                                                 'switches (recomp/cheats.py)')
     ap.add_argument('--reg-locals', type=int, default=regs.LOCALS,
                     help=f'guest registers per function kept in C locals (recomp/regs.py; default {regs.LOCALS}, 0: none)')
     ap.add_argument('--no-callee-saved-trust', action='store_true',
@@ -629,6 +633,12 @@ def main():
     mods = layout(args.exefs)
     write_layout(mods, args.out)
     table = patches.load(args.patches, mods) if args.patches else patches.Table()
+    if args.cheats:
+        if not table.page:   # the sets need no patch page, but patches.h names one; the same page as load() picks
+            main = next(m for m in mods if m[0] == 'main')
+            table.page = (main[1] + main[2] + patches.PAGE - 1) & ~(patches.PAGE - 1)
+        n = cheats.merge(table, args.cheats, args.exefs, mods, lambda m: print(m, file=sys.stderr, flush=True))
+        print(f'cheats: {n} loaded', file=sys.stderr, flush=True)
     write_if_changed(args.out / 'patches.h', patches.header_text(table, GENERATED_MARKER))
     want = args.modules.split(',')
     unknown = set(want) - {n for n, _, _ in mods}

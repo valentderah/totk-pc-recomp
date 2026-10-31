@@ -17,6 +17,11 @@
 # Fix for physics that bounce at high frame rates.
 # highfps_fix = 1
 
+[cheats]
+# Cheats that are on, by id, comma separated (the settings menu's Cheats tab writes this line). A build has the cheats
+# of cheats/<build id>.txt that gen.py --cheats converted (cheats/README.md). Default: none.
+# cheats = inf_equipment_durability
+
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
 # The Advanced tab of the settings menu (F1) shows all of them except zstd_native and zstd_check.

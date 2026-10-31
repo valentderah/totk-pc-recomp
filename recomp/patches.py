@@ -53,6 +53,7 @@ class Table:
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
+        self.cheats = []           # [(set index, id, display name, sites)] from recomp/cheats.py merge
 
     def spins_for(self, name, base):
         """{absolute back-edge address: absolute head address}."""
@@ -148,5 +149,18 @@ def header_text(table, marker):
              f'#define RT_PATCH_PAGE {table.page:#x}ull',
              '// X(index, name, env switch, default)',
              '#define RT_PATCH_SETS(X) ' + ' '.join(f'X({i}, {n}, "{e}", {d})' for i, (n, e, d) in
-                                                    enumerate(table.sets)), '']
+                                                    enumerate(table.sets)), '',
+             f'#define RT_CHEAT_COUNT {len(table.cheats)}',
+             '// X(set index, id, menu name, sites): cheats from gen.py --cheats (recomp/cheats.py)',
+             '#define RT_CHEATS(X) ' + ' '.join(f'X({k}, "{c}", {c_string(n)}, {s})' for k, c, n, s in table.cheats),
+             '']
     return '\n'.join(lines)
+
+
+def c_string(s):
+    """A C string literal of s (UTF-8 bytes outside printable ASCII as octal escapes)."""
+    out = []
+    for b in s.encode('utf-8'):
+        ch = chr(b)
+        out.append('\\' + ch if ch in '"\\' else ch if 32 <= b < 127 and ch != '?' else f'\\{b:03o}')
+    return '"' + ''.join(out) + '"'
