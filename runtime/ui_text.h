@@ -11,7 +11,8 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English and Russian texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Russian and Brazilian Portuguese
+    // texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,
@@ -98,7 +99,7 @@ typedef enum {
     // Language names, each in its own language and the same in every row (game language and menu language lists)
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
-    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO,
+    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -166,13 +167,14 @@ typedef enum {
 // UTF-8 text for id in the language of ov_language(); English when the catalog has no row for that language.
 const char *ui_text(UiTextId id);
 // The same for an explicit catalog language ("en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans",
-// "zh-Hant", "ko"); an empty entry gives the English text.
+// "zh-Hant", "ko", "pt-BR"); an empty entry gives the English text.
 const char *ui_text_in(const char *lang, UiTextId id);
 // 1 when the row of lang has its own text for id (no fallback to English), for the probe.
 int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en" / "ru"); unset, Russian when the
-// system UI language is Russian, else English. Follows a live change of the setting.
+// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en" / "ru" / "pt-BR"); unset, Russian
+// or Brazilian Portuguese when the system UI language is one of them, else English. Follows a live change of the
+// setting.
 const char *menu_text(UiTextId id);
