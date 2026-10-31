@@ -57,6 +57,11 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
   Simplified Chinese). The Chinese glyphs come from a system font (Microsoft YaHei, `plat_font_path`) merged into the
   font atlas.
+- Where a default lives. A change that helps every machine gets a fixed default and a `TOTK_*` switch to turn it
+  off. One that helps one kind of machine takes its default from the device profile in `cfg.c` (`TOTK_DEVICE_PROFILE`:
+  the Steam Deck's `DECK[]` table, applied to the keys the player did not set) when it depends on the device, or from
+  `VkCaps` (`vk_caps.c`: GPU vendor, driver branch, pipeline library support, decided at device creation) when it
+  depends on the GPU or driver. Neither layer guesses from the operating system.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores
