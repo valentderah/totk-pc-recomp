@@ -27,7 +27,6 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Planned
 
-- Linux and the Steam Deck
 - Mods made for emulators: unpack a mod into a `mods` folder
 - VRR
 
@@ -40,7 +39,20 @@ Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
 4. Play `totk.exe` from the install folder.
 
-To update, run a newer `TotK-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
+### Linux and the Steam Deck
+
+Requirements: Linux 6.7 or later (SteamOS 3.8 qualifies), glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 and
+newer), the same CPU, GPU and disk space as on Windows.
+
+1. Download `TotK-Setup-x86_64.AppImage` from [Releases](../../releases/latest).
+2. Make it executable (`chmod +x TotK-Setup-x86_64.AppImage`, or Properties, Permissions in the file manager) and start
+   it. On a Steam Deck, do this in Desktop Mode.
+3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once (about
+   an hour on a Steam Deck).
+4. Play `totk` from the install folder. For Game Mode, add it to Steam as a non-Steam game. The game recognises the
+   Deck and starts with its own defaults (1280x800, 40 fps); `totk.ini` in the install folder overrides them.
+
+To update, run a newer `TotK-Setup.exe` or AppImage on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 
