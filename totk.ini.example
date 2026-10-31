@@ -153,6 +153,11 @@
 # (K in every mode) or j (the other transformer model: slightly less ghosting behind moving characters, a little more
 # flicker). Changes while the game runs take effect at once (DLSS starts a new history).
 # dlss_preset = default
+# Characters' trails: DLSS's motion vectors follow the camera only, so a character, animal or held item that moves on
+# its own can drag a faint copy of itself. The G-buffer marks those objects; on them and where they were the frame
+# before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes more of
+# the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
+# dlss_char_mask = 65
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
