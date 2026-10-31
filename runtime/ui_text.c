@@ -25,6 +25,15 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_SWKBD_TITLE] = title, [UI_SWKBD_PROMPT] = prompt, [UI_SWKBD_DEFAULT_NAME] = name, [UI_SWKBD_OK] = ok, \
     [UI_SWKBD_CANCEL] = cancel, [UI_SWKBD_PAD_HINT] = hint, LANG_NAMES
 
+// The DLSS model file and the executable, as the player sees them on this platform.
+#ifdef _WIN32
+#define DLSS_FILE "nvngx_dlss.dll"
+#define EXE_FILE "totk.exe"
+#else
+#define DLSS_FILE "libnvidia-ngx-dlss.so"
+#define EXE_FILE "totk"
+#endif
+
 static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
@@ -123,9 +132,14 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
                                   "Takes effect at the next start.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to totk.exe): smoother edges "
-                          "and less shimmer. The HUD is not touched. The mode below sets the resolution it works from. Takes effect "
-                          "after a restart.",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
+                          "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works from. Takes effect after a restart.",
+    [UI_MENU_DLSS_PRESET] = "DLSS model",
+    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic lets the driver choose (the transformer model K for DLAA, "
+                                 "Quality and Balanced). J: slightly less ghosting behind moving characters, a little more "
+                                 "flicker. K: always the sharpest model, also in Performance. Applies at once.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
+    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
     [UI_MENU_DLSS] = "DLSS mode",
     [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced and Performance draw it at 67, 58 "
                           "and 50 % and let DLSS scale it up, for more frames per second; they replace the 3D render "
@@ -552,9 +566,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
                                   "разрешение теней. Действует после перезапуска.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; nvngx_dlss.dll рядом с totk.exe): ровнее края и "
-                          "меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он работает. "
-                          "Действует после перезапуска.",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
+                          "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
+                          "работает. Действует после перезапуска.",
+    [UI_MENU_DLSS_PRESET] = "Модель DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» оставляет выбор драйверу (трансформерная модель "
+                                 "K для DLAA, «Качества» и «Баланса»). J: чуть меньше шлейфов за движущимися персонажами, "
+                                 "немного больше мерцания. K: всегда самая чёткая модель, и в «Производительности». "
+                                 "Действует сразу.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Автоматически", [UI_MENU_DLSS_PRESET_K] = "K (самая чёткая)",
+    [UI_MENU_DLSS_PRESET_J] = "J (меньше шлейфов)",
     [UI_MENU_DLSS] = "Режим DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс» и «Производительность» рисуют её "
                           "в 67, 58 и 50 % и масштабируют через DLSS ради большего числа кадров; они заменяют масштаб "
