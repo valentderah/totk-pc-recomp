@@ -414,10 +414,10 @@ static void row_window_size(void) {
     opt_choice_list("TOTK_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
-// The game resolution (resolution.c): 16:9 sizes from the game's own 1920x1080 up, and the current value when it is
-// another size.
+// The game resolution (resolution.c): 16:9 sizes from 1280x720, the smallest it takes, and the current value when it is
+// another size. Below the game's own 1920x1080 the shipped heaps are big enough and only the GPU time drops.
 static void row_output_res(void) {
-    static const char *const vals[] = {"1920x1080", "2560x1440", "3200x1800", "3840x2160"};
+    static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
