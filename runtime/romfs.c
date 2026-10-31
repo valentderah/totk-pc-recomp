@@ -315,40 +315,46 @@ static void added_init(void) {
     rt_log("RomFS overlay: %zu files added to the RomFS", nadded);
 }
 
-// The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
-// base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS original; the grown table is
-// written to <profile>/resolution/ and served in the base's place.
-#define HEAPDEF "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
-static void heapdef_overlay(void) {
-    if (!res_heap_extra_kib()) return;
-    uint64_t i = lower(HEAPDEF);
-    if (i >= file_count || strcmp(entry_name(entry(i)), HEAPDEF)) {
-        rt_log("RomFS: %s missing; the game keeps its own resolution", HEAPDEF);
-        return;
+// RomFS file `rel` as the game would read it: from an overlay that replaces it (*base), else from the image. malloc'd;
+// NULL when it is missing, unreadable or 16 MiB or more (logged with `keeps`, what the game does without it).
+static void *read_served(const char *rel, Overlay **base, size_t *n, const char *keeps) {
+    uint64_t i = lower(rel);
+    *base = NULL;
+    if (i >= file_count || strcmp(entry_name(entry(i)), rel)) {
+        rt_log("RomFS: %s missing; %s", rel, keeps);
+        return NULL;
     }
-    Overlay *base = NULL;
     for (size_t k = 0; k < noverlay; k++)
-        if (overlays[k].index == i) base = &overlays[k];
-    PlatFile *f = base ? open_read(base->path) : image;
-    uint64_t off = base ? 0 : entry(i).offset, n = base ? base->size : entry(i).size;
-    void *in = n && n < (16u << 20) && f ? malloc((size_t)n) : NULL;
-    int ok = in && read_at(f, in, (uint32_t)n, off) == (int64_t)n;
-    if (base && f) plat_file_close(f);
-    void *out = NULL;
-    size_t out_n = 0;
-    ok = ok && res_heapdef_build(in, (size_t)n, &out, &out_n);
-    free(in);
-    if (!ok) return;
+        if (overlays[k].index == i) *base = &overlays[k];
+    PlatFile *f = *base ? open_read((*base)->path) : image;
+    uint64_t off = *base ? 0 : entry(i).offset, size = *base ? (*base)->size : entry(i).size;
+    void *in = size && size < (16u << 20) && f ? malloc((size_t)size) : NULL;
+    int ok = in && read_at(f, in, (uint32_t)size, off) == (int64_t)size;
+    if (*base && f) plat_file_close(f);
+    if (!ok) {
+        free(in);
+        rt_log("RomFS: cannot read %s; %s", rel, keeps);
+        return NULL;
+    }
+    *n = (size_t)size;
+    return in;
+}
+
+// Serves out[0..out_n) (malloc'd, freed here) in place of RomFS file `rel` and of an overlay that replaces it (base):
+// written to <profile>/<sub>/<file name of rel>. `what` names the change in the log. 0 when it cannot be written.
+static int serve_generated(const char *rel, Overlay *base, void *out, size_t out_n, const char *sub, const char *what,
+                           const char *keeps) {
     char dir[2100], file[2200];
-    need(snprintf(dir, sizeof dir, "%s/resolution", rt_config()->profile) < (int)sizeof dir, "resolution path");
-    need(snprintf(file, sizeof file, "%s/Product.Nin_NX_NVN.HeapDef.byml.zs", dir) < (int)sizeof file, "resolution path");
+    const char *leaf = strrchr(rel, '/') ? strrchr(rel, '/') + 1 : rel;
+    need(snprintf(dir, sizeof dir, "%s/%s", rt_config()->profile, sub) < (int)sizeof dir, "generated overlay path");
+    need(snprintf(file, sizeof file, "%s/%s", dir, leaf) < (int)sizeof file, "generated overlay path");
     plat_file_mkdir_p(dir);
-    ok = plat_file_write(file, out, out_n);
+    int ok = plat_file_write(file, out, out_n);
     free(out);
     PlatFile *r = ok ? open_read(file) : NULL;
     if (!r) {
-        rt_log("RomFS: cannot write %s; the game keeps its own resolution", file);
-        return;
+        rt_log("RomFS: cannot write %s; %s", file, keeps);
+        return 0;
     }
     Identity id = identity_of(r);
     plat_file_close(r);
@@ -365,12 +371,45 @@ static void heapdef_overlay(void) {
             overlays = realloc(overlays, overlay_cap * sizeof *overlays);
             need(overlays != NULL, "overlay table");
         }
-        char *rel = strdup(HEAPDEF);
-        need(rel != NULL, "overlay path copy");
-        overlays[noverlay++] = (Overlay){i, out_n, copy, rel, id};
+        char *name = strdup(rel);
+        need(name != NULL, "overlay path copy");
+        overlays[noverlay++] = (Overlay){lower(rel), out_n, copy, name, id};
     }
-    rt_log("RomFS overlay: %s (%zu bytes, grown heaps) replaces %s", file, out_n, base ? "the mod's table" : "the original");
-    res_heapdef_served();
+    rt_log("RomFS overlay: %s (%zu bytes, %s) replaces %s", file, out_n, what, base ? "the mod's file" : "the original");
+    return 1;
+}
+
+// The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
+// base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS original; the grown table is
+// written to <profile>/resolution/ and served in the base's place.
+#define HEAPDEF "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
+static void heapdef_overlay(void) {
+    if (!res_heap_extra_kib()) return;
+    static const char keeps[] = "the game keeps its own resolution";
+    Overlay *base;
+    size_t n;
+    void *in = read_served(HEAPDEF, &base, &n, keeps), *out = NULL;
+    size_t out_n = 0;
+    int ok = in && res_heapdef_build(in, n, &out, &out_n);
+    free(in);
+    if (ok && serve_generated(HEAPDEF, base, out, out_n, "resolution", "grown heaps", keeps)) res_heapdef_served();
+}
+
+// The player camera's pack with its stick speeds multiplied by TOTK_STICK_SENS (camera_speed.c). The base is an
+// overlay that replaces the pack (a mod's camera stays), else the RomFS original; the dictionary is the RomFS's own.
+#define CAMPACK "Pack/Actor/PlayerCamera.pack.zs"
+static void camera_overlay(void) {
+    if (cam_speed_wanted() == 1.0f) return;
+    static const char keeps[] = "the camera keeps its own speed";
+    Overlay *base, *dic_base;
+    size_t n, dn;
+    void *in = read_served(CAMPACK, &base, &n, keeps), *out = NULL;
+    void *dic = in ? read_served("Pack/ZsDic.pack.zs", &dic_base, &dn, keeps) : NULL;
+    size_t out_n = 0;
+    int ok = in && dic && cam_pack_build(in, n, dic, dn, &out, &out_n);
+    free(in);
+    free(dic);
+    if (ok && serve_generated(CAMPACK, base, out, out_n, "camera", "camera speed", keeps)) cam_pack_served();
 }
 
 static int xbox_prompts_ready;    // romfs-patches-xbox/manifest.tsv was next to romfs-index.bin at start
@@ -427,6 +466,7 @@ static void overlay_init(void) {
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
     heapdef_overlay();
+    camera_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
     for (size_t k = 1; k < noverlay; k++)
