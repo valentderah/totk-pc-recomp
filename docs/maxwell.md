@@ -207,6 +207,13 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
 17. **Depth bias argument order.** `vk_exec_draw.c` `record_fixed` (units, clamp, factor); DK3D takes the same three and doubles units for the register (1.7). **OK.**
 18. **Sampler LOD.** `vk_texture.c` `make_sampler`. **OK.**
 19. **Viewport / scissor arrays.** Single viewport (`vk_exec_draw.c` `record_fixed`), extra scissors logged. Census: 0 differing. **OK.**
+20. **GPU results the CPU reads after a fence.** On the Switch a target rendered into a CPU-visible pool holds that frame's
+    texels once its fence passes. Here the replay records frame N+1 before the CPU waits for N, so the fence write-back
+    (`vk_texture.c` `vk_texture_write_back_small`) left such a target for the later fence, and its own host writes then
+    made the next write-back look overwritten by the CPU. The camera rune reads three 1x1 targets (formats 0x25, 0x2e) and
+    a 96x96 one (0x6) to tell what is in the picture: its subject marker flickered and photos did not register; yuzu users
+    worked around the same symptom by turning off reactive flushing. **Fixed 2026-10-31**: per-fence snapshots in an
+    epilogue command buffer (`vk_texture.c` "per-fence snapshots", `vk_sync.c` `epilogue`, `TOTK_WB_SNAPSHOT`).
 
 20. **Depth-compare sampling in compute** (VUID-vkCmdDispatch-None-06479): one compute shader samples a 4x4 R32F
     CPU-written placeholder through an R32_SFLOAT view with compare on, ~1/frame. Needs a D32 copy. **Minor.**

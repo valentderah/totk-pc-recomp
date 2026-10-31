@@ -203,3 +203,11 @@
 # names each dirty target over the limit that stays on the GPU ("fence write-back skipped-for-size") and each one over
 # 65536 bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
 # wb_fence_limit = 65536
+# Per-fence snapshots of those targets: the submission that renders one copies it, and a fence wait writes back the
+# copy of that frame, as the Switch's memory holds it, even when a later frame is already queued (the camera rune reads
+# such a target to tell what is in the picture). 1 = on, the copy wins over a CPU write since the render; 2 = on, a CPU
+# write since the render wins; 0 = off.
+# wb_snapshot = 1
+# Write mirrored targets back before an invalidate, memcpy or CPU copy of their memory (0 = off, for tests: yuzu's
+# "reactive flushing" off).
+# wb_invalidate = 1

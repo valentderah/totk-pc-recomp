@@ -290,6 +290,21 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     return cb;
 }
 
+// The copies of the small render targets the submission wrote (vk_texture.c, "per-fence snapshots"), in a command
+// buffer of their own submitted after its last part and before its value is signalled, so a CPU that waited for the
+// value finds them done. VK_NULL_HANDLE when the submission rendered none. sub_lock held; may move slots[].
+static VkCommandBuffer epilogue(VkCtx *c, uint64_t fence) {
+    if (!vk_texture_snapshot_due(fence)) return VK_NULL_HANDLE;
+    int i = claim_slot(c, fence);
+    VkCommandBuffer cb = slots[i].cb;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(cb, &bi);
+    vk_texture_snapshot_record(cb, fence);
+    vkEndCommandBuffer(cb);
+    return cb;
+}
+
 VkCommandBuffer vk_sync_split(void) {
     VkCtx *c = vk_ctx();
     VkCommandBuffer cb = slots[cur_slot].cb;
@@ -355,15 +370,17 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     vk_upload_flush(0);
     VkCommandBuffer pro = prologue(c, fence);
+    VkCommandBuffer epi = epilogue(c, fence);
     s = &slots[cur_slot];
-    VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
-                                        {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
+    VkCommandBufferSubmitInfo cbi[3];
+    uint32_t ncb = 0;
+    if (pro) cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro};
+    if (recorded) cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb};
+    if (epi) cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = epi};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
                                  .value = fence, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
-                        .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
-                        .pSignalSemaphoreInfos = &sig};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = ncb,
+                        .pCommandBufferInfos = cbi, .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();

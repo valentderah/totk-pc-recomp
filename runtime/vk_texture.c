@@ -464,7 +464,10 @@ static void rel_unlink(Tex *e) {
     e->rel_prev = e->rel_next = NULL;
 }
 
+static void snap_forget(const Tex *e);
+
 static void destroy_tex(Tex *e) {
+    snap_forget(e);
     own_remove(e);
     tex_gen_bump(e->key.addr);
     nvn_hm_del(&by_key, &e->key);
@@ -894,6 +897,7 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
 enum { WB_SMALL_DEFAULT = 64 << 10 };
 static int small_pending;
 static uint64_t wb_limit = WB_SMALL_DEFAULT;
+static void snap_mark_due(uint64_t fence);
 static int wb_trace;
 static int wb_cfg_read;
 
@@ -922,7 +926,10 @@ void vk_texture_gpu_written(const tex_t *t) {
             e->gpu_seq = ++gpu_writes;
             e->gpu_fence = vk_exec_recording_fence();
             wb_cfg_init();
-            if (e->t.L.size <= wb_limit) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+            if (e->t.L.size <= wb_limit) {
+                __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+                snap_mark_due(e->gpu_fence);
+            }
             own_add(e);
         }
     }
@@ -1348,6 +1355,7 @@ static void write_back(Tex *e) {
             free(buf);
         }
     e->gpu_dirty = 0;
+    snap_forget(e);   // the image's newest texels are in the storage: older snapshots would go back over them
 }
 
 // Mirrored textures overlapping [addr, addr+size) that the GPU wrote since their last write-back.
@@ -1413,7 +1421,16 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size) {
 // a stale map or stale resource bytes (wrong textures in the distance). Every hit is checked before any is written
 // back, since a write-back is itself a CPU write to storage another hit may share; the hits then go back oldest render
 // first, so where two descriptors share storage the newer render wins.
+// TOTK_WB_INVALIDATE=0 (diagnostics; default 1): an invalidate, memcpy or CPU copy over a mirrored target no longer
+// writes its image back first, which the CPU-side reads of the pool then miss (yuzu's "reactive flushing" off).
+static int wb_invalidate = -1;
+
 void vk_texture_write_back(uint64_t addr, uint64_t size) {
+    if (wb_invalidate < 0) {
+        wb_invalidate = cfg_bool("TOTK_WB_INVALIDATE");
+        if (!wb_invalidate) rt_log("vk: write-back on invalidate off (TOTK_WB_INVALIDATE=0)");
+    }
+    if (!wb_invalidate) return;
     lock();
     Tex **hit = malloc(sizeof *hit * (size_t)(nowned + 1));
     if (!hit) rt_fatal("vk: out of memory for a texture write-back");
@@ -1461,10 +1478,15 @@ static void wb_note(const Tex *e, int skipped) {
            (unsigned long long)wb_limit);
 }
 
+static int snap_apply(uint64_t fence);
+static void wbs_tick(void);
+static uint64_t wbs_later, wbs_cpu_drop;   // old path, since the last trace line: left for a later fence, dropped
+
 void vk_texture_write_back_small(uint64_t fence) {
     lock();
     wb_cfg_init();
     __atomic_store_n(&small_pending, 0, __ATOMIC_RELAXED);
+    int snaps_left = snap_apply(fence);   // per-fence snapshots first; their entries leave the path below
     AcquireSRWLockShared(&owned_lock);
     int n = 0, later = 0;
     for (int i = 0; i < nowned; i++) n += owned[i]->gpu_dirty && owned[i]->t.L.size <= wb_limit;
@@ -1481,18 +1503,18 @@ void vk_texture_write_back_small(uint64_t fence) {
             }
             continue;
         }
-        if (e->gpu_fence > fence) later = 1;
+        if (e->gpu_fence > fence) later = 1, wbs_later++;
         else {
             if (wb_trace && e->t.L.size > WB_SMALL_DEFAULT) wb_note(e, 0);
             hit[n++] = e;
         }
     }
     ReleaseSRWLockShared(&owned_lock);
-    if (later) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+    if (later || snaps_left) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
     int k = 0;
     for (int i = 0; i < n; i++) {
         uint32_t now;
-        if (storage_rewritten(hit[i], hit[i]->gpu_gen, &now) == 1) hit[i]->gpu_dirty = 0;
+        if (storage_rewritten(hit[i], hit[i]->gpu_gen, &now) == 1) hit[i]->gpu_dirty = 0, wbs_cpu_drop++;
         else hit[k++] = hit[i];
     }
     for (int i = 1; i < k; i++)
@@ -1504,7 +1526,197 @@ void vk_texture_write_back_small(uint64_t fence) {
     for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);
     free(hit);
+    wbs_tick();
     unlock();
+}
+
+// ---------------------------------------------------------------- per-fence snapshots (TOTK_WB_SNAPSHOT)
+// On the Switch a target the GPU renders into a CPU-visible pool holds that frame's texels once the frame's fence has
+// passed, whatever later frames are queued. Here the image holds the newest render recorded: the replay runs on the
+// submitting thread, so by the time the CPU waits for frame N's fence the replay has often recorded frame N+1 into the
+// same target already. vk_texture_write_back_small then left the target for the later fence (gpu_fence > fence) and the
+// CPU kept an older frame's bytes, and after a write-back its own host writes looked like CPU writes to the check of the
+// next one, which was dropped. The camera rune reads such a target to tell what is in the picture: its subject marker
+// flickered, and right after a menu, with no frame queued ahead, it held for about two seconds.
+// So the submission that renders a small mirrored target (up to wb_limit bytes, one level and layer, a plain colour or
+// depth format) also copies it into a host-visible buffer, in an epilogue command buffer before the submission's value
+// is signalled (vk_sync.c epilogue); a fence wait writes back each snapshot of that fence or older, in order. Mode 1
+// (default): the snapshot's texels win, as the GPU's write wins on the Switch. Mode 2: a snapshot is skipped when the
+// CPU wrote the storage after the render was recorded (the old path's rule). 0: off, the old path alone.
+typedef struct Snap {
+    struct Snap *next;
+    Tex *e;
+    uint64_t fence;
+    uint32_t gen;           // the entry's gpu_gen at the render: CPU writes after it are newer than the snapshot
+    VkBuffer buf;
+    VmaAllocation alloc;
+    uint8_t *map;
+    VkDeviceSize size;
+    Region g;
+    NVNcopyRegion r;
+} Snap;
+static Snap *snap_head, *snap_tail;   // tex_lock; in fence order
+static Snap *snap_free;               // tex_lock; reusable buffers (their fence has passed)
+static int snap_mode = -1;
+static uint64_t snap_due_fence;       // the submission being recorded rendered a target to snapshot
+static uint64_t wbs_taken, wbs_applied, wbs_over_cpu, wbs_skip_cpu;   // since the last trace line
+static uint64_t wbs_t0;
+
+static int snap_on(void) {
+    if (snap_mode < 0) {
+        int m = cfg_int("TOTK_WB_SNAPSHOT");
+        snap_mode = m < 0 || m > 2 ? 1 : m;
+        rt_log("vk: per-fence snapshots of small render targets: %s (TOTK_WB_SNAPSHOT=%d)",
+               snap_mode == 0 ? "off" : snap_mode == 1 ? "on, the snapshot wins" : "on, a CPU write since the render wins",
+               snap_mode);
+    }
+    return snap_mode;
+}
+
+static void snap_mark_due(uint64_t fence) {
+    if (snap_on()) __atomic_store_n(&snap_due_fence, fence, __ATOMIC_RELEASE);
+}
+
+int vk_texture_snapshot_due(uint64_t fence) { return __atomic_load_n(&snap_due_fence, __ATOMIC_ACQUIRE) == fence; }
+
+// The region a snapshot covers (level 0, layer 0, the whole image); 0 when the entry takes the old path.
+static int snap_region(const Tex *e, Region *g, NVNcopyRegion *r, VkImageAspectFlags *aspect) {
+    const nvn_texdesc *d = &e->t.d;
+    if (e->f.astc_bw || e->f.astc_bc || e->f.expand_rgb || e->pub.levels != 1 || e->pub.layers != 1 ||
+        d->target == NVN_TEXTURE_TARGET_3D || e->pub.samples > 1 || !read_aspect(e, aspect))
+        return 0;
+    *r = (NVNcopyRegion){.width = (int)d->width, .height = d->target == 0 || d->target == 3 ? 1 : (int)d->height, .depth = 1};
+    view_t v = {0};
+    return region_of(&e->t, &v, r, 0, 0, g) && g->wb * g->hb <= e->t.L.size;
+}
+
+static void snap_release(Snap *s) {   // tex_lock held; the snapshot's fence has passed
+    s->next = snap_free;
+    snap_free = s;
+}
+
+static void snap_destroy_cb(void *arg) {   // completion thread: the fence passed; VMA is internally synchronized
+    Snap *s = arg;
+    vmaDestroyBuffer(vk_ctx()->vma, s->buf, s->alloc);
+    free(s);
+}
+
+// Snapshots of an entry being destroyed: dropped, their buffers freed once the GPU is done writing them.
+static void snap_forget(const Tex *e) {
+    Snap **pp = &snap_head;
+    while (*pp) {
+        Snap *s = *pp;
+        if (s->e != e) { pp = &s->next; continue; }
+        *pp = s->next;
+        if (s->fence <= vk_sync_fence_done()) snap_release(s);
+        else vk_completion_add(s->fence, snap_destroy_cb, s);
+    }
+    snap_tail = NULL;
+    for (Snap *s = snap_head; s; s = s->next) snap_tail = s;
+}
+
+static Snap *snap_new(VkDeviceSize size) {
+    for (Snap **pp = &snap_free; *pp; pp = &(*pp)->next)
+        if ((*pp)->size >= size && (*pp)->size <= size * 2) {
+            Snap *s = *pp;
+            *pp = s->next;
+            return s;
+        }
+    Snap *s = calloc(1, sizeof *s);
+    if (!s) rt_fatal("vk: out of memory for a target snapshot");
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &s->buf, &s->alloc, &info) != VK_SUCCESS) {
+        free(s);
+        return NULL;
+    }
+    s->map = info.pMappedData;
+    s->size = size;
+    return s;
+}
+
+int vk_texture_snapshot_record(VkCommandBuffer cb, uint64_t fence) {
+    if (!snap_on()) return 0;
+    lock();
+    int n = 0, barriered = 0;
+    AcquireSRWLockShared(&owned_lock);
+    for (int i = 0; i < nowned; i++) {
+        Tex *e = owned[i];
+        if (!e->gpu_dirty || e->gpu_fence != fence || e->t.L.size > wb_limit) continue;
+        Region g;
+        NVNcopyRegion r;
+        VkImageAspectFlags aspect;
+        if (!snap_region(e, &g, &r, &aspect)) continue;
+        Snap *s = snap_new(g.wb * g.hb);
+        if (!s) continue;
+        s->next = NULL, s->e = e, s->fence = fence, s->gen = e->gpu_gen, s->g = g, s->r = r;
+        if (!barriered) {   // the submission's writes, before every copy of this epilogue
+            barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            barriered = 1;
+        }
+        VkBufferImageCopy rg = {.imageSubresource = {aspect, 0, 0, 1},
+                                .imageExtent = {(uint32_t)r.width, (uint32_t)r.height, 1}};
+        vkCmdCopyImageToBuffer(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, s->buf, 1, &rg);
+        if (snap_tail) snap_tail->next = s;
+        else snap_head = s;
+        snap_tail = s;
+        n++;
+        static volatile long n_first;
+        log_limited(&n_first, "target snapshot of %#llx (%ux%u fmt %#x, %llu bytes)", (unsigned long long)e->pub.addr,
+                    e->t.d.width, e->t.d.height, (unsigned)e->t.d.format, (unsigned long long)e->t.L.size);
+    }
+    ReleaseSRWLockShared(&owned_lock);
+    if (barriered)   // the copies, before the host reads them after the value
+        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
+                VK_ACCESS_2_HOST_READ_BIT);
+    wbs_taken += (uint64_t)n;
+    unlock();
+    return n;
+}
+
+// tex_lock held. Writes back the snapshots of fence `fence` and older, oldest first; returns 1 when later ones remain.
+static int snap_apply(uint64_t fence) {
+    while (snap_head && snap_head->fence <= fence) {
+        Snap *s = snap_head;
+        snap_head = s->next;
+        if (!snap_head) snap_tail = NULL;
+        Tex *e = s->e;
+        uint32_t now;
+        int cpu = storage_rewritten(e, s->gen, &now) == 1;
+        if (cpu && snap_mode == 2) {
+            wbs_skip_cpu++;
+        } else {
+            vmaInvalidateAllocation(vk_ctx()->vma, s->alloc, 0, VK_WHOLE_SIZE);
+            if (storage_texels(&e->t, &s->g, &s->r, s->map, 1)) wbs_applied++, wbs_over_cpu += (uint64_t)cpu;
+            perf_count(PERF_CNT_WB);
+        }
+        if (s->fence >= e->gpu_fence) e->gpu_dirty = 0;   // no newer render recorded: the storage is current
+        storage_rewritten(e, 0, &now);   // the host write above is not a CPU write for the later checks
+        if (!e->gpu_dirty) e->gpu_gen = now;
+        for (Snap *q = snap_head; q; q = q->next)
+            if (q->e == e) q->gen = now;
+        snap_release(s);
+    }
+    return snap_head != NULL;
+}
+
+// TOTK_TRACE=gfx: what the fence write-backs did, every two seconds when anything happened.
+static void wbs_tick(void) {
+    if (!wb_trace) return;
+    uint64_t t = kern_now_ns();
+    if (!wbs_t0) wbs_t0 = t;
+    if (t - wbs_t0 < 2000000000ull) return;
+    if (wbs_taken | wbs_applied | wbs_later | wbs_cpu_drop | wbs_skip_cpu)
+        rt_log("vk: fence write-back %.1f s: snapshots taken %llu, written back %llu (%llu over a CPU write), skipped "
+               "for a CPU write %llu; old path: left for a later fence %llu, dropped for a CPU write %llu",
+               (t - wbs_t0) / 1e9, (unsigned long long)wbs_taken, (unsigned long long)wbs_applied,
+               (unsigned long long)wbs_over_cpu, (unsigned long long)wbs_skip_cpu, (unsigned long long)wbs_later,
+               (unsigned long long)wbs_cpu_drop);
+    wbs_taken = wbs_applied = wbs_over_cpu = wbs_skip_cpu = wbs_later = wbs_cpu_drop = 0;
+    wbs_t0 = t;
 }
 
 // ---------------------------------------------------------------- samplers (LAS textures.c)
@@ -1714,6 +1926,14 @@ void vk_texture_census(VkTexCensus *s) {
 void vk_texture_shutdown(void) {
     VkCtx *c = vk_ctx();
     lock();
+    for (Snap *s = snap_head, *nx; s; s = nx) nx = s->next, snap_release(s);   // the device is idle at shutdown
+    snap_head = snap_tail = NULL;
+    for (Snap *s = snap_free, *nx; s; s = nx) {
+        nx = s->next;
+        if (c) vmaDestroyBuffer(c->vma, s->buf, s->alloc);
+        free(s);
+    }
+    snap_free = NULL;
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
     int n = 0;
     for (uint32_t i = 0; i < by_key.cap; i++)
