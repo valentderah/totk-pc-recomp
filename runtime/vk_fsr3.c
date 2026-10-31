@@ -1,7 +1,7 @@
-// AMD FSR 3.1 temporal upscaler for vk_dlaa.c's DLAA / DLSS point (vk_fsr3.h), through the C bridge of FSR-Vulkan
-// (FireBurn/FSR-Vulkan, MIT) to the FSR 3.1.5 upscaler of AMD's FidelityFX SDK 2.3 (MIT). The libraries it needs are
-// built from that repository and kept in runtime/deps with the other dependencies (tools/ffx/README.md); their shaders
-// are SPIR-V compiled into them.
+// AMD FSR 3.1 temporal upscaler for vk_dlaa.c's DLAA / DLSS point (vk_fsr3.h), through the C bridge of
+// UniversalScalers-Vulkan (FireBurn/UniversalScalers-Vulkan, formerly FSR-Vulkan; MIT) to the FSR 3.1.5 upscaler of
+// AMD's FidelityFX SDK 2.3 (MIT). The libraries it needs are built from that repository into runtime/deps
+// (tools/make_release.py build_ffx, tools/ffx/README.md); their shaders are SPIR-V compiled into them.
 //
 // The bridge records plain Vulkan commands into the command buffer it is given and binds pipelines and descriptor sets
 // of its own: vk_dlaa.c drains the recorder before the call and makes the next draw bind everything again, as it does
@@ -21,10 +21,24 @@
 #include <string.h>
 
 #include "cfg.h"
-#include "ffx_vk_fsr3_3_1_5_bridge.h"
 #include "host.h"
 #include "vk.h"
 #include "vk_fsr3.h"
+
+// A build without the libraries in its deps folder (an MSYS2 source build that never ran tools/ffx/README.md) has no
+// bridge header: FSR 3.1 is then left out and aa_engine offers DLSS alone.
+#if !__has_include("ffx_vk_fsr3_3_1_5_bridge.h")
+int fsr3_available(void) { return 0; }
+Fsr3 *fsr3_create(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, VkImage mv, VkImage out) {
+    (void)w, (void)h, (void)ow, (void)oh, (void)mv, (void)out;
+    return NULL;
+}
+void fsr3_destroy(Fsr3 *f) { (void)f; }
+int fsr3_dispatch(Fsr3 *f, VkCommandBuffer cb, const Fsr3Frame *in) { (void)f, (void)cb, (void)in; return 0; }
+#else
+#include "ffx_vk_fsr3_3_1_5_bridge.h"
+
+int fsr3_available(void) { return 1; }
 
 enum { IN_COLOR, IN_DEPTH, IN_MV, OUT_IMG, DIL_DEPTH, DIL_MV, PREV_DEPTH, NRES };
 
@@ -194,3 +208,4 @@ int fsr3_dispatch(Fsr3 *f, VkCommandBuffer cb, const Fsr3Frame *in) {
     if (errors++ < 5) rt_log("fsr3: dispatch failed (%d)", (int)res);
     return 0;
 }
+#endif   // the bridge header
