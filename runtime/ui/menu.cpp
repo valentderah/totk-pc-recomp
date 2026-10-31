@@ -578,6 +578,41 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
+// The action a key presses, or -1: the walk key is a key of its own, but Shift is B in the default bindings, and a
+// walk key that also presses something walks and does that something at the same time. The bindings come from a
+// snapshot, and every key of an action is looked at: binds_refresh rebuilds the live table on the polling thread while
+// the menu draws, and an action may hold more than the two keys its cells show.
+static int key_action(const InputMap *m, int key) {
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        uint8_t keys[INPUT_BINDING_MAX];
+        int n = input_map_keys_of(m, a, keys, INPUT_BINDING_MAX);
+        for (int i = 0; i < n; i++)
+            if (keys[i] == key) return a;
+    }
+    return -1;
+}
+
+// The walk key as the handful of keys a player is likely to pick. "none" rather than an empty value closes it: an
+// unset key falls back to the default in the settings table, the same as a fresh installation. totk.ini takes any name
+// input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
+// action it presses.
+static void row_walk_key(void) {
+    static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
+    const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
+    const char *cur = cfg_value("TOTK_WALK_KEY");
+    static char note[64];
+    const char *n = nullptr;
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
+        if (!input_key_name(k) || _stricmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
+    }
+    opt_choice_list("TOTK_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
+                    -1, n);
+}
+
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
@@ -589,6 +624,8 @@ static void tab_controls(float scale) {
     opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
     opt_slider("TOTK_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
     opt_slider("TOTK_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
+    row_walk_key();
+    opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     binds_rows(scale);
     opt_end();
     binds_after_page();

@@ -166,6 +166,14 @@
 # stick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
+# keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
+# none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
+# the gamepad are unchanged. The Controls tab sets both. The default stops just above half because a keyboard sample of
+# 32767 times 0.5 is one short of the 16384 the game's stick-direction bits need, and below that the keyboard stick
+# reads as a partial tilt only.
+# walk_key = lshift
+# walk_scale = 0.51
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
