@@ -140,8 +140,14 @@ int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
     return n;
 }
 
+// StartSixAxisSensor: the states from before it belong to the previous session (its reference frame, its sampling
+// numbers, an angle the next motion_feed zeroes), so a read before the next sample gets none and the guest sees the
+// controller at rest (ov_input.c six_fill).
 void motion_restart(MotionFusion *m) {
     AcquireSRWLockExclusive(&m->lock);
     m->restart = 1;
+    m->produced = 0;
+    m->last_ns = 0;
+    memset(m->angle, 0, sizeof m->angle);
     ReleaseSRWLockExclusive(&m->lock);
 }
