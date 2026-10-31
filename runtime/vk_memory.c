@@ -63,7 +63,9 @@ typedef struct PoolRec {
     VmaAllocation salloc;
     uint8_t *smap;                     // its mapping; offsets as in buf (from import_lo)
     uint32_t sgen;                     // gen_lock: every page write stamped up to this generation is in the shadow
+    uint32_t ssub;                     // shadow_lock: the submission (shadow_sub) of its last sync
     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
+    uint8_t swc;                       // the shadow is write-combined memory (shadow_pool)
 } PoolRec;
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
@@ -828,14 +830,40 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
 // TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux.
+// - A pool is synced once per submission, in the prologue of the first part that uses it (shadow_sub, set at the
+//   start of each submission's recording): every part syncing its pools again made 157 pool syncs and 110 write-watch
+//   queries a frame on the RX 7800 XT for about 90 pools, and each query re-protects pages, which flushes the TLBs of
+//   every core running the game. The GPU then reads a pool as of that first part, which is nearer to the submit call,
+//   the moment the game means (vk_usnap.c). TOTK_SHADOW_RESYNC=1 syncs in every part as before.
+// - The shadow of a CPU_UNCACHED or CPU_NO_ACCESS pool (the game writes it with memcpy and reads it back never) goes to
+//   write-combined host memory where the device has it (HOST_VISIBLE, HOST_COHERENT, neither HOST_CACHED nor
+//   DEVICE_LOCAL): an APU's GPU reads cached system memory through the CPU's cache coherence, at a lower bandwidth.
+//   CPU_CACHED pools stay in cached memory, which the fence copies (vk_gpu_written) read on the CPU.
+//   TOTK_SHADOW_WC = auto (that), 0 (all cached, as before) or all (every pool), for A/B runs on the Steam Deck.
 typedef struct { uint64_t lo, hi; } SRange;
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
 static SRange *spend;                             // shadow_lock: GPU writes recorded and not copied back yet
 static int nspend, cspend;
-static int64_t s_live_n, s_live_bytes;            // shadow_lock
-static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
+static int64_t s_live_n, s_live_bytes, s_wc_n, s_wc_bytes;   // shadow_lock
+static uint64_t s_syncs, s_skipped, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
+static int shadow_wc = 1;                         // TOTK_SHADOW_WC: 0 cached, 1 auto, 2 all (mirror_mode)
+static int shadow_resync;                         // TOTK_SHADOW_RESYNC (mirror_mode)
+static uint32_t shadow_sub;                       // the submission being recorded, 0 before the first (probes)
+
+// The device's write-combined host memory types, 0 when it has none.
+static uint32_t shadow_wc_types(const VkCtx *c) {
+    uint32_t bits = 0;
+    for (uint32_t i = 0; i < c->mem_props.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = c->mem_props.memoryTypes[i].propertyFlags;
+        if ((f & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+            !(f & (VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)))
+            bits |= 1u << i;
+    }
+    return bits;
+}
 
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~0xfffull;
@@ -843,10 +871,15 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     uint64_t n = r->import_hi - r->import_lo;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n, .usage = pool_usage(c),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    // Cached where the device has it: the fence copies read it back on the CPU.
+    static uint32_t wc_types = UINT32_MAX;
+    if (wc_types == UINT32_MAX) wc_types = shadow_wc_types(c);
+    int wc = wc_types && (shadow_wc == 2 || (shadow_wc == 1 && !(r->flags & NVN_MEMORY_POOL_FLAGS_CPU_CACHED)));
+    // Cached where the device has it, unless write-combined is the better fit (above): the fence copies read it back
+    // on the CPU.
     VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                   .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                  .preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT};
+                                  .preferredFlags = wc ? 0 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                  .memoryTypeBits = wc ? wc_types : 0};
     VmaAllocationInfo info;
     VkResult res = vmaCreateBuffer(c->vma, &bi, &ai, &r->buf, &r->salloc, &info);
     if (res != VK_SUCCESS) {
@@ -860,8 +893,10 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->sgen = gen_now;   // the copy below holds every write stamped so far; later stamps are copied again
     plat_mutex_unlock(&gen_lock);
     memcpy(r->smap, (const void *)(uintptr_t)r->import_lo, n);
+    r->swc = (uint8_t)wc;
     plat_mutex_lock(&shadow_lock);
     s_live_n++, s_live_bytes += (int64_t)n;
+    if (wc) s_wc_n++, s_wc_bytes += (int64_t)n;
     plat_mutex_unlock(&shadow_lock);
     plat_inc32(&n_imports);
     return 1;
@@ -883,6 +918,7 @@ static void shadow_forget(PoolRec *r) {
     for (int i = 0; i < nstouch; i++)
         if (stouch[i] == r) { stouch[i] = stouch[--nstouch]; break; }
     s_live_n--, s_live_bytes -= (int64_t)(r->import_hi - r->import_lo);
+    if (r->swc) s_wc_n--, s_wc_bytes -= (int64_t)(r->import_hi - r->import_lo);
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -945,9 +981,18 @@ void vk_mem_shadow_sync(void) {
     plat_mutex_lock(&shadow_lock);
     if (nstouch) {
         plat_mutex_lock(&gen_lock);
-        for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i]), stouch[i]->stouched = 0;
+        for (int i = 0; i < nstouch; i++) {
+            PoolRec *r = stouch[i];
+            r->stouched = 0;
+            if (shadow_sub && r->ssub == shadow_sub && !shadow_resync) {   // synced for an earlier part of this submission
+                s_skipped++;
+                continue;
+            }
+            r->ssub = shadow_sub;
+            shadow_sync_pool(r);
+            s_syncs++;
+        }
         plat_mutex_unlock(&gen_lock);
-        s_syncs += (uint64_t)nstouch;
         nstouch = 0;
     }
     s_ticks += qpc() - t0;
@@ -984,12 +1029,14 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
 static void shadow_log(uint64_t frame) {
     if (!shadow_on) return;
     plat_mutex_lock(&shadow_lock);
-    rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
-           "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending",
-           (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
+    rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB (%lld write-combined, %.1f MiB); since the last: %llu pool "
+           "syncs (%llu skipped as synced in the submission), %llu queries, %.1f MiB copied in (%llu untracked), "
+           "%.1f MiB written back, %.2f ms, %d GPU writes pending",
+           (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (long long)s_wc_n,
+           s_wc_bytes / 1048576.0, (unsigned long long)s_syncs, (unsigned long long)s_skipped,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend);
-    s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
+    s_syncs = s_skipped = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1191,8 +1238,16 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
-    if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
-                          sh && *sh ? " (TOTK_SHADOW)" : "");
+    const char *wc = cfg_get("TOTK_SHADOW_WC");
+    shadow_wc = !wc || !*wc || !strcmp(wc, "auto") ? 1 : !strcmp(wc, "all") ? 2 : 0;
+    const char *rs = cfg_get("TOTK_SHADOW_RESYNC");
+    shadow_resync = rs && *rs && strcmp(rs, "0");
+    if (shadow_on)
+        rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s; "
+               "write-combined memory for %s (TOTK_SHADOW_WC); a pool synced %s (TOTK_SHADOW_RESYNC)",
+               sh && *sh ? " (TOTK_SHADOW)" : "",
+               shadow_wc == 2 ? "every pool" : shadow_wc ? "pools the CPU does not cache" : "no pool",
+               shadow_resync ? "in every part of a submission" : "once per submission");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
 }
@@ -1459,6 +1514,11 @@ static void freeze_pass(void) {
 }
 
 void vk_mem_mirror_begin(void) {
+    if (shadow_on) {   // a new submission: its first part syncs each pool it uses again (vk_mem_shadow_sync)
+        plat_mutex_lock(&shadow_lock);
+        shadow_sub = shadow_sub + 1 ? shadow_sub + 1 : 1;
+        plat_mutex_unlock(&shadow_lock);
+    }
     if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
         if (!freeze_idle) return;
         plat_mutex_lock(&gen_lock);
