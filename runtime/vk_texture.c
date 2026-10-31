@@ -1661,9 +1661,14 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     float lim = c->props.limits.maxSamplerLodBias;
     si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
     float aniso = d->aniso;
-    // TOTK_ANISO raises the level for filtered, mipmapped colour samplers only: depth-compare (shadow) samplers and
-    // nearest or unmipmapped ones (data maps, LUTs) keep what the game set.
-    if (aniso_force > 1 && !d->cmp_mode && si.magFilter == VK_FILTER_LINEAR && si.minFilter == VK_FILTER_LINEAR &&
+    // TOTK_ANISO raises the level for filtered, mipmapped colour samplers that repeat on U and V only: the surface
+    // textures it is for tile. Depth-compare (shadow) samplers, nearest or unmipmapped ones (data maps, LUTs) and clamped
+    // ones keep what the game set. Clamped samplers read screen-sized buffers, whose coordinates can stretch steeply at
+    // an object's edge; there anisotropic taps reach across the edge and leave a speckled fringe (the inventory's
+    // character preview).
+    int tiled = (modes[0] == VK_SAMPLER_ADDRESS_MODE_REPEAT || modes[0] == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT) &&
+                (modes[1] == VK_SAMPLER_ADDRESS_MODE_REPEAT || modes[1] == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
+    if (aniso_force > 1 && tiled && !d->cmp_mode && si.magFilter == VK_FILTER_LINEAR && si.minFilter == VK_FILTER_LINEAR &&
         (mf == NVN_MIN_FILTER_LINEAR_MIPMAP_NEAREST || mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR) && aniso < aniso_force)
         aniso = aniso_force;
     if (aniso > 1) {
