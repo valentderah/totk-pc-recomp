@@ -301,6 +301,31 @@ static float floor_margin(void) {
     return m;
 }
 
+// TOTK_MOUSECAM_HOLD_YAW (default ON, 0 = off): hold the view steady while the game's own camera turns by itself (it eases round to
+// follow the way Link runs). The displayed yaw is the game's yaw + the mouse's offset, and the game's yaw keeps easing round after Link
+// while he moves, so with the mouse untouched the view crept round on its own. The mouse's offset is reduced by whatever the game's
+// yaw moved since the last update, so what you see only turns when the mouse does.
+static int hold_yaw_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = cfg_get("TOTK_MOUSECAM_HOLD_YAW");
+        on = v && *v && !strcmp(v, "0") ? 0 : 1;
+        rt_log("mousecam: hold the view steady while running: %s", on ? "on" : "off");
+    }
+    return on;
+}
+
+// TOTK_MOUSECAM_HOLD_PITCH (default ON, 0 = off): the same for the pitch: the game tips its camera over crests and slopes by itself.
+static int hold_pitch_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = cfg_get("TOTK_MOUSECAM_HOLD_PITCH");
+        on = v && *v && !strcmp(v, "0") ? 0 : 1;
+        rt_log("mousecam: hold the pitch steady while running: %s", on ? "on" : "off");
+    }
+    return on;
+}
+
 static uint64_t lk_ptr(uint64_t a) { return a && readable(a, 8) ? *(volatile uint64_t *)(uintptr_t)a : 0; }
 
 static int lk_is_player(uint64_t actor) {
@@ -457,6 +482,40 @@ static void apply_rel(float *cam, float dx, float dy, float scroll, int reset, f
             else ml_phi = wrap_rad(ml_phi + 0.02f * wrap_rad(ph - ml_phi));
         }
         if (ml_have_phi && hz < 1.0f) yawg = wrap_rad(fy + ml_phi);
+    }
+    // the game's own yaw moved (its follow turn, not our offset): take it off the offset so the displayed yaw stays put
+    {
+        static float hold_prev, hold_sum, hold_pprev;
+        static uint64_t hold_t, hold_log_t;
+        static int hold_have;
+        int hold_ok = !reset && hold_have && now - hold_t < 100000000ull;
+        if (hold_pitch_on() && hold_ok && fabsf(pitch0 - hold_pprev) < 0.12f)
+            ml.off_pitch -= pitch0 - hold_pprev;   // same for the pitch: the game tips the camera over crests and slopes by itself
+        hold_pprev = pitch0;
+        if (hold_yaw_on() && hold_ok && hz > 1.0f) {
+            float d = wrap_rad(yawg - hold_prev);
+            if (fabsf(d) < 0.12f) {   // a bigger step is a cut or a lock-on: not compensated
+                ml.off_yaw = wrap_rad(ml.off_yaw - d);
+                hold_sum += d;
+            }
+        }
+        {   // TOTK_MOUSECAM_DEBUG=1: once a second, how far the game's own camera turned by itself (and was held)
+            static int dbg = -1;
+            if (dbg < 0) {
+                const char *dv = cfg_get("TOTK_MOUSECAM_DEBUG");
+                dbg = dv && *dv && strcmp(dv, "0") ? 1 : 0;
+            }
+            if (dbg && now - hold_log_t > 1000000000ull) {
+                if (hold_log_t && fabsf(hold_sum) > 1e-4f)
+                    rt_log("mousecam: the game's own camera turned %.2f deg in the last second (held: %s), mouse offset now %.1f deg",
+                           hold_sum * 57.29578f, hold_yaw_on() ? "yes" : "no", ml.off_yaw * 57.29578f);
+                hold_log_t = now;
+                hold_sum = 0;
+            }
+        }
+        hold_prev = yawg;
+        hold_t = now;
+        hold_have = hz > 1.0f;
     }
     // the pitch offset may not take the camera below pitch_min (or past the top limit); it never fights the game's own pitch
     float lo = fminf(pitch_min(), pitch0), hi = fmaxf(PITCH_LIMIT, pitch0);
