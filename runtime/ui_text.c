@@ -175,6 +175,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Off",
     [UI_MENU_REFLEX_ON] = "On",
     [UI_MENU_REFLEX_BOOST] = "On + Boost",
+    [UI_MENU_AA_ENGINE] = "DLSS / DLAA engine",
+    [UI_MENU_AA_ENGINE_DESC] = "What runs at the DLSS / DLAA point. NVIDIA DLSS needs an RTX GPU and nvngx_dlss.dll; AMD FSR "
+                               "3.1 runs on any GPU. Automatic takes DLSS when it is available, else FSR 3.1.",
+    [UI_MENU_AA_ENGINE_AUTO] = "Automatic", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -709,6 +714,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Выкл",
     [UI_MENU_REFLEX_ON] = "Вкл",
     [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
+    [UI_MENU_AA_ENGINE] = "Движок DLSS / DLAA",
+    [UI_MENU_AA_ENGINE_DESC] = "Что работает в точке DLSS / DLAA. NVIDIA DLSS нужна видеокарта RTX и nvngx_dlss.dll; AMD "
+                               "FSR 3.1 работает на любой видеокарте. «Автоматически» берёт DLSS, когда он доступен, "
+                               "иначе FSR 3.1.",
+    [UI_MENU_AA_ENGINE_AUTO] = "Автоматически", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
