@@ -194,6 +194,12 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+// An UpdateUniformBuffer of n bytes at addr within the uniform block [block, block+block_n): later bindings of the
+// block read a copy with the new bytes (an overlay). 1 when made; 0 when the block has no snapshot or the arena is full.
+int vk_usnap_update(uint64_t block, uint64_t block_n, uint64_t addr, uint64_t n, const void *data);
+// The overlay a uniform binding at addr reads from, as its arena offset + 1; 0 when none. The descriptor memo
+// (vk_exec_draw.c bind_sig) keys a draw's uniform slots on it, so only the draws of an updated block rebuild.
+uint64_t vk_usnap_overlay_at(uint64_t addr);
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);

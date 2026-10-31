@@ -14,6 +14,11 @@
 // - The arena goes back to a free list once the submission's fence is done (completion thread).
 // The design follows MacNativeGames' TOTK_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
+// - An UpdateUniformBuffer within a snapshot region (vk_usnap_update) gets an overlay: a fresh copy of its block in
+//   the arena with the new bytes, which the bindings recorded after it use (vk_usnap_find looks there first), while
+//   the earlier ones keep the region's copy. The replay then copies the bytes into the buffer itself at the pass end
+//   instead of at once (vk_exec_draw.c op_update_ub): the terrain updates one block before each of about 500 draws a
+//   frame, and each copy in place meant ending the pass and a full barrier.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
 // with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
 #include <stdlib.h>
@@ -27,6 +32,8 @@
 #define ALIGN 256u
 #define MAX_RANGE (64u << 10)
 #define ARENA_MIN (4u << 20)
+#define OVL_ROOM (4u << 20)   // arena bytes kept for overlays
+#define OVL_N 256             // overlays at a time: the terrain's updates all go to one block, replaced in place
 #define CALL_DEPTH 16
 
 typedef struct Arena {
@@ -34,26 +41,33 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
+    uint8_t *host;     // the same bytes in ordinary memory: map is write-combined device memory (the BAR, an APU's
+                       // carve-out), which the CPU reads at a few tens of MB/s, and an overlay copies a block's bytes
     uint64_t size;
 } Arena;
 
 typedef struct { uint64_t lo, hi; } Rng;
 typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
 typedef struct { uint64_t lo, hi, fence; } Wrote;
+typedef struct { uint64_t lo, hi, off; } Ovl;
 
 static struct {
     int mode;                   // rt_knob: 0 off, 1 on, 2 ab
     int on;                     // this submission has a snapshot
     uint64_t fence, gen;
     Arena *arena;
+    uint64_t used;              // arena bytes taken: the regions, then the overlays
     Rng *col;                   // collected ranges
     int ncol, ccol;
     Reg *reg;                   // merged, sorted by lo, disjoint
     int nreg, creg;
+    Ovl ovl[OVL_N];             // blocks updated in this submission, newest last; the newest copy of each
+    int novl;
+    uint64_t ovl_lo, ovl_hi;    // the span of every overlay made in this submission (vk_usnap_overlay_at)
     Wrote *wr;                  // GPU writes of submissions not known to be complete
     int nwr, cwr;
     // since the last summary
-    uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
+    uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs, overlays, ovl_hits, ovl_refused;
 } U;
 
 static Arena *free_arenas;
@@ -95,6 +109,7 @@ static Arena *arena_get(uint64_t need) {
         return NULL;
     }
     a->map = info.pMappedData;
+    if (!(a->host = malloc(a->size))) rt_fatal("vk_usnap: out of memory");
     rt_log("vk_usnap: new arena of %.1f MiB", a->size / 1048576.0);
     return a;
 }
@@ -210,15 +225,19 @@ static void summary(void) {
     double s = U.subs ? (double)U.subs : 1.0;
     rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
            "%.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU writes, %.1f left out (GPU writes in "
-           "flight), %.1f refused (not an imported pool)",
+           "flight), %.1f refused (not an imported pool); %.1f update overlays, %.0f bindings from them, %.1f updates "
+           "refused",
            (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
-           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s);
+           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s, U.overlays / s, U.ovl_hits / s,
+           U.ovl_refused / s);
     U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
+    U.overlays = U.ovl_hits = U.ovl_refused = 0;
 }
 
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1;   // stored +1: 0 is "not read yet"
     U.on = 0, U.fence = fence, U.gen++;
+    U.novl = 0, U.ovl_lo = UINT64_MAX, U.ovl_hi = 0;
     summary();
     if (!RT_KNOB_ON(U.mode - 1)) {
         U.off_subs++;
@@ -252,9 +271,12 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
     if (!U.nreg) return;
-    if (!(U.arena = arena_get(total))) return;
-    for (int i = 0; i < U.nreg; i++)
-        memcpy(U.arena->map + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+    if (!(U.arena = arena_get(total + OVL_ROOM))) return;
+    U.used = total;
+    for (int i = 0; i < U.nreg; i++) {
+        memcpy(U.arena->host + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+        memcpy(U.arena->map + U.reg[i].off, U.arena->host + U.reg[i].off, U.reg[i].hi - U.reg[i].lo);
+    }
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
@@ -262,7 +284,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
 
 void vk_usnap_end(uint64_t fence) {
     if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
-    U.on = 0, U.gen++;
+    U.on = 0, U.novl = 0, U.gen++;
 }
 
 // First region whose end is above a.
@@ -278,6 +300,16 @@ static int first_above(uint64_t a) {
 
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
     if (!U.on || !n) return 0;
+    if (U.novl && addr >= U.ovl_lo && addr < U.ovl_hi)
+        for (int k = U.novl; k-- > 0;) {   // an updated block first: the newest copy of its bytes
+            const Ovl *o = &U.ovl[k];
+            if (addr < o->lo || addr + n > o->hi) continue;
+            uint64_t off = o->off + (addr - o->lo);
+            if (off % align) return 0;
+            *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
+            U.hits++, U.ovl_hits++;
+            return 1;
+        }
     int i = first_above(addr);
     if (i >= U.nreg) return 0;
     const Reg *r = &U.reg[i];
@@ -289,13 +321,67 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     return 1;
 }
 
-void vk_usnap_drop(uint64_t addr, uint64_t n) {
-    if (!U.mode || !n) return;
+// The GPU writes [addr, addr+n) in this submission: later snapshots leave the range out until the write is complete.
+static void wr_note(uint64_t addr, uint64_t n) {
     if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
+}
+
+void vk_usnap_drop(uint64_t addr, uint64_t n) {
+    if (!U.mode || !n) return;
+    wr_note(addr, n);
     if (!U.on) return;
     for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
         if (!U.reg[i].dropped) U.reg[i].dropped = 1, U.drops++, U.gen++;
+    for (int k = 0; k < U.novl;)   // overlays of the range go too: the bindings after this read the buffer itself
+        if (U.ovl[k].lo < addr + n && addr < U.ovl[k].hi) U.ovl[k] = U.ovl[--U.novl], U.gen++;
+        else k++;
+}
+
+int vk_usnap_update(uint64_t block, uint64_t block_n, uint64_t addr, uint64_t n, const void *data) {
+    if (!U.on || !n || !block_n || addr < block || addr + n > block + block_n) return 0;
+    int i = first_above(addr);
+    if (i >= U.nreg || U.reg[i].dropped || addr < U.reg[i].lo || addr + n > U.reg[i].hi) return 0;
+    const Reg *r = &U.reg[i];
+    // The overlay covers the block as far as the region does, at most MAX_RANGE from its start, as a binding would
+    uint64_t lo = block & ~(uint64_t)(ALIGN - 1), hi = block + block_n;
+    if (lo < r->lo) lo = r->lo;
+    if (hi > r->hi) hi = r->hi;
+    if (hi > lo + MAX_RANGE) hi = lo + MAX_RANGE;
+    if (addr < lo || addr + n > hi) return U.ovl_refused++, 0;
+    // The bytes before the update: the block's own overlay when it has one, else the region's copy. An overlay of
+    // another block over these bytes would leave two copies to choose from: the caller copies on the GPU instead.
+    const uint8_t *src = U.arena->host + r->off + (lo - r->lo);   // host: never read the device memory back
+    int k = 0;
+    for (; k < U.novl; k++) {
+        if (U.ovl[k].lo == lo && U.ovl[k].hi == hi) {
+            src = U.arena->host + U.ovl[k].off;
+            break;
+        }
+        if (U.ovl[k].lo < hi && lo < U.ovl[k].hi) return U.ovl_refused++, 0;
+    }
+    uint64_t size = (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
+    if (k == U.novl && U.novl == OVL_N) return U.ovl_refused++, 0;
+    if (U.used + size > U.arena->size) return U.ovl_refused++, 0;
+    uint8_t *dst = U.arena->host + U.used;
+    memcpy(dst, src, hi - lo);
+    memcpy(dst + (addr - lo), data, n);
+    memcpy(U.arena->map + U.used, dst, hi - lo);
+    U.ovl[k] = (Ovl){lo, hi, U.used};
+    if (k == U.novl) U.novl++;
+    if (lo < U.ovl_lo) U.ovl_lo = lo;
+    if (hi > U.ovl_hi) U.ovl_hi = hi;
+    U.used += size;
+    U.overlays++;   // not U.gen: only the draws binding this block resolve differently (vk_usnap_overlay_at)
+    wr_note(addr, n);   // the deferred GPU copy writes the buffer in this submission all the same
+    return 1;
+}
+
+uint64_t vk_usnap_overlay_at(uint64_t addr) {
+    if (!U.novl || addr < U.ovl_lo || addr >= U.ovl_hi) return 0;
+    for (int k = U.novl; k-- > 0;)
+        if (addr >= U.ovl[k].lo && addr < U.ovl[k].hi) return U.ovl[k].off + 1;
+    return 0;
 }
 
 uint64_t vk_usnap_gen(void) { return U.gen; }
@@ -303,7 +389,8 @@ uint64_t vk_usnap_gen(void) { return U.gen; }
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
     plat_mutex_lock(&free_lock);
-    for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
+    for (Arena *a = free_arenas, *next; a; a = next)
+        next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a->host), free(a);
     free_arenas = NULL;
     plat_mutex_unlock(&free_lock);
 }

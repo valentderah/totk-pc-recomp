@@ -74,13 +74,15 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; uniform updates "
+           "deferred %llu direct %llu flushes %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->ub_deferred, (unsigned long long)f->ub_direct,
+           (unsigned long long)f->ub_flushes, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -538,10 +540,24 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
                                    .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
 }
 
+static const VkMemoryBarrier2 FULL_BARRIER = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                              .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                              .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                              .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                              .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+
+void vk_exec_mem_barrier(VkExec *ex) {
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                           .pMemoryBarriers = &FULL_BARRIER};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->barrier_at = ++ex->recorded;
+}
+
 // Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
     vk_exec_pass_end(ex);
+    vk_exec_draw_flush_updates(ex);   // deferred uniform copies, behind a barrier of their own; this one makes them visible
     VkImageMemoryBarrier2 ib[18];
     uint32_t n = 0;
     for (int i = 0; i < ex->nfbl; i++)
@@ -555,13 +571,8 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
     vk_exec_frame.fb_layouts += n;
-    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
-                           .imageMemoryBarrierCount = n, .pImageMemoryBarriers = ib};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                           .pMemoryBarriers = &FULL_BARRIER, .imageMemoryBarrierCount = n, .pImageMemoryBarriers = ib};
     vkCmdPipelineBarrier2(ex->cb, &di);
     ex->barrier_at = ++ex->recorded;
 }
@@ -795,6 +806,7 @@ static void maybe_split(VkExec *ex) {
     if (split_ns && kern_now_ns() - part_t0 < split_ns) return;   // split_draws stays: the next draw asks again
     split_draws = 0;
     if (ex->recorded == part_start) return;
+    vk_exec_draw_flush_updates(ex);   // into this part: their sources are scratch of its command buffer
     ex->cb = vk_sync_split();
     part_start = ex->recorded;
     part_t0 = kern_now_ns();
@@ -908,6 +920,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         walk(ex, nvn_op_first(handles[i]), 0);
     }
     vk_exec_pass_end(ex);
+    vk_exec_draw_flush_updates(ex);
     x_here = 0;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory

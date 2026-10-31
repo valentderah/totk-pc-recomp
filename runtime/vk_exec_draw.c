@@ -194,7 +194,15 @@ static void cb_done(void *arg) {   // completion thread
     free(r->written), free(r->pools), free(r->chunks), free(r);
 }
 
-void vk_exec_draw_new_cb(void) { memset(&B, 0, sizeof B); }
+// Deferred UpdateUniformBuffer copies, defined with op_update_ub below
+static int ndef;
+static int def_hit(uint64_t addr, uint64_t n);
+static void def_check(VkExec *ex);
+
+void vk_exec_draw_new_cb(void) {
+    if (ndef) rt_fatal("vk_exec: %d deferred uniform copies left at a command buffer change", ndef);
+    memset(&B, 0, sizeof B);
+}
 
 static CbRes *cb_res(VkExec *ex) {
     if (cur && cur_fence == ex->fence) return cur;
@@ -780,6 +788,11 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     uint64_t n = size && size < sp.avail ? size : sp.avail;
     if (n > max) n = max;
     if (!n) return 0;
+    if (ndef && def_hit(addr, n)) {   // read from the buffer itself: the deferred copies first (op_update_ub)
+        int reopen = ex->in_pass;
+        vk_exec_barrier(ex);
+        if (reopen) vk_exec_pass_begin(ex);
+    }
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
@@ -1617,6 +1630,18 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     }
     if (l->c0) PUT(c0_binst);
     for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
+    // The UpdateUniformBuffer overlays (vk_usnap_update) the draw's uniform slots read from: a draw of an updated block
+    // resolves differently after each update, the others not at all
+    uint64_t ov = 0;
+    for (uint32_t i = 0; i < l->n; i++) {
+        const RsRange *r = &l->r[i];
+        if (r->off < offsetof(VkExec, ubo) || r->off >= offsetof(VkExec, ubo) + sizeof ex->ubo) continue;
+        for (uint32_t o = 0; o + sizeof(p_bind_buf) <= r->len; o += sizeof(p_bind_buf)) {
+            const p_bind_buf *b = (const p_bind_buf *)((const uint8_t *)ex + r->off + o);
+            ov = ov * 1099511628211ull ^ vk_usnap_overlay_at(b->addr);
+        }
+    }
+    PUT(ov);
 #undef PUT
     diff |= n != RS.hn;
     RS.hn = n;
@@ -2000,6 +2025,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (ex->render_disabled) return 0;
     cb_res(ex);
     dummies_init();
+    if (ndef) def_check(ex);
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
         uint32_t w, h;
         vk_exec_noatt_dims(ex, &w, &h);
@@ -2300,21 +2326,82 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, &(p_dispatch){0, 0, 0, d->caller});
 }
 
+// UpdateUniformBuffer inside a pass. NVN writes the bytes in GPU order: the draws recorded after it read them, those
+// before it the old ones. Copying them into the buffer at that point ends the pass with a full barrier, which the
+// terrain paid before each of its ~500 draws a frame. So when the snapshot can serve the later bindings from an
+// overlay (vk_usnap_update), the copy waits in DEF for the next full barrier, where the pass has ended anyway
+// (vk_exec.c barrier_to, the split, the end of the submission: vk_exec_draw_flush_updates), and a binding that would
+// read the buffer itself before then (def_check, bind_range) brings the copies forward, as before the deferral.
+// TOTK_UB_DEFER=0 copies at once as before; =ab alternates (TOTK_AB).
+// At most DEF_N copies wait (updates beyond that copy at once): def_check asks for every bound uniform slot of every
+// draw, so the list stays short, and the span of the pending copies (def_lo, def_hi) answers most of them in one
+// comparison. A run of updates to one block keeps a single entry.
+#define DEF_N 256
+static struct { uint64_t dst, size; VkBuffer sb, db; VkDeviceSize so, doff; } DEF[DEF_N];
+static uint64_t def_lo = UINT64_MAX, def_hi;
+static int def_mode = -1;
+
+static int def_hit(uint64_t addr, uint64_t n) {
+    if (addr >= def_hi || addr + n <= def_lo) return 0;
+    for (int i = 0; i < ndef; i++)
+        if (addr < DEF[i].dst + DEF[i].size && DEF[i].dst < addr + n) return 1;
+    return 0;
+}
+
+void vk_exec_draw_flush_updates(VkExec *ex) {
+    if (!ndef) return;
+    vk_exec_mem_barrier(ex);   // the draws before an update may have read the old bytes from the buffer itself
+    for (int i = 0; i < ndef; i++) {
+        VkBufferCopy cp = {DEF[i].so, DEF[i].doff, DEF[i].size};
+        vkCmdCopyBuffer(ex->cb, DEF[i].sb, DEF[i].db, 1, &cp);
+    }
+    ex->recorded += ndef;
+    ndef = 0;
+    def_lo = UINT64_MAX, def_hi = 0;
+    vk_exec_frame.ub_flushes++;
+}
+
+// Before a draw: a uniform binding over a deferred update that the snapshot cannot serve would read the buffer before
+// the copy, so the copies go in first; the draw's pass then restarts at the barrier, as before the deferral.
+static void def_check(VkExec *ex) {
+    if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
+    for (int st = 0; st < 6; st++)
+        for (int s = 0; s < 18; s++) {
+            const p_bind_buf *b = &ex->ubo[st][s];
+            VkDescriptorBufferInfo bi;
+            if (!b->size || !def_hit(b->addr, b->size)) continue;
+            if (vk_usnap_find(b->addr, b->size < LIM.ubo_max ? b->size : LIM.ubo_max, LIM.ubo_align, &bi)) continue;
+            vk_exec_barrier(ex);
+            return;
+        }
+}
+
 static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     if (!u->size) return;
     VkMemSpan sp;
     if (!vk_mem_resolve(u->dst, u->size, &sp)) return warn_once(W_UB, "UpdateUniformBuffer to %#llx is not backed: dropped", (unsigned long long)u->dst);
     cb_res(ex);
-    vk_exec_barrier(ex);   // earlier draws finished with the old contents
     VkBuffer b;
     VkDeviceSize o;
     memcpy(scratch(ex, u->size, &b, &o), u->data, u->size);
     VK_MEM_PICK(sp);
-    VkBufferCopy cp = {o, sp.offset, u->size};
-    vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
+    if (def_mode < 0) def_mode = rt_knob("UB_DEFER", "1");
+    if (RT_KNOB_ON(def_mode) && ndef < DEF_N && vk_usnap_update(u->buf, u->buf_size, u->dst, u->size, u->data)) {
+        // The copies run in order at the flush, so only the newest of a run of updates to the same bytes is kept
+        int i = ndef && DEF[ndef - 1].dst == u->dst && DEF[ndef - 1].size == u->size ? ndef - 1 : ndef++;
+        DEF[i] = (typeof(DEF[0])){u->dst, u->size, b, sp.buffer, o, sp.offset};
+        if (u->dst < def_lo) def_lo = u->dst;
+        if (u->dst + u->size > def_hi) def_hi = u->dst + u->size;
+        vk_exec_frame.ub_deferred++;
+    } else {
+        vk_exec_barrier(ex);   // earlier draws finished with the old contents (and the deferred copies went in)
+        VkBufferCopy cp = {o, sp.offset, u->size};
+        vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
+        vk_usnap_drop(u->dst, u->size);
+        ex->recorded++;
+        vk_exec_frame.ub_direct++;
+    }
     vk_mem_gpu_wrote(&sp, u->size);
-    vk_usnap_drop(u->dst, u->size);
-    ex->recorded++;
     vk_mem_count(sp.cls, VK_MUSE_GPU_WRITE, u->size);
     note_written(ex, u->dst, u->size);
     upd_note(ex, u);
