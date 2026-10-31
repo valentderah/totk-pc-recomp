@@ -227,6 +227,10 @@ uint64_t kern_now_ns(void);
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
+// 1 while SVCs and host calls are counted (svc.c, hostfn.c): in every mode but the plain game run, and with
+// TOTK_TRACE=svc,host. A counter shared by every thread costs a cache line transfer per call, and the game calls a
+// host function for each memcpy and NVN command.
+extern int rt_stats_on;
 
 // ---- IPC (ipc.c)
 int ipc_svc(Cpu *c, uint32_t imm);                         // 0x15, 0x1F, 0x21, 0x22; 1 if handled

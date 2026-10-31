@@ -510,6 +510,9 @@ int main(int argc, char **argv) {
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
+    // The probes and --boot print or check the SVC and host call counts; the game itself (--seconds included, which
+    // times it) pays for them only when tracing asks (host.h rt_stats_on).
+    rt_stats_on = mode != NULL || (rt_trace & (RT_TRACE_SVC | RT_TRACE_HOSTCALL)) != 0;
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();

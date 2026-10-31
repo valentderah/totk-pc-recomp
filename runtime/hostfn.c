@@ -2,8 +2,8 @@
 // Host functions at synthetic guest addresses: the HOST_OVERRIDE / HOST_OBSERVER
 // linker tables, the registry behind them, and the calls between host and guest (rt_call, rt_original).
 //
-// Every registered function dispatches through hostfn_entry, which counts the call, traces the first one
-// (TOTK_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
+// Every registered function dispatches through hostfn_entry, which counts the call while statistics are on
+// (rt_stats_on, host.h), traces the first one (TOTK_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
 // table; guest threads start after that, so lookups need no lock.
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,10 +146,12 @@ static void hostfn_entry(Cpu *c) {
     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
     Slot *s = &slots[i];
-    uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
-    if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
-        char lr[96];
-        rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
+    if (__builtin_expect(rt_stats_on, 0)) {
+        uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+        if (!n && (rt_trace & RT_TRACE_HOSTCALL)) {
+            char lr[96];
+            rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
+        }
     }
     if (s->blocking) {
         hostfn_blocking(c, s->fn);
