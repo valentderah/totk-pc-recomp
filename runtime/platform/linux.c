@@ -580,38 +580,47 @@ void plat_mutex_unlock_shared(PlatMutex *m) {
     if (!(s & LK_R) && (s & LK_S)) lk_wake(w);
 }
 
-// ---- condition variables: a sequence number in the first 32 bits. A waiter reads it before releasing the lock and
-// sleeps only while it is unchanged, so a signal between the release and the sleep is not lost.
+// ---- condition variables: a sequence number in the first 32 bits, the count of waiters in the next 32. A waiter
+// counts itself in and reads the sequence before releasing the lock, and sleeps only while the sequence is unchanged,
+// so a signal between the release and the sleep is not lost. A signal bumps the sequence and makes the futex call only
+// while the count says someone waits: both sides' first operation is a full barrier, so either the waiter sees the new
+// sequence or the signaller sees the waiter. The kernel (kernel.c core_grant, wake) signals threads that are mostly
+// still spinning for their core rather than sleeping, and each futex wake is a system call.
 
 static inline volatile uint32_t *cv(PlatCond *c) { return (volatile uint32_t *)&c->p; }
+static inline volatile uint32_t *cvn(PlatCond *c) { return (volatile uint32_t *)&c->p + 1; }
 
 void plat_cond_init(PlatCond *c) { c->p = 0; }
 
 void plat_cond_wait(PlatCond *c, PlatMutex *m) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cvn(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     plat_mutex_unlock(m);
     futex(cv(c), FUTEX_WAIT, seq, NULL);
+    __atomic_sub_fetch(cvn(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
 }
 
 int plat_cond_wait_ns(PlatCond *c, PlatMutex *m, uint64_t ns) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cvn(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     struct timespec ts = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)};
     plat_mutex_unlock(m);
     long r = futex(cv(c), FUTEX_WAIT, seq, &ts);
     int timed_out = r == -1 && errno == ETIMEDOUT;
+    __atomic_sub_fetch(cvn(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
     return !timed_out;
 }
 
 void plat_cond_signal(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, 1, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cvn(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, 1, NULL);
 }
 
 void plat_cond_broadcast(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cvn(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
 }
 
 // ---- files
