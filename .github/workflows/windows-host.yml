@@ -42,6 +42,7 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-validation-layers
             mingw-w64-ucrt-x86_64-shaderc
             mingw-w64-ucrt-x86_64-spirv-tools
+            mingw-w64-ucrt-x86_64-python
 
       - name: Platform uses
         run: python tools/check_platform.py
