@@ -23,6 +23,15 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_SWKBD_TITLE] = title, [UI_SWKBD_PROMPT] = prompt, [UI_SWKBD_DEFAULT_NAME] = name, [UI_SWKBD_OK] = ok, \
     [UI_SWKBD_CANCEL] = cancel, [UI_SWKBD_PAD_HINT] = hint, LANG_NAMES
 
+// The DLSS model file and the executable, as the player sees them on this platform.
+#ifdef _WIN32
+#define DLSS_FILE "nvngx_dlss.dll"
+#define EXE_FILE "totk.exe"
+#else
+#define DLSS_FILE "libnvidia-ngx-dlss.so"
+#define EXE_FILE "totk"
+#endif
+
 static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
@@ -69,6 +78,29 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_FIT] = "Black bars", [UI_MENU_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
+                          "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works from.",
+    [UI_MENU_DLSS_PRESET] = "DLSS model",
+    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic lets the driver choose (the transformer model K for DLAA, "
+                                 "Quality and Balanced). J: slightly less ghosting behind moving characters, a little more "
+                                 "flicker. K: always the sharpest model, also in Performance. Applies at once.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
+    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
+    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
+    [UI_MENU_DLSS_CHARS_DESC] = "Reduces the faint trails behind moving characters, animals and what they hold: DLSS takes "
+                                "less of the previous frames there. Stronger removes more of the trails and leaves those "
+                                "edges a little less smooth. Applies at once.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
+    [UI_MENU_DLSS_CHARS_FULL] = "Full",
+    [UI_MENU_DLSS] = "DLSS mode",
+    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced and Performance draw it at 67, 58 "
+                          "and 50 % and let DLSS scale it up, for more frames per second; they replace the 3D render "
+                          "scale. Takes effect after a restart.",
+    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
+    [UI_MENU_DLSS_PERFORMANCE] = "Performance",
+    [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
+    [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -314,6 +346,31 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_FIT] = "Чёрные полосы", [UI_MENU_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
+    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
+                          "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
+                          "работает.",
+    [UI_MENU_DLSS_PRESET] = "Модель DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» оставляет выбор драйверу (трансформерная модель "
+                                 "K для DLAA, «Качества» и «Баланса»). J: чуть меньше шлейфов за движущимися персонажами, "
+                                 "немного больше мерцания. K: всегда самая чёткая модель, и в «Производительности». "
+                                 "Действует сразу.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Автоматически", [UI_MENU_DLSS_PRESET_K] = "K (самая чёткая)",
+    [UI_MENU_DLSS_PRESET_J] = "J (меньше шлейфов)",
+    [UI_MENU_DLSS_CHARS] = "Шлейфы персонажей в DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "Убирает слабые шлейфы за движущимися персонажами, животными и тем, что они держат: DLSS "
+                                "берёт там меньше от прошлых кадров. Чем сильнее, тем меньше шлейфов и тем чуть менее "
+                                "гладкие края. Действует сразу.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
+    [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
+    [UI_MENU_DLSS] = "Режим DLSS",
+    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс» и «Производительность» рисуют её "
+                          "в 67, 58 и 50 % и масштабируют через DLSS ради большего числа кадров; они заменяют масштаб "
+                          "3D-отрисовки. Действует после перезапуска.",
+    [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
+    [UI_MENU_DLSS_PERFORMANCE] = "Производительность",
+    [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
+    [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "

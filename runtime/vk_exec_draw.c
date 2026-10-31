@@ -28,6 +28,7 @@
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
+#include "vk_dlaa.h"
 
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
@@ -1853,6 +1854,7 @@ static void record_fixed(VkExec *ex) {
         if (w < 1) w = 1;
         if (h < 1) h = 1;
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+        vk_dlaa_viewport(ex, &v);   // the scene's draws move by the DLAA jitter
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
     }
@@ -2041,6 +2043,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
     if (!vs || (has_fs && !fs)) return 0;
+    if (vk_dlaa_skip_draw(ex, fs)) return 0;   // the game's FXAA off, or its scaling replaced by DLSS (vk_dlaa.c)
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
@@ -2111,6 +2114,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
     }
+    vk_dlaa_draw(ex);
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
