@@ -15,9 +15,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl git python3 python3-venv python3-pip \
         build-essential clang lld ninja-build pkg-config binutils file \
-        zsync imagemagick desktop-file-utils python3-pil python3-capstone python3-unicorn \
+        zsync imagemagick desktop-file-utils python3-pil \
         libvulkan1 mesa-vulkan-drivers xvfb \
     && rm -rf /var/lib/apt/lists/*
+
+# The two Python modules the tests import. From pip, not apt: the Debian unicorn is 2.0 and its Uc has no
+# reg_write_batch, which tests/diff/simd.py calls.
+RUN pip3 install --no-cache-dir --break-system-packages 'unicorn==2.1.4' capstone
 
 # .NET 10 SDK: build_xlate.py publishes totk_xlate for linux-x64 with NativeAOT.
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
