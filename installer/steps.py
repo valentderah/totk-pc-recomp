@@ -168,9 +168,9 @@ def raise_if_damaged(error, name, path):
 
 
 def game_version(ctx):
-    """The update this install is built from: what the check identified, else the recorded one (an install made before
-    1.4.3 support records none: 1.2.1)."""
-    return ctx.state.get('version', SUPPORTED[0])
+    """The update this install is built from: what the check identified, else the recorded one. An install made before
+    1.4.3 support records no version, and that install is 1.2.1: name it here rather than leaning on SUPPORTED's order."""
+    return ctx.state.get('version', '1.2.1')
 
 
 def expected_update(ctx):

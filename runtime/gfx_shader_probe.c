@@ -50,11 +50,13 @@ static const char *str_field(const char *from, const char *to, const char *name,
 static int hexval(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
 // The shader census the probes translate (tools/shader_census.py --version <ver>): build/<ver>/shaders in the nearest
-// parent of totk.exe that has one with a jobs.json, the running game version's first, then the other's (any census
+// parent of totk.exe that has one with a jobs.json, the running game version's first, then the others' (any census
 // serves a probe). 1 with that folder in dir.
 int probe_census_dir(char *dir, size_t n) {
-    const char *const versions[2] = {RT_V143 ? "v143" : "v121", RT_V143 ? "v121" : "v143"};
-    for (int v = 0; v < 2; v++) {
+    const char *const versions[3] = {RT_V111 ? "v111" : RT_V143 ? "v143" : "v121",
+                                     RT_V111 ? "v121" : RT_V143 ? "v121" : "v143",
+                                     RT_V111 ? "v143" : RT_V143 ? "v111" : "v111"};
+    for (int v = 0; v < 3; v++) {
         char exe[PLAT_PATH_MAX * 2];
         int len = plat_exe_path(exe, sizeof exe);
         if (!len || len >= sizeof exe) return 0;

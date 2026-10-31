@@ -36,7 +36,7 @@ from pathlib import Path
 WIN = os.name == 'nt'
 EXE = '.exe' if WIN else ''
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-SUPPORTED = ('1.1.1', '1.2.1', '1.4.3')   # updates the installer builds; the check identifies the player's by hash
+SUPPORTED = ('1.2.1', '1.4.3', '1.1.1')   # updates the installer builds; the check identifies the player's by hash
 
 
 def version_tag(version):
