@@ -19,7 +19,7 @@
 #include "ui/menu.h"
 #include "vk.h"
 
-enum { STICK_MAX = 32767, STICK_DEAD = 2500, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
+enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
 static SRWLOCK lock = SRWLOCK_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
@@ -428,9 +428,21 @@ static void mouse_camera(int32_t out[2]) {
     out[1] = held[1];
 }
 
-static int32_t axis(int16_t v) {
-    int32_t a = v < -STICK_MAX ? -STICK_MAX : v;
-    return a > -STICK_DEAD && a < STICK_DEAD ? 0 : a;
+static float stick_dead = -1;              // TOTK_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
+static unsigned stick_dead_seen;
+
+static float stick_dead_get(void) {
+    unsigned ver = cfg_version();
+    if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
+    stick_dead_seen = ver;
+    double v = cfg_double("TOTK_STICK_DEADZONE");
+    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
+    return stick_dead;
+}
+
+// One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
+static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
+    input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
@@ -545,10 +557,9 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    sl[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
-    sl[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-    sr[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
-    sr[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+    float dead = stick_dead_get();
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead, sr);
     return 1;
 }
 

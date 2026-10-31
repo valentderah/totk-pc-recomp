@@ -325,6 +325,15 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
     out[1] = (int32_t)lrint(y);
 }
 
+void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
+    double fx = x / (double)STICK_MAX, fy = y / (double)STICK_MAX, m = sqrt(fx * fx + fy * fy);
+    out[0] = out[1] = 0;
+    if (m <= dead) return;
+    double k = ((m > 1 ? 1 : m) - dead) / (1 - dead) / m;   // past the edge (a square gate's corner) the length is 1
+    out[0] = (int32_t)lrint(fmax(-1, fmin(1, fx * k)) * STICK_MAX);
+    out[1] = (int32_t)lrint(fmax(-1, fmin(1, fy * k)) * STICK_MAX);
+}
+
 // Minus and Plus held together open or close the menu. *held: latched from the poll where both go down until neither is
 // down (the caller keeps it). Every poll of the latch reports neither to the game, so releasing one button first does not
 // leak the other; Minus alone before Plus reaches the game unchanged. With the menu open the game sees a neutral pad.

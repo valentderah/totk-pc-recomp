@@ -38,7 +38,7 @@ enum {
     R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
-    R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask,
+    R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
 };
 
 static uint64_t now_ns(void) {
@@ -131,7 +131,8 @@ void rec_begin(VkCommandBuffer cb) {
     if (mode < 0) {
         // Default off on AMD GPUs: with the recorder their drivers lost the device within the first frames or at menu
         // opens, 1 boot in 3 on an RX 9070 XT, and TOTK_VK_RECORDER=0 ended it for three users (issue #5); under RADV
-        // the kernel saw an illegal opcode at the end of a command buffer (issue #40). The cause is not found.
+        // the kernel saw an illegal opcode at the end of a command buffer (issue #40). Letting the recorder end its own
+        // parts (rec_end_cb) fixed the white scene on an RX 6700 XT; the default stays off until more AMD cards run it.
         const char *set = cfg_get("TOTK_VK_RECORDER");
         mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
         if (!mode && vk_caps.amd && !(set && *set))
@@ -160,6 +161,32 @@ void rec_end(void) {
     if (!rec_live) return;
     rec_drain();
     rec_live = 0;
+}
+
+// TOTK_REC_END (default 1): the thread that recorded the part also ends it, after the breadcrumb crumb (kind 0: none)
+// that vk_sync.c writes at the end of a submission. On an RX 6700 XT (driver 26.10.1, issue #5) parts the recorder
+// recorded and the submitting thread ended broke when a submission was split (vk_sync.c vk_sync_split): the GPU hung
+// or the scene turned green, then white. The handoff in rec_drain orders the two threads, so Vulkan allows the old
+// split; the driver did not cope with it. TOTK_REC_END=0 brings the old split back.
+typedef struct { int kind; uint64_t n; } A_EndCb;
+int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
+    static int mode = -1;
+    if (mode < 0) {
+        mode = rt_knob("REC_END", "1");
+        rt_log("vk_rec: a part the recorder records is ended by %s (TOTK_REC_END=%d)",
+               mode ? "the recorder" : "the submitting thread", mode);
+    }
+    if (!rec_live || cb != rec_cb || !mode) {
+        rec_end();
+        if (crumb) vk_crumb(cb, crumb, n);
+        return 0;
+    }
+    A_EndCb *a = put(R_EndCb, sizeof *a);
+    *a = (A_EndCb){crumb, n};
+    pub();
+    rec_drain();
+    rec_live = 0;
+    return 1;
 }
 
 void rec_stats_log(void) {
@@ -588,6 +615,12 @@ static void exec_packet(uint32_t op, void *p) {
     case R_BlendEnable: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEnableEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_BlendEquation: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEquationEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_WriteMask: { A_Targets *a = p; ((PFN_vkCmdSetColorWriteMaskEXT)a->fn)(cb, a->first, a->n, a->v); break; }
+    case R_EndCb: {
+        A_EndCb *a = p;
+        if (a->kind) vk_crumb(cb, a->kind, a->n);
+        vkEndCommandBuffer(cb);
+        break;
+    }
     default: rt_fatal("vk_rec: unknown packet %u", op);
     }
 }
