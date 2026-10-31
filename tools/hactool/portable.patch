@@ -1,26 +1,23 @@
 Applied by tools/build_hactool.py to SciresM/hactool (ISC) at 1d64a83450e025622f3468c28fc4164dad2c5ef6.
-From MacNativeGames build_app.py build_hactool() (MIT, Copyright (c) 2026 MacNativeGames contributors), the parts
-that run on Windows: MNG_TITLE_KEYS names the title-key file, and the BKTR checks accept the subsection table
-padding and the subsection layout of newer cumulative updates. Its funopen base-range hook is macOS-only and left out.
+MNG_TITLE_KEYS and the BKTR layout checks are from MacNativeGames build_app.py build_hactool()
+(MIT, Copyright (c) 2026 MacNativeGames contributors). Our adapter accepts stdin title keys,
+comments and Lockpick's trailing NUL without writing normalized key copies or logging values.
 
-diff --git a/main.c b/main.c
-index 07f53cb..7921cc4 100644
 --- a/main.c
 +++ b/main.c
-@@ -472,7 +472,7 @@ int main(int argc, char **argv) {
+@@ -472,7 +472,8 @@
      }
- 
+
      /* Try to load titlekeys. */
 -    FILE *titlekeyfile = open_key_file("title");
-+    FILE *titlekeyfile = getenv("MNG_TITLE_KEYS") ? fopen(getenv("MNG_TITLE_KEYS"), "rb") : open_key_file("title");
++    const char *title_path = getenv("MNG_TITLE_KEYS");
++    FILE *titlekeyfile = title_path ? (!strcmp(title_path, "-") ? stdin : fopen(title_path, "rb")) : open_key_file("title");
      if (titlekeyfile != NULL) {
          extkeys_parse_titlekeys(&tool_ctx.settings, titlekeyfile);
      }
-diff --git a/nca.c b/nca.c
-index 8a84366..2fe877f 100644
 --- a/nca.c
 +++ b/nca.c
-@@ -1149,7 +1149,8 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
+@@ -1149,7 +1149,8 @@
      /* Validate magics. */
      if (sb->relocation_header.magic == MAGIC_BKTR && sb->subsection_header.magic == MAGIC_BKTR) {
          if (sb->relocation_header.offset + sb->relocation_header.size != sb->subsection_header.offset ||
@@ -30,10 +27,10 @@ index 8a84366..2fe877f 100644
              fprintf(stderr, "Invalid BKTR layout!\n");
              exit(EXIT_FAILURE);
          }
-@@ -1180,7 +1181,9 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
+@@ -1180,7 +1181,9 @@
          ctx->bktr_ctx.relocation_block = relocs;
          ctx->bktr_ctx.subsection_block = subs;
- 
+
 -        if (ctx->bktr_ctx.subsection_block->total_size != sb->subsection_header.offset) {
 +        if (ctx->bktr_ctx.subsection_block->total_size != sb->subsection_header.offset &&
 +            (sb->relocation_header.size > sb->subsection_header.offset ||
@@ -41,3 +38,61 @@ index 8a84366..2fe877f 100644
              free(relocs);
              free(subs);
              ctx->bktr_ctx.relocation_block = NULL;
+--- a/extkeys.c
++++ b/extkeys.c
+@@ -72,11 +72,11 @@
+      * Additionally, it's possible that the last line of a file is not actually
+      * a line (i.e., does not end in '\n'); we do want to handle those.
+      */
+-    if ((p = strchr(line, '\r')) != NULL || (p = strchr(line, '\n')) != NULL) {
++    if ((p = strchr(line, '#')) != NULL || (p = strchr(line, '\r')) != NULL || (p = strchr(line, '\n')) != NULL) {
+         end = p;
+         *p = '\0';
+     } else {
+-        end = line + strlen(line) + 1;
++        end = line + strlen(line);
+     }
+
+     p = line;
+@@ -125,10 +125,10 @@
+     v = p;
+
+     /* Skip trailing whitespace */
+-    for (p = end - 1; *p == '\t' || *p == ' '; --p)
++    for (p = end; p > v && (p[-1] == '\t' || p[-1] == ' '); --p)
+         ;
+
+-    *(p + 1) = '\0';
++    *p = '\0';
+
+     *key = k;
+     *value = v;
+@@ -153,13 +153,13 @@
+
+ void parse_hex_key(unsigned char *key, const char *hex, unsigned int len) {
+     if (strlen(hex) != 2 * len) {
+-        fprintf(stderr, "Key (%s) must be %"PRIu32" hex digits!\n", hex, 2 * len);
++        fprintf(stderr, "Invalid key encoding: expected %"PRIu32" hex digits.\n", 2 * len);
+         exit(EXIT_FAILURE);
+     }
+
+     for (unsigned int i = 0; i < 2 * len; i++) {
+         if (!ishex(hex[i])) {
+-            fprintf(stderr, "Key (%s) must be %"PRIu32" hex digits!\n", hex, 2 * len);
++            fprintf(stderr, "Invalid key encoding: expected %"PRIu32" hex digits.\n", 2 * len);
+             exit(EXIT_FAILURE);
+         }
+     }
+@@ -220,6 +220,12 @@
+             if (key == NULL || value == NULL) {
+                 continue;
+             }
++            /* Lockpick includes a trailing NUL in these two source families. */
++            const char *source_name = !strncmp(key, "mariko_", 7) ? key + 7 : key;
++            const size_t prefix = sizeof("master_kek_source_") - 1;
++            if (!strncmp(source_name, "master_kek_source_", prefix) && strlen(source_name) == prefix + 2 &&
++                ishex(source_name[prefix]) && ishex(source_name[prefix + 1]) && strlen(value) == 34 &&
++                value[32] == '0' && value[33] == '0') value[32] = '\0';
+             int matched_key = 0;
+             if (strcmp(key, "aes_kek_generation_source") == 0) {
+                 parse_hex_key(keyset->aes_kek_generation_source, value, sizeof(keyset->aes_kek_generation_source));

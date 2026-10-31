@@ -31,13 +31,14 @@ def main():
     firmware = args.firmware or config['input'].get('firmware')
     if not firmware:
         sys.exit('error: give --firmware <NCA directory> or set input.firmware in config.local.toml')
+    firmware = Path(firmware).expanduser()
     out = args.out or ROOT / config.get('work', {}).get('dir', 'build') / 'extracted' / 'firmware' / 'shared-fonts'
     if (out / 'manifest.json').is_file():
         print(f'{out} already holds verified shared fonts')
         return
     out.parent.mkdir(parents=True, exist_ok=True)
     # The vendored script's own command line; the keys path goes in, the key values stay in that process.
-    sys.argv = ['extract_shared_fonts.py', '--keys', config['input']['keys'], '--firmware', str(firmware),
+    sys.argv = ['extract_shared_fonts.py', '--keys', str(Path(config['input']['keys']).expanduser()), '--firmware', str(firmware),
                 '--output', str(out)]
     extract_shared_fonts.main()
 

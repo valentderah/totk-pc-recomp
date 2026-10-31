@@ -1,0 +1,372 @@
+diff --git a/runtime/fs_host.c b/runtime/fs_host.c
+--- a/runtime/fs_host.c
++++ b/runtime/fs_host.c
+@@ -1,12 +1,10 @@
+-/* nn::fs host implementation for the functions main imports. RomFS paths and handles go to the
+-   verified read-only backend (romfs.c); save, temporary and cache storage are host directories under
+-   the profile directory. Application save data is created on first start, as the system launcher does
+-   for titles that declare save data. Writes reach the host file immediately; Commit flushes them.
+-   Because of that, quitting in the middle of a save (the game writes several files, then commits) would leave a slot half
+-   written: runtime_fs_save_busy tells the window close to wait until the save is done (runtime/frontend.m). */
++/* Save mounts use private working files; Commit publishes a durable generation.
++   RomFS streaming has a separate handle lifetime, so saves cannot block asset reads.
++   Temporary and cache mounts use ordinary host directories under the profile. */
+ #include "autoload.h"
+ #include "runtime.h"
+ #include "fs_host.h"
++#include "save_store.h"
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -27,7 +25,7 @@
+ #define R_OPEN_MODE 0x307402u
+ #define R_APPEND_REQUIRED 0x2f5e02u
+ #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
+-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE };
++enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };
+ enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
+ #define FILE_BASE 0x200000000ULL
+ #define DIR_BASE 0x300000000ULL
+@@ -35,7 +33,7 @@
+ #define NDIRS 256
+ 
+ typedef struct { int kind; char name[32]; char root[1024]; } Mount;
+-typedef struct { int fd, mode, save; } File;   /* save: on a save-data mount (counts for runtime_fs_save_busy) */
++typedef struct { int fd, mode, save, work; } File;   /* save: on a save-data mount (counts for runtime_fs_save_busy) */
+ typedef struct { DIR *dir; char path[1024]; int mode; } Dir;
+ static Mount mounts[16];
+ static File files[NFILES];
+@@ -43,6 +41,21 @@
+ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+ static char profile[1024], save_root[1024];
+ static pthread_once_t once = PTHREAD_ONCE_INIT;
++static NativeSaveStore save_store;
++static pthread_rwlock_t snapshot_lock = PTHREAD_RWLOCK_INITIALIZER;
++typedef struct { int held; int away; } SaveAccess;
++static SaveAccess save_access(int exclusive) {
++    SaveAccess access = {.away=runtime_core_away()};
++    int r=exclusive ? pthread_rwlock_wrlock(&snapshot_lock) : pthread_rwlock_rdlock(&snapshot_lock);
++    if(r)runtime_fail("save snapshot lock");
++    access.held=1;return access;
++}
++static void save_access_end(SaveAccess *access) {
++    if(access->held)pthread_rwlock_unlock(&snapshot_lock);
++    runtime_core_back(&access->away);
++}
++#define SAVE_ACCESS(exclusive) SaveAccess access __attribute__((cleanup(save_access_end))) = save_access(exclusive)
++
+ 
+ static void need(int c, const char *m) { if (!c) runtime_fail(m); }
+ 
+@@ -74,6 +87,8 @@
+     char p[1100]; make_dir(profile);
+     snprintf(p, sizeof p, "%s/save", profile); make_dir(p);
+     need(snprintf(save_root, sizeof save_root, "%s/save/%016llx%016llx", profile, (unsigned long long)uid[1], (unsigned long long)uid[0]) < (int)sizeof save_root, "save path");
++    snprintf(p, sizeof p, "%s/save-tx", profile);
++    need(native_save_open(&save_store, save_root, p)==0,"open transactional save storage");
+     make_dir(save_root);                                   /* launcher-style EnsureSaveData */
+     snprintf(p, sizeof p, "%s/temp", profile); remove_tree(p); make_dir(p);
+     snprintf(p, sizeof p, "%s/cache", profile); make_dir(p);
+@@ -118,16 +133,17 @@
+ /* A change to save data through a path (create, delete, rename, directories): marks the save as in progress. */
+ static unsigned save_change_path(const char *path, char *out, size_t cap) {
+     int kind = M_FREE; unsigned r = host_path_kind(path, out, cap, &kind);
++    if (!r && kind == M_SAVE_RO) return R_OPEN_MODE;
+     if (!r && kind == M_SAVE) save_touched();
+     return r;
+ }
+ static unsigned errno_result(void) { return errno == ENOENT || errno == ENOTDIR ? R_PATH_NOT_FOUND : errno == EEXIST ? R_ALREADY_EXISTS : errno == ENOTEMPTY ? R_NOT_EMPTY : R_INVALID_ARGUMENT; }
+ 
+ /* ---------- storage mounts ---------- */
+-static unsigned mount_save(const char *name, const uint64_t *uid) {
++static unsigned mount_save(const char *name, const uint64_t *uid) { SAVE_ACCESS(0);
+     ready(); uint64_t me[2]; runtime_account_uid(me);
+     if (!uid || uid[0] != me[0] || uid[1] != me[1]) return R_TARGET_NOT_FOUND;
+-    return mount_add(name, M_SAVE, save_root);
++    return mount_add(name, M_SAVE, save_store.work);
+ }
+ static unsigned char save_exists(uint64_t application, const uint64_t *uid) {
+     ready(); uint64_t me[2]; runtime_account_uid(me);
+@@ -136,7 +152,7 @@
+ /* Other titles' save data (e.g. data-link bonuses) is not present on this host. */
+ static unsigned mount_save_ro(const char *name, uint64_t application, const uint64_t *uid) {
+     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
+-    return mount_add(name, M_SAVE, save_root);
++    return mount_add(name, M_SAVE_RO, save_root);
+ }
+ static unsigned mount_temp(const char *name) { ready(); char p[1100]; snprintf(p, sizeof p, "%s/temp", profile); return mount_add(name, M_TEMP, p); }
+ static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
+@@ -169,18 +185,55 @@
+ }
+ static void close_cache_list(uint64_t h) { free((void *)(uintptr_t)h); }
+ static void unmount(const char *name) {
++    SAVE_ACCESS(1);
+     pthread_mutex_lock(&lock);
+-    for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; pthread_mutex_unlock(&lock); return; }
++    int found=0, was_save=0, remain=0;
++    for(int i=0;i<16;i++)if(mounts[i].kind && !strcmp(mounts[i].name,name)){
++        found=1;was_save=mounts[i].kind==M_SAVE;mounts[i].kind=M_FREE;break;
++    }
++    for(int i=0;i<16;i++)if(mounts[i].kind==M_SAVE)remain++;
++    int reset=was_save&&!remain;
++    if(reset){
++        // Invalidate working-copy handles before moving the directory. Read-only
++        // mounts of the committed generation retain their independent handles.
++        for(int i=0;i<NFILES;i++)if(files[i].fd>0 && files[i].work){
++            close(files[i].fd);files[i]=(File){0};
++        }
++        size_t n=strlen(save_store.work);
++        for(int i=0;i<NDIRS;i++)if(dirs[i].dir && !strncmp(dirs[i].path,save_store.work,n)
++             && (!dirs[i].path[n]||dirs[i].path[n]=='/')){
++            closedir(dirs[i].dir);dirs[i].dir=NULL;
++        }
++        atomic_store(&save_writers,0);
++    }
+     pthread_mutex_unlock(&lock);
+-    if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
++    if(!found && !runtime_romfs_owns(name))runtime_fail("unmount of unknown fs mount");
++    if(reset){
++        char committed[PATH_MAX],root[PATH_MAX];
++        strcpy(committed,save_store.committed);strcpy(root,save_store.root);
++        if(native_save_open(&save_store,committed,root))runtime_fail("reset unmounted save transaction");
++        atomic_store(&save_dirty,0);
++    }
+ }
+ static unsigned commit(const char *name) {
++    SAVE_ACCESS(1);
+     pthread_mutex_lock(&lock); int found = 0, save = 0;
+     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { found = 1; save = mounts[i].kind == M_SAVE; }
+     pthread_mutex_unlock(&lock);
+     if (!found) return R_PATH_NOT_FOUND;
+-    for (int i = 0; i < NFILES; i++) { pthread_mutex_lock(&lock); int fd = files[i].fd; pthread_mutex_unlock(&lock); if (fd > 0) fcntl(fd, F_FULLFSYNC); }
+-    if (save && !(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 23)) atomic_store(&save_dirty, 0);   /* 23: probe-save's negative control */
++    if (save) {
++        atomic_fetch_add(&save_writers, 1);
++        int r=native_save_commit(&save_store);
++        atomic_fetch_sub(&save_writers, 1);
++        if(r){fprintf(stderr,"[totk] save commit failed: %s; working data retained\n",strerror(errno));return R_INVALID_ARGUMENT;}
++        if (!(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 23)) atomic_store(&save_dirty, 0);
++    } else {
++        pthread_mutex_lock(&lock);
++        int r=0;
++        for(int i=0;i<NFILES;i++)if(files[i].fd>0 && files[i].mode&OPEN_WRITE && fcntl(files[i].fd,F_FULLFSYNC))r=R_INVALID_ARGUMENT;
++        pthread_mutex_unlock(&lock);
++        if(r)return (unsigned)r;
++    }
+     return 0;
+ }
+ 
+@@ -192,18 +245,20 @@
+ }
+ void runtime_fs_log(const char *what, const char *path);
+ static unsigned open_file(uint64_t *out, const char *path, int mode) {
+-    if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
+     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
++    SAVE_ACCESS(0);
++    if (path) runtime_fs_log(mode & 2 ? "write" : "read", path);
+     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
+     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
+     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
++    if (kind == M_SAVE_RO && (mode & (OPEN_WRITE | OPEN_APPEND))) return R_OPEN_MODE;
+     int save_writer = kind == M_SAVE && (mode & OPEN_WRITE);
+     int fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
+     if (fd < 0) return errno_result();
+     runtime_autoload_save_file_opened(path);   /* TOTK_AUTOLOAD: a slot's caption.sav starts the presses, its progress.sav ends them */
+     pthread_mutex_lock(&lock);
+     for (int i = 0; i < NFILES; i++) if (files[i].fd <= 0) {
+-        files[i] = (File){fd, mode, save_writer}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
++        files[i] = (File){fd, mode, save_writer, kind == M_SAVE}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
+         if (save_writer) { atomic_fetch_add(&save_writers, 1); save_touched(); }
+         return 0;
+     }
+@@ -211,6 +266,7 @@
+ }
+ static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
+     if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size);
++    SAVE_ACCESS(0);
+     int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
+     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
+     dm_guest_write_prepare(buffer, (size_t)size);
+@@ -220,7 +276,7 @@
+ }
+ static unsigned read_options(uint64_t *out, uint64_t h, int64_t off, void *buf, uint64_t size, const void *options) { (void)options; return read_file(out, h, off, buf, size); }
+ static unsigned read_exact(uint64_t h, int64_t off, void *buf, uint64_t size) { uint64_t n = 0; unsigned r = read_file(&n, h, off, buf, size); return r ? r : n == size ? 0 : R_INVALID_ARGUMENT; }
+-static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint64_t size, const int32_t *option) {
++static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint64_t size, const int32_t *option) { SAVE_ACCESS(0);
+     int fd, mode; File *f = offset < 0 || (!buffer && size) ? NULL : file_of(h, &fd, &mode); if (!f) return R_INVALID_ARGUMENT;
+     if (!(mode & OPEN_WRITE)) return R_OPEN_MODE;
+     struct stat st; if (fstat(fd, &st)) runtime_fail("host save stat");
+@@ -232,41 +288,44 @@
+         if (delay_ms > 0) usleep((useconds_t)delay_ms * 1000);   /* tests only: slow saves down so a window close lands in the middle of one */
+     }
+     while (done < size) { ssize_t n = pwrite(fd, (const uint8_t *)buffer + done, (size_t)(size - done), offset + (off_t)done); if (n <= 0) runtime_fail("host save write failure"); done += (uint64_t)n; }
+-    if (option && (*option & 1)) fcntl(fd, F_FULLFSYNC);
++    if (option && (*option & 1) && fcntl(fd, F_FULLFSYNC)) return errno_result();
+     return 0;
+ }
+ static unsigned file_size(int64_t *out, uint64_t h) {
+     if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h);
++    SAVE_ACCESS(0);
+     int fd; struct stat st; if (!out || !file_of(h, &fd, NULL) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
+     *out = st.st_size; return 0;
+ }
+-static unsigned set_file_size(uint64_t h, int64_t size) {
++static unsigned set_file_size(uint64_t h, int64_t size) { SAVE_ACCESS(0);
+     int fd, mode; if (size < 0 || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
+     if (!(mode & OPEN_WRITE)) return R_OPEN_MODE;
+     if (files[h - FILE_BASE].save) save_touched();
+     return ftruncate(fd, size) ? errno_result() : 0;
+ }
+-static unsigned flush_file(uint64_t h) { int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; fcntl(fd, F_FULLFSYNC); return 0; }
++static unsigned flush_file(uint64_t h) { SAVE_ACCESS(0); int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; return fcntl(fd, F_FULLFSYNC) ? errno_result() : 0; }
+ static void close_file(uint64_t h) {
+     if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; }
++    SAVE_ACCESS(1);
+     if (!file_of(h, NULL, NULL)) runtime_fail("close invalid file handle");
+     pthread_mutex_lock(&lock); int fd = files[h - FILE_BASE].fd, save = files[h - FILE_BASE].save; files[h - FILE_BASE].fd = 0; pthread_mutex_unlock(&lock);
+     close(fd);
+     if (save) { save_touched(); atomic_fetch_sub(&save_writers, 1); }
+ }
+-static unsigned create_file(const char *path, int64_t size) {
++static unsigned create_file(const char *path, int64_t size) { SAVE_ACCESS(0);
+     char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; if (size < 0) return R_INVALID_ARGUMENT;
+     int fd = open(p, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600); if (fd < 0) return errno_result();
+     int bad = ftruncate(fd, size); close(fd); return bad ? errno_result() : 0;
+ }
+-static unsigned delete_file(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; return unlink(p) ? errno_result() : 0; }
+-static unsigned rename_file(const char *from, const char *to) {
+-    char a[1100], b[1100]; unsigned r = save_change_path(from, a, sizeof a); if (!r) r = host_path(to, b, sizeof b); if (r) return r;
++static unsigned delete_file(const char *path) { SAVE_ACCESS(0); char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; return unlink(p) ? errno_result() : 0; }
++static unsigned rename_file(const char *from, const char *to) { SAVE_ACCESS(0);
++    char a[1100], b[1100]; unsigned r = save_change_path(from, a, sizeof a); if (!r) r = save_change_path(to, b, sizeof b); if (r) return r;
+     struct stat st; if (!stat(b, &st)) return R_ALREADY_EXISTS;
+     return rename(a, b) ? errno_result() : 0;
+ }
+ static unsigned entry_type(int *out, const char *path) {
+     if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
++    SAVE_ACCESS(0);
+     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
+     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
+     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
+@@ -275,9 +334,9 @@
+ /* ---------- directories ---------- */
+ typedef struct { char name[769]; uint8_t pad0[3]; int8_t type; uint8_t pad1[3]; int64_t size; } DirectoryEntry;
+ _Static_assert(sizeof(DirectoryEntry) == 0x310, "nn::fs::DirectoryEntry");
+-static unsigned create_directory(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; return mkdir(p, 0700) ? errno_result() : 0; }
+-static unsigned delete_recursive(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; return remove_tree(p) ? R_INVALID_ARGUMENT : 0; }
+-static unsigned open_directory(uint64_t *out, const char *path, int mode) {
++static unsigned create_directory(const char *path) { SAVE_ACCESS(0); char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; return mkdir(p, 0700) ? errno_result() : 0; }
++static unsigned delete_recursive(const char *path) { SAVE_ACCESS(0); char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; return remove_tree(p) ? R_INVALID_ARGUMENT : 0; }
++static unsigned open_directory(uint64_t *out, const char *path, int mode) { SAVE_ACCESS(0);
+     if (runtime_romfs_owns(path)) { fprintf(stderr, "[totk] OpenDirectory on RomFS %s\n", path); runtime_fail("RomFS directory listing not implemented"); }
+     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
+     DIR *d = opendir(p); if (!d) return errno_result();
+@@ -285,7 +344,7 @@
+     for (int i = 0; i < NDIRS; i++) if (!dirs[i].dir) { dirs[i].dir = d; dirs[i].mode = mode; strcpy(dirs[i].path, p); *out = DIR_BASE + (uint64_t)i; pthread_mutex_unlock(&lock); return 0; }
+     pthread_mutex_unlock(&lock); runtime_fail("host directory handle table full");
+ }
+-static unsigned read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, int64_t max) {
++static unsigned read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, int64_t max) { SAVE_ACCESS(1);
+     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !count || max < 0 || (!out && max)) return R_INVALID_ARGUMENT;
+     Dir *d = &dirs[h - DIR_BASE]; if (!d->dir) return R_INVALID_ARGUMENT;
+     int64_t n = 0; struct dirent *e;
+@@ -297,7 +356,7 @@
+     }
+     *count = n; return 0;
+ }
+-static void close_directory(uint64_t h) {
++static void close_directory(uint64_t h) { SAVE_ACCESS(1);
+     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !dirs[h - DIR_BASE].dir) runtime_fail("close invalid directory handle");
+     pthread_mutex_lock(&lock); closedir(dirs[h - DIR_BASE].dir); dirs[h - DIR_BASE].dir = NULL; pthread_mutex_unlock(&lock);
+ }
+@@ -315,6 +374,11 @@
+     CHECK(!runtime_fs_save_busy(), "idle at start");
+     CHECK(create_file("save:/a.sav", 16) == 0 && runtime_fs_save_busy(), "creating a save file starts a save");
+     CHECK(commit("save") == 0 && !runtime_fs_save_busy(), "commit ends it");
++    CHECK(mount_save_ro("ro", TOTK_APPLICATION_ID, uid) == 0, "mount committed generation read only");
++    CHECK(open_file(&h, "ro:/a.sav", OPEN_WRITE) == R_OPEN_MODE, "reject read-only writer");
++    CHECK(create_file("ro:/bad", 1) == R_OPEN_MODE, "reject read-only create");
++    CHECK(delete_file("ro:/a.sav") == R_OPEN_MODE, "reject read-only delete");
++    CHECK(rename_file("save:/a.sav", "ro:/bad") == R_OPEN_MODE, "reject read-only rename destination");
+     CHECK(open_file(&h, "save:/a.sav", OPEN_WRITE) == 0 && runtime_fs_save_busy(), "a save file open for writing");
+     static const char data[16] = "progress";
+     CHECK(write_file(h, 0, data, sizeof data, NULL) == 0 && runtime_fs_save_busy(), "writing");
+@@ -331,8 +395,24 @@
+     CHECK(create_file("temp:/t.bin", 4) == 0 && !runtime_fs_save_busy(), "temporary storage does not count");
+     CHECK(rename_file("save:/b.sav", "save:/c.sav") == 0 && runtime_fs_save_busy(), "renaming save data");
+     CHECK(commit("save") == 0 && !runtime_fs_save_busy() && delete_file("save:/c.sav") == 0 && runtime_fs_save_busy() && commit("save") == 0, "delete and commit");
++    CHECK(mount_save("alias",uid)==0, "save alias");
++    CHECK(open_file(&h,"save:/a.sav",OPEN_WRITE)==0, "writer before unmount");
++    CHECK(write_file(h,0,"changed!",8,NULL)==0, "uncommitted change");
++    unmount("alias");
++    CHECK(file_of(h,NULL,NULL)!=NULL, "alias unmount retains live transaction");
++    unmount("save");
++    CHECK(file_of(h,NULL,NULL)==NULL, "last unmount invalidates work handles");
++    CHECK(mount_save("save",uid)==0 && open_file(&h,"save:/a.sav",OPEN_READ)==0, "remount committed save");
++    char restored[16]={0};
++    CHECK(read_exact(h,0,restored,16)==0 && !memcmp(restored,"progress",8), "unmount rolls back uncommitted writes");
++    close_file(h);
+ #undef CHECK
+     remove_tree(dir);
++    need(!pthread_rwlock_wrlock(&snapshot_lock), "probe exclusive save transaction");
++    uint64_t unread=0; int64_t unavailable=0;
++    need(read_file(&unread,UINT64_C(0x100000001),0,NULL,0)!=0, "RomFS read bypasses save transaction");
++    need(file_size(&unavailable,UINT64_C(0x100000001))!=0, "RomFS metadata bypasses save transaction");
++    pthread_rwlock_unlock(&snapshot_lock); checks+=2;
+     printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close\"}\n", checks);
+ }
+ 
+diff --git a/runtime/romfs.c b/runtime/romfs.c
+--- a/runtime/romfs.c
++++ b/runtime/romfs.c
+@@ -39,6 +39,21 @@
+ static const uint8_t *image_map;
+ static char mount_name[32];
+ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
++// RomFS handles have their own lifetime lock. Saving never blocks streaming;
++// closing an overlay waits until readers have finished using its descriptor.
++static pthread_rwlock_t handle_lifetime=PTHREAD_RWLOCK_INITIALIZER;
++typedef struct { int away; } RomAccess;
++static RomAccess rom_access(int exclusive) {
++ RomAccess access={.away=runtime_core_away()};
++ int result=exclusive?pthread_rwlock_wrlock(&handle_lifetime):pthread_rwlock_rdlock(&handle_lifetime);
++ if(result)runtime_fail("RomFS handle lifetime lock");
++ return access;
++}
++static void rom_access_end(RomAccess *access) {
++ pthread_rwlock_unlock(&handle_lifetime);runtime_core_back(&access->away);
++}
++#define ROM_ACCESS(exclusive) RomAccess access __attribute__((cleanup(rom_access_end)))=rom_access(exclusive)
++
+ static _Atomic uint64_t read_calls,read_bytes,read_ns,read_prepare_ns,read_report_ns;
+ static uint64_t handles[NH]; /* file index + 1; 0 is free */
+ /* Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
+@@ -253,7 +268,7 @@
+ /* TOTK_FS_LOG=1: log every RomFS open with the time since start (shows how far the game gets without a picture). */
+ static void fs_log(const char *what,const char *path){static int on=-1;static uint64_t t0;if(on<0){on=getenv("TOTK_FS_LOG")!=NULL;t0=runtime_now_ns();}if(on)fprintf(stderr,"[totk-fs] %8.3f %s %s\n",(runtime_now_ns()-t0)/1e9,what,path);}
+ void runtime_fs_log(const char *what,const char *path){fs_log(what,path);}
+-unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) {
++unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) { ROM_ACCESS(0);
+  fs_log("rom",path?path:"(null)");
+  if(!out||mode!=1)return UNSUPPORTED;const char *p=rom_path(path);if(!p)return NOT_FOUND;uint64_t i=file_index(p);if(i==UINT64_MAX)return NOT_FOUND;
+  uint32_t ov=overlay_slot(i);int fd=-1;
+@@ -268,7 +283,7 @@
+  pthread_mutex_lock(&lock);uint32_t ov=handle_ovl[h-0x100000000ULL];int ofd=handle_fd[h-0x100000000ULL];pthread_mutex_unlock(&lock);
+  if(ov){*fd=ofd;*base=0;*size=overlays[ov-1].size;}else{*fd=image_fd;*base=e->offset;*size=e->size;}
+ }
+-unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer,uint64_t size) {
++unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer,uint64_t size) { ROM_ACCESS(0);
+  Entry e;if(!out||offset<0||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,fsize;handle_source(h,&e,&fd,&base,&fsize);if((uint64_t)offset>fsize||(!buffer&&size))return INVALID;
+  uint64_t n=size;if(n>fsize-(uint64_t)offset)n=fsize-(uint64_t)offset;uint64_t done=0;
+  static _Atomic int profile_mode=-1;int profile=atomic_load(&profile_mode);if(profile<0){profile=getenv("TOTK_FS_TIMING")!=NULL;atomic_store(&profile_mode,profile);}uint64_t prep_start=profile?runtime_now_ns():0;
+@@ -283,8 +298,8 @@
+     (unsigned long long)atomic_exchange(&read_calls,0),(unsigned long long)atomic_exchange(&read_bytes,0),atomic_exchange(&read_ns,0)/1e6,atomic_exchange(&read_prepare_ns,0)/1e6);}
+  *out=done;return 0;
+ }
+-unsigned runtime_romfs_size(int64_t *out,uint64_t h) {Entry e;if(!out||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,size;handle_source(h,&e,&fd,&base,&size);*out=(int64_t)size;return 0;}
+-void runtime_romfs_close(uint64_t h) {Entry e;if(!handle_entry(h,&e))runtime_fail("close invalid file handle");uint64_t j=h-0x100000000ULL;pthread_mutex_lock(&lock);int fd=handle_ovl[j]?handle_fd[j]:-1;handles[j]=0;handle_ovl[j]=0;handle_fd[j]=-1;pthread_mutex_unlock(&lock);if(fd>=0)close(fd);}
++unsigned runtime_romfs_size(int64_t *out,uint64_t h) { ROM_ACCESS(0);Entry e;if(!out||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,size;handle_source(h,&e,&fd,&base,&size);*out=(int64_t)size;return 0;}
++void runtime_romfs_close(uint64_t h) { ROM_ACCESS(1);Entry e;if(!handle_entry(h,&e))runtime_fail("close invalid file handle");uint64_t j=h-0x100000000ULL;pthread_mutex_lock(&lock);int fd=handle_ovl[j]?handle_fd[j]:-1;handles[j]=0;handle_ovl[j]=0;handle_fd[j]=-1;pthread_mutex_unlock(&lock);if(fd>=0)close(fd);}
+ unsigned runtime_romfs_entry_type(int *out,const char *path) {
+  if(!out)return INVALID;const char *p=rom_path(path);if(!p)return NOT_FOUND;if(file_index(p)!=UINT64_MAX){*out=1;return 0;}
+  char dir[4096];if(snprintf(dir,sizeof(dir),"%s/",p)>=(int)sizeof(dir))return INVALID;if(folder_exists(dir)){*out=0;return 0;}return NOT_FOUND;

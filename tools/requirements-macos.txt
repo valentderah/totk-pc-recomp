@@ -1,0 +1,5 @@
+# Python 3.14+; preparation and native differential verification.
+capstone==5.0.9
+unicorn==2.1.4
+lz4==4.4.5
+cryptography==50.0.2

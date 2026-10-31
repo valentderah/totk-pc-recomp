@@ -598,7 +598,18 @@ def mib(n):
 
 
 def main():
+    # Dispatch before touching Win32 memory accounting or the x86 C-lift path.
+    target = argparse.ArgumentParser(add_help=False)
+    target.add_argument('--target', choices=('windows-x86_64', 'macos-arm64'),
+                        default='macos-arm64' if sys.platform == 'darwin' else 'windows-x86_64')
+    selected, remaining = target.parse_known_args()
+    if selected.target == 'macos-arm64':
+        if sys.platform != 'darwin':
+            raise SystemExit('macos-arm64 must be built on an Apple Silicon Mac')
+        from macos.build import main as build_native
+        return build_native(remaining)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--target', choices=('windows-x86_64',), default='windows-x86_64')
     ap.add_argument('--version', default='v121', help='game version (default v121)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')

@@ -1,0 +1,71 @@
+name: Native macOS build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  installer:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install cryptography==50.0.2 lz4==4.4.5
+      - name: Installer model and native Windows cancellation
+        run: |
+          python tests/installer_gui_test.py ParseTest ModelTest RunStatesTest FormTest CatalogTest CancelTest
+          python tests/game_inputs_test.py SelectionTests ReleaseTests -v
+  native:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install build dependencies
+        run: |
+          brew install ninja opus libvpx
+          python -m pip install -r tools/requirements-macos.txt
+      - name: Fetch pinned native sources
+        run: |
+          mkdir -p refs/MacNativeGames
+          git -C refs/MacNativeGames init
+          git -C refs/MacNativeGames fetch --depth 1 https://github.com/ly05010419/MacNativeGames.git b75be8cfa704df3701e86130c8ced268e79d6b11
+          git -C refs/MacNativeGames checkout FETCH_HEAD
+      - name: Build both supported versions without game data
+        run: |
+          python tools/build_game.py --target macos-arm64 --version v143 --probes --package --jobs 3
+          python tools/build_game.py --target macos-arm64 --version v121 --probes --jobs 3
+      - name: Save fault injection, layout and frame acceptance
+        run: |
+          python tools/build_hactool.py --src build/macos-arm64/hactool-src --out build/macos-arm64/hactool
+          python tests/game_inputs_test.py -v
+          python tests/macos_save_test.py -v
+          python tests/macos_layout_test.py -v
+          python tests/macos_resolution_test.py -v
+          python tests/macos_benchmark_test.py -v
+          python tests/macos_build_test.py -v
+          python tests/macos_shader_cache_test.py
+          python tests/macos_guest_memory_test.py
+          python tests/macos_mouse_test.py
+          python tests/macos_prompts_test.py
+          python tests/macos_prompt_assets_test.py
+          python tests/macos_game_input_test.py
+          python tests/macos_thread_test.py
+          python tests/macos_cache_register_test.py
+          python tests/macos_trace_test.py -v
+          build/macos-arm64/probes-v143/totk-native --probe-policy
+          build/macos-arm64/probes-v143/totk-native --probe-clock
+          build/macos-arm64/probes-v143/totk-native --probe-pool-cache
+          build/macos-arm64/probes-v143/totk-native --probe-save
+      - name: ARM64 calling convention
+        run: |
+          python build/macos-arm64/source/games/totk/scripts/test_call_window.py
+          mkdir -p build/macos-arm64/source/games/totk/analysis
+          make -C build/macos-arm64/source/games/totk probe-call PY="$(which python)"
+      # Hosted VMs do not establish physical Metal or display performance.
+      - name: Content guard
+        run: python tools/check_content.py

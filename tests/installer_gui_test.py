@@ -5,10 +5,8 @@
 The end-to-end test runs the real CLI in --verify mode on a finished install (every step skips) and folds its events
 through the same code the window uses (the fixture's step keys are recomputed for the checkout under test, because the keys fingerprint recomp/, tools/ and runtime/). The install is build/inst-gui/e2e-install: hard links to build/install-test, so
 nothing there is written, except the state file and totk.ini, which a run rewrites and which are copied. The run hashes
-the 17 GB RomFS; it is skipped when the hash differs from the expected one in all three tries. On the developer machine
-(RAM with a bad bit) a buffered read of a file sometimes returns flipped bits from the page cache while the file on
-disk is intact (an unbuffered read of install-test's romfs.bin gives the expected hash), so such a skip is the machine,
-not the installer. It is also skipped when build/install-test is absent.
+the 17 GB RomFS. A changed output is a failure, including when storage or memory corruption caused it.
+The end-to-end test is skipped only when build/install-test is absent.
 """
 import io
 import json
@@ -370,10 +368,10 @@ class EndToEndTest(unittest.TestCase):
     def test_verify_run_skips_every_step(self):
         form = Form(dest=str(make_fixture()))
         self.assertTrue(form.update_mode())
-        code, model, stray, elapsed = self.run_cli(form, ROOT / 'build' / 'inst-gui' / 'e2e-temp', tries=3)
+        code, model, stray, elapsed = self.run_cli(form, ROOT / 'build' / 'inst-gui' / 'e2e-temp')
         print(f'\nend-to-end: exit {code}, result {model.result}, {elapsed:.1f} s, states {model.states}')
-        if any(w[0] == 'state.output_changed' for w in model.warnings):
-            self.skipTest('the RomFS hash read wrong three times (page cache of the faulty RAM, see the module docstring)')
+        self.assertFalse(any(w[0] == 'state.output_changed' for w in model.warnings),
+                         'Installed output changed: integrity verification must not be skipped')
         self.assertEqual(code, 0, stray[-5:] or model.error)
         self.assertEqual(model.result, 'ok')
         self.assertIn(model.mode, ('resume', 'update'))

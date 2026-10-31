@@ -1,0 +1,125 @@
+--- a/third_party/d2r_gfx/gfx/nvn/hle_nvn.c
++++ b/third_party/d2r_gfx/gfx/nvn/hle_nvn.c
+@@ -1906,7 +1906,7 @@
+ static void present_exec(win_t *o, int idx, double period, const int crop[4], uint64_t frame);
+ static void *x_thread(void *unused) {
+     (void)unused; pthread_setname_np("totk-translate");
+-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
++    native_frame_thread_init();
+     for (;;) {
+         pthread_mutex_lock(&g_xq_mu);
+         while (g_xq_done == g_xq_in) pthread_cond_wait(&g_xq_cv, &g_xq_mu);
+@@ -1915,10 +1915,6 @@
+         if (j.kind == XJ_SUBMIT) { submit_exec(j.n, j.h, j.ucap); for (int i = 0; i < j.n; i++) copy_unref(copy_of(j.h[i])); free(j.h); }
+         else if (j.kind == XJ_TEXREL) { void live_del_x(const tex_t *o); live_del_x(&j.tex); mtl_tex_release(&j.tex); }
+         else {
+-            // Real-time like the game's render thread that used to replay (set at acquire): otherwise the game's ~50
+-            // worker threads preempt the replay (measured: replay 6.6 -> 13 ms, 10 fps). Half the period is declared.
+-            static uint64_t rt; uint64_t per = (uint64_t)(j.period * 1e9);
+-            if (per && rt != per) { rt = per; void set_time_constraint_comp_x(uint64_t, uint64_t); set_time_constraint_comp_x(per, per / 2); }
+             present_exec(j.win, j.idx, j.period, j.crop, j.frame);
+         }
+         pthread_mutex_lock(&g_xq_mu);
+@@ -2155,8 +2151,6 @@
+     memcpy(o->crop, v, sizeof v);
+ }
+ static void trow(uint64_t f, const char *name, double v);
+-static void set_time_constraint(uint64_t period_ns);
+-static void rt_comp_tick(uint64_t period_ns);
+ static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
+ static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED_HZ while interpolation paces the game
+ #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
+@@ -2179,8 +2173,6 @@
+     if (v < 0) { const char *e = getenv("TOTK_UNCAPPED_INTERVAL"); v = e && atoi(e); atomic_store(&g_uncapped_interval, v); }
+     return v;
+ }
+-static double g_rt_comp_ms;   // 当前声明的实时计算量（ms；0 = 未声明） | Currently declared real-time computation amount (ms; 0 = not declared)
+-static double g_rt_period_ms;
+ static void sleep_until_ns(uint64_t dl);
+ static uint64_t present_period(const win_t *o);
+ static unsigned present_ticks(const win_t *o);
+@@ -2201,10 +2193,9 @@
+     // 垂直同步阻塞在这里（真机 NVN：交换链里的贴图都在等显示时，等下一张被释放），不在出图里——游戏常持锁调出图
+     // Vsync blocks here (real-device NVN: when all textures in the swapchain are waiting for display, wait for the next one to be released), not in present -- the game often calls present while holding a lock
+     uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = at > now ? at - now : 0;
+-    if (!dm_detclock_enabled()) {   // 取图线程登记为时间约束线程（不再只在「来早了」时才登记：热态一直落后时也要声明） | Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
+-        static uint64_t rt_period; uint64_t period = present_period(o);
+-        if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
+-        rt_comp_tick(period);
++    if (!dm_detclock_enabled()) {
++        native_frame_thread_init();
++        uint64_t period = present_period(o);
+         if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+         else if (wait) sleep_until_ns(at);
+     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
+@@ -2334,8 +2325,8 @@
+           qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp);
+           uint64_t aw = 0, ag = 0; int an = 0; void mtl_alloc_stats(uint64_t *, uint64_t *, int *); mtl_alloc_stats(&aw, &ag, &an);
+           static uint64_t pyn, pyns; uint64_t yn = 0, yns = 0; dm_main_yield_stats(&yn, &yns);
+-          LOG("[nvn] 翻译细项 至帧 %llu：每帧提交 周期 %.2f M（每条指令 %.2f 周期）、CPU %.3f ms 其中内核态 %.3f ms、墙钟 %.3f ms；平均主频 %.2f GHz（周期 / CPU 时间）；本线程 QoS %#x；分配器池 %d 个、累计等 GPU %llu 次；实时声明计算 %.2f ms；主线程让出 每帧 %.0f 次 / %.3f ms", frame,
+-              cyc / 1e6 / nf, cyc / (double)(ci - pi), cpu / 1e6 / nf, (double)(ck - pk) / 1e6 / nf, (double)(cw - pw) / 1e6 / nf, cpu > 0 ? cyc / cpu : 0, (unsigned)qc, an, (unsigned long long)aw, g_rt_comp_ms, (double)(yn - pyn) / nf, (double)(yns - pyns) / 1e6 / nf); pyn = yn; pyns = yns; }
++          LOG("[nvn] replay details at frame %llu: cycles %.2f M/frame (%.2f/instruction), CPU %.3f ms (kernel %.3f), wall %.3f ms; clock %.2f GHz; QoS %#x; allocator pools %d, GPU waits %llu; main yields %.0f/frame, %.3f ms/frame", frame,
++              cyc / 1e6 / nf, cyc / (double)(ci - pi), cpu / 1e6 / nf, (double)(ck - pk) / 1e6 / nf, (double)(cw - pw) / 1e6 / nf, cpu > 0 ? cyc / cpu : 0, (unsigned)qc, an, (unsigned long long)aw, (double)(yn - pyn) / nf, (double)(yns - pyns) / 1e6 / nf); pyn = yn; pyns = yns; }
+         { static uint64_t pun, puns; uint64_t un = 0, uns = 0; void mtl_upload_wait_stats(uint64_t *, uint64_t *); mtl_upload_wait_stats(&un, &uns);
+           if (pf && frame > pf) LOG("[nvn] 上传槽等待 至帧 %llu：每帧 %.2f 次 / %.3f ms", frame, (double)(un - pun) / (double)(frame - pf), (double)(uns - puns) / 1e6 / (double)(frame - pf));
+           pun = un; puns = uns; }
+@@ -2371,7 +2362,10 @@
+           memcpy(pr, v, sizeof pr); }
+         if (frame % 300 == 0) { unsigned wn = 0; uint32_t wq = dm_guest_work_qos(&wn); thread_extended_info_data_t xi; mach_msg_type_number_t xc = THREAD_EXTENDED_INFO_COUNT; int okx = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_EXTENDED_INFO, (thread_info_t)&xi, &xc) == KERN_SUCCESS;
+             thread_time_constraint_policy_data_t tp; mach_msg_type_number_t tc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0; int rt_live = thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tp, &tc, &def) == KERN_SUCCESS && !def;   // def = 1：实时策略没在生效（没设上 / 被撤） | def = 1: the real-time policy is not in effect (never set / revoked)
+-            LOG("[nvn] 线程策略：主线程 实时 计算 %.2f ms / 周期 %.2f ms，实时策略%s，当前优先级 %d（基础 %d，调度类 %d）；工作线程 %u 条 QoS %#x；出图 QoS %#x", g_rt_comp_ms, g_rt_period_ms, rt_live ? "在生效" : "未生效", okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }
++            qos_class_t qos = QOS_CLASS_UNSPECIFIED; int relative = 0;
++            pthread_get_qos_class_np(pthread_self(), &qos, &relative);
++            LOG("[nvn] thread policy: render QoS %#x, real-time %d, priority %d (base %d, policy %d); workers %u QoS %#x; present QoS %#x",
++                (unsigned)qos, rt_live, okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }
+         py = cy; pk = ck; pw = cw; }
+       pi = ci; pc = cc; pd = dr_; pf = frame; }
+     uint64_t up, re, fa, pr; mtl_pkg_stats(&up, &re); nvn_dirty_stats(&fa, &pr);
+@@ -2413,47 +2407,6 @@
+         fprintf(stderr, "%s\n", b);
+     }
+     if (f % 300 == 0) fprintf(stderr, "[slowframe]\t#\t至帧 %llu\tjudged=%llu\tslow=%llu\t判据=%s\n", f, judged, slow, has ? "上屏间隔" : "出图调用间隔（无窗口）");
+-}
+-// 时间约束（实时）线程的声明：周期 = 出图周期，约束 = 周期，计算 = 这条线程每帧实际要用的 CPU 时间。
+-// 原先计算量写死 2 ms，而游戏主线程（游戏逻辑 + 录制 + 提交回放）热态每帧约 10 ms——声明与实际差 5 倍：
+-// 实时线程超出自己声明的计算量会被系统降级处理，性能控制器也按声明定频（系统就是靠这份声明得知帧期限和工作量的）。
+-// DM_RT_COMP=<毫秒> 固定声明；缺省 auto = 每 120 帧取本线程每帧 CPU 时间的 p90，与已声明值差 > 15% 就重新声明（上限 0.9 × 周期）。
+-// Declaration for the time-constraint (real-time) thread: period = present period, constraint = period, computation = the CPU time this thread actually needs per frame.
+-// The computation used to be hard-coded at 2 ms, while the game main thread (game logic + recording + submit replay) takes about 10 ms per frame when hot - a 5× gap between declared and actual:
+-// a real-time thread that exceeds its declared computation gets demoted by the system, and the performance controller also sets frequency from the declaration (this declaration is how the system learns the frame deadline and the workload).
+-// DM_RT_COMP=<ms> fixes the declaration; default auto = every 120 frames take the p90 of this thread's per-frame CPU time and re-declare if it differs from the declared value by > 15% (capped at 0.9 × period).
+-static void set_time_constraint_comp(uint64_t period_ns, uint64_t comp_ns) {
+-    static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+-    if (comp_ns < 1000000ull) comp_ns = 1000000ull; if (comp_ns > period_ns * 9 / 10) comp_ns = period_ns * 9 / 10;
+-    thread_time_constraint_policy_data_t p = {
+-        .period = (uint32_t)(period_ns * tb.denom / tb.numer), .computation = (uint32_t)(comp_ns * tb.denom / tb.numer),
+-        .constraint = (uint32_t)(period_ns * tb.denom / tb.numer), .preemptible = 1};
+-    kern_return_t kr = thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+-    if (kr == KERN_SUCCESS) { g_rt_comp_ms = comp_ns / 1e6; g_rt_period_ms = period_ns / 1e6; }
+-    LOG("[nvn] 出图线程时间约束策略（周期 %.3f ms、计算 %.3f ms）%s", period_ns / 1e6, comp_ns / 1e6, kr == KERN_SUCCESS ? "已设" : "设置失败");
+-}
+-// TOTK translation thread: the same policy for the calling thread without touching the render thread's declaration state.
+-void set_time_constraint_comp_x(uint64_t period_ns, uint64_t comp_ns) {
+-    mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+-    thread_time_constraint_policy_data_t p = {
+-        .period = (uint32_t)(period_ns * tb.denom / tb.numer), .computation = (uint32_t)(comp_ns * tb.denom / tb.numer),
+-        .constraint = (uint32_t)(period_ns * tb.denom / tb.numer), .preemptible = 1};
+-    kern_return_t kr = thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+-    LOG("[nvn] 翻译线程时间约束策略（周期 %.3f ms、计算 %.3f ms）%s", period_ns / 1e6, comp_ns / 1e6, kr == KERN_SUCCESS ? "已设" : "设置失败");
+-}
+-static int rt_comp_fixed_ms(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_RT_COMP"); v = e && *e && strcmp(e, "auto") ? atoi(e) : -1; } return v; }   // −1 = auto
+-static void set_time_constraint(uint64_t period_ns) { int f = rt_comp_fixed_ms(); set_time_constraint_comp(period_ns, f > 0 ? (uint64_t)f * 1000000ull : 2000000ull); }   // 首次：固定值，或 auto 的起始值 2 ms | first time: the fixed value, or auto's starting value of 2 ms
+-// 每帧在取图处调：记本线程自上次以来的 CPU 时间；auto 模式下按 p90 重新声明
+-// Called every frame at acquire: records this thread's CPU time since the last call; in auto mode re-declares based on p90
+-static void rt_comp_tick(uint64_t period_ns) {
+-    if (rt_comp_fixed_ms() > 0 || !period_ns || !g_rt_comp_ms) return;
+-    static uint64_t last; static double win[120]; static int n;
+-    uint64_t c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID); if (!last) { last = c; return; }
+-    win[n++] = (double)(c - last) / 1e6; last = c;
+-    if (n < 120) return;
+-    double v[120]; memcpy(v, win, sizeof v); qsort(v, 120, sizeof *v, dcmp); n = 0;
+-    double p90 = v[107], comp = p90 * 1.25, cap = period_ns * 0.9 / 1e6; if (comp > cap) comp = cap; if (comp < 1) comp = 1;
+-    if (comp > g_rt_comp_ms * 1.15 || comp < g_rt_comp_ms * 0.85) set_time_constraint_comp(period_ns, (uint64_t)(comp * 1e6));
+ }
+ static void sleep_until_ns(uint64_t dl) {   // 单调时钟上的绝对时刻 | absolute time on the monotonic clock
+     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);

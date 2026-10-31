@@ -1,9 +1,11 @@
-"""Build hactool: toolchain/hactool/hactool.exe (SciresM/hactool at a pinned commit + tools/hactool/*.patch).
+"""Build native hactool: toolchain/hactool/hactool[.exe] from pinned SciresM sources.
 
 Fetches the pinned commit into toolchain/src/hactool, resets it (local changes and build output there are discarded),
-applies portable.patch (MacNativeGames' Windows-relevant changes) and unicode.patch (ours), and builds a static exe
+applies portable.patch (MacNativeGames' extraction changes and our stdin/key parsing fixes) and unicode.patch,
+and builds a static exe
 with MSYS2 UCRT64 gcc; mbedtls comes with hactool's tree. The exe and hactool's LICENSE go to toolchain/hactool, where
-tools/extract.py and tools/make_release.py take them. Run with .venv.
+tools/extract.py and tools/make_release.py take them. macOS uses Apple Clang ARM64,
+the bundled mbedtls, and only portable.patch; the Unicode resource patch is Windows-only.
 
   python tools/build_hactool.py [--src DIR] [--out DIR]
 """
@@ -46,29 +48,35 @@ def main():
     ap.add_argument('--src', type=Path, default=ROOT / 'toolchain' / 'src' / 'hactool', help='source checkout')
     ap.add_argument('--out', type=Path, default=ROOT / 'toolchain' / 'hactool', help='where hactool.exe goes')
     args = ap.parse_args()
-    if not MSYS_BASH.is_file():
+    native_mac = sys.platform == 'darwin'
+    if not native_mac and not MSYS_BASH.is_file():
         sys.exit(f'{MSYS_BASH} not found: install MSYS2 with the UCRT64 gcc and make (docs/building.md)')
     src, out = args.src.resolve(), args.out.resolve()
 
     fetch(src)
-    for p in PATCHES:
+    patches = PATCHES[:1] if native_mac else PATCHES
+    for p in patches:
         git(src, 'apply', '--whitespace=nowarn', str(p))
-    (src / 'config.mk').write_text(CONFIG_MK, encoding='utf-8', newline='\n')
+    config = ('CC = clang\nEXEEXT =\nCFLAGS = -O2 -arch arm64 -mmacosx-version-min=26.0 -std=gnu11\n'
+              'LDFLAGS = -lmbedtls -lmbedx509 -lmbedcrypto\n') if native_mac else CONFIG_MK
+    (src / 'config.mk').write_text(config, encoding='utf-8', newline='\n')
 
     env = dict(os.environ, MSYSTEM='UCRT64', CHERE_INVOKING='1')
-    r = subprocess.run([str(MSYS_BASH), '-lc', f'make -j{os.cpu_count() or 4}'], cwd=src, env=env,
+    command = ['make', f'-j{min(os.cpu_count() or 4, 16)}'] if native_mac else [str(MSYS_BASH), '-lc', f'make -j{os.cpu_count() or 4}']
+    r = subprocess.run(command, cwd=src, env=env,
                        capture_output=True, text=True)
     (src / 'build.log').write_text(r.stdout + r.stderr, encoding='utf-8')
     if r.returncode:
         sys.exit(f'make failed ({r.returncode}); log: {src / "build.log"}')
 
     out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src / 'hactool.exe', out / 'hactool.exe')
+    name = 'hactool' if native_mac else 'hactool.exe'
+    shutil.copy2(src / name, out / name)
     shutil.copy2(src / 'LICENSE', out / 'LICENSE')
-    banner = subprocess.run([str(out / 'hactool.exe')], capture_output=True, text=True)
+    banner = subprocess.run([str(out / name)], capture_output=True, text=True)
     if 'hactool (c) SciresM' not in banner.stdout + banner.stderr:
-        sys.exit(f'{out / "hactool.exe"} does not start')
-    print(f'{out / "hactool.exe"}: {COMMIT[:7]} + {", ".join(p.name for p in PATCHES)}')
+        sys.exit(f'{out / name} does not start')
+    print(f'{out / name}: {COMMIT[:7]} + {", ".join(p.name for p in patches)}')
 
 
 if __name__ == '__main__':

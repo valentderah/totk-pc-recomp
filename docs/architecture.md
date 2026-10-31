@@ -1,6 +1,16 @@
 # Architecture
 
-How the Switch build of *Tears of the Kingdom* becomes a native Windows x86-64 program. The upstream projects it builds on are listed under Credits in the [README](../README.md).
+The Windows target translates ARM64 to C and renders through Vulkan. The macOS target executes prepared ARM64 modules and renders through Metal 4. The upstream projects are listed under Credits in the [README](../README.md).
+
+## Apple Silicon
+
+`tools/macos/` exports the pinned MacNativeGames runtime into `build/macos-arm64/source`, applies `runtime/macos/patches`, and builds it with Apple Clang. The native path retains the upstream typed NVN/Metal interface, Darwin thread environment, audio and input services. It does not compile the Windows C-lift runtime. The two hosts currently share extraction, version identities, module placement policy and shader translator sources; their service implementations remain separate.
+
+`recomp/layout.py::native_layout` chooses native module addresses and accounts for rewritten code and main's private timing page. The loader checks sizes, hashes, permissions and address collisions. Guest x18/TLS and host call transitions use the pinned native rewriter's validation gates before game tables are generated.
+
+The macOS integration owns transactional save publication, the strict native-4K presentation policy, frame evidence and application packaging. App resources stay read-only. Saves, caches and logs use the user's Library folders. See [macOS](macos.md) for the build and acceptance boundary.
+
+## Windows
 
 ## Starting points
 
@@ -55,7 +65,7 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian).
-- OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
+- The Windows host's platform split is incomplete: `runtime/platform/` (`platform.h`, `win32.c`) covers part of its OS calls, and `tools/check_platform.py` lists direct Win32 uses left in other files. The native macOS target uses its separate Darwin host.
 
 #### Threads and cores
 

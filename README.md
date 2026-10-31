@@ -1,6 +1,6 @@
 # TotK Recomp
 
-**TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)).
+**TotK Recomp** builds *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) for Windows x86-64/Vulkan and Apple Silicon/Metal 4 ([architecture](docs/architecture.md), [macOS build](docs/macos.md)).
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
@@ -10,6 +10,8 @@
 ## Status
 
 Early development. The game is playable on Windows; visual bugs and crashes are still expected.
+
+The macOS target builds an ARM64 runtime and local `.app` for 1.4.3 and 1.2.1. Its native GPU and CPU probes run without game data. Full-game compatibility, driver stability and sustained native 4K/144 FPS still require gameplay acceptance; the build does not establish those results.
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -32,6 +34,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - VRR
 
 ## Installing
+
+For Apple Silicon on macOS 26 or later, follow [the native macOS instructions](docs/macos.md). The installer below is for Windows.
 
 Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
 

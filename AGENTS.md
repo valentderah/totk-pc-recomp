@@ -1,6 +1,6 @@
 # TotK Recomp
 
-Static recompilation of *Tears of the Kingdom* (Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. Design: [docs/architecture.md](docs/architecture.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md).
+Native *Tears of the Kingdom* targets: Windows x86-64 C lift/Vulkan and macOS ARM64/Metal 4. Design: [docs/architecture.md](docs/architecture.md). Windows builds: [docs/building.md](docs/building.md). Native macOS builds and checks: [docs/macos.md](docs/macos.md).
 
 ## Game content boundary
 
@@ -21,7 +21,8 @@ This repository is public. Game data lives outside it and every derived file sta
 
 ## Code
 
-- Build C with MSYS2 UCRT64 Clang (`C:\msys64\ucrt64\bin`). Generated C uses GNU extensions, so `cl.exe` is out. Call Ninja from that directory by full path or put it first on PATH.
+- Windows: build C with MSYS2 UCRT64 Clang (`C:\msys64\ucrt64\bin`). Generated C uses GNU extensions, so `cl.exe` is out. Call Ninja from that directory by full path or put it first on PATH.
+- macOS: use `tools/build_macos.py` or `tools/build_game.py --target macos-arm64`. Native upstream edits are tracked patches in `runtime/macos/patches/`, applied to an ignored export. Never edit `refs/`. Run the native save, layout, presentation, shader and GPU checks documented in `docs/macos.md` for the affected paths.
 - Two Python environments: `.venv` (3.12) for the lifter and the build, `.venv-py314` for the extraction and shader scripts, which need `compression.zstd`.
 - Generated C is never edited by hand: change the generator (`recomp/`).
 - Every lifter change passes the differential tests against Unicorn ([docs/building.md](docs/building.md), "Checks"). After changing `recomp/jumptables.py`, `tests\jumptables_check.py` reports 0 disagreements on 1.2.1 and 1.4.3.

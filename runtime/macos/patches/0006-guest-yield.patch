@@ -1,0 +1,155 @@
+--- a/runtime/threads.c
++++ b/runtime/threads.c
+@@ -60,7 +60,8 @@
+     mach_port_t mport;         // 宿主线程端口（取 CPU 时间） | Host thread port (to get CPU time)
+     uint32_t qos;
+     int cur_core;              // virtual core held while running guest code, -1 while blocked / not started
+-    int preempt;               // a higher-priority thread waits for this thread's core
++    unsigned yield_core_mask; // temporary scheduling constraint for yield without migration
++    _Atomic int preempt;       // checked at SVC entry without holding G
+     uint64_t cseq, core_since; struct thr *cnext;
+     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
+     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
+@@ -128,7 +129,13 @@
+ static thr_t *g_core_wait;
+ static int g_cores_on = -1;
+ static int cores_enabled(void) { if (g_cores_on < 0) g_cores_on = getenv("TOTK_FREE_CORES") ? 0 : 1; return g_cores_on; }
+-static int core_allowed(const thr_t *t, int c) { return (int)((t->mask >> c) & 1); }
++static int core_allowed(const thr_t *t, int c) {
++    // A yield restriction is private scheduling state, not the guest's affinity.
++    // An explicit affinity change can remove the original core while we wait.
++    uint64_t mask = t->mask;
++    if (mask & t->yield_core_mask) mask &= t->yield_core_mask;
++    return (int)((mask >> c) & 1);
++}
+ static void core_grant(int c) {   // holding G: give free core c to the best waiter
+     thr_t *b = NULL, **bp = NULL;
+     for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
+@@ -140,15 +147,27 @@
+     if (t->cur_core < 0) return;
+     int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
+ }
+-static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
+-    if (!cores_enabled() || t->cur_core >= 0) return;
+-    if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
+-    int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
+-    for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
+-    if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
+-    t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
+-    for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;
+-    while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
++static void core_request_preemption(const thr_t *t) { // holding G
++    for (int i = 0; i < NCORE; i++)
++        if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio)
++            g_core_owner[i]->preempt = 1;
++}
++static void core_take(thr_t *t) {   // holding G; waits for an allowed virtual core
++    if (!cores_enabled()) return;
++    for (;;) {
++        if (t->cur_core >= 0) {
++            if (core_allowed(t, t->cur_core)) return;
++            // Affinity can change after a grant, before the waiter reacquires G.
++            core_put(t);
++        }
++        if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
++        int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
++        for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
++        if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
++        t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
++        core_request_preemption(t);
++        while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
++    }
+ }
+ static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
+ void runtime_thread_note_hle(unsigned i) { thr_t *t = me_or_null(); if (t) t->last_hle = (int)i + 1; }   // hle_stack.c, while tracing
+@@ -324,15 +343,11 @@
+ 
+ // 处理线程 / 同步类 SVC；返回 1 = 已处理
+ // Handle thread / synchronization SVCs; returns 1 = handled
+-/* Yield back-off (after nxnative e06a8ec / b703be2). On the Switch a yield with nothing else runnable costs nothing; here
+-   a guest loop that polls and yields becomes a host busy spin (on the iPhone the system logged about 1,300 wake-ups a
+-   second for the game). A run of yields with no other SVC between them stays plain sched_yield for its first 2 ms:
+-   shorter waits are handoffs between working threads, such as the main thread waiting for its ModuleSystem workers on
+-   the frame's critical path (nxnative started at 200 µs and 1.4.3 then dropped itself to 20 fps). After that each yield
+-   sleeps an eighth of the run so far, 10 to 250 µs, with the virtual core given up, so a wait ends at most an eighth late.
+-   Off by default: on the Mac at about 100 fps (1.2.1 field save, 300 s each) it saved 3% CPU (708 -> 685 s) but frames
+-   dropped steadily, 10-15 per 300 instead of 0-3. TOTK_YIELD_BACKOFF=on turns it on (250:2000); =<cap µs>[:<start µs>]
+-   sets the cap and the start. Returns the sleep for a yield whose run started run_ns ago, 0 for a plain yield. */
++/* Optional idle-poll backoff, after nxnative e06a8ec / b703be2. Once a run of yields
++   lasts long enough, sleep with the virtual core released. Disabled by default:
++   extending a short guest-worker wait can miss a presentation deadline.
++   TOTK_YIELD_BACKOFF=on uses a 2 ms start and 250 us cap; <cap us>:<start us>
++   overrides both. Return zero when no backoff is needed. */
+ static uint64_t yield_backoff_ns(uint64_t run_ns) {
+     static int64_t cap = -1, start = 2000000;
+     if (cap < 0) {
+@@ -385,21 +400,33 @@
+             uint64_t deadline = guest_ns() + (uint64_t)ns;
+             while (guest_ns() < deadline) { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
+         } else if (ns > 0) { struct timespec ts = {ns / 1000000000, ns % 1000000000}; nanosleep(&ts, 0); }
+-        else {   // 让出（0 / -1 / -2）。主线程的让出次数与耗时记账：游戏渲染任务图「等全部做完」是纯轮询 + 让出（main+0x15ee898），量它占一帧多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
++        else if (ns >= -2) {   // 让出（0 / -1 / -2）。主线程的让出次数与耗时记账：游戏渲染任务图「等全部做完」是纯轮询 + 让出（main+0x15ee898），量它占一帧多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
+             thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL);
+             uint64_t y0 = now_ns();
+             if (me && me->nsvc != me->yrun_svc + 1) me->yrun_ns = y0;   // another SVC since the last yield: a new run
+             if (me) me->yrun_svc = me->nsvc;
+-            pthread_mutex_lock(&G);   // Horizon yield: hand the core to a waiting thread of equal or higher priority
+-            int give = 0; for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && w->prio <= me->prio;
+-            if (give) { core_put(me); core_take(me); }
++            pthread_mutex_lock(&G);   // Yield-to-any (-2) also admits lower-priority peers.
++            int give = 0; for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && (ns == -2 || w->prio <= me->prio);
++            if (give) {
++                me->yield_core_mask = ns == 0 ? 1u << me->cur_core : 0;
++                core_put(me); core_take(me);
++                me->yield_core_mask = 0;
++            }
+             pthread_mutex_unlock(&G);
+             uint64_t backoff = !give && me ? yield_backoff_ns(y0 - me->yrun_ns) : 0;
+             if (backoff) {   // a long poll: sleep with the core given up, as SleepThread(ns) does
+-                pthread_mutex_lock(&G); core_put(me); pthread_mutex_unlock(&G);
++                pthread_mutex_lock(&G);
++                me->yield_core_mask = ns == 0 && me->cur_core >= 0 ? 1u << me->cur_core : 0;
++                core_put(me); pthread_mutex_unlock(&G);
+                 struct timespec ts = {0, (long)backoff}; nanosleep(&ts, 0);
+-                pthread_mutex_lock(&G); core_take(me); pthread_mutex_unlock(&G);
+-            } else if (!give) sched_yield();
++                pthread_mutex_lock(&G); core_take(me); me->yield_core_mask = 0; pthread_mutex_unlock(&G);
++            } else if (!give) {
++                // The virtual scheduler already found no eligible guest peer. A Darwin yield
++                // can instead deschedule this frame thread in favour of unrelated host work.
++                // Keep polling on the guest core; real guest handoffs still wait on the peer.
++                if (cores_enabled()) __asm__ volatile("yield" ::: "memory");
++                else sched_yield();
++            }
+             if (me && me->handle == 0x1001) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
+         }
+         if (ns > 0) { pthread_mutex_lock(&G); core_take(self); pthread_mutex_unlock(&G); }
+@@ -410,11 +437,23 @@
+     case 0x0D: { if(regs[1]<28||regs[1]>59){regs[0]=R_BAD_STATE;return 1;}pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[0], O_THREAD); if (t) t->prio = (int)regs[1]; regs[0] = t ? 0 : R_BAD_HANDLE;pthread_mutex_unlock(&G); return 1; }
+     case 0x0E: { pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[2], O_THREAD);
+                  regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)(uint32_t)t->core : 0; regs[2] = t ? t->mask : 0;pthread_mutex_unlock(&G); return 1; }
+-    case 0x0F: {  // SetThreadCoreMask(w0, w1 理想核, x2 掩码)：-1 = 用进程缺省、-2/-3 = 不改理想核；宿主只记账 | SetThreadCoreMask(w0, w1 ideal core, x2 mask): -1 = use the process default, -2/-3 = leave the ideal core unchanged; the host only keeps the bookkeeping
+-        pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
+-        if (t) { int c = (int)regs[1]; if (c >= 0) t->core = c; else if (c == -1) t->core = 0; if (regs[2]) t->mask = regs[2];
+-                 if (t == cur() && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) { core_put(t); core_take(t); } }   // migrate off a core no longer allowed
+-        regs[0] = t ? 0 : R_BAD_HANDLE;pthread_mutex_unlock(&G); return 1;
++    case 0x0F: {  // SetThreadCoreMask(handle, ideal core, affinity mask)
++        pthread_mutex_lock(&G);
++        thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
++        if (t) {
++            int c = (int)regs[1];
++            if (c >= 0) t->core = c; else if (c == -1) t->core = 0;
++            if (regs[2]) t->mask = regs[2];
++            if (t->cur_core >= 0 && !core_allowed(t, t->cur_core)) {
++                if (t == cur()) { core_put(t); core_take(t); }
++                else t->preempt = 1; // Running peers migrate at their next SVC checkpoint.
++            }
++            for (int i = 0; i < NCORE; ++i) if (!g_core_owner[i]) core_grant(i);
++            for (thr_t *w = g_core_wait; w; w = w->cnext)
++                if (w == t) core_request_preemption(w);
++        }
++        regs[0] = t ? 0 : R_BAD_HANDLE;
++        pthread_mutex_unlock(&G); return 1;
+     }
+     case 0x10: { thr_t *t = cur(); regs[0] = (uint64_t)(uint32_t)(t->cur_core >= 0 ? t->cur_core : t->core); return 1; }   // GetCurrentProcessorNumber
+     case 0x25: { pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[1], O_THREAD); regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? t->id : 0;pthread_mutex_unlock(&G); return 1; }

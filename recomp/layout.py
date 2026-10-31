@@ -20,6 +20,30 @@ ADDRESS_LIMIT = 1 << 39
 ORDER = ['main'] + [f'subsdk{i}' for i in range(10)] + ['sdk']
 
 
+def native_layout(image_sizes):
+    """Native rewritten images, including main's private timing page.
+
+    Darwin mappings use hints and reject collisions; they never overwrite a host
+    allocation. The same 39-bit IPC limit and 2 MiB module alignment apply.
+    """
+    unknown = set(image_sizes) - set(ORDER)
+    if unknown:
+        raise ValueError(f'unknown modules: {sorted(unknown)}')
+    result, base = [], FIRST_BASE
+    for name in ORDER:
+        if name not in image_sizes:
+            continue
+        size = image_sizes[name]
+        if not isinstance(size, int) or size <= 0:
+            raise ValueError(f'{name}: invalid rewritten image size')
+        size = align_up(size, 0x4000) + (0x4000 if name == 'main' else 0)
+        if size > ADDRESS_LIMIT - base:
+            raise ValueError('native modules exceed the 39-bit address space')
+        result.append((name, base, size))
+        base = align_up(base + size)
+    return result
+
+
 def align_up(v, a=ALIGN):
     return (v + a - 1) & ~(a - 1)
 

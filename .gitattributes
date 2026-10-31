@@ -6,3 +6,6 @@
 
 *.png binary
 *.jpg binary
+
+# A unified diff represents blank context lines with one space.
+runtime/macos/patches/*.patch -whitespace

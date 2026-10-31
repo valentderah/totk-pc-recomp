@@ -97,7 +97,7 @@ LLVM_SKIP_DIRS = {'aarch64-w64-mingw32', 'armv7-w64-mingw32', 'i686-w64-mingw32'
 LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 
 # tools/ files the installer steps run (and what they import), copied from the repo.
-TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract.py', 'hostmem.py', 'make_romfs_patches.py',
+TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract.py', 'game_inputs.py', 'hostmem.py', 'make_romfs_patches.py',
                'pack_shader_cache.py', 'prepare_shaders.py', 'romfs_index.py', 'shader_census.py', 'shader_list.py',
                'ultrawide_layout.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
@@ -271,6 +271,10 @@ def build_llvm(out):
 def build_bin(out):
     b = out / 'bin'
     b.mkdir(parents=True, exist_ok=True)
+    # The extractor and hactool share a stdin ticket protocol. Rebuild from
+    # this checkout so a cached executable cannot silently use the old one.
+    subprocess.run([sys.executable, str(ROOT / 'tools/build_hactool.py'),
+                    '--out', str(MAIN_ROOT / 'toolchain/hactool')], check=True)
     for f in ('totk_xlate.exe', 'totk_xlate.id'):
         shutil.copy2(MAIN_ROOT / 'build' / 'xlate' / f, b / f)
     shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')

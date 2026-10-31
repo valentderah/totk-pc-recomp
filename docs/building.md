@@ -1,5 +1,7 @@
 # Building from source
 
+This page covers Windows. For Apple Silicon, use [the macOS build](macos.md); it executes prepared ARM64 modules directly and uses Metal 4.
+
 Windows 10 or later, an x86-64 CPU with AVX2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. Allow about
 60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB afterwards.
 
