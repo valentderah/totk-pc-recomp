@@ -159,7 +159,14 @@ typedef enum {
     UI_MENU_OV_FMT_SCENE,     // "%ux%u, %.0f%%": the scene and its share of the game image's width
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
-    UI_MENU_LAST_ID = UI_MENU_OV_SCALE_BILINEAR,
+    // the Cheats tab (cheats.c): the file, the kinds of cheat and why one cannot be switched
+    UI_MENU_TAB_CHEATS,
+    UI_MENU_CHEATS_NONE,      // "%s": cheats\<build id>.txt
+    UI_MENU_CHEATS_FILE,      // "%s": the file, "%d": its cheats
+    UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
+    UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
+    UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
+    UI_MENU_LAST_ID = UI_MENU_CHEAT_UNSUPPORTED_DESC,
     UI_TEXT_COUNT
 } UiTextId;
 

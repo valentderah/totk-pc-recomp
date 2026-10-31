@@ -254,6 +254,22 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
+    [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_CHEATS_NONE] = "No cheats for this game version. Put an Atmosphere cheat file in %s next to totk.exe and "
+                            "run the setup again on this folder: it builds the cheats that change the game's code.",
+    [UI_MENU_CHEATS_FILE] = "%s, %d cheats",
+    [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
+    [UI_MENU_CHEAT_MASTER] = "always on",
+    [UI_MENU_CHEAT_MASTER_DESC] = "The file's master code: it is always on.",
+    [UI_MENU_CHEAT_RESTORE] = "not needed",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
+    [UI_MENU_CHEAT_REBUILD] = "run the setup again",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "This cheat changes the game's code and is new or edited since the game was built. "
+                                   "Run the setup again on this folder to build it (about three minutes).",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -494,6 +510,22 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
+    [UI_MENU_TAB_CHEATS] = "Читы",
+    [UI_MENU_CHEATS_NONE] = "Для этой версии игры читов нет. Положите файл читов Atmosphere в %s рядом с totk.exe и "
+                            "запустите установщик для этой папки ещё раз: он соберёт читы, меняющие код игры.",
+    [UI_MENU_CHEATS_FILE] = "%s, читов: %d",
+    [UI_MENU_CHEAT_CODE_DESC] = "Меняет код игры. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Меняет код игры, пока вы держите %s. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Пока включён, записывает память игры каждый кадр.",
+    [UI_MENU_CHEAT_MASTER] = "всегда вкл.",
+    [UI_MENU_CHEAT_MASTER_DESC] = "Главный код файла: включён всегда.",
+    [UI_MENU_CHEAT_RESTORE] = "не нужен",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Он только возвращает исходный код игры. Выключение чита уже делает это.",
+    [UI_MENU_CHEAT_REBUILD] = "запустите установщик",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Этот чит меняет код игры и появился или изменился после сборки игры. Запустите "
+                                   "установщик для этой папки ещё раз, чтобы собрать его (около трёх минут).",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

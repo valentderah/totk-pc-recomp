@@ -190,6 +190,11 @@
 # Folder with RomFS mod files that replace or add game files. Default: none.
 # romfs_mods =
 
+[cheats]
+# One line per cheat of cheats\<build id>.txt next to totk.exe (docs/cheats.md); the Cheats tab of the menu writes
+# them. cheat_<hash> = 1 switches a cheat on, the hash being FNV-1a 32 of its name. Default: every cheat off.
+# cheat_0123abcd = 1
+
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
 # Performance log sets perf (frame timings). Default: none.

@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "cfg.h"
+#include "cheats.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -253,10 +254,11 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
-// Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
-static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
+// Roboto Medium (Latin, Cyrillic, dashes, quotes and the numero sign of cheat names) at 26 px per 1080 lines, with
+// the glyphs of the Japanese, Korean and Chinese language names merged in from a system font when there is one (each
+// language is named in its own script). Made again when the window height changes; the old texture goes after the
+// queue is idle (CreateFontsTexture).
+static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0x2116, 0x2116, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
@@ -307,7 +309,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_CHEATS, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -601,6 +603,54 @@ static void tab_menu(float scale) {
     opt_end();
 }
 
+// ---- Cheats: the cheats of cheats\<build id>.txt (cheats.c), a row per cheat in file order and a heading per group
+// label; a cheat that cannot be switched here is greyed out with the reason.
+static void tab_cheats(float scale) {
+    opt_begin("##cheats", scale);
+    static char line[512], desc[768], buttons[192];
+    int n = cheats_count();
+    if (!n) {
+        snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_NONE),
+                 cheats_file()[0] ? cheats_file() : "cheats\\<build id>.txt");
+        opt_text_str(line);
+        opt_end();
+        return;
+    }
+    int listed = 0;
+    for (int i = 0; i < n; i++) listed += cheats_info(i)->kind != CHEAT_HEADING;
+    snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_FILE), cheats_file(), listed);
+    opt_text_str(line);
+    for (int i = 0; i < n; i++) {
+        const CheatInfo *c = cheats_info(i);
+        UiTextId text = UI_MENU_CHEAT_CODE_DESC;
+        switch (c->kind) {
+        case CHEAT_HEADING:
+            if (!strstr(c->name, "TID=")) opt_group_text(c->name);   // the file's title line only names the game
+            continue;
+        case CHEAT_CODE: break;
+        case CHEAT_KEY: text = UI_MENU_CHEAT_KEY_DESC; break;
+        case CHEAT_DATA: text = UI_MENU_CHEAT_DATA_DESC; break;
+        case CHEAT_MASTER: text = UI_MENU_CHEAT_MASTER_DESC, opt_disable_next(UI_MENU_CHEAT_MASTER); break;
+        case CHEAT_RESTORE: text = UI_MENU_CHEAT_RESTORE_DESC, opt_disable_next(UI_MENU_CHEAT_RESTORE); break;
+        case CHEAT_REBUILD: text = UI_MENU_CHEAT_REBUILD_DESC, opt_disable_next(UI_MENU_CHEAT_REBUILD); break;
+        case CHEAT_UNSUPPORTED:
+            text = UI_MENU_CHEAT_UNSUPPORTED_DESC, opt_disable_next(UI_MENU_CHEAT_UNSUPPORTED);
+            break;
+        }
+        if (c->kind == CHEAT_KEY)
+            snprintf(desc, sizeof desc, menu_text(text), cheats_buttons(c->buttons, buttons, sizeof buttons));
+        else if (c->kind == CHEAT_UNSUPPORTED)
+            snprintf(desc, sizeof desc, "%s %s", menu_text(text), c->note);
+        else
+            snprintf(desc, sizeof desc, "%s", menu_text(text));
+        if (opt_toggle_text(c->key, c->name, desc, cheats_on(i) != 0)) {
+            cheats_set(i, !cheats_on(i));
+            opt_save_soon();
+        }
+    }
+    opt_end();
+}
+
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
 static bool g_modal;   // the reset confirmation is open: B and Esc close it, not the menu; L / R stay on the page
 
@@ -760,7 +810,8 @@ static void tab_advanced(float scale) {
 }
 
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_CHEATS,
+                                              UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -812,6 +863,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
             case TAB_MENU: tab_menu(scale); break;
+            case TAB_CHEATS: tab_cheats(scale); break;
             case TAB_ADVANCED: tab_advanced(scale); break;
             }
             ImGui::EndTabItem();
@@ -1088,6 +1140,7 @@ static void perf_draw(const MenuTarget *t, float scale) {
 
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
+    cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();

@@ -491,12 +491,24 @@ EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
 
 
+def cheats_file(ctx):
+    """<dest>/cheats/<build id>.txt, the Atmosphere cheat file of the installed main (tools/cheats.py), whether or not
+    it exists."""
+    try:
+        with open(ctx.dest / 'exefs' / 'main', 'rb') as f:
+            bid = f.read(0x48)[0x40:0x48].hex().upper()
+    except OSError:
+        bid = 'unknown'
+    return ctx.dest / 'cheats' / f'{bid}.txt'
+
+
 class Lift(Step):
     id = 'lift'
     transient = True
 
     def key(self, ctx):
-        return fingerprint('lift-1', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)))
+        return fingerprint('lift-2', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+                           ctx.layout.tools / 'cheats.py', cheats_file(ctx))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
@@ -513,8 +525,19 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
+        # The code cheats of the cheat file become patch sets (tools/cheats.py); its status file tells the runtime
+        # which cheats the build has.
+        patches, cheats = layout.patches(game_version(ctx)), cheats_file(ctx)
+        if cheats.is_file():
+            combined = ctx.temp / 'patches-cheats.txt'
+            code, log = run_tool(ctx, 'lift', layout.tools / 'cheats.py',
+                                 ['--exefs', ctx.dest / 'exefs', '--cheats', cheats, '--patches', patches,
+                                  '--out', combined, '--status', cheats.with_suffix('.status')])
+            if code:
+                raise InstallError('lift.failed', code=code, log=str(log))
+            patches = combined
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py',
-                             ['--exefs', ctx.dest / 'exefs', '--out', gen, '--patches', layout.patches(game_version(ctx))], parse)
+                             ['--exefs', ctx.dest / 'exefs', '--out', gen, '--patches', patches], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')

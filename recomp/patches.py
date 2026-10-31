@@ -14,10 +14,12 @@ encoded for the site's address. The patch page is the first 4 KiB page after mai
 of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
-`if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Replacement
-words must not branch except a final `bl` (lifted with the site's return address); the original must not be a branch
-other than `bl`. So the function's control flow, labels and jump tables are the original's. The generator writes
-patches.h (set names, switches, the page address) next to layout.h for the runtime.
+`if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Several
+sets may patch one address (cheats that write different values there): `if (a) {..} else if (b) {..} else {..}`, the
+first set in file order wins. The original may be any instruction but br, blr and ret; a replacement's last word may be
+a bl (lifted with the site's return address), a b or b.cond / cbz / tbz (its target joins the function's labels when
+inside it) or a ret; earlier words must not branch. Every alternative of a site writes the same flags. The generator
+writes patches.h (set names, switches, the page address) next to layout.h for the runtime.
 
 A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <head> that only another thread can end,
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
@@ -42,7 +44,8 @@ def adrp(pc, target, rd):
 
 
 class Table:
-    """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg)], original)}}; page."""
+    """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg)], original)]}} (the
+    alternatives of a site in file order); page."""
 
     def __init__(self, sets=(), sites=None, page=0, spins=None):
         self.sets = list(sets)
@@ -55,11 +58,12 @@ class Table:
         return {base + b: base + h for b, h in self.spins.get(name, {}).items()}
 
     def for_module(self, name, base):
-        """{absolute address: (set index, [words])} with @page resolved."""
+        """{absolute address: [(set index, [words])]} with @page resolved."""
         out = {}
-        for off, (k, repl, _) in self.sites.get(name, {}).items():
+        for off, alts in self.sites.get(name, {}).items():
             a = base + off
-            out[a] = (k, [adrp(a, self.page, w[1]) if isinstance(w, tuple) else w for w in repl])
+            out[a] = [(k, [adrp(a, self.page, w[1]) if isinstance(w, tuple) else w for w in repl])
+                      for k, repl, _ in alts]
         return out
 
 
@@ -89,10 +93,12 @@ def load(path, mods):
                     repl.append(('page', int(w[7:])))
                 else:
                     repl.append(int(w, 16))
-            mod = sites.setdefault(f[2], {})
-            if off in mod:
-                raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice')
-            mod[off] = (index[f[1]], repl, orig)
+            alts = sites.setdefault(f[2], {}).setdefault(off, [])
+            if any(k == index[f[1]] for k, _, _ in alts):
+                raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice by set {f[1]}')
+            if alts and alts[0][2] != orig:
+                raise PatchError(f'{where}: {f[2]}+{off:#x} expects {orig:08x}, an earlier line {alts[0][2]:08x}')
+            alts.append((index[f[1]], repl, orig))
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -114,7 +120,7 @@ def load(path, mods):
 
 def check(table, mod, name):
     """Stops on a site whose original word differs from the module's."""
-    for off, (_, _, want) in table.sites.get(name, {}).items():
+    for off, [(_, _, want), *_] in table.sites.get(name, {}).items():
         a = mod.base + off
         if not mod.in_text(a):
             raise PatchError(f'{name}+{off:#x}: patch site outside .text')

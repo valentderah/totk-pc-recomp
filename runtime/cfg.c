@@ -135,7 +135,7 @@ static const CfgMeta metas[] = {
 static int is_known(const char *key) {
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
         if (!strcmp(known[i], key)) return 1;
-    return 0;
+    return !strncmp(key, "CHEAT_", 6);   // cheats.c and the cheat patch sets (tools/cheats.py)
 }
 
 static void clear(void) {
@@ -394,6 +394,7 @@ static void puts_(Out *o, const char *s) { put(o, s, strlen(s)); }
 static const char *section_of(const char *key) {
     for (size_t i = 0; i < sizeof sections / sizeof *sections; i++)
         if (!strcmp(sections[i].key, key)) return sections[i].section;
+    if (!strncmp(key, "CHEAT_", 6)) return "cheats";   // cheats.c: one key per cheat of the cheat file
     return NULL;
 }
 
