@@ -35,6 +35,8 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   - generator runs in parallel processes, with bounded memory per worker;
   - jump tables resolved by our own symbolic pass instead of Unicorn, which keeps GPL code out of the shipped generator;
   - `LDXP`/`STXP` (128-bit exclusive pairs) supported;
+  - `DMB LD` and `DMB ST` become acquire-release fences, which x86 orders by itself, so they cost no instruction;
+    the full `DMB`, `DSB` and `ISB` stay sequentially consistent fences (a locked instruction);
   - no 64 MB limit on `main`; `subsdk*` loaded;
   - NZCV and the six most used general registers of each function kept in C locals instead of the `Cpu`
     (`recomp/flags.py`, `recomp/regs.py`): registers are stored back where they changed, before calls, SVCs and
@@ -71,6 +73,9 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   and the switch happens at SVC 0x36. `TOTK_ASYNC_PREEMPT=2` keeps those two without interrupting. The interruption is
   Win32 (SuspendThread, SetThreadContext); another host needs a signal handler there, as MacNativeGames has.
 - Host work gives the core back. Queue submits, presents, GPU waits, shader translation, `nn::fs` calls and NVN memory pool setup run without a core (`NVN_BLOCKING`, `kern_core_away`), as the Switch blocks those threads in IPC, so a thread blocked in the driver or on a file does not hold up guest threads.
+- An event signal wakes only the `WaitSynchronization` waiters it satisfies. The audio renderer signals about 200
+  times a second and the vsync thread 60 times; waking every waiter for each made them all take a core, find nothing
+  of their own and sleep again.
 - Spin waits. Loops that only another thread can end (857 in 1.4.3, 864 in 1.2.1, found by `tools/spin_waits.py`, the
   nxnative search) send their back-edges through `rt_spin_gate`, which pauses the core once per pass and hands it to a
   waiter after 50 us of polling (`TOTK_SPIN`, `TOTK_SPIN_HANDOFF_US`).
@@ -86,7 +91,10 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - Uniform snapshot. The game rewrites per-object uniform blocks on other threads soon after it submits the frame
   that reads them, while the replay still records it. At the start of a submission's replay every uniform range it
   binds from CPU-written pools is copied, and the draws bind the copy (`vk_usnap.c`, after MacNativeGames'
-  `TOTK_UBO_SNAPSHOT`); without it, late draws read another object's matrix.
+  `TOTK_UBO_SNAPSHOT`); without it, late draws read another object's matrix. An `UpdateUniformBuffer` into a copied
+  block gives the draws after it a fresh copy with the new bytes, and the copy into the buffer itself waits for the
+  pass end (`TOTK_UB_DEFER`): the terrain updates one block before each of about 500 draws a frame, and each copy in
+  place used to end the pass with a full barrier.
 - Driver data. The NVN driver keeps a per-stage constant bank (c0) that shaders read for things like point size, dispatch size and base instance. The back end fills it the way the driver does.
 - Shaders: the Ryujinx translator 1.3.2 with MacNativeGames' patches and ours (`tools/xlate/patches/`), built with .NET 10 NativeAOT as `totk_xlate.exe` and run as a separate process. Its SPIR-V goes to Vulkan directly. `tools/prepare_shaders.py` and `totk.exe --prepare-shaders` translate and compile the variants of MacNativeGames' shared list ahead of play (29,587 for 1.4.3); the rest are translated on first use and cached on disk.
 - Pipelines: `VK_EXT_graphics_pipeline_library` where the driver has it. Shader stages are compiled ahead into libraries; a draw that meets a new state links them at once (fast link), and an optimised pipeline replaces the linked one when a background thread finishes it. Pipeline keys seen in play are saved and built at boot. A draw whose pipeline is not ready is skipped when one of its pass's targets was rendered in the previous frame, and waits otherwise, so one-shot passes are never lost; a full-screen draw is skipped as well rather than waiting (`TOTK_PIPE_SKIP`); the stage libraries a waiting draw needs are built on idle workers in parallel (`TOTK_PIPE_WAIT`). Without the extension, a missing pipeline is built on a worker and the draw waits or is skipped by the same rule.

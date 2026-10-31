@@ -169,8 +169,15 @@ re-protecting imported memory invalidates the driver's userptr buffer on every s
 amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
 host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
 writes come back at its fence. In play that costs about 0.2 ms a frame and doubles the memory of those pools (about
-1.1 GB). `TOTK_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
-well: the shadow copies are chosen for the measured cost above, not for a missing extension.
+1.1 GB). A pool is synced once per submission, in the first part that uses it (`TOTK_SHADOW_RESYNC=1` syncs in every
+part), and the shadow of a pool the game does not cache on the CPU lives in write-combined memory, which an APU's GPU
+reads faster than cached memory (`TOTK_SHADOW_WC=auto|0|all`). `TOTK_SHADOW=1` turns shadow storage on under Windows
+too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as well: the shadow copies are chosen for the measured
+cost above, not for a missing extension.
+
+Code pages: at start the lifted code (about 208 MiB of text) is copied onto memory backed by 2 MiB pages, where the
+kernel's transparent huge pages are enabled (`always` or `madvise`), so a Zen 2 core's instruction TLB covers far
+more of it; the log line `text:` reports how much. `TOTK_HUGE_TEXT=0` leaves it on 4 KiB pages.
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
 `TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
