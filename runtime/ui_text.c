@@ -97,11 +97,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "Nintendo for controllers with Nintendo labels and Xbox for the others.",
     [UI_MENU_PAD_LAYOUT_AUTO] = "Automatic", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A right)",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A bottom)", [UI_MENU_PAD_LAYOUT_IN_USE] = "in use: %s",
+    [UI_MENU_STICK_DEADZONE] = "Stick dead zone",
+    [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own.",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
-    [UI_MENU_STICK_DEADZONE] = "Stick dead zone",
-    [UI_MENU_STICK_DEADZONE_DESC] = "How far a controller stick has to move from the centre before the game sees it. "
-                                    "Raise it if the character or the camera moves on its own (stick drift).",
 
     [UI_BINDS_HELP] = "Select a cell and press A or Enter, then the key, mouse button or controller button. Delete or "
                       "X clears a cell. A key in use moves here; a controller button swaps with the one it replaces.",
@@ -318,11 +317,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                 "Nintendo для контроллеров с подписями Nintendo, Xbox для остальных.",
     [UI_MENU_PAD_LAYOUT_AUTO] = "Автоматически", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A справа)",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A снизу)", [UI_MENU_PAD_LAYOUT_IN_USE] = "сейчас: %s",
+    [UI_MENU_STICK_DEADZONE] = "Мёртвая зона стиков",
+    [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами.",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
-    [UI_MENU_STICK_DEADZONE] = "Мёртвая зона стиков",
-    [UI_MENU_STICK_DEADZONE_DESC] = "Насколько стик контроллера должен отойти от центра, чтобы игра это заметила. "
-                                    "Увеличьте, если персонаж или камера двигаются сами (дрейф стика).",
 
     [UI_BINDS_HELP] = "Выберите ячейку и нажмите A или Enter, затем клавишу, кнопку мыши или кнопку контроллера. "
                       "Delete или X очищает ячейку. Занятая клавиша переходит сюда; кнопка контроллера меняется "

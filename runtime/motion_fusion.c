@@ -7,8 +7,9 @@
 // axis, direction = the controller's three axes in a reference frame whose z is up. The orientation is integrated from
 // the gyro and, while the controller is not being accelerated (|a| within 15 % of 1 G), pulled toward the measured
 // gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; yaw has no reference and drifts with the
-// gyro's bias. The newest MOTION_RING samples are kept; reads are newest first. The feeding thread writes, guest
-// threads read, both under the instance's SRW lock.
+// gyro's bias. The newest MOTION_RING samples are kept; reads are newest first. A restart (StartSixAxisSensor) drops
+// the samples before it: reads return nothing until the next sample, which starts a fresh frame and angle; sampling
+// numbers go on. The feeding thread writes, guest threads read, both under the instance's SRW lock.
 #include <windows.h>
 #include <math.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@ struct MotionFusion {
     SRWLOCK lock;
     MotionState ring[MOTION_RING];
     uint64_t produced, last_ns;
+    uint64_t first;   // produced at the last restart: older samples are not read
     double R[3][3];   // controller -> reference; row i = reference axis i in controller coordinates
     double angle[3];
     int restart;
@@ -131,8 +133,8 @@ int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
     if (max <= 0) return 0;
     int n = 0;
     AcquireSRWLockShared(&m->lock);
-    if (m->produced && (now < m->last_ns || now - m->last_ns < STALE_NS)) {
-        uint64_t have = m->produced < MOTION_RING ? m->produced : MOTION_RING;
+    if (m->produced > m->first && (now < m->last_ns || now - m->last_ns < STALE_NS)) {
+        uint64_t have = m->produced - m->first < MOTION_RING ? m->produced - m->first : MOTION_RING;
         n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
         for (int i = 0; i < n; i++) out[i] = m->ring[(m->produced - 1 - (uint64_t)i) % MOTION_RING];
     }
@@ -143,5 +145,8 @@ int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
 void motion_restart(MotionFusion *m) {
     AcquireSRWLockExclusive(&m->lock);
     m->restart = 1;
+    m->first = m->produced;
+    m->last_ns = 0;   // the first sample after the restart integrates nothing across the stop
+    memset(m->angle, 0, sizeof m->angle);
     ReleaseSRWLockExclusive(&m->lock);
 }

@@ -436,24 +436,13 @@ static float stick_dead_get(void) {
     if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
     stick_dead_seen = ver;
     double v = cfg_double("TOTK_STICK_DEADZONE");
-    float was = stick_dead;
-    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100;
-    if (stick_dead != was) rt_log("input: stick dead zone %.0f%%", stick_dead * 100.0);
+    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
     return stick_dead;
 }
 
-static int32_t stick_clamp(double v) { return (int32_t)lround(v < -STICK_MAX ? -STICK_MAX : v > STICK_MAX ? STICK_MAX : v); }
-
-// One gamepad stick, y up. The dead zone is radial and scaled: a deflection inside it reads 0, so a stick that rests
-// off centre (drift) stays still, and past it the length is mapped from the edge of the dead zone to full deflection,
-// so a slight tilt beyond it is a slight tilt to the game at any setting. The direction is kept, so a diagonal does not
-// snap to an axis. At 0 the stick goes through unchanged.
-static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, int32_t out[2]) {
-    double x = SDL_GetGamepadAxis(pad, ax), y = -(double)SDL_GetGamepadAxis(pad, ay);
-    double len = sqrt(x * x + y * y), dead = stick_dead_get() * STICK_MAX;
-    double k = len <= dead ? 0 : (len - dead) / (STICK_MAX - dead) * STICK_MAX / len;
-    out[0] = stick_clamp(x * k);
-    out[1] = stick_clamp(y * k);
+// One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
+static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
+    input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
@@ -568,8 +557,9 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, sl);
-    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, sr);
+    float dead = stick_dead_get();
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead, sr);
     return 1;
 }
 
