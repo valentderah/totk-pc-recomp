@@ -28,9 +28,17 @@ OTHER_OS = getattr(build_game, 'other_os', None)      # a file name -> True when
 NEEDS_GAME = set(build_game.INSTALL_SIDE)             # include romfs_config.h / patches.h: generated from the dump
 
 
+def msys_prefix():
+    """The MSYS2 prefix this Python lives in: C:/msys64/ucrt64 locally, D:/a/_temp/msys64/ucrt64 on a CI runner."""
+    for cand in (Path(sys.prefix), Path(sys.base_prefix), Path('C:/msys64/ucrt64')):
+        if 'ucrt64' in str(cand).replace('\\', '/').lower() and (cand / 'include').is_dir():
+            return cand
+    return Path('C:/msys64/ucrt64')
+
+
 def compiler():
     if WIN:
-        exe = Path('C:/msys64/ucrt64/bin/clang.exe')
+        exe = msys_prefix() / 'bin' / 'clang.exe'
         if exe.is_file():
             return str(exe)
         return shutil.which('clang.exe')
@@ -54,8 +62,9 @@ def args_sysroot_include():
 
 def vma_include():
     deps = argv_path('--deps', 'include')
+    prefix = msys_prefix() / 'include' if WIN else Path('/nonexistent')
     for d in ((deps / 'vma') if deps else Path('/nonexistent'),
-              Path('C:/msys64/ucrt64/include/vma'), Path('C:/msys64/ucrt64/include'),
+              (prefix / 'vma') if WIN else Path('/nonexistent'), prefix,
               ROOT / 'toolchain' / 'vma' / 'include', ROOT / 'toolchain' / 'vma',
               Path('/usr/local/include/vma'), Path('/usr/include/vma'), Path('/usr/include'),
               args_sysroot_include()):
@@ -114,7 +123,8 @@ def main():
     cpath = [Path(d) for d in os.environ.get('CPATH', '').split(os.pathsep) if d]
     vk = any((Path(i[2:]) / 'vulkan' / 'vulkan.h').is_file() for i in inc if i.startswith('-I')) or \
         any((d / 'vulkan' / 'vulkan.h').is_file() for d in cpath) or \
-        Path('/usr/include/vulkan/vulkan.h').is_file() or Path('C:/msys64/ucrt64/include/vulkan/vulkan.h').is_file()
+        Path('/usr/include/vulkan/vulkan.h').is_file() or \
+        (msys_prefix() / 'include' / 'vulkan' / 'vulkan.h').is_file()
     if not vk:
         sys.exit('compile gate: Vulkan headers not found: install libvulkan-dev (Ubuntu), vulkan-headers (Arch), '
                  'or point CPATH at a Vulkan-Headers checkout')
