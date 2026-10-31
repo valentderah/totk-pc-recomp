@@ -131,6 +131,10 @@
 # totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Changes while the game
 # runs take effect at once.
 # dlaa = 0
+# What runs at that point: dlss (NVIDIA DLSS, as above), fsr3 (AMD FSR 3.1, on any GPU, no DLL needed) or auto (DLSS
+# when it is available, else FSR 3.1). The dlss setting below picks the scene size for both. Changes while the game runs
+# take effect at once.
+# aa_engine = auto
 # What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
 # 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). With dlaa
 # = 0 the game's own scaling is used at that size. Read at start.

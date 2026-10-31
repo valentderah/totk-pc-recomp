@@ -79,6 +79,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_AA_ENGINE] = "DLSS / DLAA engine",
+    [UI_MENU_AA_ENGINE_DESC] = "What runs at the DLSS / DLAA point. NVIDIA DLSS needs an RTX GPU and nvngx_dlss.dll; AMD FSR "
+                               "3.1 runs on any GPU. Automatic takes DLSS when it is available, else FSR 3.1.",
+    [UI_MENU_AA_ENGINE_AUTO] = "Automatic", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -325,6 +330,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_AA_ENGINE] = "Движок DLSS / DLAA",
+    [UI_MENU_AA_ENGINE_DESC] = "Что работает в точке DLSS / DLAA. NVIDIA DLSS нужна видеокарта RTX и nvngx_dlss.dll; AMD "
+                               "FSR 3.1 работает на любой видеокарте. «Автоматически» берёт DLSS, когда он доступен, "
+                               "иначе FSR 3.1.",
+    [UI_MENU_AA_ENGINE_AUTO] = "Автоматически", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "

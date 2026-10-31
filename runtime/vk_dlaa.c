@@ -21,6 +21,7 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "vk_fsr3.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
@@ -222,6 +223,7 @@ static struct {
         VmaAllocation out_mem, mv_mem;
         VkImageView out_view, mv_view;
         NgxHandle *feat;
+        Fsr3 *fsr;               // the FSR 3.1 context of this size (aa_engine fsr3), made at its first frame
         uint64_t used;           // evals count when it last ran
     } sizes[3], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
@@ -248,9 +250,19 @@ static struct {
     uint64_t mv_frames, mv_none;
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
+    int fsr;                     // this frame's engine is FSR 3.1 (aa_engine, read at each present)
 } D = {.mv_ok = -1};
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+// DLSS needs NGX and its model; FSR 3.1 runs on any GPU the back end runs on. on already says the engine is there.
+static int dl_active(void) { return !D.failed && D.on; }
+
+// The engine aa_engine names: fsr3, dlss, or auto (DLSS when NGX has it, else FSR 3.1).
+static int engine_fsr(void) {
+    const char *e = cfg_value("TOTK_AA_ENGINE");
+    if (!strcmp(e, "fsr3")) return 1;
+    if (!strcmp(e, "dlss")) return 0;
+    return !N.available;
+}
 
 static void dl_fail(const char *what, NgxResult r) {
     rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
@@ -280,6 +292,7 @@ static void free_size(struct Size *e) {
     if (e->out) vmaDestroyImage(c->vma, e->out, e->out_mem);
     if (e->mv) vmaDestroyImage(c->vma, e->mv, e->mv_mem);
     if (e->feat) N.release(e->feat);
+    fsr3_destroy(e->fsr);
     memset(e, 0, sizeof *e);
 }
 
@@ -476,7 +489,20 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
-// dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
+static int dlss_evaluate(VkCommandBuffer cb, struct Size *e, const VkExecTarget *t, const VkExecTarget *z,
+                         VkImageView zv, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, float jx, float jy);
+
+// The engine's RGBA16F output into dst at its level and layer.
+static void blit_out(VkCommandBuffer cb, const struct Size *e, const VkExecTarget *dst, uint32_t ow, uint32_t oh) {
+    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .srcOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst->level, dst->base_layer, 1},
+                     .dstOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}}};
+    vkCmdBlitImage(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+    full_barrier(cb);
+}
+
+// dst: the target the engine's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
     if (!dst) dst = t;
@@ -486,8 +512,6 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     struct Size *e = size_for(cb, w, h, ow, oh);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++;   // another size's history is from another moment
-    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
-    NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
@@ -500,7 +524,46 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         full_barrier(cb);
         if (!no_mv) D.reset = 1, D.why[1]++;   // no camera: the history cannot be moved along
     }
-    rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
+    rec_drain();   // NGX and FSR record into the command buffer themselves: the recorder thread must have made every call
+    if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    if (D.fsr) {
+        // the bridge imports whole images: the scene's targets are mip 0, layer 0 of their own images
+        if (t->level || t->base_layer || z->level || z->base_layer) return dl_fail("FSR 3.1 input (not mip 0, layer 0)", 0);
+        if (!e->fsr) {
+            if (!(e->fsr = fsr3_create(w, h, ow, oh, e->mv, e->out))) return dl_fail("FSR 3.1 context creation", 0);
+            D.reset = 1;
+        }
+        Fsr3Frame fr = {.color = t->image, .depth = z->image, .jx = jx, .jy = jy, .reset = D.reset,
+                        .frame = ex->fence};
+        if (!fsr3_dispatch(e->fsr, cb, &fr)) return dl_fail("FSR 3.1 dispatch", 0);
+    } else if (!dlss_evaluate(cb, e, t, z, zv, w, h, ow, oh, jx, jy)) {
+        return;
+    }
+    D.reset = 0;
+    D.last = e, e->used = D.evals + 1;
+    full_barrier(cb);
+    // the result into the scene target (DLAA: the bloom, the post passes and the HUD read it and draw over it) or into
+    // the scaling pass's target (the HUD draws over it)
+    blit_out(cb, e, dst, ow, oh);
+    ex->recorded += 4;
+    vk_exec_draw_new_cb();   // NGX or FSR bound pipelines and descriptor sets of their own: the next draw binds all again
+    D.jdepth = z->image;
+    next_jitter();
+    if (++D.evals == 1 || D.evals % 3600 == 0)
+        rt_log("dlaa: %llu frames anti-aliased by %s (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu "
+               "with camera motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target)",
+               (unsigned long long)D.evals, D.fsr ? "FSR 3.1" : "DLSS", w, h, ow, oh,
+               (unsigned long long)D.frames_missed, (unsigned long long)D.mv_frames, (unsigned long long)D.mv_none,
+               (unsigned long long)D.holds, (unsigned long long)D.why[0], (unsigned long long)D.why[1],
+               (unsigned long long)D.why[2]);
+}
+
+// NGX's half of evaluate: creates the size's DLSS feature at its first frame and records DLSS into cb. 0 when it failed
+// (DLAA is then off for the run).
+static int dlss_evaluate(VkCommandBuffer cb, struct Size *e, const VkExecTarget *t, const VkExecTarget *z,
+                         VkImageView zv, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, float jx, float jy) {
+    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0), 0;
+    NgxParam *p = D.params;
     if (!e->feat) {
         p_setu(p, "CreationNodeMask", 1);
         p_setu(p, "VisibilityNodeMask", 1);
@@ -513,12 +576,11 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
         NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, &e->feat);
-        if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r);
+        if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r), 0;
         D.reset = 1;
         rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d (scene format %d, depth format %d)", w,
                h, ow, oh, perf_quality(w, ow), (int)t->format, (int)z->format);
     }
-    if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
                                          t->base_layer, 1, 0);
     NgxResourceVK rc = res_image(cv, t->image, t->format, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
@@ -541,28 +603,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     p_setf(p, "DLSS.Exposure.Scale", 1.0f);
     p_setf(p, "FrameTimeDeltaInMsec", 16.67f);
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
-    if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
-    D.reset = 0;
-    D.last = e, e->used = D.evals + 1;
-    full_barrier(cb);
-    // the result into the scene target (DLAA: the bloom, the post passes and the HUD read it and draw over it) or into
-    // the scaling pass's target (the HUD draws over it)
-    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .srcOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst->level, dst->base_layer, 1},
-                     .dstOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}}};
-    vkCmdBlitImage(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
-    full_barrier(cb);
-    ex->recorded += 4;
-    vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
-    D.jdepth = z->image;
-    next_jitter();
-    if (++D.evals == 1 || D.evals % 3600 == 0)
-        rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
-               "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target)",
-               (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.frames_missed,
-               (unsigned long long)D.mv_frames, (unsigned long long)D.mv_none, (unsigned long long)D.holds,
-               (unsigned long long)D.why[0], (unsigned long long)D.why[1], (unsigned long long)D.why[2]);
+    if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r), 0;
+    return 1;
 }
 
 static int scene_color(VkFormat f) {
@@ -604,10 +646,11 @@ void vk_dlaa_pass(VkExec *ex) {
 }
 
 void vk_dlaa_frame(void) {
-    int on = N.available && cfg_bool("TOTK_DLAA");
-    if (on != D.on) {
-        rt_log("dlaa: %s", on ? "on" : "off");
-        D.on = on;
+    int fsr = engine_fsr();
+    int on = (fsr || N.available) && cfg_bool("TOTK_DLAA");
+    if (on != D.on || (on && fsr != D.fsr)) {
+        rt_log("dlaa: %s%s", on ? "on with " : "off", on ? (fsr ? "FSR 3.1" : "DLSS") : "");
+        D.on = on, D.fsr = fsr;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
         D.hold = 0;

@@ -542,6 +542,8 @@ static void tab_screen(float scale) {
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
+    static const UiTextId engine[] = {UI_MENU_AA_ENGINE_AUTO, UI_MENU_AA_ENGINE_DLSS, UI_MENU_AA_ENGINE_FSR3};
+    opt_choice("TOTK_AA_ENGINE", UI_MENU_AA_ENGINE, engine, 3, UI_MENU_AA_ENGINE_DESC);
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE};
     opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 4, UI_MENU_DLSS_DESC);
