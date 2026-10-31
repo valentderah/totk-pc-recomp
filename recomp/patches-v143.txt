@@ -77,6 +77,10 @@ site zstd   main 5f574c 97e912a5 94d3aa25   # bl ZSTD_decompress_usingDDict -> p
 site zstd   main bdc910 97d17634 94bc0db4   # bl ZSTD_decompress_usingDDict -> page+0xfe0
 site zstd   main 1852314 979f9fb3 948a3733  # bl ZSTD_decompress_usingDDict -> page+0xfe0
 
+set mousecam TOTK_MOUSECAM 1
+site mousecam main 718b80 9400033b 94cf1d14   # bl camera -> host
+site mousecam main 1b87468 97ae4901 947d62da   # bl camera -> host
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v143/exefs --patches recomp/patches-v143.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main 231dc 231ec   # 5 instructions; loads

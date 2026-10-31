@@ -15,6 +15,7 @@
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
+#include "mousecam.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -284,6 +285,8 @@ uint32_t input_key_char(int key) {
 
 // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
+static volatile LONG cam_dx, cam_dy, cam_scroll, cam_reset;   // mouselook: counts, raw wheel delta (120 per notch), middle click
+static volatile LONG pad_rs_x, pad_rs_y;                       // right stick without the mouse, for the camera hook
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
@@ -357,9 +360,14 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
             ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
             InterlockedAdd(&mouse_dx, ri.data.mouse.lLastX);
             InterlockedAdd(&mouse_dy, ri.data.mouse.lLastY);
+            InterlockedAdd(&cam_dx, ri.data.mouse.lLastX);
+            InterlockedAdd(&cam_dy, ri.data.mouse.lLastY);
         }
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
+    case WM_MOUSEWHEEL:
+        if (cur_captured) InterlockedAdd(&cam_scroll, GET_WHEEL_DELTA_WPARAM(w));
+        break;
     case WM_SETCURSOR:
         if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
         break;
@@ -368,8 +376,10 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         break;
     case WM_KEYDOWN:   // Esc is unbound in the game layout: it releases the cursor and opens the menu (menu_window_msg)
         if (w == VK_ESCAPE && !(cur_rel & CUR_REL)) { cur_rel_update(rel_esc); cursor_update(h); }
+        if (w == VK_F3 && !(l & (1 << 30))) mousecam_toggle();
         break;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:   // client area only; poll_merged drops the click
+        if (m == WM_MBUTTONDOWN && cur_captured) InterlockedExchange(&cam_reset, 1);
         if (cur_rel & CUR_REL) { cur_rel_update(rel_clear); cursor_update(h); }
         break;
     case WM_MOUSEACTIVATE:   // sent before WM_ACTIVATEAPP: a title bar or border click must not capture
@@ -435,8 +445,9 @@ static void mouse_camera(int32_t out[2]) {
             held[0] = held[1] = 0;   // frames stopped: do not hold a deflection
         }
     }
-    out[0] = held[0];
-    out[1] = held[1];
+    int quiet = mousecam_suppress_stick();   // the camera hook rotates the camera: the stick must not as well
+    out[0] = quiet ? 0 : held[0];
+    out[1] = quiet ? 0 : held[1];
 }
 
 static int32_t axis(int16_t v) {
@@ -594,6 +605,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             pick(&sl[0], &sl[1], k[0], k[1]);
             input_map_stick(down, 1, k);
             pick(&sr[0], &sr[1], k[0], k[1]);
+            InterlockedExchange(&pad_rs_x, sr[0]);
+            InterlockedExchange(&pad_rs_y, sr[1]);
             mouse_camera(k);
             pick(&sr[0], &sr[1], k[0], k[1]);
         }
@@ -815,3 +828,14 @@ void input_motion_start(void) {
     }
     ReleaseSRWLockExclusive(&lock);
 }
+
+// Mouselook (mousecam.c): counts, wheel notches and the middle click since the last call.
+int input_mouse_look_take(float *dx, float *dy, float *scroll, int *reset) {
+    LONG x = InterlockedExchange(&cam_dx, 0), y = InterlockedExchange(&cam_dy, 0);
+    LONG s = InterlockedExchange(&cam_scroll, 0), r = InterlockedExchange(&cam_reset, 0);
+    if (!cur_captured) { *dx = *dy = *scroll = 0; *reset = 0; return 0; }
+    *dx = (float)x; *dy = (float)y; *scroll = (float)s / WHEEL_DELTA; *reset = r != 0;
+    return 1;
+}
+float input_mouse_sens(void) { return mouse_sens_get(); }
+void input_stick_r_pad(int32_t out[2]) { out[0] = pad_rs_x; out[1] = pad_rs_y; }
