@@ -133,12 +133,13 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 `romfs\` next to the exe or point `TOTK_ROMFS` at its folder. Run `totk.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
-## Linux (in progress)
+## Linux
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
 files (`*_win.c`); `runtime/platform/linux.c` implements `platform.h`. Status: the selftest and the probes pass; 1.2.1
 plays at 60 fps on RADV (RX 7800 XT) and NVIDIA (RTX 3060); 1.4.3 builds, probes and plays on RADV (RX 6600, and the
-Vega 7 of a Ryzen 5 4600G at about 34 fps). Long play sessions and the Steam Deck itself are not verified yet.
+Vega 7 of a Ryzen 5 4600G at about 34 fps). The release AppImage installs and runs on the Steam Deck (docs/installer.md,
+"Linux release"; docs/tester-guide.md, "Steam Deck").
 
 Requirements:
 
@@ -181,6 +182,18 @@ more of it; the log line `text:` reports how much. `TOTK_HUGE_TEXT=0` leaves it 
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
 `TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
+
+Measuring: `TOTK_TRACE=perf` logs, every 60 presents, a `perf:` line with the frame interval, the replay time and the
+render thread's waits, a second with the GPU's busy time and `bound: pace|gpu|cpu`, and a third, where the driver has
+`VK_KHR_calibrated_timestamps`, that splits the GPU's idle time into time *waiting for the next submission* (the
+replay or the game held the GPU up) and time *with it queued* (uploads, presents, waits); `frametime:` lines give the
+mean, the 1% low and the worst frames every 60 s and at exit. `tools/perf_summary.py` condenses a log over a frame
+window and `tools/ab_summary.py` an in-launch A/B (`TOTK_AB`). On a Steam Deck, `tools/profile_deck.sh --install
+<folder> --script tools/input/walk_pan.txt --tag <name>` runs a scripted walk with the trace on and keeps the log under
+`<folder>/profiles/`, named by date, build and tag, together with the GPU clock sampled during the run, the power
+state and one summary line per run in `summary.tsv`: a Deck halves its frame rate when the APU drops a power state,
+when the present mode changes or when the scene resolution grows, and none of that shows in an fps number alone.
+`--binary <totk>` measures a build the installer did not place, `--env K=V` sets a switch for the run.
 
 ## Checks
 
