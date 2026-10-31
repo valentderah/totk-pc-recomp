@@ -273,6 +273,10 @@ change passes these, all run with `.venv`:
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
+The tests marked "no" need two Python modules besides the standard library: `capstone` and `unicorn` (Debian and
+Ubuntu: `python3-capstone`, `python3-unicorn`; elsewhere `pip install capstone unicorn`). The build image has both, so
+`.github/workflows/linux-host.yml` runs them.
+
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`
 too, so they check the software fma the v2 build links rather than the C runtime's.
 
