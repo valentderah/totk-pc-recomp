@@ -25,7 +25,6 @@
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.1 and 1.2.1 from this port's analysis of main;
 // 1.4.3 from MacNativeGames' scripts/verify_boot.py) and of the first nvnBootstrapLoader call, per game version.
-#define RT_V111 (rt_game_version == 111)
 #define CHECKPOINT_RET (RT_V143 ? 0xbdb48cull : RT_V111 ? 0xeb8c14ull : 0xe7a954ull)
 #define NVN_RET (RT_V143 ? 0xbe0360ull : RT_V111 ? 0xebcdecull : 0xe7eb2cull)
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
