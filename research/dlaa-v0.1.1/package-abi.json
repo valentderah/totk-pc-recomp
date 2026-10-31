@@ -1,0 +1,9 @@
+{
+  "base_commit": "701bd628209956a70863d864844bc97cdaf074f1",
+  "sha256": {
+    "runtime/vk.h": "462ae275c6ff41ccd5f1a56d205e34031743d41db55ebd035de1ebbc2d6c8f08",
+    "runtime/vk_exec.h": "c726a571f25c5a096a427169fbc0d992af438f077421e5328e6abaf726a196a5",
+    "runtime/cfg.h": "b353f8a4da53ebe9541c1e7eecfa1054068ebefe8ed0afb35920ee13e72a1dd5",
+    "runtime/ui/menu.h": "a1477d278096e529f4f01dd21164626a017d9ff6f72f3b343d4c1b8d1aeb6769"
+  }
+}
