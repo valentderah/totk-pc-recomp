@@ -49,6 +49,7 @@ static struct {
     int scene_set;             // the scene differs from the game's 5/6 of the output
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
+    double dlss_k;             // TOTK_DLSS quality/balanced/performance: the scene's share of the output, else 0
 } R;
 
 static void decide(void) {
@@ -67,7 +68,16 @@ static void decide(void) {
     }
     const char *s = cfg_value("TOTK_RENDER_SCALE");
     double k = 5.0 / 6.0;
-    if (strcmp(s, "game")) {
+    const char *m = cfg_value("TOTK_DLSS");   // a DLSS mode other than dlaa sets the scene size
+    static const struct { const char *name; double k; } dlss[] = {
+        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
+    for (int i = 0; i < 3; i++)
+        if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
+    if (R.dlss_k) {
+        k = R.dlss_k;
+        R.scene_set = 1;
+        rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, k * 100);
+    } else if (strcmp(s, "game")) {
         char *end;
         double pct = strtod(s, &end);
         if (end != s && !*end && pct >= 25 && pct <= 400) {
@@ -239,6 +249,13 @@ void res_init(void) {
     }
     rt_log("resolution: output %ux%u, scene %ux%u%s; texture heap +%llu KiB", R.ow, R.oh, R.sw, R.sh,
            scene_on ? "" : " (the game's own 5/6 of the output)", (unsigned long long)res_heap_extra_kib());
+}
+
+// DLSS upscaling: textures are sampled for the output's resolution, not the scene's (NVIDIA's DLSS guide: a mip bias
+// of log2(render / output)), so their detail survives the scaling. 0 without a DLSS mode.
+float res_dlss_lod_bias(void) {
+    decide();
+    return R.dlss_k ? (float)log2(R.dlss_k) : 0.0f;
 }
 
 // 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.

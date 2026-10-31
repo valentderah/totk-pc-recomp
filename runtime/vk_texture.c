@@ -1565,8 +1565,14 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     si.maxLod = d->lod_max > 1000 ? VK_LOD_CLAMP_NONE : d->lod_max;
     if (mf <= NVN_MIN_FILTER_LINEAR) si.maxLod = si.minLod + 0.25f;   // not mipmapped: stay on the base level
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
-    float lim = c->props.limits.maxSamplerLodBias;
-    si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
+    float lim = c->props.limits.maxSamplerLodBias, bias = d->lod_bias;
+    // DLSS upscaling (resolution.c): the scene's material textures, the filtered mipmapped ones that repeat, are
+    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias.
+    if (!d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
+        (si.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeU == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ||
+         si.addressModeV == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT))
+        bias += res_dlss_lod_bias();
+    si.mipLodBias = fmaxf(-lim, fminf(lim, bias));
     if (d->aniso > 1) {
         si.anisotropyEnable = VK_TRUE;
         si.maxAnisotropy = fminf(d->aniso, c->props.limits.maxSamplerAnisotropy);
