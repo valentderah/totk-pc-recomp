@@ -1,15 +1,19 @@
 // DLAA: NVIDIA DLSS at the scene's own size (TOTK_DLAA, totk.ini dlaa). NGX is loaded at run time from the driver's
-// NGX core (_nvngx.dll, found through HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore); the DLSS model
-// (nvngx_dlss.dll) is loaded by NGX from the folder of totk.exe. No NVIDIA SDK code or header is compiled in: the few
-// NGX types used are declared here from the SDK's documented ABI, the way the Metroid Dread recomp's dlss.c reaches
-// the core (read for behaviour only).
+// NGX core: on Windows _nvngx.dll, found through HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore; on Linux
+// libnvidia-ngx.so.1, which the NVIDIA driver installs on the library path. NGX loads the DLSS model from the folder of
+// the executable: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. No NVIDIA SDK code or header is
+// compiled in: the few NGX types used are declared here from the SDK's documented ABI, the way the Metroid Dread
+// recomp's dlss.c reaches the core (read for behaviour only).
 //
-// The core's parameter object is a C++ class whose virtual functions are called through the MSVC vtable: the Set
-// overloads in slots 0-7 and the Get overloads in 8-15, each group in reverse declaration order. vtable_ok checks that
+// The core's parameter object is a C++ class whose virtual functions are called through its vtable: the Set overloads
+// in slots 0-7 and the Get overloads in 8-15. MSVC (the Windows core) lays out each group of overloads in reverse
+// declaration order, the Itanium C++ ABI (the Linux core, built with GCC) in declaration order. vtable_ok checks the
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +22,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "platform/platform.h"
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
@@ -56,7 +61,7 @@ typedef NgxResult (*PFN_Evaluate)(VkCommandBuffer, const NgxHandle *, const NgxP
 typedef NgxResult (*PFN_Release)(NgxHandle *);
 
 static struct {
-    HMODULE core;
+    void *core;   // the NGX core library (an HMODULE on Windows)
     PFN_Init init;
     PFN_ReqExt req_ext;
     PFN_Params caps, alloc_params;
@@ -76,7 +81,13 @@ typedef NgxResult (*GetI)(const NgxParam *, const char *, int *);
 typedef NgxResult (*GetU)(const NgxParam *, const char *, unsigned *);
 typedef NgxResult (*GetF)(const NgxParam *, const char *, float *);
 typedef NgxResult (*GetP)(const NgxParam *, const char *, void **);
+// The SDK declares Set(u64), Set(float), Set(double), Set(u32), Set(int), Set(ID3D11Resource *), Set(ID3D12Resource *),
+// Set(void *), then the Get overloads in the same order, then Reset.
+#ifdef _WIN32
 enum { S_P = 0, S_D12, S_D11, S_I, S_U32, S_D, S_F, S_U64, G_P, G_D12, G_D11, G_I, G_U32, G_D, G_F, G_U64 };
+#else
+enum { S_U64 = 0, S_F, S_D, S_U32, S_I, S_D11, S_D12, S_P, G_U64, G_F, G_D, G_U32, G_I, G_D11, G_D12, G_P };
+#endif
 static void p_seti(NgxParam *p, const char *n, int v) { ((SetI)p->vt->slot[S_I])(p, n, v); }
 static void p_setu(NgxParam *p, const char *n, unsigned v) { ((SetU)p->vt->slot[S_U32])(p, n, v); }
 static void p_setf(NgxParam *p, const char *n, float v) { ((SetF)p->vt->slot[S_F])(p, n, v); }
@@ -86,6 +97,12 @@ static int p_getu(const NgxParam *p, const char *n, unsigned *v) { return NGX_OK
 static int p_getf(const NgxParam *p, const char *n, float *v) { return NGX_OK(((GetF)p->vt->slot[G_F])(p, n, v)); }
 static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((GetP)p->vt->slot[G_P])(p, n, v)); }
 
+#ifdef _WIN32
+#define DLSS_MODEL "nvngx_dlss.dll"
+#else
+#define DLSS_MODEL "libnvidia-ngx-dlss.so.<version>"
+#endif
+
 // NGX is brought up whenever the driver has it, whatever the setting, so dlaa can be switched on while the game runs
 // (its device extensions can only be asked for at device creation). Switched off, nothing else of DLAA runs.
 int vk_dlaa_wanted(void) { return 1; }
@@ -93,6 +110,7 @@ int vk_dlaa_wanted(void) { return 1; }
 static int core_load(void) {
     if (N.tried) return N.loaded;
     N.tried = 1;
+#ifdef _WIN32
     char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
     DWORD n = sizeof dir;
     if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
@@ -106,7 +124,17 @@ static int core_load(void) {
         rt_log("dlaa: cannot load %s (error %lu): DLAA off", path, GetLastError());
         return 0;
     }
-#define FN(f, name) N.f = (void *)GetProcAddress(N.core, name)
+#define FN(f, name) N.f = (void *)GetProcAddress((HMODULE)N.core, name)
+#else
+    // The driver's NGX core; the dynamic loader finds it where the driver put it (/usr/lib, /usr/lib/x86_64-linux-gnu).
+    const char *path = "libnvidia-ngx.so.1";
+    N.core = plat_lib_open(path);
+    if (!N.core) {
+        rt_log("dlaa: cannot load %s (not an NVIDIA driver, or one without NGX): DLAA off", path);
+        return 0;
+    }
+#define FN(f, name) N.f = plat_lib_sym(N.core, name)
+#endif
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
@@ -170,12 +198,46 @@ static int vtable_ok(void) {
     return ok;
 }
 
+#ifndef _WIN32
+// UTF-8 to UTF-32 wchar_t, without the C library's locale (the runtime never sets one, so mbstowcs would stop at the
+// first non-ASCII byte). Returns 0 on malformed input or when out has no room.
+static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
+    const unsigned char *u = (const unsigned char *)in;
+    size_t n = 0;
+    while (*u) {
+        unsigned c = *u++, more = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 4;
+        if (more == 4) return 0;
+        if (more) c &= 0x3F >> more;
+        for (unsigned k = 0; k < more; k++, u++) {
+            if ((*u & 0xC0) != 0x80) return 0;
+            c = c << 6 | (*u & 0x3F);
+        }
+        if (n + 1 >= cap) return 0;
+        out[n++] = (wchar_t)c;
+    }
+    out[n] = 0;
+    return 1;
+}
+#endif
+
 void vk_dlaa_init(void) {
     if (!vk_dlaa_wanted() || !core_load()) return;
+#ifdef _WIN32
     wchar_t wdir[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
     while (len && wdir[len - 1] != L'\\') len--;
     wdir[len] = 0;
+#else
+    // The executable's folder, where NGX looks for libnvidia-ngx-dlss.so and writes its logs, as a wchar_t string:
+    // 32-bit code points here, as the Linux core expects.
+    char dir[PLAT_PATH_MAX];
+    wchar_t wdir[PLAT_PATH_MAX];
+    char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
+    if (!cut || !utf8_to_wide((cut[1] = 0, dir), wdir, PLAT_PATH_MAX)) {
+        rt_log("dlaa: cannot name the executable's folder for NGX: DLAA off");
+        return;
+    }
+#endif
     // 231313132: the application id NVIDIA's DLSS samples use for builds without an NVIDIA-issued id
     const VkCtx *c = vk_ctx();
     NgxResult r = N.init(231313132ull, wdir, c->instance, c->phys, c->device, vkGetInstanceProcAddr,
@@ -192,7 +254,7 @@ void vk_dlaa_init(void) {
         p_geti(caps, "SuperSampling.NeedsUpdatedDriver", &driver);
     }
     N.available = avail != 0;
-    rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is nvngx_dlss.dll next to totk.exe?)",
+    rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
            driver ? "; the driver needs an update" : "");
 }
 
