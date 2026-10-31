@@ -33,7 +33,7 @@
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
-#define SUPPORT_BYTES 1424u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...
+#define SUPPORT_BYTES 1440u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
@@ -1444,6 +1444,22 @@ static const float *pcss_params(void) {
     return p;
 }
 
+// The shadow_spread field of the support buffer: the factor translator patch 0011 applies to the lighting shaders' sun
+// shadow filter offset (element 56 .xy of their lighting block), 1 / TOTK_SHADOW_SCALE. The game spaces its four
+// compares for its own shadow map texels; with maps TOTK_SHADOW_SCALE times larger, the same offset in UV spans that
+// many more texels and the near cascade shows four separate copies of each edge. Dividing by the scale keeps the game's
+// spacing in texels. The offset is in UV of the shadow map, so the output resolution plays no part. The scale is read
+// once, as vk_texture.c shadow_scale reads it: the maps keep the size they were made with.
+static const float *shadow_spread_params(void) {
+    static float p[4] = {0, 0, 0, 0};
+    if (p[0] == 0) {
+        int scale = cfg_int("TOTK_SHADOW_SCALE");
+        scale = scale < 1 ? 1 : scale > 4 ? 4 : scale;
+        p[0] = 1.0f / (float)scale;
+    }
+    return p;
+}
+
 static void support_fill(uint8_t *b, float w, float h, float point_size) {
     memset(b, 0, SUPPORT_BYTES);
     float inv[4] = {w > 0 ? 2.0f / w : 0, h > 0 ? 2.0f / h : 0, 0, 0}, size[4] = {w, h, 0, 0};
@@ -1452,6 +1468,7 @@ static void support_fill(uint8_t *b, float w, float h, float point_size) {
     const float one = 1.0f;
     memcpy(b + 1392, &point_size, 4);   // point_size (translator patch 0008): vertex shaders that write none output it
     memcpy(b + 1408, pcss_params(), 16);   // pcss (translator patch 0010): soft sun shadows in the cascade compares
+    memcpy(b + 1424, shadow_spread_params(), 16);    // shadow_spread (translator patch 0011): sun shadow filter width
     for (int i = 0; i < 73; i++) memcpy(b + 192 + 16 * i, &one, 4);   // render scale 1: the host renders at guest size
 }
 
