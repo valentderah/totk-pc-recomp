@@ -310,7 +310,10 @@ static struct {
     uint64_t mv_frames, mv_none;
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
-} D = {.mv_ok = -1};
+    int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
+    unsigned cfg_seen;           // cfg_version when preset was read
+    uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
+} D = {.mv_ok = -1, .cfg_seen = ~0u};
 
 static int dl_active(void) { return N.available && !D.failed && D.on; }
 
@@ -531,6 +534,17 @@ static void next_jitter(void) {
     D.jit_ok = !D.hold && !nj;
 }
 
+// The DLSS model (TOTK_DLSS_PRESET, live): default leaves the choice to NGX, which in the 310 releases is the
+// transformer preset K for DLAA, Quality and Balanced and M for Performance. j is the other transformer model: NVIDIA
+// describes it as slightly less ghosting at the cost of extra flicker. k pins K, also in Performance. The value is an
+// NVSDK_NGX_DLSS_Hint_Render_Preset, read when a feature is created; a change recreates the features (preset_check).
+static int preset_value(void) {
+    const char *v = cfg_get("TOTK_DLSS_PRESET");
+    if (v && (v[0] == 'k' || v[0] == 'K') && !v[1]) return 11;
+    if (v && (v[0] == 'j' || v[0] == 'J') && !v[1]) return 10;
+    return 0;
+}
+
 // The quality setting DLSS is created with, from the scene's share of the output width.
 static int perf_quality(uint32_t w, uint32_t ow) {
     if (w >= ow) return NGX_PERFQ_DLAA;
@@ -545,6 +559,11 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
+    if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
+        for (int i = 0; i < 3; i++)
+            if (D.sizes[i].out) free_size(&D.sizes[i]);
+        D.last = NULL, D.preset_dirty = 0;
+    }
     struct Size *e = size_for(cb, w, h, ow, oh);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++;   // another size's history is from another moment
@@ -574,11 +593,17 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
         p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
+        static const char *const hint[] = {"DLSS.Hint.Render.Preset.DLAA", "DLSS.Hint.Render.Preset.Quality",
+                                           "DLSS.Hint.Render.Preset.Balanced", "DLSS.Hint.Render.Preset.Performance",
+                                           "DLSS.Hint.Render.Preset.UltraPerformance",
+                                           "DLSS.Hint.Render.Preset.UltraQuality"};
+        for (size_t i = 0; i < sizeof hint / sizeof *hint; i++) p_setu(p, hint[i], (unsigned)D.preset);
         NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, &e->feat);
         if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r);
         D.reset = 1;
-        rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d (scene format %d, depth format %d)", w,
-               h, ow, oh, perf_quality(w, ow), (int)t->format, (int)z->format);
+        rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d, preset %s (scene format %d, depth "
+               "format %d)", w, h, ow, oh, perf_quality(w, ow), D.preset == 11 ? "K" : D.preset == 10 ? "J" : "default",
+               (int)t->format, (int)z->format);
     }
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
@@ -601,7 +626,12 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     p_setu(p, "DLSS.Render.Subrect.Dimensions.Height", h);
     p_setf(p, "DLSS.Pre.Exposure", 1.0f);
     p_setf(p, "DLSS.Exposure.Scale", 1.0f);
-    p_setf(p, "FrameTimeDeltaInMsec", 16.67f);
+    // The time since the previous evaluation, which DLSS weighs its history by; 60 fps before the first and after a
+    // gap (a pause, a load), where no history carries over anyway.
+    uint64_t now = plat_now_ns();
+    double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
+    D.last_eval_ns = now;
+    p_setf(p, "FrameTimeDeltaInMsec", dt > 0 && dt < 100 ? (float)dt : 16.67f);
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
     D.reset = 0;
@@ -665,7 +695,19 @@ void vk_dlaa_pass(VkExec *ex) {
     }
 }
 
+// The preset, read again when a setting changed (the menu); a different one recreates the features at the next DLAA run.
+static void preset_check(void) {
+    unsigned v = cfg_version();
+    if (v == D.cfg_seen) return;
+    D.cfg_seen = v;
+    int p = preset_value();
+    if (p == D.preset) return;
+    if (D.evals) rt_log("dlaa: DLSS preset %s; the features are created again", p == 11 ? "K" : p == 10 ? "J" : "default");
+    D.preset = p, D.preset_dirty = 1, D.reset = 1;
+}
+
 void vk_dlaa_frame(void) {
+    preset_check();
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
