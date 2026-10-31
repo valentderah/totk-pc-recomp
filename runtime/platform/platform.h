@@ -100,6 +100,8 @@ void plat_wait_ns(uint64_t ns);
 #else
 #define PLAT_WAIT_LATE_NS 60000u    // clock_nanosleep with a 1 us timer slack (plat_timer_1ms), scheduler wakeup
 #endif
+// Sleeps until the monotonic time at: plat_wait_ns to 2 * PLAT_WAIT_LATE_NS before it, then spins (common.c).
+void plat_sleep_until_ns(uint64_t at);
 static inline uint64_t plat_now_ms(void) { return plat_now_ns() / 1000000u; }
 void plat_sleep_ms(uint32_t ms);          // coarse sleep: the scheduler's granularity, no spinning
 

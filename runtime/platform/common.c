@@ -21,6 +21,24 @@ void plat_rmutex_unlock(PlatRMutex *m) {
     plat_mutex_unlock(&m->m);
 }
 
+// ---- deadline sleep, for the frame pacing (vk_backend.c present_main, nvn_api_obj.c nvnWindowAcquireTexture): on
+// the timer until it could wake late, then spinning the rest, so the deadline is met within microseconds. Windows
+// yields in the spin (SwitchToThread is back at once with nobody ready on the processor); Linux pauses, as sched_yield
+// is a system call that under EEVDF also puts the caller behind a whole slice, and a loop of it to a deadline 1-2 ms
+// away took that long of a hardware thread on every frame.
+
+void plat_sleep_until_ns(uint64_t at) {
+    uint64_t now = plat_now_ns();
+    if (at > now + 3 * PLAT_WAIT_LATE_NS) plat_wait_ns(at - now - 2 * PLAT_WAIT_LATE_NS);
+    while (plat_now_ns() < at) {
+#ifdef _WIN32
+        plat_yield();
+#else
+        plat_pause();
+#endif
+    }
+}
+
 // ---- once: state 0 not run, 1 running, 2 done. Waiters for a running initialiser sleep on one process-wide
 // condition variable; initialisers are rare and short.
 
