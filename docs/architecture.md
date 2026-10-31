@@ -57,6 +57,11 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian).
+- Where a default lives. A change that helps every machine gets a fixed default and a `TOTK_*` switch to turn it
+  off. One that helps one kind of machine takes its default from the device profile in `cfg.c` (`TOTK_DEVICE_PROFILE`:
+  the Steam Deck's `DECK[]` table, applied to the keys the player did not set) when it depends on the device, or from
+  `VkCaps` (`vk_caps.c`: GPU vendor, driver branch, pipeline library support, decided at device creation) when it
+  depends on the GPU or driver. Neither layer guesses from the operating system.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores
