@@ -37,6 +37,7 @@ jobs:
             mingw-w64-ucrt-x86_64-opus
             mingw-w64-ucrt-x86_64-libvpx
             mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-devel
             mingw-w64-ucrt-x86_64-vulkan-memory-allocator
             mingw-w64-ucrt-x86_64-vulkan-validation-layers
