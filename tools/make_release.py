@@ -11,7 +11,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
     runtime/   libtotkrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
-               ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+               ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA,
+               and the FSR 3.1 libraries built from the pinned UniversalScalers-Vulkan source; needs cmake)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
@@ -52,6 +53,8 @@ MSYS2 = 'https://repo.msys2.org/mingw/ucrt64/'
 SDL_VERSION = '3.4.18'
 LLVM_VERSION = '20261020'
 MNG_COMMIT = 'b75be8cfa704df3701e86130c8ced268e79d6b11'   # MacNativeGames, the shader list (refs/MacNativeGames)
+# UniversalScalers-Vulkan (formerly FSR-Vulkan): the FSR 3.1.5 upscaler for runtime/vk_fsr3.c (build_ffx)
+FFX_COMMIT = 'c64f093404125e960813f95f1996c14780f0dd69'
 # name: (url, sha256)
 PINS = {
     'python-embed': ('https://www.python.org/ftp/python/3.14.9/python-3.14.9-embed-amd64.zip',
@@ -81,6 +84,8 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
+    'fsr-vulkan': (f'https://github.com/FireBurn/UniversalScalers-Vulkan/archive/{FFX_COMMIT}.tar.gz',   # source
+                   'a7bd487de070d1bf94b0fbaecbafcd32ca20bcc757f4827da82f522bfa59e49a'),
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
@@ -121,6 +126,8 @@ def fetch(name):
     path = DL / Path(url.split('?')[0]).name.replace('%7E', '~')
     if name == 'libvpx-src':
         path = DL / 'libvpx-1.17.0.tar.gz'
+    if name == 'fsr-vulkan':
+        path = DL / f'UniversalScalers-Vulkan-{FFX_COMMIT[:12]}.tar.gz'
     if not path.is_file():
         print(f'download {url}')
         with urllib.request.urlopen(url) as r, open(path, 'wb') as f:
@@ -304,6 +311,41 @@ def build_deps(out):
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
 
 
+def ffx_source():
+    return unpack('fsr-vulkan') / f'UniversalScalers-Vulkan-{FFX_COMMIT}'
+
+
+def build_ffx(out, llvm):
+    """runtime/deps: FSR 3.1 for runtime/vk_fsr3.c, built from the pinned UniversalScalers-Vulkan source with the
+    folder's llvm/, ninja and Vulkan headers as tools/ffx/README.md describes: the upscaler's two static libraries, the
+    shader-blob stubs of tools/ffx/ffx_fsr3_blobs.cpp and the bridge header. Needs cmake (on PATH, else MSYS2 UCRT64's)."""
+    cmake = shutil.which('cmake') or r'C:\msys64\ucrt64\bin\cmake.exe'
+    if not Path(cmake).is_file():
+        sys.exit('cmake not found: install MSYS2 UCRT64 cmake (pacman -S mingw-w64-ucrt-x86_64-cmake)')
+    src, build, deps = ffx_source(), WORK / 'fsr-vulkan-build', out / 'runtime' / 'deps'
+    shutil.rmtree(build, ignore_errors=True)
+    off = ['TESTS', 'PROBE', 'FSR3_HOST', 'FSR3_VK_BACKEND', 'FSR4_V07_VULKAN', 'INSTALL']
+    run([cmake, '-S', src, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+         f'-DCMAKE_MAKE_PROGRAM={(out / "bin" / "ninja.exe").as_posix()}',
+         f'-DCMAKE_C_COMPILER={(llvm / "bin" / "x86_64-w64-mingw32-clang.exe").as_posix()}',
+         f'-DCMAKE_CXX_COMPILER={(llvm / "bin" / "x86_64-w64-mingw32-clang++.exe").as_posix()}',
+         f'-DVulkan_INCLUDE_DIR={(deps / "include").as_posix()}',
+         f'-DVulkan_LIBRARY={(deps / "lib" / "libvulkan-1.dll.a").as_posix()}',
+         '-DFFX_VK_PORTABLE_BUILD_FSR3_3_1_5_SCAFFOLD=ON', *[f'-DFFX_VK_PORTABLE_BUILD_{o}=OFF' for o in off]])
+    run([cmake, '--build', build, '--target', 'ffx_vulkan_fsr3_vk_backend_3_1_5', 'ffx_vulkan_portable'])
+    kit = src / 'upstream' / 'ffx-2.3.0' / 'Kits' / 'FidelityFX'
+    blobs = build / 'ffx_fsr3_blobs.o'
+    run([llvm / 'bin' / 'x86_64-w64-mingw32-clang++.exe', '-O2', '-std=c++17', '-c',
+         '-include', src / 'src' / 'ffx_1_1_4_portability.hpp',
+         *[a for d in ('api/include', 'api/internal', 'upscalers/include', 'upscalers/fsr3/include',
+                       'upscalers/fsr3/internal') for a in ('-I', kit / d)],
+         ROOT / 'tools' / 'ffx' / 'ffx_fsr3_blobs.cpp', '-o', blobs])
+    run([llvm / 'bin' / 'llvm-ar.exe', 'rcs', deps / 'lib' / 'libffx_vulkan_fsr3_blobs.a', blobs])
+    for lib in ('libffx_vulkan_fsr3_vk_backend_3_1_5.a', 'libffx_vulkan_portable.a'):
+        shutil.copy2(build / lib, deps / 'lib' / lib)
+    shutil.copy2(src / 'include' / 'ffx_vk_fsr3_3_1_5_bridge.h', deps / 'include')
+
+
 def collect_licenses(out):
     lic = out / 'licenses'
     lic.mkdir(parents=True, exist_ok=True)
@@ -317,6 +359,8 @@ def collect_licenses(out):
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
+        (ffx_source() / 'LICENSE.txt', 'UniversalScalers-Vulkan-LICENSE.txt'),
+        (ffx_source() / 'NOTICE.md', 'UniversalScalers-Vulkan-NOTICE.md'),   # which AMD files, under which notices
     ]
     for src, name in pairs:
         shutil.copy2(src, lic / name)
@@ -508,6 +552,7 @@ def main():
     llvm = build_llvm(out)
     build_bin(out)
     build_deps(out)
+    build_ffx(out, llvm)
     runtime_lib(out, llvm)
     build_sources(out)
     build_launcher(out, llvm)

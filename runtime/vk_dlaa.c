@@ -256,8 +256,10 @@ static struct {
 // DLSS needs NGX and its model; FSR 3.1 runs on any GPU the back end runs on. on already says the engine is there.
 static int dl_active(void) { return !D.failed && D.on; }
 
-// The engine aa_engine names: fsr3, dlss, or auto (DLSS when NGX has it, else FSR 3.1).
+// The engine aa_engine names: fsr3, dlss, or auto (DLSS when NGX has it, else FSR 3.1). A build without FSR 3.1
+// (fsr3_available) always takes DLSS.
 static int engine_fsr(void) {
+    if (!fsr3_available()) return 0;
     const char *e = cfg_value("TOTK_AA_ENGINE");
     if (!strcmp(e, "fsr3")) return 1;
     if (!strcmp(e, "dlss")) return 0;
