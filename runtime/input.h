@@ -75,3 +75,9 @@ MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
 void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
+
+// Mouselook (mousecam.c). Raw counts, wheel notches and a middle-click flag since the last call; returns 0 (and discards
+// them) while the cursor is not captured.
+int input_mouse_look_take(float *dx, float *dy, float *scroll, int *reset);
+float input_mouse_sens(void);                 // TOTK_MOUSE_SENS, 0..10
+void input_stick_r_pad(int32_t out[2]);       // right stick from gamepad and keys only, without the mouse

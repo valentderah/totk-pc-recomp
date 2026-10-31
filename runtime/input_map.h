@@ -101,6 +101,25 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
 // drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]);
 
+// The mouse camera, "native" mode (TOTK_MOUSE_MODE): the technique of Zelda on PC's PCCamera (MPL-2.0, mircea32000),
+// written again here. Each presented frame the mouse motion becomes a camera rotation in degrees (counts * 0.022 *
+// sens), and the right stick is set to the deflection that makes the game turn the camera by exactly that angle: the
+// rate wanted over the rate at full deflection, through the inverse of the game's stick response (dead zone, then
+// power curve). A rotation the stick cannot express this frame (past full deflection) is carried into the next
+// frames, up to 12 degrees, so a fast flick still turns the whole angle. The turn is the mouse's distance, not its
+// speed through a curve: the same movement turns the same angle at any speed and at any frame rate.
+typedef struct { double carry[2]; } MouseCamState;   // degrees left over, yaw (right +) and pitch (up +)
+typedef struct {
+    float sens;       // TOTK_MOUSE_SENS: 1 = 0.022 degrees per count
+    float y_ratio;    // TOTK_MOUSE_Y_RATIO: vertical sensitivity relative to horizontal
+    float curve;      // TOTK_MOUSE_CURVE: the game's response exponent after its dead zone (1 = linear)
+    float deadzone;   // TOTK_MOUSE_DEADZONE: the game's dead zone as a fraction of full deflection
+    float rate;       // TOTK_MOUSE_RATE: degrees per second the camera turns at full deflection (yaw)
+} MouseCamCfg;
+// Writes the right stick (-32767..32767, up is +y). dx, dy: raw counts since the last call,
+// dt_s the time since it. sens <= 0 gives a neutral stick.
+void input_mouse_camera(MouseCamState *st, int32_t dx, int32_t dy, double dt_s, const MouseCamCfg *c, int32_t out[2]);
+
 // ---- the remapping rows' edits, on a copy of input_map. Pure.
 // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.
 int input_map_keys_of(const InputMap *m, int action, uint8_t *out, int max);

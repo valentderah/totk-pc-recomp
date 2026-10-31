@@ -78,7 +78,17 @@ bind_Y = pad:north, key:mouse_l
 
 ## Mouse camera
 
-Mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
+Mouse motion (raw input) becomes right-stick deflection, as the camera angle you moved the mouse. This is the idea of Zelda on PC's camera (mircea32000, MPL-2.0; `src/pcedition/PCCamera.cpp`, `CameraConverter::Update`), written again here without copying its code: each presented frame takes the counts moved since the last frame, turns them into degrees (`counts * 0.022 * TOTK_MOUSE_SENS`), and sets the stick to the deflection that makes the game turn the camera by exactly that angle, through the inverse of the game's stick response (its dead zone, then a power curve). The same movement therefore turns the camera the same angle at any speed and at any frame rate, and the slowest movement is past the dead zone instead of lost. A rotation the stick cannot show in one frame (past full deflection) is carried into the next frames, up to 12 degrees, so a flick still turns its whole angle. It is still the stick: the game's own camera speed and smoothing apply on top, and the mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
+
+The inverse needs the game's stick response, which is not measured for Tears of the Kingdom: the settings below start from the sibling game's values (Breath of the Wild, as Zelda on PC measured them) and an estimated dead zone, and are live in `totk.ini` (no restart). If the camera feels too sharp at slow speeds, lower `mouse_curve`; if slow movements stick or jump, change `mouse_deadzone`; `mouse_mode = linear` restores the older mapping (counts per second to deflection, `/ 3000`).
+
+| Setting (`totk.ini` key) | Default | Meaning |
+|---|---|---|
+| `mouse_mode` | `native` | `native` as above, `linear` the older mapping |
+| `mouse_y_ratio` | 1 (0.25 to 4) | vertical sensitivity relative to horizontal |
+| `mouse_curve` | 2 (1 to 3) | the game's response exponent after its dead zone; 1 is linear |
+| `mouse_deadzone` | 0.2 (0 to 0.5) | the game's dead zone, as a fraction of full deflection |
+| `mouse_rate` | 85 (20 to 300) | degrees per second the camera turns at full deflection |
 
 `TOTK_MOUSE_SENS` (0 to 10, default 1; higher turns faster, 0 turns the mouse camera and the cursor capture off). While the window is the foreground window the cursor is hidden and confined to the client area. It is released on focus loss, minimise, while F11 changes the window, during a size or move loop and while a text entry is open. Esc releases it by hand: the cursor shows, the mouse camera and mouse buttons stop, and the window can be moved, minimised or closed. A mouse click inside the client area captures it again; that click does not reach the game. Activating the window by a click on its title bar or border does not capture, so it can be dragged or closed right away; Alt+Tab or a click in the client area captures as before. `TOTK_INPUT=none` disables the capture too.
 

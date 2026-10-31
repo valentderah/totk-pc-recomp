@@ -261,17 +261,25 @@ int probe_cfg(void) {
     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
     input_mouse_stick(30, 0, 1.0 / 60, 0, st);
     CHECK(st[0] == 0 && st[1] == 0, "mouse: sensitivity 0 is off");
-    input_pad_stick(3000, -2000, 0.15f, st);
-    CHECK(st[0] == 0 && st[1] == 0, "pad stick: an 11% drift inside a 15% dead zone reads centred");
-    input_pad_stick(4000, -3000, 0, st);
-    CHECK(st[0] == 4000 && st[1] == -3000, "pad stick: dead zone 0 passes the stick unchanged");
-    input_pad_stick(32767, 0, 0.15f, st);
-    CHECK(st[0] == 32767 && st[1] == 0, "pad stick: full deflection still reaches full");
-    input_pad_stick(-32768, -32768, 0.15f, st);
-    CHECK(st[0] < 0 && st[1] < 0 && st[0] >= -32767 && (int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768,
-          "pad stick: a square gate's corner stays on the unit circle");
-    input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
-    CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
+    {   // the native camera: the same distance is the same angle at any speed and frame rate; a flick's excess is carried
+        const MouseCamCfg cc = {1, 1, 2, 0.2f, 85};
+        MouseCamState cs = {{0, 0}};
+        int32_t o[2];
+        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] == 0 && o[1] == 0, "mouse camera: no motion is a neutral stick");
+        input_mouse_camera(&cs, 1, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] > 0.2 * 32767 && o[1] == 0, "mouse camera: one count is past the dead zone");
+        input_mouse_camera(&cs, 0, -10, 1.0 / 60, &cc, o);
+        CHECK(o[1] > 0, "mouse camera: moving up is stick up");
+        cs = (MouseCamState){{0, 0}};
+        input_mouse_camera(&cs, 2000, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] == 32767 && cs.carry[0] > 0 && cs.carry[0] <= 12.0, "mouse camera: a flick saturates and the rest is carried (12 degrees at most)");
+        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] > 0, "mouse camera: the carry keeps turning after the mouse stops");
+        const MouseCamCfg off = {0, 1, 2, 0.2f, 85};
+        input_mouse_camera(&cs, 50, 0, 1.0 / 60, &off, o);
+        CHECK(o[0] == 0 && cs.carry[0] == 0, "mouse camera: sensitivity 0 is off");
+    }
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
