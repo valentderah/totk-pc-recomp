@@ -11,7 +11,6 @@
 // - Inputs of at least AWAY_BYTES give the virtual core up while they decode (other guest threads run on it).
 // TOTK_ZSTD_NATIVE=0 keeps the guest decoder (the patch set switch); TOTK_ZSTD_CHECK=1 decodes each call both ways,
 // keeps the guest's result and logs every call where the two differ.
-#include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +23,7 @@
 
 #if __has_include("patches.h")
 #include "patches.h"
+#include "platform/platform.h"
 #endif
 
 #ifdef RT_PATCH_PAGE
@@ -44,7 +44,7 @@ typedef struct {
 } Dict;
 static Dict dicts[NDICT];
 static int ndicts;
-static SRWLOCK dict_lock = SRWLOCK_INIT;
+static PlatMutex dict_lock = PLAT_MUTEX_INIT;
 
 static struct {
     uint64_t calls, in, out, ns, guest_ns, fallbacks, away, inplace;
@@ -76,23 +76,23 @@ static ZSTD_DDict *dict_for(uint64_t guest, uint64_t content, uint64_t size) {
         return NULL;
     uint64_t print = fingerprint(gp(content), size);
     ZSTD_DDict *dd = NULL;
-    AcquireSRWLockShared(&dict_lock);
+    plat_mutex_lock_shared(&dict_lock);
     for (int i = 0; i < ndicts && !dd; i++)
         if (dicts[i].guest == guest && dicts[i].content == content && dicts[i].size == size && dicts[i].print == print)
             dd = dicts[i].dd;
-    ReleaseSRWLockShared(&dict_lock);
+    plat_mutex_unlock_shared(&dict_lock);
     if (dd) return dd;
     // A copy: the guest may free or reuse its buffer. Entries are never freed (another thread may be decoding with
     // one); a full table sends further dictionaries to the guest decoder.
     ZSTD_DDict *made = ZSTD_createDDict(gp(content), (size_t)size);
     if (!made) return NULL;
     int slot = -1;
-    AcquireSRWLockExclusive(&dict_lock);
+    plat_mutex_lock(&dict_lock);
     for (int i = 0; i < ndicts && !dd; i++)   // another thread may have made it meanwhile
         if (dicts[i].guest == guest && dicts[i].content == content && dicts[i].size == size && dicts[i].print == print)
             dd = dicts[i].dd;
     if (!dd && ndicts < NDICT) slot = ndicts, dicts[ndicts++] = (Dict){guest, content, size, print, made}, dd = made;
-    ReleaseSRWLockExclusive(&dict_lock);
+    plat_mutex_unlock(&dict_lock);
     if (dd != made) {
         ZSTD_freeDDict(made);
         if (!dd) rt_log("zstd: more than %d dictionaries: further ones decode in the guest", NDICT);

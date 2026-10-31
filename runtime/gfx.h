@@ -16,7 +16,7 @@ const OvNvState *ov_nv_state(void);                        // ov_gfx.c
 #define RT_GPU_VA_BASE 0x8000000000ull                     // 2^39, never mapped on the host
 #define RT_GPU_VA_SIZE (64ull << 30)
 
-// ---- window, vsync, focus (gfx_window.c, vk_device.c). Host threads only; never run guest code.
+// ---- window, vsync, focus (gfx_present.c and the window back end, gfx_wsys.h; vk_device.c). Host threads only; never run guest code.
 void gfx_window_start(void);                               // window thread, Vulkan device, swapchain; idempotent
 void gfx_vsync_bind(uint64_t system_event);                // nn::vi vsync event; signalled at 60 Hz
 uint64_t gfx_vsync_ticks(void);                            // ticks since start
@@ -50,7 +50,7 @@ const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8
 uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
 void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (TOTK_TRACE=perf)
 // Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
-void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3]);
+void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits);
 const uint8_t *gfx_shader_key(const GfxShader *s);          // the 32-byte cache key (stable while the translator is)
 const uint8_t *gfx_shader_input_id(const GfxShader *s);     // the 32-byte input id (stable across translators)
 // By input id from memory or disk; xlate 1 also translates it from its stored inputs. NULL if absent.

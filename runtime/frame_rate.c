@@ -24,7 +24,7 @@
 //
 // The world clock (frame_step_world_us) sums the steps from the first present that finds the player actor away from
 // the origin, where the title screen keeps it: the end of the first save load. Recorded and scripted input
-// (input_win.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
+// (input.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
 // length; a later load (fast travel) still shifts what follows by its length.
 //
 // TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
@@ -90,7 +90,7 @@ void frame_step_init(void) {
 
 int frame_step_realtime(void) { return step_word != NULL; }
 
-// The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 120, 144, any whole rate from 30 to 360, or display (the
+// The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the
 // refresh rate of the window's monitor). Unset, the older TOTK_FPS60=0 still means 30. A limit of 30 switches the set
 // fps60 off (the shipping minimum interval 2), every other limit switches it on; the controller reads its minimum
 // interval from the patched sites each frame. With the real-time step the pacer holds frames to the limit; above 60
@@ -161,10 +161,14 @@ static uint64_t read_ptr(uint64_t a) {
     uint64_t p = 0;
     return read_guest(a, &p, 8) ? p : 0;
 }
-// 1.2.1: [main+0x4728538] (1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the resident actors; the one
-// named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h TOTK_GAME_V121/V143).
+// 1.2.1: [main+0x4728538] (1.1.1: [main+0x4630a68], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
+// resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
+// TOTK_GAME_V121/V143). The 1.1.1 slot was measured from its own dereference chain: 181 scene accesses in that build
+// read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
+// compare) instruction for instruction.
 static int player_pos(float xyz[3]) {
-    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : 0x4728538)), scene = module ? read_ptr(module + 0x1e8) : 0;
+    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V111 ? 0x4630a68 : 0x4728538)),
+             scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;
     if (!scene || !read_guest(scene + 0x50, &count, 4) || count < 14 || count > 256) return 0;
     uint64_t comps = read_ptr(scene + 0x58), resident = comps ? read_ptr(comps + 13 * 8) : 0;

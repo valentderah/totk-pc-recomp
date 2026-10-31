@@ -44,7 +44,7 @@ static const char *const action_names[ACTION_COUNT] = {
     "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN"};
 static const char *const pad_names[PAD_COUNT] = {
     NULL, "south", "east", "west", "north", "lstick", "rstick", "l", "r", "start", "back",
-    "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr"};
+    "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr", "lpaddle1", "rpaddle1", "lpaddle2", "rpaddle2"};
 static const char *const key_names[KEY_COUNT] = {   // each group starts at its id; the ids of a group are consecutive
     [KEY_A] = "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u",
     "v", "w", "x", "y", "z",
@@ -67,13 +67,13 @@ void input_map_reset(void) { input_map = defaults; }
 
 static int key_id(const char *name) {
     for (int k = KEY_A; k < KEY_COUNT; k++)
-        if (key_names[k] && !_stricmp(key_names[k], name)) return k;
+        if (key_names[k] && !strcasecmp(key_names[k], name)) return k;
     return KEY_NONE;
 }
 
 static int pad_id(const char *name) {
     for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
-        if (!_stricmp(pad_names[p], name)) return p;
+        if (!strcasecmp(pad_names[p], name)) return p;
     return PAD_NONE;
 }
 
@@ -120,25 +120,25 @@ static void pads_put(InputMap *m, int layout, int action, const uint8_t *list, i
 int input_map_bind(const char *button, const char *list) {
     int action = -1;
     for (int a = 0; a < ACTION_COUNT; a++)
-        if (!_stricmp(action_names[a], button)) action = a;
+        if (!strcasecmp(action_names[a], button)) action = a;
     if (action < 0) { rt_log("input: bind: unknown button '%s'", button); return 0; }
     uint8_t keys[INPUT_BINDING_MAX], pads[INPUT_PAD_BINDING_MAX];
     int nk = 0, np = 0, none = 0, key_def = 0, pad_def = 0, bad = 0;
     char buf[256];
     snprintf(buf, sizeof buf, "%s", list);
-    for (char *save = NULL, *tok = strtok_s(buf, ",", &save); tok; tok = strtok_s(NULL, ",", &save)) {
+    for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         tok = trim(tok);
-        if (!_stricmp(tok, "none")) { none = 1; continue; }
+        if (!strcasecmp(tok, "none")) { none = 1; continue; }
         int ok = 0;
-        if (!_strnicmp(tok, "pad:", 4) && action < B_SL_LEFT) {
+        if (!strncasecmp(tok, "pad:", 4) && action < B_SL_LEFT) {
             const char *name = trim(tok + 4);
             int p = pad_id(name);
-            if (!_stricmp(name, "default")) pad_def = ok = 1;
+            if (!strcasecmp(name, "default")) pad_def = ok = 1;
             else if (p && np < INPUT_PAD_BINDING_MAX) pads[np++] = (uint8_t)p, ok = 1;
-        } else if (!_strnicmp(tok, "key:", 4)) {
+        } else if (!strncasecmp(tok, "key:", 4)) {
             const char *name = trim(tok + 4);
             int k = key_id(name);
-            if (!_stricmp(name, "default")) key_def = ok = 1;
+            if (!strcasecmp(name, "default")) key_def = ok = 1;
             else if (k && nk < INPUT_BINDING_MAX) keys[nk++] = (uint8_t)k, ok = 1;
         }
         if (!ok) {
@@ -283,8 +283,8 @@ void input_map_line(const InputMap *m, int action, char *out, size_t n) {
 }
 
 int input_pad_layout_pick(const char *setting, int east_labelled_a) {
-    if (setting && !_stricmp(setting, "nintendo")) return PAD_LAYOUT_NINTENDO;
-    if (setting && !_stricmp(setting, "xbox")) return PAD_LAYOUT_XBOX;
+    if (setting && (!strcasecmp(setting, "nintendo") || !strcasecmp(setting, "xbox_prompts"))) return PAD_LAYOUT_NINTENDO;
+    if (setting && !strcasecmp(setting, "xbox")) return PAD_LAYOUT_XBOX;
     return east_labelled_a ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX;
 }
 
@@ -365,8 +365,7 @@ void input_mouse_camera(MouseCamState *st, int32_t dx, int32_t dy, double dt_s, 
 // down (the caller keeps it). Every poll of the latch reports neither to the game, so releasing one button first does not
 // leak the other; Minus alone before Plus reaches the game unchanged. With the menu open the game sees a neutral pad.
 // Returns 1 in the poll where both go down: the caller toggles the menu once.
-int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]) {
-    const uint64_t combo = 1ull << B_MINUS | 1ull << B_PLUS;
+static int chord(int *held, uint64_t *buttons, uint64_t combo) {
     uint64_t raw = *buttons & combo;
     int edge = 0;
     if (*held) {
@@ -376,9 +375,20 @@ int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[
         edge = 1;
     }
     if (*held) *buttons &= ~combo;
+    return edge;
+}
+
+int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]) {
+    int edge = chord(held, buttons, 1ull << B_MINUS | 1ull << B_PLUS);
     if (menu_open) {
         *buttons = 0;
         sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0;
     }
     return edge;
+}
+
+// Both stick clicks held together step the performance overlay as F10 does (a gamepad has no F10: the Steam Deck in
+// Game Mode). The same latch as the menu's above; the game sees neither click while it holds.
+int input_overlay_gate(int *held, uint64_t *buttons) {
+    return chord(held, buttons, 1ull << B_STICK_L | 1ull << B_STICK_R);
 }

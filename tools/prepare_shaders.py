@@ -28,6 +28,7 @@ bundles it; it stays out of the repository), else from refs/ through git with th
 import argparse
 import hashlib
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -68,6 +69,15 @@ def read_list(path):
     return shader_list.history(ROOT / 'refs' / 'MacNativeGames')
 
 
+def pipeline_variants(key):
+    """The vertex and fragment variant names of an R/B row's pipeline key. Since MacNativeGames f024ef04 (2026-10-28) the
+    TotK list keeps keys packed, "<vs variant>:<fs variant>:<the rest in hex>"; older revisions and contribution files
+    hold the whole key in hex, "<vs variant>\\0<fs variant>\\0" + a Metal descriptor (docs/shader-list.md there)."""
+    if ':' in key:
+        return key.split(':', 2)[:2]
+    return [n.decode('ascii', 'replace') for n in bytes.fromhex(key).split(b'\0')[:2]]
+
+
 def parse_list(text):
     """V rows as (key, deps); priority per shader key from the warm rows (variant names start with the key)."""
     variants, prio = [], {}
@@ -85,10 +95,9 @@ def parse_list(text):
         elif f[0] == 'C' and len(f) == 3:
             warm(f[1][:64], f[2])
         elif f[0] in ('R', 'B') and len(f) >= 3:
-            names = bytes.fromhex(f[1]).split(b'\0')[:2]   # "<vs variant>\0<fs variant>\0" + a Metal descriptor
-            for n in names:
+            for n in pipeline_variants(f[1]):
                 if len(n) >= 64:
-                    warm(n[:64].decode('ascii', 'replace'), f[-1])
+                    warm(n[:64], f[-1])
     return variants, prio
 
 
@@ -131,10 +140,17 @@ def main():
     t0 = time.monotonic()
     variants, prio = parse_list(read_list(a.list))
     extracted = ROOT / 'build' / 'extracted' / a.version
-    shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs')
+    listed = len(variants)
+    shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)
+    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.1 holds 17,587 of its
+    # 41,414 rows, so most rows are absent because the game does not have them, not because the walk missed them. A walk
+    # that found next to nothing does say something: the shader directories have moved.
+    if len(shaders) < max(64, listed // 20):
+        print(f'only {len(shaders)} shaders found of the {listed} listed variants: reading every RomFS file instead',
+              flush=True)
+        shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs')
     t1 = time.monotonic()
     progs, recs, seen, skipped = {}, [], set(), {'not in this version': 0, 'stage': 0}
-    listed = len(variants)
     variants += [(key, DEFAULT) for key in sorted(shaders)]
     for key, deps in variants:
         s = shaders.get(key)
@@ -175,7 +191,7 @@ def main():
           f'seed written in {time.monotonic() - t0:.1f} s', flush=True)
     if a.no_run:
         return 0
-    exe = out / 'totk.exe'
+    exe = out / ('totk.exe' if os.name == 'nt' else 'totk')
     r = subprocess.run([str(exe), '--prepare-shaders'], cwd=str(out))
     print(f'totk.exe --prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s')
     return r.returncode

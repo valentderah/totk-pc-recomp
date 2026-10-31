@@ -6,7 +6,8 @@ tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and
 here: the host check is a small C program built with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
+romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
+totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -94,8 +96,34 @@ def kill_tree(proc):
         return
     if os.name == 'nt':
         subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
-    else:
+        return
+    try:   # run_tool starts each tool in a session of its own: the group holds ninja, clang and the game
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
         proc.kill()
+
+
+def linux_glibc():
+    """(major, minor) of the C library this Linux process runs on, None elsewhere or when it is not glibc."""
+    try:
+        name = os.confstr('CS_GNU_LIBC_VERSION') if sys.platform.startswith('linux') else None
+    except (ValueError, OSError):
+        return None
+    m = re.match(r'glibc (\d+)\.(\d+)', name or '')
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+# The bundled clang, lld and the cryptography wheel are built against glibc 2.34 (tools/make_release_linux.py
+# GLIBC_FLOOR); on an older one they cannot start
+GLIBC_NEEDED = (2, 34)
+
+
+def linux_kernel():
+    """(major, minor) of the running Linux kernel, None elsewhere."""
+    if not sys.platform.startswith('linux'):
+        return None
+    m = re.match(r'(\d+)\.(\d+)', os.uname().release)
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def run_tool(ctx, step, script, args, parse=None, cwd=None):
@@ -109,7 +137,8 @@ def run_tool(ctx, step, script, args, parse=None, cwd=None):
     env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
     with open(log, 'w', encoding='utf-8', newline='\n') as out:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd or ctx.layout.root,
-                                env=env, text=True, encoding='utf-8', errors='replace', bufsize=1)
+                                env=env, text=True, encoding='utf-8', errors='replace', bufsize=1,
+                                start_new_session=os.name != 'nt')
         try:
             for line in proc.stdout:
                 out.write(line)
@@ -139,9 +168,9 @@ def raise_if_damaged(error, name, path):
 
 
 def game_version(ctx):
-    """The update this install is built from: what the check identified, else the recorded one (an install made before
-    1.4.3 support records none: 1.2.1)."""
-    return ctx.state.get('version', SUPPORTED[0])
+    """The update this install is built from: what the check identified, else the recorded one. An install made before
+    1.4.3 support records no version, and that install is 1.2.1: name it here rather than leaning on SUPPORTED's order."""
+    return ctx.state.get('version', '1.2.1')
 
 
 def expected_update(ctx):
@@ -201,9 +230,10 @@ class Check(Step):
             raise InstallError('check.release_incomplete', paths=missing[:5])
         if dest.exists() and not dest.is_dir():
             raise InstallError('check.dest_not_folder', path=str(dest))
-        if ctx.mode == 'install' and dest.is_dir() and any(dest.iterdir()):
+        own = (ctx.temp, *ctx.temp.parents)   # a temp folder inside the install folder (installer/cli.py) is ours
+        if ctx.mode == 'install' and dest.is_dir() and any(p not in own for p in dest.iterdir()):
             raise InstallError('check.dest_not_empty', path=str(dest))
-        lang = ctx.options.lang or ctx.state.get('lang')
+        lang = ini.canonical_language(ctx.options.lang or ctx.state.get('lang'))
         if not lang:
             raise InstallError('check.lang_missing')
         if lang not in ini.LANGUAGES:
@@ -229,9 +259,17 @@ class Check(Step):
 
     def host(self, ctx):
         layout, work = ctx.layout, ctx.temp / 'check'
+        glibc = linux_glibc()
+        if glibc and glibc < GLIBC_NEEDED and not layout.dev:
+            raise InstallError('check.glibc_old', version='.'.join(map(str, glibc)),
+                               need='.'.join(map(str, GLIBC_NEEDED)))
         work.mkdir(parents=True, exist_ok=True)
         exe = work / ('hostcheck' + EXE)
-        command = [str(layout.clang), '-O1', str(HOSTCHECK), '-I', str(layout.deps / 'include'), '-o', str(exe)]
+        command = [str(layout.clang), '-O1', str(HOSTCHECK), '-o', str(exe)]
+        if layout.deps:
+            command += ['-I', str(layout.deps / 'include')]
+        if layout.sysroot:
+            command += [f'--sysroot={layout.sysroot}', '-fuse-ld=lld']
         if os.name != 'nt':
             command.append('-ldl')
         r = subprocess.run(command, capture_output=True, text=True, errors='replace')
@@ -254,6 +292,11 @@ class Check(Step):
         if not any(tuple(d['api'][:2]) >= (1, 3) for d in devices):
             raise InstallError('check.vulkan_too_old',
                                devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
+        kernel = linux_kernel()
+        if kernel and kernel < (6, 7):
+            # Without userfaultfd's asynchronous write protection nothing tracks the CPU's writes: the game copies whole
+            # pools to the GPU at each submit and its texture checks see every page as changed (docs/building.md, Linux)
+            ctx.reporter.warning('warn.kernel_old', version='.'.join(map(str, kernel)))
         ctx.host = host
 
     def inputs(self, ctx):
@@ -532,8 +575,8 @@ class Compile(Step):
         layout = ctx.layout
         clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
         tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
-        return fingerprint('compile-1', ctx.keys['lift'], layout.runtime, layout.runtime_lib, layout.deps, *tools,
-                           clang, *[d.name for d in layout.dlls])
+        return fingerprint('compile-1', ctx.keys['lift'], layout.runtime, layout.runtime_lib, layout.deps or 'system',
+                           layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -558,7 +601,8 @@ class Compile(Step):
 
         rep.progress('compile', 'compile', force=True)
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
-            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--deps', layout.deps,
+            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm,
+            *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
             '--runtime', layout.runtime, '--runtime-lib', layout.runtime_lib, '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
@@ -581,13 +625,20 @@ class Compile(Step):
 TRANSLATED = re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs')
 
 
+# The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
+# and 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops)
+ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
+                '1280x800', '1680x1050', '1920x1200', '2560x1600')
+
+
 class Prepare(Step):
     id = 'prepare'
 
     def key(self, ctx):
         layout = ctx.layout
         xlate_id = layout.xlate.with_suffix('.id')
-        tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py')]
+        tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
+                                            'pack_shader_cache.py', 'ultrawide_layout.py')]
         return fingerprint('prepare-1', ctx.keys['compile'], layout.xlate, xlate_id, shader_list_text(layout), *tools)
 
     def current(self, ctx, record):
@@ -617,6 +668,26 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        # The same overlay with the UI laid out for each game resolution of another shape the settings menu offers
+        # (runtime/romfs.c overlay_init picks the one that matches; the camera's side is the patch set aspect,
+        # recomp/patches-v<ver>.txt).
+        for size in ASPECT_SIZES:
+            remove(dest / f'romfs-patches-{size}')
+            code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                                  dest / f'romfs-patches-{size}', '--aspect', size])
+            if code:
+                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (written on
+        # every install, so the menu choice works without another run of the setup). Optional: when it fails, the game
+        # keeps the Switch prompts and the menu says the files are missing, so the setup warns and goes on.
+        remove(dest / 'romfs-patches-xbox')
+        code, log = run_tool(ctx, 'prepare-xbox', layout.tools / 'make_romfs_patches.py',
+                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                              dest / 'romfs-patches-xbox', '--xbox-prompts'])
+        if code:
+            remove(dest / 'romfs-patches-xbox')
+            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
 
         shader_list = layout.shader_list
         if not shader_list:
@@ -638,6 +709,12 @@ class Prepare(Step):
                               dest / 'exefs', '--list', shader_list], parse)
         if code or not (dest / 'shader-prepared.bin').is_file():
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
+
+        # One shader-cache.pack instead of four files per shader (~117,000): totk.exe reads the pack first.
+        rep.progress('prepare', 'pack', force=True)
+        code, log = run_tool(ctx, 'prepare', layout.tools / 'pack_shader_cache.py', [dest / 'shader-cache'])
+        if code:
+            raise InstallError('prepare.pack_failed', code=code, log=str(log))
         return {'xlate_sha256': file_sha256(xlate)}
 
 
@@ -661,7 +738,23 @@ class Cleanup(Step):
             remove(stale)
         for name in ('gen', 'build', 'check', 'shader_list.tsv'):
             remove(ctx.temp / name)
+        romfs_problem(dest / 'romfs', expected_update(ctx))
         return {}
+
+
+def romfs_problem(romfs, expected):
+    """Raise cleanup.romfs_unreadable unless romfs/ still holds the verified image. The game opens romfs.bin at start;
+    an install whose romfs/ went empty and unreadable after the extraction verified it (a folder Windows was still
+    deleting, #107) reported success and the game stopped at its first file read."""
+    try:
+        ok = extract.romfs_verified(romfs, expected) and (romfs / 'romfs.bin').stat().st_size == expected['romfs']['size']
+        if ok:
+            with open(romfs / 'romfs.bin', 'rb') as f:
+                f.read(1)
+    except (OSError, ValueError):
+        ok = False
+    if not ok:
+        raise InstallError('cleanup.romfs_unreadable', path=str(romfs))
 
 
 def all_steps():

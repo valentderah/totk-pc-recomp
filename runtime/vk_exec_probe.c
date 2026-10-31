@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "cfg.h"
 #include "gfx.h"
@@ -16,6 +15,7 @@
 #include "nvn_tex.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "platform/platform.h"
 
 #define SUBMITS 100
 #define TAIL 10
@@ -31,14 +31,14 @@
         }                                                                                                              \
     } while (0)
 
-static DWORD main_tid;
+static uint32_t main_tid;
 static uint64_t ran[SUBMITS + TAIL + 8];
 static long nran, on_main;
 
 static void note(void *arg) {   // completion thread
     if (nran < (long)(sizeof ran / sizeof ran[0])) ran[nran] = (uint64_t)(uintptr_t)arg;
     nran++;
-    if (GetCurrentThreadId() == main_tid) on_main++;
+    if (plat_thread_id() == main_tid) on_main++;
 }
 
 typedef struct { volatile uint32_t *word; uint32_t value; } WordWrite;
@@ -127,7 +127,7 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
 
     uint64_t frames = gfx_stats().frames;
     // the exact colour check needs the bilinear blit: FSR's approximate reciprocals move a flat colour by 1/255
-    _putenv_s("TOTK_UPSCALER", "bilinear");
+    plat_setenv("TOTK_UPSCALER", "bilinear");
     vk_present_capture(1);
     const int crop[4] = {0, 0, TEX_W, TEX_H};
     b->present(&t, crop, 0);
@@ -142,11 +142,16 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     if (fmt == VK_FORMAT_B8G8R8A8_UNORM) want[0] = to_byte(rgba[2]), want[1] = to_byte(rgba[1]), want[2] = to_byte(rgba[0]);
     else if (fmt == VK_FORMAT_R8G8B8A8_UNORM) want[0] = to_byte(rgba[0]), want[1] = to_byte(rgba[1]), want[2] = to_byte(rgba[2]);
     else CHECK(0, "swapchain format %d is not UNORM RGBA/BGRA", (int)fmt);
-    uint32_t wv;
+    uint32_t wv, black = 0xff000000u;   // opaque black in both byte orders
     memcpy(&wv, want, 4);
+    int r[4];   // the picture's rectangle; black bars around it when the window's shape differs (gfx_present.c)
+    gfx_fit_rect(TEX_W, TEX_H, w, h, r);
     const uint32_t *p = (const uint32_t *)px;
-    for (long k = 0, n = (long)w * h; k < n; k++)
-        CHECK(p[k] == wv, "presented pixel %ld is %08x, expected %08x", k, p[k], wv);
+    for (long k = 0, n = (long)w * h; k < n; k++) {
+        int x = (int)(k % w), y = (int)(k / w);
+        uint32_t e = x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] ? wv : black;
+        CHECK(p[k] == e, "presented pixel %ld (%d, %d) is %08x, expected %08x", k, x, y, p[k], e);
+    }
     vk_present_capture(0);
     b->texture_release(&t);
     b->pool_fini(&pool);
@@ -240,7 +245,7 @@ static int test_clear(const GfxBackend *b, uint8_t *guest, int *n_inside) {
 }
 
 // ---- draw part: the pipeline self-test, then a hand-built stream that clears an RGBA8 target, binds a census
-// vertex + fragment pair and draws one triangle; a census compute shader is dispatched. The census (build/v121/shaders,
+// vertex + fragment pair and draws one triangle; a census compute shader is dispatched. The census (probe_census_dir,
 // tools/shader_census.py) is read the way vk_pipeline_selftest reads it: a pair is a fragment shader and a vertex
 // shader of the same source file.
 
@@ -308,19 +313,6 @@ static char *dr_read(const char *path, long *size) {
     return b;
 }
 
-static int dr_root(char *root, size_t n) {
-    char exe[MAX_PATH * 2];
-    DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
-    if (!len || len >= sizeof exe) return 0;
-    for (char *cut = strrchr(exe, '\\'); cut; cut = strrchr(exe, '\\')) {
-        *cut = 0;
-        char p[MAX_PATH * 2 + 40];
-        snprintf(p, sizeof p, "%s\\build\\v121\\shaders\\jobs.json", exe);
-        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return snprintf(root, n, "%s", exe) < (int)n;
-    }
-    return 0;
-}
-
 static int dr_hex(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
 // A program of one census shader as the game hands it to NVN: control section, code with its 0x30-byte header.
@@ -329,8 +321,8 @@ static prog_t *dr_prog(const char *root, const DrawEnt *e[], int n) {
     prog_t *p = calloc(1, sizeof *p);
     p->magic = NVN_PROG_MAGIC, p->serial = ++serial;
     for (int i = 0; i < n; i++) {
-        char path[MAX_PATH * 2 + 128];
-        snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\code\\%.64s.code", root, e[i]->key);
+        char path[PLAT_PATH_MAX * 2 + 128];
+        snprintf(path, sizeof path, "%s/code/%.64s.code", root, e[i]->key);
         long body;
         char *raw = dr_read(path, &body);
         if (!raw) return free(p), NULL;
@@ -395,9 +387,10 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
 }
 
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
-    char root[MAX_PATH * 2], path[MAX_PATH * 2 + 64];
-    CHECK(dr_root(root, sizeof root), "build/v121/shaders/jobs.json not found");
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\jobs.json", root);
+    char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
+    CHECK(probe_census_dir(root, sizeof root), "no build/v%d/shaders/jobs.json above the exe (run tools/shader_census.py)",
+          rt_game_version);
+    snprintf(path, sizeof path, "%s/jobs.json", root);
     long size;
     char *jobs = dr_read(path, &size);
     DrawEnt *e = malloc(sizeof *e * 20000);
@@ -854,7 +847,7 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
 
 int probe_vkexec(void) {
     layouts_equal = 0;
-    main_tid = GetCurrentThreadId();
+    main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;
     uint64_t heap = 0;
     CHECK(mem_set_heap_size(16ull << 20, &heap) == 0 && heap, "SetHeapSize 16 MiB");

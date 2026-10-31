@@ -8,8 +8,8 @@
 // TOTK_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in TOTK_ROMFS_PROOF_DIR) keyed by
 // the file's volume, file id, size and times skips it on later starts, TOTK_ROMFS_VERIFY=force ignores the proof.
 //
-// Reads are positional (ReadFile with an OVERLAPPED offset on a FILE_FLAG_OVERLAPPED handle, one event per thread),
-// so threads read the image in parallel without a file-pointer lock. TOTK_ROMFS_MMAP=1 maps the image instead.
+// Reads are positional (platform.h plat_file_pread), so threads read the image in parallel without a file-pointer
+// lock. TOTK_ROMFS_MMAP=1 maps the image instead.
 //
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
@@ -17,8 +17,6 @@
 // TOTK_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
-#include <windows.h>
-#include <bcrypt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,9 +26,11 @@
 #include "host.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
+#include "platform/platform.h"
+#include "sha256.h"
 
 #define NH 65536                     // RomFS handle slots
-#define READ_CHUNK (64u << 20)       // largest single ReadFile
+#define READ_CHUNK (64u << 20)       // largest single read
 #define HASH_CHUNK (8u << 20)
 #define ADDED UINT64_MAX             // an added overlay file's index until overlay_init numbers it
 
@@ -43,15 +43,15 @@ typedef struct { uint64_t index, size; char *path, *name; Identity id; } Overlay
 static uint8_t *index_bytes;
 static size_t index_size;
 static uint64_t file_count, strings_offset;
-static HANDLE image = INVALID_HANDLE_VALUE;
+static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
 static char mount_name[32];
-static SRWLOCK lock = SRWLOCK_INIT;
+static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
-static HANDLE handle_file[NH];       // the handle's open overlay file, when handle_ovl is set
+static PlatFile *handle_file[NH];    // the handle's open overlay file, when handle_ovl is set
 static Overlay *overlays;            // sorted by RomFS index after overlay_init
 static size_t noverlay, overlay_cap;
 static char **added;                 // RomFS paths of the added files, sorted; added[k] is index file_count + k
@@ -68,63 +68,34 @@ static Entry entry(uint64_t i) {
 }
 static const char *entry_name(Entry e) { return (const char *)index_bytes + strings_offset + e.name; }
 
-static double now_s(void) {
-    LARGE_INTEGER t, f;
-    QueryPerformanceCounter(&t);
-    QueryPerformanceFrequency(&f);
-    return (double)t.QuadPart / (double)f.QuadPart;
-}
+static double now_s(void) { return (double)plat_now_ns() / 1e9; }
 
 // ---- positional reads
-// Bytes read at off (0 at or past the end of the file), -1 on an I/O error. Works on synchronous and
-// FILE_FLAG_OVERLAPPED handles; the event is per thread, so concurrent reads on one handle do not share it.
-static int64_t read_at(HANDLE f, void *buf, uint32_t n, uint64_t off) {
-    static _Thread_local HANDLE ev;
-    if (!ev && !(ev = CreateEventW(NULL, TRUE, FALSE, NULL)))
-        rt_fatal("RomFS: CreateEvent failed (%lu)", GetLastError());
-    OVERLAPPED ov = {.Offset = (DWORD)off, .OffsetHigh = (DWORD)(off >> 32), .hEvent = ev};
-    DWORD got = 0;
+// Bytes read at off (0 at or past the end of the file), -1 on an I/O error.
+static int64_t read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     mem_thaw((uintptr_t)buf, n);   // the kernel's write would fail on a frozen page instead of faulting
-    if (!ReadFile(f, buf, n, &got, &ov)) {
-        DWORD e = GetLastError();
-        if (e == ERROR_HANDLE_EOF) return 0;
-        if (e == ERROR_IO_PENDING && !GetOverlappedResult(f, &ov, &got, TRUE)) e = GetLastError();
-        else if (e == ERROR_IO_PENDING) return got;
-        if (e == ERROR_HANDLE_EOF) return 0;
-        if (e == ERROR_NOACCESS)   // a read-only page in the buffer: a frozen region missed its thaw
-            rt_log("RomFS: read of %u bytes into %p refused: the buffer is not writable", n, buf);
-        return -1;
-    }
-    return got;
+    int64_t got = plat_file_pread(f, buf, n, off);
+    if (got == -2)   // a read-only page in the buffer: a frozen region missed its thaw
+        rt_log("RomFS: read of %u bytes into %p refused: the buffer is not writable", n, buf);
+    return got < 0 ? -1 : got;
 }
 
-static HANDLE open_read(const char *path, int overlapped) {
-    wchar_t *w = fs_wide(path);
-    HANDLE h = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL | (overlapped ? FILE_FLAG_OVERLAPPED : 0), NULL);
-    free(w);
-    return h;
+static PlatFile *open_read(const char *path) { return plat_file_open(path); }
+
+static Identity identity_of(PlatFile *f) {
+    PlatFileId i;
+    need(plat_file_id(f, &i), "file information");
+    return (Identity){(uint32_t)i.volume, 0, i.file_id, i.size, i.write_time, i.create_time};
 }
 
-static Identity identity_of(HANDLE f) {
-    BY_HANDLE_FILE_INFORMATION i;
-    need(GetFileInformationByHandle(f, &i), "file information");
-    return (Identity){i.dwVolumeSerialNumber, 0, (uint64_t)i.nFileIndexHigh << 32 | i.nFileIndexLow,
-                      (uint64_t)i.nFileSizeHigh << 32 | i.nFileSizeLow,
-                      (uint64_t)i.ftLastWriteTime.dwHighDateTime << 32 | i.ftLastWriteTime.dwLowDateTime,
-                      (uint64_t)i.ftCreationTime.dwHighDateTime << 32 | i.ftCreationTime.dwLowDateTime};
-}
-
-// ---- SHA-256 over a file range (BCrypt, streaming)
+// ---- SHA-256 over a file range, streaming
 static void hex32(const uint8_t d[32], char out[65]) {
     for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
-static void sha_range(HANDLE f, uint64_t offset, uint64_t size, char hex[65], int progress) {
-    BCRYPT_ALG_HANDLE alg;
-    BCRYPT_HASH_HANDLE h;
-    need(!BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) &&
-         !BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0), "SHA-256 provider");
+static void sha_range(PlatFile *f, uint64_t offset, uint64_t size, char hex[65], int progress) {
+    Sha256 h;
+    sha256_init(&h);
     uint8_t *buf = malloc(HASH_CHUNK);
     need(buf != NULL, "hash buffer");
     double t0 = now_s();
@@ -132,16 +103,14 @@ static void sha_range(HANDLE f, uint64_t offset, uint64_t size, char hex[65], in
         uint32_t want = size - done > HASH_CHUNK ? HASH_CHUNK : (uint32_t)(size - done);
         int64_t n = read_at(f, buf, want, offset + done);
         need(n > 0, "read of hash input");
-        need(!BCryptHashData(h, buf, (ULONG)n, 0), "SHA-256 update");
+        sha256_update(&h, buf, (size_t)n);
         done += (uint64_t)n;
         if (progress && (done % (2ull << 30) < (uint64_t)n || done == size))
             rt_log("RomFS: hashed %.1f of %.1f GiB (%.0f MiB/s)", done / 1073741824.0, size / 1073741824.0,
                    done / 1048576.0 / (now_s() - t0 + 1e-9));
     }
     uint8_t d[32];
-    need(!BCryptFinishHash(h, d, 32, 0), "SHA-256 final");
-    BCryptDestroyHash(h);
-    BCryptCloseAlgorithmProvider(alg, 0);
+    sha256_final(&h, d);
     free(buf);
     hex32(d, hex);
 }
@@ -158,14 +127,13 @@ static void verify_image(const char *dir) {
     memcpy(want.magic, "TOTKRFS-PROOF-1", 16);
     memcpy(want.sha256, ROMFS_IMAGE_SHA256, sizeof ROMFS_IMAGE_SHA256 < 65 ? sizeof ROMFS_IMAGE_SHA256 : 65);
     want.id = identity_of(image);
-    char path[2100], tmp[2200];
+    char path[2100];
     need(snprintf(path, sizeof path, "%s/.romfs-verified-v1", dir) < (int)sizeof path, "proof path");
     if (strcmp(mode, "force")) {
-        HANDLE p = open_read(path, 0);
-        DWORD got = 0;
-        if (p != INVALID_HANDLE_VALUE) {
-            int ok = ReadFile(p, &saved, sizeof saved, &got, NULL) && got == sizeof saved;
-            CloseHandle(p);
+        PlatFile *p = open_read(path);
+        if (p) {
+            int ok = plat_file_pread(p, &saved, sizeof saved, 0) == sizeof saved;
+            plat_file_close(p);
             if (ok && !memcmp(&saved, &want, sizeof want)) {
                 rt_log("RomFS unchanged since its full SHA-256 check (%s)", path);
                 return;
@@ -180,17 +148,7 @@ static void verify_image(const char *dir) {
                  ROMFS_IMAGE_SHA256);
     Identity after = identity_of(image);
     need(!memcmp(&after, &want.id, sizeof after), "image changed during verification");
-    snprintf(tmp, sizeof tmp, "%s.%lu.tmp", path, GetCurrentProcessId());
-    wchar_t *wt = fs_wide(tmp), *wp = fs_wide(path);
-    HANDLE out = CreateFileW(wt, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (out != INVALID_HANDLE_VALUE) {
-        DWORD put = 0;
-        int ok = WriteFile(out, &want, sizeof want, &put, NULL) && put == sizeof want && FlushFileBuffers(out);
-        CloseHandle(out);
-        if (!ok || !MoveFileExW(wt, wp, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) DeleteFileW(wt);
-    }
-    free(wt);
-    free(wp);
+    plat_file_write_atomic(path, &want, sizeof want);
     rt_log("RomFS: image SHA-256 ok");
 }
 
@@ -244,15 +202,17 @@ static uint32_t overlay_slot(uint64_t i) {
 }
 
 // ---- overlays
-static void overlay_load(const char *dir) {
+// Loads and checks one overlay folder. A failed check stops the game, except with optional set (the Xbox prompts
+// folder): the folder is dropped, the reason logged, and 0 returned. Returns 1 when the folder is loaded or has no
+// manifest.
+static int overlay_load(const char *dir, int optional) {
+#define BAD(...) do { if (!optional) rt_fatal(__VA_ARGS__); rt_log(__VA_ARGS__); goto bad; } while (0)
     char path[2100];
     need(snprintf(path, sizeof path, "%s/manifest.tsv", dir) < (int)sizeof path, "overlay path");
-    wchar_t *w = fs_wide(path);
-    FILE *m = _wfopen(w, L"rb");
-    free(w);
+    FILE *m = fopen(path, "rb");
     if (!m) {
         rt_log("RomFS overlay: none (%s)", path);
-        return;
+        return 1;
     }
     char line[8192];
     size_t first = noverlay;
@@ -268,37 +228,39 @@ static void overlay_load(const char *dir) {
         uint64_t i = lower(name);
         int known = i < file_count && !strcmp(entry_name(entry(i)), name), add = !strcmp(orig, "-");
         if (!known && !add)
-            rt_fatal("RomFS overlay: %s/manifest.tsv names %s, which the RomFS lacks; a new file has \"-\" as its "
-                     "original's SHA-256", dir, name);
+            BAD("RomFS overlay: %s/manifest.tsv names %s, which the RomFS lacks; a new file has \"-\" as its "
+                "original's SHA-256", dir, name);
         if (known && add)
-            rt_fatal("RomFS overlay: %s/manifest.tsv adds %s, which the RomFS already has; give its original's SHA-256",
-                     dir, name);
+            BAD("RomFS overlay: %s/manifest.tsv adds %s, which the RomFS already has; give its original's SHA-256",
+                dir, name);
         Entry e = {0};
         if (known) {
             e = entry(i);
             sha_range(image, e.offset, e.size, hex, 0);
-            if (strcmp(hex, orig)) rt_fatal("RomFS overlay: the original of %s has SHA-256 %s, %s/manifest.tsv says %s",
-                                            name, hex, dir, orig);
+            if (strcmp(hex, orig)) BAD("RomFS overlay: the original of %s has SHA-256 %s, %s/manifest.tsv says %s",
+                                       name, hex, dir, orig);
         } else {
             i = ADDED;
         }
         char file[8200];
         need(snprintf(file, sizeof file, "%s/%s", dir, name) < (int)sizeof file, "overlay file path");
-        HANDLE f = open_read(file, 1);
-        if (f == INVALID_HANDLE_VALUE) rt_fatal("RomFS overlay: %s missing", file);
+        PlatFile *f = open_read(file);
+        if (!f) BAD("RomFS overlay: %s missing", file);
         Identity id = identity_of(f);
-        if (id.size != size) rt_fatal("RomFS overlay: %s has %llu bytes, its manifest says %llu", file,
-                                      (unsigned long long)id.size, size);
+        if (id.size != size) {
+            plat_file_close(f);
+            BAD("RomFS overlay: %s has %llu bytes, its manifest says %llu", file, (unsigned long long)id.size, size);
+        }
         sha_range(f, 0, size, hex, 0);
-        CloseHandle(f);
-        if (strcmp(hex, sha)) rt_fatal("RomFS overlay: %s has SHA-256 %s, its manifest says %s", file, hex, sha);
+        plat_file_close(f);
+        if (strcmp(hex, sha)) BAD("RomFS overlay: %s has SHA-256 %s, its manifest says %s", file, hex, sha);
         hashed += e.size + size;
         if (noverlay == overlay_cap) {
             overlay_cap = overlay_cap ? overlay_cap * 2 : 16;
             overlays = realloc(overlays, overlay_cap * sizeof *overlays);
             need(overlays != NULL, "overlay table");
         }
-        char *copy = _strdup(file), *rel = _strdup(name);
+        char *copy = strdup(file), *rel = strdup(name);
         need(copy && rel, "overlay path copy");
         overlays[noverlay++] = (Overlay){i, size, copy, rel, id};
         if (noverlay - first <= 16)
@@ -309,6 +271,16 @@ static void overlay_load(const char *dir) {
                                       noverlay - first - 16);
     if (noverlay > first) rt_log("RomFS overlay: %s checked, %zu files, %.1f MiB hashed in %.2f s", dir,
                                  noverlay - first, hashed / 1048576.0, now_s() - t0);
+    return 1;
+bad:
+    fclose(m);
+    for (size_t k = first; k < noverlay; k++) {
+        free((void *)overlays[k].path);
+        free((void *)overlays[k].name);
+    }
+    noverlay = first;
+    return 0;
+#undef BAD
 }
 
 static int overlay_order(const void *a, const void *b) {
@@ -357,11 +329,11 @@ static void heapdef_overlay(void) {
     Overlay *base = NULL;
     for (size_t k = 0; k < noverlay; k++)
         if (overlays[k].index == i) base = &overlays[k];
-    HANDLE f = base ? open_read(base->path, 1) : image;
+    PlatFile *f = base ? open_read(base->path) : image;
     uint64_t off = base ? 0 : entry(i).offset, n = base ? base->size : entry(i).size;
-    void *in = n && n < (16u << 20) && f != INVALID_HANDLE_VALUE ? malloc((size_t)n) : NULL;
+    void *in = n && n < (16u << 20) && f ? malloc((size_t)n) : NULL;
     int ok = in && read_at(f, in, (uint32_t)n, off) == (int64_t)n;
-    if (base && f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    if (base && f) plat_file_close(f);
     void *out = NULL;
     size_t out_n = 0;
     ok = ok && res_heapdef_build(in, (size_t)n, &out, &out_n);
@@ -370,23 +342,17 @@ static void heapdef_overlay(void) {
     char dir[2100], file[2200];
     need(snprintf(dir, sizeof dir, "%s/resolution", rt_config()->profile) < (int)sizeof dir, "resolution path");
     need(snprintf(file, sizeof file, "%s/Product.Nin_NX_NVN.HeapDef.byml.zs", dir) < (int)sizeof file, "resolution path");
-    wchar_t *wd = fs_wide(dir), *wf = fs_wide(file);
-    CreateDirectoryW(wd, NULL);
-    HANDLE w = CreateFileW(wf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    DWORD put = 0;
-    ok = w != INVALID_HANDLE_VALUE && WriteFile(w, out, (DWORD)out_n, &put, NULL) && put == out_n;
-    if (w != INVALID_HANDLE_VALUE) CloseHandle(w);
-    free(wd);
-    free(wf);
+    plat_file_mkdir_p(dir);
+    ok = plat_file_write(file, out, out_n);
     free(out);
-    HANDLE r = ok ? open_read(file, 1) : INVALID_HANDLE_VALUE;
-    if (r == INVALID_HANDLE_VALUE) {
-        rt_log("RomFS: cannot write %s (error %lu); the game keeps its own resolution", file, GetLastError());
+    PlatFile *r = ok ? open_read(file) : NULL;
+    if (!r) {
+        rt_log("RomFS: cannot write %s; the game keeps its own resolution", file);
         return;
     }
     Identity id = identity_of(r);
-    CloseHandle(r);
-    char *copy = _strdup(file);
+    plat_file_close(r);
+    char *copy = strdup(file);
     need(copy != NULL, "overlay path copy");
     if (base) {
         free(base->path);
@@ -399,7 +365,7 @@ static void heapdef_overlay(void) {
             overlays = realloc(overlays, overlay_cap * sizeof *overlays);
             need(overlays != NULL, "overlay table");
         }
-        char *rel = _strdup(HEAPDEF);
+        char *rel = strdup(HEAPDEF);
         need(rel != NULL, "overlay path copy");
         overlays[noverlay++] = (Overlay){i, out_n, copy, rel, id};
     }
@@ -407,18 +373,59 @@ static void heapdef_overlay(void) {
     res_heapdef_served();
 }
 
+static int xbox_prompts_ready;    // romfs-patches-xbox/manifest.tsv was next to romfs-index.bin at start
+static int xbox_prompts_active;   // and overlay_init loaded it
+
+int romfs_xbox_prompts_ready(void) { return xbox_prompts_ready; }
+int romfs_xbox_prompts_active(void) { return xbox_prompts_active; }
+
 static void overlay_init(void) {
-    // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
-    char def[2100];
+    // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
+    // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
+    // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
+    // the layout goes with (res_wants_wide_overlay).
+    // With pad_layout = xbox_prompts, romfs-patches-xbox in its place: the same patches with the A/B and X/Y prompts
+    // swapped (make_romfs_patches.py --xbox-prompts). The game reads the archives once at boot, so the prompts stay
+    // until restart even though the layout itself changes live. Each folder replaces romfs-patches as a whole and the
+    // setup builds no wide folder with Xbox prompts, so a wide game resolution keeps the Switch prompts.
+    char def[2100], xbox[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES");
-    if (!patches && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
-        GetFileAttributesA(def) != INVALID_FILE_ATTRIBUTES) {
+    int wide = 0;
+    unsigned out[2];
+    res_wanted(out);
+    if (!patches && res_wants_wide_overlay(out)) {
+        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
+            plat_file_exists(def)) {
+            def[strlen(def) - strlen("/manifest.tsv")] = 0;
+            patches = def, wide = 1;
+        } else {
+            rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
+                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+        }
+    }
+    xbox_prompts_ready =
+        snprintf(xbox, sizeof xbox, "%s/romfs-patches-xbox/manifest.tsv", index_dir) < (int)sizeof xbox &&
+        plat_file_exists(xbox);
+    int want_xbox = !strcasecmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
+    if (!patches && want_xbox && xbox_prompts_ready) {
+        xbox[strlen(xbox) - strlen("/manifest.tsv")] = 0;
+        xbox_prompts_active = overlay_load(xbox, 1);
+        if (xbox_prompts_active) rt_log("RomFS overlay: Xbox button prompts (%s)", xbox);
+        else rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", xbox);
+    } else if (want_xbox) {
+        rt_log("RomFS overlay: pad_layout = xbox_prompts, but %s; Switch prompts stay",
+               wide      ? "the game resolution takes the wide UI layout"
+               : patches ? "TOTK_ROMFS_PATCHES is set"
+                         : "romfs-patches-xbox has no manifest.tsv (run the setup again)");
+    }
+    if (!patches && !xbox_prompts_active && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
+        plat_file_exists(def)) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
     const char *dirs[2] = {patches, cfg_get("TOTK_ROMFS_MODS")};
     for (int i = 0; i < 2; i++)
-        if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i]);
+        if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], 0);
     heapdef_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
@@ -436,38 +443,25 @@ static void index_path(char *out, size_t cap) {
         need(snprintf(out, cap, "%s", e) < (int)cap, "index path");
         return;
     }
-    wchar_t exe[MAX_PATH * 2];
-    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH * 2);
-    need(n && n < MAX_PATH * 2, "executable path");
-    while (n && exe[n - 1] != L'\\' && exe[n - 1] != L'/') n--;
-    exe[n] = 0;
-    int k = WideCharToMultiByte(CP_UTF8, 0, exe, -1, out, (int)cap, NULL, NULL);
-    need(k > 0 && (size_t)k + 16 < cap, "executable path");
-    strcat(out, "romfs-index.bin");
+    need(plat_exe_path(out, cap), "executable path");
+    char *sep = plat_last_sep(out);
+    size_t k = sep ? (size_t)(sep - out) + 1 : 0;
+    need(k + 16 < cap, "executable path");
+    strcpy(out + k, "romfs-index.bin");
 }
 
 static void load_index(void) {
     char path[2100];
     index_path(path, sizeof path);
     snprintf(index_dir, sizeof index_dir, "%s", path);
-    char *sep = strrchr(index_dir, '\\'), *slash = strrchr(index_dir, '/');
-    if (slash > sep) sep = slash;
+    char *sep = plat_last_sep(index_dir);
     if (sep) *sep = 0;
     else strcpy(index_dir, ".");
-    HANDLE f = open_read(path, 0);
-    if (f == INVALID_HANDLE_VALUE)
-        rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to totk.exe)", path);
-    LARGE_INTEGER sz;
-    need(GetFileSizeEx(f, &sz) && sz.QuadPart >= 24 && sz.QuadPart < (128 << 20), "index size");
-    index_size = (size_t)sz.QuadPart;
-    index_bytes = malloc(index_size);
-    need(index_bytes != NULL, "index allocation");
-    for (size_t done = 0; done < index_size;) {
-        DWORD got = 0;
-        need(ReadFile(f, index_bytes + done, (DWORD)(index_size - done), &got, NULL) && got, "index read");
-        done += got;
-    }
-    CloseHandle(f);
+    uint64_t sz = 0;
+    index_bytes = plat_file_read(path, &sz);
+    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to totk.exe)", path);
+    need(sz >= 24 && sz < (128 << 20), "index size");
+    index_size = (size_t)sz;
     uint8_t d[32];
     char hex[65];
     rt_sha256(index_bytes, index_size, d);
@@ -494,8 +488,8 @@ static void load_index(void) {
     rt_log("RomFS index %s: SHA-256 ok, %llu files, %zu bytes", path, (unsigned long long)file_count, index_size);
 }
 
-static BOOL CALLBACK init_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
-    (void)once, (void)param, (void)ctx;
+static void init_once(void *param) {
+    (void)param;
 #ifdef ROMFS_MISSING
     rt_fatal("this build has no RomFS: tools/build_game.py found no index.json in its --romfs directory");
 #else
@@ -503,38 +497,36 @@ static BOOL CALLBACK init_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     load_index();
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
-    image = open_read(image_file, 1);
-    if (image == INVALID_HANDLE_VALUE) rt_fatal("RomFS image %s missing (error %lu); put romfs.bin into the romfs folder next to totk.exe or set TOTK_ROMFS",
-                                          image_file, GetLastError());
-    LARGE_INTEGER sz;
-    need(GetFileSizeEx(image, &sz), "image size");
-    if ((uint64_t)sz.QuadPart != ROMFS_IMAGE_SIZE)
+    image = open_read(image_file);
+    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to totk or set TOTK_ROMFS",
+                         image_file);
+    PlatFileId sz;
+    need(plat_file_id(image, &sz), "image size");
+    if (sz.size != ROMFS_IMAGE_SIZE)
         rt_fatal("RomFS image %s has %llu bytes, the index was built for %llu", image_file,
-                 (unsigned long long)sz.QuadPart, (unsigned long long)ROMFS_IMAGE_SIZE);
+                 (unsigned long long)sz.size, (unsigned long long)ROMFS_IMAGE_SIZE);
     rt_log("RomFS image %s: size ok (%llu bytes)", image_file, (unsigned long long)ROMFS_IMAGE_SIZE);
     verify_image(index_dir);
     const char *mm = cfg_get("TOTK_ROMFS_MMAP");
     if (mm && strcmp(mm, "0")) {
-        HANDLE map = CreateFileMappingW(image, NULL, PAGE_READONLY, 0, 0, NULL);
-        const void *v = map ? MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0) : NULL;
-        if (map) CloseHandle(map);   // the view keeps the mapping alive
+        const void *v = plat_file_map(image);
         if (v) {
             image_map = v;
             rt_log("RomFS: mapped read path enabled");
         } else {
-            rt_log("RomFS: mapping failed (error %lu); using ReadFile", GetLastError());
+            rt_log("RomFS: mapping failed; using positional reads");
         }
     }
     overlay_init();
     rt_log("RomFS ready: %llu files, %zu overlays, %zu added, %.2f s", (unsigned long long)file_count, noverlay,
            nadded, now_s() - t0);
 #endif
-    return TRUE;
+    return;
 }
 
 void fs_init(void) {
-    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
-    InitOnceExecuteOnce(&once, init_once, NULL, NULL);
+    static PlatOnce once = PLAT_ONCE_INIT;
+    plat_once(&once, init_once, NULL);
 }
 
 // ---- the RomFS interface (fs.h)
@@ -579,10 +571,10 @@ uint32_t romfs_mount(const char *name) {
     if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
         strchr(name, ':'))
         return FS_R_INVALID;
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     if (*mount_name && strcmp(name, mount_name)) rt_fatal("second RomFS mount %s (%s is mounted)", name, mount_name);
     strcpy(mount_name, name);
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
     rt_log("fs mount %s: -> RomFS", name);
     return 0;
 }
@@ -595,39 +587,39 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
     uint32_t ov = overlay_slot(i);
-    HANDLE f = INVALID_HANDLE_VALUE;
+    PlatFile *f = NULL;
     if (ov) {
         const Overlay *o = &overlays[ov - 1];
-        f = open_read(o->path, 1);
+        f = open_read(o->path);
         Identity id;
-        if (f != INVALID_HANDLE_VALUE) id = identity_of(f);
-        if (f == INVALID_HANDLE_VALUE || memcmp(&id, &o->id, sizeof id))
+        if (f) id = identity_of(f);
+        if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
     }
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
         if (!handles[j]) {
             handles[j] = i + 1;
             handle_ovl[j] = ov;
             handle_file[j] = f;
             *out = ROMFS_HANDLE_BASE + j;
-            ReleaseSRWLockExclusive(&lock);
+            plat_mutex_unlock(&lock);
             return 0;
         }
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
     rt_fatal("RomFS file handle table full (%d)", NH);
 }
 
 // The handle's index row (an added file's is empty: its bytes are all in its overlay), and where its bytes come from:
 // the overlay file, or the original's range of the image.
-static int handle_source(uint64_t h, HANDLE *f, uint64_t *base, uint64_t *size) {
+static int handle_source(uint64_t h, PlatFile **f, uint64_t *base, uint64_t *size) {
     if (!romfs_handle(h)) return 0;
     uint64_t j = h - ROMFS_HANDLE_BASE;
-    AcquireSRWLockShared(&lock);
+    plat_mutex_lock_shared(&lock);
     uint64_t i = handles[j];
     uint32_t ov = handle_ovl[j];
-    HANDLE of = handle_file[j];
-    ReleaseSRWLockShared(&lock);
+    PlatFile *of = handle_file[j];
+    plat_mutex_unlock_shared(&lock);
     if (!i) return 0;
     if (ov) {
         *f = of;
@@ -643,7 +635,7 @@ static int handle_source(uint64_t h, HANDLE *f, uint64_t *base, uint64_t *size) 
 }
 
 uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
-    HANDLE f;
+    PlatFile *f;
     uint64_t base, fsize;
     if (!out || offset < 0 || !handle_source(h, &f, &base, &fsize)) return FS_R_INVALID;
     if ((uint64_t)offset > fsize || (!buffer && size)) return FS_R_INVALID;
@@ -655,8 +647,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
     while (done < n) {
         uint32_t chunk = n - done > READ_CHUNK ? READ_CHUNK : (uint32_t)(n - done);
         int64_t r = read_at(f, (uint8_t *)buffer + done, chunk, base + (uint64_t)offset + done);
-        if (r <= 0) rt_fatal("RomFS read failure at %#llx (error %lu)", (unsigned long long)(base + offset + done),
-                             GetLastError());
+        if (r <= 0) rt_fatal("RomFS read failure at %#llx", (unsigned long long)(base + offset + done));
         done += (uint64_t)r;
     }
     *out = done;
@@ -664,7 +655,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
 }
 
 uint32_t romfs_size(int64_t *out, uint64_t h) {
-    HANDLE f;
+    PlatFile *f;
     uint64_t base, size;
     if (!out || !handle_source(h, &f, &base, &size)) return FS_R_INVALID;
     *out = (int64_t)size;
@@ -672,18 +663,18 @@ uint32_t romfs_size(int64_t *out, uint64_t h) {
 }
 
 void romfs_close(uint64_t h) {
-    HANDLE f;
+    PlatFile *f;
     uint64_t base, size;
     if (!handle_source(h, &f, &base, &size))
         rt_fatal("RomFS: close of invalid file handle %#llx", (unsigned long long)h);
     uint64_t j = h - ROMFS_HANDLE_BASE;
-    AcquireSRWLockExclusive(&lock);
-    HANDLE of = handle_ovl[j] ? handle_file[j] : INVALID_HANDLE_VALUE;
+    plat_mutex_lock(&lock);
+    PlatFile *of = handle_ovl[j] ? handle_file[j] : NULL;
     handles[j] = 0;
     handle_ovl[j] = 0;
-    handle_file[j] = INVALID_HANDLE_VALUE;
-    ReleaseSRWLockExclusive(&lock);
-    if (of != INVALID_HANDLE_VALUE) CloseHandle(of);
+    handle_file[j] = NULL;
+    plat_mutex_unlock(&lock);
+    if (of) plat_file_close(of);
 }
 
 uint32_t romfs_entry_type(int *out, const char *path) {

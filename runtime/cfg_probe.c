@@ -17,7 +17,7 @@ static int fails;
 int probe_cfg(void) {
     char path[1024];
     if (!plat_exe_path(path, sizeof path)) return 1;
-    char *cut = strrchr(path, '\\');
+    char *cut = plat_last_sep(path);
     if (!cut) return 1;
     strcpy(cut + 1, "cfg-probe.ini");
     static const char ini[] =
@@ -35,8 +35,8 @@ int probe_cfg(void) {
         "no_such_setting = 1\r\n"
         "no equals sign\r\n"
         "last = no newline at the end";
-    _putenv_s("TOTK_LOCALE", "");   // an empty variable is how _putenv_s spells "remove" on Windows
-    _putenv_s("TOTK_FPS60", "");
+    plat_setenv("TOTK_LOCALE", NULL);
+    plat_setenv("TOTK_FPS60", NULL);
     CHECK(plat_file_write(path, ini, sizeof ini - 1), "write the probe ini");
     CHECK(cfg_load(path) == 1, "load the probe ini");
     CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
@@ -48,9 +48,9 @@ int probe_cfg(void) {
     CHECK(cfg_get("TOTK_CLOTH_REALTIME") == NULL, "absent key is NULL");
     CHECK(cfg_get("TOTK_comment") == NULL, "comment is not a key");
     CHECK(EQ(cfg_get("TOTK_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
-    _putenv_s("TOTK_FPS60", "1");
+    plat_setenv("TOTK_FPS60", "1");
     CHECK(EQ(cfg_get("TOTK_FPS60"), "1"), "environment overrides the file");
-    _putenv_s("TOTK_FPS60", "");
+    plat_setenv("TOTK_FPS60", NULL);
     CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "file value returns when the variable is removed");
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
@@ -90,9 +90,9 @@ int probe_cfg(void) {
         "\r\n"
         "[audio]\r\n"
         "volume = 40\r\n";
-    _putenv_s("TOTK_MOTION", "");
-    _putenv_s("TOTK_VOLUME", "");
-    _putenv_s("TOTK_RUMBLE_STRENGTH", "");
+    plat_setenv("TOTK_MOTION", NULL);
+    plat_setenv("TOTK_VOLUME", NULL);
+    plat_setenv("TOTK_RUMBLE_STRENGTH", NULL);
     CHECK(plat_file_write(path, before, sizeof before - 1), "write the save ini");
     CHECK(cfg_load(path) == 1, "load the save ini");
     unsigned v0 = cfg_version();
@@ -117,11 +117,11 @@ int probe_cfg(void) {
           EQ(cfg_get("TOTK_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("TOTK_VOLUME"), "40") &&
           EQ(cfg_get("TOTK_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
     const char *held = cfg_get("TOTK_VOLUME");
-    _putenv_s("TOTK_VOLUME", "70");
+    plat_setenv("TOTK_VOLUME", "70");
     cfg_set("TOTK_VOLUME", "90");
     CHECK(cfg_from_env("TOTK_VOLUME") && EQ(cfg_get("TOTK_VOLUME"), "70"), "environment wins over cfg_set");
     CHECK(EQ(held, "40"), "a pointer cfg_get handed out stays valid after cfg_set");
-    _putenv_s("TOTK_VOLUME", "");
+    plat_setenv("TOTK_VOLUME", NULL);
     CHECK(!cfg_from_env("TOTK_VOLUME") && EQ(cfg_get("TOTK_VOLUME"), "90"), "cfg_set value returns without the variable");
     plat_file_delete(path);
     CHECK(cfg_save_to(path) == 1, "cfg_save_to creates a missing file");
@@ -147,7 +147,7 @@ int probe_cfg(void) {
     // cfg_reset: the key's active lines leave totk.ini, the commented example stays
     static const char rbase[] = "[audio]\n# volume = 100\n[input]\nmotion = 0\n";
     static const char *const vol[] = {"VOLUME"};
-    _putenv_s("TOTK_VOLUME", "");
+    plat_setenv("TOTK_VOLUME", NULL);
     CHECK(plat_file_write(path, rbase, sizeof rbase - 1), "write the reset ini");
     CHECK(cfg_load(path) == 1, "load the reset ini");
     cfg_set("TOTK_VOLUME", "40");
@@ -186,9 +186,9 @@ int probe_cfg(void) {
 
     // a key the environment sets is skipped and keeps its file line
     CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_VOLUME"), "60"), "reset: reload");
-    _putenv_s("TOTK_VOLUME", "70");
+    plat_setenv("TOTK_VOLUME", "70");
     CHECK(cfg_reset(vol, 1) == 0, "reset: an environment-set key is skipped");
-    _putenv_s("TOTK_VOLUME", "");
+    plat_setenv("TOTK_VOLUME", NULL);
     CHECK(EQ(cfg_get("TOTK_VOLUME"), "60"), "reset: the skipped key keeps its value");
     CHECK(cfg_save_to(path) == 1, "reset: save after a skip");
     got = plat_file_read(path, &got_n);
@@ -200,7 +200,7 @@ int probe_cfg(void) {
     cfg_set("TOTK_VOLUME", "20");
     char bad[1100];
     snprintf(bad, sizeof bad, "%s", path);
-    strcpy(strrchr(bad, '\\') + 1, "no-such-dir\\cfg-probe.ini");
+    strcpy(plat_last_sep(bad) + 1, "no-such-dir/cfg-probe.ini");
     CHECK(cfg_save_to(bad) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("TOTK_VOLUME"), "20"),
           "save status: an unwritable path fails, the value stays");
     cfg_set("TOTK_VOLUME", "21");
@@ -285,6 +285,9 @@ int probe_cfg(void) {
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
     CHECK(input_pad_layout_pick("Xbox", 1) == PAD_LAYOUT_XBOX && input_pad_layout_pick("nintendo", 0) == PAD_LAYOUT_NINTENDO,
           "pad layout: a set layout wins over the labels");
+    CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
+              input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
+          "pad layout: Xbox prompts keep the Nintendo positions (only the prompts change, romfs.c overlay_init)");
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;
     CHECK(input_map_pad_buttons(pd, PAD_LAYOUT_NINTENDO) == (1ull << B_B | 1ull << B_X) &&
@@ -298,6 +301,13 @@ int probe_cfg(void) {
           "pad layout: a bind line adds its physical button in every layout");
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_SOUTH] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a bind line replaces the layout's own button");
+    input_map_reset();
+    CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_XBOX) == 0,
+          "pad layout: a back paddle is unbound by default");
+    CHECK(input_map_bind("ZL", "pad:default, pad:rpaddle1") &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_ZL] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL,
+          "bind: pad:rpaddle1 adds a back paddle, pad:default keeps the trigger");
     input_map_reset();
     // Bind lines for stick directions and default parts; the remapping rows' edits (input_map.c)
     memset(dn, 0, sizeof dn);
@@ -350,24 +360,24 @@ int probe_cfg(void) {
     CHECK(!strcmp(line, "none"), "edit: a stick direction without keys is none");
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");
-    _putenv_s("TOTK_FPS60", "");
-    _putenv_s("TOTK_MOUSE_SENS", "");
-    _putenv_s("TOTK_FREE_CORES", "");
+    plat_setenv("TOTK_FPS60", NULL);
+    plat_setenv("TOTK_MOUSE_SENS", NULL);
+    plat_setenv("TOTK_FREE_CORES", NULL);
     CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
     CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
-    _putenv_s("TOTK_MOUSE_SENS", "2.5");
+    plat_setenv("TOTK_MOUSE_SENS", "2.5");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
-    _putenv_s("TOTK_MOUSE_SENS", "fast");
+    plat_setenv("TOTK_MOUSE_SENS", "fast");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
-    _putenv_s("TOTK_MOUSE_SENS", "");
+    plat_setenv("TOTK_MOUSE_SENS", NULL);
     cfg_set("TOTK_MOUSE_SENS", "3");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 3.0 && cfg_int("TOTK_MOUSE_SENS") == 3, "a cfg_set value beats the default");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 0, "free_cores unset: off");
-    _putenv_s("TOTK_FREE_CORES", "0");
+    plat_setenv("TOTK_FREE_CORES", "0");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 0, "free_cores 0 gives the same as unset");
-    _putenv_s("TOTK_FREE_CORES", "1");
+    plat_setenv("TOTK_FREE_CORES", "1");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 1, "free_cores 1: on");
-    _putenv_s("TOTK_FREE_CORES", "");
+    plat_setenv("TOTK_FREE_CORES", NULL);
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
     for (int i = 0; cfg_meta_at(i); i++) {
@@ -376,7 +386,7 @@ int probe_cfg(void) {
         listed++;
         char name[96];
         snprintf(name, sizeof name, "TOTK_%s", m->key);
-        _putenv_s(name, "");
+        plat_setenv(name, "");
         CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
         int ok = 0;
         if (!m->values) ok = 1;

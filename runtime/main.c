@@ -4,6 +4,7 @@
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
+//     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
 //     --probe-astc      the compute ASTC decoder against astc_decode_ldr; needs no game files
@@ -17,11 +18,7 @@
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
 // rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (a vectored exception handler that
 // names the lifted function, the guest registers and the guest frame-pointer chain).
-#include <windows.h>
-#include <bcrypt.h>
 #include <limits.h>
-#include <psapi.h>
-#include <timeapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +26,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "sha256.h"
 
 #define MAX_MODULES 16
 
@@ -45,7 +43,7 @@ unsigned rt_trace;
 enum { LOG_EARLY, LOG_FILE, LOG_OFF };
 static int g_log_state;
 static PlatAppend *g_log_file;
-static char g_log_path[MAX_PATH * 3];
+static char g_log_path[PLAT_PATH_MAX * 3];
 static char g_log_early[32768];
 static size_t g_log_early_n;
 static uint64_t g_log_bytes;
@@ -99,23 +97,23 @@ const char *rt_log_path(void) {
 // Opens the log file for a game run (game = 1) and writes the buffered lines to it; anything else drops them. Runs on
 // the main thread before the boot starts other threads.
 static void log_open(int game) {
-    char dir[MAX_PATH * 3], from[MAX_PATH * 3 + 16], to[MAX_PATH * 3 + 16];
+    char dir[PLAT_PATH_MAX * 3], from[PLAT_PATH_MAX * 3 + 16], to[PLAT_PATH_MAX * 3 + 16];
     char *cut = NULL;
     if (game && !plat_stderr_path(dir, sizeof dir) && plat_exe_path(dir, sizeof dir)) {
-        cut = strrchr(dir, '\\');
+        cut = plat_last_sep(dir);
         char *f = strrchr(dir, '/');
         if (f > cut) cut = f;
     }
-    if (cut && (size_t)(cut - dir) + sizeof "\\logs" <= sizeof dir) {
-        strcpy(cut, "\\logs");
+    if (cut && (size_t)(cut - dir) + sizeof "/logs" <= sizeof dir) {
+        strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
         for (int i = LOG_KEEP - 1; i > 0; i--) {   // totk.3.log -> totk.4.log, ..., totk.log -> totk.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s\\totk.%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s\\totk.log", dir);
-            snprintf(to, sizeof to, "%s\\totk.%d.log", dir, i);
+            if (i > 1) snprintf(from, sizeof from, "%s/totk.%d.log", dir, i - 1);
+            else snprintf(from, sizeof from, "%s/totk.log", dir);
+            snprintf(to, sizeof to, "%s/totk.%d.log", dir, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s\\totk.log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/totk.log", dir);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {
@@ -147,29 +145,7 @@ static void parse_trace(void) {
     }
 }
 
-void rt_sha256(const void *p, size_t n, uint8_t out[32]) {
-    static BCRYPT_ALG_HANDLE alg;
-    BCRYPT_ALG_HANDLE a = __atomic_load_n(&alg, __ATOMIC_ACQUIRE);
-    if (!a) {
-        if (BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0)) rt_fatal("SHA-256 provider unavailable");
-        BCRYPT_ALG_HANDLE expected = NULL;
-        if (!__atomic_compare_exchange_n(&alg, &expected, a, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            BCryptCloseAlgorithmProvider(a, 0);
-            a = expected;
-        }
-    }
-    BCRYPT_HASH_HANDLE h;
-    if (BCryptCreateHash(a, &h, NULL, 0, NULL, 0, 0)) rt_fatal("SHA-256: BCryptCreateHash failed");
-    const uint8_t *s = p;
-    while (n) {
-        ULONG k = n > 0x40000000 ? 0x40000000 : (ULONG)n;
-        if (BCryptHashData(h, (PUCHAR)s, k, 0)) rt_fatal("SHA-256: BCryptHashData failed");
-        s += k;
-        n -= k;
-    }
-    if (BCryptFinishHash(h, out, 32, 0)) rt_fatal("SHA-256: BCryptFinishHash failed");
-    BCryptDestroyHash(h);
-}
+void rt_sha256(const void *p, size_t n, uint8_t out[32]) { sha256(p, n, out); }
 
 // ---- configuration
 static RtConfig cfg;
@@ -193,17 +169,9 @@ void rt_udf(Cpu *c, uint64_t pc) {
 // CNTPCT_EL0: the Switch counter runs at 19.2 MHz. The scale is set before main, so no thread reads it half written.
 static PlatScale tick_scale;
 
-__attribute__((constructor)) static void tick_scale_init(void) {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    tick_scale = plat_scale(19200000u, (uint64_t)f.QuadPart);
-}
+__attribute__((constructor)) static void tick_scale_init(void) { tick_scale = plat_scale(19200000u, plat_counter_hz()); }
 
-uint64_t rt_ticks(void) {
-    LARGE_INTEGER t;
-    QueryPerformanceCounter(&t);
-    return plat_scaled(tick_scale, (uint64_t)t.QuadPart);
-}
+uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
 
 // ---- crash reporter
 typedef struct { uintptr_t host; uint64_t guest; } FnRev;
@@ -215,7 +183,8 @@ static int by_host(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-// The lifted function that contains a host code address, by the nearest function start below it.
+// The lifted function that contains a host code address, by the nearest function start below it; 0 outside the lifted
+// code.
 static uint64_t lifted_function(uintptr_t rip) {
     if (!fn_rev) {
         static RtModule mods[MAX_MODULES];
@@ -229,6 +198,9 @@ static uint64_t lifted_function(uintptr_t rip) {
                 fn_rev[fn_rev_n++] = (FnRev){(uintptr_t)mods[i].fns[k], mods[i].addrs[k]};
         qsort(fn_rev, fn_rev_n, sizeof *fn_rev, by_host);
     }
+    // The lifted code is one range with the host code outside it (kernel.c ap_init checks that); an address above the
+    // last function start is taken for host code, which costs only the last function's body.
+    if (!fn_rev_n || rip > fn_rev[fn_rev_n - 1].host) return 0;
     uint64_t lo = 0, hi = fn_rev_n;
     while (lo < hi) {
         uint64_t mid = (lo + hi) / 2;
@@ -238,36 +210,26 @@ static uint64_t lifted_function(uintptr_t rip) {
     return lo ? fn_rev[lo - 1].guest : 0;
 }
 
-static int readable(uint64_t a, uint64_t n) {
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
-    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
-    return a + n <= (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
-}
+static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 
-static LONG CALLBACK crash_handler(EXCEPTION_POINTERS *ep) {
-    static volatile LONG busy;
-    DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_STACK_OVERFLOW &&
-        code != EXCEPTION_IN_PAGE_ERROR)
-        return EXCEPTION_CONTINUE_SEARCH;
-    uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
-    HMODULE self = GetModuleHandleW(NULL);
-    MODULEINFO mi;
-    if (!GetModuleInformation(GetCurrentProcess(), self, &mi, sizeof mi) || rip - (uintptr_t)mi.lpBaseOfDll >= mi.SizeOfImage)
-        return EXCEPTION_CONTINUE_SEARCH;   // not our code: leave it to the handler that expects it
-    if (InterlockedExchange(&busy, 1)) ExitProcess(71);
+static void crash_handler(const PlatCrash *x) {
+    static volatile int32_t busy;
+    if (plat_xchg32(&busy, 1)) plat_exit(71);
     char d[160];
-    rt_logf("FATAL: exception %#lx at host %p (totk.exe+%#llx)", code, (void *)rip,
-            (unsigned long long)(rip - (uintptr_t)mi.lpBaseOfDll));
-    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
-        rt_logf(", %s address %#llx",
-                ep->ExceptionRecord->ExceptionInformation[0] == 1 ? "writing" : ep->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : "reading",
-                (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
+    uintptr_t rip = x->rip;
+    rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip, (unsigned long long)x->offset);
+    if (x->access >= 0)
+        rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
+                (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
     uint64_t f = lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
+    for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
+        uint64_t g = lifted_function(x->frames[i]);
+        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - (rip - x->offset)));
+        if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
+        rt_log_raw("\n", 1);
+    }
     Cpu *c = kern_cpu();
     if (c) {
         for (int i = 0; i < 31; i++)
@@ -285,19 +247,14 @@ static LONG CALLBACK crash_handler(EXCEPTION_POINTERS *ep) {
         rt_logf("  not on a guest thread\n");
     }
     fflush(stderr);
-    ExitProcess(71);
+    plat_exit(71);
 }
 
 // ---- self-test: layout, dispatch table, host-function registry, without game files
 static int failures;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("  FAIL: " __VA_ARGS__); putchar('\n'); } } while (0)
 
-static double now_s(void) {
-    LARGE_INTEGER t, f;
-    QueryPerformanceCounter(&t);
-    QueryPerformanceFrequency(&f);
-    return (double)t.QuadPart / (double)f.QuadPart;
-}
+static double now_s(void) { return (double)plat_now_ns() / 1e9; }
 
 static volatile int host_probe_hits;
 static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
@@ -324,9 +281,8 @@ static void check_layout(void) {
             CHECK(lay[i].base > lay[i - 1].base, "%s base is not above %s", lay[i].name, lay[i - 1].name);
             CHECK(lay[i - 1].base + lay[i - 1].size <= lay[i].base, "%s overlaps %s", lay[i - 1].name, lay[i].name);
         }
-        MEMORY_BASIC_INFORMATION mbi;
-        int ours = VirtualQuery((void *)(uintptr_t)lay[i].base, &mbi, sizeof mbi) && mbi.State == MEM_RESERVE &&
-                   (uint64_t)(uintptr_t)mbi.AllocationBase <= lay[i].base;
+        uint64_t end;
+        int ours = plat_mem_state(lay[i].base, lay[i].base + 1, &end) == PLAT_MEM_RESERVED;
         CHECK(ours, "%s is not inside the reserved module window", lay[i].name);
     }
     const RtGuestLayout *g = mem_layout();
@@ -446,14 +402,14 @@ static int selftest(void) {
            (double)s.table_bytes / (1 << 20), dt * 1e3);
     check_modules(mods, n);
     CHECK(s.functions > 0, "no functions linked");
-    Cpu *c = _aligned_malloc(sizeof(Cpu), 64);
+    Cpu *c = plat_aligned_alloc(sizeof(Cpu), 64);
     memset(c, 0, sizeof *c);
     uint64_t r = rt_call(c, probe, 1, (uint64_t)7);
     CHECK(rt_dispatch_lookup(probe) && r == 42 && host_probe_hits == 1 && c->x[30] == 0,
           "a registered host function does not dispatch through rt_call");
     CHECK(!rt_dispatch_lookup(probe + 16), "an unregistered host-function address dispatches");
     CHECK(rt_dispatch_lookup(RT_RET_HOST), "the rt_call return sentinel is not registered");
-    _aligned_free(c);
+    plat_aligned_free(c);
     bench(mods, n);
 
     void *k1 = mem_kernel_alloc(0x200, 16), *k2 = mem_kernel_alloc(0x2000, 0x1000);
@@ -463,25 +419,25 @@ static int selftest(void) {
     CHECK(mem_kernel_alloc(0x200, 16) == k1, "a freed kernel-region block is not reused");
     check_memory();
 
-    PROCESS_MEMORY_COUNTERS pmc = {.cb = sizeof pmc};
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc))
-        printf("process: peak working set %.1f MiB\n", (double)pmc.PeakWorkingSetSize / (1 << 20));
+    float used, total, proc;
+    plat_mem_info(&used, &total, &proc);
+    if (proc >= 0) printf("process: working set %.0f MiB\n", proc);
     printf("selftest: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
     return failures ? 1 : 0;
 }
 
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
-                    "--probe-cfg | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                    "--probe-cfg | --probe-dpi | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
 // Paths for a copied folder (tools/package_build.py). Per path: TOTK_EXEFS, TOTK_ROMFS, TOTK_PROFILE_DIR, else the
-// folder next to totk.exe (exefs, romfs, profile) if it exists, else the path baked in at build time. A relative
-// value is relative to totk.exe's folder.
-static char pp_exefs[MAX_PATH * 2], pp_romfs[MAX_PATH * 2], pp_profile[MAX_PATH * 2];
+// folder next to totk.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
+// path baked in at build time. A relative value is relative to totk.exe's folder.
+static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
 
 static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
                                  const char *fallback) {
@@ -489,36 +445,37 @@ static const char *portable_path(const char *dir, const char *var, const char *s
     if (e && *e) {
         int abs_path = e[0] == '\\' || e[0] == '/' || e[1] == ':';
         if (abs_path) snprintf(out, cap, "%s", e);
-        else snprintf(out, cap, "%s\\%s", dir, e);
+        else snprintf(out, cap, "%s/%s", dir, e);
         return out;
     }
-    char probe[MAX_PATH * 3];
-    snprintf(out, cap, "%s\\%s", dir, sub);
-    snprintf(probe, sizeof probe, "%s\\%s", out, must);
-    return GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES ? out : fallback;
+    char probe[PLAT_PATH_MAX * 3];
+    snprintf(out, cap, "%s/%s", dir, sub);
+    if (!must) return plat_dir_exists(out) ? out : fallback;   // the folder itself is the sign
+    snprintf(probe, sizeof probe, "%s/%s", out, must);
+    return plat_file_exists(probe) ? out : fallback;
 }
 
 static void portable_paths(RtConfig *c) {
-    char exe[MAX_PATH * 2];
-    DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
-    char *cut = n && n < sizeof exe ? strrchr(exe, '\\') : NULL;
+    char exe[PLAT_PATH_MAX * 2];
+    int n = plat_exe_path(exe, sizeof exe);
+    char *cut = n && n < sizeof exe ? plat_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
     c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
     c->romfs = portable_path(exe, "TOTK_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
-    c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", ".", pp_profile, sizeof pp_profile, c->profile);
+    c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    AddVectoredExceptionHandler(0, crash_handler);
+    plat_crash_hook(crash_handler);
     parse_trace();
     prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
     // costs a full tick. TOTK_TIMER_1MS=0 keeps the default for comparison.
-    if (cfg_bool("TOTK_TIMER_1MS")) timeBeginPeriod(1);
+    if (cfg_bool("TOTK_TIMER_1MS")) plat_timer_1ms();
     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
                      .gpu = cfg_get("TOTK_GPU")};
     portable_paths(&cfg);   // command-line paths below still win
@@ -559,6 +516,9 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--selftest")) return selftest();
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
+#ifdef _WIN32
+    if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
+#endif
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();
     if (!strcmp(mode, "--probe-services")) return probe_services();

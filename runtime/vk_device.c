@@ -5,23 +5,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 static VkCtx g_vk;
 static int g_ready;
-static SRWLOCK g_lock = SRWLOCK_INIT;
+static PlatMutex g_lock = PLAT_MUTEX_INIT;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
     (void)type, (void)user;
     int err = (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
-    if (err) InterlockedIncrement(&g_vk.validation_errors);
-    static volatile long logged;
-    if (InterlockedIncrement(&logged) <= 500) rt_log("vk validation %s: %s", err ? "error" : "warning", d->pMessage);
+    if (err) plat_inc32(&g_vk.validation_errors);
+    static volatile int32_t logged;
+    if (plat_inc32(&logged) <= 500) rt_log("vk validation %s: %s", err ? "error" : "warning", d->pMessage);
     return VK_FALSE;
 }
 
@@ -41,9 +41,23 @@ static int layer_present(const char *name) {
     return found;
 }
 
+// Mesa's drivers (RADV on Linux and the Steam Deck) keep a shader cache of their own beside our pipeline cache, by
+// default in ~/.cache and up to 1 GB: about 35 MB in a minute of the title screen. A Deck's /home is small and the game
+// usually sits on the SD card, so unless MESA_SHADER_CACHE_DIR names a folder, it goes to mesa-cache beside the exe.
+static void mesa_cache_beside_exe(void) {
+    char dir[PLAT_PATH_MAX * 2];
+    if (plat_getenv("MESA_SHADER_CACHE_DIR", dir, sizeof dir)) return;
+    int len = plat_exe_path(dir, sizeof dir - 16);
+    char *cut = len ? plat_last_sep(dir) : NULL;
+    if (!cut) return;
+    strcpy(cut + 1, "mesa-cache");
+    plat_setenv("MESA_SHADER_CACHE_DIR", dir);
+}
+
 static int create_instance(void) {
-    const char *ext[4] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
-    uint32_t n_ext = 2;
+    mesa_cache_beside_exe();
+    const char *ext[8];
+    uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
     if (validate && !layer_present(layers[0])) {
@@ -91,18 +105,18 @@ static const char *missing_required(VkPhysicalDevice pd) {
     return miss;
 }
 
-// Graphics+compute family that can present on win32.
+// Graphics+compute family that can present to the window.
 static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperties *qp, uint32_t nq) {
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-            vkGetPhysicalDeviceWin32PresentationSupportKHR(pd, i))
+            gfx_window_vk_presentable(g_vk.instance, pd, i))
             return i;
     return UINT32_MAX;
 }
 
 static int name_has(const char *s, const char *sub) {
     for (size_t n = strlen(sub); *s; s++)
-        if (!_strnicmp(s, sub, n)) return 1;
+        if (!strncasecmp(s, sub, n)) return 1;
     return 0;
 }
 
@@ -233,6 +247,8 @@ static int create_device(void) {
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
+    // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
+    if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
@@ -246,6 +262,7 @@ static int create_device(void) {
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
+    vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
     if (gpl_link) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
@@ -267,6 +284,7 @@ static int create_device(void) {
     else if (!h->geometryShader) miss = "geometryShader";
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
+    if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
@@ -319,6 +337,7 @@ static int create_device(void) {
         rt_log("vk: timeline semaphore creation failed (%d)", (int)r);
         return 0;
     }
+    vk_crumbs_init(&g_vk);
     return 1;
 }
 
@@ -328,6 +347,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_astc_release();
+    if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
@@ -345,24 +365,83 @@ static void destroy_all(void) {
 long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.validation_errors : 0); }
 
 int vk_init(void) {
-    AcquireSRWLockExclusive(&g_lock);
+    plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
         if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_headroom_start();
         else destroy_all();
     }
     int ok = g_ready;
-    ReleaseSRWLockExclusive(&g_lock);
+    plat_mutex_unlock(&g_lock);
     return ok;
 }
 
 void vk_shutdown(void) {
-    AcquireSRWLockExclusive(&g_lock);
+    plat_mutex_lock(&g_lock);
     if (g_ready) { destroy_all(); g_ready = 0; }
-    ReleaseSRWLockExclusive(&g_lock);
+    plat_mutex_unlock(&g_lock);
 }
 
 VkCtx *vk_ctx(void) { return g_ready ? &g_vk : NULL; }
+
+static const char *fault_address_type(VkDeviceFaultAddressTypeEXT t) {
+    switch (t) {
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "none";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "read invalid";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "write invalid";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "execute invalid";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "instruction pointer (unknown)";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "instruction pointer (invalid)";
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "instruction pointer (fault)";
+    default: return "unknown type";
+    }
+}
+
+// The query runs once per process. Threads that hit the loss at the same time wait on the lock until it is logged, so
+// none of them reaches its rt_fatal and ends the process before the report is written.
+void vk_device_fault_report(VkResult r) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    static int done;
+    if (r != VK_ERROR_DEVICE_LOST) return;
+    plat_mutex_lock(&lock);
+    if (done) { plat_mutex_unlock(&lock); return; }
+    done = 1;
+    vk_crumbs_report();
+    VkCtx *c = vk_ctx();
+    PFN_vkGetDeviceFaultInfoEXT get =
+        c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")
+                                 : NULL;
+    if (!get) {
+        rt_log("vk: device lost; no fault report (VK_EXT_device_fault %s)", c && c->has_device_fault ? "has no entry point"
+                                                                                                    : "not enabled");
+        plat_mutex_unlock(&lock);
+        return;
+    }
+    VkDeviceFaultCountsEXT n = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    VkResult q = get(c->device, &n, NULL);
+    VkDeviceFaultAddressInfoEXT *ai = calloc(n.addressInfoCount + 1, sizeof *ai);
+    VkDeviceFaultVendorInfoEXT *vi = calloc(n.vendorInfoCount + 1, sizeof *vi);
+    VkDeviceFaultInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, .pAddressInfos = ai, .pVendorInfos = vi};
+    uint64_t binary = n.vendorBinarySize;
+    n.vendorBinarySize = 0;   // the vendor binary is not fetched; its size alone is logged
+    if (q == VK_SUCCESS && ai && vi) q = get(c->device, &n, &info);
+    if (q != VK_SUCCESS && q != VK_INCOMPLETE) {
+        rt_log("vk: device lost; vkGetDeviceFaultInfoEXT failed (%d)", (int)q);
+    } else {
+        rt_log("vk: device fault: \"%s\" (%u address infos, %u vendor infos, vendor binary %llu bytes)", info.description,
+               n.addressInfoCount, n.vendorInfoCount, (unsigned long long)binary);
+        // The faulting access lies in the precision-aligned range around the reported address.
+        for (uint32_t i = 0; i < n.addressInfoCount; i++)
+            rt_log("vk: device fault address %u: %s at %#llx, precision %#llx", i, fault_address_type(ai[i].addressType),
+                   (unsigned long long)ai[i].reportedAddress, (unsigned long long)ai[i].addressPrecision);
+        for (uint32_t i = 0; i < n.vendorInfoCount; i++)
+            rt_log("vk: device fault vendor info %u: \"%s\" code %#llx data %#llx", i, vi[i].description,
+                   (unsigned long long)vi[i].vendorFaultCode, (unsigned long long)vi[i].vendorFaultData);
+    }
+    free(ai);
+    free(vi);
+    plat_mutex_unlock(&lock);
+}
 
 int vk_selftest(void) {
     if (!vk_init()) return 1;

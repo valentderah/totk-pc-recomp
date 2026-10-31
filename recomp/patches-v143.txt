@@ -32,6 +32,13 @@ site realtime main 2daa70 1e201820 d503201f   # fdiv s0, s1, s0 -> nop
 site realtime main 2daa74 1e2c1001 d503201f   # fmov s1, #0.5 -> nop
 site realtime main 2daa78 1e210800 d503201f   # fmul s0, s0, s1 -> nop
 
+# Equipment-switch cooldown (issue #18, found by JieML1100): the player update (main+0x2b0368) steps the countdown at
+# player state +0x109c through the timer step (main+0x1b0834, value += ratio * rate) only while it is above FLT_EPSILON,
+# but the equipment gate (main+0x31cc7c) blocks weapon, shield and bow changes while it is above 0. Whole 30 Hz steps
+# reach exactly 0; a measured ratio leaves a rounding remainder, and one in (0, FLT_EPSILON] is never stepped again and
+# keeps equipment locked until a load. Stepping while above 0 takes the remainder below 0 like any other last step.
+site realtime main 2b036c 0f016681 0f000401   # movi v1.2s, #0x34, lsl #24 (FLT_EPSILON) -> movi v1.2s, #0
+
 # Hair and cloth: the actor animation update builds a second clock {seconds = factor / 30, ratio = factor} per
 # rendered frame. 1.4.3 inlines it in two actor paths, where the factor was just stored to the ratio slot: the
 # replacement stores measured ratio * factor there and computes measured seconds * factor. Two other callers share the
@@ -47,6 +54,18 @@ site cloth main 28bc98 9400546a @page:x8 bd400104 1e240842 1e240863 9400546a   #
 # s1 is set again by the fmov two instructions on.
 site bounce main 562a64 bd402920 bd402920 bd403921 1e210800   # ldr s0, [x9, #0x28]; ldr s1, [x9, #0x38]; fmul s0, s0, s1
 
+# Fades (MacNativeGames game_patches_v143.c patch_fade_increment, upstream 3e9e7f67): the distance/LOD mesh fades and
+# the pre-actor fades add trunc(2.1 * ratio) to a counter each frame: 2 at 30 fps, 1 at 60, 0 above about 63.5 fps
+# (ratio below 1 / 2.1), where a fade stops and its object stays translucent or invisible until a slower frame moves
+# it on. Each site floors the increment at 1 without the flags: clz is 32 only for 0, so increment += clz >> 5. The
+# scratch register is one the next instruction writes (w10 at 0x0a7ac4: ldrb w10; w11 at the pre-actor sites: add
+# w11), or at 0x95dd24 a temporary the function no longer reads (add, strb, return).
+set fade     TOTK_HIGHFPS_FIX    1
+site fade main 0a7ac4 1e380008 1e380008 5ac0110a 53057d4a 0b0a0108   # fcvtzs w8, s0; clz w10, w8; lsr w10, w10, #5; add w8, w8, w10
+site fade main 95dd24 1e380008 1e380008 5ac0110a 53057d4a 0b0a0108   # the same, second mesh fade
+site fade main 6155e4 1e38000a 1e38000a 5ac0114b 53057d6b 0b0b014a   # fcvtzs w10, s0; clz w11, w10; lsr w11, w11, #5; add w10, w10, w11
+site fade main 615660 1e38000a 1e38000a 5ac0114b 53057d6b 0b0b014a   # the same, second pre-actor fade path
+
 # Output size (upstream game_patches_v143.c patch_output_res; runtime/resolution.c switches the set on). The swapchain
 # size nnMain writes comes from page +48; the display configuration's canvas (+0x10) and active output (+0x508) from
 # page +32, and the configuration goes to page +40. x9 is dead at the publication point.
@@ -60,6 +79,27 @@ site scene main 585e48 1e220160 @page:x3    # scvtf s0, w11 -> adrp x3, page
 site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x3, #16]
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
+
+# Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
+# aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
+# switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
+# (update and setup) load the camera's copy of DefaultAspect 1.777778, two viewport routines divide width by height.
+# The replacement loads the ratio from the page instead, so a 21:9 output shows more of the world at the sides with
+# the vertical view kept (Hor+). x10 is kept on the stack, so no register liveness is assumed.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main 628c74 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x19, #0x140] (camera update)
+site aspect main b43460 bd406ac0 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x22, #0x68] (camera setup)
+site aspect main 1ff04f4 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+site aspect main 253fbb0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+
+# Field of view (runtime/resolution.c res_fov_live writes TOTK_FOV / 100 to page +60 and switches the set). The same two
+# camera routines as the aspect set load the camera's vertical view angle (radians) a few words before the ratio and
+# hand it to sead's perspective projection (+0xa0, then sin / cos / tan of half of it at +0xa4..+0xac). The replacement
+# loads the angle as before and multiplies it by the factor on the page; s8 holds the factor because the next
+# instruction (fmul s8, s0, s1) overwrites it. Zooms the game makes itself (the bow, the scope) scale with it.
+set fov      TOTK_FOV_PATCH      0
+site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of

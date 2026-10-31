@@ -3,10 +3,10 @@
 // audren:u, the audio renderer service: RequestUpdate wire formats, the server-side
 // renderer state, and the mixer interface (audio_mixer.c: the real mixer with SDL3 output).
 #pragma once
-#include <windows.h>
 #include <stdint.h>
 
 #include "ipc.h"
+#include "platform/platform.h"
 
 typedef struct {
     int32_t sample_rate, sample_count, mix_buffer_count, submix_count, voice_count, sink_count, effect_count,
@@ -150,9 +150,9 @@ enum { SV_STOPPED, SV_STARTED, SV_PAUSED, SV_STOPPING };
 
 typedef struct AudioRenderer {
     AudrenParameter param;
-    SRWLOCK lock;
-    HANDLE thread;
-    volatile long running;
+    PlatMutex lock;
+    PlatThread *thread;
+    volatile int32_t running;
     uint32_t state, revision, time_limit, event;   // state 0 started, 1 stopped; event: writable handle
     int logged;
     uint64_t behavior_flags, elapsed_frames;
@@ -180,5 +180,9 @@ void audio_mixer_update_effects(AudioRenderer *r);
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size);
 uint32_t audio_mixer_sink_written(AudioRenderer *r, int id);
 void audio_mixer_render(AudioRenderer *r, double seconds);   // after audio_voices_prepare, before voices advance
+// Device pacing for the render thread at kern_now_ns `now`: 0 renders the next frame now, a positive value waits that
+// many ns (the ring is at its target), -1 leaves the pace to the render thread's timer (no device, renderer stopped,
+// device stalled).
+int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now);
 int audio_buffer_empty(const AudrenWaveBuffer *b);   // no samples to decode: played as soon as it is reached
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // IAudioDevice

@@ -15,6 +15,7 @@ Text is never the payload: ids name a step ("step.<id>"), a phase ("phase.<step>
 and installer/text/en.json holds their English text with {param} placeholders. The log renders events with it.
 """
 import json
+import os
 import sys
 import threading
 import time
@@ -28,11 +29,14 @@ def load_catalog(path=CATALOG):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+GAME_EXE = 'totk.exe' if os.name == 'nt' else 'totk'   # {game_exe} in the catalogs
+
+
 def render(catalog, id, params=None):
     """The English text of id, or the id itself when the catalog lacks it."""
     text = catalog.get(id, id)
     try:
-        return text.format(**(params or {}))
+        return text.format(**{'game_exe': GAME_EXE, **(params or {})})
     except (KeyError, IndexError, ValueError):
         return f'{text} {params}'
 

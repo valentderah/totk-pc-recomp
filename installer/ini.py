@@ -9,19 +9,27 @@ import os
 import re
 from pathlib import Path
 
-# runtime/ov_system.c: the codes TOTK_LANG accepts.
+# runtime/ov_system.c: the codes TOTK_LANG offers. Each language appears once, under the code the game accepts.
 LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'nl', 'pt', 'pt-BR', 'ru', 'ko',
-             'zh-CN', 'zh-TW', 'zh-Hans', 'zh-Hant')
+             'zh-Hans', 'zh-Hant')
+# Older installer builds wrote these two codes; they are read as the canonical ones and rewritten on the next install.
+ALIASES = {'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant'}
 # Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the installer does not extract.
-NEED_SHARED_FONTS = ('ko', 'zh-CN', 'zh-TW', 'zh-Hans', 'zh-Hant')
+NEED_SHARED_FONTS = ('ko', 'zh-Hans', 'zh-Hant')
 
 ACTIVE = re.compile(r'^(\s*)(?:totk_)?lang(\s*=\s*)(.*?)(\s*)$', re.IGNORECASE)
 COMMENTED = re.compile(r'^\s*[#;]\s*(?:totk_)?lang\s*=.*$', re.IGNORECASE)
 SECTION = re.compile(r'^\s*\[(.*)\]\s*$')
 
 
+def canonical_language(lang):
+    """The code LANGUAGES lists for lang: an alias of an older installer build is mapped, anything else is kept."""
+    return ALIASES.get(lang, lang)
+
+
 def set_language(text, lang):
-    """text with `lang = <lang>`; see the module docstring."""
+    """text with `lang = <lang>` (an alias written as its canonical code); see the module docstring."""
+    lang = canonical_language(lang)
     lines = text.splitlines()
     for i, line in enumerate(lines):
         m = ACTIVE.match(line)

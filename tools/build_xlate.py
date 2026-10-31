@@ -2,7 +2,8 @@
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
 byte-identical; 0001-0004 are MNG's, 0005-0009 are ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
-tools and vswhere.exe (docs/building.md). Run with .venv.
+tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
+NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
 Next to the exe it writes totk_xlate.id: the translator identity, a sha256 over everything the build reads (this script,
 Program.cs, the csproj, the patches, the vendor tree). runtime/gfx_shader.c puts it into every shader cache key, so a
@@ -28,6 +29,8 @@ VENDOR = ROOT / "tools" / "vendor" / "ryujinx"
 MNG_VENDOR = ROOT / "refs" / "MacNativeGames" / "vendor" / "ryujinx"
 XLATE = ROOT / "tools" / "xlate"
 BUILD = ROOT / "build" / "xlate"
+WIN = os.name == "nt"
+EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
 
 
@@ -48,7 +51,7 @@ def mng_pin() -> str:
     """The MacNativeGames commit tools/fetch_refs.sh pins."""
     for line in (ROOT / "tools" / "fetch_refs.sh").read_text(encoding="utf-8").splitlines():
         f = line.split()
-        if len(f) == 4 and f[:2] == ["fetch", "MacNativeGames"]:
+        if len(f) >= 4 and f[:2] == ["fetch", "MacNativeGames"]:   # a fifth word asks for the history
             return f[3]
     sys.exit("tools/fetch_refs.sh pins no MacNativeGames commit")
 
@@ -133,21 +136,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--id-only", action="store_true", help="write totk_xlate.id for the exe already built")
     parser.add_argument("--out", type=Path, help="build directory instead of build/xlate")
+    parser.add_argument("--llvm", type=Path, help="Linux: an LLVM directory whose bin/clang and lld link the exe")
+    parser.add_argument("--sysroot", type=Path, help="Linux: link against this sysroot's glibc instead of the host's "
+                                                     "(tools/make_release_linux.py)")
     a = parser.parse_args()
     if a.out:
         global BUILD
         BUILD = a.out.resolve()
     if a.id_only:
-        write_identity(BUILD / "totk_xlate.exe")
+        write_identity(BUILD / EXE)
         return
     started = time.time()
     dotnet = shutil.which("dotnet")
     if not dotnet:
         sys.exit("missing: dotnet (.NET 10 SDK)")
-    if not (VSWHERE_DIR / "vswhere.exe").is_file() and not shutil.which("vswhere"):
-        sys.exit(f"missing: vswhere.exe (expected in {VSWHERE_DIR}); NativeAOT cannot link without it")
     env = dict(os.environ)
-    env["PATH"] = str(VSWHERE_DIR) + os.pathsep + env["PATH"]
+    if WIN:
+        if not (VSWHERE_DIR / "vswhere.exe").is_file() and not shutil.which("vswhere"):
+            sys.exit(f"missing: vswhere.exe (expected in {VSWHERE_DIR}); NativeAOT cannot link without it")
+        env["PATH"] = str(VSWHERE_DIR) + os.pathsep + env["PATH"]
 
     verify_vendor()
     src = prepare_sources()
@@ -159,13 +166,18 @@ def main() -> None:
     out = BUILD / "publish"
     shutil.rmtree(out, ignore_errors=True)
     cmd = [
-        dotnet, "publish", str(work / "totk_xlate.csproj"), "-c", "Release", "-r", "win-x64",
+        dotnet, "publish", str(work / "totk_xlate.csproj"), "-c", "Release", "-r", "win-x64" if WIN else "linux-x64",
         "-p:PublishAot=true", "-p:InvariantGlobalization=true", f"-p:RyuSrc={src}", "-o", str(out),
     ]
+    if a.llvm:
+        env["PATH"] = str(a.llvm.resolve() / "bin") + os.pathsep + env["PATH"]
+        cmd += ["-p:CppCompilerAndLinker=clang", "-p:LinkerFlavor=lld"]
+    if a.sysroot:
+        cmd.append(f"-p:SysRoot={a.sysroot.resolve()}")
     if subprocess.run(cmd, env=env).returncode != 0:
         sys.exit("dotnet publish failed")
-    exe = BUILD / "totk_xlate.exe"
-    shutil.copy2(out / "totk_xlate.exe", exe)
+    exe = BUILD / EXE
+    shutil.copy2(out / EXE, exe)
     write_identity(exe)
     print(f"built {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - started:.0f} s")
 

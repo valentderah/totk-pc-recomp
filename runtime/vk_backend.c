@@ -17,7 +17,6 @@
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
 // replay thread handled present N-1. Calls that read or free GPU state that queued work may use drain the queue first
 // (replay_drain), each cause counted.
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,50 +28,47 @@
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "platform/platform.h"
 
 #define WEAK __attribute__((weak))
 
 typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
 
-static SRWLOCK pl = SRWLOCK_INIT;
-static CONDITION_VARIABLE pcv = CONDITION_VARIABLE_INIT;   // job queued, job taken, job submitted
+static PlatMutex pl = PLAT_MUTEX_INIT;
+static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
 static PresentJob job;
 static int pending, busy, present_thread;
 
 // Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
-static void wait_until(HANDLE timer, uint64_t at) {
+static void wait_until(uint64_t at) {
     uint64_t now = kern_now_ns();
-    if (at > now + 1500000 && timer) {
-        LARGE_INTEGER d = {.QuadPart = -(LONGLONG)((at - now - 1000000) / 100)};
-        if (SetWaitableTimer(timer, &d, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, INFINITE);
-    }
-    while (kern_now_ns() < at) SwitchToThread();
+    if (at > now + 1500000) plat_wait_ns(at - now - 1000000);
+    while (kern_now_ns() < at) plat_yield();
 }
 
-static DWORD WINAPI present_main(void *arg) {
+static void present_main(void *arg) {
     (void)arg;
-    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     uint64_t last = 0, last_queued = 0;
-    AcquireSRWLockExclusive(&pl);
+    plat_mutex_lock(&pl);
     for (;;) {
-        while (!pending) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);
+        while (!pending) plat_cond_wait(&pcv, &pl);
         PresentJob j = job;
         pending = 0;
         busy = 1;
-        WakeAllConditionVariable(&pcv);
-        ReleaseSRWLockExclusive(&pl);
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
-        AcquireSRWLockExclusive(&pl);
+        plat_mutex_lock(&pl);
         busy = 0;
-        WakeAllConditionVariable(&pcv);
-        ReleaseSRWLockExclusive(&pl);
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        wait_until(timer, j.at);
+        wait_until(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
@@ -85,16 +81,16 @@ static DWORD WINAPI present_main(void *arg) {
         last = t1;
         last_queued = j.queued;
         vk_pipeline_autosave();   // starts the autosave thread once
-        AcquireSRWLockExclusive(&pl);
+        plat_mutex_lock(&pl);
     }
-    return 0;
+    return;
 }
 
 void vk_present_drain(void) {
     uint64_t p0 = perf_begin();
-    AcquireSRWLockExclusive(&pl);
-    while (pending || busy) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);
-    ReleaseSRWLockExclusive(&pl);
+    plat_mutex_lock(&pl);
+    while (pending || busy) plat_cond_wait(&pcv, &pl);
+    plat_mutex_unlock(&pl);
     perf_end(PERF_DRAIN, p0);
 }
 
@@ -102,14 +98,14 @@ void vk_present_drain(void) {
 // presented; value: the timeline value queued for this present (asynchronous replay), 0 for the next one (synchronous).
 static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t queued, uint64_t frame,
                           uint64_t value) {
-    static volatile long n_skipped;
+    static volatile int32_t n_skipped;
     vk_exec_frame_log(t, frame);
     vk_mem_census(frame);
     if (vk_dump_armed) vk_dump_present(frame);
     __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
     const VkTexImage *img = vk_texture_get(t);
     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
-        if (InterlockedIncrement(&n_skipped) <= 8)
+        if (plat_inc32(&n_skipped) <= 8)
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
         if (value) {   // the queued value is still signalled, in order
             vk_present_drain();
@@ -125,18 +121,16 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
     }
     vk_upload_flush(0);   // an upload vk_texture_get just recorded goes before the blit
-    AcquireSRWLockExclusive(&pl);
+    plat_mutex_lock(&pl);
     if (!present_thread) {
-        HANDLE h = CreateThread(NULL, 0, present_main, NULL, 0, NULL);
-        if (!h) rt_fatal("vk: cannot start the present thread (error %lu)", GetLastError());
-        CloseHandle(h);
+        if (!plat_thread_spawn(present_main, NULL, "vk present", 0)) rt_fatal("vk: cannot start the present thread");
         present_thread = 1;
     }
-    while (pending) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);   // one present in waiting at most
+    while (pending) plat_cond_wait(&pcv, &pl);   // one present in waiting at most
     job = j;
     pending = 1;
-    WakeAllConditionVariable(&pcv);
-    ReleaseSRWLockExclusive(&pl);
+    plat_cond_broadcast(&pcv);
+    plat_mutex_unlock(&pl);
     if (rdoc_active()) { vk_present_drain(); rdoc_after_present(frame); }
 }
 
@@ -155,8 +149,8 @@ static const char *const dr_name[DR_N] = {
     "pool_fini", "map_virtual", "texture_release (queued)", "program_release", "finish", "read_texels (writer fence)",
     "write_texels", "guest_read (writer fence)", "frame bound", "queue full", "check drain"};
 
-static SRWLOCK rl = SRWLOCK_INIT;
-static CONDITION_VARIABLE rcv = CONDITION_VARIABLE_INIT;   // item queued, item taken, item done
+static PlatMutex rl = PLAT_MUTEX_INIT;
+static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
 static ReplayItem rq[RQ_CAP];
 static int rq_head, rq_n, r_busy, r_started;
 static uint64_t r_presents_queued, r_presents_done, r_submit_done, game_frames;
@@ -182,9 +176,9 @@ int gfx_replay_async(void) { return gfx_backend() == &gfx_vulkan_backend && vk_r
 // The newest submit number (nvn_submit_count) whose replay is done: recording copies it used may be freed.
 uint64_t gfx_replayed_submits(void) {
     if (!gfx_replay_async()) return nvn_submit_count();
-    AcquireSRWLockShared(&rl);
+    plat_mutex_lock_shared(&rl);
     uint64_t v = r_submit_done;
-    ReleaseSRWLockShared(&rl);
+    plat_mutex_unlock_shared(&rl);
     return v;
 }
 
@@ -195,18 +189,18 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
     return vk_sync_submit(handles, n);
 }
 
-static DWORD WINAPI replay_main(void *arg) {
+static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     for (;;) {
-        while (!rq_n) SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+        while (!rq_n) plat_cond_wait(&rcv, &rl);
         ReplayItem it = rq[rq_head];
         rq_head = (rq_head + 1) % RQ_CAP;
         rq_n--;
         r_busy = 1;
-        WakeAllConditionVariable(&rcv);
-        ReleaseSRWLockExclusive(&rl);
+        plat_cond_broadcast(&rcv);
+        plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
             uint64_t f = submit_sync(it.h, it.n);
             if (f != it.value)
@@ -221,13 +215,13 @@ static DWORD WINAPI replay_main(void *arg) {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
-        AcquireSRWLockExclusive(&rl);
+        plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
         else r_presents_done++;
         r_busy = 0;
-        WakeAllConditionVariable(&rcv);
+        plat_cond_broadcast(&rcv);
     }
-    return 0;
+    return;
 }
 
 static void wait_counted(int why, uint64_t t0) {   // rl held
@@ -241,25 +235,23 @@ static void wait_counted(int why, uint64_t t0) {   // rl held
 // guest_read (memcpy, pool invalidate), pool and texture finalize run without it, and a drain lasts up to a replay.
 // Called and returning with rl held; rl is not held while the core is taken back.
 static int core_away_unlocked(void) {
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     int away = kern_core_away();
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     return away;
 }
 static void core_back_unlocked(int *away) {
     if (!*away) return;
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     kern_core_back(away);
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
 }
 
 // Queues an item (waits while the queue is full) and returns its value, reserved under rl so values follow queue order.
 static uint64_t replay_enqueue(ReplayItem *it) {
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     if (!r_started) {
-        HANDLE h = CreateThread(NULL, 0, replay_main, NULL, 0, NULL);
-        if (!h) rt_fatal("vk: cannot start the replay thread (error %lu)", GetLastError());
-        CloseHandle(h);
+        if (!plat_thread_spawn(replay_main, NULL, "vk replay", 0)) rt_fatal("vk: cannot start the replay thread");
         r_started = 1;
     }
     // rl is dropped while the core is taken back, and another thread may fill the queue again meanwhile: check again.
@@ -267,38 +259,38 @@ static uint64_t replay_enqueue(ReplayItem *it) {
         uint64_t p0 = perf_begin();
         dr_calls[DR_FULL]++, dr_tcalls[DR_FULL]++;
         int away = core_away_unlocked();
-        while (rq_n == RQ_CAP) SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+        while (rq_n == RQ_CAP) plat_cond_wait(&rcv, &rl);
         wait_counted(DR_FULL, p0);
         core_back_unlocked(&away);
     }
     it->value = it->kind == RI_RELEASE ? 0 : vk_sync_reserve();   // a release signals nothing
     rq[(rq_head + rq_n) % RQ_CAP] = *it;
     rq_n++;
-    WakeAllConditionVariable(&rcv);
-    ReleaseSRWLockExclusive(&rl);
+    plat_cond_broadcast(&rcv);
+    plat_mutex_unlock(&rl);
     return it->value;
 }
 
 // Returns once every queued item was replayed and submitted. Back-end entries only: the replay thread never calls them.
 static void replay_drain(int why) {
     if (!gfx_replay_async()) return;
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     dr_calls[why]++, dr_tcalls[why]++;
     if (rq_n || r_busy) {
         uint64_t p0 = perf_begin();
         int away = core_away_unlocked();
-        while (rq_n || r_busy) SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+        while (rq_n || r_busy) plat_cond_wait(&rcv, &rl);
         wait_counted(why, p0);
         core_back_unlocked(&away);
     }
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
 }
 
 // What made the game wait for the replay: since the last line (every 1800 game frames), or over the run (at exit).
 static void replay_log(uint64_t frame, int total) {
     char buf[1024];
     int k = 0;
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     const uint64_t *c = total ? dr_tcalls : dr_calls, *w = total ? dr_twaits : dr_waits, *t = total ? dr_tns : dr_ns;
     for (int i = 0; i < DR_N && k < (int)sizeof buf - 96; i++)
         if (c[i] || w[i])
@@ -311,7 +303,7 @@ static void replay_log(uint64_t frame, int total) {
     memset(dr_calls, 0, sizeof dr_calls);
     memset(dr_waits, 0, sizeof dr_waits);
     memset(dr_ns, 0, sizeof dr_ns);
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     rt_log("vk: replay queue %s frame %llu:%s", total ? "over the run to" : "at", (unsigned long long)frame,
            k ? buf : " no waits");
 }
@@ -319,8 +311,8 @@ static void replay_log(uint64_t frame, int total) {
 // The run total, once: the game exits through prof_write (boot.c _exit, the window close), probes through
 // vk_backend_shutdown.
 void gfx_exit_log(void) {
-    static LONG done;
-    if (gfx_replay_async() && r_started && !InterlockedExchange(&done, 1)) replay_log(game_frames, 1);
+    static int32_t done;
+    if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);
 }
 
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
@@ -332,15 +324,15 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
         return;
     }
     // Frame bound: the replay thread handled the previous present before this one is queued.
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     dr_calls[DR_FRAME]++, dr_tcalls[DR_FRAME]++;
     if (r_presents_done < r_presents_queued) {
         uint64_t p0 = perf_begin();
-        while (r_presents_done < r_presents_queued) SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+        while (r_presents_done < r_presents_queued) plat_cond_wait(&rcv, &rl);
         wait_counted(DR_FRAME, p0);
     }
     r_presents_queued++;
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     uint64_t frame = ++game_frames;
     perf_present(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
@@ -380,9 +372,9 @@ static void vk_be_texture_release(const tex_t *t) {
     if (!copy) rt_fatal("vk: out of memory (replay queue)");
     *copy = *t;
     ReplayItem it = {.kind = RI_RELEASE, .tex = copy};
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     dr_calls[DR_TEX_RELEASE]++, dr_tcalls[DR_TEX_RELEASE]++;
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     replay_enqueue(&it);
 }
 static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
@@ -423,18 +415,18 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
         return;
     }
     uint64_t f = vk_texture_last_write(t);
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     dr_calls[DR_READ_TEXELS]++, dr_tcalls[DR_READ_TEXELS]++;
     int idle = !rq_n && !r_busy;
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     if (f && vk_sync_fence_done() < f) {
         uint64_t t0 = kern_now_ns();
         vk_sync_fence_wait(f, UINT64_MAX);   // counts as a fence wait in perf
         uint64_t d = kern_now_ns() - t0;
-        AcquireSRWLockExclusive(&rl);
+        plat_mutex_lock(&rl);
         dr_waits[DR_READ_TEXELS]++, dr_twaits[DR_READ_TEXELS]++;
         dr_ns[DR_READ_TEXELS] += d, dr_tns[DR_READ_TEXELS] += d;
-        ReleaseSRWLockExclusive(&rl);
+        plat_mutex_unlock(&rl);
     }
     vk_read_texels(t, v, r, dst, row, img);
     if (!replay_check()) return;
@@ -447,8 +439,8 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
     uint64_t f1 = vk_texture_last_write(t);
     vk_read_texels(t, v, r, again, row, img);
     int differ = memcmp(again, dst, n) != 0;
-    static volatile long n_logged;
-    if (differ && InterlockedIncrement(&n_logged) <= 40) {
+    static volatile int32_t n_logged;
+    if (differ && plat_inc32(&n_logged) <= 40) {
         size_t at = 0;
         while (at < n && again[at] == dst[at]) at++;
         rt_log("vk: replay check: ReadTexels of %p (format %#x, %dx%dx%d at %d,%d,%d) differs at byte %zu of %zu; writer "
@@ -456,14 +448,14 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
                (void *)t->mem, t->d.format, r->width, r->height, r->depth, r->xoffset, r->yoffset, r->zoffset, at, n,
                (unsigned long long)f0, (unsigned long long)f1, (unsigned long long)vk_sync_fence_done(), idle ? "idle" : "busy");
     }
-    AcquireSRWLockExclusive(&rl);
+    plat_mutex_lock(&rl);
     ck_reads++;
     if (differ) {
         ck_diff++;
         if (f1 == f0) ck_diff_unexplained++;
         if (idle) ck_diff_idle++;
     }
-    ReleaseSRWLockExclusive(&rl);
+    plat_mutex_unlock(&rl);
     free(again);
 }
 static void vk_be_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row,
@@ -483,18 +475,18 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     vk_sync_start();
     if (gfx_replay_async()) {
         uint64_t f = vk_texture_dirty_fence(addr, size);
-        AcquireSRWLockExclusive(&rl);
+        plat_mutex_lock(&rl);
         dr_calls[DR_GUEST_READ]++, dr_tcalls[DR_GUEST_READ]++;
-        ReleaseSRWLockExclusive(&rl);
+        plat_mutex_unlock(&rl);
         if (f && vk_sync_fence_done() < f) {
             uint64_t t0 = kern_now_ns();
             NVN_BLOCKING();
             vk_sync_fence_wait(f, UINT64_MAX);
             uint64_t d = kern_now_ns() - t0;
-            AcquireSRWLockExclusive(&rl);
+            plat_mutex_lock(&rl);
             dr_waits[DR_GUEST_READ]++, dr_twaits[DR_GUEST_READ]++;
             dr_ns[DR_GUEST_READ] += d, dr_tns[DR_GUEST_READ] += d;
-            ReleaseSRWLockExclusive(&rl);
+            plat_mutex_unlock(&rl);
         }
     }
     vk_present_drain();

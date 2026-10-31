@@ -4,7 +4,6 @@
 // and the service table. The SDK client code runs unchanged: requests are read from the calling thread's message
 // buffer (TLR, or the user buffer of 0x22) and answered in place. Unknown ports, services and commands stop with their
 // name and id instead of returning a fake success. Also --probe-ipc.
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +11,7 @@
 #include "audren.h"
 #include "host.h"
 #include "ipc.h"
+#include "platform/platform.h"
 
 #define CMIF_IN_MAGIC 0x49434653u    // "SFCI"
 #define CMIF_OUT_MAGIC 0x4f434653u   // "SFCO"
@@ -27,24 +27,24 @@ static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
 };
 
-static volatile long g_live;
-static volatile long long g_released, g_requests;
+static volatile int32_t g_live;
+static volatile int64_t g_released, g_requests;
 static _Thread_local const Cpu *t_req;   // guest context of the request being served
 
-long ipc_sessions_live(void) { return InterlockedCompareExchange(&g_live, 0, 0); }
-uint64_t ipc_sessions_released(void) { return (uint64_t)InterlockedCompareExchange64(&g_released, 0, 0); }
+long ipc_sessions_live(void) { return plat_cas32(&g_live, 0, 0); }
+uint64_t ipc_sessions_released(void) { return (uint64_t)plat_cas64(&g_released, 0, 0); }
 
 // ---- sessions
 uint32_t ipc_session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *state)) {
     IpcSession *s = calloc(1, sizeof *s);
     if (!s) rt_fatal("ipc: session allocation");
     *s = (IpcSession){name, handler, state, close, 1};
-    InterlockedIncrement(&g_live);
+    plat_inc32(&g_live);
     return kern_handle_new(KERN_SESSION, s);
 }
 
 static uint32_t session_clone(IpcSession *s) {
-    InterlockedIncrement(&s->refs);
+    plat_inc32(&s->refs);
     return kern_handle_new(KERN_SESSION, s);
 }
 
@@ -55,21 +55,16 @@ void ipc_handle_closed(int kind, void *obj) {
     }
     if (kind != KERN_SESSION) rt_fatal("ipc_handle_closed: handle kind %d", kind);
     IpcSession *s = obj;
-    if (InterlockedDecrement(&s->refs)) return;
+    if (plat_dec32(&s->refs)) return;
     if (rt_trace & RT_TRACE_IPC) rt_log("ipc: %s closed", s->name);
     if (s->close) s->close(s->state);
     free(s);
-    InterlockedDecrement(&g_live);
-    InterlockedIncrement64(&g_released);
+    plat_dec32(&g_live);
+    plat_inc64(&g_released);
 }
 
 // ---- helpers for services
-static int readable(uint64_t a, uint64_t n) {
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
-    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
-    return a + n <= (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
-}
+static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 
 void ipc_backtrace(void) {
     const Cpu *c = t_req;
@@ -213,7 +208,7 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     unsigned ndata;
     parse(m, &rq, &words, &ndata);
     if (rq.type == T_CLOSE || rq.type == T_TIPC_CLOSE) return;
-    InterlockedIncrement64(&g_requests);
+    plat_inc64(&g_requests);
     IpcResponse rs;
     memset(&rs, 0, sizeof rs);
     int tipc = rq.type >= T_TIPC_BASE;
@@ -655,33 +650,12 @@ static void child_main(Cpu *c) {
 
 // Re-run this executable with the same arguments and PROBE_CHILD_ENV set; it must stop with the named fatal.
 static void probe_unknown_service(void) {
-    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
-    HANDLE rd, wr;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) rt_fatal("probe-ipc: CreatePipe failed (error %lu)", GetLastError());
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES, .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
-                       .hStdOutput = wr, .hStdError = wr};
-    PROCESS_INFORMATION pi;
-    wchar_t *cmdline = _wcsdup(GetCommandLineW());
-    SetEnvironmentVariableA(PROBE_CHILD_ENV, "1");
-    BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
-    SetEnvironmentVariableA(PROBE_CHILD_ENV, NULL);
-    free(cmdline);
-    CloseHandle(wr);
-    if (!ok) rt_fatal("probe-ipc: CreateProcessW failed (error %lu)", GetLastError());
     static char out[65536];
-    DWORD n, len = 0;
-    while (len < sizeof out - 1 && ReadFile(rd, out + len, (DWORD)(sizeof out - 1 - len), &n, NULL) && n) len += n;
-    out[len] = 0;
-    CloseHandle(rd);
-    WaitForSingleObject(pi.hProcess, 30000);
-    DWORD code = 0;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+    int code = plat_run_self(PROBE_CHILD_ENV, "1", out, sizeof out, 30000);
+    if (code < 0) rt_fatal("probe-ipc: cannot start the child");
     const char *want = "FATAL: sm: service \"" PROBE_UNKNOWN_SERVICE "\" is not implemented";
     const char *line = strstr(out, want);
-    printf("child GetServiceHandle(%s): exit code %lu, %s\n", PROBE_UNKNOWN_SERVICE, (unsigned long)code,
+    printf("child GetServiceHandle(%s): exit code %d, %s\n", PROBE_UNKNOWN_SERVICE, code,
            line ? "named fatal seen" : "named fatal MISSING");
     if (line) printf("  child: %.*s\n", (int)strcspn(line, "\r\n"), line);
     CHECK(code == 70 && line, "unknown service fatal (child output: %s)", out);
@@ -738,7 +712,7 @@ static void probe_sdk_client(Cpu *c) {
     unsigned trace = rt_trace;
     rt_trace |= RT_TRACE_IPC;   // log the requests the SDK sends during set-up
     sdk_prepare(c);
-    uint64_t requests0 = (uint64_t)InterlockedCompareExchange64(&g_requests, 0, 0);
+    uint64_t requests0 = (uint64_t)plat_cas64(&g_requests, 0, 0);
     uint64_t released0 = ipc_sessions_released();
     int32_t *param = mem_kernel_alloc(0x100, 64);
     rt_call(c, stub(SYM_INIT_PARAM), 1, (uint64_t)(uintptr_t)param);
@@ -783,7 +757,7 @@ static void probe_sdk_client(Cpu *c) {
           "SDK render loop");
     rt_call(c, stub(SYM_STOP), 2, handle[0], handle[1]);
     rt_call(c, stub(SYM_CLOSE), 2, handle[0], handle[1]);
-    uint64_t requests = (uint64_t)InterlockedCompareExchange64(&g_requests, 0, 0) - requests0;
+    uint64_t requests = (uint64_t)plat_cas64(&g_requests, 0, 0) - requests0;
     printf("sdk: CloseAudioRenderer: renderers running %ld, sessions released +%llu; %llu requests served for the "
            "lifted client (sm: kept open by the SDK: %ld session)\n", audren_renderers_live(),
            (unsigned long long)(ipc_sessions_released() - released0), (unsigned long long)requests,

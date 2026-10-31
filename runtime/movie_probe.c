@@ -7,7 +7,6 @@
 //   2. paced at 60 presents per second (fake clock): at most one frame per present, one frame per 2 presents, no drops;
 //   3. paced at 15 presents per second: late frames are dropped, the frame handed over is the one due.
 // Without the RomFS (no game data) it prints why and exits 0. TOTK_PROBE_MOVIE_SHOT=<file.ppm> saves the middle frame.
-#include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +16,7 @@
 #include "fs.h"
 #include "host.h"
 #include "movie.h"
+#include "platform/platform.h"
 
 #define CHECK(cond, ...)                                                                                                \
     do {                                                                                                               \
@@ -125,7 +125,7 @@ static void *md_slot(PMd *m, const char *k, int create) {
     return &m->e[m->n++];
 }
 #define MDE(p) ((__typeof__(&((PMd *)0)->e[0]))(p))
-static void s_signal(Cpu *c) { InterlockedIncrement((volatile LONG *)arg_p(c, 0)); }
+static void s_signal(Cpu *c) { plat_inc32((volatile int32_t *)arg_p(c, 0)); }
 static void s_set_range(Cpu *c) { PBuf *b = arg_p(c, 0); b->off = (int)arg_x(c, 1); b->size = (int)arg_x(c, 2); }
 static void s_set_data(Cpu *c) { PBuf *b = arg_p(c, 0); b->base = arg_x(c, 1); b->cap = arg_x(c, 2); }
 static void s_base(Cpu *c) { ret_x(c, ((PBuf *)arg_p(c, 0))->base); }
@@ -160,9 +160,9 @@ static void s_set_string(Cpu *c) {
         snprintf(MDE(e)->s, sizeof MDE(e)->s, "%s", (const char *)arg_p(c, 2));
     }
 }
-static volatile LONG g_d0, g_d2;
-static void s_orig_d0(Cpu *c) { (void)c; InterlockedIncrement(&g_d0); }   // the library's deleting destructor
-static void s_orig_d2(Cpu *c) { (void)c; InterlockedIncrement(&g_d2); }
+static volatile int32_t g_d0, g_d2;
+static void s_orig_d0(Cpu *c) { (void)c; plat_inc32(&g_d0); }   // the library's deleting destructor
+static void s_orig_d2(Cpu *c) { (void)c; plat_inc32(&g_d2); }
 static void s_vtable(Cpu *c) { (void)c; rt_fatal("probe-movie: the decoder vtable was called"); }
 
 // ---- driving the entries as the game does
@@ -203,7 +203,7 @@ static void save_ppm(const char *path, const uint8_t *nv12, int w, int h) {
 static int wait_quiet(uint64_t obj) {
     for (int i = 0; i < 5000; i++) {
         if (movie_quiet(obj)) return 1;
-        Sleep(1);
+        plat_sleep_ms(1);
     }
     return 0;
 }
@@ -269,9 +269,9 @@ static int paced(uint64_t obj, const uint8_t *data, const Track *t, int limit, u
 
 int probe_movie(void) {
     const char *dir = rt_config()->romfs;
-    char image[MAX_PATH];
+    char image[PLAT_PATH_MAX];
     snprintf(image, sizeof image, "%s/romfs.bin", dir);
-    if (GetFileAttributesA(image) == INVALID_FILE_ATTRIBUTES) {
+    if (!plat_file_exists(image)) {
         printf("probe-movie: skipped: no RomFS image at %s (game data absent; extract it with tools/extract.py)\n", image);
         return 0;
     }
@@ -334,12 +334,12 @@ int probe_movie(void) {
                                                   movie_symbols[i]);
     hostfn_seal();
     movie_set_guest(&g);
-    C = _aligned_malloc(sizeof(Cpu), 64);
+    C = plat_aligned_alloc(sizeof(Cpu), 64);
     CHECK(C, "Cpu allocation");
     memset(C, 0, sizeof *C);
 
     uint64_t obj_mem[2] = {0}, obj = U(obj_mem);
-    volatile LONG ev[4] = {0};
+    volatile int32_t ev[4] = {0};
     uint64_t events[4] = {U(&ev[0]), U(&ev[1]), U(&ev[2]), U(&ev[3])};
     PMd cfg = {0};
     C->x[0] = U(&cfg);
@@ -377,9 +377,7 @@ int probe_movie(void) {
     int sent = 0, eos_sent = 0, got = 0, eos = 0, formats = 0;
     int64_t prev = INT64_MIN;
     double luma_lo = 255, luma_hi = 0;
-    LARGE_INTEGER f0, f1, qf;
-    QueryPerformanceFrequency(&qf);
-    QueryPerformanceCounter(&f0);
+    uint64_t f0 = plat_now_ns();
     for (int idle = 0; !eos;) {
         if (feed(obj, data, &t, &sent, t.n, &eos_sent)) return 1;
         movie_tick(C);
@@ -419,11 +417,10 @@ int probe_movie(void) {
         if (progress) idle = 0;
         else {
             CHECK(++idle < 20000, "no output for 20 s (%d of %d frames out, %d in)", got, t.n, sent);
-            Sleep(1);
+            plat_sleep_ms(1);
         }
     }
-    QueryPerformanceCounter(&f1);
-    double wall = (double)(f1.QuadPart - f0.QuadPart) / (double)qf.QuadPart;
+    double wall = (double)(plat_now_ns() - f0) / 1e9;
     MovieStats st;
     CHECK(movie_stats(obj, &st), "stats");
     CHECK(got == t.n, "%d frames out of %d in", got, t.n);
@@ -431,10 +428,10 @@ int probe_movie(void) {
           (unsigned long long)st.frames, (unsigned long long)st.errors);
     CHECK(formats, "GetOutputBuffer's format does not describe the NV12 frame");
     CHECK(ev[MOVIE_EV_INPUT] > 0 && ev[MOVIE_EV_OUTPUT] > 0 && ev[MOVIE_EV_FORMAT] == 1 && ev[MOVIE_EV_ERROR] == 0,
-          "events: input %ld output %ld format %ld error %ld", ev[0], ev[1], ev[2], ev[3]);
+          "events: input %d output %d format %d error %d", ev[0], ev[1], ev[2], ev[3]);
     CHECK(luma_hi - luma_lo > 1 || luma_hi > 4, "decoded pictures look blank (centre luma %.1f-%.1f)", luma_lo, luma_hi);
     double avg = st.decode_ns / 1e6 / (double)st.frames;
-    printf("probe-movie: unpaced: %d frames, %dx%d NV12, PTS in order, events input %ld output %ld format %ld; centre "
+    printf("probe-movie: unpaced: %d frames, %dx%d NV12, PTS in order, events input %d output %d format %d; centre "
            "luma %.1f-%.1f\n", got, t.w, t.h, ev[0], ev[1], ev[2], luma_lo, luma_hi);
     printf("probe-movie: decode %.2f ms per frame (max %.2f ms) on the worker; %.1f frames/s through the API\n", avg,
            st.max_ns / 1e6, got / wall);
@@ -475,7 +472,7 @@ int probe_movie(void) {
     free(frame);
     free(data);
     free(t.f);
-    _aligned_free(C);
+    plat_aligned_free(C);
     printf("probe-movie: passed\n");
     return 0;
 }

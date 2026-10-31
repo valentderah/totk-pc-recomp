@@ -1,6 +1,7 @@
 // Host check of the installer's first step, compiled with the bundled clang at install time: does the CPU run
 // -march=x86-64-v3 code, and does a Vulkan 1.3 device exist. Prints one JSON object on stdout.
 // The Vulkan loader is opened at run time, so a machine without one gets "loader": false instead of a failed start.
+#include <cpuid.h>
 #include <stdio.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
@@ -24,9 +25,26 @@ static void json_string(const char *s) {
     putchar('"');
 }
 
+// The x86-64-v3 level from CPUID: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE, with the OS saving the YMM state.
+// Not __builtin_cpu_supports("x86-64-v3"): clang reads that from the C runtime's CPU model, and libgcc before GCC 12
+// (the Linux release's sysroot has GCC 10) has no level bits, so it answers false on every CPU.
+static int x86_64_v3(void) {
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) return 0;
+    const unsigned fma = 1u << 12, movbe = 1u << 22, osxsave = 1u << 27, avx = 1u << 28, f16c = 1u << 29;
+    if ((c & (fma | movbe | osxsave | avx | f16c)) != (fma | movbe | osxsave | avx | f16c)) return 0;
+    unsigned lo, hi;
+    __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    if ((lo & 6) != 6) return 0;   // XMM and YMM state enabled by the OS
+    if (!__get_cpuid_count(7, 0, &a, &b, &c, &d)) return 0;
+    const unsigned bmi1 = 1u << 3, avx2 = 1u << 5, bmi2 = 1u << 8;
+    if ((b & (bmi1 | avx2 | bmi2)) != (bmi1 | avx2 | bmi2)) return 0;
+    if (!__get_cpuid(0x80000001, &a, &b, &c, &d)) return 0;
+    return (c & (1u << 5)) != 0;   // LZCNT (ABM)
+}
+
 int main(void) {
-    __builtin_cpu_init();
-    printf("{\"x86_64_v3\": %s, ", __builtin_cpu_supports("x86-64-v3") ? "true" : "false");
+    printf("{\"x86_64_v3\": %s, ", x86_64_v3() ? "true" : "false");
     void *lib = open_lib();
     PFN_vkGetInstanceProcAddr gipa = lib ? (PFN_vkGetInstanceProcAddr)lib_sym(lib, "vkGetInstanceProcAddr") : NULL;
     if (!gipa) {

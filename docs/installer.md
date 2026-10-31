@@ -24,7 +24,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   exefs/, romfs/                 extracted from the player's files
   profile/                       saves
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
-  shader and pipeline caches     prepared by the setup
+  shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
   totk-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
@@ -34,7 +34,7 @@ The player runs a newer installer on the same folder. It reads `totk-install.jso
 `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the shaders. A newer
 release that changes nothing game-derived skips the rebuild.
 
-Given another update file than the recorded one (1.2.1, then 1.4.3), the installer extracts and builds again from it and
+Given an update file other than the recorded one (1.2.1, then 1.4.3), the installer extracts and builds again from it and
 keeps `profile/`. Saves carry over both ways: 1.4.3 converts a 1.2.1 save on load, and 1.2.1 loads the saves 1.4.3 wrote.
 
 ## Setup steps
@@ -50,7 +50,11 @@ keeps `profile/`. Saves carry over both ways: 1.4.3 converts a 1.2.1 save on loa
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library into `totk.exe` (`build_game.py --runtime-lib`; about 3 min on 24 cores).
 5. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
-   `totk.exe --prepare-shaders`) in the install folder.
+   `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
+   117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
+   writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
+   The patches are written twice: `romfs-patches` and `romfs-patches-xbox` (`--xbox-prompts`, the A/B and X/Y prompts
+   swapped for `pad_layout = xbox_prompts`).
 6. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
@@ -105,9 +109,47 @@ totk.ini.example, VERSION  the default ini; the release string (the repository's
 - The release contains nothing game-derived; `make_release.py` runs `tools/check_content.py` over the folder before it
   finishes.
 
+## Linux release
+
+`tools/make_release_linux.py` builds the same setup for Linux and packs it as `TotK-Setup-x86_64.AppImage` (the static
+type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
+Desktop Mode. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
+Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `totk` there with
+`libSDL3.so.0` beside it. The folder inside the AppImage:
+
+```
+AppRun                starts python/bin/python3 -m installer.gui (no bytecode written into the read-only mount)
+totk-setup.desktop, totk-setup.png
+installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION   as on Windows
+python/               python-build-standalone 3.14 (with tkinter) + the installer's packages; a .pth puts the folder,
+                      tools/ and recomp/ on sys.path
+llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files of the Steam Runtime 3 "sniper" SDK the
+                      game's compile and link read (about 130 files)
+runtime/              libtotkrt.a, headers, the install-side sources, totk.png; deps/ with the Vulkan headers, VMA and a
+                      static zstd
+bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
+```
+
+- What we compile is built against the sniper sysroot (glibc 2.31): the game, hostcheck, hactool and the translator
+  need no newer glibc. The game links Opus, libvpx, zstd and libstdc++ statically and needs only glibc, the system's
+  Vulkan loader and the SDL3 beside it. The setup itself needs glibc 2.34 (Ubuntu 22.04, Debian 12, Fedora 35,
+  SteamOS 3): the official LLVM binaries and the `cryptography` wheel are built against it. `make_release_linux.py`
+  checks every ELF file in the folder against that floor (`check_glibc`), and the setup's check step stops with one
+  message on an older system.
+- The setup's temp folder is `.setup-temp` inside the install folder (`--temp` changes it): the AppImage is mounted
+  read-only, and a Steam Deck's `/home` is often too full for the generated C while the game goes to the SD card.
+- The game keeps Mesa's shader cache in `mesa-cache` beside `totk` unless `MESA_SHADER_CACHE_DIR` is set, for the
+  same reason: RADV fills its default folder in `~/.cache` up to 1 GB.
+- The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
+  it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
+- Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
+- Building the release needs one game version extracted and lifted (`tools/extract.py`, `recomp/gen.py`, either
+  version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
+  is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
+
 ## Constraints
 
-- The installer steps contain no Win32 calls: Linux follows with its own compiler and the same steps.
+- The installer steps contain no Win32 calls: Linux runs the same steps with its own compiler ("Linux release").
 - The keys file path is passed to the tools; key values never appear in the UI, logs or files.
 - The window is a front end over the CLI (`python -m installer --base ... --update ... --keys ... --lang ... --dest
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
@@ -123,4 +165,4 @@ totk.ini.example, VERSION  the default ini; the release string (the repository's
 ## Later
 
 - Re-warm the driver cache on start after a move, GPU or driver change.
-- NSZ and XCZ input. Linux release.
+- NSZ and XCZ input.

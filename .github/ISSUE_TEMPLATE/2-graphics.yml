@@ -1,0 +1,59 @@
+name: Graphics glitch
+description: Artifacts, missing or broken textures, flicker, wrong colours or shadows.
+labels: [bug, graphics]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the pinned issues at the top of the issue list first: they cover the known glitches on each GPU.
+
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this glitch.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3".
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: GPU, driver and Windows version
+      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+    validations:
+      required: true
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or video
+      description: Drag the file into this field. Say where in the game it was taken.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What looks wrong and when
+      description: Does it show all the time, in one place, or after some time in play? Which settings did you change from the defaults?
+    validations:
+      required: true
+  - type: dropdown
+    id: blocker
+    attributes:
+      label: Can you keep playing?
+      options:
+        - "Yes"
+        - "No, I cannot see enough to play"
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach logs\totk.log from the folder of totk.exe.

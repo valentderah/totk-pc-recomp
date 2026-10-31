@@ -1,0 +1,65 @@
+name: Crash
+description: The game closes, freezes or shows a FATAL message.
+labels: [bug, crash]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the pinned issues at the top of the issue list first: they cover the known crashes and their workarounds.
+
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this crash.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3".
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: GPU, driver and Windows version
+      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+    validations:
+      required: true
+  - type: dropdown
+    id: when
+    attributes:
+      label: When does it crash?
+      options:
+        - At startup, before the Nintendo logo
+        - Between the Nintendo logo and the title screen
+        - While loading a save
+        - In gameplay
+        - In a cutscene
+    validations:
+      required: true
+  - type: dropdown
+    id: blocker
+    attributes:
+      label: Can you keep playing?
+      options:
+        - "Yes, it does not happen again after a restart, or I can avoid it"
+        - "No, it happens every time at the same point"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did before the crash
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach logs\totk.log from the folder of totk.exe. Copy it before you start the game again, because the next start overwrites it.
+    validations:
+      required: true

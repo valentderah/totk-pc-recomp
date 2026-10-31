@@ -21,7 +21,9 @@ import compression.zstd as zstd
 import concurrent.futures
 import hashlib
 import json
+import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -32,8 +34,8 @@ from pathlib import Path
 import lz4.block
 
 ROOT = Path(__file__).resolve().parent.parent
-XLATE = ROOT / 'build' / 'xlate' / 'totk_xlate.exe'
-SPIRV_VAL = Path(r'C:\msys64\ucrt64\bin\spirv-val.exe')
+XLATE = ROOT / 'build' / 'xlate' / ('totk_xlate.exe' if os.name == 'nt' else 'totk_xlate')
+SPIRV_VAL = Path(r'C:\msys64\ucrt64\bin\spirv-val.exe') if os.name == 'nt' else Path(shutil.which('spirv-val') or '/usr/bin/spirv-val')
 ZSTD = b'\x28\xb5\x2f\xfd'
 # NVN program control section magic, u32 0x98761234 (d2r-mobile dm/gfx/tools/shader_map.py)
 CONTROL_MAGIC = b'\x34\x12\x76\x98'
@@ -170,7 +172,13 @@ def startup_package(name):
             name.startswith('Shader/') and name.endswith('.zs'))
 
 
-def inventory(romfs, exefs):
+# The RomFS directories that can hold shaders: the agl and gsys packages, the effects, terrain, the UI layout archives
+# and the game's own shader packs. Every shader of 1.1.1 (27,576) comes from these six; they are 1,996 entries and
+# 147 MiB, 0.9% of a RomFS whose every file the walk below used to read and decompress first (65 s against 2.8 s).
+SHADER_DIRS = ('Shader/', 'Effect/', 'Lib/agl/', 'Lib/Terrain/', 'Lib/gsys/', 'UI/LayoutArchive/')
+
+
+def inventory(romfs, exefs, everything=True):
     """Every unique shader: key -> dict(stage, control, code, source, origin, startup). As in MNG, a shader is a startup
     shader when it comes from an agl package, a game module, or a startup_package() RomFS file; the others come from
     effect and UI layout resources, which MNG translates only for bind states players have met. Also returns the number
@@ -226,6 +234,8 @@ def inventory(romfs, exefs):
                 pos += max(size, 8)
 
         for name in sorted(entries):
+            if not everything and not name.startswith(SHADER_DIRS):
+                continue
             raw = read(name)
             if raw[:4] not in (ZSTD, b'SARC', b'FSHA', b'BNSH', b'BAHS') and b'BNSH\0\0\0\0' not in raw:
                 continue

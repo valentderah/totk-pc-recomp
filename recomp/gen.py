@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'recomp'))
 
 import flags  # noqa: E402
+import hostmem  # noqa: E402
 import jumptables  # noqa: E402
 import patches  # noqa: E402
 import regs  # noqa: E402
@@ -587,12 +588,29 @@ def remove_stale(moddir, name, nchunks, errors):
     return removed
 
 
+# Peak memory of one emit worker on 1.4.3 is 1.3 GiB (1.5 GiB with margin); the parent holds about 0.7 GiB.
+WORKER_MEM = 1536 << 20
+MEM_SHARE = 0.8  # of the free memory the workers may take, the rest is for the system and other programs
+
+
+def pick_jobs(requested):
+    """Worker count and the reason for it: --jobs if given, else the CPU count capped by the free memory."""
+    if requested:
+        return requested, '--jobs'
+    cpus = os.cpu_count() or 4
+    free = hostmem.available_ram()
+    if free is None:
+        return cpus, f'{cpus} CPUs, free memory unknown'
+    by_mem = max(1, int(free * MEM_SHARE) // WORKER_MEM)
+    return min(cpus, by_mem), f'{cpus} CPUs, {free / 2**30:.1f} GiB free memory allows {by_mem}'
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--modules', default='main,subsdk0,sdk')
-    ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
+    ap.add_argument('--jobs', type=int, help='emit workers (default: by free memory and CPU count)')
     ap.add_argument('--limit', type=int, default=0, help='emit only the first N functions of each module')
     ap.add_argument('--chunk-fns', type=int, default=3000, help='functions per chunk at most')
     ap.add_argument('--chunk-bytes', type=int, default=3000000, help='estimated bytes of C per chunk')
@@ -651,7 +669,9 @@ def main():
     done_at, errors = {}, []
     t_emit = time.perf_counter()
     ctx = mp.get_context('spawn')
-    with ctx.Pool(max(1, args.jobs), initializer=_worker_init, initargs=(paths, starts_abs, table, opts)) as pool:
+    jobs, why = pick_jobs(args.jobs)
+    print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
+    with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts)) as pool:
         for i, r in enumerate(pool.imap_unordered(_emit_chunk, [t for _, t in tasks], chunksize=1)):
             results[r['module']].append(r)
             if r['error']:

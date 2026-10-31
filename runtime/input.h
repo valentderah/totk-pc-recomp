@@ -1,9 +1,6 @@
-// Host input sampling (runtime/input_win.c): SDL3 gamepad and the keyboard as one Switch npad.
+// Host input sampling (runtime/input.c, with input_win.c or input_sdl.c): SDL3 gamepad and the keyboard as one Switch npad.
 #pragma once
 #include <stdint.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 // Bits of libnx HidNpadButton (A=0 B=1 X=2 Y=3 StickL=4 StickR=5 L=6 R=7 ZL=8 ZR=9 Plus=10 Minus=11 Left=12 Up=13 Right=14
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
@@ -20,6 +17,7 @@ void input_menu(int open);
 // Minus+Plus combo and the neutral pad while the menu is open (input_map.c, window-system free): *held is the caller's memory
 // of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
+int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
@@ -38,18 +36,14 @@ void input_map_snapshot(struct InputMap *m);
 int input_capture(int reset, int *id);
 // The character on a punctuation key (KEY_MINUS..KEY_GRAVE) in the keyboard layout in use, 0 for another key.
 uint32_t input_key_char(int key);
+// F8, the flight recorder's key (no KEY_ id), held while the game window is in front.
+int input_flight_key(void);
 
 // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
 // mouse input, cursor hiding and confinement; it returns 1 with *res set when the message is handled. input_cursor_suspend(1)
 // releases the cursor around an F11 window change, (0) captures it again once the client area has its new size.
-#ifdef _WIN32
-int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res);
-int input_cursor_released(void);   // Esc or a non-client activation released the cursor (probe)
-// The menu's Win32 adapter (ui/menu_win.cpp), called next: F1 / Esc open or close the menu; while it is open, keys,
-// mouse and focus go to it. Returns 1 with *res set when the message is fully handled.
-int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res);
-#endif
 void input_cursor_suspend(int on);
+int input_cursor_released(void);   // Esc or a non-client activation released the cursor (probe)
 
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.

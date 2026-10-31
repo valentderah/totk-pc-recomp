@@ -32,6 +32,12 @@ site realtime main 8f2398 1e2c1001 bd400120   # fmov s1, #0.5 -> ldr s0, [x9] (g
 site realtime main 8f23a8 5e21d800 d503201f   # scvtf s0, s0 -> nop
 site realtime main 8f23ac 1e210800 d503201f   # fmul s0, s0, s1 -> nop
 
+# Equipment-switch cooldown (issue #18, found by JieML1100 on 1.4.3): the player update (main+0x852d24) steps the
+# countdown at player state +0x109c through the timer step (main+0xec98cc) only while it is above FLT_EPSILON, but the
+# equipment gate (main+0xcae6f8) blocks weapon, shield and bow changes while it is above 0. A measured ratio can leave
+# a remainder in (0, FLT_EPSILON] that is never stepped again; stepping while above 0 takes it below 0.
+site realtime main 852d28 1e270101 1e2703e1   # fmov s1, w8 (FLT_EPSILON) -> fmov s1, wzr
+
 # Hair and cloth (upstream 290ec9f, 8f8022f): the actor animation update builds a second clock {seconds = factor / 30,
 # ratio = factor} per rendered frame. Three inlined places: at the fmul, seconds = measured seconds * factor; at the
 # store of the factor into the ratio slot, measured ratio * factor. The call of the shared update (main+0x89822c)
@@ -63,6 +69,17 @@ site output main cc3f58 f9400015 f94012b5   # ldr x21, [x0] -> ldr x21, [x21, #3
 site scene main cc3f68 5e21d900 @page:x9    # scvtf s0, s8 -> adrp x9, page
 site scene main cc3f70 bd0cc660 2d420520    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cc3f74 5e21d921 bd0cc660    # scvtf s1, s9 -> str s0, [x19, #0xcc4]
+
+# Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches.c, the 1.2.1 sites of aspect_install;
+# runtime/resolution.c res_init writes the output's width / height to page +56 and switches the set on). The same four
+# sites as patches-v143.txt, with the same original words: two camera sites (update and setup) load the camera's copy of
+# DefaultAspect 1.777778, two viewport routines divide width by height. The replacement loads the ratio from the page
+# instead (Hor+). x10 is kept on the stack, so no register liveness is assumed.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main cb4b10 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x19, #0x140] (camera update)
+site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0, [x19, #0x140] (camera setup)
+site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v121/exefs --patches recomp/patches-v121.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.

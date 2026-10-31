@@ -4,7 +4,8 @@
 // ring, in call order, and the recorder makes the real call in that order; calls into any other command buffer (uploads,
 // the window, probes) are made at once. A call the ring has no packet for (a structure with a pNext chain) waits for
 // the recorder to empty the ring and is then made at once on the calling thread. rec_end returns once the recorder made
-// every call, so ending, submitting and the command pool stay on the submitting thread.
+// every call. vk_sync.c ends a part through rec_end_cb: the recorder makes the last calls into a part it recorded,
+// vkEndCommandBuffer included; submitting and the command pool stay on the submitting thread.
 //
 // Every vkCmd* the runtime calls through vk.h goes through the rc_* wrappers below (the macros at the end); the
 // extension commands called through function pointers have rec_* wrappers of their own. TOTK_VK_RECORDER=0 makes every
@@ -16,6 +17,9 @@
 
 void rec_begin(VkCommandBuffer cb);   // the submitting thread, sub_lock held
 void rec_end(void);                   // waits for the recorder; no-op when rec_begin did not start it
+// The end of part cb: the breadcrumb crumb (0: none, vk_crumbs.c), then vkEndCommandBuffer, both made by the recorder
+// when it records cb, and the wait for it (1); otherwise rec_end and the breadcrumb, and the caller ends cb (0).
+int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
 void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
 

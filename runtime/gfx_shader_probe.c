@@ -1,14 +1,15 @@
 // --probe-shader: the shader service client (gfx_shader.c) against 32 census shaders. Needs build/xlate/totk_xlate.exe and
-// build/v121/shaders/ (tools/shader_census.py); uses a throwaway cache directory.
+// a census, build/<version>/shaders/ (tools/shader_census.py, probe_census_dir); uses a throwaway cache directory.
 //   1. Translate 32 shaders (mixed stages) through gfx_shader_get; each SPIR-V starts with the magic 0x07230203.
 //   2. Drop the memory cache and ask again: 32 hits from disk, 0 service requests. A third pass returns the same pointers.
 //   3. Send a malformed line straight to the service: it answers with an error line and still serves a valid request.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "gfx.h"
+#include "host.h"
+#include "platform/platform.h"
 
 int gfx_shader_raw_request(const char *line, char *reply, size_t reply_size);
 uint64_t gfx_shader_requests(void);
@@ -48,16 +49,23 @@ static const char *str_field(const char *from, const char *to, const char *name,
 
 static int hexval(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
-// The repository root: the nearest parent of totk.exe holding build/v121/shaders/jobs.json.
-static int find_root(char *root, size_t n) {
-    char exe[MAX_PATH * 2];
-    DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
-    if (!len || len >= sizeof exe) return 0;
-    for (char *cut = strrchr(exe, '\\'); cut; cut = strrchr(exe, '\\')) {
-        *cut = 0;
-        char p[MAX_PATH * 2 + 40];
-        snprintf(p, sizeof p, "%s\\build\\v121\\shaders\\jobs.json", exe);
-        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return snprintf(root, n, "%s", exe) < (int)n;
+// The shader census the probes translate (tools/shader_census.py --version <ver>): build/<ver>/shaders in the nearest
+// parent of totk.exe that has one with a jobs.json, the running game version's first, then the others' (any census
+// serves a probe). 1 with that folder in dir.
+int probe_census_dir(char *dir, size_t n) {
+    const char *const versions[3] = {RT_V111 ? "v111" : RT_V143 ? "v143" : "v121",
+                                     RT_V111 ? "v121" : RT_V143 ? "v121" : "v143",
+                                     RT_V111 ? "v143" : RT_V143 ? "v111" : "v111"};
+    for (int v = 0; v < 3; v++) {
+        char exe[PLAT_PATH_MAX * 2];
+        int len = plat_exe_path(exe, sizeof exe);
+        if (!len || len >= sizeof exe) return 0;
+        for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
+            *cut = 0;
+            char p[PLAT_PATH_MAX * 2 + 40];
+            snprintf(p, sizeof p, "%s/build/%s/shaders/jobs.json", exe, versions[v]);
+            if (plat_file_exists(p)) return snprintf(dir, n, "%s/build/%s/shaders", exe, versions[v]) < (int)n;
+        }
     }
     return 0;
 }
@@ -95,15 +103,15 @@ static int pick_entries(const char *jobs, Entry *out) {
     return got;
 }
 
-static char root[MAX_PATH * 2];
+static char root[PLAT_PATH_MAX * 2];   // the census folder (probe_census_dir)
 
 // Builds the program the game would hand NVN for a census entry and translates it.
 static const GfxShader *translate(const Entry *e, int *err) {
-    char path[MAX_PATH * 2 + 64];
+    char path[PLAT_PATH_MAX * 2 + 64];
     uint8_t c1[8192], control[0x880] = {0};
     if (e->c1_len > sizeof c1) return *err = 1, NULL;
     for (size_t b = 0; b < e->c1_len; b++) c1[b] = (uint8_t)(hexval(e->c1[b * 2]) << 4 | hexval(e->c1[b * 2 + 1]));
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\code\\%s.code", root, e->key);
+    snprintf(path, sizeof path, "%s/code/%s.code", root, e->key);
     size_t body_size;
     char *body = slurp(path, &body_size);
     if (!body) return *err = 1, NULL;
@@ -120,28 +128,27 @@ static const GfxShader *translate(const Entry *e, int *err) {
     return s;
 }
 
+static int remove_entry(const char *name, int kind, uint64_t size, void *dir) {
+    (void)size;
+    char f[PLAT_PATH_MAX * 2];
+    snprintf(f, sizeof f, "%s/%s", (const char *)dir, name);
+    if (kind == PLAT_FS_FILE) plat_fs_unlink(f);
+    return 1;
+}
+
 static void remove_dir(const char *dir) {
-    char pat[MAX_PATH * 2];
-    snprintf(pat, sizeof pat, "%s\\*", dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pat, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            char f[MAX_PATH * 2];
-            snprintf(f, sizeof f, "%s\\%s", dir, fd.cFileName);
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileA(f);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    RemoveDirectoryA(dir);
+    plat_fs_list(dir, remove_entry, (void *)dir);
+    plat_fs_rmdir(dir);
 }
 
 #define FAIL_IF(cond, ...) do { if (cond) { printf("probe-shader: FAILED: " __VA_ARGS__); printf("\n"); remove_dir(dir); return 1; } } while (0)
 
 int probe_shader(void) {
-    char path[MAX_PATH * 2 + 64];
-    CHECK(find_root(root, sizeof root), "build/v121/shaders/jobs.json not found (run tools/shader_census.py)");
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\jobs.json", root);
+    char path[PLAT_PATH_MAX * 2 + 64];
+    CHECK(probe_census_dir(root, sizeof root),
+          "no build/v%d/shaders/jobs.json above the exe (run tools/shader_census.py --version v%d)", rt_game_version,
+          rt_game_version);
+    snprintf(path, sizeof path, "%s/jobs.json", root);
     size_t jobs_size;
     char *jobs = slurp(path, &jobs_size);
     CHECK(jobs, "cannot read %s", path);
@@ -149,9 +156,11 @@ int probe_shader(void) {
     int count = pick_entries(jobs, entries);
     CHECK(count == WANT, "only %d census shaders usable", count);
 
-    char dir[MAX_PATH];
-    snprintf(dir, sizeof dir, "%s\\totk-shader-probe-%lu", getenv("TEMP") ? getenv("TEMP") : ".", GetCurrentProcessId());
-    CHECK(_putenv_s("TOTK_SHADER_CACHE", dir) == 0, "cannot set TOTK_SHADER_CACHE");
+    char dir[PLAT_PATH_MAX];
+    char tmp[PLAT_PATH_MAX];
+    if (!plat_temp_dir(tmp, sizeof tmp)) strcpy(tmp, ".");
+    snprintf(dir, sizeof dir, "%s/totk-shader-probe-%u", tmp, plat_process_id());
+    CHECK(plat_setenv("TOTK_SHADER_CACHE", dir), "cannot set TOTK_SHADER_CACHE");
 
     // pass 1: translate through the service
     const GfxShader *first[WANT];
@@ -198,16 +207,16 @@ int probe_shader(void) {
     FAIL_IF(strncmp(reply, "fail ", 5), "malformed line answered with \"%s\"", reply);
     FAIL_IF(!gfx_shader_raw_request("{\"job\":{\"stage\":\"ps\"},\"out\":\"x\"}", reply, sizeof reply) || strncmp(reply, "fail ", 5),
             "job without key not rejected");
-    char dir_json[MAX_PATH * 2], line[MAX_PATH * 4 + 1024], *o = dir_json;
+    char dir_json[PLAT_PATH_MAX * 2], line[PLAT_PATH_MAX * 4 + 1024], *o = dir_json;
     for (const char *s = dir; *s; s++) { if (*s == '\\') *o++ = '\\'; *o++ = *s; }
     *o = 0;
-    char esc_root[MAX_PATH * 2];
+    char esc_root[PLAT_PATH_MAX * 2];
     o = esc_root;
     for (const char *s = root; *s; s++) { if (*s == '\\') *o++ = '\\'; *o++ = *s; }
     *o = 0;
     const Entry *e = &entries[0];
     snprintf(line, sizeof line,
-             "{\"job\":{\"key\":\"%.64sa\",\"stage\":\"%s\",\"debug\":false,\"c1\":\"%.*s\",\"code\":\"%s\\\\build\\\\v121\\\\shaders\\\\code\\\\%.64s.code\"},\"out\":\"%s\"}",
+             "{\"job\":{\"key\":\"%.64sa\",\"stage\":\"%s\",\"debug\":false,\"c1\":\"%.*s\",\"code\":\"%s/code/%.64s.code\"},\"out\":\"%s\"}",
              e->key, e->stage == GFX_STAGE_VS ? "vs" : e->stage == GFX_STAGE_FS ? "ps" : "cs", (int)(e->c1_len * 2), e->c1,
              esc_root, e->key, dir_json);
     FAIL_IF(!gfx_shader_raw_request(line, reply, sizeof reply), "service did not answer a valid request after the malformed one");

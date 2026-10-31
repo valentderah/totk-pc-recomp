@@ -36,7 +36,7 @@ static bool g_disable_next;              // opt_disable_next: the next row is gr
 static UiTextId g_disable_note;
 
 // The description pane: this frame's hovered and selected rows, the page's first row, and the last one shown.
-struct Desc { char text[512]; };
+struct Desc { char text[UI_DESC_BYTES]; };
 static Desc g_hover, g_focus, g_first, g_shown;
 
 // disabled: the note of a row opt_disable_next greyed out, else NULL.

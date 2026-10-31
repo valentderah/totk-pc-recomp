@@ -34,11 +34,14 @@ enum {
 };
 
 // Gamepad inputs by position (Nintendo layout, as SDL names them), platform-neutral like the key ids. ZL and ZR are the
-// analog triggers; input_win.c translates SDL buttons and axes to these (one place).
+// analog triggers; input_win.c translates SDL buttons and axes to these (one place). The paddles are the back buttons
+// of an Xbox Elite, DualSense Edge or Steam Controller (SDL's LEFT_PADDLE1 and so on); no Switch button has them by
+// default, a bind line or the remapping rows add them.
 enum {
     PAD_NONE = 0,
     PAD_SOUTH, PAD_EAST, PAD_WEST, PAD_NORTH, PAD_LSTICK, PAD_RSTICK, PAD_L, PAD_R, PAD_START, PAD_BACK,
     PAD_DPAD_LEFT, PAD_DPAD_UP, PAD_DPAD_RIGHT, PAD_DPAD_DOWN, PAD_ZL, PAD_ZR,
+    PAD_LPADDLE1, PAD_RPADDLE1, PAD_LPADDLE2, PAD_RPADDLE2,
     PAD_COUNT
 };
 
@@ -77,8 +80,10 @@ int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
 
-// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); anything else ("auto", NULL) picks Nintendo
-// when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox otherwise.
+// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts" is the Nintendo layout with
+// the A/B and X/Y prompts swapped (runtime/romfs.c overlay_init), so the buttons map as "nintendo". Anything else
+// ("auto", NULL) picks Nintendo when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox
+// otherwise.
 int input_pad_layout_pick(const char *setting, int east_labelled_a);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
@@ -91,6 +96,10 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);
 // Mouse motion in raw counts over dt_s seconds to right-stick deflection: full deflection at 3000 / sens counts/s.
 // Clamped to the unit circle, up (negative dy) is +y.
 void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]);
+// A gamepad stick (x, y in -32768..32767, up is +y) through a round dead zone of `dead` (fraction of full deflection,
+// 0..0.5): inside the circle the stick reads 0, and the rest of the travel is scaled to start at 0 at the edge, so a
+// drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
+void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]);
 
 // The mouse camera, "native" mode (TOTK_MOUSE_MODE): the technique of Zelda on PC's PCCamera (MPL-2.0, mircea32000),
 // written again here. Each presented frame the mouse motion becomes a camera rotation in degrees (counts * 0.022 *

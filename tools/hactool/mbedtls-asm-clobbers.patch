@@ -1,0 +1,20 @@
+Applied by tools/build_hactool.py to SciresM/hactool (ISC) at 1d64a83450e025622f3468c28fc4164dad2c5ef6, ours.
+The x86-64 multiply-accumulate asm of hactool's bundled mbedtls 2.6.1 (MULADDC in bn_mul.h) adds into memory through
+rdi and changes the flags without saying so. gcc happens to keep that code correct; clang (the Linux release's
+toolchain) keeps memory values in registers across it at -O1 and above, the RSA arithmetic goes wrong, and every
+signature check fails (NCA header, NPDM, ACID), which stops the merge of the update. Later mbedtls releases name the
+same two clobbers.
+
+diff --git a/mbedtls/include/mbedtls/bn_mul.h b/mbedtls/include/mbedtls/bn_mul.h
+index cac3f14..c787b0a 100644
+--- a/mbedtls/include/mbedtls/bn_mul.h
++++ b/mbedtls/include/mbedtls/bn_mul.h
+@@ -179,7 +179,7 @@
+ #define MULADDC_STOP                        \
+         : "+c" (c), "+D" (d), "+S" (s)      \
+         : "b" (b)                           \
+-        : "rax", "rdx", "r8"                \
++        : "rax", "rdx", "r8", "memory", "cc" \
+     );
+ 
+ #endif /* AMD64 */

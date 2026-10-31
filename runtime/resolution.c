@@ -12,6 +12,8 @@
 //
 // Patch page: +16 the scene size {w, h} as floats, +32 the output size and +48 the swapchain size as {w, h} in one
 // 64-bit word, +40 the renderer (1.2.1) or display configuration (1.4.3) the patched code stores there.
+// +56 the camera's aspect ratio as a float when the output is not 16:9 (set aspect), +60 the field-of-view factor
+// (set fov, res_fov_live).
 // 1.4.3 scales the scene it reads by output width / 1920 (a 2560x1440 output renders its 1600x900 scene at 2128x1200;
 // MacNativeGames measured the same), so its page holds the wanted size divided by that factor and the game's 5/6 needs
 // no scene patch. 1.2.1 renders the size it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and
@@ -218,8 +220,66 @@ void res_init(void) {
     rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
+    // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
+    // patches-v143.txt, set aspect), so a 21:9 output shows more of the world at the sides instead of a stretched 16:9 view. The HUD's layouts
+    // for that shape come from romfs-patches-<w>x<h> (romfs.c overlay_init, tools/make_romfs_patches.py --aspect).
+    double ratio = (double)R.ow / R.oh, game = (double)BASE_W / BASE_H;
+    int aspect = rt_patch_set("aspect");
+    if (!res_is_16x9(R.ow, R.oh)) {
+        if (aspect < 0) {
+            rt_log("resolution: output %ux%u is not 16:9 and this game version has no camera aspect patch; the view "
+                   "is stretched", R.ow, R.oh);
+        } else {
+            float r = (float)ratio;
+            memcpy(page + 56, &r, sizeof r);
+            rt_patch_switch(aspect, 1);
+            rt_log("resolution: camera aspect ratio %.4f (16:9 is %.4f)", ratio, game);
+        }
+    } else {
+        rt_patch_switch(aspect, 0);   // the page holds no ratio
+    }
     rt_log("resolution: output %ux%u, scene %ux%u%s; texture heap +%llu KiB", R.ow, R.oh, R.sw, R.sh,
            scene_on ? "" : " (the game's own 5/6 of the output)", (unsigned long long)res_heap_extra_kib());
+}
+
+// 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.
+int res_is_16x9(unsigned w, unsigned h) {
+    double rel = ((double)w / h) / ((double)BASE_W / BASE_H);
+    return rel >= 0.99 && rel <= 1.01;
+}
+
+// The game resolution asks for a romfs-patches-<w>x<h> overlay: it is not 16:9 and the game version has the camera
+// aspect patch (set aspect); the UI layouts of another shape only fit a camera that follows the same shape.
+int res_wants_wide_overlay(const unsigned out[2]) {
+    return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
+}
+
+// Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the
+// factor on page +60 (recomp/patches-v143.txt, set fov). The horizontal angle follows through the aspect ratio. 100
+// switches the set off, so the camera code is the game's own. Runs on a settings change (gfx_present.c
+// window_settings_live), the first time at the first present.
+#define FOV_MIN 70
+#define FOV_MAX 140
+void res_fov_live(void) {
+    static int set = -2, shown = 100;
+    if (set == -2) set = rt_patch_set("fov");
+    int pct = cfg_int("TOTK_FOV");
+    pct = pct < FOV_MIN ? FOV_MIN : pct > FOV_MAX ? FOV_MAX : pct;
+    if (pct == shown) return;
+    shown = pct;
+    if (set < 0) {
+        rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d does nothing", pct);
+        return;
+    }
+    float k = pct / 100.0f;
+    memcpy((uint8_t *)rt_patch_page() + 60, &k, sizeof k);   // before the switch: a site that sees it on reads k
+    rt_patch_switch(set, pct != 100);
+    rt_log("resolution: field of view %d%% of the game's", pct);
+}
+
+void res_wanted(unsigned out[2]) {
+    decide();
+    out[0] = R.ow, out[1] = R.oh;
 }
 
 void res_sizes(unsigned out[2], unsigned scene[2]) {

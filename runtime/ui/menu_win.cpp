@@ -1,5 +1,5 @@
-// Win32 adapter of the in-game menu: window messages to menu events (menu.h). The only Win32 code of the menu; an SDL3
-// window gets its own adapter later. Window thread.
+// Win32 adapter of the in-game menu: window messages to menu events (menu.h). The only Win32 code of the menu; the SDL3
+// window has its own (ui/menu_sdl.cpp). Window thread.
 //
 // F1 opens and closes the menu, Esc opens it (with the menu open, Esc goes to the menu, which closes). Esc also releases
 // the cursor (input_window_msg runs first; closing the menu gives the capture back). While the menu is open, its keys,
@@ -12,6 +12,7 @@
 
 extern "C" {
 #include "input.h"
+#include "input_win.h"
 #include "ui/menu.h"
 }
 

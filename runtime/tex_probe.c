@@ -7,11 +7,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 #include "host.h"
 #include "nvn_api.h"
 #include "tex.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 static uint64_t g_rng = 0x9E3779B97F4A7C15ull;
 static uint8_t rnd8(void) {
@@ -318,7 +318,9 @@ static void copy_wait(VkBuffer src, VkDeviceSize so, VkBuffer dst, VkDeviceSize 
 }
 
 // A CPU-visible pool over the guest heap: GPU writes land in guest memory, CPU writes are read by the GPU, write watch
-// reports the CPU writes and the explicit ones.
+// reports the CPU writes and the explicit ones. GPU writes are noted and reported as the replay does
+// (vk_mem_gpu_pending, vk_gpu_written at the fence), and a GPU read follows vk_mem_shadow_sync as a submit does: with
+// shadow storage that is what moves the bytes; with an import they are already in place.
 static int test_import(pool_t *pool) {
     VkCtx *c = vk_ctx();
     uint8_t *m = pool->mem;
@@ -338,7 +340,9 @@ static int test_import(pool_t *pool) {
     vmaFlushAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
     vk_mem_resolve(a + 0x1000, 0x20000, &sp);
     mem_written_pages(a, pool->size, pages, 64);
+    vk_mem_gpu_pending(a + 0x1000, 0x20000);
     copy_wait(sb, 0, sp.buffer, sp.offset, 0x20000);
+    vk_gpu_written(a + 0x1000, 0x20000);
     GCHECK(!memcmp(m + 0x1000, s, 0x20000), "GPU copy into the imported heap range differs from the source");
     n = mem_written_pages(a, pool->size, pages, 64);
     g_gpu_seen = n;
@@ -347,10 +351,11 @@ static int test_import(pool_t *pool) {
 
     // CPU writes: reported exactly, and the GPU reads them through the same buffer
     for (int i = 0; i < 0x4000; i++) m[0x30000 + i] = rnd8();
-    n = mem_written_pages(a, pool->size, pages, 64);
+    n = mem_written_peek(a, pool->size, pages, 64);
     GCHECK(n == 4 && pages[0] == a + 0x30000 && pages[3] == a + 0x33000, "CPU writes to 4 pages: %llu reported",
            (unsigned long long)n);
     vk_mem_resolve(a + 0x30000, 0x4000, &sp);
+    vk_mem_shadow_sync();
     copy_wait(sp.buffer, sp.offset, sb, 0, 0x4000);
     vmaInvalidateAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
     GCHECK(!memcmp(s, m + 0x30000, 0x4000), "GPU read of CPU-written heap differs");
@@ -372,33 +377,29 @@ static int test_import(pool_t *pool) {
 
 // ReadFile into a watched page, buffered and unbuffered: timed, and whether write watch saw the kernel's write.
 static int test_readfile(uint8_t *dst) {
-    char dir[MAX_PATH], path[MAX_PATH];
-    GCHECK(GetTempPathA(MAX_PATH, dir) && GetTempFileNameA(dir, "tvk", 0, path), "temp file name");
+    char dir[PLAT_PATH_MAX], path[PLAT_PATH_MAX + 64];
+    GCHECK(plat_temp_dir(dir, sizeof dir), "temp directory");
+    snprintf(path, sizeof path, "%s/tvk-%u.tmp", dir, plat_process_id());
     static uint8_t data[0x2000];
     for (size_t i = 0; i < sizeof data; i++) data[i] = rnd8();
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
-    DWORD got = 0;
-    GCHECK(h != INVALID_HANDLE_VALUE && WriteFile(h, data, sizeof data, &got, NULL) && got == sizeof data, "temp file write");
-    CloseHandle(h);
-    LARGE_INTEGER f, t0, t1;
-    QueryPerformanceFrequency(&f);
+    GCHECK(plat_file_write(path, data, sizeof data), "temp file write");
     for (int k = 0; k < 2; k++) {
         uint8_t *p = dst + (size_t)k * 0x2000;
         uint64_t pages[8];
-        h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, k ? FILE_FLAG_NO_BUFFERING : 0, NULL);
-        GCHECK(h != INVALID_HANDLE_VALUE, "temp file open");
+        PlatFile *h = k ? plat_file_open_unbuffered(path) : plat_file_open(path);
+        GCHECK(h, "temp file open");
         mem_written_pages((uintptr_t)p, 0x2000, pages, 8);
-        QueryPerformanceCounter(&t0);
-        BOOL ok = ReadFile(h, p, 0x2000, &got, NULL);
-        QueryPerformanceCounter(&t1);
-        CloseHandle(h);
-        GCHECK(ok && got == 0x2000 && !memcmp(p, data, sizeof data), "ReadFile (%s) result", k ? "unbuffered" : "buffered");
+        uint64_t t0 = plat_now_ns();
+        int64_t got = plat_file_pread(h, p, 0x2000, 0);
+        uint64_t t1 = plat_now_ns();
+        plat_file_close(h);
+        GCHECK(got == 0x2000 && !memcmp(p, data, sizeof data), "ReadFile (%s) result", k ? "unbuffered" : "buffered");
         g_rf_seen[k] = mem_written_pages((uintptr_t)p, 0x2000, pages, 8);
-        g_rf_us[k] = (uint64_t)((t1.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart);
+        g_rf_us[k] = (t1 - t0) / 1000;
         printf("probe-vkmem: ReadFile %s of 8 KiB into a watched page: %llu us, write watch saw %llu of 2 pages\n",
                k ? "unbuffered" : "buffered", (unsigned long long)g_rf_us[k], (unsigned long long)g_rf_seen[k]);
     }
-    DeleteFileA(path);
+    plat_file_delete(path);
     g_gpu_checks += 2;
     return 0;
 }

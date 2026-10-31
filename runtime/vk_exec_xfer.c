@@ -5,7 +5,7 @@
 // (linear texel layout, GENERAL layout; block-linear storage is only converted when a mirrored texture is uploaded). So a
 // copy is one Vulkan transfer command and the pitch of a buffer side comes from the payload (OP_COPY_STRIDE or the
 // tight row). Every copy ends the open pass and starts with a full barrier. Destinations: an image is marked
-// GPU-written at record time; a CPU-visible buffer range is reported to vk_guest_written once the GPU is done (write
+// GPU-written at record time; a CPU-visible buffer range is reported to vk_gpu_written once the GPU is done (write
 // watch does not see GPU writes, textures stored there re-upload).
 //
 // Events and counters are CPU-visible side effects. Their values go into guest memory on the completion thread through
@@ -48,7 +48,7 @@
 enum { W_FORMAT, W_REGION, W_BUFFER, W_OVERLAP, W_COPY, W_CLEAR, W_QUERY, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
-    static volatile long seen[W_COUNT];
+    static volatile int32_t seen[W_COUNT];
     if (__atomic_exchange_n(&seen[key], 1, __ATOMIC_RELAXED)) return;
     char msg[256];
     va_list ap;
@@ -66,7 +66,7 @@ typedef struct { uint64_t addr, size; } Range;
 
 static void guest_written_cb(void *arg) {
     Range *r = arg;
-    vk_guest_written(r->addr, r->size);
+    vk_gpu_written(r->addr, r->size);
     free(r);
 }
 
@@ -77,6 +77,7 @@ static void note_gpu_write(VkExec *ex, uint64_t addr, uint64_t size) {
     Range *r = malloc(sizeof *r);
     if (!r) rt_fatal("vk: out of memory");
     *r = (Range){addr, size};
+    vk_mem_gpu_pending(addr, size);
     vk_completion_add(ex->fence, guest_written_cb, r);
 }
 
@@ -211,7 +212,10 @@ static void oq_cb(void *arg) {
         // completion thread, and with it every later callback, for good. It counts as visible (one sample).
         VkResult r = vkGetQueryPoolResults(dev, oq_pool, s->q[i], j - i, sizeof v, v, 2 * sizeof v[0],
                                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-        if (r != VK_SUCCESS && r != VK_NOT_READY) rt_fatal("vk: occlusion query results failed (%d)", (int)r);
+        if (r != VK_SUCCESS && r != VK_NOT_READY) {
+            vk_device_fault_report(r);
+            rt_fatal("vk: occlusion query results failed (%d)", (int)r);
+        }
         vkResetQueryPool(dev, oq_pool, s->q[i], j - i);
         for (uint32_t k = i; k < j; k++) {
             if (v[2 * (k - i) + 1]) sum += v[2 * (k - i)];

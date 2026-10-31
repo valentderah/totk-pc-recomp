@@ -7,7 +7,6 @@
 // Objects are stored in place in the NVN object memory the game provides (nvn_obj.h); every argument is read from the
 // AAPCS64 registers (host.h arg_x / arg_s / arg_p) and every result returned with ret_x. Command-buffer procs are in
 // nvn_api_cmd.c, the TOTK extension procs in nvn_ext.c.
-#include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +16,7 @@
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
+#include "platform/platform.h"
 
 // ---------- Descriptor pools
 // NVNboolean nvnTexturePoolInitialize(NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
@@ -143,7 +143,7 @@ NVN_API(nvnTextureBuilderGetStorageAlignment) {
 // registering the descriptor again, as an NVN descriptor refers to memory and stays valid on hardware. The table maps
 // storage address -> a copy of the live texture so the back end can redirect a registration whose serial was finalized.
 static nvn_hmap live = {.klen = 8};
-static SRWLOCK live_lock = SRWLOCK_INIT;
+static PlatMutex live_lock = PLAT_MUTEX_INIT;
 
 static void live_put(const tex_t *o) {
     if (!o->mem) return;
@@ -151,30 +151,30 @@ static void live_put(const tex_t *o) {
     tex_t *copy = malloc(sizeof *copy);
     if (!copy) rt_fatal("nvn: out of memory for the live texture table");
     *copy = *o;
-    AcquireSRWLockExclusive(&live_lock);
+    plat_mutex_lock(&live_lock);
     tex_t *old = nvn_hm_put(&live, &k, copy);
-    ReleaseSRWLockExclusive(&live_lock);
+    plat_mutex_unlock(&live_lock);
     free(old);
 }
 
 static void live_del(const tex_t *o) {
     if (!o->mem) return;
     uint64_t k = (uintptr_t)o->mem;
-    AcquireSRWLockExclusive(&live_lock);
+    plat_mutex_lock(&live_lock);
     tex_t *cur = nvn_hm_get(&live, &k);
     if (cur && cur->serial == o->serial) nvn_hm_del(&live, &k);
     else cur = NULL;
-    ReleaseSRWLockExclusive(&live_lock);
+    plat_mutex_unlock(&live_lock);
     free(cur);
 }
 
 int nvn_tex_live_at(const void *mem, tex_t *out) {
     if (!mem) return 0;
     uint64_t k = (uintptr_t)mem;
-    AcquireSRWLockShared(&live_lock);
+    plat_mutex_lock_shared(&live_lock);
     const tex_t *cur = nvn_hm_get(&live, &k);
     if (cur) *out = *cur;
-    ReleaseSRWLockShared(&live_lock);
+    plat_mutex_unlock_shared(&live_lock);
     return cur != NULL;
 }
 
@@ -657,8 +657,8 @@ static void sleep_until(uint64_t deadline) {
         uint64_t now = kern_now_ns();
         if (now >= deadline) return;
         uint64_t d = deadline - now;
-        if (d >= 2000000) Sleep((DWORD)(d / 1000000 - 1));
-        else SwitchToThread();
+        if (d >= 2000000) plat_sleep_ms((uint32_t)(d / 1000000 - 1));
+        else plat_yield();
     }
 }
 

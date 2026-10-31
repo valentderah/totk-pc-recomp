@@ -91,11 +91,19 @@ static inline void ret_d(Cpu *c, double d) { uint64_t b; memcpy(&b, &d, 8); c->v
 typedef struct { const char *name; GuestFn fn; } RtHostEntry;
 #define RT_CAT2(a, b) a##b
 #define RT_CAT(a, b) RT_CAT2(a, b)
-// File-scope declarations; fn must be declared before. The loader binds them by symbol name.
+// File-scope declarations; fn must be declared before. The loader binds them by symbol name. The entries of every
+// object file meet in one section per kind, which hostfn.c walks: on PE/COFF ".ovr$m", which the linker sorts between
+// hostfn.c's ".ovr$a" and ".ovr$z" markers; on ELF "totk_ovr", which the linker brackets with __start_totk_ovr and
+// __stop_totk_ovr.
+#ifdef _WIN32
+#define RT_HOST_SECTION(kind) section("." #kind "$m")
+#else
+#define RT_HOST_SECTION(kind) section("totk_" #kind)
+#endif
 #define HOST_OVERRIDE(sym, fn) /* replaces sym in every GOT/GLOB_DAT/ABS64 of every module */                  \
-    __attribute__((used, section(".ovr$m"))) static const RtHostEntry RT_CAT(rt_ovr_, __COUNTER__) = {sym, fn}
+    __attribute__((used, RT_HOST_SECTION(ovr))) static const RtHostEntry RT_CAT(rt_ovr_, __COUNTER__) = {sym, fn}
 #define HOST_OBSERVER(sym, fn) /* JUMP_SLOT only; fn calls rt_original(c) */                                    \
-    __attribute__((used, section(".obs$m"))) static const RtHostEntry RT_CAT(rt_obs_, __COUNTER__) = {sym, fn}
+    __attribute__((used, RT_HOST_SECTION(obs))) static const RtHostEntry RT_CAT(rt_obs_, __COUNTER__) = {sym, fn}
 uint64_t hostfn_register(const char *name, GuestFn fn);    // synthetic address; before hostfn_seal only. The same
                                                            // (name, fn) pair returns the same address
 GuestFn hostfn_override(const char *name);                 // NULL if none
@@ -176,8 +184,9 @@ typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
-extern const int rt_game_version;                          // the game build: 121 (1.2.1) or 143 (1.4.3)
+extern const int rt_game_version;                          // the game build: 111 (1.1.1), 121 (1.2.1) or 143 (1.4.3)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
+#define RT_V111 (rt_game_version == 111)                    // 1.1.1: its own boot constants and data slots
 #define RT_V143 (rt_game_version >= 143)
 
 // ---- kernel (kernel.c)
@@ -242,6 +251,10 @@ void res_heapdef_served(void);                             // romfs.c serves the
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
+int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
+int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
+void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
+void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
@@ -281,12 +294,14 @@ void rt_boot(void);                                        // boot.c
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.
 int probe_cfg(void);                                       // cfg_probe.c
+int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
 int probe_vkdevice(void);                                 // vk_device.c
 int probe_nvn(void), probe_nvn_tex(void);                  // nvn_probe.c, nvn_tex_probe.c
-int probe_window(void);                                    // gfx_window.c
+int probe_window(void);                                    // gfx_window_probe.c
 int probe_shader(void);                                    // gfx_shader.c
+int probe_census_dir(char *dir, size_t n);                 // gfx_shader_probe.c: build/<version>/shaders for the probes
 int probe_vkmem(void), probe_vkexec(void), probe_astc(void);                 // tex_probe.c, vk_exec_probe.c, astc_probe.c
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)

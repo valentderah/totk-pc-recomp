@@ -274,7 +274,8 @@ def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lam
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config', type=Path, default=ROOT / 'config.local.toml')
-    parser.add_argument('--hactool', type=Path, default=ROOT / 'toolchain' / 'hactool' / 'hactool.exe')
+    parser.add_argument('--hactool', type=Path,
+                        default=ROOT / 'toolchain' / 'hactool' / ('hactool.exe' if os.name == 'nt' else 'hactool'))
     parser.add_argument('--base', type=Path, help='base game (default: input.base of the config)')
     parser.add_argument('--update', type=Path, action='append',
                         help='an update NSP, repeatable (default: input.updates of the config)')

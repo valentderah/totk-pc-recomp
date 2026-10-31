@@ -46,7 +46,7 @@ struct IpcSession {
     IpcHandler handler;
     void *state;
     void (*close)(void *state);
-    long refs;
+    int32_t refs;
 };
 
 uint32_t ipc_session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *state));   // handle
