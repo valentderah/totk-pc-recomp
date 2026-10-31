@@ -31,8 +31,8 @@ from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
 from installer.steps import all_steps  # noqa: E402
-from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, Model, Process,  # noqa: E402
-                                amount, describe_event, parse_line, windows_ui_language)
+from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Model,  # noqa: E402
+                                Process, amount, describe_event, parse_line, windows_ui_language)
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
@@ -233,12 +233,16 @@ class FormTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
-    def test_russian_covers_english_with_the_same_placeholders(self):
-        en, ru = Catalog('en').english, Catalog('ru').texts
-        self.assertEqual(sorted(set(en) - set(ru)), [])
-        self.assertEqual(sorted(set(ru) - set(en)), [])
-        holes = [k for k in en if sorted(re.findall(r'\{\w+\}', en[k])) != sorted(re.findall(r'\{\w+\}', ru[k]))]
-        self.assertEqual(holes, [])
+    def test_every_language_covers_english_with_the_same_placeholders(self):
+        en = Catalog('en').english
+        for lang in UI_LANGUAGES[1:]:
+            with self.subTest(lang=lang):
+                other = Catalog(lang).texts
+                self.assertEqual(sorted(set(en) - set(other)), [])
+                self.assertEqual(sorted(set(other) - set(en)), [])
+                holes = [k for k in en
+                         if sorted(re.findall(r'\{\w+\}', en[k])) != sorted(re.findall(r'\{\w+\}', other[k]))]
+                self.assertEqual(holes, [])
 
     def test_every_id_the_window_uses_exists(self):
         cat = Catalog('en')
@@ -246,12 +250,12 @@ class CatalogTest(unittest.TestCase):
                                    'process_died', 'result_ok', 'result_failed', 'result_cancelled')]
         ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
-        for lang in ('en', 'ru'):
+        for lang in UI_LANGUAGES:
             cat.set_language(lang)
             self.assertEqual([i for i in ids if not cat.has(i)], [])
 
     def test_codes_become_names(self):
-        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский')):
+        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский'), ('pt-BR', 'Coreano')):
             cat = Catalog(lang)
             self.assertIn(korean, cat('warn.lang_needs_fonts', lang='ko'))
             self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
@@ -280,7 +284,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(describe_event(cat, {'type': 'start'}), '')
 
     def test_windows_language_is_a_known_value(self):
-        self.assertIn(windows_ui_language(), ('en', 'ru'))
+        self.assertIn(windows_ui_language(), UI_LANGUAGES)
 
 
 BREAK_CHILD = 'import time\nprint("ready", flush=True)\ntime.sleep(60)\n'

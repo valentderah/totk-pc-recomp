@@ -79,9 +79,10 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   the merged RomFS (15.9 GiB) before it deletes them. The check computes the exact figure.
 - Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
-  finish screen with Open folder. English or Russian, chosen from the Windows display language, switchable in the
-  window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `totk-install.json` needs only the
-  folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
+  finish screen with Open folder. English, Russian or Brazilian Portuguese, chosen from the Windows display language,
+  switchable in the window; every sentence is an id in `installer/text/<en|ru|pt-BR>.json`. A folder with
+  `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
+  closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of

@@ -2,10 +2,10 @@
 
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
 install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Decisions live in guilogic.py;
-this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
+this file only draws. The window text is in installer/text/<en|ru|pt-BR>.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
-    --lang en|ru               window language (default: the Windows display language)
+    --selftest [--shots DIR]   build every screen in every language and close by itself (PNG per screen with --shots)
+    --lang en|ru|pt-BR         window language (default: the Windows display language)
 """
 import argparse
 import json
@@ -523,7 +523,7 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None):
-    """Every screen in both languages; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen in every language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')
