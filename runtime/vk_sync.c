@@ -61,6 +61,14 @@ static volatile uint8_t ts_busy[TS_PAIRS]; // written until the completion threa
 static int ts_cur = -1;                    // the pair of the part being recorded, -1 untimed
 static uint64_t ts_last_end;               // completion thread: end of the latest part read (ticks)
 static volatile int64_t ts_busy_ns, ts_parts, ts_missed;
+// GPU idle (with calibrated timestamps): the gap before each timed part, split by whether the part was submitted after
+// the previous one had ended (the GPU waited for the CPU: starved) or before (it waited for untimed work or a wait).
+static uint64_t ts_sub_ns[TS_PAIRS];       // CPU time the part was handed to vkQueueSubmit2
+static int ts_unsent[4], ts_n_unsent;      // pairs closed and not yet submitted (sub_lock)
+static uint64_t ts_last_end_ns;            // completion thread: ts_last_end on the CPU clock
+static volatile int64_t ts_idle_ns, ts_starved_ns, ts_gaps, ts_max_gap_ns, ts_queued_ns;
+static int64_t cal_tick, cal_ns, cal_at;   // completion thread: a calibrated (GPU tick, CPU ns) pair and when it was taken
+static PFN_vkGetCalibratedTimestampsKHR cal_fn;
 
 // On the first submission that wants timing (perf_gpu_timing: TOTK_TRACE=perf or the full performance overlay).
 static void ts_setup(VkCtx *c) {
@@ -91,6 +99,49 @@ static void ts_setup(VkCtx *c) {
 
 typedef struct { uint32_t pair; } TsRead;
 
+// Completion thread: refresh the GPU tick / CPU clock pair every 250 ms; 0 when there is no calibration. The host
+// domain is the clock plat_now_ns reads (QPC on Windows, CLOCK_MONOTONIC elsewhere), plat_counter_hz ticks a second.
+static int cal_refresh(VkCtx *c) {
+    if (!c->has_calibrated) return 0;
+    if (!cal_fn) {
+        cal_fn = (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(c->device, c->has_calibrated == 2 ? "vkGetCalibratedTimestampsKHR"
+                                                                                                        : "vkGetCalibratedTimestampsEXT");
+        if (!cal_fn) { c->has_calibrated = 0; return 0; }
+    }
+    int64_t now = (int64_t)plat_now_ns();
+    if (cal_at && now - cal_at < 250000000) return 1;
+    VkCalibratedTimestampInfoKHR ci[2] = {{.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_DEVICE_KHR},
+#ifdef _WIN32
+                                          {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR}};
+#else
+                                          {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR}};
+#endif
+    uint64_t v[2], dev;
+    if (cal_fn(c->device, 2, ci, v, &dev) != VK_SUCCESS) {
+        if (!cal_at) {   // the domain pair is not supported: no split
+            rt_log("vk: calibrated timestamps failed: the perf line shows no GPU idle split");
+            c->has_calibrated = 0;
+        }
+        return cal_at != 0;
+    }
+    cal_tick = (int64_t)(v[0] & ts_mask), cal_ns = (int64_t)((double)v[1] * 1e9 / (double)plat_counter_hz()), cal_at = now;
+    return 1;
+}
+
+static int64_t tick_ns(uint64_t t) { return cal_ns + (int64_t)((double)((int64_t)t - cal_tick) * ts_period); }
+
+static void max64(volatile int64_t *m, int64_t v) {
+    int64_t o = __atomic_load_n(m, __ATOMIC_RELAXED);
+    while (v > o && !__atomic_compare_exchange_n(m, &o, v, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+// Just before vkQueueSubmit2 (sub_lock held): the parts closed since the last submit leave the CPU now.
+static void ts_submitted(void) {
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < ts_n_unsent; i++) ts_sub_ns[ts_unsent[i]] = now;
+    ts_n_unsent = 0;
+}
+
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
     TsRead *t = arg;
     VkCtx *c = vk_ctx();
@@ -98,6 +149,18 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
     if (vkGetQueryPoolResults(c->device, ts_pool, 2 * t->pair, 2, sizeof v, v, sizeof v[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         uint64_t s = v[0] & ts_mask, e = v[1] & ts_mask;
         if (e >= s) {
+            if (cal_refresh(c)) {
+                int64_t sn = tick_ns(s), en = tick_ns(e), sub = (int64_t)ts_sub_ns[t->pair];
+                if (ts_last_end_ns && sn > ts_last_end_ns) {
+                    int64_t gap = sn - ts_last_end_ns, late = sub - ts_last_end_ns;
+                    plat_add64(&ts_idle_ns, gap);
+                    if (late > 0) plat_add64(&ts_starved_ns, late < gap ? late : gap);
+                    if (gap > 500000) plat_inc64(&ts_gaps);
+                    max64(&ts_max_gap_ns, gap);
+                }
+                if (sub && sn > sub) plat_add64(&ts_queued_ns, sn - sub);
+                if (en > ts_last_end_ns) ts_last_end_ns = en;
+            }
             uint64_t from = s > ts_last_end ? s : ts_last_end;
             if (e > from) {
                 int64_t ns = (int64_t)((double)(e - from) * ts_period);
@@ -132,6 +195,8 @@ static int ts_open(VkCommandBuffer cb) {
 static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence) {
     if (pair < 0) return;
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)pair + 1);
+    ts_sub_ns[pair] = 0;
+    if (ts_n_unsent < 4) ts_unsent[ts_n_unsent++] = pair;
     TsRead *t = malloc(sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
     t->pair = (uint32_t)pair;
@@ -159,6 +224,12 @@ static void gpu_stats(PerfGpu *g) {
     g->gpu_parts = (uint64_t)plat_xchg64(&ts_parts, 0);
     g->gpu_missed = (uint64_t)plat_xchg64(&ts_missed, 0);
     g->have_vram = vk_mem_vram(&g->vram_used, &g->vram_budget, &g->vram_exact);
+    g->have_idle = vk_ctx()->has_calibrated != 0 && cal_at != 0;
+    g->idle_ns = (uint64_t)plat_xchg64(&ts_idle_ns, 0);
+    g->starved_ns = (uint64_t)plat_xchg64(&ts_starved_ns, 0);
+    g->queued_ns = (uint64_t)plat_xchg64(&ts_queued_ns, 0);
+    g->idle_gaps = (uint64_t)plat_xchg64(&ts_gaps, 0);
+    g->max_gap_ns = (uint64_t)plat_xchg64(&ts_max_gap_ns, 0);
 }
 
 // Weak stand-in for vk_exec.c's replay: only empty recordings ({OP_BEGIN, OP_END}) can be submitted.
@@ -303,6 +374,7 @@ VkCommandBuffer vk_sync_split(void) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
+    ts_submitted();
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
@@ -366,6 +438,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    ts_submitted();
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();

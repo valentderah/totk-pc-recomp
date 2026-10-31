@@ -57,6 +57,9 @@ typedef struct {
     int have_gpu, have_vram, vram_exact;
     uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
     uint64_t vram_used, vram_budget;
+    int have_idle;                              // calibrated timestamps: the idle split below is filled
+    uint64_t idle_ns, starved_ns, queued_ns;    // GPU idle between timed parts; of it, before the part was submitted; submit to start
+    uint64_t idle_gaps, max_gap_ns;             // gaps over 0.5 ms; the longest
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
