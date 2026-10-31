@@ -624,17 +624,40 @@ def ci_container(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
+    ap.add_argument('--out', type=Path, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
     ap.add_argument('--ci-container', action='store_true',
                     help='build and pack inside the pinned image of tools/linux/Dockerfile')
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='--prove: build and run the check for this CPU level (default v3)')
+    ap.add_argument('--fetch-toolchain', action='store_true',
+                    help='download the pinned LLVM, extract the sniper sysroot and build runtime/deps into --out, then '
+                         'stop: everything tools/ci/compile_gate.py needs to compile the way the release does')
+    ap.add_argument('--fetch-sysroot', action='store_true',
+                    help='download and extract the sniper sysroot the release compiles against, print its path, '
+                         'and stop: for a job that only wants to compile the runtime')
     args = ap.parse_args()
     if args.ci_container and not os.environ.get('TOTK_CI_CONTAINER'):
         ci_container(args)
         return
+    if args.fetch_sysroot:
+        print(full_sysroot())
+        return
+    if args.fetch_toolchain:
+        if not args.out:
+            ap.error('--fetch-toolchain needs --out')
+        out = args.out.resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        llvm = build_llvm(out) if not (out / 'llvm' / 'bin' / 'clang').is_file() else out / 'llvm'
+        sysroot = full_sysroot()
+        build_deps(out, llvm, sysroot)
+        print(f'llvm    {llvm}')
+        print(f'sysroot {sysroot}')
+        print(f'deps    {out / "runtime" / "deps"}')
+        return
+    if not args.out:
+        ap.error('--out is required unless --fetch-sysroot is given')
     out = args.out.resolve()
     if args.prove:
         prove(out, args.cpu)

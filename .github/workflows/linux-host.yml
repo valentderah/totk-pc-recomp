@@ -1,8 +1,8 @@
 name: Linux host
 
 # No game files here, by design: the generated C needs a dump, the runtime does not, so the compile gate is the check a
-# public CI runner can run. It compiles inside tools/linux/Dockerfile, the same pinned image the release AppImage is
-# built in, so CI cannot pass on a toolchain that the release does not use.
+# public CI runner can run. It compiles with the release's own toolchain -- the pinned LLVM, the sniper sysroot and
+# runtime/deps -- inside tools/linux/Dockerfile, so CI cannot pass on a toolchain the release does not use.
 
 on:
   push:
@@ -13,18 +13,37 @@ on:
 jobs:
   compile-gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - name: Build the pinned build image
-        run: docker build -f tools/linux/Dockerfile -t totk-linux-build .
+        run: docker build -f tools/linux/Dockerfile -t totk-linux-build tools/linux
+
+      # 1 GB of LLVM, the sniper sysroot and the runtime deps: downloaded once, then reused until the pins change.
+      - name: Cache the release toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ci-toolchain
+            toolchain/release-work
+          key: totk-toolchain-${{ runner.os }}-${{ hashFiles('tools/make_release_linux.py') }}
+
+      - name: Fetch the pinned toolchain
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src totk-linux-build
+          python3 tools/make_release_linux.py --out build/ci-toolchain --fetch-toolchain
 
       - name: Platform uses
         run: docker run --rm -v "$PWD:/src" -w /src totk-linux-build python3 tools/check_platform.py
 
       - name: Compile every runtime translation unit
-        run: docker run --rm -v "$PWD:/src" -w /src totk-linux-build python3 tools/ci/compile_gate.py --undefined
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src totk-linux-build
+          python3 tools/ci/compile_gate.py --undefined
+          --cc build/ci-toolchain/llvm/bin/clang
+          --sysroot toolchain/release-work/sniper
+          --deps build/ci-toolchain/runtime/deps
 
       - name: Tests that need no game files
         run: |

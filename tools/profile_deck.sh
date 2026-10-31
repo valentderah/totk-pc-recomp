@@ -11,7 +11,7 @@ set -euo pipefail
 
 INSTALL=""
 BINARY=""
-SECONDS_TO_RUN=60
+SECONDS_TO_RUN=90      # the runtime prints a summary every 60 s of runtime, and one on exit
 WARMUP=10
 
 while [ $# -gt 0 ]; do
@@ -75,6 +75,7 @@ echo "power at the end:         $(power)"
 echo
 grep -E "device profile|frame rate: limit|present mode|resolution: output|shadow storage|ASTC textures|patches:" "$LOG" | sed 's/^\[host\] //'
 echo
-grep -E "frametime: [0-9]+ s:" "$LOG" | sed 's/^\[host\] /  /' || echo "  no frametime summary: the run ended early, see $LOG"
+# Both matter: a 60 s window when the run lasted that long, and the exit summary when it did not.
+grep -E "frametime: ([0-9]+ s|exit):" "$LOG" | sed 's/^\[host\] /  /' || echo "  no frametime summary: the run ended early, see $LOG"
 echo
 echo "log: $LOG"
