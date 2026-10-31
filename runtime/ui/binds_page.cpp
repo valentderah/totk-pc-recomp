@@ -21,7 +21,8 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static_assert(UI_BIND_RSTICK_DOWN - UI_BIND_A == ACTION_COUNT - 1, "UI_BIND_* follow the actions");
 static_assert(UI_BIND_DESC_MINUS - UI_BIND_DESC_A == B_MINUS, "UI_BIND_DESC_* follow the actions");
 static_assert(UI_KEY_PAGEDOWN - UI_KEY_SPACE == KEY_PAGEDOWN - KEY_SPACE, "UI_KEY_* follow the key ids");
-static_assert(UI_PAD_ZR - UI_PAD_SOUTH == PAD_ZR - PAD_SOUTH, "UI_PAD_* follow the pad ids");
+static_assert(UI_PAD_RPADDLE2 - UI_PAD_SOUTH == PAD_RPADDLE2 - PAD_SOUTH && PAD_RPADDLE2 == PAD_COUNT - 1,
+              "UI_PAD_* follow the pad ids");
 
 enum { CAPTURE_SECONDS = 5 };
 // The capture window stays this long after the press: the press and its click reach ImGui a frame or two later and must

@@ -280,6 +280,13 @@ int probe_cfg(void) {
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_SOUTH] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a bind line replaces the layout's own button");
     input_map_reset();
+    CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_XBOX) == 0,
+          "pad layout: a back paddle is unbound by default");
+    CHECK(input_map_bind("ZL", "pad:default, pad:rpaddle1") &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_ZL] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL,
+          "bind: pad:rpaddle1 adds a back paddle, pad:default keeps the trigger");
+    input_map_reset();
     // Bind lines for stick directions and default parts; the remapping rows' edits (input_map.c)
     memset(dn, 0, sizeof dn);
     dn[KEY_I] = 1;

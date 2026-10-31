@@ -34,11 +34,14 @@ enum {
 };
 
 // Gamepad inputs by position (Nintendo layout, as SDL names them), platform-neutral like the key ids. ZL and ZR are the
-// analog triggers; input_win.c translates SDL buttons and axes to these (one place).
+// analog triggers; input_win.c translates SDL buttons and axes to these (one place). The paddles are the back buttons
+// of an Xbox Elite, DualSense Edge or Steam Controller (SDL's LEFT_PADDLE1 and so on); no Switch button has them by
+// default, a bind line or the remapping rows add them.
 enum {
     PAD_NONE = 0,
     PAD_SOUTH, PAD_EAST, PAD_WEST, PAD_NORTH, PAD_LSTICK, PAD_RSTICK, PAD_L, PAD_R, PAD_START, PAD_BACK,
     PAD_DPAD_LEFT, PAD_DPAD_UP, PAD_DPAD_RIGHT, PAD_DPAD_DOWN, PAD_ZL, PAD_ZR,
+    PAD_LPADDLE1, PAD_RPADDLE1, PAD_LPADDLE2, PAD_RPADDLE2,
     PAD_COUNT
 };
 
