@@ -20,6 +20,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - In-game settings menu (F1) and performance overlay (F10)
+- Setup and in-game menu in English, Russian and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: a layout that keeps the Switch button positions and shows the Xbox labels
 - Shaders prepared at install instead of during play

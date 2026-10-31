@@ -12,11 +12,19 @@
 #define LANGID_RUSSIAN 0x19
 #define PATH_CHARS (MAX_PATH * 2)
 
+/* The language of the window (installer/guilogic.py ui_language_for_langid): Russian, Simplified Chinese (zh-CN and
+   zh-SG; the Traditional Chinese regions get English, as the window has no Traditional Chinese), else English. */
 static void fail(void)
 {
-    int russian = (GetUserDefaultUILanguage() & 0x3ff) == LANGID_RUSSIAN;
-    MessageBoxW(NULL, russian ? LAUNCHER_PYTHON_MISSING_RU : LAUNCHER_PYTHON_MISSING_EN,
-                russian ? LAUNCHER_TITLE_RU : LAUNCHER_TITLE_EN, MB_OK | MB_ICONERROR);
+    LANGID ui = GetUserDefaultUILanguage();
+    int russian = (ui & 0x3ff) == LANGID_RUSSIAN;
+    int chinese = ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
+                  ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE);
+    MessageBoxW(NULL,
+                russian ? LAUNCHER_PYTHON_MISSING_RU : chinese ? LAUNCHER_PYTHON_MISSING_ZH_HANS
+                                                               : LAUNCHER_PYTHON_MISSING_EN,
+                russian ? LAUNCHER_TITLE_RU : chinese ? LAUNCHER_TITLE_ZH_HANS : LAUNCHER_TITLE_EN,
+                MB_OK | MB_ICONERROR);
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, int show)

@@ -23,11 +23,16 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru')
+UI_LANGUAGES = ('en', 'ru', 'zh-Hans')
+# what the language switch in the window's corner shows for each
+UI_LANGUAGE_LABELS = {'en': 'EN', 'ru': 'RU', 'zh-Hans': '中文'}
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
+# Windows LANGIDs that write Simplified Chinese: zh-CN, zh-SG. zh-TW, zh-HK and zh-MO write Traditional Chinese, which
+# the window does not have.
+LANGIDS_ZH_HANS = (0x0804, 0x1004)
 
 
 def load_texts(lang):
@@ -75,15 +80,27 @@ def flat(value):
 
 
 def windows_ui_language():
-    """'ru' when the Windows display language is Russian, else 'en'."""
+    """The window language for the Windows display language (ui_language_for_langid)."""
     try:
         langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
     except (AttributeError, OSError):
         return 'en'
-    return 'ru' if langid & 0x3ff == LANG_RU else 'en'
+    return ui_language_for_langid(langid)
+
+
+def ui_language_for_langid(langid):
+    """'ru' for a Russian Windows LANGID, 'zh-Hans' for a Simplified Chinese one, else 'en'."""
+    if langid & 0x3ff == LANG_RU:
+        return 'ru'
+    if langid in LANGIDS_ZH_HANS:
+        return 'zh-Hans'
+    return 'en'
 
 
 def default_game_language(ui):
+    """The game language the form starts with. A Chinese window still starts with English: Chinese game text needs
+    the Switch shared fonts (ini.NEED_SHARED_FONTS), which the installer does not extract, and the game stops when
+    they are missing; the player can still pick Chinese."""
     return 'ru' if ui == 'ru' else 'en-US'
 
 

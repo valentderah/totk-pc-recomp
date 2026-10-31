@@ -11,7 +11,8 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English and Russian texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Russian and Simplified Chinese
+    // texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,
@@ -173,6 +174,11 @@ int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en" / "ru"); unset, Russian when the
-// system UI language is Russian, else English. Follows a live change of the setting.
+// Menu text: ui_text_in(menu_language(), id).
 const char *menu_text(UiTextId id);
+// The menu's catalog language: TOTK_MENU_LANG ("en", "ru" or "zh-Hans"); unset, menu_lang_for_system of the system UI
+// language. Follows a live change of the setting.
+const char *menu_language(void);
+// The menu language for a system UI language tag: "ru" for Russian, "zh-Hans" for Simplified Chinese (zh-Hans...,
+// zh-CN, zh-SG), else "en".
+const char *menu_lang_for_system(const char *tag);

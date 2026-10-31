@@ -169,6 +169,7 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
+static const char *g_font_lang;   // the menu language whose glyphs the uploaded atlas holds
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -253,16 +254,18 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
-// Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
+// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines. For the Japanese, Korean and Chinese
+// languages, glyphs are merged in from a system font when there is one: those of the language's own name (each language
+// is named in its own script in the language lists) and, for the menu language, every glyph of the menu and overlay
+// text. Made again when the window height or the menu language changes; the old texture goes after the queue is idle
+// (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
 };
 
-static int fonts_up(float scale) {
+static int fonts_up(float scale, const char *menu_lang) {
     enum { N = sizeof kCjk / sizeof *kCjk };
     ImFontAtlas *fa = ImGui::GetIO().Fonts;
     fa->Clear();
@@ -279,6 +282,8 @@ static int fonts_up(float scale) {
         merged++;
         ImFontGlyphRangesBuilder b;
         b.AddText(ui_text_in("en", kCjk[i].name));
+        if (!strcmp(kCjk[i].lang, menu_lang))
+            for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) b.AddText(ui_text_in(menu_lang, (UiTextId)id));
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -291,8 +296,10 @@ static int fonts_up(float scale) {
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
-    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
+    rt_log("menu: font atlas at %.1f px for menu language %s, CJK glyphs from %d of %d system fonts", 26.0f * scale,
+           menu_lang, merged, (int)N);
     g_font_scale = ok ? scale : 0;
+    g_font_lang = menu_lang;
     return ok;
 }
 
@@ -596,8 +603,10 @@ static void tab_controls(float scale) {
 
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    // one name per TOTK_MENU_LANG value (cfg.c), after the automatic choice
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
+                                     UI_MENU_LANGNAME_ZH_HANS};
+    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, (int)(sizeof langs / sizeof *langs), UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -1112,7 +1121,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     uint64_t t0 = plat_now_ns();
     if (!g_ctx_ok) make_context();
     float scale = menu_scale(t->height);
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
+    const char *lang = menu_language();
+    // vk_up first: a new back end drops the atlas (g_font_scale 0)
+    if (!vk_up(t) || ((g_font_scale != scale || !g_font_lang || strcmp(g_font_lang, lang)) && !fonts_up(scale, lang))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);
