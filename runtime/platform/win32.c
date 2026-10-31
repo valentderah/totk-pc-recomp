@@ -1033,6 +1033,8 @@ int plat_temp_dir(char *out, size_t cap) {
 
 uintptr_t plat_exe_base(void) { return (uintptr_t)GetModuleHandleW(NULL); }
 
+uint64_t plat_huge_text(uint64_t *huge) { *huge = 0; return 0; }   // the image stays as the loader mapped it
+
 int plat_module_of(uintptr_t addr, char *name, size_t cap, uintptr_t *base) {
     HMODULE m = NULL;
     wchar_t w[WPATH];
