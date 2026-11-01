@@ -1438,7 +1438,45 @@ static void thread_finish(RtThread *t) {
 // ExitThread: back to the thread start with a non-unwinding longjmp; no SEH unwinding through lifted frames.
 // (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
 // is offset, and the landing code then reads its locals through the wrong base.)
+#if defined(_WIN32) && defined(__x86_64__)
+// Newer ucrtbase builds (Windows 11 26H2, ucrtbase 10.0.26100.9711) end the process with 0xc0000409 (fast fail 13,
+// invalid jump buffer) when longjmp finds Frame == 0 in the buffer, and setjmp(b) = _setjmp(b, NULL) leaves exactly
+// that. So the registers are restored here from the _JUMP_BUFFER layout: Frame 0x00, Rbx 0x08, Rsp 0x10, Rbp 0x18,
+// Rsi 0x20, Rdi 0x28, R12-R15 0x30-0x48, Rip 0x50, MxCsr 0x58, Xmm6-Xmm15 0x60-0xf0. setjmp stores the Rsp and Rip of
+// its return, so this lands where setjmp returns, with 1.
+static __attribute__((noreturn)) void exit_now(RtThread *t) {
+    __asm__ volatile(
+        "movups 0x60(%0), %%xmm6\n\t"
+        "movups 0x70(%0), %%xmm7\n\t"
+        "movups 0x80(%0), %%xmm8\n\t"
+        "movups 0x90(%0), %%xmm9\n\t"
+        "movups 0xa0(%0), %%xmm10\n\t"
+        "movups 0xb0(%0), %%xmm11\n\t"
+        "movups 0xc0(%0), %%xmm12\n\t"
+        "movups 0xd0(%0), %%xmm13\n\t"
+        "movups 0xe0(%0), %%xmm14\n\t"
+        "movups 0xf0(%0), %%xmm15\n\t"
+        "ldmxcsr 0x58(%0)\n\t"
+        "movq 0x08(%0), %%rbx\n\t"
+        "movq 0x18(%0), %%rbp\n\t"
+        "movq 0x20(%0), %%rsi\n\t"
+        "movq 0x28(%0), %%rdi\n\t"
+        "movq 0x30(%0), %%r12\n\t"
+        "movq 0x38(%0), %%r13\n\t"
+        "movq 0x40(%0), %%r14\n\t"
+        "movq 0x48(%0), %%r15\n\t"
+        "movq 0x50(%0), %%rdx\n\t"
+        "movq 0x10(%0), %%rsp\n\t"
+        "movl $1, %%eax\n\t"
+        "jmpq *%%rdx"
+        :
+        : "c"(&t->exit_jmp)
+        : "memory");
+    __builtin_unreachable();
+}
+#else
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
+#endif
 
 // The calling host thread, for ap_try (TOTK_ASYNC_PREEMPT) and dg_sample (TOTK_CORE_DIAG).
 static PlatIntr *ap_open_self(void) {
