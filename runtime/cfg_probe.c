@@ -139,6 +139,11 @@ int probe_cfg(void) {
           "meta: prefix and case are accepted");
     m = cfg_meta("RUMBLE_STRENGTH");
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
+    m = cfg_meta("LSTICK_DEADZONE");
+    CHECK(m && EQ(m->def, "8") && EQ(m->values, "0..50") && m->live, "meta: left stick dead zone 8 in 0..50, live");
+    m = cfg_meta("RSTICK_DEADZONE");
+    CHECK(m && EQ(m->def, "8") && EQ(m->values, "0..50") && m->live, "meta: right stick dead zone 8 in 0..50, live");
+    CHECK(cfg_meta("STICK_DEADZONE") == NULL, "meta: the old single stick dead zone key has no row");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
@@ -172,6 +177,34 @@ int probe_cfg(void) {
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 60\n"), "reset then set: the new line is written");
     free(got);
+
+    // cfg_migrate: an older stick_deadzone line fills the per-stick keys that are unset, then leaves the file
+    static const char mbase[] = "[input]\n# lstick_deadzone = 8\n# rstick_deadzone = 8\nstick_deadzone = 15\n";
+    plat_setenv("TOTK_STICK_DEADZONE", NULL);
+    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
+    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
+    CHECK(plat_file_write(path, mbase, sizeof mbase - 1), "write the migrate ini");
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_STICK_DEADZONE"), "15"), "load the migrate ini");
+    CHECK(cfg_migrate() == 2, "migrate: both per-stick keys take the old value");
+    CHECK(cfg_double("TOTK_LSTICK_DEADZONE") == 15 && cfg_double("TOTK_RSTICK_DEADZONE") == 15 &&
+              cfg_get("TOTK_STICK_DEADZONE") == NULL,
+          "migrate: 15 for both sticks in memory, the old key gone");
+    CHECK(cfg_migrate() == 0, "migrate: nothing left to carry over");
+    CHECK(cfg_save_to(path) == 1, "migrate: save");
+    got = plat_file_read(path, &got_n);
+    CHECK(got && strstr((const char *)got, "\nlstick_deadzone = 15\n") && strstr((const char *)got, "\nrstick_deadzone = 15\n") &&
+              !strstr((const char *)got, "\nstick_deadzone = 15\n") && strstr((const char *)got, "# lstick_deadzone = 8"),
+          "migrate: the per-stick lines are in the file, the old line is not, the examples stay");
+    if (got && !strstr((const char *)got, "\nlstick_deadzone = 15\n")) fprintf(stderr, "---- saved:\n%s\n----\n", got);
+    free(got);
+    static const char mkeep[] = "[input]\nrstick_deadzone = 20\nstick_deadzone = 15\n";
+    CHECK(plat_file_write(path, mkeep, sizeof mkeep - 1) && cfg_load(path) == 1, "load the migrate ini with one stick set");
+    CHECK(cfg_migrate() == 1 && cfg_double("TOTK_LSTICK_DEADZONE") == 15 && cfg_double("TOTK_RSTICK_DEADZONE") == 20,
+          "migrate: a per-stick key already set keeps its value, the other takes the old one");
+    plat_setenv("TOTK_STICK_DEADZONE", "30");
+    CHECK(cfg_load(path) == 1 && cfg_migrate() == 0 && cfg_double("TOTK_STICK_DEADZONE") == 30,
+          "migrate: the environment variable is left alone (input.c applies it to both sticks)");
+    plat_setenv("TOTK_STICK_DEADZONE", NULL);
 
     // an active line with an empty value has no entry in memory; Reset still removes it from the file
     static const char rempty[] = "[audio]\n# volume = 100\nvolume =\n[input]\nmotion = 0\n";

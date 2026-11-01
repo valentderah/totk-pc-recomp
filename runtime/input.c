@@ -263,16 +263,24 @@ static void mouse_camera(int32_t out[2]) {
     out[1] = held[1];
 }
 
-static float stick_dead = -1;              // TOTK_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
+// TOTK_LSTICK_DEADZONE and TOTK_RSTICK_DEADZONE as fractions of full deflection; live (cfg_version). The older
+// TOTK_STICK_DEADZONE set in the environment applies to both (an ini line is carried over by cfg_migrate instead).
+static float stick_dead[2] = {-1, -1};
 static unsigned stick_dead_seen;
 
-static float stick_dead_get(void) {
+static void stick_dead_get(float out[2]) {
+    static const char *const keys[2] = {"TOTK_LSTICK_DEADZONE", "TOTK_RSTICK_DEADZONE"};
     unsigned ver = cfg_version();
-    if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
-    stick_dead_seen = ver;
-    double v = cfg_double("TOTK_STICK_DEADZONE");
-    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
-    return stick_dead;
+    if (stick_dead[0] < 0 || ver != stick_dead_seen) {
+        stick_dead_seen = ver;
+        int both = cfg_from_env("TOTK_STICK_DEADZONE");
+        for (int i = 0; i < 2; i++) {
+            double v = cfg_double(both ? "TOTK_STICK_DEADZONE" : keys[i]);
+            stick_dead[i] = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
+        }
+    }
+    out[0] = stick_dead[0];
+    out[1] = stick_dead[1];
 }
 
 // One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
@@ -425,9 +433,10 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    float dead = stick_dead_get();
-    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
-    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead, sr);
+    float dead[2];
+    stick_dead_get(dead);
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead[0], sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead[1], sr);
     return 1;
 }
 

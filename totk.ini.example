@@ -187,9 +187,11 @@
 # labels (A with B, X with Y; it loads romfs-patches-xbox, docs/controls.md, "Xbox button prompts"). The bind_ lines
 # below apply on top. Changes while the game runs take effect at once; the xbox_prompts prompts at the next start.
 # pad_layout = auto
-# Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
-# the stick reads centred, and the rest of its travel is scaled to start there.
-# stick_deadzone = 8
+# Gamepad stick dead zones in percent of full deflection (0 to 50), one per stick. Raise one for a stick that drifts:
+# inside the circle the stick reads centred, and the rest of its travel is scaled to start there. A stick_deadzone
+# line from an older totk.ini is carried over to both at the next start.
+# lstick_deadzone = 8
+# rstick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
