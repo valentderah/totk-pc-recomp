@@ -318,11 +318,19 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
 
 // ---- render tick: one frame each time the output device has taken the ring below its target (audio_mixer_pace_ns),
 // or every sample_count / sample_rate seconds of the host clock without a device, while stopped or while it stalls
-static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) {
+// Counts the samples a frame consumes with the same per-output-sample stepping as voice_render, so the
+// next frame starts exactly where the mixer left off (a closed-form count rounds differently: a 32 kHz
+// voice steps by 2/3, and a one-sample disagreement clicks at the frame seam).
+static void advance_voice(AudioRenderer *r, ServerVoice *v, int frames) {
     if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate) return;
-    double want = v->fraction + out_seconds * v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0);
-    uint64_t samples = (uint64_t)want;
-    v->fraction = want - (double)samples;
+    const double step = v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0) / r->param.sample_rate;
+    double frac = v->fraction;
+    uint64_t samples = 0;
+    for (int k = 0; k < frames; k++) {
+        frac += step;
+        while (frac >= 1.0) { frac -= 1.0; samples++; }
+    }
+    v->fraction = frac;
     while (samples && v->valid[v->index]) {
         AudrenWaveBuffer *b = &v->buffers[v->index];
         uint64_t length = (uint64_t)(b->end - b->start), left = length - v->offset;
@@ -354,12 +362,22 @@ static void render_thread(void *p) {
     plat_thread_priority(PLAT_PRIO_HIGHEST);
     const uint64_t frame_ns = (uint64_t)r->param.sample_count * 1000000000ull / (uint64_t)r->param.sample_rate;
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
-    uint64_t next = kern_now_ns();
+    // When the device pulls a period (1024 samples on PipeWire, 4-5 frames) the ring drops below its target
+    // and the frames would otherwise render back to back. On hardware the DSP renders one frame every 5 ms and
+    // the game's audio thread works in between; AUX effects need that time to fill the return ring, or mix_aux
+    // reads stale samples and the frame clicks at its seams. Device-paced frames stay at least 4/5 of a frame
+    // apart, which still refills a period well before the device drains it.
+    const uint64_t gap_ns = frame_ns * 4 / 5;
+    uint64_t next = kern_now_ns(), last = 0;
     while (plat_cas32(&r->running, 0, 0)) {
         uint64_t now = kern_now_ns();
         int64_t pace = audio_mixer_pace_ns(r, now);
         if (pace > 0) {
             plat_wait_ns((uint64_t)pace);
+            continue;
+        }
+        if (pace == 0 && last && now - last < gap_ns) {
+            plat_wait_ns(gap_ns - (now - last));
             continue;
         }
         if (pace == 0) {
@@ -369,11 +387,12 @@ static void render_thread(void *p) {
             else if (now - next > 100000000ull) next = now;   // fell far behind (debugger, sleep): resynchronise
             next += frame_ns;
         }
+        last = kern_now_ns();
         plat_mutex_lock(&r->lock);
         if (r->state == 0) {
             voices_prepare(r);
             audio_mixer_render(r, frame);
-            for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], frame);
+            for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], r->param.sample_count);
             r->elapsed_frames++;
             uint64_t given = r->stop_released + r->empty_played + r->flushed;
             if ((rt_trace & RT_TRACE_IPC) && given != r->logged_released && r->elapsed_frames % 1000 == 0) {
