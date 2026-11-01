@@ -91,10 +91,12 @@ class Plan:
         return code
 
 
-def plan(effects, succ, calls, exits):
+def plan(effects, succ, calls, exits, maybe=(), entries=(0,)):
     """effects[i]: (reads, kind or None); succ[i]: successor indices inside the function; calls: indices of calls,
     whose callee may leave any flags; exits: indices that can leave for another function other than by a call or a
-    return (a tail branch, falling into the next function, a br through rt_dispatch).
+    return (a tail branch, falling into the next function, a br through rt_dispatch); maybe: indices whose definition
+    may not happen (a patched site whose alternatives do not all write flags), so the flags before them reach on;
+    entries: where the function may start (gen.py entries(): also in the middle).
 
     Discovery can start a function inside another one (a branch target, a materialised address), and the code
     before it then falls or branches into it with live flags. So a tail exit publishes the flags in c->nzcv, and a
@@ -106,11 +108,15 @@ def plan(effects, succ, calls, exits):
         return p
     p.used = True
     reach = [set() for _ in range(n)]
-    reach[0].add(ENTRY)
-    work = [0]
+    work = list(entries)
+    for e in entries:
+        reach[e].add(ENTRY)
     while work:
         i = work.pop()
-        out = {i} if effects[i][1] else ({CALL} if i in calls else reach[i])
+        if effects[i][1]:
+            out = {i} | reach[i] if i in maybe else {i}
+        else:
+            out = {CALL} if i in calls else reach[i]
         for s in succ[i]:
             if not out <= reach[s]:
                 reach[s] |= out

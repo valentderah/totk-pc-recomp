@@ -15,7 +15,8 @@ Function discovery runs in this process, vectorised over the module's .text word
 seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets), every BL target, and code addresses
 materialised by ADR or ADRP+ADD (except an ADR that anchors a jump table: one with a `br` in the next 16
 instructions, or one an ADD register form uses as its base right after). A function is [start, next start). A direct branch whose target lies outside its
-function makes the target a new start, until no new start appears.
+function makes the target a new start, until no new start appears. With --patches, the words of its `code` lines are
+part of .text (recomp/module.py), and a replacement that ends in a direct branch counts as a branch of its site.
 
 Emission runs in worker processes, one chunk per task. Each worker loads the modules itself, lifts one function at a
 time and resolves its jump tables (recomp/jumptables.py), so memory per worker does not grow with the module.
@@ -45,7 +46,7 @@ import patches  # noqa: E402
 import regs  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 from layout import layout, write as write_layout  # noqa: E402
-from lifter import hx  # noqa: E402
+from lifter import Unsupported, hx  # noqa: E402
 from module import Module  # noqa: E402
 
 TERMINATORS = ('b', 'br', 'ret', 'trap')
@@ -77,10 +78,31 @@ def _sext(v, n):
     return np.where(v & (1 << (n - 1)), v - (1 << n), v)
 
 
-def discover(mod):
-    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics."""
+def patch_branches(mod, patched):
+    """[(site, target, is call)] of the patched sites' alternatives that end in a direct branch (recomp/patches.py), as
+    absolute addresses: discovery takes them as branches of the module's code."""
+    out = []
+    for a, alts in patched.items():
+        for _, words in alts:
+            try:
+                r = mod.lifter.lift(words[-1], a)
+            except Unsupported:
+                continue   # the emitter reports it
+            if r.kind in ('bl', 'b', 'bcond'):
+                out.append((a, r.target, r.kind == 'bl'))
+    return out
+
+
+def discover(mod, extra=()):
+    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics.
+    extra: patch_branches(), branches the code has once patched.
+
+    What the patches add does not split the game's functions: the code caves' branches and materialised addresses
+    into the game's code, and the replacements' branches into it, are left out here; entries() gives such a target
+    an entry of its own."""
     w = mod.words
     n = len(w)
+    cave = (mod.cave - mod.lo) >> 2   # first word of the code caves (n without code lines)
 
     def idx(mask):
         return np.flatnonzero(mask).astype(np.int64)
@@ -92,14 +114,24 @@ def discover(mod):
     imm = _sext(w[b_all] & 0x03FFFFFF, 26)
     is_bl = (w[b_all] >> 31).astype(bool)
     bl_tgt = b_all[is_bl] + imm[is_bl]
+    bl_tgt = bl_tgt[(b_all[is_bl] < cave) | (bl_tgt >= cave)]
     br_src, br_tgt = [b_all[~is_bl]], [b_all[~is_bl] + imm[~is_bl]]
     # B.cond (the lifter accepts o1 = 1 too), CBZ/CBNZ: imm19 at bit 5. TBZ/TBNZ: imm14 at bit 5.
     for mask, val, nb in ((0xFE000010, 0x54000000, 19), (0x7E000000, 0x34000000, 19), (0x7E000000, 0x36000000, 14)):
         s = idx((w & mask) == val)
         br_src.append(s)
         br_tgt.append(s + _sext((w[s] >> 5) & ((1 << nb) - 1), nb))
+    extra = [(a, t, c) for a, t, c in extra if t >= mod.cave]   # into a code cave
+    if extra:
+        src = (np.array([a for a, _, _ in extra], dtype=np.int64) - mod.lo) >> 2
+        tgt = np.array([t for _, t, _ in extra], dtype=np.int64) - mod.lo
+        tgt = np.where(tgt % 4 == 0, tgt >> 2, -1)
+        call = np.array([c for _, _, c in extra], dtype=bool)
+        bl_tgt = np.concatenate([bl_tgt, tgt[call]])
+        br_src.append(src[~call])
+        br_tgt.append(tgt[~call])
     br_src, br_tgt = np.concatenate(br_src), np.concatenate(br_tgt)
-    ok = (br_tgt >= 0) & (br_tgt < n)
+    ok = (br_tgt >= 0) & (br_tgt < n) & ((br_src < cave) | (br_tgt >= cave))
     br_src, br_tgt = br_src[ok], br_tgt[ok]
 
     # ADR: pc + imm21. ADRP: page + (imm21 << 12), then ADD (imm, 64-bit, unshifted) of the same register within
@@ -125,6 +157,7 @@ def discover(mod):
         near |= (((x & 0xFF200000) == 0x8B000000) | ((x & 0xFFE00000) == 0x8B200000)) & (((x >> 5) & 31) == rd)
     adr = adr[~near]
     adr_bytes = pc0 + adr * 4 + imm21(adr)
+    adr_bytes = adr_bytes[(adr < cave) | (adr_bytes >= mod.cave)]
     is_adrp = (w & 0x9F000000) == 0x90000000
     add = idx((w & 0xFFC00000) == 0x91000000)
     rn = ((w[add] >> 5) & 31).astype(np.int64)
@@ -139,6 +172,7 @@ def discover(mod):
     p = found[hit]
     page = ((pc0 + p * 4) & ~np.int64(0xFFF)) + (imm21(p) << 12)
     add_bytes = page + ((w[add[hit]] >> 10) & 0xFFF).astype(np.int64)
+    add_bytes = add_bytes[(add[hit] < cave) | (add_bytes >= mod.cave)]
     mat = np.concatenate([adr_bytes, add_bytes])
     mat = mat[(mat >= mod.lo) & (mat < mod.hi) & (mat % 4 == 0)]
     mat = (mat - pc0) >> 2
@@ -164,6 +198,26 @@ def discover(mod):
     stats['rounds'] = rounds
     stats['functions'] = int(len(starts))
     return starts, stats
+
+
+def entries(mod, starts, extra=()):
+    """{address: start of its function} of the places the patches enter the game's code in the middle of a function:
+    the targets of the code caves' branches into it, and of replacements' branches into another function. Each gets
+    a function of its own, the whole function it is in entered there (Emitter.function alias), so the game's
+    functions stay as they are. starts: discover()'s; extra: patch_branches()."""
+    st = mod.lo + starts.astype(np.int64) * 4
+    known = set(st.tolist())
+
+    def fn(a):
+        return int(st[np.searchsorted(st, a, side='right') - 1])
+    out = []
+    for a in range(mod.cave, mod.hi, 4):
+        ins = mod.lift(a)
+        if ins.kind in ('b', 'bl', 'bcond') and isinstance(ins.target, int):
+            out.append((a, ins.target))
+    out += [(a, t) for a, t, _ in extra]
+    return {t: fn(t) for a, t in out
+            if mod.lo <= t < mod.cave and t % 4 == 0 and t not in known and fn(t) != fn(a)}
 
 
 def estimate_sizes(mod, starts):
@@ -216,6 +270,7 @@ class Emitter:
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
         self.uses_patches = False
+        self.cave_flags = set()   # patched sites whose bl into a code cave returns the site's flags (patched_effect)
         self.stats = Counter()
         self.unsupported = Counter()
 
@@ -301,10 +356,10 @@ class Emitter:
         succ.append([])
         return succ
 
-    def flag_plan(self, insns, entry, end, tables, succ):
+    def flag_plan(self, insns, entry, end, tables, succ, entries=(0,)):
         """recomp/flags.py plan for the function: each instruction's flag use over the flow succ (flow())."""
         n = len(insns)
-        calls, effects, exits = set(), [], {n}
+        calls, effects, exits, packed, maybe = set(), [], {n}, [], set()
         for i, ins in enumerate(insns):
             k, a = ins.kind, entry + 4 * i
             if k in ('bl', 'blr'):
@@ -314,52 +369,90 @@ class Emitter:
             elif k == 'br':
                 exits.add(i)   # through rt_dispatch, also a table's default
             if a in self.patched:
-                effects.append(self.patched_effect(ins, a))
+                # A replacement's bl is no call here: switched off, the flags before the site still hold after it,
+                # and a callee's flags reach the site only from a code cave (patched_effect).
+                effect, pack, partial = self.patched_effect(ins, a)
+                effects.append(effect)
+                if pack:
+                    packed.append(i)
+                if partial:
+                    maybe.add(i)
                 for words in self.replacements(a):
                     r = words[-1]
-                    if r.kind == 'bl':
-                        calls.add(i)
-                    elif r.kind in ('b', 'bcond') and not entry <= r.target < end:
+                    if r.kind in ('b', 'bcond') and not entry <= r.target < end:
                         exits.add(i)
             else:
                 effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
         effects.append((False, None))
-        return flags.plan(effects, succ, calls, exits)
+        p = flags.plan(effects, succ, calls, exits, maybe, entries)
+        for i in packed:
+            p.pack[i] = True
+        return p
 
     def patched_effect(self, ins, a):
-        """Flag effect of a patched site: every alternative (the original and each replacement) must write the same
-        flags, in at most one word each; the site reads flags when any alternative does (a b.cond reads them)."""
-        alts = []
-        for words in [[ins]] + self.replacements(a):
+        """(flag effect, pack, maybe) of a patched site. Each alternative (the original and each replacement) writes
+        flags in at most one word; the site reads flags when any alternative does (a b.cond reads them). When the
+        alternatives write different flags (a cheat's mov over a subs, or one kind of compare over another), the site
+        writes the packed form (pack: every alternative's definition packs), and when some write none (maybe), the
+        flags from before the site reach past it too (recomp/flags.py plan).
+
+        A b or bl into a code cave (recomp/patches.py `code`) is special. A b leaves the function, and its tail exit
+        publishes the flags from before the site, which the cave sees. A bl in place of a flag-setting instruction
+        returns the cave's flags (its functions keep them in c->nzcv), which the bl takes from c->nzcv (function()).
+        Any other call must not replace an instruction that uses flags: a callee's flags are not kept."""
+        mod, kinds, reads, calls = self.mod, [], False, False
+        for n, words in enumerate([[ins]] + self.replacements(a)):
             fx = [flags.effect(w.code or '') if w.kind == 'op' else flags.effect(w.cond) for w in words
                   if w.kind in ('op', 'bcond')]
             fx = [e for e in fx if e[0] or e[1]]
             if len(fx) > 1:
                 raise patches.PatchError(f'{a:#x}: several flag-using words in one alternative')
-            alts.append(fx[0] if fx else (False, None))
-        if any(e[1] != alts[0][1] for e in alts):
-            raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({[e[1] for e in alts]})')
-        reads = any(e[0] for e in alts)
-        if (alts[0][1] or reads) and (ins.kind == 'bl' or any(w[-1].kind == 'bl' for w in self.replacements(a))):
+            e = fx[0] if fx else (False, None)
+            reads |= e[0]
+            last = words[-1]
+            cave = last.kind if n and last.kind in ('b', 'bl') and mod.in_cave(last.target) else None
+            if cave and fx:
+                raise patches.PatchError(f'{a:#x}: flags used before a branch into a code cave')
+            if cave == 'bl':
+                kinds.append('nz' if kinds[0] else None)
+                if kinds[0]:
+                    self.cave_flags.add(a)
+            elif cave != 'b':
+                kinds.append(e[1])
+                calls |= last.kind == 'bl'
+        if (kinds[0] or reads) and calls:
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
-        return reads, alts[0][1]
+        if a in self.cave_flags and reads:
+            raise patches.PatchError(f'{a:#x}: a call into a code cave in place of an instruction that reads flags')
+        defs = set(kinds) - {None}
+        if not defs:
+            return (reads, None), False, False
+        return (reads, defs.pop() if len(defs) == 1 else 'nz'), len(defs) > 1 or a in self.cave_flags, None in kinds
 
-    def function(self, entry, end):
-        """(lines of C, referenced function starts) for the guest function [entry, end)."""
+    def function(self, entry, end, alias=None):
+        """(lines of C, referenced function starts) for the guest function [entry, end); with alias, f_<alias>, the
+        same function entered at alias (entries())."""
         mod, starts = self.mod, self.starts
+        head = alias or entry   # where the C function starts
         insns = [mod.lift(a) for a in range(entry, end, 4)]
         labels, tables = self.scan(insns, entry, end)
         refs = set()
         all_labels = 'all' in tables.values()
         if all_labels:
             labels = set(range(entry, end, 4))
+        entries = (0,)
+        if alias:
+            labels.add(alias)
+            entries = (0, (alias - entry) // 4)
         # An unresolved computed br re-enters the function through fb_<entry>, a C function of its own, which local
         # flags would not survive; such functions keep NZCV in c->nzcv.
         # The same holds for registers in locals (recomp/regs.py): fb_<entry> keeps them in the Cpu too.
+        # A function in a code cave (recomp/patches.py `code`) keeps NZCV in c->nzcv too: a cheat may call it for
+        # the flags it returns (patched_effect).
         local = not all_labels
         spill, reload, reload_call = (regs.SPILL, regs.RELOAD, regs.RELOAD_CALL) if local else ('', '', '')
         succ = self.flow(insns, entry, end, tables) if local else None
-        fp = self.flag_plan(insns, entry, end, tables, succ) if local else None
+        fp = self.flag_plan(insns, entry, end, tables, succ, entries) if local and not mod.in_cave(entry) else None
         if fp and fp.used:
             self.stats['local_flag_functions'] += 1
             self.stats['flag_reads_direct'] += sum(1 for k in fp.reader if k and k != 'nz')
@@ -388,18 +481,18 @@ class Emitter:
             # An unresolved computed br re-enters the function through fb_<entry>, which switches on c->pc to any
             # instruction. A goto to a shared dispatch block inside the body instead turns every instruction into
             # a loop header, and clang's loop passes then take tens of seconds on one function.
-            fb = f'fb_{entry:x}'
+            fb = f'fb_{head:x}'
             cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
             redispatch = f'{MUSTTAIL} {fb}(c);'
             out = [f'static void {fb}(Cpu *c);',
-                   f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});', f'    c->pc = {hx(entry)};',
+                   f'void {fname(head)}(Cpu *c) {{', f'    FN_ENTER({hx(head)});', f'    c->pc = {hx(head)};',
                    f'    {redispatch}', '}',
                    f'static void {fb}(Cpu *c) {{', f'    switch (c->pc) {{ {cases} default: break; }}',
                    f'    {MUSTTAIL} rt_dispatch(c);']
         else:
             redispatch = f'{MUSTTAIL} rt_dispatch(c);'
-            out = [f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});']
-            if fp.used:
+            out = [f'void {fname(head)}(Cpu *c) {{', f'    FN_ENTER({hx(head)});']
+            if fp and fp.used:
                 out.append('    ' + fp.decl())
 
         def call(t, a):
@@ -418,6 +511,8 @@ class Emitter:
             if r.kind == 'op':
                 return op(i, r.code)
             if r.kind == 'bl':
+                if a in self.cave_flags and fp and fp.used:
+                    return call(r.target, a) + ' F.nz = c->nzcv;'   # the cave's flags (patched_effect)
                 return call(r.target, a)
             if r.kind == 'b':
                 return jump(r.target, i)
@@ -481,7 +576,7 @@ class Emitter:
                 raise ValueError(f'{a:#x}: unknown instruction kind {k!r}')
         n = len(insns)
         if k not in TERMINATORS or end - 4 in self.patched:  # falls through into the next function
-            if end < mod.hi:
+            if end < mod.hi and end != mod.cave:   # .text does not fall into the code caves
                 emit(n, '    ' + jump(end, n))
             else:
                 emit(n, f'    {spill}rt_udf(c, {hx(end)});')
@@ -492,14 +587,16 @@ class Emitter:
                     texts[i] += line
             clean = {i for i, ins in enumerate(insns) if entry + 4 * i not in self.patched
                      and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in texts[i]))}
-            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept)
+            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept, entries)
             if rp.regs:
                 out.append('    ' + rp.decl())
+            if alias:
+                out.append(f'    goto L_{alias:x};')
             self.stats['local_reg_functions'] += bool(rp.regs)
             self.stats['reg_spills'] += sum(len(s) for s in rp.spill)
             out += [line if i is None else rp.resolve(i, line) for i, line in body]
         else:
-            out += [line for _, line in body]
+            out += [line for _, line in body]   # fb_<head> enters at c->pc
         out.append('}')
         self.stats['functions'] += 1
         self.stats['instructions'] += len(insns)
@@ -507,11 +604,11 @@ class Emitter:
 
 
 def chunk_text(name, number, emitter, fns):
-    """C text of one chunk. fns: [(entry, end)]."""
+    """C text of one chunk. fns: [(entry, end)] and [(entry, end, alias)] (Emitter.function)."""
     body, refs = [], set()
     emitter.uses_patches = False
-    for entry, end in fns:
-        lines, r = emitter.function(entry, end)
+    for fn in fns:
+        lines, r = emitter.function(*fn)
         body.append('\n'.join(lines))
         refs |= r
     # Every referenced function gets a prototype, including ones defined later in this chunk.
@@ -570,7 +667,7 @@ def _emitter(name):
     e = _W['emitters'].get(name)
     if e is None:
         path, base = _W['mods'][name]
-        mod = Module(name, path, base, 'c')
+        mod = Module(name, path, base, 'c', _W['patches'].code_for(name))
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
                                            spins=_W['patches'].spins_for(name, base), **_W['opts'])
@@ -676,9 +773,12 @@ def main():
             continue
         t = time.perf_counter()
         path = args.exefs / name
-        mod = Module(name, path, base, 'c')
+        mod = Module(name, path, base, 'c', table.code_for(name))
         patches.check(table, mod, name)
-        starts, dstats = discover(mod)
+        extra = patch_branches(mod, table.for_module(name, base))
+        starts, dstats = discover(mod, extra)
+        inner = entries(mod, starts, extra)
+        dstats['entries'] = len(inner)
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
         n = len(starts) if not args.limit else min(args.limit, len(starts))
@@ -689,11 +789,17 @@ def main():
         for number, (i0, i1) in enumerate(chunks):
             fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist()))
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
+        if inner:   # one more chunk: the functions entered in the middle
+            end_of = dict(zip(abs_starts.tolist(), ends.tolist()))
+            fns = [(e, end_of[e], a) for a, e in sorted(inner.items())]
+            number = len(chunks)
+            tasks.append((0, (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
         paths[name] = (str(path), base)
-        starts_abs[name] = abs_starts
-        info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi, 'emitted': abs_starts[:n].tolist(),
-                      'chunks': len(chunks), 'discover': dstats, 'discover_seconds': time.perf_counter() - t,
-                      'moddir': moddir}
+        starts_abs[name] = np.union1d(abs_starts, np.array(sorted(inner), dtype=np.int64))
+        info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi,
+                      'emitted': sorted(abs_starts[:n].tolist() + list(inner)),
+                      'chunks': len(chunks) + bool(inner), 'discover': dstats,
+                      'discover_seconds': time.perf_counter() - t, 'moddir': moddir}
         print(f'{name}: {dstats["functions"]} functions ({dstats["seeds"]} seeds, {dstats["rounds"]} rounds), '
               f'{len(chunks)} chunks, discovery {time.perf_counter() - t:.1f}s', file=sys.stderr, flush=True)
         del mod

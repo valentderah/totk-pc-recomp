@@ -43,23 +43,28 @@ Each cheat's switch is `cheat_<hash> = 1`, where the hash is FNV-1a 32 of `<mod 
 
 ## How cheats run
 
-The game's code is compiled ahead of time, so a cheat cannot write new instructions into it while the game runs. The port sorts each cheat by what it writes (`tools/cheats.py` at setup, `runtime/cheats.c` in game):
+The game's code is compiled ahead of time, so a cheat cannot write new instructions into it while the game runs. At setup, `tools/cheats.py` runs every cheat of a file the way Atmosphère's dmnt would and sorts it by what it writes; in game, `runtime/cheats.c` switches the result:
 
 | Kind | What the cheat does | How the port runs it |
 |---|---|---|
-| code | Opcode 0 writes into main's code | Built into the game at setup as a patch set (`recomp/patches.py`); switches at once. |
-| key | Code writes inside a button condition (`8` mask, writes, `21` else, the original words, `20`) | A patch set that is on while the cheat is on and the buttons are held. |
-| data | Writes data only: heap, main's data, pointer chains, button conditions | Runs in a cheat VM after dmnt's, opcodes 0 to A, every presented frame while on. |
-| master | `{name}` with code writes | A patch set that is always on. |
+| code | Writes into main's code, directly (opcode 0) or through registers (`400B0000 ... ; 640F01B0 ...`) | Built into the game at setup as a patch set (`recomp/patches.py`); switches at once. |
+| key | Code writes that apply only while buttons are held, the original words otherwise | A patch set that is on while the cheat is on and the buttons are held. |
+| data | Writes data only: heap, main's data, pointer chains, button conditions | Runs in a cheat VM after dmnt's every presented frame while on. |
+| master | `{name}` | Always on: its patch set, its VM run. |
+| built in | The file's setup code: writes only code caves (below) and loads registers for the other cheats | Nothing to switch: its code caves are built into the game. |
 | restore | Writes back only the game's original instructions | Not needed: switching a cheat off restores them. Greyed out. |
 
-A cheat whose code writes call or jump into a code cave the cheat writes itself (into main's zero padding) gets the cave inlined at the call site. The setup builds the code cheats of every mod in the `mods` folder, switched on or off, so switching a mod on later needs only a restart. A code cheat added or edited after the last build waits for the rebuild; a data cheat runs at the next start.
+Code caves: a cheat may write its own code into the zero padding after main's code and branch there from the game. The setup builds every cave the cheats branch to into the game, as functions of their own; what a cheat writes there that is not code (a value or a table a cave reads) the VM writes. A cheat that writes both, like a speed multiplier, is a code cheat whose data the VM writes while it is on. Two mods that write one cave differently conflict: the mod later by name is greyed out.
+
+Registers: like dmnt, the VM starts each frame with the registers at 0. The setup cheats (a `{name}` master, or a file's first cheat, which in many files loads a pointer into a register for the others, often named "must be on") run first and hand their registers to every other cheat. A cheat that uses such a register also gets the value the setup cheat leaves when setup could tell it, so it works even with the setup cheat off. Packages that keep each cheat in a folder of its own work too: the setup reads the mods by name, and a file of one cheat counts as a setup cheat only when it is the first, so name the master code's folder to sort first (`#0110 ...` before `#1 ...`).
+
+The setup builds the code cheats of every mod in the `mods` folder, switched on or off, so switching a mod on later needs only a restart. The VM runs opcodes 0 to A, C0 to C3 (register conditions, save and restore, static registers), and FF0, FF1 and FFF, which do nothing here. A code cheat added or edited after the last build waits for the rebuild; a data cheat runs at the next start, and is switched off if it turns out to write into the game's code.
 
 Not supported, and shown greyed out with the reason:
 
-- the 0xC and 0xF opcode extensions;
-- opcode 5 with a register offset;
-- code writes mixed with other opcodes, except the button pattern above;
-- code writes that change the CPU flags differently from the game's instruction, or code caves with branches or pc-relative instructions.
+- code writes under conditions other than buttons held;
+- a branch into the middle of another function of the game, or a call to something that is not a function: the cheat was most likely made for another update;
+- code writes whose address or value only a run can tell (from a register loaded from the game's memory);
+- a cheat that writes a code cave differently from another cheat.
 
 `build-cache\cheats.status` next to `totk.exe`, written by the setup, records which cheats were built and how; the log line `cheats: ...` sums them up at start. When the code cheats cannot be built, the setup warns and installs the game without them.
