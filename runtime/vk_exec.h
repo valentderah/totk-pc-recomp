@@ -69,6 +69,8 @@ typedef struct VkExecJob {
     int chunk;                           // vk_exec.c: the chunk that holds the op
     VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
                                          // (mask) or the scaling pass's target (evaluation; no tex: in place)
+    VkExecTarget sun;                    // contact: the half-resolution lighting target whose alpha is sun visibility
+                                         // (no img: none in this frame)
     float pc[16];                        // the march's push constants
 } VkExecJob;
 

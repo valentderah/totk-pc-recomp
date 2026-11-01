@@ -20,7 +20,7 @@ Many rows below are developer tools that only act together with another setting 
 | --- | --- | --- | --- |
 | `astc_time` | `1` times the GPU dispatches of each ASTC texture decode and logs the time per block footprint and the largest call. | Adds GPU timestamp queries around every decode; if the queue has no timestamps or no `hostQueryReset`, the log says the decodes are not timed and nothing is measured. | Caution |
 | `bind_stats` | `1` counts bindings and descriptors per draw of each stage and how much of the bound state changes between draws. | Adds per-draw bookkeeping to the render thread and extra log output; frames get slower. | Caution |
-| `contact_debug` | `1` draws the contact-shadow factor in grey in place of the picture. | The frame shows a grey debug image while it is set; has no effect when contact shadows are off. | Caution |
+| `contact_debug` | `1` draws the contact-shadow factor in grey in place of the picture; `2` draws the sun visibility the shadows are scaled by (white in the sun, black in shade and underground). | The frame shows a grey debug image while it is set; has no effect when contact shadows are off. | Caution |
 | `core_diag` | `1` records why ready guest threads wait for a virtual core and for how long, with a histogram every 60 presents. | Turns on host-call and SVC depth tracking and writes many log lines (one per present over 25 ms); frames get slower. | Caution |
 | `menu_cursor_log` | `1` logs what the menu cursor code reads at every screen change. | Only adds log lines. | Safe |
 | `perf_slow_ms` (default `50`) | Frames at least this many milliseconds long get a `perf: slow frame` log line with the time blocked per cause. | Changes how many frames are logged; a small value fills the log. | Safe |
