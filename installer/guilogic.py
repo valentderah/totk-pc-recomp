@@ -158,10 +158,12 @@ class Form:
         if not self.dest.strip():
             found.append('ui.need_dest')
         if not update:
+            combined = self.base.strip().lower().endswith('.xci')
             for name in ('base', 'update', 'keys'):
                 value = getattr(self, name).strip()
                 if not value:
-                    found.append(f'ui.need_{name}')
+                    if not (name == 'update' and combined):
+                        found.append(f'ui.need_{name}')
                 elif not Path(value).is_file():
                     found.append(f'ui.missing_{name}')
             if self.lang not in ini.LANGUAGES:

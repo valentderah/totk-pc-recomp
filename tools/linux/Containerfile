@@ -1,0 +1,31 @@
+# Build environment of kingdom-setup.sh: the installer window (installer/gui.py) and every tool its steps run.
+# Fedora 41 for its glibc 2.40: totk built here runs on the host, which needs a glibc at least as new.
+FROM registry.fedoraproject.org/fedora:41
+
+RUN dnf -y install --setopt=install_weak_deps=False \
+        python3.14 python3.14-tkinter \
+        clang lld llvm ninja-build gcc make git curl tar gzip findutils pkgconf-pkg-config \
+        SDL3-devel vulkan-headers vulkan-loader-devel libvpx-devel opus-devel libzstd-devel zlib-devel \
+        libstdc++-static mbedtls-devel libicu \
+        dejavu-sans-fonts \
+    && dnf clean all
+
+# tools/requirements-installer.txt: what the installer steps import (the release bundles the same packages).
+COPY requirements-installer.txt /tmp/requirements-installer.txt
+RUN python3.14 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements-installer.txt
+
+# The VMA header tools/build_game.py looks for in /usr/local/include/vma; the release's MSYS2 package is 3.4.0 too.
+ARG VMA_SHA256=8487b7995ad3b263eb73bc5b9a77d71aa69b6bef5d58a715c02d2663afd81f1a
+RUN mkdir -p /usr/local/include/vma \
+    && curl -fsSL -o /usr/local/include/vma/vk_mem_alloc.h \
+        https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h \
+    && echo "$VMA_SHA256  /usr/local/include/vma/vk_mem_alloc.h" | sha256sum -c -
+
+# .NET 10 SDK for tools/build_xlate.py (NativeAOT for linux-x64).
+RUN curl -fsSL -o /tmp/dotnet-install.sh https://dot.net/v1/dotnet-install.sh \
+    && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /opt/dotnet \
+    && rm /tmp/dotnet-install.sh
+
+ENV PATH=/opt/venv/bin:/opt/dotnet:$PATH \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1

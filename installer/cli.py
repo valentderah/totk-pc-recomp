@@ -48,7 +48,7 @@ def cancel(signum, frame):
 def main(argv=None):
     ap = Parser(prog='python -m installer', description=__doc__.splitlines()[0])
     ap.add_argument('--base', type=Path, help='base game, XCI or NSP')
-    ap.add_argument('--update', type=Path, help='the update NSP: 1.1.1, 1.2.1 or 1.4.3')
+    ap.add_argument('--update', type=Path, help='the update NSP; optional when --base is an XCI containing the update')
     ap.add_argument('--keys', type=Path, help='prod.keys')
     ap.add_argument('--firmware', type=Path, help='Switch firmware folder (Contents/registered) for the shared fonts '
                                                    'of Chinese, Korean and Traditional Chinese text')

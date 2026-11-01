@@ -11,6 +11,7 @@
  "phase.check.verify": "检查已安装的文件",
  "phase.check.verify_romfs": "检查已安装的游戏数据",
  "phase.check.inputs": "用密钥打开游戏文件",
+ "phase.check.split": "正在分离 XCI 中的基础游戏和更新",
  "phase.check.versions": "检查游戏版本",
  "phase.fonts.extract": "正在从固件中提取共享字体",
  "phase.fonts.copy": "正在将共享字体复制到安装文件夹",
