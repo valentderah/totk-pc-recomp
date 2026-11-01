@@ -770,6 +770,8 @@ static void reflect(GfxShader *s) {
         json_objects(js, kinds[k], add_res, s, k);
     }
     reflect_spirv(s);
+    if (s->stage == GFX_STAGE_CS && cfg_bool("TOTK_BUFFER_WRITE_MASKS"))
+        gfx_spirv_store_masks(s->spirv,s->words,s->res[GFX_RES_SSBO],s->nres[GFX_RES_SSBO]);
 }
 
 // ---- use masks (see the cache key at the top)

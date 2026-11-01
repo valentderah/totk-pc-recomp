@@ -88,7 +88,9 @@ typedef struct {
     uint16_t handle;            // TEX/IMG: raw handle (word offset; separate: texture | sampler << 14); SSBO: address offset
     uint16_t count;             // descriptors (array length)
     uint8_t separate;           // TEX: texture and sampler handles are separate
+    uint8_t write_mask;         // SSBO: proven scalar-u32 lanes written per 16 bytes; 0 means unknown/dense
 } GfxShaderRes;
+void gfx_spirv_store_masks(const uint32_t *words, uint64_t count, GfxShaderRes *res, int nres);
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
 int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res

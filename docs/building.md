@@ -201,6 +201,16 @@ Runtime probes, each a mode of `totk.exe` (the list is at the top of `runtime/ma
 part of `--probe-vkexec` translate shaders of the census below: they look for `build/<ver>/shaders/jobs.json` of the
 exe's own version first, then of the other one.
 
+Buffer writeback regression (no game files): compile the probe with the same Clang and Vulkan headers as the runtime,
+then run the synthetic SPIR-V cases and integer differential checks:
+
+```powershell
+clang -O2 -Wall -Wextra -I runtime tests/store_masks_probe.c runtime/gfx_store_mask.c runtime/vk_buffer_ranges.c -o build/store_masks_probe.exe
+.venv\Scripts\python tests/store_masks_check.py build/store_masks_probe.exe
+```
+
+`TOTK_BUFFER_WRITE_MASKS=0` disables inferred write lanes for an in-game comparison; restart after changing it.
+
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.
 `tools\xlate_smoke.py` checks the translator alone, without game files.

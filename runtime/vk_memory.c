@@ -20,6 +20,7 @@
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "vk.h"
+#include "vk_buffer_ranges.h"
 #include "platform/platform.h"
 
 // Timestamps for the tracking cost, in ns; qpc_ms converts.
@@ -1148,7 +1149,7 @@ static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
 static uint32_t msub;                  // replay: number of the submission being recorded
 static uint32_t mepoch;                // replay: its write-watch snapshot epoch (vk_texture_epoch)
-typedef struct { PoolRec *r; uint64_t off, size; } MRange;
+typedef struct { PoolRec *r; uint64_t off, size; unsigned mask; } MRange;
 static MRange *pend, *wbl;             // replay: copies for the next prologue; GPU writes into mirrors this submission
 static int npend, cpend, nwbl, cwbl;
 static VkBufferCopy *mregions;         // replay: vkCmdCopyBuffer regions
@@ -1197,13 +1198,16 @@ static void mirror_mode(int discrete) {
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
 }
 
-static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {
-    if (*n && (*a)[*n - 1].r == r && (*a)[*n - 1].off + (*a)[*n - 1].size == off) {
+static void range_add_mask(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size, unsigned mask) {
+    if (*n && (*a)[*n - 1].r == r && (*a)[*n - 1].mask == mask && (*a)[*n - 1].off + (*a)[*n - 1].size == off) {
         (*a)[*n - 1].size += size;
         return;
     }
     if (*n == *cap) grow((void **)a, cap, sizeof **a);
-    (*a)[(*n)++] = (MRange){r, off, size};
+    (*a)[(*n)++] = (MRange){r, off, size, mask};
+}
+static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {
+    range_add_mask(a, n, cap, r, off, size, 15);
 }
 
 static int range_cmp(const void *x, const void *y) {
@@ -1212,8 +1216,9 @@ static int range_cmp(const void *x, const void *y) {
     return a->off < b->off ? -1 : a->off > b->off;
 }
 
-// Records the ranges as one vkCmdCopyBuffer per pool, overlapping and adjacent ranges merged; to_mirror: buf -> mbuf,
-// else mbuf -> buf. Returns the commands recorded; adds what they move to *bytes and *copies.
+// One copy command per pool. GPU writeback keeps only proven shader-written lanes: whole-range copies can overwrite
+// newer CPU values in fields the shader never stored (particle birth times share vec4 records with GPU velocities).
+// Expand before taking the union, since another writer may legitimately write a hole. CPU uploads stay dense.
 static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies) {
     qsort(a, (size_t)n, sizeof *a, range_cmp);
     int rec = 0;
@@ -1225,14 +1230,10 @@ static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint
             uint64_t lo = a[i].off, hi = a[i].off + a[i].size;
             if (hi > lim) hi = lim;
             if (lo >= hi) continue;
-            if (k && lo <= mregions[k - 1].srcOffset + mregions[k - 1].size) {
-                uint64_t end = mregions[k - 1].srcOffset + mregions[k - 1].size;
-                if (hi > end) mregions[k - 1].size += hi - end;
-                continue;
-            }
-            if (k == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
-            mregions[k++] = (VkBufferCopy){lo, lo, hi - lo};
+            if (!vk_buffer_ranges_append(&mregions, &k, &cregions, lo, hi - lo, to_mirror ? 15 : a[i].mask))
+                rt_fatal("vk: buffer copy range allocation failed");
         }
+        k = vk_buffer_ranges_merge(mregions, k);
         if (!k) continue;
         if (to_mirror) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)k, mregions);
         else vkCmdCopyBuffer(cb, r->mbuf, r->buf, (uint32_t)k, mregions);
@@ -1421,9 +1422,13 @@ int vk_mem_mirror_probe(uint64_t addr) {
 }
 
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
+    vk_mem_gpu_wrote_mask(sp, size, 15);
+}
+void vk_mem_gpu_wrote_mask(const VkMemSpan *sp, uint64_t size, unsigned mask) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
-    range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
+    if ((sp->offset & 15) || (size & 3)) mask = 15;
+    range_add_mask(&wbl, &nwbl, &cwbl, r, sp->offset, size, mask);
 }
 
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {

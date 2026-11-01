@@ -783,7 +783,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+        if (written) vk_mem_gpu_wrote_mask(&sp, n, (unsigned)written), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;
@@ -972,8 +972,15 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        unsigned mask = 15;
+        if (written && st == NVN_STAGE_CS && r->write_mask && !lead) {
+            int aligned = 1;
+            for (int i = 0; i < 16; i++) if (ex->ssbo[st][i].addr & 15) aligned = 0;
+            for (int i = 0; i < 18; i++) if (ex->ubo[st][i].addr & 15) aligned = 0;
+            if (aligned) mask = r->write_mask;
+        }
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
-                       written, &bi)) {
+                       written ? (int)mask : 0, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
             return bi;
         }
