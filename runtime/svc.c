@@ -19,6 +19,7 @@
 #define PROGRAM_ID 0x0100f2c0115b6000ull
 
 static uint64_t g_svcs;
+int rt_stats_on;   // main.c sets it (host.h)
 void (*volatile svc_test_exit_hook)(unsigned code);
 
 RtStats rt_stats(void) {
@@ -150,7 +151,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
 }
 
 static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
-    __atomic_fetch_add(&g_svcs, 1, __ATOMIC_RELAXED);
+    if (__builtin_expect(rt_stats_on, 0)) __atomic_fetch_add(&g_svcs, 1, __ATOMIC_RELAXED);
     if (rt_trace & RT_TRACE_SVC) {
         char at[160];
         rt_log("svc %#x at %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", imm, ldr_describe(pc, at, sizeof at),

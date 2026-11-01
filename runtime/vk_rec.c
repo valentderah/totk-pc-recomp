@@ -52,18 +52,23 @@ static void rec_main(void *arg) {
     (void)arg;
     plat_thread_priority(rec_prio);
     uint64_t t = 0;
+    int idle = 0;   // the last wait ran out with nothing published: back to sleep without the spin
     for (;;) {
         uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
         if (t == h) {
-            for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+            // Packets follow each other within microseconds while a part is recorded, so spin a little before
+            // sleeping. Between parts the ring stays empty, and a spin after every timed-out wait kept a few percent
+            // of a hardware thread busy for nothing.
+            for (int i = 0; !idle && i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
             if (t == h) {
                 __atomic_store_n(&sleeping, 1, __ATOMIC_SEQ_CST);
                 h = __atomic_load_n(&head, __ATOMIC_SEQ_CST);
-                if (t == h) plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
+                if (t == h) idle = !plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
                 __atomic_store_n(&sleeping, 0, __ATOMIC_RELAXED);
                 continue;
             }
         }
+        idle = 0;
         for (int k = 0; t != h; k++) {
             uint64_t w = ring[t % RING_WORDS];
             uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);

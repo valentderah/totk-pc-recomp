@@ -133,12 +133,13 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 `romfs\` next to the exe or point `TOTK_ROMFS` at its folder. Run `totk.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
-## Linux (in progress)
+## Linux
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
 files (`*_win.c`); `runtime/platform/linux.c` implements `platform.h`. Status: the selftest and the probes pass; 1.2.1
 plays at 60 fps on RADV (RX 7800 XT) and NVIDIA (RTX 3060); 1.4.3 builds, probes and plays on RADV (RX 6600, and the
-Vega 7 of a Ryzen 5 4600G at about 34 fps). Long play sessions and the Steam Deck itself are not verified yet.
+Vega 7 of a Ryzen 5 4600G at about 34 fps). The release AppImage installs and runs on the Steam Deck (docs/installer.md,
+"Linux release"; docs/tester-guide.md, "Steam Deck").
 
 Requirements:
 
@@ -169,11 +170,32 @@ re-protecting imported memory invalidates the driver's userptr buffer on every s
 amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
 host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
 writes come back at its fence. In play that costs about 0.2 ms a frame and doubles the memory of those pools (about
-1.1 GB). `TOTK_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
-well: the shadow copies are chosen for the measured cost above, not for a missing extension.
+1.1 GB). A pool is synced once per submission, in the first part that uses it (`TOTK_SHADOW_RESYNC=1` syncs in every
+part), and the shadow of a pool the game does not cache on the CPU lives in write-combined memory, which an APU's GPU
+reads faster than cached memory (`TOTK_SHADOW_WC=auto|0|all`). `TOTK_SHADOW=1` turns shadow storage on under Windows
+too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as well: the shadow copies are chosen for the measured
+cost above, not for a missing extension.
+
+Code pages: at start the lifted code (about 208 MiB of text) is copied onto memory backed by 2 MiB pages, where the
+kernel's transparent huge pages are enabled (`always` or `madvise`), so a Zen 2 core's instruction TLB covers far
+more of it; the log line `text:` reports how much. `TOTK_HUGE_TEXT=0` leaves it on 4 KiB pages.
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
 `TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
+
+Measuring: `TOTK_TRACE=perf` logs, every 60 presents, a `perf:` line with the frame interval, the replay time and the
+render thread's waits, a second with the GPU's busy time and `bound: pace|gpu|cpu`, and a third, where the driver has
+`VK_KHR_calibrated_timestamps`, that splits the GPU's idle time into time *waiting for the next submission* (the
+replay or the game held the GPU up) and time *with it queued* (uploads, presents, waits); `frametime:` lines give the
+mean, the 1% low and the worst frames every 60 s and at exit. `tools/perf_summary.py` condenses a log over a frame
+window and `tools/ab_summary.py` an in-launch A/B (`TOTK_AB`). On a Steam Deck, `tools/profile_deck.sh --install
+<folder> --script tools/input/walk_pan.txt --tag <name>` runs a scripted walk with the trace on and keeps the log under
+`<folder>/profiles/`, named by date, build and tag, together with the GPU clock sampled during the run, the power
+state and one summary line per run in `summary.tsv`: a Deck halves its frame rate when the APU drops a power state,
+when the present mode changes or when the scene resolution grows, and none of that shows in an fps number alone.
+`--binary <totk>` measures a build the installer did not place, `--env K=V` sets a switch for the run, and
+`--script tools/input/spin.txt` turns the camera slowly on the spot instead of walking, so a scene chosen by playing
+to it and saving there is measured from the save.
 
 ## Checks
 

@@ -652,16 +652,6 @@ static uint64_t pace(uint64_t *target, uint64_t now, uint64_t period) {
     return 0;
 }
 
-static void sleep_until(uint64_t deadline) {
-    for (;;) {
-        uint64_t now = kern_now_ns();
-        if (now >= deadline) return;
-        uint64_t d = deadline - now;
-        if (d >= 2000000) plat_sleep_ms((uint32_t)(d / 1000000 - 1));
-        else plat_yield();
-    }
-}
-
 // NVNwindowAcquireTextureResult nvnWindowAcquireTexture(NVNwindow *w, NVNsync *s, int *index): blocks here, not in the
 // present, until the image's previous present plus one period has passed (the game often presents with a lock held).
 // That is the time the next frame goes to the display, so the image is free as soon as that time is reached.
@@ -675,7 +665,7 @@ NVN_API(nvnWindowAcquireTexture) {
     uint64_t at = idx < 4 ? o->avail[idx] : 0;
     if (at) {
         uint64_t p0 = perf_begin();
-        sleep_until(at);
+        plat_sleep_until_ns(at);
         perf_end(PERF_PACE, p0);
     }
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is

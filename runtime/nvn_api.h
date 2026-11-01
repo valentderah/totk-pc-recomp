@@ -81,7 +81,8 @@ typedef struct { volatile uint32_t *val; uint32_t mode, value; } p_signal_event;
 typedef struct { uint64_t type, addr; } p_report_counter;  // OP_REPORT_COUNTER: NVNcounterType, NVNcounterData address
 typedef struct { uint64_t type; } p_reset_counter;         // OP_RESET_COUNTER
 typedef struct { uint64_t src, dst, size; } p_copy_b2b;    // OP_COPY_B2B: GPU addresses
-typedef struct { uint64_t dst, size; uint8_t data[]; } p_update_ub;   // OP_UPDATE_UB: size bytes written at dst
+// OP_UPDATE_UB: size bytes written at dst, within the uniform block [buf, buf+buf_size) of the call
+typedef struct { uint64_t dst, size, buf, buf_size; uint8_t data[]; } p_update_ub;
 typedef struct { int32_t bits, pad; } p_barrier;           // OP_BARRIER: NVNbarrierBits
 typedef struct { uint64_t target; } p_jump;                // OP_JUMP / OP_CALL: next record / called recording
 // OP_DRAW_IDX_IND: DrawElementsIndirect; ind = GPU address of {count, instances, first index, base vertex, base
@@ -91,7 +92,7 @@ typedef struct { uint64_t ind, caller; } p_dispatch_ind;   // OP_DISPATCH_IND: i
 // OP_CLEAR_BUF: size bytes at addr filled with the 32-bit value in GPU order (ClearBuffer; ReportValue is a 4-byte one)
 typedef struct { uint64_t addr, size; uint32_t value, pad; } p_clear_buf;
 _Static_assert(sizeof(p_signal_event) == 16 && sizeof(p_report_counter) == 16 && sizeof(p_copy_b2b) == 24 &&
-               sizeof(p_update_ub) == 16, "op payload layouts of hle_nvn.c");
+               sizeof(p_update_ub) == 32, "op payload layouts of hle_nvn.c");
 static inline const op_hdr *nvn_op_first(uint64_t handle) { return (const op_hdr *)(uintptr_t)handle; }   // OP_BEGIN
 static inline const op_hdr *nvn_op_next(const op_hdr *h) { return (const op_hdr *)(const void *)((const uint8_t *)h + h->size); }
 static inline const void *nvn_op_payload(const op_hdr *h) { return h + 1; }

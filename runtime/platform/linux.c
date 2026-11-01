@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <link.h>
 #include <linux/fs.h>
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
@@ -580,38 +581,47 @@ void plat_mutex_unlock_shared(PlatMutex *m) {
     if (!(s & LK_R) && (s & LK_S)) lk_wake(w);
 }
 
-// ---- condition variables: a sequence number in the first 32 bits. A waiter reads it before releasing the lock and
-// sleeps only while it is unchanged, so a signal between the release and the sleep is not lost.
+// ---- condition variables: a sequence number in the first 32 bits, the count of waiters in the next 32. A waiter
+// counts itself in and reads the sequence before releasing the lock, and sleeps only while the sequence is unchanged,
+// so a signal between the release and the sleep is not lost. A signal bumps the sequence and makes the futex call only
+// while the count says someone waits: both sides' first operation is a full barrier, so either the waiter sees the new
+// sequence or the signaller sees the waiter. The kernel (kernel.c core_grant, wake) signals threads that are mostly
+// still spinning for their core rather than sleeping, and each futex wake is a system call.
 
 static inline volatile uint32_t *cv(PlatCond *c) { return (volatile uint32_t *)&c->p; }
+static inline volatile uint32_t *cvn(PlatCond *c) { return (volatile uint32_t *)&c->p + 1; }
 
 void plat_cond_init(PlatCond *c) { c->p = 0; }
 
 void plat_cond_wait(PlatCond *c, PlatMutex *m) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cvn(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     plat_mutex_unlock(m);
     futex(cv(c), FUTEX_WAIT, seq, NULL);
+    __atomic_sub_fetch(cvn(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
 }
 
 int plat_cond_wait_ns(PlatCond *c, PlatMutex *m, uint64_t ns) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cvn(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     struct timespec ts = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)};
     plat_mutex_unlock(m);
     long r = futex(cv(c), FUTEX_WAIT, seq, &ts);
     int timed_out = r == -1 && errno == ETIMEDOUT;
+    __atomic_sub_fetch(cvn(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
     return !timed_out;
 }
 
 void plat_cond_signal(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, 1, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cvn(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, 1, NULL);
 }
 
 void plat_cond_broadcast(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cvn(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
 }
 
 // ---- files
@@ -1153,6 +1163,75 @@ int plat_temp_dir(char *out, size_t cap) {
 uintptr_t plat_exe_base(void) {
     Dl_info d;
     return dladdr((void *)plat_exe_base, &d) ? (uintptr_t)d.dli_fbase : 0;
+}
+
+// ---- huge pages for the code
+// The executable's text is about 208 MiB, nearly all of it lifted game code, on 4 KiB pages: a Zen 2 core's 64-entry
+// L1 and 512-entry L2 instruction TLBs then cover 2 MiB of it, and a call into another function misses both more often
+// than not. So the 2 MiB-aligned interior of the text segment is copied into anonymous memory that asks for
+// transparent huge pages and moved over the original (as HHVM's hugifyText does), from main before any other thread
+// runs. The 2 MiB that hold these functions stay as they are, since they run while the rest moves. The kernel backs the
+// copy with 2 MiB pages where /sys/kernel/mm/transparent_hugepage/enabled is always or madvise and it finds free 2 MiB
+// blocks, 4 KiB pages elsewhere; AnonHugePages of /proc/self/smaps_rollup tells.
+#define HUGE_PAGE (2u << 20)
+typedef struct { uintptr_t lo, hi; } TextSeg;
+
+static int text_seg(struct dl_phdr_info *info, size_t size, void *arg) {
+    (void)size;
+    TextSeg *t = arg;
+    for (int i = 0; i < info->dlpi_phnum; i++) {   // the first object is the executable itself
+        const ElfW(Phdr) *p = &info->dlpi_phdr[i];
+        if (p->p_type == PT_LOAD && (p->p_flags & PF_X)) {
+            t->lo = info->dlpi_addr + p->p_vaddr;
+            t->hi = t->lo + p->p_memsz;
+        }
+    }
+    return 1;
+}
+
+__attribute__((noinline)) static int hugify(uintptr_t lo, uintptr_t hi) {   // [lo, hi) 2 MiB-aligned; 1 when moved
+    size_t n = hi - lo;
+    void *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tmp == MAP_FAILED) return 0;
+    madvise(tmp, n, MADV_HUGEPAGE);
+    memcpy(tmp, (const void *)lo, n);
+    if (mprotect(tmp, n, PROT_READ | PROT_EXEC) ||
+        mremap(tmp, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)lo) == MAP_FAILED) {
+        munmap(tmp, n);
+        return 0;
+    }
+    return 1;
+}
+
+static uint64_t anon_huge_bytes(void) {
+    FILE *f = fopen("/proc/self/smaps_rollup", "r");
+    if (!f) return 0;
+    char line[256];
+    unsigned long long kib = 0;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "AnonHugePages: %llu kB", &kib) == 1) break;
+    fclose(f);
+    return kib << 10;
+}
+
+uint64_t plat_huge_text(uint64_t *huge) {
+    *huge = 0;
+    TextSeg t = {0, 0};
+    dl_iterate_phdr(text_seg, &t);
+    uintptr_t lo = (t.lo + HUGE_PAGE - 1) & ~(uintptr_t)(HUGE_PAGE - 1), hi = t.hi & ~(uintptr_t)(HUGE_PAGE - 1);
+    if (!t.hi || hi <= lo) return 0;
+    // the 2 MiB block(s) holding the three functions above and this one
+    uintptr_t fns[] = {(uintptr_t)text_seg, (uintptr_t)hugify, (uintptr_t)anon_huge_bytes, (uintptr_t)plat_huge_text};
+    uintptr_t me_lo = fns[0], me_hi = fns[0];
+    for (int i = 1; i < 4; i++) me_lo = fns[i] < me_lo ? fns[i] : me_lo, me_hi = fns[i] > me_hi ? fns[i] : me_hi;
+    me_lo &= ~(uintptr_t)(HUGE_PAGE - 1);
+    me_hi = (me_hi + 4096 + HUGE_PAGE - 1) & ~(uintptr_t)(HUGE_PAGE - 1);
+    uint64_t moved = 0;
+    uintptr_t a_hi = me_lo < hi ? me_lo : hi, b_lo = me_hi > lo ? me_hi : lo;
+    if (a_hi > lo && hugify(lo, a_hi)) moved += a_hi - lo;
+    if (hi > b_lo && hugify(b_lo, hi)) moved += hi - b_lo;
+    if (moved) *huge = anon_huge_bytes();
+    return moved;
 }
 
 int plat_module_of(uintptr_t addr, char *name, size_t cap, uintptr_t *base) {

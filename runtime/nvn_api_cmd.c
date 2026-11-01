@@ -472,6 +472,8 @@ NVN_API(nvnCommandBufferUpdateUniformBuffer) {
     p_update_ub *r = rec(cmd_of(c), OP_UPDATE_UB, offsetof(p_update_ub, data) + n);
     r->dst = dst;
     r->size = n;
+    r->buf = arg_x(c, 1);
+    r->buf_size = arg_x(c, 2);
     memcpy(r->data, data, n);
 }
 

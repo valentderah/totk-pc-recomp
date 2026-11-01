@@ -152,8 +152,10 @@ static RtConfig cfg;
 const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
+#ifdef RT_FNPROF
 volatile int g_fnprof = 0;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr, (void)lr, (void)x0; }
+#endif
 
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
@@ -468,6 +470,9 @@ static void portable_paths(RtConfig *c) {
 
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    // The lifted code on 2 MiB pages (platform/linux.c plat_huge_text), while this is the only thread
+    const char *ht = cfg_get("TOTK_HUGE_TEXT");
+    uint64_t huge_pages = 0, huge_text = !ht || !*ht || strcmp(ht, "0") ? plat_huge_text(&huge_pages) : 0;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);
@@ -508,6 +513,12 @@ int main(int argc, char **argv) {
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
+    if (huge_text)
+        rt_log("text: %.0f MiB of code moved to memory asking for 2 MiB pages; the process has %.0f MiB in such pages "
+               "(TOTK_HUGE_TEXT=0 skips it)", huge_text / 1048576.0, huge_pages / 1048576.0);
+    // The probes and --boot print or check the SVC and host call counts; the game itself (--seconds included, which
+    // times it) pays for them only when tracing asks (host.h rt_stats_on).
+    rt_stats_on = mode != NULL || (rt_trace & (RT_TRACE_SVC | RT_TRACE_HOSTCALL)) != 0;
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();

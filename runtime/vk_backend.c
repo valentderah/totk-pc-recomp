@@ -39,13 +39,6 @@ static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
 static PresentJob job;
 static int pending, busy, present_thread;
 
-// Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
-static void wait_until(uint64_t at) {
-    uint64_t now = kern_now_ns();
-    if (at > now + 1500000) plat_wait_ns(at - now - 1000000);
-    while (kern_now_ns() < at) plat_yield();
-}
-
 static void present_main(void *arg) {
     (void)arg;
     uint64_t last = 0, last_queued = 0;
@@ -68,7 +61,7 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        wait_until(j.at);
+        plat_sleep_until_ns(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present

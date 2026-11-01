@@ -324,8 +324,15 @@ class Lifter:
             if crn == 2 and op1 == 3 and rt == 31:  # hints
                 return Insn('op', '/* hint */')
             if crn == 3 and op1 == 3 and rt == 31:  # barriers
-                if op2 == 2:
+                if op2 == 2:  # CLREX
                     return Insn('op', 'c->excl_addr = ~0ull;')
+                # DMB LD keeps earlier loads before later loads and stores, DMB ST earlier stores before later stores
+                # (CRm bits 1:0 = 1, 2). x86 orders both by itself, so an acquire-release fence, no instruction
+                # there, only holds the compiler: 1.4.3 main has 1095 ISHLD and 26 ISHST sites against 538 ISH. A
+                # full DMB also keeps a store before a later load, which x86 does not; it, DSB and ISB stay
+                # sequentially consistent fences (a locked or on x86).
+                if op2 == 5 and (crm & 3) in (1, 2):
+                    return Insn('op', '__atomic_thread_fence(__ATOMIC_ACQ_REL);')
                 return Insn('op', '__atomic_thread_fence(__ATOMIC_SEQ_CST);')
             raise Unsupported(f'pstate/system {w:08x}')
         if op0 == 1:  # SYS

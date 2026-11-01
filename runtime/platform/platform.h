@@ -100,6 +100,8 @@ void plat_wait_ns(uint64_t ns);
 #else
 #define PLAT_WAIT_LATE_NS 60000u    // clock_nanosleep with a 1 us timer slack (plat_timer_1ms), scheduler wakeup
 #endif
+// Sleeps until the monotonic time at: plat_wait_ns to 2 * PLAT_WAIT_LATE_NS before it, then spins (common.c).
+void plat_sleep_until_ns(uint64_t at);
 static inline uint64_t plat_now_ms(void) { return plat_now_ns() / 1000000u; }
 void plat_sleep_ms(uint32_t ms);          // coarse sleep: the scheduler's granularity, no spinning
 
@@ -322,6 +324,9 @@ int plat_file_fsync(PlatFile *f);                         // the file's data to 
 int plat_temp_dir(char *out, size_t cap);                 // the user's temporary directory, no trailing separator
 int plat_exe_path(char *out, size_t cap);                 // path of the running executable; 0 on failure
 uintptr_t plat_exe_base(void);                            // where the executable is loaded
+// Linux: moves the executable's code onto memory backed by 2 MiB pages, before other threads run (main.c). Returns the
+// bytes moved and, in *huge, how many bytes of the process are in such pages afterwards; 0 where there is no such thing.
+uint64_t plat_huge_text(uint64_t *huge);
 // The module (executable or library) holding code address addr: its file name without directories into name, its load
 // address into *base. 0 when none.
 int plat_module_of(uintptr_t addr, char *name, size_t cap, uintptr_t *base);

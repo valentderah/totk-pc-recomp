@@ -33,7 +33,8 @@ typedef struct VkCtx {
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
-        has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
+        has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
+        has_calibrated;                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -194,6 +195,12 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+// An UpdateUniformBuffer of n bytes at addr within the uniform block [block, block+block_n): later bindings of the
+// block read a copy with the new bytes (an overlay). 1 when made; 0 when the block has no snapshot or the arena is full.
+int vk_usnap_update(uint64_t block, uint64_t block_n, uint64_t addr, uint64_t n, const void *data);
+// The overlay a uniform binding at addr reads from, as its arena offset + 1; 0 when none. The descriptor memo
+// (vk_exec_draw.c bind_sig) keys a draw's uniform slots on it, so only the draws of an updated block rebuild.
+uint64_t vk_usnap_overlay_at(uint64_t addr);
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);
