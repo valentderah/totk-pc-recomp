@@ -811,16 +811,21 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English and Russian text, the software keyboard keeps its
-// game-language rows, and menu_text follows TOTK_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has its own English, Russian and Simplified Chinese text, the software
+// keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id), "menu text id %d lacks en or ru", id);
         CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id), "menu text id %d is empty", id);
-        // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set)
+        // zh-Hans is a full catalog, not a keyboard-only row: a missing entry would show English inside a Chinese menu
+        CHECK(ui_text_defined("zh-Hans", (UiTextId)id) && *ui_text_in("zh-Hans", (UiTextId)id),
+              "menu text id %d lacks zh-Hans", id);
+        // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set); Chinese costs three
+        // bytes a character, so its length is checked in bytes like the others
         CHECK(strlen(ui_text_in("en", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
-              strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES, "menu text id %d is too long for the "
+              strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES, "menu text id %d is too long for the "
               "description pane", id);
     }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
@@ -841,6 +846,12 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
     cfg_set("TOTK_MENU_LANG", "en");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
+    cfg_set("TOTK_MENU_LANG", "zh-Hans");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("zh-Hans", UI_MENU_CONTINUE),
+          "menu_text did not follow MENU_LANG=zh-Hans");
+    cfg_set("TOTK_MENU_LANG", "zh-CN");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("zh-Hans", UI_MENU_CONTINUE),
+          "menu_text did not read MENU_LANG=zh-CN as zh-Hans");
     cfg_set("TOTK_MENU_LANG", "");
     const char *sys = plat_ui_language();
     int ru = !strncmp(sys, "ru", 2);

@@ -340,13 +340,40 @@ static int fonts_up(float scale) {
         mc.FontDataOwnedByAtlas = false;
         fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, ranges[i].Data);
     }
+    // The Chinese catalog needs every glyph it uses, not only the four language names: merge them from the system's
+    // Simplified Chinese font so menu_lang = zh-Hans draws the whole interface in Chinese.
+    uint8_t *zh_data = NULL;
+    {
+        char path[512];
+        uint64_t size = 0;
+        if (plat_font_path("zh-Hans", path, sizeof path)) zh_data = plat_file_read(path, &size);
+        if (zh_data && font_usable(zh_data, size)) {
+            ImFontGlyphRangesBuilder b;
+            for (int k = 0; k < UI_TEXT_COUNT; k++) {
+                const char *s = ui_text_in("zh-Hans", (UiTextId)k);
+                if (s && *s) b.AddText(s);
+            }
+            ImVector<ImWchar> zh_ranges;
+            b.BuildRanges(&zh_ranges);
+            ImFontConfig mc;
+            mc.MergeMode = true;
+            mc.FontDataOwnedByAtlas = false;
+            fa->AddFontFromMemoryTTF(zh_data, (int)size, 26.0f * scale, &mc, zh_ranges.Data);
+            merged++;
+        } else if (zh_data) {
+            rt_log("menu: system Chinese font left out: the font parser cannot read it (%llu bytes)",
+                   (unsigned long long)size);
+        }
+    }
     vk_queue_lock();   // the upload submits on the queue and waits for it
     int ok = ImGui_ImplVulkan_CreateFontsTexture();
     vk_queue_unlock();
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
-    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
+    free(zh_data);
+    rt_log("menu: font atlas at %.1f px, %d of %d system fonts merged (language names, Chinese catalog)", 26.0f * scale,
+           merged, (int)N + 1);
     g_font_scale = ok ? scale : 0;
     return ok;
 }
@@ -686,8 +713,9 @@ static void tab_controls(float scale) {
 
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
+                                     UI_MENU_LANGNAME_ZH_HANS};
+    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 4, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
