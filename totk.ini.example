@@ -229,6 +229,9 @@
 [files]
 # Folder with RomFS mod files that replace or add game files. Default: none.
 # romfs_mods =
+# Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
+# Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
+# shared_fonts =
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

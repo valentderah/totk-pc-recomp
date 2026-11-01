@@ -11,6 +11,8 @@ holds only the game; the installer and its tools stay outside it.
 2. Picks:
    - the base game (XCI or NSP) and the 1.1.1, 1.2.1 or 1.4.3 update (NSP);
    - their `prod.keys`;
+   - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
+     needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
 4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
@@ -22,6 +24,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
+  shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
   profile/                       saves
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
@@ -31,8 +34,8 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
-`profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the shaders. A newer
-release that changes nothing game-derived skips the rebuild.
+`shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
+shaders. A newer release that changes nothing game-derived skips the rebuild.
 
 Given an update file other than the recorded one (1.1.1, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -44,13 +47,16 @@ loads the saves 1.4.3 wrote.
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU has
    AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one clear message.
-2. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
-3. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
+2. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
+   from the firmware into `shared-fonts/` (MacNativeGames' `extract_shared_fonts.py`, which verifies every NCA layer
+   and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
+3. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
+4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
    to the installer.
-4. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
+5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library into `totk.exe` (`build_game.py --runtime-lib`; about 3 min on 24 cores).
-5. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
+6. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
@@ -59,7 +65,7 @@ loads the saves 1.4.3 wrote.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-6. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
+7. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
 
@@ -68,10 +74,13 @@ A cancelled or failed setup resumes from the last finished step (`totk-install.j
 `installer/` (stdlib only; `installer/layout.py` maps the release folder and, in a repository, the dev toolchain):
 
 ```
-python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--root DIR] [--temp DIR] [--verify]
+python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--root DIR] [--temp DIR] [--verify]
 ```
 
 - On a folder with `totk-install.json` only `--dest` is needed; the game files only when the extraction must run again.
+- `--firmware DIR` is the folder holding the firmware NCAs: an unpacked firmware, or the emulators' installed
+  `Contents/registered` (the parent `Contents` folder works too). It is read only with Chinese, Korean or Traditional
+  Chinese text, and only when `shared-fonts/` is not already in the install folder.
 - stdout: one JSON event per line, types `start`, `plan`, `step` (started, done, skipped), `progress` (step, phase,
   done/total/unit), `space` (bytes needed and free on the install disk and the temp disk), `warning`, `error`, `end` (`installer/events.py`). Messages are ids with parameters;
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.

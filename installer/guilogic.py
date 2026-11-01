@@ -25,7 +25,7 @@ from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru', 'pt-BR')
-STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
+STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -113,6 +113,7 @@ class Form:
     base: str = ''
     update: str = ''
     keys: str = ''
+    firmware: str = ''
     lang: str = ''
     dest: str = ''
 
@@ -149,19 +150,21 @@ class Form:
                 value = getattr(self, name).strip()
                 if value and not Path(value).is_file():
                     found.append(f'ui.missing_{name}')
+        if self.firmware.strip() and not Path(self.firmware.strip()).is_dir():
+            found.append('ui.missing_firmware')
         return found
 
-    def command(self, python, root=None, temp=None, verify=False):
+    def command(self, python, root=None, temp=None, verify_hashes=False):
         cmd = [str(python), '-m', 'installer']
         for flag, value in (('--base', self.base), ('--update', self.update), ('--keys', self.keys),
-                            ('--lang', self.lang), ('--dest', self.dest)):
+                            ('--firmware', self.firmware), ('--lang', self.lang), ('--dest', self.dest)):
             if value.strip():
                 cmd += [flag, value.strip()]
         if root:
             cmd += ['--root', str(root)]
         if temp:
             cmd += ['--temp', str(temp)]
-        if verify:
+        if verify_hashes:
             cmd.append('--verify')
         return cmd
 

@@ -1,13 +1,14 @@
-"""The six setup steps of docs/installer.md: check, extract, lift, compile, prepare, cleanup.
+"""The seven setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, cleanup.
 
-Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); lift,
-compile and prepare run the bundled Python on recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and
-tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call
-here: the host check is a small C program built with the bundled clang (hostcheck.c).
+Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
+runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
+recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepare_shaders.py, whose output goes to
+<temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call here: the host check is a small C program built
+with the bundled clang (hostcheck.c).
 
-Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
-totk-install.json.
+Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
+and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of
+totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
@@ -217,6 +218,64 @@ def size_of(paths):
     return sum(p.stat().st_size for p in paths if p.is_file())
 
 
+# The Switch system shared fonts (runtime/ov_system.c): TotK falls back to them for Chinese, Korean and Traditional
+# Chinese text. tools/vendor/macnativegames/extract_shared_fonts.py writes these names.
+SHARED_FONTS = 'shared-fonts'
+SHARED_FONT_FILES = ('0-standard.bfttf', '1-chinese-simplified.bfttf', '2-chinese-simplified-extension.bfttf',
+                     '3-chinese-traditional.bfttf', '4-korean.bfttf', '5-nintendo-extension.bfttf')
+FONTS_NEED = 32 << 20     # the six BFTTF files and their manifest
+
+
+def requested_lang(ctx):
+    """The language this run uses: --lang, else the one recorded for the install (Check canonicalizes it)."""
+    return ini.canonical_language(getattr(ctx.options, 'lang', None) or ctx.state.get('lang'))
+
+
+def firmware_dir(value):
+    """The firmware NCA folder behind a --firmware path: the folder itself, or its registered/ child (the emulators'
+    layout, Contents/registered)."""
+    if not value:
+        return None
+    path = Path(value)
+    return path / 'registered' if (path / 'registered').is_dir() else path
+
+
+def firmware_has_ncas(folder):
+    """Whether folder holds firmware NCAs: .nca files, or the hashed directories with a 00 file (registered/)."""
+    try:
+        entries = list(Path(folder).iterdir())
+    except OSError:
+        return False
+    return any((e.is_file() and e.suffix.lower() == '.nca') or (e.is_dir() and (e / '00').is_file()) for e in entries)
+
+
+def firmware_stamp(folder):
+    """A cheap identity of the firmware NCAs: names, sizes and mtimes, not their contents (the folder is ~326 MB)."""
+    try:
+        entries = sorted(Path(folder).iterdir())
+    except OSError:
+        return 'missing'
+    rows = []
+    for entry in entries:
+        if entry.is_dir():
+            file = entry / '00'
+            if not file.is_file():
+                continue
+        elif not entry.is_file() or entry.suffix.lower() != '.nca':
+            continue
+        else:
+            file = entry
+        st = file.stat()
+        rows.append((entry.name, st.st_size, st.st_mtime_ns))
+    return rows
+
+
+def shared_fonts_ready(dest):
+    """Whether dest/shared-fonts holds a complete set that the game can load."""
+    folder = Path(dest) / SHARED_FONTS
+    return (folder / 'manifest.json').is_file() and all((folder / name).is_file() for name in SHARED_FONT_FILES)
+
+
 # ---- 1. check
 
 UPDATE_TITLE_ID = '0100F2C0115B6800'
@@ -250,13 +309,30 @@ class Check(Step):
         own = (ctx.temp, *ctx.temp.parents)   # a temp folder inside the install folder (installer/cli.py) is ours
         if ctx.mode == 'install' and dest.is_dir() and any(p not in own for p in dest.iterdir()):
             raise InstallError('check.dest_not_empty', path=str(dest))
-        lang = ini.canonical_language(ctx.options.lang or ctx.state.get('lang'))
+        lang = requested_lang(ctx)
         if not lang:
             raise InstallError('check.lang_missing')
         if lang not in ini.LANGUAGES:
             raise InstallError('check.lang_unknown', lang=lang, known=', '.join(ini.LANGUAGES))
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is not None:
+            if not firmware.is_dir():
+                raise InstallError('check.firmware_missing', path=str(firmware))
+            if not firmware_has_ncas(firmware):
+                raise InstallError('check.firmware_empty', path=str(firmware))
         if lang in ini.NEED_SHARED_FONTS:
-            rep.warning('warn.lang_needs_fonts', lang=lang)
+            if firmware is None:
+                rep.warning('warn.lang_needs_fonts', lang=lang)
+            elif not shared_fonts_ready(dest):
+                keys = getattr(ctx.options, 'keys', None)
+                if not keys or not Path(keys).is_file():
+                    raise InstallError('check.fonts_keys_needed')
+                try:
+                    key_values = load_keys(Path(keys))
+                except (ValueError, OSError, UnicodeDecodeError):
+                    raise InstallError('check.keys_unreadable') from None
+                if 'header_key' not in key_values:
+                    raise InstallError('check.keys_no_header_key')
         ctx.lang = lang
         ctx.temp.mkdir(parents=True, exist_ok=True)
 
@@ -389,6 +465,8 @@ class Check(Step):
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction replaces it
                 dest_need -= romfs.stat().st_size
+        if ctx.will_run('fonts'):
+            dest_need += FONTS_NEED
         if ctx.will_run('prepare') or ctx.will_run('extract'):
             dest_need += DEST_EXTRA
         if ctx.will_run('lift') or ctx.will_run('compile'):
@@ -440,7 +518,72 @@ class Check(Step):
         ctx.state['version'] = found
 
 
-# ---- 2. extract
+# ---- 2. fonts
+
+class Fonts(Step):
+    """The Switch system fonts for Chinese, Korean and Traditional Chinese text (tools/extract_fonts.py, which runs the
+    vendored extract_shared_fonts.py). The firmware folder is optional: without it the setup warns and the game runs
+    with those glyphs missing. The extraction verifies the firmware NCAs and writes the six BFTTF files the console
+    puts in shared memory."""
+
+    id = 'fonts'
+
+    def key(self, ctx):
+        lang = requested_lang(ctx)
+        if lang not in ini.NEED_SHARED_FONTS:
+            return fingerprint('fonts-1', 'not-needed')
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is None:
+            return fingerprint('fonts-1', 'no-firmware')
+        return fingerprint('fonts-1', lang, str(firmware), firmware_stamp(firmware))
+
+    def current(self, ctx, record):
+        if requested_lang(ctx) not in ini.NEED_SHARED_FONTS or not getattr(ctx.options, 'firmware', None):
+            return True
+        return shared_fonts_ready(ctx.dest)
+
+    def verify(self, ctx, record):
+        # An update run may omit --firmware; the installed set still has to be there for these languages.
+        if requested_lang(ctx) in ini.NEED_SHARED_FONTS:
+            return shared_fonts_ready(ctx.dest)
+        return True
+
+    def run(self, ctx):
+        lang = getattr(ctx, 'lang', None) or requested_lang(ctx)
+        if lang not in ini.NEED_SHARED_FONTS:
+            return {}
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is None:
+            return {}   # Check warned: the game runs, some text may not show
+        keys = getattr(ctx.options, 'keys', None)
+        if not keys:
+            raise InstallError('check.fonts_keys_needed')
+        out = ctx.temp / 'shared-fonts'
+        remove(out)
+        ctx.reporter.progress('fonts', 'extract', force=True)
+        tool = ctx.layout.tools / 'vendor' / 'macnativegames' / 'extract_shared_fonts.py'
+        code, log = run_tool(ctx, 'fonts', tool, ['--keys', keys, '--firmware', firmware, '--output', out])
+        if code:
+            detail = ''
+            try:
+                detail = log.read_text(encoding='utf-8', errors='replace').strip().splitlines()[-1][:300]
+            except (OSError, IndexError):
+                pass
+            raise InstallError('fonts.failed', code=code, detail=detail, log=str(log))
+        missing = [name for name in SHARED_FONT_FILES if not (out / name).is_file()]
+        if missing or not (out / 'manifest.json').is_file():
+            raise InstallError('fonts.incomplete', files=', '.join(missing) or 'manifest.json')
+        ctx.reporter.progress('fonts', 'copy', force=True)
+        try:
+            ctx.dest.mkdir(parents=True, exist_ok=True)
+            remove(ctx.dest / SHARED_FONTS)
+            shutil.move(str(out), str(ctx.dest / SHARED_FONTS))
+        except OSError as e:
+            raise InstallError('fonts.copy_failed', path=str(ctx.dest / SHARED_FONTS), detail=str(e)) from None
+        return {'files': len(SHARED_FONT_FILES)}
+
+
+# ---- 3. extract
 
 class Extract(Step):
     id = 'extract'
@@ -548,7 +691,7 @@ class Extract(Step):
             watch.stop()
 
 
-# ---- 3. lift
+# ---- 4. lift
 
 EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
@@ -584,7 +727,7 @@ class Lift(Step):
         return {}
 
 
-# ---- 4. compile
+# ---- 5. compile
 
 NINJA_LINE = re.compile(r'^\[(\d+)/(\d+)\] ')
 
@@ -641,7 +784,7 @@ class Compile(Step):
         return {'exe_sha256': file_sha256(dest / exe.name)}
 
 
-# ---- 5. prepare
+# ---- 6. prepare
 
 TRANSLATED = re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs')
 # runtime/vk_pipeline.c lb_warm_prepared: variants the driver crashed on in an earlier run (tools/prepare_shaders.py
@@ -748,7 +891,7 @@ class Prepare(Step):
         return {'xlate_sha256': file_sha256(xlate)}
 
 
-# ---- 6. clean up
+# ---- 7. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -766,7 +909,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('gen', 'build', 'check', 'shader_list.tsv'):
+        for name in ('gen', 'build', 'check', 'shader_list.tsv', 'shared-fonts'):
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
         return {}
@@ -788,4 +931,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]

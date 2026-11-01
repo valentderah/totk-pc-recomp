@@ -316,6 +316,108 @@ class BaseGameCheckTest(unittest.TestCase):
         self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
 
 
+class FontsTest(unittest.TestCase):
+    """The fonts step: keyed by language and firmware, a no-op without firmware, writes dest/shared-fonts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, self.firmware = base / 'dest', base / 'temp', base / 'firmware'
+        temp.mkdir()
+        self.firmware.mkdir()
+        (self.firmware / 'a.nca').write_bytes(b'nca')
+        self.keys = base / 'prod.keys'
+        self.keys.write_text('header_key = 00\n')
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, lang='zh-Hans', state={},
+                                   layout=SimpleNamespace(tools=ROOT / 'tools', root=ROOT),
+                                   reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(lang='zh-Hans', firmware=self.firmware, keys=str(self.keys)))
+        self.saved_run_tool = steps.run_tool
+
+    def tearDown(self):
+        steps.run_tool = self.saved_run_tool
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def fake_tool(self, files=None, code=0):
+        """Stand-in for extract_shared_fonts.py: writes the requested files where --output points."""
+        def run(ctx, step, script, args):
+            out = Path(args[args.index('--output') + 1])
+            out.mkdir(parents=True)
+            for name in steps.SHARED_FONT_FILES if files is None else files:
+                (out / name).write_bytes(b'bfttf')
+            (out / 'manifest.json').write_text('{}')
+            log = ctx.temp / 'fonts.log'
+            log.write_text('error line\n')
+            return code, log
+        steps.run_tool = run
+
+    def test_all_steps_order(self):
+        self.assertEqual([s.id for s in steps.all_steps()],
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup'])
+
+    def test_extracts_into_the_install_folder(self):
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {'files': 6})
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+        self.assertEqual(sorted(p.name for p in (self.dest / 'shared-fonts').iterdir()),
+                         sorted((*steps.SHARED_FONT_FILES, 'manifest.json')))
+
+    def test_noop_without_firmware(self):
+        self.ctx.options.firmware = None
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertFalse((self.dest / 'shared-fonts').exists())
+
+    def test_noop_for_other_languages(self):
+        self.ctx.lang, self.ctx.options.lang = 'en-US', 'en-US'
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertFalse((self.dest / 'shared-fonts').exists())
+
+    def test_failed_extraction_keeps_the_old_folder(self):
+        self.fake_tool()
+        steps.Fonts().run(self.ctx)
+        self.fake_tool(code=1)
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Fonts().run(self.ctx)
+        self.assertEqual(e.exception.id, 'fonts.failed')
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+
+    def test_incomplete_output_is_an_error(self):
+        self.fake_tool(files=steps.SHARED_FONT_FILES[:1])
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Fonts().run(self.ctx)
+        self.assertEqual(e.exception.id, 'fonts.incomplete')
+
+    def test_current_tracks_language_and_output(self):
+        fonts = steps.Fonts()
+        self.assertFalse(fonts.current(self.ctx, {}))
+        self.fake_tool()
+        fonts.run(self.ctx)
+        self.assertTrue(fonts.current(self.ctx, {}))
+        self.ctx.options.lang = 'en-US'
+        self.assertTrue(fonts.current(self.ctx, {}))
+        self.ctx.options.lang = 'zh-Hans'
+        (self.dest / 'shared-fonts' / '0-standard.bfttf').unlink()
+        self.assertFalse(fonts.current(self.ctx, {}))
+
+    def test_key_changes_with_language_and_firmware(self):
+        fonts = steps.Fonts()
+        zh = fonts.key(self.ctx)
+        self.ctx.options.lang = 'en-US'
+        self.assertNotEqual(zh, fonts.key(self.ctx))
+        self.ctx.options.lang = 'zh-Hans'
+        (self.firmware / 'b.nca').write_bytes(b'other')
+        self.assertNotEqual(zh, fonts.key(self.ctx))
+
+    def test_registered_child_is_used(self):
+        nested = self.firmware / 'registered'
+        nested.mkdir()
+        (nested / 'c.nca').write_bytes(b'nca')
+        self.assertEqual(steps.firmware_dir(self.firmware), nested)
+
+
 class EventsTest(unittest.TestCase):
     def test_lines_are_json_and_the_log_is_english(self):
         with tempfile.TemporaryDirectory() as d:
