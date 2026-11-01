@@ -892,9 +892,14 @@ static int fs_kind_of(const WIN32_FIND_DATAW *fd) {
 int plat_fs_kind(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return PLAT_FS_MISSING;
+    DWORD a = GetFileAttributesW(w);
+    if (a == INVALID_FILE_ATTRIBUTES) return PLAT_FS_MISSING;
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT)) return a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+    // the reparse tag comes with the find data only; FindFirstFileW is asked only here, since it fails on a path
+    // with a trailing separator and reads wildcards
     WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW(w, &fd);   // the reparse tag comes with the find data only
-    if (h == INVALID_HANDLE_VALUE) return PLAT_FS_MISSING;
+    HANDLE h = FindFirstFileW(w, &fd);
+    if (h == INVALID_HANDLE_VALUE) return PLAT_FS_LINK;
     FindClose(h);
     return fs_kind_of(&fd);
 }
