@@ -8,7 +8,7 @@
 // into its destination mix, folds the submixes, runs the mix effects and writes the device sink's stereo mix into a
 // single-producer single-consumer ring. The SDL audio thread drains that ring without taking any lock: an empty ring
 // plays silence and never blocks the render thread or the guest. TOTK_AUDIO=none (or TOTK_AUDIO_OFF) mixes without a
-// device; TOTK_AUDIO_PREFILL_MS (0..500, default 20) is the queued audio the output waits for after start or underrun.
+// device; TOTK_AUDIO_PREFILL_MS (0..500, default 20, 60 on Linux) is the queued audio the output waits for after start or underrun.
 // The device's clock paces the render thread, as the audio hardware paces the Switch's DSP (audio_mixer_pace_ns): a
 // frame is rendered when the ring holds less than the output target, max(prefill, two device periods), so the queue and
 // the delay from the game to the speakers stay there and the host and device clocks cannot drift apart. LASRecomp and
@@ -90,8 +90,15 @@ static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
 // ---- output: SDL3 audio stream fed from the ring
 // How much audio the output waits for before it starts, and again after an underrun: TOTK_AUDIO_PREFILL_MS rounded up
 // to whole 5 ms render blocks. Returns -1 for a value outside 0..500 ms.
+// The Linux default is higher: at 20 ms PipeWire's queue (max(prefill, two 1024-sample periods)) underran
+// thousands of times within minutes in busy scenes, and 60 ms removed the underruns.
+#ifdef __linux__
+#define PREFILL_DEFAULT_MS 60
+#else
+#define PREFILL_DEFAULT_MS 20
+#endif
 static int prefill_blocks_for(const char *e) {
-    if (!e || !*e) return 4;
+    if (!e || !*e) return PREFILL_DEFAULT_MS / 5;
     char *end;
     double ms = strtod(e, &end);
     if (end == e || *end || !(ms >= 0) || ms > 500) return -1;
@@ -290,8 +297,8 @@ void audio_mixer_open(AudioRenderer *r) {
     const char *pe = cfg_get("TOTK_AUDIO_PREFILL_MS");
     m->prefill = prefill_blocks_for(pe);
     if (m->prefill < 0) {
-        rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20", pe);
-        m->prefill = 4;
+        rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using %d", pe, PREFILL_DEFAULT_MS);
+        m->prefill = PREFILL_DEFAULT_MS / 5;
     }
     r->mixer = m;
     atomic_store(&m->playing, r->state == 0);
