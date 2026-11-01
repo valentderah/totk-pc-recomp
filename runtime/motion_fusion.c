@@ -17,6 +17,53 @@
 #include "host.h"
 #include "input.h"
 #include "platform/platform.h"
+// ========== Gyro zero-bias fix added code starts ==========
+#include <stdbool.h>
+
+#define GYRO_WIN 16
+
+typedef struct {
+    double bias[3];
+    bool have_bias;
+    double acc[3];
+    bool have_acc;
+    double rest_ms;
+    double gwin[GYRO_WIN][3];
+    double awin[GYRO_WIN][3];
+    int gn, gi, an, ai;
+    double learn_ms;
+} GyroBiasState;
+
+static GyroBiasState g_gyro = {0};
+
+static void push_win(double w[GYRO_WIN][3], int *n, int *idx, const double v[3]) {
+    for (int i = 0; i < 3; i++) w[*idx][i] = v[i];
+    *idx = (*idx + 1) % GYRO_WIN;
+    if (*n < GYRO_WIN) (*n)++;
+}
+
+static void mean_win(double w[GYRO_WIN][3], int count, double out[3]) {
+    for (int i = 0; i < 3; i++) {
+        double s = 0;
+        for (int j = 0; j < count; j++) s += w[j][i];
+        out[i] = count ? s / count : 0;
+    }
+}
+
+static double ptp_win(double w[GYRO_WIN][3], int count) {
+    double worst = -1;
+    for (int i = 0; i < 3; i++) {
+        double lo = 1e18, hi = -1e18;
+        for (int j = 0; j < count; j++) {
+            if (w[j][i] < lo) lo = w[j][i];
+            if (w[j][i] > hi) hi = w[j][i];
+        }
+        double d = hi - lo;
+        if (d > worst) worst = d;
+    }
+    return worst < 0 ? 0 : worst;
+}
+// ========== Gyro zero-bias fix added code ends ==========
 
 enum { MOTION_RING = 64 };
 #define STALE_NS 200000000ull   // no sample for 200 ms: no motion
@@ -112,20 +159,86 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uin
     double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
     if (dt > 0.05) dt = 0.004;   // a gap (no controller, sensors were off): no integration across it
     m->last_ns = now;
+    
+    // Copy to apply modifications without changing the original input
+    double clean_gyro[3] = {gyro[0], gyro[1], gyro[2]}; 
+
     if (m->restart) {
         align_to(m->R, acc);
         memset(m->angle, 0, sizeof m->angle);
         m->restart = 0;
-    } else integrate(m->R, gyro, acc, dt);
+        // Reset bias state on restart
+        memset(&g_gyro, 0, sizeof(g_gyro));
+    } else {
+        // ========== Gyro zero-bias fix core logic starts ==========
+        double dt_ms = dt * 1000.0;
+        
+        // Note: The source code's acc unit is G, so normal gravity is 1.0
+        push_win(g_gyro.awin, &g_gyro.an, &g_gyro.ai, acc);
+        g_gyro.have_acc = true;
+        // Use raw gyro to calculate stability
+        push_win(g_gyro.gwin, &g_gyro.gn, &g_gyro.gi, gyro); 
+
+        double mag = sqrt(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
+        double gsp = ptp_win(g_gyro.gwin, g_gyro.gn);
+        double asp = g_gyro.an >= GYRO_WIN ? ptp_win(g_gyro.awin, g_gyro.an) : 1e9;
+        double m_mean[3];
+        mean_win(g_gyro.gwin, g_gyro.gn, m_mean);
+
+        // Acc unit is G, so the threshold is within 25% of 1.0
+        int stable = (g_gyro.gn >= GYRO_WIN) && (g_gyro.an >= GYRO_WIN) && 
+                     g_gyro.have_acc &&
+                     (fabs(mag - 1.0) < 0.25) &&
+                     (gsp < 0.040) && (asp < 0.50);
+
+        double lim = g_gyro.have_bias ? 0.050 : 0.150;
+        double dev = 0;
+        for (int i = 0; i < 3; i++) {
+            double d = fabs(m_mean[i] - g_gyro.bias[i]);
+            if (d > dev) dev = d;
+        }
+        int at_rest = stable && (dev < lim);
+
+        if (at_rest) {
+            g_gyro.rest_ms += dt_ms;
+            if (g_gyro.rest_ms > 400.0) {
+                double tau = g_gyro.have_bias ? 30000.0  : 250.0;
+                double alpha = dt_ms / tau;
+                if (alpha > 0.25) alpha = 0.25;
+                for (int i = 0; i < 3; i++) {
+                    g_gyro.bias[i] += alpha * (m_mean[i] - g_gyro.bias[i]);
+                    if (g_gyro.bias[i] > 0.3) g_gyro.bias[i] = 0.3;
+                    if (g_gyro.bias[i] < -0.3) g_gyro.bias[i] = -0.3;
+                }
+                g_gyro.learn_ms += dt_ms;
+                if (g_gyro.learn_ms > 1500.0 && dev < 0.010) g_gyro.have_bias = true;
+            }
+        } else {
+            g_gyro.rest_ms = 0;
+            if (dev > 0.10) g_gyro.learn_ms = 0;
+        }
+
+        // Subtract bias and apply deadzone
+        for (int i = 0; i < 3; i++) {
+            double v = gyro[i] - g_gyro.bias[i];
+            if (fabs(v) < 0.006) v = 0;
+            clean_gyro[i] = v;
+        }
+        // ========== Gyro zero-bias fix core logic ends ==========
+
+        // Pass the clean gyro data to the original integration function
+        integrate(m->R, clean_gyro, acc, dt);
+    }
+
     MotionState *s = &m->ring[m->produced % MOTION_RING];
     *s = (MotionState){.delta_ns = (int64_t)(dt * 1e9), .sampling = (int64_t)m->produced + 1, .attributes = 1};
     for (int i = 0; i < 3; i++) {
-        double rps = gyro[i] / (2 * M_PI);
+        double rps = clean_gyro[i] / (2 * M_PI); // Use clean_gyro here as well
         m->angle[i] += rps * dt;
         s->acc[i] = (float)acc[i];
         s->gyro[i] = (float)rps;
         s->angle[i] = (float)m->angle[i];
-        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)m->R[j][i];   // direction i = controller axis i in the reference frame
+        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)m->R[j][i];
     }
     m->produced++;
     plat_mutex_unlock(&m->lock);
