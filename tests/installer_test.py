@@ -254,6 +254,19 @@ class LiftKeyTest(unittest.TestCase):
         self.add_cheats('main.npdm', 'not a patch', mod='Fps', where='exefs')
         self.assertEqual(self.key(), both)
 
+    def test_renaming_a_mod_folder_changes_the_key(self):
+        # tools/cheats.py and tools/exefs_patches.py name a patch set after "<mod folder>/<cheat or file>": a renamed
+        # folder needs a lift even though its files are the same
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]', mod='MyNXCheats')
+        self.add_cheats('dynamic-fps.pchtxt', '@nsobid-277178B7DBA1B6D4', mod='Fps', where='exefs')
+        before = self.key()
+        mods = self.dest / 'mods'
+        (mods / 'MyNXCheats').rename(mods / 'MyNXCheats 1.4.3')
+        cheats_renamed = self.key()
+        self.assertNotEqual(cheats_renamed, before)
+        (mods / 'Fps').rename(mods / 'Fps 2')
+        self.assertNotEqual(self.key(), cheats_renamed)
+
     def test_status_and_other_files_keep_the_key(self):
         self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
         before = self.key()
