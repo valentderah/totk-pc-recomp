@@ -50,7 +50,7 @@ void vk_hdr_off(void) { g_wanted = 0; }
 
 // The three nits, read again when the settings change. The replay (every draw's support buffer) and the present
 // thread read them: an update fills the snapshot not in use and then publishes it.
-typedef struct { float peak, game, ui; } Nits;
+typedef struct { float peak, game, ui, hue; } Nits;
 static struct { unsigned seen; int cur; Nits snap[2]; PlatMutex lock; } N = {.seen = ~0u, .lock = PLAT_MUTEX_INIT};
 
 static Nits nits(void) {
@@ -62,6 +62,7 @@ static Nits nits(void) {
             n->peak = fmaxf((float)cfg_double("TOTK_HDR_PEAK_NITS"), 80.0f);
             n->game = fmaxf((float)cfg_double("TOTK_HDR_GAME_NITS"), 80.0f);
             n->ui = fmaxf((float)cfg_double("TOTK_HDR_UI_NITS"), 80.0f);
+            n->hue = fminf(fmaxf((float)cfg_double("TOTK_HDR_HUE"), 0.0f), 100.0f) / 100.0f;
             __atomic_store_n(&N.cur, !N.cur, __ATOMIC_RELEASE);
             __atomic_store_n(&N.seen, v, __ATOMIC_RELEASE);
         }
@@ -74,7 +75,8 @@ void vk_hdr_support(float out[4]) {
     Nits n = nits();
     out[0] = n.game / n.ui;                              // the picture's white against the HUD's
     out[1] = n.peak > n.game ? n.peak / n.game : 1.0f;   // the peak against the picture's white
-    out[2] = out[3] = 0;
+    out[2] = n.hue;                                      // hue correction of highlights (hdr_tonemap.frag)
+    out[3] = 0;
 }
 
 // ---- 1. the tonemap shader

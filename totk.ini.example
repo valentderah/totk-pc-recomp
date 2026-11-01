@@ -200,6 +200,9 @@
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
+# Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
+# picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
+# hdr_hue = 80
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
