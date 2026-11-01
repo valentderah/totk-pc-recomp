@@ -1,0 +1,12 @@
+# Title screen to the latest save, then 90 s of a slow camera spin on the spot: half a turn's worth one way, then back
+# the other way, so a measuring run draws everything around wherever the save was made without moving Link (a fight
+# or a crowded place can be measured from a save made there). The A presses stop once the world clock starts.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+1200 A 4
+1500 A 4
+1800 A 4
+@1000 RSTICK 9000 0 44000
+@45500 RSTICK -9000 0 44000
