@@ -349,6 +349,11 @@ class Check(Step):
                     raise InstallError('check.keys_unreadable') from None
                 if 'header_key' not in key_values:
                     raise InstallError('check.keys_no_header_key')
+        if (sys.platform == 'linux' and ctx.will_run('prepare')
+                and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))):
+            # totk --prepare-shaders opens a window and needs a present-capable queue family; without a display it
+            # fails after lift and compile (~15 min), so stop here
+            raise InstallError('check.no_display')
         ctx.lang = lang
         ctx.temp.mkdir(parents=True, exist_ok=True)
 

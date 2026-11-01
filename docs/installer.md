@@ -149,11 +149,23 @@ totk.ini.example, VERSION  the default ini; the release string (the repository's
 - The release contains nothing game-derived; `make_release.py` runs `tools/check_content.py` over the folder before it
   finishes.
 
+## Switch system fonts
+
+Simplified Chinese, Traditional Chinese and Korean text needs the Switch system fonts (`0-standard.bfttf` and the other
+nn::pl shared fonts). The game does not ship them. Without them it exits before its first frame in those languages
+(`rt_fatal` in `runtime/ov_system.c`). Supply them from your own console, in either way:
+
+- Give the setup the firmware folder (`--firmware DIR`, or the window's firmware field); the Fonts step extracts them to
+  `shared-fonts/` in the install folder.
+- Run `python tools/extract_fonts.py --firmware <dir>` with `.venv-py314` and the keys from `config.local.toml`, or
+  point `TOTK_SHARED_FONTS` at a folder that holds the extracted fonts.
+
 ## Linux release
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `TotK-Setup-x86_64.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
-Desktop Mode. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
+Desktop Mode. The command-line setup needs the desktop session's display (`DISPLAY` or `WAYLAND_DISPLAY`) because preparing the
+shaders opens a window; the check step fails at once without it. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
 Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `totk` there with
 `libSDL3.so.0` beside it. The folder inside the AppImage:
 
