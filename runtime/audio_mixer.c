@@ -5,8 +5,9 @@
 //
 // Per 5 ms frame the render thread (audren.c, renderer lock held) decodes every started voice (PCM8/16/24/32, float,
 // DSP-ADPCM) along the sample path the voice clock consumes, resamples it linearly, runs the voice biquads, scales it
-// into its destination mix, folds the submixes, runs the mix effects and writes the device sink's stereo mix into a
-// single-producer single-consumer ring. The SDL audio thread drains that ring without taking any lock: an empty ring
+// into its destination mix, folds the submixes, runs the mix effects and writes the device sink's mix (stereo, or 5.1
+// with TOTK_AUDIO_CHANNELS, output_channels) into a single-producer single-consumer ring. The SDL audio thread drains
+// that ring without taking any lock: an empty ring
 // plays silence and never blocks the render thread or the guest. TOTK_AUDIO=none (or TOTK_AUDIO_OFF) mixes without a
 // device; TOTK_AUDIO_PREFILL_MS (0..500, default 20) is the queued audio the output waits for after start or underrun.
 // The device's clock paces the render thread, as the audio hardware paces the Switch's DSP (audio_mixer_pace_ns): a
@@ -32,7 +33,8 @@
 #include "ipc.h"
 
 #define MAX_FRAME 1024
-#define RING_FRAMES 16384            // stereo frames, about 340 ms at 48 kHz
+#define RING_FRAMES 16384            // output frames, about 340 ms at 48 kHz
+#define OUT_MAX 6                    // output channels at most: 5.1
 #define QUEUE_SLACK_MS 40            // queued audio above the target plus the device's request that ring_pull skips
 #define STALL_MS 50                  // the device took nothing this long (at least 4 periods): the timer paces
 #define SPLITTER_UNUSED 0xffffffffu
@@ -51,7 +53,8 @@ typedef struct Mixer {
     int *offset;                                   // first mix buffer of each mix id
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
     SDL_AudioStream *stream; int device_ok, rate;
-    float ring[RING_FRAMES * 2];
+    int channels;                                  // output channels, 2 or 6 (output_channels)
+    float ring[RING_FRAMES * OUT_MAX];
     _Atomic uint64_t wr, rd, underruns, overruns, missing_frames, callback_frames, callback_nonzero, skipped_frames;
     _Atomic int playing; int ready;                // ready: the callback's own state
     int target, period;                            // output target and device period, frames (output_open)
@@ -61,7 +64,7 @@ typedef struct Mixer {
     EffectState *effect; int *effect_order; unsigned effect_reported;
     uint64_t *sink_address; uint32_t *sink_size, *sink_offset, *sink_old, *sink_written;
     unsigned reported;                             // one-time reports
-    float voice_scratch[6][MAX_FRAME], filter_scratch[MAX_FRAME], output_scratch[MAX_FRAME * 2];
+    float voice_scratch[6][MAX_FRAME], filter_scratch[MAX_FRAME], output_scratch[MAX_FRAME * OUT_MAX];
     double level_sum, level_peak; uint64_t level_count, level_frames; int first_sound_logged;
     int prefill;                                   // render blocks
 } Mixer;
@@ -98,8 +101,32 @@ static int prefill_blocks_for(const char *e) {
     return (int)ceil(ms / 5.0);
 }
 
-// Fills `frames` stereo frames from the ring (zeros for what is missing). Lock-free; runs on SDL's audio thread.
+// TOTK_AUDIO_CHANNELS: the output channels of this run, decided once. stereo gives 2; 5.1 gives 6 (FL FR C LFE RL RR,
+// the device sink's order and SDL's); auto gives 6 when the default playback device has at least six channels (a 5.1
+// or 7.1 speaker setup in Windows; SDL places 5.1 on 7.1) and 2 otherwise. IAudioDevice reports the same count to the
+// game (GetActiveChannelCount), which picks its sink layout from it. TOTK_AUDIO=none: 2, without touching SDL.
+static int output_channels(void) {
+    static _Atomic int decided;
+    int n = atomic_load(&decided);
+    if (n) return n;
+    const char *want = cfg_value("TOTK_AUDIO_CHANNELS"), *mode = cfg_get("TOTK_AUDIO");
+    if ((mode && !strcmp(mode, "none")) || cfg_get("TOTK_AUDIO_OFF")) n = 2;
+    else if (!strcmp(want, "5.1")) n = 6;
+    else if (!strcmp(want, "stereo")) n = 2;
+    else {
+        SDL_AudioSpec dev = {0};
+        n = SDL_InitSubSystem(SDL_INIT_AUDIO) && SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &dev, NULL) &&
+            dev.channels >= 6 ? 6 : 2;
+        rt_log("audio: TOTK_AUDIO_CHANNELS=auto: the default device has %d channels, output %s", dev.channels,
+               n == 6 ? "5.1" : "stereo");
+    }
+    int expected = 0;
+    return atomic_compare_exchange_strong(&decided, &expected, n) ? n : expected;
+}
+
+// Fills `frames` output frames from the ring (zeros for what is missing). Lock-free; runs on SDL's audio thread.
 static void ring_pull(Mixer *m, float *out, uint32_t frames) {
+    const int oc = m->channels;
     atomic_fetch_add(&m->callback_frames, frames);
     unsigned epoch = atomic_load_explicit(&m->stop_epoch, memory_order_acquire);
     uint64_t rd = atomic_load(&m->rd), wr = atomic_load_explicit(&m->wr, memory_order_acquire), have = wr - rd;
@@ -114,7 +141,7 @@ static void ring_pull(Mixer *m, float *out, uint32_t frames) {
         m->ready = 0;
     }
     if (!atomic_load_explicit(&m->playing, memory_order_acquire)) {
-        memset(out, 0, (size_t)frames * 2 * sizeof(float));
+        memset(out, 0, (size_t)frames * oc * sizeof(float));
         m->ready = 0;
         atomic_store_explicit(&m->rd, wr, memory_order_release);
         return;
@@ -124,7 +151,7 @@ static void ring_pull(Mixer *m, float *out, uint32_t frames) {
     if (prefill > RING_FRAMES) prefill = RING_FRAMES;
     if (!m->ready) {
         if (have < prefill) {
-            memset(out, 0, (size_t)frames * 2 * sizeof(float));
+            memset(out, 0, (size_t)frames * oc * sizeof(float));
             return;
         }
         m->ready = 1;
@@ -140,13 +167,16 @@ static void ring_pull(Mixer *m, float *out, uint32_t frames) {
     uint64_t nonzero = 0;
     for (uint32_t i = 0; i < n; i++) {
         uint64_t k = (rd + i) % RING_FRAMES;
-        out[2 * i] = m->ring[2 * k];
-        out[2 * i + 1] = m->ring[2 * k + 1];
-        if (out[2 * i] != 0 || out[2 * i + 1] != 0) nonzero++;
+        int sound = 0;
+        for (int c = 0; c < oc; c++) {
+            out[oc * i + c] = m->ring[oc * k + c];
+            sound |= out[oc * i + c] != 0;
+        }
+        nonzero += sound;
     }
     atomic_fetch_add(&m->callback_nonzero, nonzero);
     if (n < frames) {
-        memset(out + 2 * n, 0, (size_t)(frames - n) * 2 * sizeof(float));
+        memset(out + (size_t)oc * n, 0, (size_t)(frames - n) * oc * sizeof(float));
         atomic_fetch_add(&m->underruns, 1);
         atomic_fetch_add(&m->missing_frames, frames - n);
         m->ready = 0;
@@ -157,15 +187,16 @@ static void ring_pull(Mixer *m, float *out, uint32_t frames) {
 static void SDLCALL sdl_pull(void *user, SDL_AudioStream *stream, int additional, int total) {
     (void)total;
     Mixer *m = user;
-    float tmp[2 * 1024];
+    float tmp[OUT_MAX * 1024];
+    const uint32_t frame_bytes = (uint32_t)m->channels * sizeof(float);
     atomic_store_explicit(&m->pulled_ns, kern_now_ns(), memory_order_release);
     while (additional > 0) {
-        uint32_t frames = (uint32_t)additional / (2 * sizeof(float));
+        uint32_t frames = (uint32_t)additional / frame_bytes;
         if (!frames) break;
         if (frames > 1024) frames = 1024;
         ring_pull(m, tmp, frames);
-        if (!SDL_PutAudioStreamData(stream, tmp, (int)(frames * 2 * sizeof(float)))) break;
-        additional -= (int)(frames * 2 * sizeof(float));
+        if (!SDL_PutAudioStreamData(stream, tmp, (int)(frames * frame_bytes))) break;
+        additional -= (int)(frames * frame_bytes);
     }
 }
 
@@ -179,7 +210,7 @@ static void output_open(Mixer *m, int rate) {
         rt_log("audio: SDL audio init failed (%s): mixing without sound", SDL_GetError());
         return;
     }
-    SDL_AudioSpec spec = {SDL_AUDIO_F32, 2, rate};
+    SDL_AudioSpec spec = {SDL_AUDIO_F32, m->channels, rate};
     m->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, sdl_pull, m);
     if (!m->stream) {
         rt_log("audio: no output device (%s): mixing without sound", SDL_GetError());
@@ -192,7 +223,7 @@ static void output_open(Mixer *m, int rate) {
         return;
     }
     m->device_ok = 1;
-    SDL_AudioSpec dev;
+    SDL_AudioSpec dev = {0};
     int period = 0;
     if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(m->stream), &dev, &period) || period <= 0) period = m->frame;
     m->period = period;
@@ -201,8 +232,9 @@ static void output_open(Mixer *m, int rate) {
     uint64_t period_ns = (uint64_t)period * 1000000000ull / (uint64_t)rate;
     m->stall_ns = 4 * period_ns > STALL_MS * 1000000ull ? 4 * period_ns : STALL_MS * 1000000ull;
     const char *name = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(m->stream));
-    rt_log("audio: SDL device '%s' opened, %d Hz stereo float, prefill %d ms, device period %d frames; the device paces "
-           "rendering at %.1f ms queued", name ? name : "?", rate, m->prefill * 5, period, m->target * 1000.0 / rate);
+    rt_log("audio: SDL device '%s' opened, %d Hz %s float (device %d channels), prefill %d ms, device period %d frames; "
+           "the device paces rendering at %.1f ms queued", name ? name : "?", rate, m->channels == 6 ? "5.1" : "stereo",
+           dev.channels, m->prefill * 5, period, m->target * 1000.0 / rate);
 }
 
 int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now) {
@@ -217,7 +249,8 @@ int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now) {
 }
 
 // Render thread only.
-static void output_push(Mixer *m, const float *lr, int frames) {
+static void output_push(Mixer *m, const float *out, int frames) {
+    const int oc = m->channels;
     uint64_t wr = atomic_load(&m->wr), rd = atomic_load_explicit(&m->rd, memory_order_acquire);
     if (m->device_ok && wr + (uint64_t)frames - rd > RING_FRAMES) {   // device stalled: drop this frame
         atomic_fetch_add(&m->overruns, 1);
@@ -225,24 +258,23 @@ static void output_push(Mixer *m, const float *lr, int frames) {
     }
     for (int i = 0; i < frames; i++) {
         uint64_t k = (wr + (uint64_t)i) % RING_FRAMES;
-        m->ring[2 * k] = lr[2 * i];
-        m->ring[2 * k + 1] = lr[2 * i + 1];
+        memcpy(&m->ring[oc * k], &out[oc * i], (size_t)oc * sizeof(float));
     }
     atomic_store_explicit(&m->wr, wr + (uint64_t)frames, memory_order_release);
     if (!m->device_ok) atomic_store(&m->rd, wr + (uint64_t)frames);   // no device: the ring only keeps the latest frames
 }
 
 // Level meter (TOTK_TRACE=audio): one line per 5 s of output, and the first nonzero frame.
-static void level_note(AudioRenderer *r, Mixer *m, const float *lr, int frames) {
+static void level_note(AudioRenderer *r, Mixer *m, const float *out, int frames) {
     if (!(rt_trace & RT_TRACE_AUDIO)) return;
     int sound = 0;
-    for (int k = 0; k < 2 * frames; k++) {
-        double x = lr[k];
+    for (int k = 0; k < m->channels * frames; k++) {
+        double x = out[k];
         m->level_sum += x * x;
         if (fabs(x) > m->level_peak) m->level_peak = fabs(x);
         if (x != 0) sound = 1;
     }
-    m->level_count += 2 * (uint64_t)frames;
+    m->level_count += (uint64_t)m->channels * (uint64_t)frames;
     m->level_frames += (uint64_t)frames;
     if (sound && !m->first_sound_logged) {
         m->first_sound_logged = 1;
@@ -293,6 +325,7 @@ void audio_mixer_open(AudioRenderer *r) {
         rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20", pe);
         m->prefill = 4;
     }
+    m->channels = output_channels();
     r->mixer = m;
     atomic_store(&m->playing, r->state == 0);
     output_open(m, r->param.sample_rate);
@@ -793,30 +826,39 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
         if (r->sinks[i].type == SINK_DEVICE && !sink) sink = &r->sinks[i];
         else if (r->sinks[i].type == SINK_CIRCULAR){mix_circular_sink(r,i);circular=1;}
     } else {m->sink_address[i]=0;m->sink_size[i]=m->sink_offset[i]=m->sink_old[i]=m->sink_written[i]=0;}
-    float *lr=m->output_scratch;
-    memset(lr, 0, sizeof(float) * 2 * (size_t)frames);
+    const int oc = m->channels;
+    float *out=m->output_scratch;
+    memset(out, 0, sizeof(float) * (size_t)oc * (size_t)frames);
     if (sink && sink->input_count >= 1 && sink->input_count <= 6) {
+        if (!(m->reported & (1u << 6))) {
+            m->reported |= 1u << 6;
+            rt_log("audio: device sink has %u inputs, output %s", sink->input_count, oc == 6 ? "5.1" : "stereo");
+        }
         const float gain = host_volume() * atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
         const float *ch[6] = {0};
         for (uint32_t c = 0; c < sink->input_count; c++) if (sink->inputs[c] >= 0 && sink->inputs[c] < m->nbuf) ch[c] = mixbuf(m, sink->inputs[c]);
         for (int k = 0; k < frames; k++) {
-            float l, rr;
-            if (sink->input_count >= 6) {   /* FL FR C LFE RL RR -> stereo */
+            float s[OUT_MAX] = {0};   /* FL FR C LFE RL RR */
+            if (sink->input_count >= 6 && oc == 6) {
+                for (int c = 0; c < 6; c++) s[c] = ch[c] ? ch[c][k] : 0;
+            } else if (sink->input_count >= 6) {   /* 5.1 -> stereo; the LFE is left out, as the Switch's downmix does */
                 float ff = sink->downmix_enabled ? sink->downmix[0] : 1.0f, cf = sink->downmix_enabled ? sink->downmix[1] : 0.7071f, sf = sink->downmix_enabled ? sink->downmix[2] : 0.7071f;
                 float C = ch[2] ? ch[2][k] : 0;
-                l = ff * (ch[0] ? ch[0][k] : 0) + cf * C + sf * (ch[4] ? ch[4][k] : 0);
-                rr = ff * (ch[1] ? ch[1][k] : 0) + cf * C + sf * (ch[5] ? ch[5][k] : 0);
-            } else if (sink->input_count >= 2) { l = ch[0] ? ch[0][k] : 0; rr = ch[1] ? ch[1][k] : 0; }
-            else l = rr = ch[0] ? ch[0][k] : 0;
-            l *= gain; rr *= gain;
-            lr[2 * k] = l > 1 ? 1 : l < -1 ? -1 : l; lr[2 * k + 1] = rr > 1 ? 1 : rr < -1 ? -1 : rr;
+                s[0] = ff * (ch[0] ? ch[0][k] : 0) + cf * C + sf * (ch[4] ? ch[4][k] : 0);
+                s[1] = ff * (ch[1] ? ch[1][k] : 0) + cf * C + sf * (ch[5] ? ch[5][k] : 0);
+            } else if (sink->input_count >= 2) { s[0] = ch[0] ? ch[0][k] : 0; s[1] = ch[1] ? ch[1][k] : 0; }
+            else s[0] = s[1] = ch[0] ? ch[0][k] : 0;
+            for (int c = 0; c < oc; c++) {
+                float x = s[c] * gain;
+                out[oc * k + c] = x > 1 ? 1 : x < -1 ? -1 : x;
+            }
         }
     } else if (!sink && !circular) report_once(m, 5, "no device sink in use", r->param.sink_count);
-    level_note(r, m, lr, frames);
-    output_push(m, lr, frames);
+    level_note(r, m, out, frames);
+    output_push(m, out, frames);
 }
 
-// ---- IAudioDevice: one stereo output device
+// ---- IAudioDevice: one output device, stereo or 5.1 (output_channels)
 static const char device_name[] = "AudioTvOutput";
 
 static void put_name(const IpcBuffer *b, IpcResponse *rs, int pointer) {
@@ -855,7 +897,7 @@ void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) 
         put_name(&b, rs, pointer);
         return;
     }
-    case 5: { int32_t n = 2; IPC_OUT(rs, n); return; }   // GetActiveChannelCount
+    case 5: { int32_t n = output_channels(); IPC_OUT(rs, n); return; }   // GetActiveChannelCount
     case 4: case 11: case 12: {   // QueryAudioDeviceSystemEvent, ...InputEvent, ...OutputEvent
         uint32_t ev = __atomic_load_n(&change_event, __ATOMIC_ACQUIRE);
         if (!ev) {

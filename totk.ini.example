@@ -218,6 +218,9 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# Speakers: auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise), stereo or 5.1. The
+# game is told the same channel count and mixes for it. Takes effect at the next start.
+# audio_channels = auto
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
