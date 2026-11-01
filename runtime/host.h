@@ -57,6 +57,9 @@ typedef struct {
     int have_gpu, have_vram, vram_exact;
     uint64_t gpu_ns, gpu_parts, gpu_missed;     // busy time, submission parts timed, parts left untimed
     uint64_t vram_used, vram_budget;
+    int have_idle;                              // calibrated timestamps: the idle split below is filled
+    uint64_t idle_ns, starved_ns, queued_ns;    // GPU idle between timed parts; of it, before the part was submitted; submit to start
+    uint64_t idle_gaps, max_gap_ns;             // gaps over 0.5 ms; the longest
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
@@ -184,14 +187,16 @@ typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
-extern const int rt_game_version;                          // the game build: 111 (1.1.1), 121 (1.2.1) or 143 (1.4.3)
+extern const int rt_game_version;                          // the game build: 110 (1.1.0), 121 (1.2.1) or 143 (1.4.3)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
-#define RT_V111 (rt_game_version == 111)                    // 1.1.1: its own boot constants and data slots
+#define RT_V110 (rt_game_version == 110)                    // 1.1.0: its own boot constants and data slots
 #define RT_V143 (rt_game_version >= 143)
 
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;
 Cpu *kern_cpu(void);                                       // current guest thread's Cpu, NULL on host threads
+void kern_free_cores_note(void);                           // for crash reports: logs that free_cores = 1 lifted the
+                                                           // virtual core gate, nothing when the gate is on
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
                                                            // (main.npdm: 1 MiB stack at the top of the stack region,
                                                            // priority 44, core 0); on the main thread: its handle
@@ -242,6 +247,13 @@ void account_uid(uint64_t out[2]);                         // the local user's n
 // ---- movies (ov_movie.c)
 void movie_tick(Cpu *c);                                   // at every present, on the presenting guest thread: hands
                                                            // decoded movie frames over when due, signals their events
+// ---- camera speed (camera_speed.c): TOTK_STICK_SENS
+float cam_speed_wanted(void);                              // the factor TOTK_STICK_SENS asks for, 0.1 to 3
+float cam_speed_applied(void);                             // the factor in effect: 1 until romfs.c serves the pack
+int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, void **out, size_t *out_n);
+                                                           // Pack/Actor/PlayerCamera.pack.zs with the camera speeds
+                                                           // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
+void cam_pack_served(void);                                // romfs.c serves the multiplied pack
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
@@ -249,6 +261,7 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   //
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
+float res_dlss_lod_bias(void);                             // TOTK_DLSS upscaling: texture LOD bias (<= 0)
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
@@ -295,6 +308,7 @@ void rt_boot(void);                                        // boot.c
 // process exit code.
 int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
+int probe_mods(void);                                      // mods_probe.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
 int probe_vkdevice(void);                                 // vk_device.c

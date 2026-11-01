@@ -6,9 +6,10 @@ from it may be shared.
 
 ## What you need
 
-- Windows 10 or later, an x86-64 CPU with AVX2, about 60 GB free.
+- Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA recommended: they build the default, faster version), about
+  60 GB free.
 - A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
-- *Tears of the Kingdom* base game (1.0.0) and the 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
+- *Tears of the Kingdom* base game (1.0.0) and the 1.1.0, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 
 ## Build
@@ -50,6 +51,37 @@ A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the t
 - `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
 
 The line `vk: using gpu N: <name>` says which one ran.
+
+## Mods
+
+Mods made for emulators go into `mods/` next to `totk.exe`, one folder per mod, unpacked as they come:
+`mods/<name>/romfs/...` (the Atmosphere layout `mods/<name>/atmosphere/contents/0100F2C0115B6000/romfs` works
+too). The game loads them at the next start. The Mods tab of the in-game menu (F1) lists them: switch a mod off, or move
+it up or down. When two mods change the same file, the higher one wins.
+
+- RomFS mods (textures, models, text, gameplay files) work.
+- Mods packaged for TKMM (`.tkcl`, "TKMM only") and mods that change the same files: merge them in TKMM and set an
+  export location to an empty folder inside `mods/` (for example `mods/TKMM`). That folder is then one mod here.
+- Files made for another game version (names with `.Product.<number>.` that this version does not have) are left out;
+  the Mods tab counts them. Look for the mod's release for your game version.
+- The resource size table (`System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs`), which tells the game how
+  much memory each file needs, is rebuilt at every start with mods enabled: the tables the mods ship are merged and
+  the entries of files a mod made larger or added are raised. The log line `RomFS: resource size table: ...` says
+  how many. A mod's table for another game version still counts for that mod's own files.
+- Mods that patch the game code (`exefs/*.ips`, `exefs/*.pchtxt`, or `atmosphere/exefs_patches/<name>/*.ips`) work
+  when the patches are for this game version and change only code: the game rebuilds itself with them at the next
+  start (the setup's rebuild window, a few minutes) and switches them with the mod. Patches for another version are
+  counted and left out; a file that writes the game's data, or that the port cannot express, keeps the whole mod off
+  and the Mods tab says why. A patch over one of the port's own patches turns that built-in patch off while the mod
+  is on (the Mods tab names it).
+- Mods with their own code (`exefs/subsdk*` or a replaced `exefs/main`, such as UltraCam) never load, their RomFS files
+  included.
+- Cheats: an Atmosphère cheat file goes into a mod's `cheats` folder (`mods/<name>/cheats/<build id>.txt`, the
+  build id `277178B7DBA1B6D4` for 1.4.3, `9B4E43650501A4D4` for 1.2.1). The Cheats tab of the menu switches them.
+  Cheats that write memory work at the next start; for cheats that change the game's code the game opens the setup's
+  rebuild window at start and comes back after it (a few minutes). The port ships no cheat files. Details: [cheats.md](cheats.md).
+
+The log names every mod at the start (`mods: <name>: ...`) and how many of its files it serves.
 
 ## What to send back
 

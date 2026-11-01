@@ -24,11 +24,17 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru')
-STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
+# what the language switch in the window's corner shows for each
+UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
+STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
+LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
+# Windows LANGIDs that write Simplified Chinese: zh-CN, zh-SG. zh-TW, zh-HK and zh-MO write Traditional Chinese, which
+# the window does not have.
+LANGIDS_ZH_HANS = (0x0804, 0x1004)
 
 
 def load_texts(lang):
@@ -76,18 +82,35 @@ def flat(value):
 
 
 def windows_ui_language():
-    """'ru' when the display language (Windows; elsewhere LC_ALL, LC_MESSAGES or LANG) is Russian, else 'en'."""
+    """The window language for the display language: the Windows one (ui_language_for_langid); elsewhere LC_ALL,
+    LC_MESSAGES or LANG ('ru', 'pt_BR', 'zh_CN' or 'zh_SG', else English)."""
     if os.name != 'nt':
-        loc = os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or ''
-        return 'ru' if loc.lower().startswith('ru') else 'en'
+        loc = (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').lower()
+        return ('ru' if loc.startswith('ru') else 'pt-BR' if loc.startswith(('pt_br', 'pt-br'))
+                else 'zh-Hans' if loc.startswith(('zh_cn', 'zh-cn', 'zh_sg', 'zh-sg', 'zh_hans', 'zh-hans')) else 'en')
     try:
         langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
     except (AttributeError, OSError):
         return 'en'
-    return 'ru' if langid & 0x3ff == LANG_RU else 'en'
+    return ui_language_for_langid(langid)
+
+
+def ui_language_for_langid(langid):
+    """'ru' for a Russian Windows LANGID, 'pt-BR' for Brazilian Portuguese, 'zh-Hans' for a Simplified Chinese one,
+    else 'en'."""
+    if langid & 0x3ff == LANG_RU:
+        return 'ru'
+    if langid == LANG_PT_BR:
+        return 'pt-BR'
+    if langid in LANGIDS_ZH_HANS:
+        return 'zh-Hans'
+    return 'en'
 
 
 def default_game_language(ui):
+    """The game language the form starts with. A Chinese window still starts with English: Chinese game text needs
+    the Switch shared fonts (ini.NEED_SHARED_FONTS), which the setup extracts only from a firmware folder, and the game
+    stops when they are missing; the player can still pick Chinese."""
     return 'ru' if ui == 'ru' else 'en-US'
 
 
@@ -111,6 +134,7 @@ class Form:
     base: str = ''
     update: str = ''
     keys: str = ''
+    firmware: str = ''
     lang: str = ''
     dest: str = ''
 
@@ -147,19 +171,21 @@ class Form:
                 value = getattr(self, name).strip()
                 if value and not Path(value).is_file():
                     found.append(f'ui.missing_{name}')
+        if self.firmware.strip() and not Path(self.firmware.strip()).is_dir():
+            found.append('ui.missing_firmware')
         return found
 
-    def command(self, python, root=None, temp=None, verify=False):
+    def command(self, python, root=None, temp=None, verify_hashes=False):
         cmd = [str(python), '-m', 'installer']
         for flag, value in (('--base', self.base), ('--update', self.update), ('--keys', self.keys),
-                            ('--lang', self.lang), ('--dest', self.dest)):
+                            ('--firmware', self.firmware), ('--lang', self.lang), ('--dest', self.dest)):
             if value.strip():
                 cmd += [flag, value.strip()]
         if root:
             cmd += ['--root', str(root)]
         if temp:
             cmd += ['--temp', str(temp)]
-        if verify:
+        if verify_hashes:
             cmd.append('--verify')
         return cmd
 

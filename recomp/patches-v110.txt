@@ -1,6 +1,6 @@
-# Code patches for TotK 1.1.1 main (recomp/patches.py). The sites come from MacNativeGames
+# Code patches for TotK 1.1.0 main (recomp/patches.py). The sites come from MacNativeGames
 # games/totk/runtime/game_patches.c (MIT, Copyright (c) 2026 MacNativeGames contributors) at upstream ebe621d, through
-# its 1.2.1 addresses in game_version.h (2db612b); each one was located again in 1.1.1 by instruction-window matching
+# its 1.2.1 addresses in game_version.h (2db612b); each one was located again in 1.1.0 by instruction-window matching
 # and its original words checked against this build's main. The patch page holds two floats the runtime writes at every
 # present (frame_rate.c): +0 the 30 Hz ratio (seconds * 30), +4 the frame step in seconds.
 
@@ -35,7 +35,7 @@ site realtime main 90e5e8 1e210800 d503201f  # fmul s0, s0, s1 -> nop
 
 # Hair and cloth (upstream 290ec9f, 8f8022f): the actor animation update builds a second clock {seconds = factor / 30,
 # ratio = factor} per rendered frame. Three inlined places: at the fmul, seconds = measured seconds * factor; at the
-# store of the factor into the ratio slot, measured ratio * factor. The call of the shared update (1.1.1
+# store of the factor into the ratio slot, measured ratio * factor. The call of the shared update (1.1.0
 # main+0x8ecb40, 1.2.1 main+0x89822c) scales s2 (seconds) and s3 (ratio) by the measured ratio. Upstream's
 # veneer bodies, inlined at the site.
 site cloth main 9efc20 1e200900 f81f0fe9 @page:x9 bd400520 1e200900 f84107e9  # fmul s0, s8, s0
@@ -66,7 +66,7 @@ site scene main cea5e0 5e21d900 @page:x9  # scvtf s0, s8 -> adrp x9, page
 site scene main cea5e8 bd0cc660 2d420520  # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cea5ec 5e21d921 bd0cc660  # scvtf s1, s9 -> str s0, [x19, #0xcc4]
 
-# Spin waits, from tools/spin_waits.py --exefs build/extracted/v111/exefs --patches recomp/patches-v111.txt: loops that only
+# Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
 # spin waits found by tools/spin_waits.py on the 1.1.x modules

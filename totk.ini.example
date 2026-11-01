@@ -4,8 +4,9 @@
 # '#' and ';' start a comment; [sections] only group lines.
 
 [frame rate]
-# Frame rate limit: 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the refresh rate of the
-# window's monitor). Above 60 is experimental and needs realtime = 1. Changes while the game runs take effect at once.
+# Frame rate limit: 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the refresh rate of the
+# window's monitor, at most 240). A higher rate gives 240: above it the game's physics runs out of memory. Above 60
+# is experimental and needs realtime = 1. Changes while the game runs take effect at once.
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
@@ -26,8 +27,9 @@
 # async_preempt = 1
 # Replay NVN submissions on their own thread, at most one frame behind the game (1 = on). Adds up to a frame of latency.
 # replay_async = 0
-# 1 lifts the virtual core gate: guest threads run without the console's limit of one thread per core. For experiments
-# only: the game keeps per-core data without locks and can crash.
+# EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
+# of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
+# usually at start (#212). Keep 0 to play.
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
@@ -89,7 +91,7 @@
 # Vulkan.
 # Vulkan validation layer: checks every call and slows the game down a lot. Needs the layer installed (Vulkan SDK).
 # vk_validation = 0
-# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on.
+# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on, except on AMD GPUs.
 # vk_recorder = 1
 # Dynamic vertex input, 0 or 1. Default: on, except on Intel's older integrated GPU drivers (Vulkan 1.3.215 and older).
 # vk_dyn_vertex = 1
@@ -144,6 +146,10 @@
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100
+# Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
+# ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
+# are raised; shadow maps, data maps and screen-sized buffers keep the game's setting. Read at start.
+# aniso = game
 # Colour adjustment of the picture, HUD included, before it is scaled to the window: brightness (-30 to 30, added in %),
 # contrast and saturation (70 to 150 and 50 to 200 %), gamma (0.8 to 1.2, below 1 brightens dark tones). At 0, 100,
 # 100 and 1 nothing runs. color_preset is the menu's profile (default, vivid, clarity, custom), which sets the four.
@@ -153,6 +159,47 @@
 # color_contrast = 100
 # color_saturation = 100
 # color_gamma = 1
+# Sun shadow map size: game (the game's own, which changes with the view and drops to about 400 near the ground, so
+# leaf shadows look blocky and jump) or a fixed 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with it.
+# Read at start.
+# shadow_res = game
+
+# Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game
+# resolution; 2 to 4 draws them that many times larger on each side, for sharper shadows. 1 = the game's. The game's
+# shadow edge filter is narrowed by the same factor (translator patch 0011), so close shadow edges don't look doubled.
+# Read at start.
+# shadow_scale = 1
+# Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
+# the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
+# shadow_range = 100
+# Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
+# short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
+# shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
+# contact_shadows = 0
+# Soft sun shadows (PCSS), percent of the default penumbra width (0 to 200; 0 = the game's own four-tap filter): sharp
+# where an object meets the ground and softer the further its shadow falls. Done in the translated shaders (translator
+# patch 0010), so the shader cache is rebuilt once after an update. Read at start.
+# pcss = 0
+
+# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with nvngx_dlss.dll (from NVIDIA's DLSS SDK) next to
+# totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
+# dlaa = 0
+# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
+# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). With dlaa
+# = 0 the game's own scaling is used at that size. Read at start.
+# dlss = dlaa
+# The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
+# once.
+# fxaa = 1
+
+# HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with
+# colour management; without it the picture stays SDR). The game's tonemap keeps highlights up to hdr_peak_nits (your
+# display's peak); hdr_game_nits is the picture's white (paper white, 203 is the HDR reference) and hdr_ui_nits the
+# HUD's and the menu's. hdr is read at start, the nits at once. The colour profile above is for SDR only.
+# hdr = 0
+# hdr_peak_nits = 1000
+# hdr_game_nits = 203
+# hdr_ui_nits = 203
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
@@ -160,8 +207,8 @@
 # lang = en-US
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
-# Language of the settings menu and the overlay: en or ru. Default: the Windows display language, English if it is
-# neither.
+# Language of the settings menu and the overlay: en, ru, pt-BR or zh-Hans. Default: the Windows display language, English if
+# it is none of them.
 # menu_lang = en
 
 [audio]
@@ -183,17 +230,34 @@
 # rumble_triggers = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
-# labels, xbox for the others). xbox_prompts: the buttons as nintendo, and the game's prompts swapped to the Xbox
-# labels (A with B, X with Y; it loads romfs-patches-xbox, docs/controls.md, "Xbox button prompts"). The bind_ lines
-# below apply on top. Changes while the game runs take effect at once; the xbox_prompts prompts at the next start.
+# labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
+# 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
-# Gamepad stick dead zones in percent of full deflection (0 to 50), one per stick. Raise one for a stick that drifts:
-# inside the circle the stick reads centred, and the rest of its travel is scaled to start there. A stick_deadzone
-# line from an older totk.ini is carried over to both at the next start.
+# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
+# (docs/controls.md, "Xbox button prompts").
+# prompts = nintendo
+# Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
+# the stick reads centred, and the rest of its travel is scaled to start there.
+# stick_deadzone = 8
+# Right-stick camera speed (0.1 to 3): multiplies the game's own camera turn rates, top speed included, at each of the
+# five camera sensitivities in the game's Options. Keys bound to the right stick follow it; the mouse keeps mouse_sens.
+# Read at start.
+# stick_sens = 1
+# The dead zone of one stick, in place of stick_deadzone for that stick (0 to 50; unset = stick_deadzone). The Controls
+# tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
+# keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
+# none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
+# the gamepad are unchanged. The Controls tab sets both. The default stops just above half because a keyboard sample of
+# 32767 times 0.5 is one short of the 16384 the game's stick-direction bits need, and below that the keyboard stick
+# reads as a partial tilt only.
+# walk_key = lshift
+# walk_scale = 0.51
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
@@ -214,9 +278,32 @@
 # bind_X = pad:west, key:space
 # bind_Y = pad:north, key:mouse_l
 
+[mods]
+# Folder with the player's mods, one subfolder per mod (<name>/romfs, <name>/exefs, <name>/cheats). Default: mods next
+# to totk.exe.
+# mods_dir =
+# Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
+# mods_order =
+# Mods switched off, names separated by |.
+# mods_disabled =
+# auto: when an enabled mod has cheats that change the game's code and the game was built without them, the game starts
+# the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
+# A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
+# mods_rebuild = auto
+
 [files]
-# Folder with RomFS mod files that replace or add game files. Default: none.
+# Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put
+# their mods into the mods folder instead ([mods]). Default: none.
 # romfs_mods =
+# Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
+# Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
+# shared_fonts =
+
+[cheats]
+# One line per cheat of the mods' cheat files, mods\<mod>\cheats\<build id>.txt (docs/cheats.md); the Cheats tab of
+# the menu writes them. cheat_<hash> = 1 switches a cheat on, the hash being FNV-1a 32 of "<mod folder>/<cheat name>".
+# Default: every cheat off.
+# cheat_0123abcd = 1
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

@@ -7,7 +7,8 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     recomp/, tools/         the lifter and the scripts; recomp/patches-<v>.txt, tools/data/expected-v<version>.json for
                             each supported update (SUPPORTED)
     llvm/                   llvm-mingw (bin/clang.exe)
-    runtime/                libtotkrt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and totk.ico; runtime/deps/ holds
+    runtime/                libtotkrt.a and libtotkrt-v2.a (x86-64-v3 / v2), the headers, install-side sources (romfs.c,
+                            patches.c, ov_zstd.c) and totk.ico; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    totk_xlate.exe (+ totk_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
@@ -21,8 +22,8 @@ against), runtime/deps/ with include/ and the static Opus, libvpx and zstd, bin/
 
 Dev mode, root = a repository checkout (no python/python.exe): build/py314-embed/py/python.exe (the embeddable
 Python the release ships, with the same packages), else this Python; toolchain/llvm-mingw-*/ and toolchain/deps-mingw;
-runtime/ as the sources with build/install-rtlib/libtotkrt.a (tools/build_game.py --make-runtime-lib --out
-build/install-rtlib); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/totk_xlate.exe; the shader list from
+runtime/ as the sources with build/install-rtlib/libtotkrt.a and libtotkrt-v2.a (tools/build_game.py --make-runtime-lib
+--out build/install-rtlib, once per --cpu); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/totk_xlate.exe; the shader list from
 refs/MacNativeGames; build/install-temp. The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
 dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
 """
@@ -36,7 +37,7 @@ from pathlib import Path
 WIN = os.name == 'nt'
 EXE = '.exe' if WIN else ''
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-SUPPORTED = ('1.2.1', '1.4.3', '1.1.1')   # updates the installer builds; the check identifies the player's by hash
+SUPPORTED = ('1.2.1', '1.4.3', '1.1.0')   # updates the installer builds; the check identifies the player's by hash
 
 
 def version_tag(version):
@@ -64,10 +65,19 @@ class Layout:
     ini_example: Path | None = None
     temp: Path | None = None
     sysroot: Path | None = None       # Linux release: what the game links against, instead of the host's
+    runtime_lib_v2: Path | None = None   # libtotkrt-v2.a: the runtime for CPUs without AVX2 (build_game.py --cpu v2)
 
     @property
     def clang(self):
         return self.llvm / 'bin' / ('clang' + EXE)
+
+    def runtime_lib_for(self, cpu):
+        """The prebuilt runtime library for cpu (v2 or v3). None in dev mode when it was not built: the runtime is
+        then compiled from the sources in runtime/ instead."""
+        lib = self.runtime_lib_v2 if cpu == 'v2' else self.runtime_lib
+        if lib and lib.is_file():
+            return lib
+        return None if self.dev else lib
 
     def patches(self, version):
         """The code patch table for recomp/gen.py."""
@@ -77,13 +87,17 @@ class Layout:
         """The expected hashes of the update."""
         return self.tools / 'data' / f'expected-v{version}.json'
 
-    def missing(self):
-        """Paths the steps need that do not exist."""
+    def missing(self, cpu='v3'):
+        """Paths the steps need that do not exist. cpu picks the runtime library the host will use."""
+        lib = self.runtime_lib_for(cpu)
         need = [self.python, self.tools / 'extract.py', self.tools / 'build_game.py', self.tools / 'prepare_shaders.py',
                 self.tools / 'pack_shader_cache.py', self.tools / 'make_romfs_patches.py', self.tools / 'ultrawide_layout.py',
+                self.tools / 'button_icons.py',
+                self.tools / 'vendor' / 'macnativegames' / 'extract_shared_fonts.py',
                 self.recomp / 'gen.py',
                 self.clang,
-                *((self.deps / 'include', self.deps / 'lib') if self.deps else ()), self.runtime, self.runtime_lib, self.ninja, self.hactool,
+                *((self.deps / 'include', self.deps / 'lib') if self.deps else ()), self.runtime, *([lib] if lib else ()),
+                self.ninja, self.hactool,
                 self.xlate, *self.dlls, *(f(v) for v in SUPPORTED for f in (self.patches, self.expected))]
         if self.shader_list:
             need.append(self.shader_list)
@@ -109,6 +123,7 @@ def release_layout(root):
         tools=root / 'tools', recomp=root / 'recomp',
         llvm=root / 'llvm', deps=root / 'runtime' / 'deps', runtime=root / 'runtime',
         runtime_lib=root / 'runtime' / 'libtotkrt.a',
+        runtime_lib_v2=root / 'runtime' / 'libtotkrt-v2.a',
         ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
@@ -134,6 +149,7 @@ def dev_layout(root):
         tools=root / 'tools', recomp=root / 'recomp',
         llvm=trees[-1] if trees else root / 'toolchain' / 'llvm-mingw-missing', deps=deps,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libtotkrt.a',
+        runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
         ninja=UCRT / ('ninja' + EXE), hactool=root / 'toolchain' / 'hactool' / ('hactool' + EXE),
         xlate=root / 'build' / 'xlate' / ('totk_xlate' + EXE),
         dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
@@ -153,6 +169,7 @@ def dev_layout_posix(root):
         python=Path(sys.executable), tools=root / 'tools', recomp=root / 'recomp',
         llvm=Path(clang).parent.parent if clang else root / 'toolchain' / 'clang-missing', deps=None,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libtotkrt.a',
+        runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
         ninja=Path(ninja) if ninja else root / 'toolchain' / 'ninja-missing',
         hactool=root / 'toolchain' / 'hactool' / 'hactool', xlate=root / 'build' / 'xlate' / 'totk_xlate',
         shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp')

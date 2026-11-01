@@ -54,7 +54,9 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   libzstd on the host (`ov_zstd.c`, `TOTK_ZSTD_NATIVE`); the lifted decoder took almost three times as long.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
-  drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian).
+  drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
+  Simplified Chinese). The Chinese glyphs come from a system font (Microsoft YaHei, `plat_font_path`) merged into the
+  font atlas.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores
@@ -74,7 +76,8 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - Spin waits. Loops that only another thread can end (857 in 1.4.3, 864 in 1.2.1, found by `tools/spin_waits.py`, the
   nxnative search) send their back-edges through `rt_spin_gate`, which pauses the core once per pass and hands it to a
   waiter after 50 us of polling (`TOTK_SPIN`, `TOTK_SPIN_HANDOFF_US`).
-- `TOTK_FREE_CORES=1` turns the gate off, for experiments.
+- `free_cores = 1` (`TOTK_FREE_CORES=1`) turns the gate off, for experiments only: the game crashes or hangs, usually
+  at start, because its job workers all report core 0 and share per-core memory (#212).
 
 ### 4. Graphics
 
@@ -82,7 +85,7 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - Vulkan 1.3 back end in place of MacNativeGames' Metal one. At `QueueSubmitCommands` the recorded NVN commands are replayed into Vulkan command buffers (`vk_exec*.c`).
 - Memory pools. Apple's unified memory let MacNativeGames use the game's pools zero-copy. The back end imports the pools as host memory (`VK_EXT_external_memory_host`). On a discrete GPU, pools bound as buffers are mirrored in device-local memory and the pages the CPU wrote (write watch, above) are uploaded before a replay; idle pool regions are made read-only so the write-watch queries skip them (`vk_memory.c`). GPU-rendered textures are written back when the CPU reads them: on a pool invalidate, on a CPU copy, and for small targets once the CPU waits for a fence (`vk_texture.c`).
 - Replay thread. `TOTK_REPLAY_ASYNC=1` moves the replay off the submitting thread onto a queue at most one frame behind the game; reads of GPU results wait for the newest writer instead of draining the queue (`vk_backend.c`). It is off by default because no timing has shown a gain yet.
-- Recorder thread. The Vulkan calls the replay makes into its command buffer are made by a thread of their own (`vk_rec.c`, after Savage Wind Recomp and LAS Recomp): each `vkCmd*` copies its arguments into a packet of a ring and the recorder makes the calls in order; calls into other command buffers are made at once; the recorder also ends the command buffer, and the submit waits until it has. In the town on an RX 9070 the replay takes 17% less time on the submitting thread. `TOTK_VK_RECORDER=0` makes every call on the submitting thread.
+- Recorder thread. The Vulkan calls the replay makes into its command buffer are made by a thread of their own (`vk_rec.c`, after Savage Wind Recomp and LAS Recomp): each `vkCmd*` copies its arguments into a packet of a ring and the recorder makes the calls in order; calls into other command buffers are made at once; the recorder also ends the command buffer, and the submit waits until it has. In the town on an RX 9070 the replay takes 17% less time on the submitting thread. It is off by default on AMD GPUs, where the driver loses the device or hangs the GPU at startup with it (`TOTK_VK_RECORDER=1` forces it on, `=0` makes every call on the submitting thread).
 - Uniform snapshot. The game rewrites per-object uniform blocks on other threads soon after it submits the frame
   that reads them, while the replay still records it. At the start of a submission's replay every uniform range it
   binds from CPU-written pools is copied, and the draws bind the copy (`vk_usnap.c`, after MacNativeGames'
@@ -102,6 +105,20 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   HUD stretched over it. The `aspect` setting (`fit`, the default; `stretch`) decides what the present does
   when the window's shape differs from the output's: `fit` letterboxes, where a 16:9 game in a wider window used to be
   stretched.
+- HDR (`hdr = 1`, `vk_hdr.c`). The game tonemaps its scene into an r11g11b10f target, upscales it and draws the HUD
+  into another float target, and a last draw copies that into the 8-bit sRGB window texture it presents. With HDR on,
+  the tonemap's fragment shader (recognised by its constants and resource names, not a hash) runs as
+  `shaders/hdr_tonemap.frag`, which keeps highlights up to the display's peak; the present reads the float target the
+  window texture was copied from (any other last draw into it, such as a menu or a movie, leaves the window texture,
+  shown at the HUD's white); a compute pass turns the picture into PQ code values in Rec. 2020 for an HDR10
+  swapchain, which FSR 1 or the blit then scale; the in-game menu is drawn into an RGBA8 image and blended on at the
+  HUD's white. Without an HDR10 surface format (Windows with "Use HDR" off, a compositor without colour management)
+  the swapchain stays SDR. `TOTK_SHOTS` reads the window texture, so its pictures clip highlights in HDR.
+- DLAA (`vk_dlaa.c`, `dlaa`, off by default). NVIDIA DLSS at the scene's own size, through the driver's NGX core loaded
+  at run time (no SDK code compiled in). It runs on the R11G11B10F light target right before the bloom chain's first
+  pass, so post effects and the HUD read the anti-aliased picture. The scene's draws get a sub-pixel Halton viewport
+  jitter; motion vectors are camera-only, reprojected from the scene depth through this and last frame's
+  view-projection of the scene camera block (constant bank c4). `fxaa` switches the game's own FXAA pass.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

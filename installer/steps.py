@@ -1,15 +1,22 @@
-"""The six setup steps of docs/installer.md: check, extract, lift, compile, prepare, cleanup.
+"""The seven setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, cleanup.
 
-Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); lift,
-compile and prepare run the bundled Python on recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and
-tools/prepare_shaders.py, whose output goes to <temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call
-here: the host check is a small C program built with the bundled clang (hostcheck.c).
+Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
+runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
+recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepare_shaders.py, whose output goes to
+<temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call here: the host check is a small C program built
+with the bundled clang (hostcheck.c).
 
-Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, totk.exe and its DLLs, romfs-index.bin,
-romfs-patches/, romfs-patches-xbox/, totk_xlate.exe, the shader state of totk.exe --prepare-shaders, totk.ini,
-totk-install.json.
+Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
+and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
-logs/ (kept by the cleanup).
+logs/. The cleanup keeps gen/, build/ and logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites
+only the chunks whose C changed, and Ninja in build/ recompiles only those. A change of the mods' code cheats then
+costs the lift (about a minute) and the chunks it touches, not a full compile.
+
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
+its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
+when an enabled mod has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
 import json
@@ -217,15 +224,100 @@ def size_of(paths):
     return sum(p.stat().st_size for p in paths if p.is_file())
 
 
+# The Switch system shared fonts (runtime/ov_system.c): TotK falls back to them for Chinese, Korean and Traditional
+# Chinese text. tools/vendor/macnativegames/extract_shared_fonts.py writes these names.
+SHARED_FONTS = 'shared-fonts'
+SHARED_FONT_FILES = ('0-standard.bfttf', '1-chinese-simplified.bfttf', '2-chinese-simplified-extension.bfttf',
+                     '3-chinese-traditional.bfttf', '4-korean.bfttf', '5-nintendo-extension.bfttf')
+FONTS_NEED = 32 << 20     # the six BFTTF files and their manifest
+
+
+def requested_lang(ctx):
+    """The language this run uses: --lang, else the one recorded for the install (Check canonicalizes it)."""
+    return ini.canonical_language(getattr(ctx.options, 'lang', None) or ctx.state.get('lang'))
+
+
+def firmware_dir(value):
+    """The firmware NCA folder behind a --firmware path: the folder itself, or its registered/ child (the emulators'
+    layout, Contents/registered)."""
+    if not value:
+        return None
+    path = Path(value)
+    return path / 'registered' if (path / 'registered').is_dir() else path
+
+
+def firmware_has_ncas(folder):
+    """Whether folder holds firmware NCAs: .nca files, or the hashed directories with a 00 file (registered/)."""
+    try:
+        entries = list(Path(folder).iterdir())
+    except OSError:
+        return False
+    return any((e.is_file() and e.suffix.lower() == '.nca') or (e.is_dir() and (e / '00').is_file()) for e in entries)
+
+
+def firmware_stamp(folder):
+    """A cheap identity of the firmware NCAs: names, sizes and mtimes, not their contents (the folder is ~326 MB)."""
+    try:
+        entries = sorted(Path(folder).iterdir())
+    except OSError:
+        return 'missing'
+    rows = []
+    for entry in entries:
+        if entry.is_dir():
+            file = entry / '00'
+            if not file.is_file():
+                continue
+        elif not entry.is_file() or entry.suffix.lower() != '.nca':
+            continue
+        else:
+            file = entry
+        st = file.stat()
+        rows.append((entry.name, st.st_size, st.st_mtime_ns))
+    return rows
+
+
+def shared_fonts_ready(dest):
+    """Whether dest/shared-fonts holds a complete set that the game can load."""
+    folder = Path(dest) / SHARED_FONTS
+    return (folder / 'manifest.json').is_file() and all((folder / name).is_file() for name in SHARED_FONT_FILES)
+
+
 # ---- 1. check
+
+UPDATE_TITLE_ID = '0100F2C0115B6800'
+
+
+def base_misuse(records):
+    """Name why a file chosen as the base game holds an update or a combined package, or return None.
+
+    The Meta NCA (content type 1) carries the package's own title id: the update's id (...800) for an update NSP, and
+    several Meta NCAs mean base, update and DLC repacked into one file.
+    """
+    metadata = [r['title_id'] for r, _ in records if r['content_type'] == 1]
+    if len(metadata) > 1:
+        return 'check.base_combined'
+    if UPDATE_TITLE_ID in metadata:
+        return 'check.base_is_update'
+    return None
+
 
 class Check(Step):
     id = 'check'
     always = True
 
+    def key(self, ctx):
+        # The compile step fingerprints the CPU level, and every key is computed before a step runs: probe the host
+        # here, once, so both steps see the same answer (the check step itself is always run). A failed probe is
+        # reported by run(), where the error names this step.
+        try:
+            self.host(ctx)
+        except InstallError:
+            pass
+        return ''
+
     def run(self, ctx):
         layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
-        missing = layout.missing()
+        missing = layout.missing(getattr(ctx, 'cpu', 'v3'))
         if missing:
             raise InstallError('check.release_incomplete', paths=missing[:5])
         if dest.exists() and not dest.is_dir():
@@ -233,13 +325,30 @@ class Check(Step):
         own = (ctx.temp, *ctx.temp.parents)   # a temp folder inside the install folder (installer/cli.py) is ours
         if ctx.mode == 'install' and dest.is_dir() and any(p not in own for p in dest.iterdir()):
             raise InstallError('check.dest_not_empty', path=str(dest))
-        lang = ini.canonical_language(ctx.options.lang or ctx.state.get('lang'))
+        lang = requested_lang(ctx)
         if not lang:
             raise InstallError('check.lang_missing')
         if lang not in ini.LANGUAGES:
             raise InstallError('check.lang_unknown', lang=lang, known=', '.join(ini.LANGUAGES))
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is not None:
+            if not firmware.is_dir():
+                raise InstallError('check.firmware_missing', path=str(firmware))
+            if not firmware_has_ncas(firmware):
+                raise InstallError('check.firmware_empty', path=str(firmware))
         if lang in ini.NEED_SHARED_FONTS:
-            rep.warning('warn.lang_needs_fonts', lang=lang)
+            if firmware is None:
+                rep.warning('warn.lang_needs_fonts', lang=lang)
+            elif not shared_fonts_ready(dest):
+                keys = getattr(ctx.options, 'keys', None)
+                if not keys or not Path(keys).is_file():
+                    raise InstallError('check.fonts_keys_needed')
+                try:
+                    key_values = load_keys(Path(keys))
+                except (ValueError, OSError, UnicodeDecodeError):
+                    raise InstallError('check.keys_unreadable') from None
+                if 'header_key' not in key_values:
+                    raise InstallError('check.keys_no_header_key')
         ctx.lang = lang
         ctx.temp.mkdir(parents=True, exist_ok=True)
 
@@ -258,6 +367,8 @@ class Check(Step):
         return {}
 
     def host(self, ctx):
+        if getattr(ctx, 'host', None) is not None:
+            return
         layout, work = ctx.layout, ctx.temp / 'check'
         glibc = linux_glibc()
         if glibc and glibc < GLIBC_NEEDED and not layout.dev:
@@ -282,8 +393,10 @@ class Check(Step):
         except ValueError:
             raise InstallError('check.host_probe_failed', code=r.returncode) from None
         ctx.reporter.log(f'host: {r.stdout.strip()}')
-        if not host['x86_64_v3']:
-            raise InstallError('check.cpu_no_avx2')
+        if not host['x86_64_v2']:
+            raise InstallError('check.cpu_too_old')
+        # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
+        ctx.cpu = 'v3' if host['x86_64_v3'] else 'v2'
         if not host['loader']:
             raise InstallError('check.vulkan_missing')
         devices = host['devices']
@@ -350,6 +463,10 @@ class Check(Step):
         except ValueError as e:
             if is_update and 'BKTR' in str(e):
                 raise InstallError('check.update_is_base') from None
+            if not is_update:
+                reason = base_misuse(records)
+                if reason:
+                    raise InstallError(reason) from None
             raise InstallError('check.update_not_totk' if is_update else 'check.base_not_totk', detail=str(e)) from None
         try:
             nca_ctr_key(header, keys, tickets)
@@ -368,6 +485,8 @@ class Check(Step):
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction replaces it
                 dest_need -= romfs.stat().st_size
+        if ctx.will_run('fonts'):
+            dest_need += FONTS_NEED
         if ctx.will_run('prepare') or ctx.will_run('extract'):
             dest_need += DEST_EXTRA
         if ctx.will_run('lift') or ctx.will_run('compile'):
@@ -419,7 +538,72 @@ class Check(Step):
         ctx.state['version'] = found
 
 
-# ---- 2. extract
+# ---- 2. fonts
+
+class Fonts(Step):
+    """The Switch system fonts for Chinese, Korean and Traditional Chinese text (tools/extract_fonts.py, which runs the
+    vendored extract_shared_fonts.py). The firmware folder is optional: without it the setup warns and the game runs
+    with those glyphs missing. The extraction verifies the firmware NCAs and writes the six BFTTF files the console
+    puts in shared memory."""
+
+    id = 'fonts'
+
+    def key(self, ctx):
+        lang = requested_lang(ctx)
+        if lang not in ini.NEED_SHARED_FONTS:
+            return fingerprint('fonts-1', 'not-needed')
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is None:
+            return fingerprint('fonts-1', 'no-firmware')
+        return fingerprint('fonts-1', lang, str(firmware), firmware_stamp(firmware))
+
+    def current(self, ctx, record):
+        if requested_lang(ctx) not in ini.NEED_SHARED_FONTS or not getattr(ctx.options, 'firmware', None):
+            return True
+        return shared_fonts_ready(ctx.dest)
+
+    def verify(self, ctx, record):
+        # An update run may omit --firmware; the installed set still has to be there for these languages.
+        if requested_lang(ctx) in ini.NEED_SHARED_FONTS:
+            return shared_fonts_ready(ctx.dest)
+        return True
+
+    def run(self, ctx):
+        lang = getattr(ctx, 'lang', None) or requested_lang(ctx)
+        if lang not in ini.NEED_SHARED_FONTS:
+            return {}
+        firmware = firmware_dir(getattr(ctx.options, 'firmware', None))
+        if firmware is None:
+            return {}   # Check warned: the game runs, some text may not show
+        keys = getattr(ctx.options, 'keys', None)
+        if not keys:
+            raise InstallError('check.fonts_keys_needed')
+        out = ctx.temp / 'shared-fonts'
+        remove(out)
+        ctx.reporter.progress('fonts', 'extract', force=True)
+        tool = ctx.layout.tools / 'vendor' / 'macnativegames' / 'extract_shared_fonts.py'
+        code, log = run_tool(ctx, 'fonts', tool, ['--keys', keys, '--firmware', firmware, '--output', out])
+        if code:
+            detail = ''
+            try:
+                detail = log.read_text(encoding='utf-8', errors='replace').strip().splitlines()[-1][:300]
+            except (OSError, IndexError):
+                pass
+            raise InstallError('fonts.failed', code=code, detail=detail, log=str(log))
+        missing = [name for name in SHARED_FONT_FILES if not (out / name).is_file()]
+        if missing or not (out / 'manifest.json').is_file():
+            raise InstallError('fonts.incomplete', files=', '.join(missing) or 'manifest.json')
+        ctx.reporter.progress('fonts', 'copy', force=True)
+        try:
+            ctx.dest.mkdir(parents=True, exist_ok=True)
+            remove(ctx.dest / SHARED_FONTS)
+            shutil.move(str(out), str(ctx.dest / SHARED_FONTS))
+        except OSError as e:
+            raise InstallError('fonts.copy_failed', path=str(ctx.dest / SHARED_FONTS), detail=str(e)) from None
+        return {'files': len(SHARED_FONT_FILES)}
+
+
+# ---- 3. extract
 
 class Extract(Step):
     id = 'extract'
@@ -527,10 +711,56 @@ class Extract(Step):
             watch.stop()
 
 
-# ---- 3. lift
+# ---- 4. lift
 
 EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
+
+
+CHEAT_PLACES = ('cheats', 'atmosphere/contents/0100F2C0115B6000/cheats', 'contents/0100F2C0115B6000/cheats',
+                '0100F2C0115B6000/cheats')
+
+
+def cheat_files(ctx):
+    """The Atmosphere cheat files of the mods folder (<dest>/mods/<mod>/cheats/*.txt and the Atmosphere places, as
+    tools/cheats.py finds them), for the lift key. All of them: the ones the build reads go by the build id of the
+    installed main, and the keys are computed before Extract runs (runner plan), when a fresh install has no main and an
+    update may still have another version's."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    return sorted(f for mod in mods.iterdir() if mod.is_dir() for where in CHEAT_PLACES
+                  for f in ((mod / where).glob('*.txt') if (mod / where).is_dir() else ()))
+
+
+EXEFS_PLACES = ('exefs', 'atmosphere/contents/0100F2C0115B6000/exefs', 'contents/0100F2C0115B6000/exefs',
+                '0100F2C0115B6000/exefs')
+
+
+def exefs_files(ctx):
+    """The ExeFS patch files of the mods folder (.ips and .pchtxt in each mod's exefs places and its
+    atmosphere/exefs_patches/<name>/, as tools/exefs_patches.py finds them), for the lift key."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    out = []
+    for mod in (m for m in mods.iterdir() if m.is_dir()):
+        folders = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
+        patches = mod / 'atmosphere' / 'exefs_patches'
+        folders += [d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else []
+        out += [f for d in folders for f in d.iterdir() if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt')]
+    return sorted(out)
+
+
+def exefs_status(ctx):
+    """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
+    return ctx.dest / 'build-cache' / 'exefs.status'
+
+
+def cheats_status(ctx):
+    """The build's cheat status file (tools/cheats.py --status), which runtime/cheats.c reads: in build-cache, not in a
+    mod's own cheats folder, which the player (or TKMM's merge) may empty."""
+    return ctx.dest / 'build-cache' / 'cheats.status'
 
 
 class Lift(Step):
@@ -538,7 +768,9 @@ class Lift(Step):
     transient = True
 
     def key(self, ctx):
-        return fingerprint('lift-1', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)))
+        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *cheat_files(ctx),
+                           *exefs_files(ctx))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
@@ -546,8 +778,10 @@ class Lift(Step):
         return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
 
     def run(self, ctx):
+        # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
+        # partition no longer has), so Ninja recompiles only those
         layout, rep, gen = ctx.layout, ctx.reporter, ctx.temp / 'gen'
-        remove(gen)
+        (gen / STAMP).unlink(missing_ok=True)
         rep.progress('lift', 'discover', force=True)
 
         def parse(line):
@@ -555,28 +789,62 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
-        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py',
-                             ['--exefs', ctx.dest / 'exefs', '--out', gen, '--patches', layout.patches(game_version(ctx))], parse)
+        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
+        # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
+        # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
+        # without them and the setup warns.
+        plain = layout.patches(game_version(ctx))
+        stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
+                  ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
+        patches, skipped = plain, {}
+        for tool, out, status, inputs, warn in stages:
+            status.unlink(missing_ok=True)   # no status: the runtime treats every such file as not built
+            if not inputs:
+                continue
+            code, log = run_tool(ctx, 'lift', layout.tools / tool,
+                                 ['--exefs', ctx.dest / 'exefs', '--mods', ctx.dest / 'mods', '--patches', patches,
+                                  '--out', ctx.temp / out, '--status', status])
+            if code:
+                status.unlink(missing_ok=True)
+                skipped[warn] = log
+            else:
+                patches = ctx.temp / out
+        args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
+        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
+        if code and patches != plain:
+            for tool, out, status, inputs, warn in stages:
+                if inputs and warn not in skipped:
+                    status.unlink(missing_ok=True)
+                    skipped[warn] = log
+            code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
+        for warn, log in skipped.items():
+            rep.warning(warn, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')
         return {}
 
 
-# ---- 4. compile
+# ---- 5. compile
 
 NINJA_LINE = re.compile(r'^\[(\d+)/(\d+)\] ')
+
+
+def runtime_key(ctx):
+    """Fingerprint of what totk.exe is built from besides the lifted code: the runtime, the toolchain and the build
+    tools. Shader preparation depends on these, not on the code cheats a lift adds."""
+    layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
+    clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
+    tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
+    return fingerprint('runtime-1', cpu, layout.runtime_lib_for(cpu), layout.runtime, layout.deps or 'system',
+                       layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
 
 
 class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        layout = ctx.layout
-        clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
-        tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
-        return fingerprint('compile-1', ctx.keys['lift'], layout.runtime, layout.runtime_lib, layout.deps or 'system',
-                           layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
+        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx))
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -600,10 +868,12 @@ class Compile(Step):
                 rep.progress('compile', 'link', force=True)
 
         rep.progress('compile', 'compile', force=True)
+        cpu = getattr(ctx, 'cpu', 'v3')
+        lib = layout.runtime_lib_for(cpu)
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
-            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm,
+            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, '--runtime-lib', layout.runtime_lib, '--ninja', layout.ninja,
+            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
@@ -617,12 +887,15 @@ class Compile(Step):
         replace_file(build / 'romfs-index.bin', dest / 'romfs-index.bin')
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
-        return {'exe_sha256': file_sha256(dest / exe.name)}
+        return {'exe_sha256': file_sha256(dest / exe.name), 'cpu': cpu}
 
 
-# ---- 5. prepare
+# ---- 6. prepare
 
 TRANSLATED = re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs')
+# runtime/vk_pipeline.c lb_warm_prepared: variants the driver crashed on in an earlier run (tools/prepare_shaders.py
+# runs the driver step again after such a crash)
+SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics driver crashed')
 
 
 # The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
@@ -638,8 +911,10 @@ class Prepare(Step):
         layout = ctx.layout
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
-                                            'pack_shader_cache.py', 'ultrawide_layout.py')]
-        return fingerprint('prepare-1', ctx.keys['compile'], layout.xlate, xlate_id, shader_list_text(layout), *tools)
+                                            'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
+        # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
+        return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
+                           shader_list_text(layout), *tools)
 
     def current(self, ctx, record):
         dest = ctx.dest
@@ -654,10 +929,18 @@ class Prepare(Step):
             # Another translator: its cache keys differ, so the old translations would only take space.
             for name in ('shader-cache', 'shader-prepared.bin'):
                 remove(dest / name)
-        replace_file(layout.xlate, xlate)
+        # totk.exe starts totk_xlate.exe as a child while it prepares shaders; a preparation that was stopped from
+        # outside leaves that child holding this file, and Windows then refuses to replace it (issue #174).
+        try:
+            replace_file(layout.xlate, xlate)
+        except PermissionError:
+            raise InstallError('prepare.xlate_in_use', path=str(xlate)) from None
         xlate_id = layout.xlate.with_suffix('.id')
         if xlate_id.is_file():
-            replace_file(xlate_id, xlate.with_suffix('.id'))
+            try:
+                replace_file(xlate_id, xlate.with_suffix('.id'))
+            except PermissionError:
+                raise InstallError('prepare.xlate_in_use', path=str(xlate.with_suffix('.id'))) from None
         else:
             remove(xlate.with_suffix('.id'))
 
@@ -678,26 +961,37 @@ class Prepare(Step):
                                   dest / f'romfs-patches-{size}', '--aspect', size])
             if code:
                 raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # romfs-patches-xbox: the same with the A/B and X/Y prompts swapped, for pad_layout = xbox_prompts (written on
-        # every install, so the menu choice works without another run of the setup). Optional: when it fails, the game
-        # keeps the Switch prompts and the menu says the files are missing, so the setup warns and goes on.
-        remove(dest / 'romfs-patches-xbox')
-        code, log = run_tool(ctx, 'prepare-xbox', layout.tools / 'make_romfs_patches.py',
-                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                              dest / 'romfs-patches-xbox', '--xbox-prompts'])
-        if code:
-            remove(dest / 'romfs-patches-xbox')
-            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
+        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
+        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
+        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
+        # files are missing, so the setup warns once and goes on.
+        failed = None
+        for style in ('xbox', 'xbox-label'):
+            out = dest / f'romfs-patches-{style}'
+            remove(out)
+            code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
+                                  '--prompts', style])
+            if code:
+                remove(out)
+                failed = failed or (code, log)
+        if failed:
+            rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
 
         shader_list = layout.shader_list
         if not shader_list:
             shader_list = ctx.temp / 'shader_list.tsv'
             shader_list.write_text(shader_list_text(layout), encoding='utf-8', newline='\n')
 
+        skipped = [0]
+
         def parse(line):
             m = TRANSLATED.search(line)
             if m:
                 rep.progress('prepare', 'translate', int(m.group(1)), int(m.group(2)), 'shaders')
+            elif SKIPPED.search(line):
+                skipped[0] = int(SKIPPED.search(line).group(1))
             elif 'listed variants' in line:
                 rep.progress('prepare', 'translate', force=True)
             elif 'gfx_shader: prepare:' in line and 'translated' in line and 'programs' in line:
@@ -709,6 +1003,8 @@ class Prepare(Step):
                               dest / 'exefs', '--list', shader_list], parse)
         if code or not (dest / 'shader-prepared.bin').is_file():
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
+        if skipped[0]:
+            rep.warning('warn.shaders_skipped', count=skipped[0], log=str(log))
 
         # One shader-cache.pack instead of four files per shader (~117,000): totk.exe reads the pack first.
         rep.progress('prepare', 'pack', force=True)
@@ -718,7 +1014,7 @@ class Prepare(Step):
         return {'xlate_sha256': file_sha256(xlate)}
 
 
-# ---- 6. clean up
+# ---- 7. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -736,10 +1032,38 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('gen', 'build', 'check', 'shader_list.tsv'):
+        for name in ('check', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
+        write_rebuild_command(ctx)
         return {}
+
+
+# Puts the release folder (the argument after -c) on sys.path and runs installer.gui with the rest. `-m installer.gui`
+# finds the package only through the release Python's ._pth: the Linux release's Python and the dev-mode embeddable one
+# lack that entry, and totk.exe starts the command in the install folder.
+REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
+                "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)")
+
+
+def rebuild_command(ctx):
+    """The command that starts the setup window in its rebuild mode on this install folder (installer/gui.py
+    --rebuild): pythonw beside the setup's Python on Windows, so no console opens. In a repository that is the Python
+    running this setup: the tools' embeddable Python there has no tkinter."""
+    layout = ctx.layout
+    python = Path(sys.executable) if layout.dev else layout.python
+    if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
+        python = python.with_name('pythonw.exe')
+    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)]
+
+
+def write_rebuild_command(ctx):
+    """build-cache/rebuild.txt in the install folder: rebuild_command, one argument per line, for totk.exe."""
+    cache = ctx.dest / 'build-cache'
+    cache.mkdir(exist_ok=True)
+    tmp = cache / 'rebuild.txt.tmp'
+    tmp.write_text('\n'.join(rebuild_command(ctx)) + '\n', encoding='utf-8', newline='\n')
+    os.replace(tmp, cache / 'rebuild.txt')
 
 
 def romfs_problem(romfs, expected):
@@ -758,4 +1082,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]

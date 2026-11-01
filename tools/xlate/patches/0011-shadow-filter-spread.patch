@@ -1,0 +1,82 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -853,7 +853,51 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateLoad(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateLoadOrStore(context, operation, isStore: false);
++            OperationResult result = GenerateLoadOrStore(context, operation, isStore: false);
++            if (result.Type == AggregateType.FP32 && IsShadowSpread(context, operation))
++            {
++                SpvInstruction f32 = context.TypeFP32(), v4 = context.TypeVector(f32, 4);
++                SpvInstruction prmPtr = context.AccessChain(context.TypePointer(StorageClass.Uniform, v4), context.ConstantBuffers[SupportBuffer.Binding],
++                                                            context.Constant(context.TypeS32(), (int)SupportBufferField.ShadowSpread));
++                SpvInstruction factor = context.CompositeExtract(f32, context.Load(v4, prmPtr), 0);
++                result = new OperationResult(AggregateType.FP32, context.FMul(f32, result.Value, factor));
++            }
++
++            return result;
++        }
++
++        // TOTK: the spread of the sun shadow filter. The deferred lighting shaders take the sun shadow as four compares
++        // at the receiver ± h on the cascade map, h = 0.5 * c[56].xy (UV) of their lighting block (fp_c9, or fp_c5 in
++        // some), the same in every cascade. In the near cascade the map is sharp enough that the four copies of an edge
++        // show apart. In a fragment shader that has a 2D array shadow sampler, reads of element 56 .x and .y from any
++        // constant buffer but fp_c4 (which holds the cascade matrices, row 56 being cascade 3's depth row) are multiplied
++        // by the support buffer's shadow_spread.x (runtime/vk_exec_draw.c support_fill, TOTK_SHADOW_SPREAD; 1 keeps the
++        // game's spread).
++        private static bool IsShadowSpread(CodeGenContext context, AstOperation load)
++        {
++            if (context.Definitions.Stage != ShaderStage.Fragment ||
++                load.StorageKind != StorageKind.ConstantBuffer ||
++                load.SourcesCount != 4 ||
++                load.GetSource(0) is not AstOperand { Type: OperandType.Constant } binding ||
++                load.GetSource(1) is not AstOperand { Type: OperandType.Constant, Value: 0 } ||
++                load.GetSource(2) is not AstOperand { Type: OperandType.Constant, Value: 56 } ||
++                load.GetSource(3) is not AstOperand { Type: OperandType.Constant, Value: < 2 } ||
++                !context.Properties.ConstantBuffers.TryGetValue(binding.Value, out BufferDefinition buffer) ||
++                buffer.Name == "fp_c4")
++            {
++                return false;
++            }
++
++            foreach (TextureDefinition texture in context.Properties.Textures.Values)
++            {
++                if ((texture.Type & (SamplerType.Mask | SamplerType.Array | SamplerType.Shadow)) ==
++                    (SamplerType.Texture2D | SamplerType.Array | SamplerType.Shadow))
++                {
++                    return true;
++                }
++            }
++
++            return false;
+         }
+ 
+         private static OperationResult GenerateLod(CodeGenContext context, AstOperation operation)
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -26,6 +26,7 @@ namespace Ryujinx.Graphics.Shader
+         TfeVertexCount,
+         PointSize,
+         Pcss,
++        ShadowSpread,
+     }
+ 
+     public struct SupportBuffer
+@@ -84,7 +85,8 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.Vector4 | AggregateType.S32, "tfe_offset"),
+                 new StructureField(AggregateType.S32, "tfe_vertex_count"),
+                 new StructureField(AggregateType.FP32, "point_size"),
+-                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss")
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread")
+             ]);
+         }
+ 
+@@ -101,5 +103,6 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<int> TfeVertexCount;
+         public Vector4<float> PointSize;
+         public Vector4<float> Pcss;
++        public Vector4<float> ShadowSpread;
+     }
+ }

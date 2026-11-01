@@ -8,9 +8,6 @@ const char *cfg_get(const char *name);
 
 // Reads totk.ini once, from mem_init after the address space is claimed and before any setting is read. Logs the file, its key count, unknown keys and environment overrides.
 void cfg_init(void);
-// Carries the value of a renamed totk.ini key into its new keys in memory (those still unset) and marks the old line
-// for removal at the next save; cfg_init calls it and saves. Returns how many keys took a value. Not thread-safe.
-int cfg_migrate(void);
 
 // Replaces the loaded keys with those of the file at path (tests). 1 when the file was read, 0 when missing.
 // Not thread-safe: nothing else may call cfg_get meanwhile.

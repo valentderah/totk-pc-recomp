@@ -1,0 +1,40 @@
+#version 450
+// Camera motion vectors for DLAA (vk_dlaa.c mv_pass): each pixel's depth is taken back to the world through this
+// frame's view-projection and forward through last frame's; the vector is last frame's window position minus this
+// frame's, in render pixels, without the jitter (DLSS's default convention). Objects that move on their own get only
+// the camera's motion.
+// The camera block is TotK's scene uniform block (bound as c4 in the scene's vertex shaders): vec4 rows 3-6 are the
+// view-projection, rows of a row-major 4x4 with OpenGL clip depth (-w..w). The replay's viewports have negative
+// heights, so window y grows downwards from ndc y = +1, and depth is z_ndc * 0.5 + 0.5.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D depth_tex;
+layout(binding = 1, rg16f) uniform writeonly image2D mv_out;
+layout(binding = 2, std140) uniform Cur { vec4 r[16]; } cur;
+layout(binding = 3, std140) uniform Prev { vec4 r[16]; } prev;
+layout(push_constant) uniform P {
+    vec2 size;     // render size in pixels
+    vec2 jitter;   // this frame's jitter, pixels, as the scene was drawn (window x right, y down)
+} pc;
+
+mat4 vp(vec4 a, vec4 b, vec4 c, vec4 d) { return transpose(mat4(a, b, c, d)); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.size.x) || p.y >= int(pc.size.y)) return;
+    float d = texelFetch(depth_tex, p, 0).r;
+    vec2 win = vec2(p) + 0.5 - pc.jitter;   // where this pixel's surface sits without the jitter
+    vec4 ndc = vec4(win.x / pc.size.x * 2.0 - 1.0, 1.0 - win.y / pc.size.y * 2.0, d * 2.0 - 1.0, 1.0);
+    mat4 c = vp(cur.r[3], cur.r[4], cur.r[5], cur.r[6]);
+    mat4 q = vp(prev.r[3], prev.r[4], prev.r[5], prev.r[6]);
+    vec4 world = inverse(c) * ndc;
+    vec2 mv = vec2(0.0);
+    if (abs(world.w) > 1e-12) {
+        vec4 clip = q * (world / world.w);
+        if (clip.w > 1e-6) {
+            vec2 pn = clip.xy / clip.w;
+            vec2 pwin = vec2((pn.x * 0.5 + 0.5) * pc.size.x, (0.5 - pn.y * 0.5) * pc.size.y);
+            mv = pwin - win;
+        }
+    }
+    imageStore(mv_out, p, vec4(mv, 0.0, 0.0));
+}

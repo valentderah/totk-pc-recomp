@@ -199,6 +199,69 @@ void plat_fiber_free(PlatFiber *f) {
     free(f);
 }
 
+// plat_jmp_save / plat_jmp_go: PlatJmp holds rbx, rbp, rdi, rsi, r12-r15, the caller's rsp and the return address at
+// 0..72, MXCSR at 80, the x87 control word at 84 and xmm6-xmm15 from 96, the Win64 callee-saved state. Both are leaf
+// code that does not move rsp before it leaves, so they need no unwind data.
+_Static_assert(sizeof(PlatJmp) == 256 && __builtin_offsetof(PlatJmp, xmm) == 96, "plat_jmp_save layout");
+__asm__(".text\n"
+        ".globl plat_jmp_save\n"
+        ".def plat_jmp_save; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "plat_jmp_save:\n"
+        "    movq %rbx, 0(%rcx)\n"
+        "    movq %rbp, 8(%rcx)\n"
+        "    movq %rdi, 16(%rcx)\n"
+        "    movq %rsi, 24(%rcx)\n"
+        "    movq %r12, 32(%rcx)\n"
+        "    movq %r13, 40(%rcx)\n"
+        "    movq %r14, 48(%rcx)\n"
+        "    movq %r15, 56(%rcx)\n"
+        "    leaq 8(%rsp), %rdx\n"   // the caller's rsp after this call returns
+        "    movq %rdx, 64(%rcx)\n"
+        "    movq (%rsp), %rdx\n"
+        "    movq %rdx, 72(%rcx)\n"
+        "    stmxcsr 80(%rcx)\n"
+        "    fnstcw 84(%rcx)\n"
+        "    movdqu %xmm6, 96(%rcx)\n"
+        "    movdqu %xmm7, 112(%rcx)\n"
+        "    movdqu %xmm8, 128(%rcx)\n"
+        "    movdqu %xmm9, 144(%rcx)\n"
+        "    movdqu %xmm10, 160(%rcx)\n"
+        "    movdqu %xmm11, 176(%rcx)\n"
+        "    movdqu %xmm12, 192(%rcx)\n"
+        "    movdqu %xmm13, 208(%rcx)\n"
+        "    movdqu %xmm14, 224(%rcx)\n"
+        "    movdqu %xmm15, 240(%rcx)\n"
+        "    xorl %eax, %eax\n"
+        "    ret\n"
+        ".globl plat_jmp_go\n"
+        ".def plat_jmp_go; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "plat_jmp_go:\n"
+        "    movq 0(%rcx), %rbx\n"
+        "    movq 8(%rcx), %rbp\n"
+        "    movq 16(%rcx), %rdi\n"
+        "    movq 24(%rcx), %rsi\n"
+        "    movq 32(%rcx), %r12\n"
+        "    movq 40(%rcx), %r13\n"
+        "    movq 48(%rcx), %r14\n"
+        "    movq 56(%rcx), %r15\n"
+        "    ldmxcsr 80(%rcx)\n"
+        "    fldcw 84(%rcx)\n"
+        "    movdqu 96(%rcx), %xmm6\n"
+        "    movdqu 112(%rcx), %xmm7\n"
+        "    movdqu 128(%rcx), %xmm8\n"
+        "    movdqu 144(%rcx), %xmm9\n"
+        "    movdqu 160(%rcx), %xmm10\n"
+        "    movdqu 176(%rcx), %xmm11\n"
+        "    movdqu 192(%rcx), %xmm12\n"
+        "    movdqu 208(%rcx), %xmm13\n"
+        "    movdqu 224(%rcx), %xmm14\n"
+        "    movdqu 240(%rcx), %xmm15\n"
+        "    movq 64(%rcx), %rsp\n"
+        "    movl $1, %eax\n"
+        "    jmpq *72(%rcx)\n");
+
 int plat_thread_spawn(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = plat_thread_new_ex(fn, arg, name, stack);
     if (t) plat_thread_detach(t);
@@ -1128,6 +1191,11 @@ int plat_os_version(char *out, size_t cap) {
     return 1;
 }
 
+int plat_is_wine(void) {
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    return nt && GetProcAddress(nt, "wine_get_version") != NULL;
+}
+
 int plat_stderr_path(char *out, size_t cap) {
     HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
     wchar_t w[WPATH];
@@ -1457,4 +1525,90 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     DWORD got = 0;
     if (!ReadFile(c->out, buf, (DWORD)cap, &got, NULL)) return -1;
     return (long)got;
+}
+
+// ---- restart
+// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
+// reused the id is not waited for. Waiting keeps the new process off the old one's files (the log it moves at start,
+// the saves) until the old one is gone; no handle is inherited, so none of them stays open in the new one either.
+#define RESTART_WAIT "TOTK_RESTART_WAIT"
+
+static uint64_t process_created(HANDLE h) {
+    FILETIME c, e, k, u;
+    return GetProcessTimes(h, &c, &e, &k, &u) ? ft64(c) : 0;
+}
+
+int plat_restart(void) {
+    char wait[48];
+    snprintf(wait, sizeof wait, "%lu.%llu", GetCurrentProcessId(), (unsigned long long)process_created(GetCurrentProcess()));
+    plat_setenv(RESTART_WAIT, wait);
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    wchar_t *cmd = _wcsdup(GetCommandLineW());   // CreateProcessW may write its command line
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(cmd);
+    plat_setenv(RESTART_WAIT, NULL);
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
+}
+
+// One argument of a command line as CommandLineToArgvW reads it back: in quotes, a backslash run doubled before a quote
+// and at the end, a quote escaped.
+static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
+#define PUT(c) do { if (at + 1 < cap) out[at] = (c); at++; } while (0)
+    PUT(L'"');
+    for (const wchar_t *p = a;; p++) {
+        size_t slashes = 0;
+        while (*p == L'\\') p++, slashes++;
+        size_t times = !*p || *p == L'"' ? 2 : 1;
+        for (size_t k = 0; k < slashes * times; k++) PUT(L'\\');
+        if (!*p) break;
+        if (*p == L'"') PUT(L'\\');
+        PUT(*p);
+    }
+    PUT(L'"');
+    PUT(L' ');
+#undef PUT
+    return at;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    enum { CMD = 32768 };
+    wchar_t *cmd = calloc(CMD, sizeof *cmd), *arg = malloc(WPATH * sizeof *arg), *dir = malloc(WPATH * sizeof *dir);
+    int ok = cmd && arg && dir && argv[0] && widen(cwd, dir, WPATH);
+    size_t at = 0;
+    for (int i = 0; ok && argv[i]; i++) {
+        ok = widen(argv[i], arg, WPATH);
+        if (ok) at = quote_arg(arg, cmd, CMD, at);
+    }
+    ok = ok && at < CMD && at > 0;
+    if (ok) cmd[at - 1] = 0;   // the last separator
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    ok = ok && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, dir, &si,
+                              &pi);
+    if (ok) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    free(cmd);
+    free(arg);
+    free(dir);
+    return ok;
+}
+
+int plat_restart_wait(uint32_t timeout_ms) {
+    char v[48];
+    if (!plat_getenv(RESTART_WAIT, v, sizeof v)) return 0;
+    plat_setenv(RESTART_WAIT, NULL);   // the processes this one starts do not wait again
+    unsigned long pid = 0;
+    unsigned long long created = 0;
+    if (sscanf(v, "%lu.%llu", &pid, &created) != 2) return 0;
+    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return 0;   // already gone
+    int r = process_created(h) != created ? 0 : WaitForSingleObject(h, timeout_ms) == WAIT_OBJECT_0 ? 1 : -1;
+    CloseHandle(h);
+    return r;
 }

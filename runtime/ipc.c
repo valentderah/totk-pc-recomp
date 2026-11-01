@@ -11,6 +11,7 @@
 #include "audren.h"
 #include "host.h"
 #include "ipc.h"
+#include "nfp.h"
 #include "platform/platform.h"
 
 #define CMIF_IN_MAGIC 0x49434653u    // "SFCI"
@@ -25,6 +26,7 @@ enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_C
 // Services sm: hands out. Anything else is a named fatal.
 static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
+    {"nfp:user", nfp_user_manager_handler},
 };
 
 static volatile int32_t g_live;

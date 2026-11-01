@@ -8,10 +8,6 @@
 // Cpu. The SDK's nn::os runs as lifted code; only the kernel under it is the host. Every wait hangs on one global lock
 // G with one condition variable per thread; wake order is the kernel's: lower priority value first, then first come.
 // Semantics follow the public Horizon kernel (KConditionVariable, KAddressArbiter, KSynchronization).
-#ifdef _WIN32
-#define __USE_MINGW_SETJMP_NON_SEH   // setjmp(b) = _setjmp(b, NULL): longjmp restores registers, no SEH unwinding
-#endif
-#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,7 +73,7 @@ struct RtThread {
     uint64_t cseq;
     RtThread *cnext;
     uint8_t *tlr, *tls;
-    jmp_buf exit_jmp;          // the thread start; ExitThread longjmps to it
+    PlatJmp exit_jmp;          // the thread start; ExitThread jumps back to it
     // fibers
     PlatFiber *base_fiber;     // the host thread as a host fiber, after the first switch
     Fiber *fiber;              // current guest fiber, NULL on the thread's own context
@@ -296,7 +292,13 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
 // and gives it up only where Horizon would switch threads (waits, sleep, yield, exit, blocking host calls); a free
 // core goes to the best waiting thread. A waiter better than a holder asks one holder to give its core up (core_kick),
 // which it does at its next SVC or indirect call (kern_checkpoint, rt_dispatch), as Horizon runs the better thread at
-// once; guest code without either keeps the core until it reaches one. TOTK_FREE_CORES=1 turns the gate off.
+// once; guest code without either keeps the core until it reaches one.
+//
+// free_cores = 1 (TOTK_FREE_CORES) turns the gate off, for experiments only: the game does not run that way. A thread
+// that holds no core reports its ideal core to GetCurrentProcessorNumber, so the game's job workers all report core 0
+// and run its per-core code at once: on 1.2.1 two of them add the same per-core NVN control memory, which retires the
+// command handle the other just recorded, and CallCommands finds no recording at start (#212); 1.4.3 corrupts a heap
+// in main+0x82e00 or hangs at the title menu. The start log and every crash report say so (kern_free_cores_note).
 static RtThread *g_core_owner[NCORE], *g_core_wait;
 static int g_cores_on = -1, g_held_max;
 
@@ -307,12 +309,19 @@ static int cores_enabled(void) {
     if (g_cores_on < 0) {
         g_cores_on = !cfg_bool("TOTK_FREE_CORES");   // "0" keeps the gate, like unset
         if (!g_cores_on)
-            rt_log("kernel: virtual core gate off (TOTK_FREE_CORES): guest threads run without the limit of one per "
-                   "core that the game's per-core data needs; for experiments only, the game can fail");
+            rt_log("kernel: WARNING: free_cores = 1 (TOTK_FREE_CORES) turns the virtual core gate off. This is an "
+                   "experimental mode and the game crashes or hangs in it, usually at start. Set free_cores = 0 in "
+                   "totk.ini to play");
         diag_init();
         ap_init();
     }
     return g_cores_on;
+}
+
+void kern_free_cores_note(void) {
+    if (!g_cores_on)
+        rt_log("fatal: free_cores = 1 was on: the game crashes in this experimental mode; set free_cores = 0 in "
+               "totk.ini before reporting this crash");
 }
 
 static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
@@ -1435,10 +1444,10 @@ static void thread_finish(RtThread *t) {
     unlock();
 }
 
-// ExitThread: back to the thread start with a non-unwinding longjmp; no SEH unwinding through lifted frames.
-// (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
-// is offset, and the landing code then reads its locals through the wrong base.)
-static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
+// ExitThread: back to the thread start with plat_jmp_go, which unwinds nothing: no SEH unwinding through lifted
+// frames. (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame
+// register is offset, and the landing code then reads its locals through the wrong base.)
+static __attribute__((noreturn)) void exit_now(RtThread *t) { plat_jmp_go(&t->exit_jmp); }
 
 // The calling host thread, for ap_try (TOTK_ASYNC_PREEMPT) and dg_sample (TOTK_CORE_DIAG).
 static PlatIntr *ap_open_self(void) {
@@ -1460,7 +1469,7 @@ static void thread_main(void *p) {
     unlock();
     Cpu *c = t->cpu;
     c->sp = t->stack_top & ~15ull;
-    if (!setjmp(t->exit_jmp)) {
+    if (!plat_jmp_save(&t->exit_jmp)) {
         rt_call(c, t->entry, 1, t->arg);
         char d[128];
         rt_fatal("guest thread %#x: entry %s returned (Horizon threads end with ExitThread)", t->handle,
@@ -1520,7 +1529,7 @@ static void guest_main(void *p) {
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
     kern_main_thread(&c);
-    if (!setjmp(tcur->exit_jmp)) fn(c);
+    if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);
     thread_finish(tcur);
     return;
 }

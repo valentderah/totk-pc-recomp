@@ -1,10 +1,12 @@
-"""Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--root DIR]
-                                     [--temp DIR] [--verify]
+"""Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
+                                     [--root DIR] [--temp DIR] [--verify]
 
-A first install needs every option. On a folder with totk-install.json (resume after a cancel or failure, or update
-with a newer release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed
-only when the extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed,
-2 bad command line, 3 cancelled (Ctrl+C or Ctrl+Break).
+A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
+Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
+Traditional Chinese. On a folder with totk-install.json (resume after a cancel or failure, or update with a newer
+release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed only when the
+extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed, 2 bad command
+line, 3 cancelled (Ctrl+C or Ctrl+Break).
 """
 import argparse
 import hashlib
@@ -46,8 +48,10 @@ def cancel(signum, frame):
 def main(argv=None):
     ap = Parser(prog='python -m installer', description=__doc__.splitlines()[0])
     ap.add_argument('--base', type=Path, help='base game, XCI or NSP')
-    ap.add_argument('--update', type=Path, help='the update NSP: 1.1.1, 1.2.1 or 1.4.3')
+    ap.add_argument('--update', type=Path, help='the update NSP: 1.1.0, 1.2.1 or 1.4.3')
     ap.add_argument('--keys', type=Path, help='prod.keys')
+    ap.add_argument('--firmware', type=Path, help='Switch firmware folder (Contents/registered) for the shared fonts '
+                                                   'of Chinese, Korean and Traditional Chinese text')
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, ru, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--root', type=Path, help='release folder or repository (default: the folder above installer/)')

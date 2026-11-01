@@ -1,0 +1,34 @@
+#version 450
+// HDR10 encode on the present (runtime/vk_hdr.c vk_hdr_encode): the game's picture, crop rectangle at offset, linear
+// Rec. 709 with the HUD's white at 1.0 (an sRGB view decodes the 8-bit window texture), into an RGBA16F image of PQ
+// code values in Rec. 2020 that FSR 1 or the blit then scale into the HDR10 swapchain. p.x: nits of 1.0, p.y: the
+// display's peak in nits, p.z: 1 when the source holds sRGB-encoded values in a UNORM format.
+// PQ: SMPTE ST 2084; the Rec. 709 to Rec. 2020 matrix: ITU-R BT.2087.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, rgba16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P {
+    ivec2 offset;
+    ivec2 size;
+    vec4 p;
+} pc;
+
+vec3 srgb_decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
+}
+
+vec3 pq(vec3 nits) {
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(m1));
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));
+}
+
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(at, pc.size))) return;
+    vec3 c = max(texelFetch(src, at + pc.offset, 0).rgb, vec3(0.0));
+    if (pc.p.z > 0.5) c = srgb_decode(clamp(c, 0.0, 1.0));
+    const mat3 to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);
+    vec3 nits = min(max(to2020 * c, vec3(0.0)) * pc.p.x, vec3(pc.p.y));
+    imageStore(dst, at, vec4(pq(nits), 1.0));
+}

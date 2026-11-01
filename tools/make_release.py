@@ -10,8 +10,9 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                files come out of the python.org installer's own component MSI, unpacked with msiexec /a and expand.exe;
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
-    runtime/   libtotkrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
-               ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+    runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
+               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
+               libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
@@ -23,6 +24,8 @@ runtime/ and bin/ (PATH holds the Windows system directory and those), then runs
 Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
 it, generated/v143, and for --prove its build/extracted/<version> (they are read, nothing is written to them). The
 runtime library reads only what both versions' layout.h share (MOD_COUNT, MOD_MAIN_BASE), so either serves.
+
+A release also needs build/xlate built from the current sources (tools/build_xlate.py); the script stops first if not.
 
 The folder contains nothing derived from the game: check_content runs over it before the script finishes. Then the
 folder's own python runs a check-only installer pass (no game files: it must get through the release, toolchain and host
@@ -44,6 +47,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_xlate  # noqa: E402
 import check_content  # noqa: E402
 import shader_list  # noqa: E402
 
@@ -101,9 +105,9 @@ LLVM_SKIP_DIRS = {'aarch64-w64-mingw32', 'armv7-w64-mingw32', 'i686-w64-mingw32'
 LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 
 # tools/ files the installer steps run (and what they import), copied from the repo.
-TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract.py', 'hostmem.py', 'make_romfs_patches.py',
-               'pack_shader_cache.py', 'prepare_shaders.py', 'romfs_index.py', 'shader_census.py', 'shader_list.py',
-               'ultrawide_layout.py']
+TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'button_icons.py', 'check_content.py', 'extract.py', 'hostmem.py',
+               'make_romfs_patches.py', 'pack_shader_cache.py', 'prepare_shaders.py', 'romfs_index.py', 'shader_census.py',
+               'shader_list.py', 'ultrawide_layout.py', 'cheats.py', 'exefs_patches.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
@@ -260,7 +264,7 @@ def build_python(out):
     copy_tree(tk / 'Lib' / 'tkinter', py / 'tkinter', lambda r: r.startswith('__pycache__'))
     copy_tree(tk / 'tcl', py / 'tcl', lambda r: r.endswith(('.lib', '.sh')) or r.startswith('nmake'))
     check = subprocess.run([str(py / 'python.exe'), '-I', '-c',
-                            'import tkinter, numpy, lz4.block, cryptography, cffi, pycparser; '
+                            'import tkinter, numpy, lz4.block, cryptography, cffi, pycparser, fontTools.ttLib; '
                             'print("python ok: Tcl", tkinter.Tcl().eval("info patchlevel"), "numpy", numpy.__version__)'],
                            env=clean_env(py), capture_output=True, text=True)
     if check.returncode:
@@ -291,6 +295,17 @@ def build_llvm(out):
 
 
 # ---- bin/ and deps ---------------------------------------------------------------------------------------------------
+
+def check_translator():
+    """Stop on a translator older than the sources. build/xlate is built by hand and only copied here (the Linux release
+    builds its own), so without a rebuild a translator change reaches no Windows release, and nothing fails: the runtime
+    sends job fields the old exe ignores, as happened to gather_bias."""
+    idf = MAIN_ROOT / 'build' / 'xlate' / 'totk_xlate.id'
+    have = idf.read_text(encoding='ascii').strip() if idf.is_file() else 'none'
+    want = build_xlate.identity()
+    if have != want:
+        sys.exit(f'build/xlate has translator {have[:16]}, the sources are {want[:16]}: run tools/build_xlate.py')
+
 
 def build_bin(out):
     b = out / 'bin'
@@ -363,15 +378,18 @@ def lifted_version():
 
 
 def runtime_lib(out, llvm):
-    """Build libtotkrt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
-    build = MAIN_ROOT / 'build' / 'release-check' / 'rtlib'
+    """Build libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2) with the folder's llvm/, and copy them, the headers
+    and the install-side sources into runtime/."""
     version = lifted_version()
     gen = MAIN_ROOT / 'generated' / version
-    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm, '--version', version,
-         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--gen', gen, '--out', build],
-        env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
-    shutil.copy2(build / 'libtotkrt.a', rt / 'libtotkrt.a')
+    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
+        build = MAIN_ROOT / 'build' / 'release-check' / f'rtlib-{cpu}'
+        run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm, '--cpu', cpu,
+             '--version', version, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe',
+             '--gen', gen, '--out', build],
+            env=clean_env(llvm / 'bin', out / 'bin'))
+        shutil.copy2(build / 'libtotkrt.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -424,12 +442,14 @@ def c_wide(text):
 
 
 def launcher_header(path):
-    """launcher_text.h: the launcher's two messages in English and Russian, taken from the installer's catalog."""
-    lines = ['/* generated by tools/make_release.py from installer/text/{en,ru}.json */']
-    for lang in ('en', 'ru'):
+    """launcher_text.h: the launcher's two messages in English, Russian, Brazilian Portuguese and Simplified Chinese,
+    taken from the installer's catalog (LAUNCHER_TITLE_PT_BR for pt-BR.json, LAUNCHER_TITLE_ZH_HANS for zh-Hans.json)."""
+    lines = ['/* generated by tools/make_release.py from installer/text/{en,ru,pt-BR,zh-Hans}.json */']
+    for lang in ('en', 'ru', 'pt-BR', 'zh-Hans'):
         texts = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
         for key in ('title', 'python_missing'):
-            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts["launcher." + key])}')
+            macro = f'LAUNCHER_{key.upper()}_{lang.upper().replace("-", "_")}'
+            lines.append(f'#define {macro} {c_wide(texts["launcher." + key])}')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('\n'.join(lines) + '\n', encoding='ascii')
 
@@ -498,7 +518,7 @@ def write_zip(out, path):
     print(f'{path}: {mib(path.stat().st_size)}')
 
 
-def prove(out):
+def prove(out, cpu='v3'):
     """Compile the generated C and link totk.exe with the folder's tools only, then run the probes next to it."""
     out = out.resolve()
     version = lifted_version()
@@ -507,8 +527,9 @@ def prove(out):
     chk = MAIN_ROOT / 'build' / 'release-check'
     env = clean_env(out / 'python', out / 'llvm' / 'bin', out / 'bin')
     t0 = time.time()
-    run([out / 'python' / 'python.exe', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm',
-         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime', '--runtime-lib', out / 'runtime' / 'libtotkrt.a',
+    run([out / 'python' / 'python.exe', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
+         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
+         '--runtime-lib', out / 'runtime' / ('libtotkrt-v2.a' if cpu == 'v2' else 'libtotkrt.a'),
          '--ninja', out / 'bin' / 'ninja.exe', '--version', version, '--gen', gen, '--out', chk, '--exefs', ext / 'exefs',
          '--romfs', ext / 'romfs', '--profile', chk / 'profile'], env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
@@ -531,11 +552,14 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--zip', type=Path, help='also write the folder as this zip')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
+    ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
+                    help='--prove: build and run the check for this CPU level (default v3)')
     args = ap.parse_args()
     out = args.out.resolve()
     if args.prove:
-        prove(out)
+        prove(out, args.cpu)
         return
+    check_translator()
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)

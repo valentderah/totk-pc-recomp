@@ -30,15 +30,16 @@ from installer import layout as layouts  # noqa: E402
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
-from installer.steps import all_steps  # noqa: E402
-from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, Model, Process,  # noqa: E402
-                                amount, describe_event, parse_line, windows_ui_language)
+from installer.steps import Fonts, all_steps  # noqa: E402
+from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS,  # noqa: E402
+                                UI_LANGUAGES, Catalog, Form, Model, Process, amount, default_game_language,
+                                describe_event, parse_line, ui_language_for_langid, windows_ui_language)
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
 COPIED = ('totk.ini', statefile.NAME)   # written by a run, so never linked
 START = {'type': 'start', 'release': 'r1', 'mode': 'install', 'dest': 'D:\\T', 'log': 'D:\\T.log',
-         'steps': ['check', 'extract', 'lift', 'compile', 'prepare', 'cleanup']}
+         'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup']}
 
 
 def fold(*events):
@@ -66,7 +67,7 @@ class ModelTest(unittest.TestCase):
         m = fold(START, {'type': 'plan', 'run': ['check', 'extract'], 'skip': {'lift': 'current', 'compile': 'current'}},
                  {'type': 'step', 'step': 'check', 'state': 'started'})
         self.assertEqual([m.states[s] for s in m.steps],
-                         [RUNNING, PENDING, SKIPPED, SKIPPED, PENDING, PENDING])
+                         [RUNNING, PENDING, PENDING, SKIPPED, SKIPPED, PENDING, PENDING])
         self.assertEqual(m.current, 'check')
         m.apply({'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1.0})
         self.assertEqual(m.states['check'], DONE)
@@ -137,10 +138,12 @@ class ModelTest(unittest.TestCase):
 
 
 class RunStatesTest(unittest.TestCase):
-    OK = [START, {'type': 'plan', 'run': ['check', 'extract'], 'skip': {'lift': 'current', 'compile': 'current',
-                                                                     'prepare': 'current', 'cleanup': 'not_needed'}},
+    OK = [START, {'type': 'plan', 'run': ['check', 'extract'], 'skip': {'fonts': 'current', 'lift': 'current',
+                                                                     'compile': 'current', 'prepare': 'current',
+                                                                     'cleanup': 'not_needed'}},
           {'type': 'step', 'step': 'check', 'state': 'started'}, {'type': 'step', 'step': 'check', 'state': 'done'},
           {'type': 'step', 'step': 'extract', 'state': 'started'}, {'type': 'step', 'step': 'extract', 'state': 'done'},
+          {'type': 'step', 'step': 'fonts', 'state': 'skipped'},
           {'type': 'step', 'step': 'lift', 'state': 'skipped'}, {'type': 'step', 'step': 'compile', 'state': 'skipped'},
           {'type': 'step', 'step': 'prepare', 'state': 'skipped'}, {'type': 'step', 'step': 'cleanup', 'state': 'done'},
           {'type': 'end', 'result': 'ok', 'seconds': 1}]
@@ -200,11 +203,20 @@ class FormTest(unittest.TestCase):
     def test_unknown_language(self):
         self.assertEqual(self.form(lang='xx').problems(), ['ui.need_lang'])
 
+    def test_firmware_folder(self):
+        firmware = self.dir / 'firmware'
+        firmware.mkdir()
+        self.assertEqual(self.form(firmware=str(firmware)).problems(), [])
+        self.assertEqual(self.form(firmware=str(self.dir / 'no-firmware')).problems(), ['ui.missing_firmware'])
+
     def test_command(self):
-        cmd = self.form().command('py.exe', root=ROOT, temp=self.dir / 't', verify=True)
+        firmware = self.dir / 'firmware'
+        firmware.mkdir()
+        cmd = self.form(firmware=str(firmware)).command('py.exe', root=ROOT, temp=self.dir / 't', verify_hashes=True)
         self.assertEqual(cmd[:3], ['py.exe', '-m', 'installer'])
-        for flag in ('--base', '--update', '--keys', '--lang', '--dest', '--root', '--temp', '--verify'):
+        for flag in ('--base', '--update', '--keys', '--firmware', '--lang', '--dest', '--root', '--temp', '--verify'):
             self.assertIn(flag, cmd)
+        self.assertEqual(cmd[cmd.index('--firmware') + 1], str(firmware))
         self.assertEqual(cmd[cmd.index('--lang') + 1], 'en-US')
 
     def test_installed_folder_needs_only_itself(self):
@@ -233,25 +245,41 @@ class FormTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
-    def test_russian_covers_english_with_the_same_placeholders(self):
-        en, ru = Catalog('en').english, Catalog('ru').texts
-        self.assertEqual(sorted(set(en) - set(ru)), [])
-        self.assertEqual(sorted(set(ru) - set(en)), [])
-        holes = [k for k in en if sorted(re.findall(r'\{\w+\}', en[k])) != sorted(re.findall(r'\{\w+\}', ru[k]))]
-        self.assertEqual(holes, [])
+    def test_every_language_covers_english_with_the_same_placeholders(self):
+        en = Catalog('en').english
+        for lang in UI_LANGUAGES[1:]:
+            with self.subTest(lang=lang):
+                other = Catalog(lang).texts
+                self.assertEqual(sorted(set(en) - set(other)), [])
+                self.assertEqual(sorted(set(other) - set(en)), [])
+                holes = [k for k in en
+                         if sorted(re.findall(r'\{\w+\}', en[k])) != sorted(re.findall(r'\{\w+\}', other[k]))]
+                self.assertEqual(holes, [])
+
+    def test_language_names_tell_the_codes_apart(self):
+        # gui.App.selected_lang maps the shown name back to its code across every window language
+        names = {}
+        for lang in UI_LANGUAGES:
+            cat = Catalog(lang)
+            for id in cat.english:
+                if id.startswith('lang.'):
+                    names.setdefault(cat(id), set()).add(id)
+        self.assertEqual({n: ids for n, ids in names.items() if len(ids) > 1}, {})
+        self.assertEqual(sorted(UI_LANGUAGE_LABELS), sorted(UI_LANGUAGES))
 
     def test_every_id_the_window_uses_exists(self):
         cat = Catalog('en')
         ids = ['ui.' + n for n in ('title', 'start', 'cancel', 'open_folder', 'notice', 'space_one', 'space_two',
                                    'process_died', 'result_ok', 'result_failed', 'result_cancelled')]
-        ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
+        ids += [f'step.{s}' for s in ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
-        for lang in ('en', 'ru'):
+        for lang in UI_LANGUAGES:
             cat.set_language(lang)
+            self.assertEqual(cat.lang, lang)
             self.assertEqual([i for i in ids if not cat.has(i)], [])
 
     def test_codes_become_names(self):
-        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский')):
+        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский'), ('pt-BR', 'Coreano'), ('zh-Hans', '韩语')):
             cat = Catalog(lang)
             self.assertIn(korean, cat('warn.lang_needs_fonts', lang='ko'))
             self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
@@ -280,7 +308,17 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(describe_event(cat, {'type': 'start'}), '')
 
     def test_windows_language_is_a_known_value(self):
-        self.assertIn(windows_ui_language(), ('en', 'ru'))
+        self.assertIn(windows_ui_language(), UI_LANGUAGES)
+
+    def test_windows_langid_picks_the_window_language(self):
+        for langid, lang in ((0x0419, 'ru'), (0x0819, 'ru'), (0x0416, 'pt-BR'), (0x0816, 'en'),
+                             (0x0804, 'zh-Hans'), (0x1004, 'zh-Hans'),
+                             (0x0404, 'en'), (0x0c04, 'en'), (0x1404, 'en'), (0x0409, 'en'), (0x0411, 'en')):
+            self.assertEqual(ui_language_for_langid(langid), lang, hex(langid))
+
+    def test_chinese_window_starts_with_a_game_language_that_needs_no_shared_fonts(self):
+        self.assertEqual(default_game_language('zh-Hans'), 'en-US')
+        self.assertEqual(default_game_language('ru'), 'ru')
 
 
 BREAK_CHILD = 'import time\nprint("ready", flush=True)\ntime.sleep(60)\n'
@@ -334,6 +372,10 @@ def make_fixture():
     ctx = Context(layout, FIXTURE, ROOT / 'build' / 'inst-gui' / 'e2e-temp', Reporter(out=io.StringIO()), options, state=state)
     ctx.steps = all_steps()
     ctx.plan()
+    # An install made before the fonts step has no record for it: record it as current when its output is (the
+    # languages that need the fonts have them in shared-fonts/).
+    if Fonts().current(ctx, {}):
+        state['steps'].setdefault('fonts', {'release': state.get('release', ''), 'key': ctx.keys['fonts']})
     for step_id, record in state['steps'].items():
         record['key'] = ctx.keys[step_id]
     statefile.save(FIXTURE, state)
@@ -346,7 +388,7 @@ class EndToEndTest(unittest.TestCase):
     def run_cli(form, temp, tries=1):
         """Runs the CLI in --verify mode through Process, up to `tries` times while the RomFS hash reads wrong."""
         for attempt in range(tries):
-            p = Process(form.command(sys.executable, root=ROOT, temp=temp, verify=True), cwd=ROOT)
+            p = Process(form.command(sys.executable, root=ROOT, temp=temp, verify_hashes=True), cwd=ROOT)
             model, stray = Model(), []
             t0, code = time.monotonic(), None
             while code is None and time.monotonic() - t0 < 600:
@@ -384,7 +426,7 @@ class EndToEndTest(unittest.TestCase):
 
     def test_cancel_during_the_check(self):
         cmd = Form(dest=str(make_fixture())).command(sys.executable, root=ROOT, temp=ROOT / 'build' / 'inst-gui' / 'e2e-temp',
-                                                     verify=True)
+                                                     verify_hashes=True)
         p = Process(cmd, cwd=ROOT)
         model, t0, code, cancelled = Model(), time.monotonic(), None, False
         while code is None and time.monotonic() - t0 < 120:

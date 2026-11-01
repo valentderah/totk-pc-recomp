@@ -288,6 +288,18 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
     return east_labelled_a ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX;
 }
 
+int input_prompts_pick(const char *prompts, const char *pad_layout) {
+    if (prompts && *prompts) return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
+    return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
+}
+
+const char *input_prompts_folder(int prompts, const char *pad_layout) {
+    if (prompts != PROMPTS_XBOX) return NULL;
+    // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
+    // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.
+    return input_pad_layout_pick(pad_layout, 0) == PAD_LAYOUT_NINTENDO ? "romfs-patches-xbox" : "romfs-patches-xbox-label";
+}
+
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout) {
     const PadBinding *t = input_map.pads[layout];
     uint64_t b = 0;
@@ -332,6 +344,16 @@ void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
     double k = ((m > 1 ? 1 : m) - dead) / (1 - dead) / m;   // past the edge (a square gate's corner) the length is 1
     out[0] = (int32_t)lrint(fmax(-1, fmin(1, fx * k)) * STICK_MAX);
     out[1] = (int32_t)lrint(fmax(-1, fmin(1, fy * k)) * STICK_MAX);
+}
+
+float input_pad_deadzone(int stick) {
+    const char *own = stick ? "TOTK_RSTICK_DEADZONE" : "TOTK_LSTICK_DEADZONE", *set = cfg_get(own);
+    double v = cfg_double(set && *set ? own : "TOTK_STICK_DEADZONE");
+    return (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
+}
+
+double input_stick_percent(int32_t x, int32_t y) {
+    return sqrt((double)x * x + (double)y * y) * 100.0 / STICK_MAX;
 }
 
 // Minus and Plus held together open or close the menu. *held: latched from the poll where both go down until neither is
