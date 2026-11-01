@@ -632,6 +632,8 @@ static void tab_screen(float scale) {
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
     opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);
+    opt_toggle("TOTK_LOD_DETAIL", UI_MENU_LOD_DETAIL, UI_MENU_LOD_DETAIL_DESC);
+    opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     rows_color();
     opt_end();
 }

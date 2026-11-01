@@ -21,6 +21,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
+- Optional full model detail at any distance (1.2.1)
 - In-game settings menu (F1) and performance overlay (F10)
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: a layout that keeps the Switch button positions and shows the Xbox labels
