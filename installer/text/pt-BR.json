@@ -51,6 +51,7 @@
  "check.vulkan_missing": "Nenhum driver Vulkan está instalado. Instale o driver mais recente da sua placa de vídeo.",
  "check.vulkan_no_device": "O Vulkan não encontra nenhuma placa de vídeo. Instale o driver mais recente da sua placa de vídeo.",
  "check.vulkan_too_old": "O jogo precisa de uma placa de vídeo com Vulkan 1.3; encontrado: {devices}. Atualize o driver de vídeo.",
+ "check.no_display": "Preparar os shaders exige uma tela. Execute a instalação na sessão da área de trabalho ou use export DISPLAY=:0 (no Steam Deck em Game Mode, também XDG_RUNTIME_DIR=/run/user/1000).",
  "check.inputs_needed": "Os arquivos do jogo são necessários: escolha o jogo base, a atualização 1.1.0, 1.2.1 ou 1.4.3 e o prod.keys.",
  "check.input_missing": "Arquivo não encontrado ({input}): {path}",
  "check.keys_unreadable": "Não foi possível ler o arquivo de chaves. Escolha um arquivo prod.keys.",
@@ -93,7 +94,7 @@
  "prepare.pack_failed": "Falha ao juntar o cache de shaders (código de saída {code}). Detalhes: {log}",
  "cleanup.ini_failed": "Não foi possível gravar o totk.ini: {detail}",
 
- "warn.lang_needs_fonts": "Textos em {lang} precisam das fontes de sistema do Switch, que o instalador não extrai; parte do texto pode não aparecer.",
+ "warn.lang_needs_fonts": "Textos em {lang} precisam das fontes de sistema do Switch, e nenhuma foi informada. O jogo não inicia neste idioma até que sejam adicionadas. Escolha a pasta do firmware (Contents/registered) ou veja \"Switch system fonts\" em docs/installer.md.",
  "warn.cheats_skipped": "Não foi possível compilar os cheats da pasta de mods que alteram o código do jogo; o jogo é instalado sem eles. Detalhes: {log}",
  "warn.exefs_skipped": "Não foi possível compilar os patches ExeFS dos mods (.ips, .pchtxt); o jogo é instalado sem eles. Detalhes: {log}",
  "warn.npdm_differs": "O main.npdm difere do dump de referência da versão {version}; só os módulos de código são usados.",
