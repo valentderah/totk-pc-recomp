@@ -1038,6 +1038,8 @@ const void *plat_file_map(PlatFile *f) {
     return v == MAP_FAILED ? NULL : v;
 }
 
+int plat_fs_os_error(void) { return errno; }
+
 static int fs_err(int e) {
     switch (e) {
     case ENOENT: case ENOTDIR: return PLAT_FS_NOT_FOUND;
