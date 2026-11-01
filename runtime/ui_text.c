@@ -226,6 +226,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_CONFIRM] = "Restart the game now? Progress since your last save is lost.",
     [UI_MENU_RESTART_YES] = "Restart",
     [UI_MENU_RESTART_SAVING] = "The game is saving: Restart is possible in a moment.",
+    [UI_MENU_GROUP_STICKS] = "Analog sticks",
     [UI_MENU_LSTICK_DEADZONE] = "Left stick dead zone", [UI_MENU_RSTICK_DEADZONE] = "Right stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own: let go of the stick, read \"stick now\" and set the dead zone a few percent above it.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
@@ -648,6 +649,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_CONFIRM] = "Перезапустить игру сейчас? Прогресс после последнего сохранения будет потерян.",
     [UI_MENU_RESTART_YES] = "Перезапустить",
     [UI_MENU_RESTART_SAVING] = "Игра сохраняется: перезапуск будет доступен через мгновение.",
+    [UI_MENU_GROUP_STICKS] = "Стики",
     [UI_MENU_LSTICK_DEADZONE] = "Мёртвая зона левого стика", [UI_MENU_RSTICK_DEADZONE] = "Мёртвая зона правого стика",
     [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами: отпустите стик, посмотрите «стик сейчас» и поставьте мёртвую зону на несколько процентов выше.",
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
@@ -998,6 +1000,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_AUTO] = "Automático", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A à direita)",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A embaixo)",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "em uso: %s",
+    [UI_MENU_GROUP_STICKS] = "Analógicos",
     [UI_MENU_LSTICK_DEADZONE] = "Zona morta do analógico esquerdo",
     [UI_MENU_RSTICK_DEADZONE] = "Zona morta do analógico direito",
     [UI_MENU_STICK_DEADZONE_DESC] = "Quanto um analógico do controle precisa se mover antes que o jogo perceba. Aumente "
@@ -1497,6 +1500,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo（A 在右）",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox（A 在下）",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "使用中：%s",
+    [UI_MENU_GROUP_STICKS] = "摇杆",
     [UI_MENU_LSTICK_DEADZONE] = "左摇杆死区", [UI_MENU_RSTICK_DEADZONE] = "右摇杆死区",
     [UI_MENU_STICK_DEADZONE_DESC] = "手柄摇杆要推动多远游戏才会响应。如果角色或视角会自己移动，"
                                     "请调高此值：松开摇杆，查看“当前摇杆”，把死区设得比它高几个百分点。",
