@@ -506,10 +506,10 @@ static void row_render_scale(void) {
 }
 
 static void row_aniso(void) {
-    static const char *const vals[] = {"game", "2", "4", "8", "16"};
-    static const char *names[] = {NULL, "2x", "4x", "8x", "16x"};
+    static const char *const vals[] = {"game", "1", "2", "4", "8", "16"};
+    static const char *names[] = {NULL, "1x", "2x", "4x", "8x", "16x"};
     names[0] = menu_text(UI_MENU_ANISO_GAME);
-    opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, vals, names, 5, UI_MENU_ANISO_DESC);
+    opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, vals, names, 6, UI_MENU_ANISO_DESC);
 }
 
 static void row_shadow_scale(void) {

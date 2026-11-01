@@ -103,7 +103,7 @@ static const CfgMeta metas[] = {
     {"COLOR_CONTRAST", "100", "70..150", LIVE}, {"COLOR_SATURATION", "100", "50..200", LIVE},
     {"COLOR_GAMMA", "1", "0.8..1.2", LIVE},
     {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
-    {"ANISO", "16", "game|2|4|8|16", RESTART}, {"SHADOW_SCALE", "1", "1..4", RESTART},
+    {"ANISO", "16", "game|1|2|4|8|16", RESTART}, {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
     {"PCSS", "0", "0..200", RESTART},
     // Game

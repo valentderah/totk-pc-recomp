@@ -153,7 +153,8 @@
 # color_contrast = 100
 # color_saturation = 100
 # color_gamma = 1
-# Anisotropic filtering of mipmapped textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16.
+# Anisotropic filtering of mipmapped textures: game (the level the game asks for, as on the Switch), 1 (none at all,
+# below the Switch, for GPUs short of memory bandwidth) or 2, 4, 8, 16.
 # Keeps ground and walls seen at a steep angle sharp. Depth-compare (shadow) and nearest-filtered samplers keep the
 # game's setting. Read at start.
 # aniso = 16

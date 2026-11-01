@@ -1611,7 +1611,7 @@ static VkCompareOp compare_op(uint32_t f) {
 }
 
 static struct { int init, mirror_clamp_edge, minmax, border_no_format; } sf;
-static float aniso_force;   // TOTK_ANISO: 0 = the game's level, else the least level of mipmapped colour samplers
+static float aniso_force;   // TOTK_ANISO: 0 = the game's level, 1 = none anywhere, else the least level of tiled samplers
 
 static void sampler_features(VkCtx *c) {
     if (sf.init) return;
@@ -1625,7 +1625,7 @@ static void sampler_features(VkCtx *c) {
     sf.border_no_format = c->has_custom_border_color && cbf.customBorderColors && cbf.customBorderColorWithoutFormat;
     const char *an = cfg_value("TOTK_ANISO");
     aniso_force = strcmp(an, "game") ? (float)atoi(an) : 0;
-    rt_log("vk: anisotropic filtering: %s", aniso_force > 1 ? an : "the game's");
+    rt_log("vk: anisotropic filtering: %s", aniso_force > 1 ? an : aniso_force == 1 ? "off" : "the game's");
     sf.init = 1;
 }
 
@@ -1671,6 +1671,7 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (aniso_force > 1 && tiled && !d->cmp_mode && si.magFilter == VK_FILTER_LINEAR && si.minFilter == VK_FILTER_LINEAR &&
         (mf == NVN_MIN_FILTER_LINEAR_MIPMAP_NEAREST || mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR) && aniso < aniso_force)
         aniso = aniso_force;
+    if (aniso_force == 1) aniso = 1;   // TOTK_ANISO=1: none at all, below the game's level, for GPUs short of bandwidth
     if (aniso > 1) {
         si.anisotropyEnable = VK_TRUE;
         si.maxAnisotropy = fminf(aniso, c->props.limits.maxSamplerAnisotropy);
