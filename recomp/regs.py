@@ -77,19 +77,20 @@ class Plan:
         return text.replace(SPILL, spill).replace(RELOAD, reload).replace(RELOAD_CALL, reload_call)
 
 
-def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED):
+def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED, entries=(0,)):
     """texts[i]: instruction i's C with markers; succ[i]: successor indices inside the function; clean: instructions
     after which every local equals the Cpu (a call or an SVC that spills and reloads on every path through it);
-    n_locals: how many registers to keep in locals; kept: registers a call does not reload."""
+    n_locals: how many registers to keep in locals; kept: registers a call does not reload; entries: where the
+    function may start (nothing is dirty there)."""
     n = len(texts)
     uses = Counter(r for t in texts for r in refs(t))
     regs = {r for r, _ in sorted(uses.items(), key=lambda kv: (-kv[1], kv[0]))[:n_locals]}
     writes = [written(t) & regs for t in texts]
     dirty = [set() for _ in range(n)]
     seen = [False] * n
-    work = [0] if n else []
-    if n:
-        seen[0] = True
+    work = [e for e in entries if e < n]
+    for e in work:
+        seen[e] = True
     while work:
         i = work.pop()
         out = set() if i in clean else dirty[i] | writes[i]

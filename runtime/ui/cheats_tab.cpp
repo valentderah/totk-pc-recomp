@@ -44,6 +44,7 @@ extern "C" bool tab_cheats(float scale) {
         case CHEAT_KEY: text = UI_MENU_CHEAT_KEY_DESC; break;
         case CHEAT_DATA: text = UI_MENU_CHEAT_DATA_DESC; break;
         case CHEAT_MASTER: text = UI_MENU_CHEAT_MASTER_DESC, opt_disable_next(UI_MENU_CHEAT_MASTER); break;
+        case CHEAT_BUILTIN: text = UI_MENU_CHEAT_BUILTIN_DESC, opt_disable_next(UI_MENU_CHEAT_BUILTIN); break;
         case CHEAT_RESTORE: text = UI_MENU_CHEAT_RESTORE_DESC, opt_disable_next(UI_MENU_CHEAT_RESTORE); break;
         case CHEAT_REBUILD: text = UI_MENU_CHEAT_REBUILD_DESC, opt_disable_next(UI_MENU_CHEAT_REBUILD); break;
         case CHEAT_UNSUPPORTED:
@@ -52,7 +53,7 @@ extern "C" bool tab_cheats(float scale) {
         }
         if (c->kind == CHEAT_KEY)
             snprintf(desc, sizeof desc, menu_text(text), cheats_buttons(c->buttons, buttons, sizeof buttons));
-        else if (c->kind == CHEAT_UNSUPPORTED)
+        else if (c->kind == CHEAT_UNSUPPORTED || (c->kind == CHEAT_REBUILD && c->note[0]))
             snprintf(desc, sizeof desc, "%s %s", menu_text(text), c->note);
         else
             snprintf(desc, sizeof desc, "%s", menu_text(text));

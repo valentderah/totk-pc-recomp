@@ -1,7 +1,7 @@
 """Code patch table for the generator: guest instructions replaced in the lifted C, switchable at run time.
 
 Lifted code cannot be byte-patched when the game runs, so a patch is applied when the C is generated. A patch file
-(gen.py --patches) has two kinds of lines; `#` starts a comment, fields are separated by whitespace:
+(gen.py --patches) has four kinds of lines; `#` starts a comment, fields are separated by whitespace:
 
   set  <name> <env> <default>               a patch set: a run-time switch <env>=0/1, <default> when it is unset
   site <set> <module> <address> <original> <replacement> [<replacement> ...]
@@ -22,8 +22,22 @@ The replacement words are lifted at the site's address in place of the original 
 sets may patch one address (cheats that write different values there): `if (a) {..} else if (b) {..} else {..}`, the
 first set in file order wins. The original may be any instruction but br, blr and ret; a replacement's last word may be
 a bl (lifted with the site's return address), a b or b.cond / cbz / tbz (its target joins the function's labels when
-inside it) or a ret; earlier words must not branch. Every alternative of a site writes the same flags. The generator
-writes patches.h (set names, switches, the page address) next to layout.h for the runtime.
+inside it) or a ret; earlier words must not branch. Every alternative of a site writes the same flags, but for a b
+or bl into a `code` run (below). Discovery treats a replacement's branch as one of the module's own, so its target
+starts a function when it is outside the site's. The generator writes patches.h (set names, switches, the page
+address) next to layout.h for the runtime.
+
+A `code` line puts instruction words into the zero padding between a module's .text and .rodata, where cheats keep
+their code caves (tools/cheats.py):
+
+  code <module> <offset> <word> [<word> ...]
+
+The words are lifted with the module's code (recomp/module.py), so a replacement may branch or call into them. Lines
+that touch make one run, and each run starts a function. Functions in the padding keep NZCV in c->nzcv, so a `bl`
+into one in place of a flag-setting instruction returns the cave's flags to the site (recomp/gen.py
+patched_effect). Their branches back into the game's code do not split its functions: each such target gets a
+function of its own that enters the whole function there (recomp/gen.py entries()). The runtime never sees the
+words: guest memory keeps the padding as the game has it (zeros), where a cheat's data still goes.
 
 A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <head> that only another thread can end,
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
@@ -51,11 +65,16 @@ class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg)], original)]}} (the
     alternatives of a site in file order); page."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, code=None):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
+        self.code = code or {}     # {module: {offset: [words]}}
+
+    def code_for(self, name):
+        """{offset: [words]} of the module's `code` lines."""
+        return dict(self.code.get(name, {}))
 
     def spins_for(self, name, base):
         """{absolute back-edge address: absolute head address}."""
@@ -73,7 +92,7 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins = [], {}, {}, {}
+    sets, index, sites, spins, code = [], {}, {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
         f = raw.split('#', 1)[0].split()
@@ -103,6 +122,17 @@ def load(path, mods):
             if alts and alts[0][2] != orig:
                 raise PatchError(f'{where}: {f[2]}+{off:#x} expects {orig:08x}, an earlier line {alts[0][2]:08x}')
             alts.append((index[f[1]], repl, orig))
+        elif f[0] == 'code' and len(f) >= 4:
+            if f[1] not in bases:
+                raise PatchError(f'{where}: module {f[1]} not in the layout')
+            off, words = int(f[2], 16), [int(w, 16) for w in f[3:]]
+            if off % 4:
+                raise PatchError(f'{where}: {f[1]}+{off:#x} is not word aligned')
+            mod = code.setdefault(f[1], {})
+            for o, ws in mod.items():
+                if o < off + 4 * len(words) and off < o + 4 * len(ws):
+                    raise PatchError(f'{where}: {f[1]}+{off:#x} overlaps the code line at {o:#x}')
+            mod[off] = words
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -119,11 +149,20 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins)
+    return Table(sets, sites, page, spins, code)
 
 
 def check(table, mod, name):
-    """Stops on a site whose original word differs from the module's."""
+    """Stops on a site whose original word differs from the module's (its code lines in), or a code line outside the
+    padding after .text or over bytes that are not zero there."""
+    text_end, rodata = mod.nso.text[0] + mod.nso.text[1], mod.nso.rodata[0]
+    for off, words in table.code.get(name, {}).items():
+        end = off + 4 * len(words)
+        if off < text_end or end > rodata:
+            raise PatchError(f'{name}+{off:#x}: code line outside the padding between .text and .rodata '
+                             f'({text_end:#x}..{rodata:#x})')
+        if any(mod.nso.image[off:end]):
+            raise PatchError(f'{name}+{off:#x}: code line over bytes that are not zero')
     for off, [(_, _, want), *_] in table.sites.get(name, {}).items():
         a = mod.base + off
         if not mod.in_text(a):

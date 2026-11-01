@@ -426,6 +426,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
     [UI_MENU_CHEAT_MASTER] = "always on",
     [UI_MENU_CHEAT_MASTER_DESC] = "The file's master code: it is always on.",
+    [UI_MENU_CHEAT_BUILTIN] = "built in",
+    [UI_MENU_CHEAT_BUILTIN_DESC] = "Code the other cheats of the file use. It was built into the game, so it needs no switch.",
     [UI_MENU_CHEAT_RESTORE] = "not needed",
     [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
     [UI_MENU_CHEAT_REBUILD] = "after the rebuild",
@@ -445,6 +447,14 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
+    [UI_MENU_CHEAT_LSTICK_LEFT] = "Left stick left",
+    [UI_MENU_CHEAT_LSTICK_UP] = "Left stick up",
+    [UI_MENU_CHEAT_LSTICK_RIGHT] = "Left stick right",
+    [UI_MENU_CHEAT_LSTICK_DOWN] = "Left stick down",
+    [UI_MENU_CHEAT_RSTICK_LEFT] = "Right stick left",
+    [UI_MENU_CHEAT_RSTICK_UP] = "Right stick up",
+    [UI_MENU_CHEAT_RSTICK_RIGHT] = "Right stick right",
+    [UI_MENU_CHEAT_RSTICK_DOWN] = "Right stick down",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -854,6 +864,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_DATA_DESC] = "Пока включён, записывает память игры каждый кадр.",
     [UI_MENU_CHEAT_MASTER] = "всегда вкл.",
     [UI_MENU_CHEAT_MASTER_DESC] = "Главный код файла: включён всегда.",
+    [UI_MENU_CHEAT_BUILTIN] = "встроен",
+    [UI_MENU_CHEAT_BUILTIN_DESC] = "Код, который используют другие читы файла. Он встроен в игру при сборке, включать его не нужно.",
     [UI_MENU_CHEAT_RESTORE] = "не нужен",
     [UI_MENU_CHEAT_RESTORE_DESC] = "Он только возвращает исходный код игры. Выключение чита уже делает это.",
     [UI_MENU_CHEAT_REBUILD] = "после пересборки",
@@ -872,6 +884,14 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
+    [UI_MENU_CHEAT_LSTICK_LEFT] = "Левый стик влево",
+    [UI_MENU_CHEAT_LSTICK_UP] = "Левый стик вверх",
+    [UI_MENU_CHEAT_LSTICK_RIGHT] = "Левый стик вправо",
+    [UI_MENU_CHEAT_LSTICK_DOWN] = "Левый стик вниз",
+    [UI_MENU_CHEAT_RSTICK_LEFT] = "Правый стик влево",
+    [UI_MENU_CHEAT_RSTICK_UP] = "Правый стик вверх",
+    [UI_MENU_CHEAT_RSTICK_RIGHT] = "Правый стик вправо",
+    [UI_MENU_CHEAT_RSTICK_DOWN] = "Правый стик вниз",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1309,6 +1329,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_DATA_DESC] = "Escreve na memória do jogo a cada quadro enquanto está ligado.",
     [UI_MENU_CHEAT_MASTER] = "sempre ligado",
     [UI_MENU_CHEAT_MASTER_DESC] = "O código mestre do arquivo: está sempre ligado.",
+    [UI_MENU_CHEAT_BUILTIN] = "integrado",
+    [UI_MENU_CHEAT_BUILTIN_DESC] = "Código usado pelos outros cheats do arquivo. Foi integrado ao jogo, então não precisa de interruptor.",
     [UI_MENU_CHEAT_RESTORE] = "desnecessário",
     [UI_MENU_CHEAT_RESTORE_DESC] = "Ele só escreve de volta o código original do jogo. Desligar um cheat já faz isso.",
     [UI_MENU_CHEAT_REBUILD] = "após recompilar",
@@ -1328,6 +1350,14 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
+    [UI_MENU_CHEAT_LSTICK_LEFT] = "Analógico esquerdo para a esquerda",
+    [UI_MENU_CHEAT_LSTICK_UP] = "Analógico esquerdo para cima",
+    [UI_MENU_CHEAT_LSTICK_RIGHT] = "Analógico esquerdo para a direita",
+    [UI_MENU_CHEAT_LSTICK_DOWN] = "Analógico esquerdo para baixo",
+    [UI_MENU_CHEAT_RSTICK_LEFT] = "Analógico direito para a esquerda",
+    [UI_MENU_CHEAT_RSTICK_UP] = "Analógico direito para cima",
+    [UI_MENU_CHEAT_RSTICK_RIGHT] = "Analógico direito para a direita",
+    [UI_MENU_CHEAT_RSTICK_DOWN] = "Analógico direito para baixo",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -1864,6 +1894,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_DATA_DESC] = "开启时每帧写入游戏内存。",
     [UI_MENU_CHEAT_MASTER] = "始终开启",
     [UI_MENU_CHEAT_MASTER_DESC] = "文件的主代码：始终开启。",
+    [UI_MENU_CHEAT_BUILTIN] = "已内置",
+    [UI_MENU_CHEAT_BUILTIN_DESC] = "同一文件中其他金手指要用的代码。它已构建进游戏，无需开关。",
     [UI_MENU_CHEAT_RESTORE] = "无需使用",
     [UI_MENU_CHEAT_RESTORE_DESC] = "它只会写回游戏原本的代码。关闭金手指时已经会这样做。",
     [UI_MENU_CHEAT_REBUILD] = "重新构建后",
@@ -1876,6 +1908,14 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
+    [UI_MENU_CHEAT_LSTICK_LEFT] = "左摇杆向左",
+    [UI_MENU_CHEAT_LSTICK_UP] = "左摇杆向上",
+    [UI_MENU_CHEAT_LSTICK_RIGHT] = "左摇杆向右",
+    [UI_MENU_CHEAT_LSTICK_DOWN] = "左摇杆向下",
+    [UI_MENU_CHEAT_RSTICK_LEFT] = "右摇杆向左",
+    [UI_MENU_CHEAT_RSTICK_UP] = "右摇杆向上",
+    [UI_MENU_CHEAT_RSTICK_RIGHT] = "右摇杆向右",
+    [UI_MENU_CHEAT_RSTICK_DOWN] = "右摇杆向下",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

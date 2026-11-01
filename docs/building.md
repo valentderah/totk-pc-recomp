@@ -195,6 +195,8 @@ Before a commit:
   `git config core.hooksPath .githooks` runs it before each local commit.
 - `build\<ver>\totk.exe --selftest`: layout, dispatch table and host-function registry, without game files.
 
+A change to the cheats (`tools/cheats.py`) passes `.venv\Scripts\python tests\cheats_check.py` (no game files).
+
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
 files); a change to the settings passes `totk.exe --probe-cfg`.
