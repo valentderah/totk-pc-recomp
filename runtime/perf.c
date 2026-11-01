@@ -183,6 +183,9 @@ static uint64_t ft_frame(uint64_t frame, uint64_t now, uint64_t d) {
 // process memory, and which side holds the frame back. pace: the frame waited for pacing (vsync, the frame limiter) at
 // least 15% of the window; gpu: the GPU was busy for 80% of the frame interval or more (without timestamps: threads
 // waited for fences for half the interval or more); cpu otherwise.
+// With calibrated timestamps a third line splits the GPU's idle time between timed parts: the part was submitted only
+// after the previous one had ended (the GPU waited for the CPU's replay or the game), or it was already queued (untimed
+// work such as uploads and presents ran there, or a wait held it).
 static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share, uint64_t n) {
     PerfGpu g;
     memset(&g, 0, sizeof g);
@@ -205,6 +208,11 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
     rt_log("perf: frame %llu: %s; fence wait per frame: render thread %.2f ms, other threads %.2f ms; %s; ram working set "
            "%.0f MiB, private %.0f MiB; bound: %s",
            (unsigned long long)frame, gs, rw, ow, vs, ws, priv, bound);
+    if (g.have_gpu && g.have_idle)
+        rt_log("perf: frame %llu: gpu idle per frame %.2f ms between timed parts: %.2f ms waiting for the next submission, "
+               "%.2f ms with it queued (untimed work or waits); %.1f gaps over 0.5 ms, longest %.2f ms; submit to start avg %.2f ms",
+               (unsigned long long)frame, g.idle_ns / 1e6 / n, g.starved_ns / 1e6 / n, (g.idle_ns - g.starved_ns) / 1e6 / n,
+               (double)g.idle_gaps / n, g.max_gap_ns / 1e6, g.gpu_parts ? g.queued_ns / 1e6 / g.gpu_parts : 0.0);
 }
 
 int rt_ab(void) {

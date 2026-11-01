@@ -2569,13 +2569,142 @@ static struct {
     uint8_t clamp, poly, minus_w, samples;             // library state (GKey fields)
     double t0, ms[3];                                  // ms: build time per kind (vertex, fragment, compute)
     // warmed: driver cache only; nolib: vertex and fragment variants skipped with the graphics pipeline library off
-    uint64_t built[3], have[3], fail[3], warmed[3], noshader, nolib, done, cs_draw;
+    // skipped: variants of the skip list (SK below)
+    uint64_t built[3], have[3], fail[3], warmed[3], noshader, nolib, skipped, done, cs_draw;
     double warm_ms[3];
     volatile int32_t kept;                                // libraries entered in libs[] so far
     int32_t keep_n;
     int idle;                                          // build at PLAT_PRIO_IDLE (boot), normal (preparation)
     PlatMutex stat;
 } LB = {.stat = PLAT_MUTEX_INIT};
+
+// ---- preparation that outlives a driver crash. A bug in the driver's shader compiler can kill the process inside
+// vkCreate*Pipelines: NVIDIA 615.78.08 on an RTX 5080 crashed on the same vertex library at the same point of every
+// preparation, natively and under Wine, so preparation never finished (issue #30 and a report on PR #60).
+// While lb_warm_prepared builds, slot k of <dir>/shader-prepare-journal.bin holds the variant its worker k has handed to
+// the driver (input id and stage; zeros between variants). The writes go straight to the OS, so they outlast the
+// process, and a run that finishes deletes the file. The next preparation or boot (skip_init) moves the variants a
+// leftover journal names into <dir>/shader-prepare-skip.txt with this GPU and driver version, and preparation and the
+// boot prebuild (lb_worker) skip what that file lists for them. The variants the other workers were building at the
+// crash are skipped along with the culprit; like it, they build at their first draw, where the driver can still crash.
+// Another driver version builds them again, and so does deleting the file. tools/prepare_shaders.py runs the build
+// again (--warm-shaders) after a run that left a journal.
+#define JR_SLOT 64    // bytes per journal slot: input id, stage, zeros
+#define JR_SLOTS 64   // lb_warm_prepared's thread cap
+
+static struct {
+    PlatFile *journal;     // while lb_warm_prepared builds
+    uint8_t (*iid)[32];    // the skip list's variants for this GPU and driver
+    size_t n;
+    int loaded;
+} SK;
+
+static int cache_dir(char *dir, size_t n) {   // the folder of pipeline-cache.bin and shader-prepared.bin
+    snprintf(dir, n, "%s", P.cache_path);
+    char *cut = plat_last_sep(dir);
+    if (!cut) return 0;
+    *cut = 0;
+    return 1;
+}
+
+static void gpu_key(char *out, size_t n) {   // vendor:device:driver version, as the skip list names a GPU and driver
+    const VkPhysicalDeviceProperties *p = &vk_ctx()->props;
+    snprintf(out, n, "%04x:%04x:%08x", p->vendorID, p->deviceID, p->driverVersion);
+}
+
+static const char *stage_name(int st) {
+    return st == GFX_STAGE_VS ? "vertex" : st == GFX_STAGE_FS ? "fragment" : st == GFX_STAGE_CS ? "compute" : "other";
+}
+
+static int hex_digit(int c) {
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+// A journal a crashed run left into the skip list, then the skip list's variants for this GPU and driver into SK.
+static void skip_init(const char *dir) {
+    if (SK.loaded) return;
+    SK.loaded = 1;
+    char jp[PLAT_PATH_MAX * 2 + 48], sp[PLAT_PATH_MAX * 2 + 48], key[32];
+    snprintf(jp, sizeof jp, "%s/shader-prepare-journal.bin", dir);
+    snprintf(sp, sizeof sp, "%s/shader-prepare-skip.txt", dir);
+    gpu_key(key, sizeof key);
+    uint64_t jn = 0, sn = 0;
+    uint8_t *j = plat_file_read(jp, &jn);
+    char *s = (char *)plat_file_read(sp, &sn);
+    int keep_journal = 0;
+    if (j) {
+        static const char head[] =
+            "# Shader variants the graphics driver was building when the process died during preparation\n"
+            "# (runtime/vk_pipeline.c skip_init): input id, stage, GPU vendor:device:driver version. Preparation skips\n"
+            "# them on that GPU and driver. Delete this file to build them again.\n";
+        size_t cap = (s ? sn : sizeof head) + (jn / JR_SLOT + 1) * 128, len = 0;
+        char *out = malloc(cap);
+        int added = 0;
+        if (out) {
+            len = s ? sn : sizeof head - 1;
+            memcpy(out, s ? s : head, len);
+            if (len && out[len - 1] != '\n') out[len++] = '\n';
+            for (uint64_t o = 0; o + 33 <= jn; o += JR_SLOT) {
+                int set = 0;
+                for (int b = 0; b < 32; b++) set |= j[o + b];
+                if (!set) continue;
+                char hex[65];
+                for (int b = 0; b < 32; b++) snprintf(hex + 2 * b, 3, "%02x", j[o + b]);
+                len += (size_t)snprintf(out + len, cap - len, "%s %s %s\n", hex, stage_name(j[o + 32]), key);
+                added++;
+            }
+            out[len] = 0;   // parsed below as the list's text
+        }
+        if (added && plat_file_write_atomic(sp, out, len)) {
+            rt_log("vk_pipeline: the last shader preparation died while the driver built %d variants; %s now lists them "
+                   "and preparation skips them on this GPU and driver (%s)", added, sp, key);
+            free(s), s = out, sn = len, out = NULL;
+        } else if (added) {
+            rt_log("vk_pipeline: cannot write %s; %s stays for the next run", sp, jp);
+            keep_journal = 1;
+        }
+        free(out);
+        free(j);
+    }
+    if (!keep_journal) plat_file_delete(jp);
+    for (char *line = s, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char hex[65], st[16], k[32];
+        uint8_t iid[32];
+        int ok = line[0] != '#' && sscanf(line, "%64s %15s %31s", hex, st, k) == 3 && strlen(hex) == 64 &&
+                 !strcmp(k, key);
+        for (int b = 0; ok && b < 32; b++) {
+            int hi = hex_digit(hex[2 * b]), lo = hex_digit(hex[2 * b + 1]);
+            if (hi < 0 || lo < 0) ok = 0;
+            else iid[b] = (uint8_t)(hi << 4 | lo);
+        }
+        uint8_t (*grown)[32] = ok ? realloc(SK.iid, (SK.n + 1) * sizeof *SK.iid) : NULL;
+        if (grown) memcpy(grown[SK.n++], iid, 32), SK.iid = grown;
+    }
+    free(s);
+    if (SK.n) rt_log("vk_pipeline: %zu shader variants skipped ahead of play on this GPU and driver (%s)", SK.n, sp);
+}
+
+static int skip_listed(const uint8_t iid[32]) {
+    for (size_t i = 0; i < SK.n; i++)
+        if (!memcmp(SK.iid[i], iid, 32)) return 1;
+    return 0;
+}
+
+static void skip_count(void) {
+    plat_mutex_lock(&LB.stat);
+    LB.skipped++;
+    plat_mutex_unlock(&LB.stat);
+}
+
+// Journal slot `slot`: the variant e its worker hands to the driver next, or zeros (e NULL) when the build returned.
+static void journal_mark(int slot, const GfxWarmEnt *e) {
+    if (!SK.journal || slot < 0 || slot >= JR_SLOTS) return;
+    uint8_t rec[JR_SLOT] = {0};
+    if (e) memcpy(rec, e->iid, 32), rec[32] = e->stage;
+    plat_file_pwrite(SK.journal, rec, sizeof rec, (uint64_t)slot * JR_SLOT);
+}
 
 VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info) {
     if (info) *info = NULL;
@@ -2749,7 +2878,8 @@ static void lb_report(const char *how) {
     rt_log("vk_pipeline: stage library prebuild %s: %llu of %zu variants in %.0f ms; kept: vertex %llu built (avg %.1f ms), "
            "%llu there; fragment %llu built (avg %.1f ms), %llu there; compute %llu built (avg %.1f ms), %llu there; driver "
            "cache only: vertex %llu (avg %.1f ms), fragment %llu (avg %.1f ms), compute %llu (avg %.1f ms); %llu failed, %llu not in the shader cache, "
-           "%llu vertex/fragment skipped (graphics pipeline library off); process working set %.0f MB", how, (unsigned long long)LB.done, LB.n,
+           "%llu vertex/fragment skipped (graphics pipeline library off), %llu skipped (the driver crashed on them before, "
+           "shader-prepare-skip.txt); process working set %.0f MB", how, (unsigned long long)LB.done, LB.n,
            now_ms() - LB.t0, (unsigned long long)LB.built[0], LB.built[0] ? LB.ms[0] / LB.built[0] : 0.0,
            (unsigned long long)LB.have[0], (unsigned long long)LB.built[1], LB.built[1] ? LB.ms[1] / LB.built[1] : 0.0,
            (unsigned long long)LB.have[1], (unsigned long long)LB.built[2], LB.built[2] ? LB.ms[2] / LB.built[2] : 0.0,
@@ -2757,7 +2887,7 @@ static void lb_report(const char *how) {
            (unsigned long long)LB.warmed[1], LB.warmed[1] ? LB.warm_ms[1] / LB.warmed[1] : 0.0,
            (unsigned long long)LB.warmed[2], LB.warmed[2] ? LB.warm_ms[2] / LB.warmed[2] : 0.0,
            (unsigned long long)(LB.fail[0] + LB.fail[1] + LB.fail[2]),
-           (unsigned long long)LB.noshader, (unsigned long long)LB.nolib, (double)mem_proc);
+           (unsigned long long)LB.noshader, (unsigned long long)LB.nolib, (unsigned long long)LB.skipped, (double)mem_proc);
     plat_mutex_unlock_shared(&LB.stat);
 }
 
@@ -2768,6 +2898,13 @@ static void lb_worker(void *arg) {
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n || LB.stop) break;
+        if (skip_listed(LB.e[i].iid)) {
+            skip_count();
+            plat_mutex_lock(&LB.stat);
+            LB.done++;
+            plat_mutex_unlock(&LB.stat);
+            continue;
+        }
         plat_thread_priority(PLAT_PRIO_NORMAL);   // gfx_shader's cache lock, disk reads
         const GfxShader *sh = gfx_shader_load_input(LB.e[i].iid, 0);
         plat_thread_priority(PLAT_PRIO_IDLE);
@@ -2805,6 +2942,8 @@ static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
     const char *e = cfg_value("TOTK_LIB_PREBUILD"), *ke = cfg_get("TOTK_LIB_PREBUILD_KEEP");
     const char *te = cfg_get("TOTK_LIB_PREBUILD_THREADS");   // no fixed default: a quarter of the CPUs when unset
     if (!A.on || !cfg_bool("TOTK_LIB_PREBUILD")) return;
+    char dir[PLAT_PATH_MAX * 2];
+    if (cache_dir(dir, sizeof dir)) skip_init(dir);
     GfxWarmEnt *all = NULL;
     size_t total = gfx_shader_warm_list(&all), n = 0, n_cs = 0;
     LB.keep_n = ke && *ke ? atoi(ke) : 0;
@@ -2847,16 +2986,20 @@ static void lb_stop(void) {
     LB.threads = 0;
 }
 
-// Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept).
+// Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept). arg is
+// the worker's journal slot.
 static void lb_warm_worker(void *arg) {
-    (void)arg;
+    int slot = (int)(intptr_t)arg;
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n) return;
-        int owned = 0;
-        const GfxShader *sh = gfx_shader_load_private(LB.e[i].iid, &owned);
+        int owned = 0, skip = skip_listed(LB.e[i].iid);
+        const GfxShader *sh = skip ? NULL : gfx_shader_load_private(LB.e[i].iid, &owned);
         int st = sh ? gfx_shader_stage(sh) : -1;
-        if (!sh) {
+        if (sh) journal_mark(slot, &LB.e[i]);   // from here to its clearing below, a crash names this variant
+        if (skip) {
+            skip_count();
+        } else if (!sh) {
             plat_mutex_lock(&LB.stat);
             LB.noshader++;
             plat_mutex_unlock(&LB.stat);
@@ -2874,6 +3017,7 @@ static void lb_warm_worker(void *arg) {
             if (P.gpl) lb_library(sh, st == GFX_STAGE_VS, 0);
             else lb_skip_lib();
         }
+        if (sh) journal_mark(slot, NULL);
         if (owned) gfx_shader_release_private(sh);
         plat_mutex_lock(&LB.stat);
         uint64_t d = ++LB.done;
@@ -2894,23 +3038,36 @@ static void lb_warm_prepared(const char *dir) {
         memcpy(LB.e[i].iid, f + 16 + 36 * i + 4, 32), LB.e[i].stage = f[16 + 36 * i], LB.e[i].prio = f[16 + 36 * i + 1];
     free(f);
     if (!LB.e) return;
+    skip_init(dir);
+    char jp[PLAT_PATH_MAX * 2 + 48];
+    snprintf(jp, sizeof jp, "%s/shader-prepare-journal.bin", dir);
+    SK.journal = plat_fs_create(jp, NULL);   // skip_init removed a leftover one
+    if (!SK.journal) rt_log("vk_pipeline: cannot create %s: a driver crash in this run will not be recorded", jp);
     LB.n = n, LB.idle = 0, LB.t0 = now_ms();
     static const uint32_t no_pr[16], no_fs[4];
     lb_state(no_pr, no_fs);
     int cpus = (int)plat_cpu_usable(), k = 0;
-    PlatThread *t[64];
-    for (int i = 0; i < cpus && i < 64; i++)
-        if ((t[k] = plat_thread_new(lb_warm_worker, NULL, "lib warm"))) k++;
-    if (!k) lb_warm_worker(NULL);
+    PlatThread *t[JR_SLOTS];
+    for (int i = 0; i < cpus && i < JR_SLOTS; i++)
+        if ((t[k] = plat_thread_new(lb_warm_worker, (void *)(intptr_t)k, "lib warm"))) k++;
+    if (!k) lb_warm_worker((void *)(intptr_t)0);
     for (int i = 0; i < k; i++) plat_thread_join(t[i]);
+    if (SK.journal) plat_file_close(SK.journal), SK.journal = NULL, plat_file_delete(jp);   // every build returned
     lb_report("preparation done");
     // with gpl off only compute variants are built: say so, rather than count the skipped ones as built
+    unsigned long long skipped = LB.skipped;
+    size_t tried = n - (size_t)skipped;
     if (LB.nolib)
         printf("prepare-shaders: %zu variants on %d threads in %.0f ms, %llu vertex/fragment variants skipped (graphics "
-               "pipeline library off, they build at their first draw)\n", n, k, now_ms() - LB.t0, (unsigned long long)LB.nolib);
+               "pipeline library off, they build at their first draw)\n", tried, k, now_ms() - LB.t0,
+               (unsigned long long)LB.nolib);
     else
-        printf("prepare-shaders: %zu variants built into the driver cache on %d threads in %.0f ms\n", n, k, now_ms() - LB.t0);
-    free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0;
+        printf("prepare-shaders: %zu variants built into the driver cache on %d threads in %.0f ms\n", tried, k,
+               now_ms() - LB.t0);
+    if (skipped)   // installer/steps.py Prepare reads this line
+        printf("prepare-shaders: %llu variants skipped: the graphics driver crashed while building them in an earlier "
+               "run (shader-prepare-skip.txt); they build at their first draw\n", skipped);
+    free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0, LB.skipped = 0;
 }
 
 // totk.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every
@@ -2922,10 +3079,7 @@ int vk_pipeline_prepare_shaders(void) {
         return 1;
     }
     char dir[PLAT_PATH_MAX * 2];
-    snprintf(dir, sizeof dir, "%s", P.cache_path);
-    char *cut = plat_last_sep(dir);
-    if (!cut) return 1;
-    *cut = 0;
+    if (!cache_dir(dir, sizeof dir)) return 1;
     int cpus = (int)plat_cpu_usable();
     const char *pe = cfg_get("TOTK_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
@@ -2944,10 +3098,7 @@ int vk_pipeline_warm_shaders(void) {
         return 1;
     }
     char dir[PLAT_PATH_MAX * 2];
-    snprintf(dir, sizeof dir, "%s", P.cache_path);
-    char *cut = plat_last_sep(dir);
-    if (!cut) return 1;
-    *cut = 0;
+    if (!cache_dir(dir, sizeof dir)) return 1;
     char prp[PLAT_PATH_MAX * 2 + 32];
     snprintf(prp, sizeof prp, "%s/shader-prepared.bin", dir);
     if (!plat_file_exists(prp)) {

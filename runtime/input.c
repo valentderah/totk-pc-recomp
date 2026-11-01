@@ -236,7 +236,56 @@ static float mouse_sens_get(void) {
 }
 
 
-// The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`.
+// ---- walk key: the keyboard's stick samples scaled down while a key is held (TOTK_WALK_KEY, TOTK_WALK_SCALE)
+// A keyboard key is all or nothing, so every keyboard-driven stick sample is +/-32767 and the game only ever sees a
+// full tilt. Holding this key scales those two samples, which gives the half tilt a gamepad gets from its analog range,
+// so the keyboard can walk as well as run. yuzu and eden do the same with their modifier and modifier_scale settings.
+// Only the keyboard is scaled: the gamepad's axes and the mouse camera sample their own values.
+static int walk_key = KEY_NONE;        // TOTK_WALK_KEY as a KEY_*, KEY_NONE = off; live (cfg_version)
+static float walk_scale = 0.51f;       // TOTK_WALK_SCALE, 0.2 to 0.9; live (cfg_version)
+static unsigned walk_seen = ~0u;
+
+// The ini takes the key names the Controls tab writes; a hand-written line may spell them in any case.
+static int name_matches(const char *name, const char *key) {
+    for (; *name && *key; name++, key++) {
+        unsigned char a = (unsigned char)*name, b = (unsigned char)*key;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return *name == *key;
+}
+
+static void walk_get(void) {
+    unsigned ver = cfg_version();
+    if (ver == walk_seen) return;
+    walk_seen = ver;
+    const char *name = cfg_value("TOTK_WALK_KEY");   // "none" (the default) turns the key off
+    int key = KEY_NONE;
+    if (*name && !name_matches(name, "none")) {
+        for (int k = KEY_A; k < KEY_COUNT && key == KEY_NONE; k++)
+            if (input_key_name(k) && name_matches(name, input_key_name(k))) key = k;
+        if (key == KEY_NONE) rt_log("input: walk_key: unknown key '%s', the keyboard sticks keep their full tilt", name);
+    }
+    // 0.51 rather than 0.5: a keyboard sample is 32767, and 32767 * 0.5 = 16383 falls one short of stick_bits'
+    // STICK_DIR (16384), which would leave the game's stick-direction bits clear while the walk key is held. The value
+    // in the settings table carries that default; this code only rejects what the table's range does not allow.
+    const char *sv = cfg_value("TOTK_WALK_SCALE");
+    char *end;
+    double d = strtod(sv, &end);
+    double s = end == sv || *end || !(d >= 0.2 && d <= 0.9) ? strtod(cfg_meta("TOTK_WALK_SCALE")->def, NULL) : d;
+    if (key != walk_key || (float)s != walk_scale) {
+        walk_key = key;
+        walk_scale = (float)s;
+        rt_log("input: walk key %s, keyboard sticks at %.0f%% of their tilt (mouse and gamepad unchanged)",
+               key != KEY_NONE ? input_key_name(key) : "off", s * 100);
+    }
+}
+
+// The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`. The sample is divided by
+// the camera speed factor the game runs with (camera_speed.c, cam_speed_applied), which multiplies every right-stick
+// turn rate, so TOTK_MOUSE_SENS alone sets the mouse's speed; below 1 the sample stays within the stick's range, so the
+// mouse's top speed drops with the factor.
 static void mouse_camera(int32_t out[2]) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
@@ -259,20 +308,23 @@ static void mouse_camera(int32_t out[2]) {
             held[0] = held[1] = 0;   // frames stopped: do not hold a deflection
         }
     }
-    out[0] = held[0];
-    out[1] = held[1];
+    double k = cam_speed_applied(), x = held[0] / k, y = held[1] / k, len = sqrt(x * x + y * y);
+    if (len > STICK_MAX) x *= STICK_MAX / len, y *= STICK_MAX / len;
+    out[0] = (int32_t)lround(x);
+    out[1] = (int32_t)lround(y);
 }
 
-static float stick_dead = -1;              // TOTK_STICK_DEADZONE as a fraction of full deflection; live (cfg_version)
+static float stick_dead[2] = {-1, -1};     // input_pad_deadzone of the left and right stick; live (cfg_version)
 static unsigned stick_dead_seen;
 
-static float stick_dead_get(void) {
+static float stick_dead_get(int s) {
     unsigned ver = cfg_version();
-    if (stick_dead >= 0 && ver == stick_dead_seen) return stick_dead;
-    stick_dead_seen = ver;
-    double v = cfg_double("TOTK_STICK_DEADZONE");
-    stick_dead = (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
-    return stick_dead;
+    if (stick_dead[0] < 0 || ver != stick_dead_seen) {
+        stick_dead_seen = ver;
+        stick_dead[0] = input_pad_deadzone(0);
+        stick_dead[1] = input_pad_deadzone(1);
+    }
+    return stick_dead[s];
 }
 
 // One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
@@ -425,10 +477,24 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    float dead = stick_dead_get();
-    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
-    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead, sr);
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
+}
+
+int input_pad_stick_percent(double pct[2]) {
+    int ok = 0;
+    pct[0] = pct[1] = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1 && pad && SDL_GamepadConnected(pad)) {   // the game's poll keeps the state fresh (SDL_UpdateGamepads)
+        pct[0] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
+                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
+        pct[1] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX),
+                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+        ok = 1;
+    }
+    plat_mutex_unlock(&lock);
+    return ok;
 }
 
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
@@ -456,9 +522,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             was_captured = cap;
             b |= input_map_buttons(down);
             int32_t k[2];
+            walk_get();
+            int walk = walk_key != KEY_NONE && down[walk_key];
             input_map_stick(down, 0, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sl[0], &sl[1], k[0], k[1]);
             input_map_stick(down, 1, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sr[0], &sr[1], k[0], k[1]);
             mouse_camera(k);
             pick(&sr[0], &sr[1], k[0], k[1]);
@@ -505,15 +575,20 @@ void input_menu(int open) {
     ikb_cursor_update();
 }
 
-// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held.
-static int blocked(volatile int32_t *flag, uint64_t buttons) {
+// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held. A stick
+// axis counts as held as well: with the walk key the keyboard's sticks move part way without setting a direction bit, so
+// a gate that watched the buttons alone would let that movement through the moment the menu or the text entry closes.
+static int blocked(volatile int32_t *flag, uint64_t buttons, const int32_t *axes) {
     int32_t k = *flag;
-    return k && !(k == 2 && !buttons && plat_cas32(flag, 0, 2) == 2);
+    int held = buttons != 0;
+    for (int i = 0; i < 4; i++) held |= axes[i] != 0;
+    return k && !(k == 2 && !held && plat_cas32(flag, 0, 2) == 2);
 }
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    int text = blocked(&g_block, *buttons), menu = blocked(&g_menu, *buttons);
+    const int32_t axes[4] = {*lx, *ly, *rx, *ry};
+    int text = blocked(&g_block, *buttons, axes), menu = blocked(&g_menu, *buttons, axes);
     if (!text && !menu) return;
     *buttons = 0; *lx = *ly = *rx = *ry = 0;
 }

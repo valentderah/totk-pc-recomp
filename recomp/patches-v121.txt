@@ -9,6 +9,7 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set shadow   TOTK_PATCH_SHADOW   0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -947,3 +948,12 @@ spin sdk 23a590 23a5d8   # 19 instructions; loads
 spin sdk 23a658 23a6a0   # 19 instructions; loads
 spin sdk 23a7fc 23a918   # 19 instructions; loads
 spin sdk 3d3250 3d3270   # 9 instructions; loads
+
+# Sun shadow map size (runtime/resolution.c shadow_init switches the set on). Each frame the engine sizes its shadow
+# cascades (a D16 4-layer array) in main+0xcebdf4: a base size (960 in the field), interpolated down by how close the
+# cover is, rounded up to 8 at main+0xcec22c and stored as the width (+0x3d8 of the cascade set) and, through the packed
+# store at +0xe4, the height (+0x3f8). Near the ground it falls to about 400, which draws foliage shadows blocky, and
+# every change of size moves the shadow texels, so leaf shadows jump instead of sliding. The page's fixed size (+92)
+# goes in just before the rounding, as the community's shadow resolution mods do (1.1.0: mov w11, #1024 over the
+# computation). Found by a write watch on the size field (the writer was this function, and no other).
+site shadow main cec22c 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7

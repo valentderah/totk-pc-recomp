@@ -142,6 +142,7 @@ Source shorthands:
 | TotK | "detective mode" Link on AMD | AMD EDS3 colour-blend driver regression | YZ-2306 PR 10946 |
 | BotW | shadow artifacts at object edges (AMD) | gather rounding | yuzu commit 780240e (2.10) |
 | TotK | dashed dark lines along wall and floor edges, changing with the camera angle (AMD, RADV) | gather rounding | gather bias (2.10) |
+| TotK | blocky foliage shadows that jump instead of sliding | not a GPU difference: the engine sizes its sun shadow map to the area it covers, down to about 400 near the ground, and each change of size moves the shadow texels | fixed size, `shadow_res` (the shadow set of `recomp/patches-v121.txt`; the community mods force 1024 the same way) |
 | BotW | black textures on GCN | HTILE (depth compression) | `AMD_DEBUG=nohyperz` wiki (1.9) |
 | BotW | 3D scene black | deferred texture handles | NXN |
 | BotW | albedo scattered squares | duplicate colour attachments | NXN |

@@ -846,6 +846,7 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
 }
 
 int probe_vkexec(void) {
+    vk_hdr_off();   // the present checks read 8-bit swapchain pixels
     layouts_equal = 0;
     main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;

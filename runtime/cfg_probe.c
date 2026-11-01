@@ -1,4 +1,5 @@
 // --probe-cfg: totk.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -272,6 +273,22 @@ int probe_cfg(void) {
           "pad stick: a square gate's corner stays on the unit circle");
     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
+    plat_setenv("TOTK_STICK_DEADZONE", "12");
+    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
+    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
+          "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
+    plat_setenv("TOTK_RSTICK_DEADZONE", "20");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
+          "pad dead zone: rstick_deadzone sets the right stick alone");
+    plat_setenv("TOTK_LSTICK_DEADZONE", "80");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
+    plat_setenv("TOTK_STICK_DEADZONE", NULL);
+    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
+    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
+    CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
+              input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
+          "stick percent: an axis's end is 100%, the centre 0%, round in between");
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
@@ -279,7 +296,30 @@ int probe_cfg(void) {
           "pad layout: a set layout wins over the labels");
     CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
               input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
-          "pad layout: Xbox prompts keep the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+          "pad layout: 0.1.9's xbox_prompts keeps the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+    // Button prompts (input_map.c)
+    CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
+              input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
+          "prompts: the game's own unless set to Xbox");
+    CHECK(input_prompts_pick(NULL, "xbox_prompts") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox_prompts") == PROMPTS_NINTENDO,
+          "prompts: 0.1.9's pad_layout = xbox_prompts means Xbox while prompts is unset");
+    CHECK(!input_prompts_folder(PROMPTS_NINTENDO, "nintendo") && !input_prompts_folder(PROMPTS_NINTENDO, "xbox"),
+          "prompts: the game's own need no folder");
+    CHECK(EQ(input_prompts_folder(PROMPTS_XBOX, "nintendo"), "romfs-patches-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "xbox_prompts"), "romfs-patches-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "xbox"), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
+          "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
+    // where the layout puts A on the east button, which an Xbox pad labels B.
+    input_map_reset();
+    static const char *const layouts[] = {"nintendo", "xbox", "auto", "xbox_prompts"};
+    for (int i = 0; i < 4; i++) {
+        int a_east = input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_EAST] = 1}, input_pad_layout_pick(layouts[i], 0)) == 1ull << B_A;
+        CHECK(a_east == EQ(input_prompts_folder(PROMPTS_XBOX, layouts[i]), "romfs-patches-xbox"),
+              "prompts: the folder names A as B exactly when the layout puts A on the button labelled B");
+    }
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;
     CHECK(input_map_pad_buttons(pd, PAD_LAYOUT_NINTENDO) == (1ull << B_B | 1ull << B_X) &&
@@ -370,6 +410,24 @@ int probe_cfg(void) {
     plat_setenv("TOTK_FREE_CORES", "1");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 1, "free_cores 1: on");
     plat_setenv("TOTK_FREE_CORES", NULL);
+    // 0.1.9's pad_layout = xbox_prompts (cfg.c migrate): read as the Nintendo layout with the Xbox prompts, saved so
+    plat_setenv("TOTK_PAD_LAYOUT", NULL);
+    plat_setenv("TOTK_PROMPTS", NULL);
+    static const char old_layout[] = "[input]\r\npad_layout = xbox_prompts\r\n";
+    CHECK(plat_file_write(path, old_layout, sizeof old_layout - 1) && cfg_load(path) == 1 &&
+              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "xbox"),
+          "0.1.9's pad_layout = xbox_prompts reads as nintendo with prompts = xbox");
+    CHECK(cfg_save_to(path) == 1, "the read pad layout and prompts save");
+    uint64_t saved_n = 0;
+    char *saved = (char *)plat_file_read(path, &saved_n);
+    CHECK(saved && strstr(saved, "pad_layout = nintendo") && strstr(saved, "prompts = xbox") && !strstr(saved, "xbox_prompts"),
+          "the next save writes the pad layout and the prompts");
+    free(saved);
+    static const char old_layout_own[] = "[input]\r\npad_layout = xbox_prompts\r\nprompts = nintendo\r\n";
+    CHECK(plat_file_write(path, old_layout_own, sizeof old_layout_own - 1) && cfg_load(path) == 1 &&
+              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "nintendo"),
+          "a prompts line of the file's own wins over 0.1.9's pad_layout = xbox_prompts");
+    plat_file_delete(path);
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
     for (int i = 0; cfg_meta_at(i); i++) {
@@ -383,9 +441,10 @@ int probe_cfg(void) {
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {
-            long lo = strtol(m->values, NULL, 10), hi = strtol(strstr(m->values, "..") + 2, NULL, 10);
+            // strtod: ranges such as 0.2..0.9 have fractional ends
+            double lo = strtod(m->values, NULL), hi = strtod(strstr(m->values, "..") + 2, NULL);
             double d = strtod(m->def, NULL);
-            ok = d >= (double)lo && d <= (double)hi;
+            ok = d >= lo && d <= hi;
         } else {
             size_t dl = strlen(m->def);
             for (const char *v = m->values; *v;) {
@@ -397,6 +456,11 @@ int probe_cfg(void) {
         if (!ok) fprintf(stderr, "FAIL cfg: default '%s' of %s is not one of its values '%s'\n", m->def, m->key, m->values), fails++;
     }
     CHECK(listed >= 30, "the defaults table was walked");
+    // cfg_meta answers with the first row of a key: a second row would be dead, and Reset would visit the key twice
+    for (int i = 0; cfg_meta_at(i); i++)
+        for (int j = i + 1; cfg_meta_at(j); j++)
+            if (!strcmp(cfg_meta_at(i)->key, cfg_meta_at(j)->key))
+                fprintf(stderr, "FAIL cfg: %s has two rows in the defaults table\n", cfg_meta_at(i)->key), fails++;
     printf("probe-cfg: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }
