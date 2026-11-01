@@ -61,7 +61,8 @@ void opt_group_text(const char *title);
 void opt_text_str(const char *text, bool warn = false);
 // lo..hi in steps of step (left and right held for a second go ten times as fast); fmt formats the value ("%.0f %%").
 // note: a short line under the value in place of the "default" mark (NULL: none). fallback: the setting that applies
-// while key is unset; the row shows its value then, and a change sets key.
+// while key is unset; the row shows its value then, and a change sets key. A key with no table default of its own takes
+// the "default" mark from the fallback's default, and a step onto the fallback's value unsets key again.
 bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step = 1,
                 const char *fmt = "%g", const char *note = nullptr, const char *fallback = nullptr);
 
