@@ -10,6 +10,9 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+# Distant detail (patches-v121.txt explains both): no sites found in this version yet, so the switches do nothing.
+set lod      TOTK_LOD_DETAIL     0
+set steady   TOTK_LOD_STEADY     0
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)

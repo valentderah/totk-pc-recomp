@@ -81,6 +81,25 @@ site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 
+# Distant detail, after the emulator mods "LOD Improvement v2" (theboy181, sweetmini) and "Disable LOD Quality
+# Reduction" (main-1.2.1.pchtxt). Those turn a conditional branch into an unconditional one; the generator patches
+# only plain instructions (recomp/gen.py, the emitter's patch), so these sites feed the branch instead.
+# Model level of detail: the level picker main+0x27d225c (a virtual method, vtable slot at data 0x43723f0) returns the
+# floor at its parameters' +0x28 when the distance term is past the threshold, and otherwise interpolates towards the
+# coarsest level; a one-level model returns count - 1 (0) at once. Here every model takes that early return, with the
+# floor in w0, so distant models keep the detail they have up close. Unlike the mod, a one-level model still returns 0:
+# the floor is not checked against the level count, and an index past a one-level list would read past its end.
+set lod      TOTK_LOD_DETAIL     0
+# A site may use the flags only once, so the one-level case is a mask (all ones unless count - 1 is 0) on the floor.
+site lod     main 27d2264 71000520 5100052b 4b0b03ec 2a0b018c 131f7d8c b9402840 0a0c0000 6b00001f   # subs w0, w9, #1 -> sub w11, w9, #1; neg w12, w11; orr w12, w12, w11; asr w12, w12, #31; ldr w0, [x2, #0x28]; and w0, w0, w12; cmp w0, w0 (b.eq taken)
+# Load-dependent quality: the graphics settings setup (main+0xc7e9xx, it also reads the FSR and FXAA switches) walks a
+# list at its +0x120 and passes three floats of each entry to virtual setters, which the mod describes as the drop of
+# model and texture detail when the frame rate falls; it skips all of it, to the epilogue, when the value it reads at
+# main+0xc7eb24 is above 8. Reading 9 there skips it as the mod does; w21 is not read again on that path (the epilogue
+# restores it).
+set steady   TOTK_LOD_STEADY     0
+site steady  main c7eb24 b9400815 52800135    # ldr w21, [x0, #8] -> mov w21, #9 (b.gt 0xc7ee4c taken)
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v121/exefs --patches recomp/patches-v121.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main ac600 ac620 ac630   # 13 instructions; loads

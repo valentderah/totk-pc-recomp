@@ -144,6 +144,18 @@
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100
+# Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
+# ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
+# are raised; shadow maps, data maps and screen-sized buffers keep the game's setting. Read at start.
+# aniso = 16
+# Distant model detail: 1 keeps the detail models have up close at any distance, 0 (the default) lets the game switch
+# to simpler versions as they recede (recomp/patches-v121.txt, set lod). Costs GPU time. Game version 1.2.1 only.
+# Read at start.
+# lod_detail = 0
+# Steady detail under load: 1 skips the game's setup for lowering model and texture detail when the frame rate drops,
+# as the emulator mod "Disable LOD Quality Reduction" does (set steady); 0 (the default) leaves it. Game version 1.2.1
+# only. Read at start.
+# lod_steady = 0
 # Colour adjustment of the picture, HUD included, before it is scaled to the window: brightness (-30 to 30, added in %),
 # contrast and saturation (70 to 150 and 50 to 200 %), gamma (0.8 to 1.2, below 1 brightens dark tones). At 0, 100,
 # 100 and 1 nothing runs. color_preset is the menu's profile (default, vivid, clarity, custom), which sets the four.
