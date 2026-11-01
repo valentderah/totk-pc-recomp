@@ -108,6 +108,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                               "bright room.",
     [UI_MENU_HDR_UI] = "HUD and menu brightness",
     [UI_MENU_HDR_UI_DESC] = "Nits of the HUD's and this menu's white.",
+    [UI_MENU_HDR_HUE] = "Highlight hue correction",
+    [UI_MENU_HDR_HUE_DESC] = "Bright colours such as fire and sparks turn towards white as in the game's own SDR picture, "
+                             "matching the light they cast; 0 keeps them fully saturated.",
     [UI_MENU_SHADOW_SCALE] = "Shadow resolution",
     [UI_MENU_SHADOW_SCALE_DESC] = "Draws the sun's shadow maps this many times larger on each side than the game's 960x960: "
                                   "sharper shadow edges and leaf shadows. Takes effect at the next start.",
@@ -533,6 +536,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                               "поднимите.",
     [UI_MENU_HDR_UI] = "Яркость интерфейса и меню",
     [UI_MENU_HDR_UI_DESC] = "Ниты белого цвета интерфейса игры и этого меню.",
+    [UI_MENU_HDR_HUE] = "Коррекция оттенка бликов",
+    [UI_MENU_HDR_HUE_DESC] = "Яркие цвета (огонь, искры) уходят к белому, как в SDR-картинке игры, и совпадают со светом, "
+                             "который они дают; 0 оставляет их полностью насыщенными.",
     [UI_MENU_SHADOW_SCALE] = "Разрешение теней",
     [UI_MENU_SHADOW_SCALE_DESC] = "Карты теней от солнца рисуются во столько раз больше по каждой стороне, чем 960x960 "
                                   "самой игры: края теней и тени листвы чётче. Действует после перезапуска.",
