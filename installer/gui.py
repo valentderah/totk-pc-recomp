@@ -495,12 +495,18 @@ class App:
 
     def open_folder(self):
         dest = self.model.dest
-        if dest and Path(dest).is_dir():
-            if os.name == 'nt':
-                os.startfile(dest)
-            else:
-                subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
+        if not dest or not Path(dest).is_dir():
+            return
+        if os.name == 'nt':
+            os.startfile(dest)
+            return
+        fifo = os.environ.get('KINGDOM_OPEN_FIFO')
+        if fifo and Path(fifo).exists():
+            with open(fifo, 'w', encoding='utf-8') as f:
+                f.write(f'{dest}\n')
+        elif shutil.which('xdg-open'):
+            subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------

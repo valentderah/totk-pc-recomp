@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -182,6 +183,66 @@ def program_ncas(base, update, keys_path):
             require(rights == bytes(16) or rights in tickets, 'Missing common ticket')
             inputs.append((source, record, header))
     return tickets, inputs
+
+
+UPDATE_META_ID = '0100F2C0115B6800'
+SPLIT_CHUNK = 64 << 20
+
+
+def combined_xci_parts(xci, keys_path):
+    """Return the base and update NCA ranges when one XCI contains both, otherwise None."""
+    keys = load_keys(keys_path)
+    with xci.open('rb') as f:
+        kind, entries = container_entries(f, xci.stat().st_size)
+        if kind != 'xci':
+            return None
+        where = {name: (start, size) for name, start, size in entries}
+        base, update = [], []
+        for record, header in nca_inventory(f, entries, keys):
+            part = (record['name'], *where[record['name']])
+            if record['content_type'] == 0:
+                bktr = any(header[0x400 + i * 512 + 4] == 4 for i in range(4))
+                (update if bktr else base).append(part)
+            elif record['content_type'] == 1:
+                (update if record['title_id'] == UPDATE_META_ID else base).append(part)
+    return (base, update) if len(base) == 2 and len(update) == 2 else None
+
+
+def write_pfs0(src, parts, out, progress=None):
+    """Write an NSP containing byte ranges from an open source file."""
+    names, table, offset = b'', b'', 0
+    for name, _, size in parts:
+        table += struct.pack('<QQII', offset, size, len(names), 0)
+        names += name.encode() + b'\0'
+        offset += size
+    head = 16 + len(table) + len(names)
+    names += b'\0' * ((-head) % 0x20)
+    tmp = out.with_name(out.name + '.part')
+    done = 0
+    with tmp.open('wb') as dst:
+        dst.write(b'PFS0' + struct.pack('<III', len(parts), len(names), 0) + table + names)
+        for name, start, size in parts:
+            src.seek(start)
+            left = size
+            while left:
+                data = src.read(min(SPLIT_CHUNK, left))
+                require(data, f'{name}: Truncated game card image')
+                dst.write(data)
+                left -= len(data)
+                done += len(data)
+                if progress:
+                    progress(done, offset)
+    os.replace(tmp, out)
+
+
+def split_combined_xci(xci, parts, out, progress=None):
+    """Split a combined XCI into temporary base.nsp and update.nsp files."""
+    out.mkdir(parents=True, exist_ok=True)
+    base, update = out / 'base.nsp', out / 'update.nsp'
+    with xci.open('rb') as f:
+        write_pfs0(f, parts[1], update, progress)
+        write_pfs0(f, parts[0], base, progress)
+    return base, update
 
 
 def merge_space(base, update, keys_path):

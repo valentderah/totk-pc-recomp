@@ -9,7 +9,7 @@ holds only the game; the installer and its tools stay outside it.
 1. Downloads `TotK-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
    starts `TotK-Setup.exe`.
 2. Picks:
-   - the base game (XCI or NSP) and the 1.1.1, 1.2.1 or 1.4.3 update (NSP);
+   - the base game (XCI or NSP) and the 1.1.1, 1.2.1 or 1.4.3 update (NSP), or one XCI containing both;
    - their `prod.keys`;
    - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
      needed for Chinese, Korean and Traditional Chinese text;
@@ -160,12 +160,22 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   read-only, and a Steam Deck's `/home` is often too full for the generated C while the game goes to the SD card.
 - The game keeps Mesa's shader cache in `mesa-cache` beside `totk` unless `MESA_SHADER_CACHE_DIR` is set, for the
   same reason: RADV fills its default folder in `~/.cache` up to 1 GB.
-- The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
+- The window follows `LANG` for English, Brazilian Portuguese or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
 - Building the release needs one game version extracted and lifted (`tools/extract.py`, `recomp/gen.py`, either
   version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
   is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
+
+### Running from a source checkout
+
+`./kingdom-setup.sh` uses Podman to keep Clang, Ninja, Python packages, .NET and development libraries in a Fedora
+build container. The host only needs Podman, Python 3, its Vulkan driver and the runtime libraries the installed game
+loads. CPU and Vulkan checks and shader preparation run on the host, where the GPU is available. Paths under the home
+directory and common removable-media mount points are mounted at the same location in the container.
+
+This container path is for development checkouts. A packaged AppImage remains self-contained and starts directly,
+without Podman.
 
 ## Constraints
 

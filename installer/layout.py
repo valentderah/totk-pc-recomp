@@ -56,7 +56,7 @@ class Layout:
     llvm: Path            # llvm-mingw tree; on Linux the tree with bin/clang (a release's, or the system's /usr)
     deps: Path | None     # include/ and lib/ for the link; None: the system's (Linux dev mode)
     runtime: Path         # runtime headers and install-side sources
-    runtime_lib: Path     # libtotkrt.a
+    runtime_lib: Path | None  # libtotkrt.a; None builds the runtime with a development install
     ninja: Path
     hactool: Path
     xlate: Path           # totk_xlate.exe; a totk_xlate.id beside it is copied too

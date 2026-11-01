@@ -39,6 +39,9 @@ DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
+HOST_CHECKED = 'KINGDOM_HOST_CHECKED'
+HOST_CPU = 'KINGDOM_HOST_CPU'
+PENDING_SHADERS = 'KINGDOM_PENDING_SHADERS'
 
 
 # ---- helpers
@@ -176,6 +179,19 @@ def game_version(ctx):
 
 def expected_update(ctx):
     return extract.load_expected()[game_version(ctx)]
+
+
+def given_files(ctx):
+    """The base and update selected by the player; a missing update may be inside the base XCI."""
+    o = ctx.options
+    base = Path(o.base) if o.base else None
+    update = Path(o.update) if o.update else base
+    return base, update
+
+
+def game_files(ctx):
+    """Files extraction reads, using temporary NSP halves for a combined XCI."""
+    return getattr(ctx, 'split', None) or given_files(ctx)
 
 
 def shader_list_text(layout):
@@ -350,11 +366,20 @@ class Check(Step):
         self.host(ctx)
         rep.progress('check', 'verify', force=True)
         ctx.verify_kept('check')
-        ncas = 0
+        ncas = split = 0
+        parts = None
         if ctx.will_run('extract'):
+            parts = self.combined(ctx)
+            if parts:
+                split = ncas = sum(size for half in parts for _, _, size in half)
+            else:
+                rep.progress('check', 'inputs', force=True)
+                ncas = self.inputs(ctx)
+        self.space(ctx, ncas, split)
+        if parts:
+            self.split(ctx, parts)
             rep.progress('check', 'inputs', force=True)
-            ncas = self.inputs(ctx)
-        self.space(ctx, ncas)
+            self.inputs(ctx)
         if ctx.will_run('extract'):
             rep.progress('check', 'versions', force=True)
             self.versions(ctx)
@@ -362,6 +387,12 @@ class Check(Step):
 
     def host(self, ctx):
         if getattr(ctx, 'host', None) is not None:
+            return
+        if os.environ.get(HOST_CHECKED) == '1':
+            # The development container does not see the host GPU. kingdom-setup.sh ran this probe on the host.
+            ctx.reporter.log('host: checked by kingdom-setup.sh on the host')
+            ctx.host = {}
+            ctx.cpu = os.environ.get(HOST_CPU, 'v3')
             return
         layout, work = ctx.layout, ctx.temp / 'check'
         glibc = linux_glibc()
@@ -406,15 +437,48 @@ class Check(Step):
             ctx.reporter.warning('warn.kernel_old', version='.'.join(map(str, kernel)))
         ctx.host = host
 
+    @staticmethod
+    def combined(ctx):
+        """Describe a combined XCI when no separate update was selected."""
+        o = ctx.options
+        base, update = given_files(ctx)
+        if not base or not o.keys or base != update or not base.is_file() or not Path(o.keys).is_file():
+            return None
+        try:
+            return extract.combined_xci_parts(base, Path(o.keys))
+        except (ValueError, OSError, UnicodeDecodeError):
+            return None
+
+    @staticmethod
+    def split(ctx, parts):
+        """Split a combined XCI once and retain the halves for resume."""
+        xci = given_files(ctx)[0]
+        out = ctx.temp / 'split'
+        st = xci.stat()
+        stamp, tag = out / STAMP, f'{xci} {st.st_size} {st.st_mtime_ns}'
+        halves = (out / 'base.nsp', out / 'update.nsp')
+        if not (stamp.is_file() and stamp.read_text().strip() == tag and all(p.is_file() for p in halves)):
+            remove(out)
+            try:
+                extract.split_combined_xci(xci, parts, out,
+                                           lambda d, t: ctx.reporter.progress('check', 'split', d, t, 'bytes'))
+            except ValueError as e:
+                raise_if_damaged(e, 'base', xci)
+                raise InstallError('check.file_unreadable', input='base', detail=str(e)) from None
+            stamp.write_text(tag + '\n')
+        ctx.split = halves
+
     def inputs(self, ctx):
         """Open both files with the keys as the extraction will. Returns the bytes of both Program NCAs."""
         o = ctx.options
-        for name in ('base', 'update', 'keys'):
-            path = getattr(o, name)
+        base, update = game_files(ctx)
+        for name, path in (('base', base), ('update', update), ('keys', o.keys)):
             if not path:
                 raise InstallError('check.inputs_needed')
             if not Path(path).is_file():
                 raise InstallError('check.input_missing', input=name, path=str(path))
+        if base == update:
+            raise InstallError('check.inputs_needed')
         try:
             keys = load_keys(Path(o.keys))
         except (ValueError, OSError, UnicodeDecodeError):
@@ -422,8 +486,7 @@ class Check(Step):
         if 'header_key' not in keys:
             raise InstallError('check.keys_no_header_key')
         total = 0
-        for name, is_update in (('base', False), ('update', True)):
-            path = Path(getattr(o, name))
+        for name, path, is_update in (('base', base, False), ('update', update, True)):
             with path.open('rb') as f:
                 total += self.open_input(f, path, keys, name, is_update)
         del keys
@@ -471,8 +534,8 @@ class Check(Step):
                                generation=max(header[0x206], header[0x220])) from None
         return record['size']
 
-    def space(self, ctx, ncas):
-        dest_need = temp_need = 0
+    def space(self, ctx, ncas, split=0):
+        dest_need, temp_need = 0, split
         if ctx.will_run('extract'):
             # the update is identified after this estimate: the larger RomFS of the supported ones
             dest_need += max(extract.load_expected()[v]['romfs']['size'] for v in SUPPORTED) + ncas
@@ -505,11 +568,11 @@ class Check(Step):
         logs = ctx.temp / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
         versions = extract.load_expected()
-        for name, is_update in (('base', False), ('update', True)):
+        for name, source, is_update in zip(('base', 'update'), game_files(ctx), (False, True)):
             out = work / name
             remove(out)
             try:
-                extract.extract_exefs(Path(getattr(o, name)), Path(o.keys), out, logs, update=is_update)
+                extract.extract_exefs(source, Path(o.keys), out, logs, update=is_update)
             except extract.DamagedFile as e:
                 raise InstallError('check.input_damaged', input=name, path=str(e.path), detail=e.detail) from None
             except ValueError:
@@ -608,11 +671,11 @@ class Extract(Step):
 
     def current(self, ctx, record):
         # Another update file than the recorded one (1.2.1 -> 1.4.3) extracts again; the check then identifies it.
-        update, known = getattr(ctx.options, 'update', None), ctx.state['inputs'].get('update')
-        if update and known and Path(update).is_file():
-            st = Path(update).stat()
+        update, known = given_files(ctx)[1], ctx.state['inputs'].get('update')
+        if update and known and update.is_file():
+            st = update.stat()
             if (st.st_size, st.st_mtime_ns) != (known.get('size'), known.get('mtime_ns')) \
-                    and file_sha256(Path(update)) != known.get('sha256'):
+                    and file_sha256(update) != known.get('sha256'):
                 return False
         expected = expected_update(ctx)
         romfs = ctx.dest / 'romfs'
@@ -630,16 +693,21 @@ class Extract(Step):
     def run(self, ctx):
         o, dest, rep = ctx.options, ctx.dest, ctx.reporter
         expected = expected_update(ctx)
-        base, update, keys = Path(o.base), Path(o.update), Path(o.keys)
+        keys = Path(o.keys)
         inputs = {}
-        for name, path in (('base', base), ('update', update)):
+        given = given_files(ctx)
+        for name, path in zip(('base', 'update'), given):
             known = ctx.state['inputs'].get(name, {})
             st = path.stat()
             if known.get('size') == st.st_size and known.get('mtime_ns') == st.st_mtime_ns and known.get('sha256'):
                 inputs[name] = known
                 continue
+            if name == 'update' and path == given[0]:
+                inputs[name] = inputs['base']
+                continue
             digest = file_sha256(path, lambda d, t, n=name: rep.progress('extract', 'hash_' + n, d, t, 'bytes'))
             inputs[name] = {'name': path.name, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'sha256': digest}
+        base, update = game_files(ctx)
         ctx.state['inputs'] = inputs
         ctx.save()
 
@@ -825,10 +893,14 @@ class Prepare(Step):
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
         return fingerprint('prepare-1', ctx.keys['compile'], layout.xlate, xlate_id, shader_list_text(layout), *tools)
 
+    @staticmethod
+    def done_file():
+        return 'seed-answers.bin' if os.environ.get(PENDING_SHADERS) else 'shader-prepared.bin'
+
     def current(self, ctx, record):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
-        return ((dest / 'shader-prepared.bin').is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
+        return ((dest / self.done_file()).is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
                 and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
 
     def run(self, ctx):
@@ -899,13 +971,20 @@ class Prepare(Step):
                 rep.progress('prepare', 'libraries', force=True)
 
         rep.progress('prepare', 'seed', force=True)
+        pending = os.environ.get(PENDING_SHADERS)
         code, log = run_tool(ctx, 'prepare', layout.tools / 'prepare_shaders.py',
                              [dest, '--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--exefs',
-                              dest / 'exefs', '--list', shader_list], parse)
-        if code or not (dest / 'shader-prepared.bin').is_file():
+                              dest / 'exefs', '--list', shader_list, *(['--no-run'] if pending else [])], parse)
+        if code or not (dest / self.done_file()).is_file():
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
         if skipped[0]:
             rep.warning('warn.shaders_skipped', count=skipped[0], log=str(log))
+
+        if pending:
+            remove(dest / 'shader-prepared.bin')
+            with open(pending, 'a', encoding='utf-8') as f:
+                f.write(f'{dest}\n')
+            return {'xlate_sha256': file_sha256(xlate)}
 
         # One shader-cache.pack instead of four files per shader (~117,000): totk.exe reads the pack first.
         rep.progress('prepare', 'pack', force=True)
@@ -933,7 +1012,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('gen', 'build', 'check', 'shader_list.tsv', 'shared-fonts'):
+        for name in ('gen', 'build', 'check', 'split', 'shader_list.tsv', 'shared-fonts'):
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
         return {}
