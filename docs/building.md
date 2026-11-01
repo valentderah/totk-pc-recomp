@@ -193,7 +193,9 @@ window and `tools/ab_summary.py` an in-launch A/B (`TOTK_AB`). On a Steam Deck, 
 `<folder>/profiles/`, named by date, build and tag, together with the GPU clock sampled during the run, the power
 state and one summary line per run in `summary.tsv`: a Deck halves its frame rate when the APU drops a power state,
 when the present mode changes or when the scene resolution grows, and none of that shows in an fps number alone.
-`--binary <totk>` measures a build the installer did not place, `--env K=V` sets a switch for the run.
+`--binary <totk>` measures a build the installer did not place, `--env K=V` sets a switch for the run, and
+`--script tools/input/spin.txt` turns the camera slowly on the spot instead of walking, so a scene chosen by playing
+to it and saving there is measured from the save.
 
 ## Checks
 
