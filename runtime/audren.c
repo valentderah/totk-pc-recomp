@@ -325,6 +325,10 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
     v->fraction = want - (double)samples;
     while (samples && v->valid[v->index]) {
         AudrenWaveBuffer *b = &v->buffers[v->index];
+        if (v->offset >= b->end) {
+            v->valid[v->index] = 0;
+            break;
+        }
         uint64_t length = (uint64_t)(b->end - b->start), left = length - v->offset;
         uint64_t step = samples < left ? samples : left;
         v->offset += step;
