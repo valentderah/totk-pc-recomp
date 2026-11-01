@@ -7,7 +7,7 @@
 //
 // Per command buffer the replay keeps transient memory (support buffers, copied uniform ranges, generated indices),
 // descriptor pools, image views and the storage-buffer ranges the GPU may write; all of it is freed, and the ranges are
-// reported with vk_guest_written, from one completion callback once the submission's fence is done (the write watch
+// reported with vk_gpu_written, from one completion callback once the submission's fence is done (the write watch
 // does not see GPU writes). Nothing here locks: it runs on the submitting thread under vk_sync_submit's lock.
 //
 // Provenance: the op semantics (bind ops, program and slot conventions, draw and dispatch flow, vertex streams with a
@@ -27,6 +27,7 @@
 #include "nvn_hmap.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "platform/platform.h"
 
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
@@ -41,7 +42,7 @@
 enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
-    static volatile long seen[W_COUNT];
+    static volatile int32_t seen[W_COUNT];
     if (__atomic_exchange_n(&seen[key], 1, __ATOMIC_RELAXED)) return;
     char msg[256];
     va_list ap;
@@ -86,7 +87,7 @@ static uint64_t cur_fence;
 // allocation, a map and a paging-fence wait on the CPU), about ten of them per frame inside the replay.
 #define SPARE_POOLS 64
 #define SPARE_CHUNKS 16
-static SRWLOCK spare_lock = SRWLOCK_INIT;
+static PlatMutex spare_lock = PLAT_MUTEX_INIT;
 static VkDescriptorPool spare_pool[SPARE_POOLS];
 static Chunk spare_chunk[SPARE_CHUNKS];
 static int nspare_pool, nspare_chunk;
@@ -174,20 +175,20 @@ static uint64_t bind_gen = 1;            // bumped by every bind op that writes 
 static void cb_done(void *arg) {   // completion thread
     CbRes *r = arg;
     VkCtx *c = vk_ctx();
-    for (int i = 0; i < r->nwritten; i++) vk_guest_written(r->written[i].addr, r->written[i].size);
+    for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
     for (int i = 0; i < r->npools; i++) {
         vkResetDescriptorPool(c->device, r->pools[i], 0);
-        AcquireSRWLockExclusive(&spare_lock);
+        plat_mutex_lock(&spare_lock);
         int kept = nspare_pool < SPARE_POOLS;
         if (kept) spare_pool[nspare_pool++] = r->pools[i];
-        ReleaseSRWLockExclusive(&spare_lock);
+        plat_mutex_unlock(&spare_lock);
         if (!kept) vkDestroyDescriptorPool(c->device, r->pools[i], NULL);
     }
     for (int i = 0; i < r->nchunks; i++) {
-        AcquireSRWLockExclusive(&spare_lock);
+        plat_mutex_lock(&spare_lock);
         int kept = r->chunks[i].size == CHUNK_BYTES && nspare_chunk < SPARE_CHUNKS;
         if (kept) spare_chunk[nspare_chunk++] = r->chunks[i];
-        ReleaseSRWLockExclusive(&spare_lock);
+        plat_mutex_unlock(&spare_lock);
         if (!kept) vmaDestroyBuffer(c->vma, r->chunks[i].buf, r->chunks[i].alloc);
     }
     free(r->written), free(r->pools), free(r->chunks), free(r);
@@ -215,9 +216,9 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
         uint64_t n = size > CHUNK_BYTES ? size : CHUNK_BYTES;
         int reused = 0;
         if (n == CHUNK_BYTES) {
-            AcquireSRWLockExclusive(&spare_lock);
+            plat_mutex_lock(&spare_lock);
             if (nspare_chunk) *c = spare_chunk[--nspare_chunk], reused = 1;
-            ReleaseSRWLockExclusive(&spare_lock);
+            plat_mutex_unlock(&spare_lock);
         }
         if (reused) {
             c->used = 0;
@@ -252,6 +253,7 @@ static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
         if (r->written[i].addr == addr && r->written[i].size == size) return;
     if (r->nwritten == r->cwritten) r->written = grow(r->written, &r->cwritten, sizeof *r->written);
     r->written[r->nwritten++] = (Range){addr, size};
+    vk_mem_gpu_pending(addr, size);
 }
 
 // ---- stand-ins for what a binding names but the game did not bind (zeros, a 1x1 image, the default sampler)
@@ -1406,9 +1408,9 @@ static VkDescriptorSet alloc_set(VkExec *ex, VkDescriptorSetLayout layout) {
                                          .poolSizeCount = sizeof sizes / sizeof sizes[0], .pPoolSizes = sizes};
         if (r->npools == r->cpools) r->pools = grow(r->pools, &r->cpools, sizeof *r->pools);
         VkDescriptorPool pool = VK_NULL_HANDLE;
-        AcquireSRWLockExclusive(&spare_lock);
+        plat_mutex_lock(&spare_lock);
         if (nspare_pool) pool = spare_pool[--nspare_pool];
-        ReleaseSRWLockExclusive(&spare_lock);
+        plat_mutex_unlock(&spare_lock);
         if (!pool && vkCreateDescriptorPool(c->device, &pi, NULL, &pool) != VK_SUCCESS) rt_fatal("vk: descriptor pool failed");
         r->pools[r->npools++] = pool;
     }

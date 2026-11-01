@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state  # noqa: E402
+from installer import ini, runner, state, steps  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
@@ -239,6 +239,81 @@ class IniTest(unittest.TestCase):
             text = path.read_text()
             self.assertIn('vk_present = fifo', text)
             self.assertEqual(ini.get_language(text), 'ja')
+
+
+class CleanupTest(unittest.TestCase):
+    """The real Cleanup step on a finished install whose romfs/ is intact, emptied or gone (#107)."""
+
+    def setUp(self):
+        self.steps = steps
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp = base / 'dest', base / 'temp'
+        (self.dest / 'romfs').mkdir(parents=True)
+        temp.mkdir()
+        image = b'romfs image'
+        (self.dest / 'romfs' / 'romfs.bin').write_bytes(image)
+        digest = steps.extract.sha256(self.dest / 'romfs' / 'romfs.bin')
+        (self.dest / 'romfs' / 'index.json').write_text(json.dumps({'romfs_size': len(image), 'romfs_sha256': digest}))
+        self.expected = {'romfs': {'size': len(image), 'sha256': digest}}
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO(), log_path=base / 'x.log'), dest=self.dest,
+                                   temp=temp, lang='en-US', state={},
+                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example'))
+        self.saved = steps.expected_update
+        steps.expected_update = lambda ctx: self.expected
+
+    def tearDown(self):
+        self.steps.expected_update = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def run_cleanup(self):
+        try:
+            self.steps.Cleanup().run(self.ctx)
+            return 'ok'
+        except self.steps.InstallError as e:
+            return e.id
+
+    def test_intact_romfs_passes(self):
+        self.assertEqual(self.run_cleanup(), 'ok')
+
+    def test_emptied_romfs_fails(self):
+        for p in (self.dest / 'romfs').iterdir():
+            p.unlink()
+        self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+    def test_missing_romfs_fails(self):
+        self.steps.remove(self.dest / 'romfs')
+        self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+    def test_romfs_of_another_size_fails(self):
+        (self.dest / 'romfs' / 'romfs.bin').write_bytes(b'short')
+        self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+
+class BaseGameCheckTest(unittest.TestCase):
+    """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
+    BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
+
+    @staticmethod
+    def nca(content_type, title_id):
+        return ({'name': 'x.nca', 'nca_offset': 0, 'size': 0xc00, 'content_type': content_type, 'title_id': title_id}, b'')
+
+    def test_update_package_names_the_update(self):
+        # An update NSP keeps the base title id on its Program NCA; only its Meta NCA carries the update id.
+        records = [self.nca(0, self.BASE), self.nca(1, self.UPDATE)]
+        with self.assertRaises(ValueError):
+            steps.program_nca(records)
+        self.assertEqual(steps.base_misuse(records), 'check.base_is_update')
+
+    def test_combined_package_is_named(self):
+        records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(1, self.UPDATE)]
+        self.assertEqual(steps.base_misuse(records), 'check.base_combined')
+
+    def test_plain_base_game_passes(self):
+        records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(3, self.BASE)]
+        self.assertIsNone(steps.base_misuse(records))
+        self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
 
 
 class EventsTest(unittest.TestCase):

@@ -2,7 +2,6 @@
 // contributors).
 // The hardware Opus decoder (nn::codec), decoded with libopus on the host. The software keyboard (nn::swkbd) is
 // in swkbd_win.c.
-#include <windows.h>
 #include <stdint.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -10,6 +9,7 @@
 #include <opus/opus.h>
 
 #include "host.h"
+#include "platform/platform.h"
 
 #define CODEC_R_INVALID 0x1fcd1u   // MacNativeGames' "invalid argument" result for nn::codec
 #define OPUS_WORK_SIZE 0x9000u     // what the game is told to reserve: libopus stereo decoder state (about 26 KiB) plus 4 KiB
@@ -22,11 +22,11 @@ typedef struct Decoder {
     uint64_t guest;
     OpusDecoder *dec;
     int rate, channels;
-    SRWLOCK use;
+    PlatMutex use;
     struct Decoder *next;
 } Decoder;
 static Decoder *decoders;
-static SRWLOCK lock = SRWLOCK_INIT;
+static PlatMutex lock = PLAT_MUTEX_INIT;
 
 static int valid_format(int rate, int channels) {
     return (rate == 48000 || rate == 24000 || rate == 16000 || rate == 12000 || rate == 8000) &&
@@ -35,16 +35,16 @@ static int valid_format(int rate, int channels) {
 
 // Returns the decoder with its use lock held.
 static Decoder *acquire(uint64_t guest, const char *fn) {
-    AcquireSRWLockShared(&lock);
+    plat_mutex_lock_shared(&lock);
     Decoder *d = decoders;
     while (d && d->guest != guest) d = d->next;
-    if (d) AcquireSRWLockExclusive(&d->use);
-    ReleaseSRWLockShared(&lock);
+    if (d) plat_mutex_lock(&d->use);
+    plat_mutex_unlock_shared(&lock);
     if (!d) rt_fatal("nn::codec::%s: unknown hardware Opus decoder %#llx", fn, (unsigned long long)guest);
     return d;
 }
 
-static void release(Decoder *d) { ReleaseSRWLockExclusive(&d->use); }
+static void release(Decoder *d) { plat_mutex_unlock(&d->use); }
 
 static OpusDecoder *opus_new(int rate, int channels) {
     int err = 0;
@@ -66,29 +66,29 @@ static void ov_initialize(Cpu *c) {
     int rate = (int)arg_x(c, 1), channels = (int)arg_x(c, 2);
     if (!guest || !valid_format(rate, channels) || size < OPUS_WORK_SIZE) { ret_x(c, CODEC_R_INVALID); return; }
     OpusDecoder *fresh = opus_new(rate, channels);
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     Decoder *d = decoders;
     while (d && d->guest != guest) d = d->next;
     if (d) {
-        AcquireSRWLockExclusive(&d->use);   // waits for a decode in flight
+        plat_mutex_lock(&d->use);   // waits for a decode in flight
         OpusDecoder *old = d->dec;
         d->dec = fresh;
         d->rate = rate;
         d->channels = channels;
-        ReleaseSRWLockExclusive(&d->use);
-        ReleaseSRWLockExclusive(&lock);
+        plat_mutex_unlock(&d->use);
+        plat_mutex_unlock(&lock);
         opus_decoder_destroy(old);
     } else {
         d = calloc(1, sizeof *d);
         if (!d) rt_fatal("nn::codec: decoder allocation");
-        InitializeSRWLock(&d->use);
+        plat_mutex_init(&d->use);
         d->guest = guest;
         d->dec = fresh;
         d->rate = rate;
         d->channels = channels;
         d->next = decoders;
         decoders = d;
-        ReleaseSRWLockExclusive(&lock);
+        plat_mutex_unlock(&lock);
     }
     ret_x(c, 0);
 }
@@ -96,14 +96,14 @@ static void ov_initialize(Cpu *c) {
 // void FinalizeHardwareOpusDecoder(HardwareOpusDecoderType *d)
 static void ov_finalize(Cpu *c) {
     uint64_t guest = arg_x(c, 0);
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     Decoder **p = &decoders;
     while (*p && (*p)->guest != guest) p = &(*p)->next;
     if (!*p) rt_fatal("nn::codec::FinalizeHardwareOpusDecoder: unknown decoder %#llx", (unsigned long long)guest);
     Decoder *d = *p;
-    AcquireSRWLockExclusive(&d->use);   // a decode in flight finishes first; the registry lock keeps new ones out
+    plat_mutex_lock(&d->use);   // a decode in flight finishes first; the registry lock keeps new ones out
     *p = d->next;
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
     opus_decoder_destroy(d->dec);
     free(d);
 }
@@ -138,7 +138,7 @@ static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t
 // {payload size, final range} and the Opus packet. A header range of 0 is not a recorded value (some encoders write 0
 // into every packet), so it is not checked. A range mismatch is logged once and the samples are kept.
 static void ov_decode(Cpu *c) {
-    static LONG warned;
+    static int32_t warned;
     uint64_t guest = arg_x(c, 0), out_size = arg_x(c, 4), in_size = arg_x(c, 6);
     size_t *consumed = arg_p(c, 1);
     int *samples = arg_p(c, 2);
@@ -159,7 +159,7 @@ static void ov_decode(Cpu *c) {
         ret_x(c, CODEC_R_INVALID);
         return;
     }
-    if (n && range && final != range && !InterlockedExchange(&warned, 1))
+    if (n && range && final != range && !plat_xchg32(&warned, 1))
         rt_log("nn::codec: Opus final range %#x != stream %#x (logged once)", (unsigned)final, (unsigned)range);
     *consumed = 8 + n;
     *samples = got;

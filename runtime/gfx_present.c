@@ -1,34 +1,31 @@
-// Win32 window, Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus.
+// Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus: the window-system-free half of the window
+// (the other half: gfx_window_win.c with Win32, gfx_window_sdl.c with SDL, through gfx_wsys.h).
 // Swapchain set-up ported from LAS Recomp, runtime/nvn/vulkan/device.c:254-330 (https://github.com/peiikai/LASRecomp @
-// da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai), SDL replaced by Win32. Focus and vsync
-// behaviour from MacNativeGames, games/totk/runtime/frontend.m:88-97, 175-176, 350-352 (https://github.com/ly05010419/
-// MacNativeGames @ b75be8cfa704df3701e86130c8ced268e79d6b11, MIT, Copyright (c) 2026 MacNativeGames contributors).
+// da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai). Focus and vsync behaviour from
+// MacNativeGames, games/totk/runtime/frontend.m:88-97, 175-176, 350-352 (https://github.com/ly05010419/MacNativeGames @
+// b75be8cfa704df3701e86130c8ced268e79d6b11, MIT, Copyright (c) 2026 MacNativeGames contributors).
 //
-// Threads: the window thread owns the HWND and its message loop and never runs guest code. The vsync thread signals the
+// Threads: the window thread (the back end's) owns the window and never runs guest code. The vsync thread signals the
 // bound system events. Presents come from any host thread (the back end's present worker) and take g_pl; every queue
-// submission takes the recursive queue lock (vk_queue_lock). The swapchain is rebuilt lazily: WM_SIZE only marks it
-// dirty, the next present (or gfx_window_resize) rebuilds it.
+// submission takes the recursive queue lock (vk_queue_lock). The swapchain is rebuilt lazily: a resize only marks it
+// dirty (gfx_window_mark_dirty), the next present (or gfx_window_resize) rebuilds it.
 //
-// The in-game menu (ui/menu.h) draws over the game image in the present's command buffer, after the blit; its keyboard
-// and mouse come from the window procedure (ui/menu_win.cpp). The window's size and fullscreen state are the settings
-// TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, applied at start and whenever a cfg_set changes them (window_settings_live).
-//
-// The process is per-monitor DPI aware (totk.manifest): every size here is physical pixels, TOTK_WINDOW_SIZE included,
-// and the swapchain matches the screen pixel for pixel. A window moved to a monitor at another display scale keeps its
-// client size (WM_GETDPISCALEDSIZE); the menu takes its text size floor from the window's DPI (gfx_window_dpi).
+// The in-game menu (ui/menu.h) draws over the game image in the present's command buffer, after the blit. The window's
+// size and fullscreen state are the settings TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, which the back end applies at start
+// and whenever a cfg_set changes them (window_settings_live -> gfx_window_apply_settings).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "cfg.h"
 #include "flight.h"
 #include "fs.h"
 #include "gfx.h"
-#include "input.h"
+#include "gfx_wsys.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -36,26 +33,70 @@
 #define VSYNC_HZ 60
 
 // ---- queue lock
-static CRITICAL_SECTION g_ql;
-__attribute__((constructor)) static void window_init_locks(void);
-void vk_queue_lock(void) { EnterCriticalSection(&g_ql); }
-void vk_queue_unlock(void) { LeaveCriticalSection(&g_ql); }
+static PlatRMutex g_ql;
+void vk_queue_lock(void) { plat_rmutex_lock(&g_ql); }
+void vk_queue_unlock(void) { plat_rmutex_unlock(&g_ql); }
 
-// ---- window state
-static HWND g_hwnd;
-static HANDLE g_wnd_ready;
+// ---- window state shared with the back end
 static VkSurfaceKHR g_surface;
-static volatile LONG g_dirty;               // WM_SIZE seen; swapchain stale
-static volatile LONG g_focused = 1;
-static volatile LONG g_focus_msgs;
-static CRITICAL_SECTION g_start_lock;       // gfx_window_start / vsync start
-static int g_started, g_wnd_failed;
-static int g_background;                   // TOTK_BACKGROUND_WINDOW: the window stays behind the user's windows
-static int g_fs_pending;                   // window thread: TOTK_FULLSCREEN waits for the first activation
-static volatile LONG g_dpi = USER_DEFAULT_SCREEN_DPI;   // the window's DPI, set by the window thread
+static volatile int32_t g_dirty;               // the window was resized; swapchain stale
+static volatile int32_t g_focused = 1;
+static volatile int32_t g_focus_msgs;
+static PlatRMutex g_start_lock;       // gfx_window_start / vsync start
+static int g_started;
+
+void gfx_window_mark_dirty(void) { plat_xchg32(&g_dirty, 1); }
+
+// The window gained or lost the focus: the game hears it as nn::oe's focus state and a notification message. The line
+// carries the local wall time, the only one in the log: when a GPU hang takes the whole system down, the log ends
+// without an error, and this time set against the driver's entry in the Windows event log (nvlddmkm 153, Display 4101)
+// tells whether an alt-tab or an overlay came before the hang or followed it.
+void gfx_window_focus_changed(int in) {
+    plat_xchg32(&g_focused, in);
+    oe_set_focus(in);                          // pinned to 1 by TOTK_ASSUME_FOCUS inside
+    oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+    plat_inc32(&g_focus_msgs);
+    struct tm t;
+    plat_local_time(&t);
+    rt_log("gfx: window %s the focus at %04d-%02d-%02d %02d:%02d:%02d local time", in ? "gained" : "lost",
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+}
+
+// The window was closed: the process ends with it, as in MNG, once a save Commit still running in the background is
+// done.
+void gfx_window_closed(void) {
+    rt_log("gfx: window closed; exiting");
+    fs_save_flush();
+    vk_pipeline_save();
+    prof_write();   // plat_exit runs no atexit handlers
+    plat_exit(0);
+}
+
+// TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the
+// swapchain follows the window; the game image is scaled to it).
+int gfx_cfg_fullscreen(void) { return cfg_bool("TOTK_FULLSCREEN"); }
+
+void gfx_cfg_window_size(int *w, int *h) {
+    int x = 0, y = 0;
+    if (sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
+        sscanf(cfg_meta("WINDOW_SIZE")->def, "%dx%d", &x, &y);   // unparsable or out of range: the default
+    *w = x;
+    *h = y;
+}
+
+// The refresh rate of the window's monitor (TOTK_FPS_LIMIT=display), measured by the back end's window thread when the
+// window opens, lands on another monitor or the display mode changes; readers take the stored value.
+static volatile int32_t g_rate_mhz;   // millihertz, 0 unknown
+
+void gfx_window_set_refresh(double hz) {
+    int32_t mhz = (int32_t)(hz * 1000 + 0.5);
+    if (plat_xchg32(&g_rate_mhz, mhz) != mhz) rt_log("gfx: monitor refresh rate %.3f Hz", hz);
+}
+
+double gfx_window_refresh_hz(void) { return plat_cas32(&g_rate_mhz, 0, 0) / 1000.0; }
 
 // ---- swapchain and present state (g_pl)
-static CRITICAL_SECTION g_pl;
+static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
 static VkExtent2D g_sc_ext;
@@ -93,207 +134,82 @@ static VkBuffer g_th_buf;
 static VmaAllocation g_th_alloc;
 static uint8_t *g_th_ptr;
 
-static void window_init_locks(void) {
-    InitializeCriticalSection(&g_ql);
-    InitializeCriticalSection(&g_pl);
-    InitializeCriticalSection(&g_start_lock);
-}
-
 // ---- vsync
-static SRWLOCK g_vs_lock = SRWLOCK_INIT;
+static PlatMutex g_vs_lock = PLAT_MUTEX_INIT;
 static uint64_t g_vs_ev[16];
 static int g_vs_nev;
-static volatile long *g_vs_ctr[4];
+static volatile int32_t *g_vs_ctr[4];
 static int g_vs_nctr;
-static volatile LONGLONG g_ticks;
-static volatile LONGLONG g_vs_start_ns;
+static volatile int64_t g_ticks;
+static volatile int64_t g_vs_start_ns;
 static int g_vs_started;
 
-static DWORD WINAPI vsync_main(void *arg) {
+static void vsync_main(void *arg) {
     (void)arg;
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    HANDLE t = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    if (!t) { rt_log("gfx: no high-resolution timer; vsync falls back to the system timer tick"); t = CreateWaitableTimerW(NULL, TRUE, NULL); }
+    plat_thread_priority(PLAT_PRIO_HIGHEST);
     uint64_t n = 0;
     for (;;) {
         uint64_t start = (uint64_t)g_vs_start_ns;
         uint64_t due = start + (n + 1) * VSYNC_NS / VSYNC_HZ;
         uint64_t now = kern_now_ns();
         if (now > due + 100000000ull) {                  // the process stalled: restart the schedule, no catch-up burst
-            g_vs_start_ns = (LONGLONG)(now - (n + 1) * VSYNC_NS / VSYNC_HZ);
+            g_vs_start_ns = (int64_t)(now - (n + 1) * VSYNC_NS / VSYNC_HZ);
         } else if (due > now) {
-            LARGE_INTEGER d;
-            d.QuadPart = -(LONGLONG)((due - now) / 100);
-            if (d.QuadPart == 0) d.QuadPart = -1;
-            SetWaitableTimer(t, &d, 0, NULL, NULL, FALSE);
-            WaitForSingleObject(t, INFINITE);
+            plat_wait_ns(due - now);
         }
         n++;
-        InterlockedExchange64(&g_ticks, (LONGLONG)n);
+        plat_xchg64(&g_ticks, (int64_t)n);
         uint64_t ev[16];
-        volatile long *ctr[4];
+        volatile int32_t *ctr[4];
         int ne, nc;
-        AcquireSRWLockShared(&g_vs_lock);
+        plat_mutex_lock_shared(&g_vs_lock);
         ne = g_vs_nev;
         nc = g_vs_nctr;
         memcpy(ev, g_vs_ev, sizeof ev);
         memcpy(ctr, g_vs_ctr, sizeof ctr);
-        ReleaseSRWLockShared(&g_vs_lock);
-        for (int i = 0; i < nc; i++) InterlockedIncrement(ctr[i]);
+        plat_mutex_unlock_shared(&g_vs_lock);
+        for (int i = 0; i < nc; i++) plat_inc32(ctr[i]);
         for (int i = 0; i < ne; i++) kern_signal_system_event(ev[i]);
     }
-    return 0;
+    return;
 }
 
 static void vsync_ensure(void) {
-    EnterCriticalSection(&g_start_lock);
+    plat_rmutex_lock(&g_start_lock);
     if (!g_vs_started) {
         g_vs_started = 1;
-        g_vs_start_ns = (LONGLONG)kern_now_ns();
-        HANDLE h = CreateThread(NULL, 0, vsync_main, NULL, 0, NULL);
-        if (!h) rt_fatal("gfx: cannot start the vsync thread (error %lu)", GetLastError());
-        CloseHandle(h);
+        g_vs_start_ns = (int64_t)kern_now_ns();
+        if (!plat_thread_spawn(vsync_main, NULL, "vsync", 0)) rt_fatal("gfx: cannot start the vsync thread");
     }
-    LeaveCriticalSection(&g_start_lock);
+    plat_rmutex_unlock(&g_start_lock);
 }
 
 void gfx_vsync_bind(uint64_t system_event) {
-    AcquireSRWLockExclusive(&g_vs_lock);
+    plat_mutex_lock(&g_vs_lock);
     int have = 0;
     for (int i = 0; i < g_vs_nev; i++) have |= g_vs_ev[i] == system_event;
     if (!have) {
         if (g_vs_nev == 16) rt_fatal("gfx: more than 16 vsync events");
         g_vs_ev[g_vs_nev++] = system_event;
     }
-    ReleaseSRWLockExclusive(&g_vs_lock);
+    plat_mutex_unlock(&g_vs_lock);
     vsync_ensure();
 }
 
-void gfx_vsync_bind_counter(volatile long *counter) {
-    AcquireSRWLockExclusive(&g_vs_lock);
+void gfx_vsync_bind_counter(volatile int32_t *counter) {
+    plat_mutex_lock(&g_vs_lock);
     if (g_vs_nctr == 4) rt_fatal("gfx: more than 4 vsync counters");
     g_vs_ctr[g_vs_nctr++] = counter;
-    ReleaseSRWLockExclusive(&g_vs_lock);
+    plat_mutex_unlock(&g_vs_lock);
     vsync_ensure();
 }
 
-uint64_t gfx_vsync_ticks(void) { return (uint64_t)InterlockedCompareExchange64(&g_ticks, 0, 0); }
+uint64_t gfx_vsync_ticks(void) { return (uint64_t)plat_cas64(&g_ticks, 0, 0); }
 uint64_t gfx_vsync_time_ns(uint64_t tick) { return (uint64_t)g_vs_start_ns + tick * VSYNC_NS / VSYNC_HZ; }
 
 // ---- focus
 int gfx_window_focused(void) { return g_focused; }
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
-HWND gfx_window_handle(void) { return g_hwnd; }
-
-// ---- window thread
-#define WND_STYLE WS_OVERLAPPEDWINDOW
-#define WM_APP_SETTINGS (WM_APP + 1)
-#define WM_APP_FULLSCREEN (WM_APP + 2)   // the fullscreen setting, held back until the window is first activated
-
-static WINDOWPLACEMENT g_saved_place = {sizeof g_saved_place};   // the window behind fullscreen (window thread)
-
-static int is_fullscreen(HWND h) { return !(GetWindowLongW(h, GWL_STYLE) & WS_OVERLAPPEDWINDOW); }
-
-unsigned gfx_window_dpi(void) { return (unsigned)InterlockedCompareExchange(&g_dpi, 0, 0); }
-
-// The outer size of a framed window whose client area is cw x ch. The frame is measured at the window's DPI, or the
-// system DPI before the window exists: plain AdjustWindowRect always takes the system DPI, which is wrong on a monitor
-// at another display scale.
-static void outer_size(HWND h, int cw, int ch, int *ow, int *oh) {
-    RECT r = {0, 0, cw, ch};
-    AdjustWindowRectExForDpi(&r, WND_STYLE, FALSE, 0, h ? GetDpiForWindow(h) : GetDpiForSystem());
-    *ow = r.right - r.left;
-    *oh = r.bottom - r.top;
-}
-
-// TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the
-// swapchain follows the window; the game image is scaled to it).
-static int cfg_fullscreen(void) {
-    return cfg_bool("TOTK_FULLSCREEN");
-}
-
-static void cfg_window_size(int *w, int *h) {
-    int x = 0, y = 0;
-    if (sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
-        sscanf(cfg_meta("WINDOW_SIZE")->def, "%dx%d", &x, &y);   // unparsable or out of range: the default
-    *w = x;
-    *h = y;
-}
-
-// Windows turns the display off and sleeps after the idle timeout, and gamepad input does not count as activity. While
-// the window is up and not minimized it holds the display and the system on, as other games do. The state belongs to
-// the calling thread, so only the window thread (window_main and wnd_proc) calls this; the process exit releases it.
-static void keep_awake(int on) {
-    static int cur = -1;
-    if (on == cur) return;
-    cur = on;
-    SetThreadExecutionState(on ? ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED : ES_CONTINUOUS);
-}
-
-// F11: borderless window over the whole monitor, and back to the saved window. The swapchain follows through WM_SIZE.
-// Not Alt+Enter: Enter is the Plus button (input_win.c). A background window (test runs) keeps its place behind the
-// user's windows and takes no focus.
-static void toggle_fullscreen(HWND h) {
-    LONG style = GetWindowLongW(h, GWL_STYLE);
-    if (style & WS_OVERLAPPEDWINDOW) {
-        MONITORINFO mi = {sizeof mi};
-        if (!GetWindowPlacement(h, &g_saved_place) || !GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY), &mi))
-            return;
-        SetWindowLongW(h, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
-        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
-                     mi.rcMonitor.bottom - mi.rcMonitor.top,
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED | (g_background ? SWP_NOZORDER | SWP_NOACTIVATE : 0));
-    } else {
-        SetWindowLongW(h, GWL_STYLE, (style & ~WS_POPUP) | WND_STYLE);
-        if (g_background) g_saved_place.showCmd = SW_SHOWNOACTIVATE;
-        SetWindowPlacement(h, &g_saved_place);
-        SetWindowPos(h, NULL, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED |
-                         (g_background ? SWP_NOACTIVATE : 0));
-    }
-}
-
-// The window size and fullscreen state last taken from the settings (window thread). apply_settings acts on a change of
-// either value only, so a window resized by hand keeps its size when another setting changes.
-static char g_applied_size[32];
-static int g_applied_fs;
-
-static void note_applied(void) {
-    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("TOTK_WINDOW_SIZE"));
-    g_applied_fs = cfg_fullscreen();
-}
-
-// Window thread: the window takes the size and fullscreen state of the settings when they changed. In fullscreen the
-// size goes into the placement restored when fullscreen ends.
-static void apply_settings(HWND h) {
-    int size_changed = strcmp(cfg_value("TOTK_WINDOW_SIZE"), g_applied_size) != 0, fs = cfg_fullscreen(), fs_changed = fs != g_applied_fs;
-    note_applied();
-    if (size_changed) {
-        int cw, ch, ow, oh;
-        cfg_window_size(&cw, &ch);
-        outer_size(h, cw, ch, &ow, &oh);
-        if (is_fullscreen(h)) {
-            RECT *n = &g_saved_place.rcNormalPosition;
-            n->right = n->left + ow;
-            n->bottom = n->top + oh;
-        } else {
-            RECT have;
-            if (GetClientRect(h, &have) && (have.right != cw || have.bottom != ch)) {
-                if (IsZoomed(h)) ShowWindow(h, SW_RESTORE);
-                SetWindowPos(h, NULL, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-        }
-    }
-    if (fs_changed && fs != is_fullscreen(h)) {
-        input_cursor_suspend(1);
-        toggle_fullscreen(h);
-        input_cursor_suspend(0);
-    }
-}
-
-void gfx_window_apply_settings(void) {
-    if (g_hwnd) PostMessageW(g_hwnd, WM_APP_SETTINGS, 0, 0);
-}
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
@@ -304,207 +220,14 @@ static void window_settings_live(void) {
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
+    res_fov_live();
     const char *e = cfg_value("TOTK_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
-        if (started) InterlockedExchange(&g_dirty, 1);
+        if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started) gfx_window_apply_settings();
     started = 1;
-}
-
-void gfx_window_request_close(void) {
-    if (g_hwnd) PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
-}
-
-// ---- refresh rate of the window's monitor (TOTK_FPS_LIMIT=display). The window thread measures it when the window
-// opens, lands on another monitor or the display mode changes; readers take the stored value. QueryDisplayConfig gives
-// the exact rational rate (59.94, 143.998); EnumDisplaySettings' whole hertz is the fallback.
-static HMONITOR g_rate_mon;
-static volatile LONG g_rate_mhz;   // millihertz, 0 unknown
-
-static double monitor_rate_hz(HMONITOR mon) {
-    MONITORINFOEXW mi = {.cbSize = sizeof mi};
-    if (!GetMonitorInfoW(mon, (MONITORINFO *)&mi)) return 0;
-    double hz = 0;
-    UINT32 np = 0, nm = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) == ERROR_SUCCESS && np && nm) {
-        DISPLAYCONFIG_PATH_INFO *paths = calloc(np, sizeof *paths);
-        DISPLAYCONFIG_MODE_INFO *modes = calloc(nm, sizeof *modes);
-        if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS)
-            for (UINT32 i = 0; i < np && !hz; i++) {
-                DISPLAYCONFIG_SOURCE_DEVICE_NAME src = {.header = {.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                                                                   .size = sizeof src,
-                                                                   .adapterId = paths[i].sourceInfo.adapterId,
-                                                                   .id = paths[i].sourceInfo.id}};
-                DISPLAYCONFIG_RATIONAL r = paths[i].targetInfo.refreshRate;
-                if (DisplayConfigGetDeviceInfo(&src.header) == ERROR_SUCCESS && !wcscmp(src.viewGdiDeviceName, mi.szDevice) &&
-                    r.Denominator)
-                    hz = (double)r.Numerator / r.Denominator;
-            }
-        free(paths);
-        free(modes);
-    }
-    DEVMODEW dm = {.dmSize = sizeof dm};
-    if (!hz && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
-        hz = dm.dmDisplayFrequency;   // 0 and 1 mean the hardware default
-    return hz;
-}
-
-// Window thread. force: the display mode changed, measure even on the same monitor.
-static void refresh_rate_update(HWND h, int force) {
-    HMONITOR mon = MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY);
-    if (!force && mon == g_rate_mon) return;
-    g_rate_mon = mon;
-    double hz = monitor_rate_hz(mon);
-    LONG mhz = (LONG)(hz * 1000 + 0.5);
-    if (InterlockedExchange(&g_rate_mhz, mhz) != mhz) rt_log("gfx: monitor refresh rate %.3f Hz", hz);
-}
-
-double gfx_window_refresh_hz(void) { return InterlockedCompareExchange(&g_rate_mhz, 0, 0) / 1000.0; }
-
-int gfx_window_monitor_size(int *w, int *h) {
-    MONITORINFO mi = {sizeof mi};
-    if (!g_hwnd || !GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) return 0;
-    *w = mi.rcMonitor.right - mi.rcMonitor.left;
-    *h = mi.rcMonitor.bottom - mi.rcMonitor.top;
-    return 1;
-}
-
-static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    LRESULT input_res;
-    if (input_window_msg(h, m, w, l, &input_res)) return input_res;
-    if (menu_window_msg(h, m, w, l, &input_res)) return input_res;
-    switch (m) {
-    case WM_KEYDOWN:
-        if (w == VK_F11 && !(l & (1 << 30))) {   // bit 30: auto-repeat
-            input_cursor_suspend(1);
-            toggle_fullscreen(h);
-            input_cursor_suspend(0);
-            cfg_set("TOTK_FULLSCREEN", is_fullscreen(h) ? "1" : "0");   // the menu shows it; the next start keeps it
-            cfg_save();
-            note_applied();   // what cfg_get reads now (the environment may still override it)
-        }
-        break;
-    case WM_APP_SETTINGS:
-        apply_settings(h);
-        return 0;
-    case WM_APP_FULLSCREEN:
-        if (cfg_fullscreen() && !is_fullscreen(h)) {
-            input_cursor_suspend(1);
-            toggle_fullscreen(h);
-            input_cursor_suspend(0);
-        }
-        return 0;
-    case WM_SIZE:
-        keep_awake(w != SIZE_MINIMIZED);
-        if (w != SIZE_MINIMIZED) InterlockedExchange(&g_dirty, 1);
-        refresh_rate_update(h, 0);
-        return 0;
-    case WM_EXITSIZEMOVE:   // dragged onto another monitor
-        refresh_rate_update(h, 0);
-        break;
-    case WM_DISPLAYCHANGE:
-        refresh_rate_update(h, 1);
-        break;
-    case WM_GETDPISCALEDSIZE:   // a framed window keeps its client size in pixels on a monitor at another scale
-        if (!is_fullscreen(h) && !IsZoomed(h)) {
-            RECT c, r;
-            if (GetClientRect(h, &c)) {
-                r = (RECT){0, 0, c.right, c.bottom};
-                if (AdjustWindowRectExForDpi(&r, WND_STYLE, FALSE, 0, LOWORD(w))) {
-                    *(SIZE *)l = (SIZE){r.right - r.left, r.bottom - r.top};
-                    return TRUE;
-                }
-            }
-        }
-        break;   // DefWindowProc: Windows scales the size with the DPI
-    case WM_DPICHANGED: {   // display scale changed, or the window reached a monitor at another scale
-        const RECT *s = (const RECT *)l;
-        InterlockedExchange(&g_dpi, LOWORD(w));
-        rt_log("gfx: window DPI %u (%u%%)", LOWORD(w), LOWORD(w) * 100u / USER_DEFAULT_SCREEN_DPI);
-        if (is_fullscreen(h)) {   // keep covering the monitor the suggested rect lies on
-            MONITORINFO mi = {sizeof mi};
-            if (GetMonitorInfoW(MonitorFromRect(s, MONITOR_DEFAULTTONEAREST), &mi))
-                SetWindowPos(h, NULL, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
-                             mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOZORDER | SWP_NOACTIVATE);
-        } else {
-            SetWindowPos(h, NULL, s->left, s->top, s->right - s->left, s->bottom - s->top, SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-        return 0;
-    }
-    case WM_ACTIVATEAPP: {
-        int in = w != 0;
-        InterlockedExchange(&g_focused, in);
-        oe_set_focus(in);                          // pinned to 1 by TOTK_ASSUME_FOCUS inside
-        oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
-        InterlockedIncrement(&g_focus_msgs);
-        if (in && g_fs_pending) {
-            g_fs_pending = 0;
-            PostMessageW(h, WM_APP_FULLSCREEN, 0, 0);
-        }
-        return 0;
-    }
-    case WM_CLOSE:
-        // The process ends with the window, as in MNG, once a save Commit still running in the background is done.
-        rt_log("gfx: window closed; exiting");
-        fs_save_flush();
-        vk_pipeline_save();
-        prof_write();   // ExitProcess runs no atexit handlers
-        ExitProcess(0);
-    case WM_ERASEBKGND:
-        return 1;
-    }
-    return DefWindowProcW(h, m, w, l);
-}
-
-static DWORD WINAPI window_main(void *arg) {
-    (void)arg;
-    HINSTANCE inst = GetModuleHandleW(NULL);
-    // Icon resource 1 of totk.rc (runtime/totk.ico): the title bar, the taskbar button and Alt+Tab.
-    WNDCLASSEXW wc = {.cbSize = sizeof wc, .lpfnWndProc = wnd_proc, .hInstance = inst,
-                      .hIcon = LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON),
-                                          GetSystemMetrics(SM_CYICON), LR_SHARED),
-                      .hIconSm = LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
-                                            GetSystemMetrics(SM_CYSMICON), LR_SHARED),
-                      .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), .lpszClassName = L"TotKRecompWindow"};
-    RegisterClassExW(&wc);
-    int cw, ch, ow, oh;
-    cfg_window_size(&cw, &ch);
-    outer_size(NULL, cw, ch, &ow, &oh);
-    // The window opens behind the user's windows without taking focus: it shows the game's blank loading frames for a
-    // while, and must not cover what the player works on meanwhile. The game still counts itself in focus until the
-    // first WM_ACTIVATEAPP, so loading goes on, and keyboard input waits for the foreground (input_win.c). Its taskbar
-    // button flashes until it is brought up, and TOTK_FULLSCREEN waits for that first activation.
-    // TOTK_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
-    int background = g_background = cfg_get("TOTK_BACKGROUND_WINDOW") && atoi(cfg_get("TOTK_BACKGROUND_WINDOW"));
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"TotK Recomp", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
-                             NULL, inst, NULL);
-    if (!g_hwnd) {
-        rt_log("gfx: CreateWindowEx failed (%lu)", GetLastError());
-        g_wnd_failed = 1;
-    } else {
-        // The frame was measured at the system DPI; the window may have opened on a monitor at another scale.
-        InterlockedExchange(&g_dpi, (LONG)GetDpiForWindow(g_hwnd));
-        outer_size(g_hwnd, cw, ch, &ow, &oh);
-        SetWindowPos(g_hwnd, HWND_BOTTOM, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        if (!background) {
-            FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
-            FlashWindowEx(&fw);
-            g_fs_pending = cfg_fullscreen();
-        }
-        note_applied();
-        refresh_rate_update(g_hwnd, 1);
-        keep_awake(1);
-    }
-    SetEvent(g_wnd_ready);
-    if (g_wnd_failed) return 1;
-    MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    return 0;
 }
 
 // ---- swapchain
@@ -546,7 +269,7 @@ static void flip_locked(void) {
     VkResult r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
     vk_device_fault_report(r);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) InterlockedExchange(&g_dirty, 1);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
 }
 
 static void free_capture(void) {
@@ -564,10 +287,10 @@ static int create_swapchain(void) {
     VkCtx *c = vk_ctx();
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(c->phys, g_surface, &caps) != VK_SUCCESS) return 0;
-    RECT rc = {0};
-    GetClientRect(g_hwnd, &rc);
+    int cw = 0, ch = 0;
+    wsys_client_size(&cw, &ch);
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent
-                                                            : (VkExtent2D){(uint32_t)rc.right, (uint32_t)rc.bottom};
+                                                            : (VkExtent2D){(uint32_t)cw, (uint32_t)ch};
     if (!ext.width || !ext.height) return 0;
     uint32_t nf = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, NULL);
@@ -624,7 +347,7 @@ static int create_swapchain(void) {
     }
     free_capture();
     vk_queue_unlock();
-    InterlockedExchange(&g_dirty, 0);
+    plat_xchg32(&g_dirty, 0);
     return 1;
 }
 
@@ -654,15 +377,15 @@ static int ensure_capture_buffer(void) {
 }
 
 void vk_thumbs_enable(int n) {
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     if (!g_th_n && n > 0 && (g_th_tag = calloc((size_t)n, sizeof *g_th_tag))) g_th_n = n;
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 void vk_thumbs_frame(uint64_t frame) {
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     g_th_frame = frame;
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 static void free_thumbs(void) {
@@ -745,7 +468,7 @@ static void record_thumb(VkCommandBuffer cb, VkImage dst, unsigned fence_slot) {
 
 int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
     int ok = 0;
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     if (g_th_n && g_th_ptr && frame) {
         unsigned ring = (unsigned)(frame % (uint64_t)g_th_n);
         if (g_th_tag[ring] == frame) {
@@ -755,7 +478,7 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
             ok = g_th_fmt == VK_FORMAT_B8G8R8A8_UNORM || g_th_fmt == VK_FORMAT_B8G8R8A8_SRGB ? 2 : 1;
         }
     }
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
     if (ok == 2)
         for (size_t i = 0; i < TH_BYTES; i += 4) {
             uint8_t t = rgba[i];
@@ -765,17 +488,17 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
 }
 
 void vk_present_capture(int on) {
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     g_capture = on;
     if (!on) g_cap_valid = 0;
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt) {
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     int ok = g_cap_valid;
     if (ok) { *px = g_cap_ptr; *w = g_cap_w; *h = g_cap_h; *fmt = g_sc_fmt; }
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
     return ok;
 }
 
@@ -796,16 +519,30 @@ static void save_capture(const char *path) {
     rt_log("gfx: menu test shot %s (%dx%d)", path, g_cap_w, g_cap_h);
 }
 
+// The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into: the whole image with
+// TOTK_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
+// on the Steam Deck's 1280x800 screen gets bars of 40 rows above and below; a 16:9 picture in a 21:9 window, bars at the
+// sides).
+void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
+    out[0] = out[1] = 0, out[2] = dw, out[3] = dh;
+    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("TOTK_ASPECT"), "stretch")) return;
+    if ((int64_t)dw * ch > (int64_t)dh * cw) out[2] = (int)(((int64_t)dh * cw + ch / 2) / ch);   // window wider: pillarbox
+    else out[3] = (int)(((int64_t)dw * ch + cw / 2) / cw);                                        // taller: letterbox
+    // A side of the window's parity keeps the two bars equal; a picture one pixel short of the window fills it
+    out[2] += (dw - out[2]) & 1, out[3] += (dh - out[3]) & 1;
+    out[0] = (dw - out[2]) / 2, out[1] = (dh - out[3]) / 2;
+}
+
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
     VkCtx *c = vk_ctx();
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     flip_locked();
-    if (!g_sc || InterlockedCompareExchange(&g_dirty, 0, 0)) {
-        if (!IsIconic(g_hwnd) && !create_swapchain() && !g_sc) goto out;
+    if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
+        if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }
-    if (IsIconic(g_hwnd) || !g_sc) goto out;
+    if (wsys_minimized() || !g_sc) goto out;
 
     unsigned slot = g_frame % FRAMES;
     if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) {
@@ -815,13 +552,13 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     uint32_t idx = 0;
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        InterlockedExchange(&g_dirty, 1);
+        plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
         r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
-    if (r == VK_SUBOPTIMAL_KHR) InterlockedExchange(&g_dirty, 1);
+    if (r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
     vkResetFences(c->device, 1, &g_fence[slot]);
     if (g_th_pending[slot]) {   // that fence has signalled: the thumbnail its submission wrote is complete
         g_th_tag[g_th_pending[slot] % (uint64_t)g_th_n] = g_th_pending[slot];
@@ -855,20 +592,37 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     const int rect[4] = {cx, cy, cw, ch};
-    // FSR (TOTK_UPSCALER) when the swapchain is larger than the crop; else the bilinear blit
-    int fsr = general && vk_fsr_record(cb, slot, src, fmt, w, h, rect, dst, g_sc_ext.width, g_sc_ext.height);
-    g_scaler = fsr ? 2 : (uint32_t)cw != g_sc_ext.width || (uint32_t)ch != g_sc_ext.height;
+    int to[4];   // where the picture goes in the swapchain image: {x, y, w, h}
+    gfx_fit_rect(cw, ch, (int)g_sc_ext.width, (int)g_sc_ext.height, to);
+    if (to[2] != (int)g_sc_ext.width || to[3] != (int)g_sc_ext.height) {   // black bars beside or above and below it
+        VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        sync_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    }
+    // Colour adjustment (TOTK_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
+    VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
+    const int grect[4] = {0, 0, cw, ch};
+    VkImage psrc = graded ? graded : src;
+    VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *prect = graded ? grect : rect;
+    // FSR (TOTK_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
+    int fsr = general && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
+    g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];
     if (!fsr) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
-            sync_barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkImageBlit region = {
-            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{cx, cy, 0}, {cx + cw, cy + ch, 1}},
-            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int)g_sc_ext.width, (int)g_sc_ext.height, 1}}};
-        vkCmdBlitImage(cb, src, general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{prect[0], prect[1], 0}, {prect[0] + cw, prect[1] + ch, 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{to[0], to[1], 0}, {to[0] + to[2], to[1] + to[3], 1}}};
+        vkCmdBlitImage(cb, psrc, general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
         if (general)   // later submissions that write the source wait for the blit's read
-            sync_barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
+            sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     }
     // last: the image's layout, and the stage and access of its last write, as each step leaves it
@@ -943,7 +697,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         if (menu_shot) save_capture(menu_shot);
     }
 out:
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
@@ -955,25 +709,23 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 }
 
 void vk_present_flip(void) {
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     flip_locked();
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 void gfx_window_resize(int cw, int chh) {
     gfx_window_start();
-    int ow, oh;
-    outer_size(g_hwnd, cw, chh, &ow, &oh);
-    SetWindowPos(g_hwnd, NULL, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    EnterCriticalSection(&g_pl);
+    wsys_resize(cw, chh);
+    plat_rmutex_lock(&g_pl);
     create_swapchain();
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 // Called by vk_shutdown before the device goes away; the window and its thread stay.
 void gfx_window_release_vk(void) {
     VkCtx *c = vk_ctx();
-    EnterCriticalSection(&g_pl);
+    plat_rmutex_lock(&g_pl);
     if (c && g_started) {
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
@@ -981,6 +733,7 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_color_release();
         free_capture();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {
@@ -998,28 +751,18 @@ void gfx_window_release_vk(void) {
         g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
-    LeaveCriticalSection(&g_pl);
+    plat_rmutex_unlock(&g_pl);
 }
 
 void gfx_window_start(void) {
-    EnterCriticalSection(&g_start_lock);
+    plat_rmutex_lock(&g_start_lock);
     if (!g_started) {
         if (!vk_init()) rt_fatal("gfx: no usable Vulkan device (see the vk: lines above)");
         VkCtx *c = vk_ctx();
-        if (!g_hwnd) {
-            g_wnd_failed = 0;
-            g_wnd_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
-            HANDLE t = CreateThread(NULL, 0, window_main, NULL, 0, NULL);
-            if (!t) rt_fatal("gfx: cannot start the window thread (error %lu)", GetLastError());
-            CloseHandle(t);
-            WaitForSingleObject(g_wnd_ready, INFINITE);
-            CloseHandle(g_wnd_ready);
-            if (g_wnd_failed) rt_fatal("gfx: window creation failed");
-        }
-        VkWin32SurfaceCreateInfoKHR si = {.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-                                          .hinstance = GetModuleHandleW(NULL), .hwnd = g_hwnd};
-        VkResult vr = vkCreateWin32SurfaceKHR(c->instance, &si, NULL, &g_surface);
-        if (vr != VK_SUCCESS) rt_fatal("gfx: vkCreateWin32SurfaceKHR failed (%d)", (int)vr);
+        static int opened;
+        if (!opened && !(opened = wsys_open())) rt_fatal("gfx: window creation failed");
+        g_surface = wsys_surface(c->instance);
+        if (!g_surface) rt_fatal("gfx: no Vulkan surface for the window");
 
         VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = c->gfx_family};
@@ -1035,14 +778,14 @@ void gfx_window_start(void) {
         }
         g_frame = 0;
         g_started = 1;
-        EnterCriticalSection(&g_pl);
+        plat_rmutex_lock(&g_pl);
         create_swapchain();
-        LeaveCriticalSection(&g_pl);
-        RECT rc = {0};
-        GetClientRect(g_hwnd, &rc);
-        rt_log("gfx: window %ldx%ld at DPI %u, swapchain %ux%u format %d", rc.right, rc.bottom, gfx_window_dpi(),
-               g_sc_ext.width, g_sc_ext.height, (int)g_sc_fmt);
+        plat_rmutex_unlock(&g_pl);
+        int cw = 0, ch = 0;
+        wsys_client_size(&cw, &ch);
+        rt_log("gfx: window %dx%d at DPI %u, swapchain %ux%u format %d", cw, ch, gfx_window_dpi(), g_sc_ext.width,
+               g_sc_ext.height, (int)g_sc_fmt);
     }
-    LeaveCriticalSection(&g_start_lock);
+    plat_rmutex_unlock(&g_start_lock);
     vsync_ensure();
 }

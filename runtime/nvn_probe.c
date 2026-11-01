@@ -12,7 +12,6 @@
 // The 40 layout goldens themselves are run by --probe-nvn-tex against nvn_tex.c; here four of them go through the procs.
 // Ported in part from MacNativeGames games/totk/tests/texture_auto_layout/probe.c @ b75be8cf (MIT, Copyright (c) 2026
 // jhaizhou; origin d2r-mobile): the golden metadata, which holds no game bytes.
-#include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +20,7 @@
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
+#include "platform/platform.h"
 
 #define CHILD_ENV "TOTK_PROBE_NVN_CHILD"
 
@@ -835,33 +835,10 @@ static void probe_proc_table(void) {
 }
 
 // ---- named fatal stubs, each in a child process
-static DWORD run_child(const char *mode, char *out, size_t cap) {
-    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
-    HANDLE rd, wr;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) rt_fatal("probe-nvn: CreatePipe (error %lu)", GetLastError());
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES, .hStdOutput = wr, .hStdError = wr};
-    PROCESS_INFORMATION pi;
-    wchar_t *cmdline = _wcsdup(GetCommandLineW());
-    SetEnvironmentVariableA(CHILD_ENV, mode);
-    BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
-    SetEnvironmentVariableA(CHILD_ENV, NULL);
-    free(cmdline);
-    CloseHandle(wr);
-    if (!ok) rt_fatal("probe-nvn: CreateProcess for the %s child (error %lu)", mode, GetLastError());
-    size_t n = 0;
-    DWORD got;
-    while (n + 1 < cap && ReadFile(rd, out + n, (DWORD)(cap - 1 - n), &got, NULL) && got) n += got;
-    out[n] = 0;
-    char sink[512];
-    while (ReadFile(rd, sink, sizeof sink, &got, NULL) && got) {}
-    CloseHandle(rd);
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return code;
+static uint32_t run_child(const char *mode, char *out, size_t cap) {
+    int code = plat_run_self(CHILD_ENV, mode, out, cap, 0);
+    if (code < 0) rt_fatal("probe-nvn: cannot start the %s child", mode);
+    return (uint32_t)code;
 }
 
 static int run_as_child(const char *name) {
@@ -877,13 +854,13 @@ static int run_as_child(const char *name) {
 static void probe_children(void) {
     static char out[16384];
     for (int i = 0; i < NFATAL; i++) {
-        DWORD code = run_child(fatal_procs[i], out, sizeof out);
+        uint32_t code = run_child(fatal_procs[i], out, sizeof out);
         char want[160];
         snprintf(want, sizeof want, "NVN %s is not implemented", fatal_procs[i]);
-        CHECK(code == 70 && strstr(out, "FATAL: ") && strstr(out, want), "child %s: exit %lu, output: %s", fatal_procs[i], code, out);
+        CHECK(code == 70 && strstr(out, "FATAL: ") && strstr(out, want), "child %s: exit %u, output: %s", fatal_procs[i], code, out);
         const char *line = strstr(out, "FATAL: ");
         int len = line ? (int)strcspn(line, "\r\n") : 0;
-        printf("fatal stub %-30s child exit %lu: %.*s\n", fatal_procs[i], code, len, line ? line : "(no FATAL line)");
+        printf("fatal stub %-30s child exit %u: %.*s\n", fatal_procs[i], code, len, line ? line : "(no FATAL line)");
     }
 }
 

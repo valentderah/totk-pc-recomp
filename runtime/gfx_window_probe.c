@@ -1,14 +1,16 @@
 // --probe-window: presents 300 frames of a cycling clear colour through vk_present_image, reads the swapchain image back
-// and compares every pixel, measures the vsync rate, flips the focus state with synthetic WM_ACTIVATEAPP messages and
-// resizes the window. Run with TOTK_VK_VALIDATION=1 to count validation errors.
+// and compares every pixel, measures the vsync rate, flips the focus state and drives the cursor release with synthetic
+// window events (the window back end's wsys_probe_*, gfx_wsys.h) and resizes the window. Run with TOTK_VK_VALIDATION=1
+// to count validation errors.
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
 
 #include "gfx.h"
+#include "gfx_wsys.h"
 #include "input.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 #define SRC_W 640
 #define SRC_H 360
@@ -110,20 +112,26 @@ static int present_and_check(Source *s, int first, int i, int *w_out, int *h_out
     else if (fmt == VK_FORMAT_R8G8B8A8_UNORM) { want[0] = rgb[0]; want[1] = rgb[1]; want[2] = rgb[2]; }
     else { printf("probe-window: swapchain format %d is not UNORM RGBA/BGRA\n", (int)fmt); return 3; }
     want[3] = 255;
-    uint32_t wv;
+    uint32_t wv, black = 0xff000000u;   // opaque black in both byte orders
     memcpy(&wv, want, 4);
+    int r[4];   // the picture's rectangle; bars of black around it when the window's shape differs
+    gfx_fit_rect(SRC_W, SRC_H, w, h, r);
     const uint32_t *p = (const uint32_t *)px;
-    for (long k = 0, n = (long)w * h; k < n; k++)
-        if (p[k] != wv) {
-            printf("probe-window: frame %d pixel %ld is %08x, expected %08x\n", i, k, p[k], wv);
+    for (long k = 0, n = (long)w * h; k < n; k++) {
+        int x = (int)(k % w), y = (int)(k / w);
+        uint32_t e = x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] ? wv : black;
+        if (p[k] != e) {
+            printf("probe-window: frame %d pixel %ld (%d, %d) is %08x, expected %08x\n", i, k, x, y, p[k], e);
             return 4;
         }
+    }
     *w_out = w;
     *h_out = h;
     return 0;
 }
 
 int probe_window(void) {
+    if (!menu_font_check()) return fail("the menu's font check takes a damaged font or refuses a good one");
     gfx_window_start();
     VkCtx *c = vk_ctx();
     if (!c) return fail("no Vulkan device");
@@ -136,11 +144,11 @@ int probe_window(void) {
         if (present_and_check(&s, i == 0, i, &w, &h)) return fail("presented pixels differ");
     printf("probe-window: %d presents, readback %dx%d exact\n", FRAMES, w, h);
 
-    // Focus: synthetic WM_ACTIVATEAPP off and on, delivered synchronously on the window thread.
+    // Focus: synthetic focus loss and gain, delivered synchronously on the window thread.
     unsigned m0 = gfx_window_focus_messages();
-    SendMessageW(gfx_window_handle(), WM_ACTIVATEAPP, FALSE, 0);
+    wsys_probe_focus(0);
     int off = gfx_window_focused();
-    SendMessageW(gfx_window_handle(), WM_ACTIVATEAPP, TRUE, 0);
+    wsys_probe_focus(1);
     int on = gfx_window_focused();
     unsigned m1 = gfx_window_focus_messages();
     if (off != 0 || on != 1 || m1 - m0 != 2) {
@@ -149,19 +157,17 @@ int probe_window(void) {
     }
     printf("probe-window: focus off/on pushed 2 messages (15)\n");
 
-    // Cursor release: Esc releases, a client click recaptures, a title bar activation releases. The probe window may not be
-    // the foreground window, so this checks the release flag, not the clip state.
-    HWND hw = gfx_window_handle();
-    SendMessageW(hw, WM_KEYDOWN, VK_ESCAPE, 0);
+    // Cursor release: Esc releases, a client click recaptures, a title bar activation releases (where the window system
+    // reports one). The probe window may not be the foreground window, so this checks the release flag, not the capture.
+    wsys_probe_escape();
     int esc = input_cursor_released();
-    SendMessageW(hw, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+    wsys_probe_click(0);
     int click = input_cursor_released();
-    SendMessageW(hw, WM_MOUSEACTIVATE, (WPARAM)hw, MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN));
+    wsys_probe_click(1);
     int client = input_cursor_released();
-    SendMessageW(hw, WM_MOUSEACTIVATE, (WPARAM)hw, MAKELPARAM(HTCAPTION, WM_LBUTTONDOWN));
-    int caption = input_cursor_released();
-    SendMessageW(hw, WM_ACTIVATEAPP, FALSE, 0);
-    SendMessageW(hw, WM_ACTIVATEAPP, TRUE, 0);
+    int caption = wsys_probe_click(2) ? input_cursor_released() : 1;
+    wsys_probe_focus(0);
+    wsys_probe_focus(1);
     int back = input_cursor_released();
     if (menu_is_open()) menu_toggle();   // Esc opened the menu: the presents below compare the bare game image
     if (!esc || click || client || !caption || back) {
@@ -172,33 +178,31 @@ int probe_window(void) {
 
     // Resize: the client area changes, the swapchain follows, presenting still reads back exact.
     gfx_window_resize(1280, 720);
-    RECT rc;
-    GetClientRect(gfx_window_handle(), &rc);
+    int cw = 0, ch = 0;
+    wsys_client_size(&cw, &ch);
     for (int i = 0; i < 10; i++)
         if (present_and_check(&s, 0, FRAMES + i, &w, &h)) return fail("presents after resize");
-    if (w != rc.right || h != rc.bottom) {
-        printf("probe-window: readback %dx%d, client area %ldx%ld\n", w, h, (long)rc.right, (long)rc.bottom);
+    if (w != cw || h != ch) {
+        printf("probe-window: readback %dx%d, client area %dx%d\n", w, h, cw, ch);
         return fail("swapchain size after resize");
     }
     printf("probe-window: resized to %dx%d, presents still exact\n", w, h);
     vk_present_capture(0);
 
     // Vsync: count ticks between two tick edges about 5 s apart.
-    static volatile long ticks;
+    static volatile int32_t ticks;
     gfx_vsync_bind_counter(&ticks);
-    LARGE_INTEGER f, t0, t1;
-    QueryPerformanceFrequency(&f);
     long a = ticks;
-    while (ticks == a) Sleep(1);
-    QueryPerformanceCounter(&t0);
+    while (ticks == a) plat_sleep_ms(1);
+    uint64_t t0 = plat_now_ns();
     long n0 = ticks;
-    Sleep(5000);
+    plat_sleep_ms(5000);
     long b = ticks;
-    while (ticks == b) Sleep(1);
-    QueryPerformanceCounter(&t1);
+    while (ticks == b) plat_sleep_ms(1);
+    uint64_t t1 = plat_now_ns();
     long n1 = ticks;
-    double rate = (double)(n1 - n0) * (double)f.QuadPart / (double)(t1.QuadPart - t0.QuadPart);
-    printf("probe-window: vsync %ld ticks in %.3f s = %.3f Hz\n", n1 - n0, (double)(t1.QuadPart - t0.QuadPart) / (double)f.QuadPart, rate);
+    double rate = (double)(n1 - n0) * 1e9 / (double)(t1 - t0);
+    printf("probe-window: vsync %ld ticks in %.3f s = %.3f Hz\n", n1 - n0, (double)(t1 - t0) / 1e9, rate);
     if (rate < 60.0 * 0.995 || rate > 60.0 * 1.005) return fail("vsync rate");
 
     source_destroy(&s);

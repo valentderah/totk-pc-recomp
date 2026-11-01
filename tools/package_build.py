@@ -20,7 +20,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll')
+EXE = '.exe' if os.name == 'nt' else ''
+# A Linux source build links the system's SDL3, Opus and libvpx: the other machine needs them installed
+DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll') if os.name == 'nt' else ()
 # Prepared state next to the exe: translator answers, programs, the prepared list, pipeline cache and its keys, and the
 # variant lists `totk.exe --prepare-shaders` reads (the driver keys its library cache by exe path, so each copy runs it).
 STATE = ('romfs-index.bin', 'pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin',
@@ -51,7 +53,7 @@ def main():
     ap.add_argument('--version', default='v121', help='game version (v121 or v143): the defaults below follow it')
     ap.add_argument('--build', type=Path, help='build dir with the prepared state (default build/<version>)')
     ap.add_argument('--exe', type=Path, help='totk.exe to package (default: <build>/totk.exe); its DLLs are taken from --build')
-    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / 'totk_xlate.exe')
+    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / f'totk_xlate{EXE}')
     ap.add_argument('--extracted', type=Path, help='default build/extracted/<version>')
     ap.add_argument('--out', type=Path, help='default build/<version>-portable')
     ap.add_argument('--with-romfs', action='store_true', help='also copy romfs.bin (about 16 GB)')
@@ -62,7 +64,7 @@ def main():
     a.out = a.out or ROOT / 'build' / f'{a.version}-portable'
 
     build, out = a.build.resolve(), a.out.resolve()
-    exe = (a.exe or build / 'totk.exe').resolve()
+    exe = (a.exe or build / f'totk{EXE}').resolve()
     fonts = a.extracted.resolve().parent / 'firmware' / 'shared-fonts'
     exefs = a.extracted.resolve() / 'exefs'
     romfs = a.extracted.resolve() / 'romfs' / 'romfs.bin'
@@ -78,10 +80,10 @@ def main():
         print('package_build: warning: the folder holds game code; keep it out of the repository')
 
     out.mkdir(parents=True, exist_ok=True)
-    copy(exe, out / 'totk.exe')
+    copy(exe, out / f'totk{EXE}')
     for d in DLLS:
         copy(build / d, out / d)
-    copy(a.xlate, out / 'totk_xlate.exe')
+    copy(a.xlate, out / f'totk_xlate{EXE}')
     idf = a.xlate.with_suffix('.id')
     if idf.exists():
         copy(idf, out / 'totk_xlate.id')
@@ -91,6 +93,8 @@ def main():
         else:
             print(f'package_build: {f} not in {build}, skipped')
     n = copy_tree(build / 'romfs-patches', out / 'romfs-patches')
+    if (build / 'romfs-patches-xbox').is_dir():   # pad_layout = xbox_prompts (make_romfs_patches.py --xbox-prompts)
+        n += copy_tree(build / 'romfs-patches-xbox', out / 'romfs-patches-xbox')
     n += copy_tree(exefs, out / 'exefs')
     n += copy_tree(fonts, out / 'shared-fonts')
     if not a.no_shader_cache and (build / 'shader-cache').is_dir():
@@ -101,7 +105,7 @@ def main():
         print('package_build: copying romfs.bin (16 GB) ...')
         shutil.copyfile(romfs, out / 'romfs' / 'romfs.bin')
     print(f'package_build: {out}: {n} files in folders, {size_of(out) / 2**30:.2f} GiB'
-          + ('' if a.with_romfs else '; no RomFS: put romfs.bin into romfs\\ or set TOTK_ROMFS'))
+          + ('' if a.with_romfs else f'; no RomFS: put romfs.bin into romfs{os.sep} or set TOTK_ROMFS'))
 
 
 if __name__ == '__main__':

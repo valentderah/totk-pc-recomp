@@ -98,7 +98,7 @@ WEAK void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {
 enum { W_UNRENDERABLE, W_LEVEL, W_LAYER, W_VIEW_FORMAT, W_BLOCK_VIEW, W_BLOCK_LAYERS, W_CLEAR_TARGET, W_CLEAR_MASK, W_STENCIL_MASK, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
-    static volatile long seen[W_COUNT];
+    static volatile int32_t seen[W_COUNT];
     if (__atomic_exchange_n(&seen[key], 1, __ATOMIC_RELAXED)) return;
     char msg[256];
     va_list ap;

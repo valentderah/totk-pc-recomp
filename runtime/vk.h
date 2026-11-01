@@ -1,10 +1,6 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
-#ifndef VK_USE_PLATFORM_WIN32_KHR
-#define VK_USE_PLATFORM_WIN32_KHR 1
-#endif
 #include <vulkan/vulkan.h>
-#include <vulkan/vulkan_win32.h>
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
@@ -32,12 +28,13 @@ typedef struct VkCtx {
     VmaAllocator vma;
     VkSemaphore timeline;                   // one timeline semaphore; values are issued by vk_sync.c
     VkDebugUtilsMessengerEXT messenger;
-    volatile long validation_errors;        // errors seen by the messenger (TOTK_VK_VALIDATION=1)
+    volatile int32_t validation_errors;        // errors seen by the messenger (TOTK_VK_VALIDATION=1)
     int validation;                         // layer active
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
-        has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
+        has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
+        has_calibrated;                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -89,7 +86,7 @@ void vk_crumbs_release(void);
 void vk_crumb(VkCommandBuffer cb, int kind, uint64_t n);
 void vk_crumbs_report(void);         // logs the two codes and what they name
 
-// ---- window and present (gfx_window.c). Host threads only.
+// ---- window and present (gfx_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled
 // to the swapchain extent, into the acquired swapchain image and presents it. src is in layout, which is
 // VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL (its writes made visible to the transfer stage by the caller's barrier) or
@@ -100,12 +97,17 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
-// FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into dst, a dw x dh
-// swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded (the setting says
-// bilinear, no upscale is needed, or FSR is not available): the caller blits.
+// FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
+// {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
+// (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
-                  VkImage dst, uint32_t dw, uint32_t dh);
+                  VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
+// Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
+// src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
+// scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
+VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
+void vk_color_release(void);   // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -113,12 +115,18 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 // Copy of the last presented swapchain image, for probes: on, the next presents read the image back into a host buffer
 // and wait for the GPU. *px stays valid until the next present; the format is the swapchain's. Returns 0 with no frame.
+// The rectangle {x, y, w, h} of a dw x dh swapchain image a cw x ch picture is presented in (gfx_present.c,
+// TOTK_ASPECT); the rest is black.
+void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
 void vk_present_capture(int on);
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 
-HWND gfx_window_handle(void);                      // NULL before gfx_window_start
+// The window system's part of device creation (gfx_window_win.c with Win32, gfx_window_sdl.c with SDL): the instance
+// extensions a surface needs (their count, at most max), and whether a queue family of pd can present to it.
+int gfx_window_vk_extensions(const char **out, int max);
+int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family);
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
-void gfx_vsync_bind_counter(volatile long *counter);  // host-side stand-in for a bound event: incremented per tick
+void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
 unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
 void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
@@ -193,6 +201,12 @@ void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
+// Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
+// write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
+// which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).
+void vk_mem_shadow_sync(void);
+void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
+void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
 void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
@@ -242,6 +256,7 @@ enum { VK_ASTC_CPU, VK_ASTC_GPU, VK_ASTC_NATIVE, VK_ASTC_CHECK };
 int vk_astc_mode(void);                 // decided once per device (logged); VK_ASTC_CPU before vk_init
 int vk_astc_native(VkFormat astc_fmt);  // 1: images of this ASTC format are created as such and get the raw blocks
 int vk_astc_gpu(void);                  // 1: ASTC images decoded to RGBA8 by the compute decoder (vk_astc_record)
+int vk_astc_bc(void);                   // 1: those images are BC3 instead, encoded after the decode (TOTK_ASTC_BC=1)
 // One image region decoded from raw blocks: tight rows of 16-byte blocks at byte src of the source buffer (slices one
 // after the other), w x h texels and slices deep, written at offset of level / layer.
 typedef struct { VkDeviceSize src; uint32_t w, h, slices, level, layer; VkOffset3D offset; } VkAstcRegion;
@@ -249,9 +264,10 @@ typedef struct { VkDeviceSize src; uint32_t w, h, slices, level, layer; VkOffset
 // bytes of blocks) goes to a device-local scratch buffer, a dispatch per region decodes it, and the texels are copied
 // into img (VK_IMAGE_LAYOUT_GENERAL). The caller records its usual barriers around an image copy before and after the
 // call. readback (optional, host-visible, TRANSFER_DST): also gets the decoded texels, the regions one after the other.
+// bc: img is BC3 (TexVkFormat.astc_bc); the texels are encoded to BC3 blocks before the copy, and readback is ignored.
 // 0 when the decoder is unavailable or the scratch buffer cannot be allocated (nothing recorded).
 int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, const VkAstcRegion *rg, int n, uint32_t bw,
-                   uint32_t bh, int srgb, VkImage img, VkImageAspectFlags aspect, VkBuffer readback);
+                   uint32_t bh, int srgb, int bc, VkImage img, VkImageAspectFlags aspect, VkBuffer readback);
 void vk_astc_stats(uint64_t *dispatches, uint64_t *texels);   // since start
 // TOTK_ASTC_TIME=1: GPU timestamps around each vk_astc_record's dispatches (logged per footprint and the largest one)
 void vk_astc_time_enable(int on);
@@ -360,7 +376,7 @@ VkCommandBuffer vk_sync_split(void);
 // Callbacks run in the order they were added, after those of earlier values; a value already done runs at once there.
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg);
 // gfx_vulkan_backend (vk_backend.c): presents go to a present thread and run after the submissions made before them.
-void rdoc_init(void);                     // runtime/rdoc_win.c: TOTK_RDOC debug capture; before vkCreateInstance
+void rdoc_init(void);                     // runtime/rdoc.c: TOTK_RDOC debug capture; before vkCreateInstance
 int rdoc_active(void);
 void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue

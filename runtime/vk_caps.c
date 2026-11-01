@@ -107,7 +107,13 @@ void vk_caps_init(VkCtx *c) {
     static const VkShaderStageFlags stage[3] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
     uint32_t told[3];
     for (int i = 0; i < 3; i++) told[i] = vk_caps.sg_pin_stages & stage[i] ? want : sg.subgroupSize;
-    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told);
+    // Gathers (TLD4) pick their four texels with Maxwell's rounding; AMD and Intel round a coordinate that sits between
+    // two texels the other way, which draws dark lines along object edges in shadow-map filtering (docs/maxwell.md 2.10;
+    // BotW and TotK on AMD). The translator biases gather coordinates by the host's sub-texel precision; NVIDIA rounds
+    // as Maxwell does. TOTK_GATHER_BIAS=<bits> forces it (0: off).
+    uint32_t gather = env_u32("TOTK_GATHER_BIAS", c->props.vendorID == 0x10de ? 0 : l->subTexelPrecisionBits);
+    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather);
+    if (gather) rt_log("vk caps: gather coordinates biased for %u sub-texel bits (TOTK_GATHER_BIAS)", gather);
 
     char dv[32];
     driver_version(dv, sizeof dv, c->props.vendorID, c->props.driverVersion);

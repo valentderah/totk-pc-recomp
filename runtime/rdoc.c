@@ -1,7 +1,7 @@
 // RenderDoc in-app capture (debug tool). TOTK_RDOC=<frame>[,<frame>...] captures those presented frames; TOTK_RDOC_DIR is the
-// output directory (default build/captures); TOTK_RDOC_DLL overrides the renderdoc.dll path. Only the API fields used are declared
-// here (layout of RENDERDOC_API_1_4_1, renderdoc_app.h, MIT), so no RenderDoc header is vendored.
-#include <windows.h>
+// output directory (default build/captures); TOTK_RDOC_DLL overrides the library's path (renderdoc.dll, librenderdoc.so).
+// Only the API fields used are declared here (layout of RENDERDOC_API_1_4_1, renderdoc_app.h, MIT), so no RenderDoc header
+// is vendored.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +10,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 #define RDOC_API_1_4_1 10401
 #define RDOC_MAX_FRAMES 64
@@ -48,9 +49,14 @@ void rdoc_init(void) {
     }
     if (!n_targets) { rt_log("rdoc: TOTK_RDOC=%s has no frame numbers", e); return; }
     const char *dll = cfg_get("TOTK_RDOC_DLL");
-    HMODULE m = LoadLibraryExA(dll && *dll ? dll : "C:\\Program Files\\RenderDoc\\renderdoc.dll", NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (!m) { rt_log("rdoc: cannot load renderdoc.dll (error %lu); set TOTK_RDOC_DLL", GetLastError()); return; }
-    int (*get_api)(int, void **) = (int (*)(int, void **))(void *)GetProcAddress(m, "RENDERDOC_GetAPI");
+#ifdef _WIN32
+    const char *def = "C:/Program Files/RenderDoc/renderdoc.dll";
+#else
+    const char *def = "librenderdoc.so";
+#endif
+    void *m = plat_lib_open(dll && *dll ? dll : def);
+    if (!m) { rt_log("rdoc: cannot load %s; set TOTK_RDOC_DLL", dll && *dll ? dll : def); return; }
+    int (*get_api)(int, void **) = (int (*)(int, void **))plat_lib_sym(m, "RENDERDOC_GetAPI");
     void *a = NULL;
     if (!get_api || get_api(RDOC_API_1_4_1, &a) != 1 || !a) { rt_log("rdoc: RENDERDOC_GetAPI(1.4.1) failed"); return; }
     api = a;
@@ -60,10 +66,10 @@ void rdoc_init(void) {
     api->SetCaptureOptionU32(8, 1);
     api->SetCaptureOptionU32(9, 1);
     const char *dir = cfg_get("TOTK_RDOC_DIR");
-    char full[MAX_PATH], tmpl[MAX_PATH + 16];
-    if (!_fullpath(full, dir && *dir ? dir : "build/captures", sizeof full)) return;
-    CreateDirectoryA(full, NULL);
-    snprintf(tmpl, sizeof tmpl, "%s\totk", full);
+    char full[PLAT_PATH_MAX], tmpl[PLAT_PATH_MAX + 16];
+    if (!plat_full_path(dir && *dir ? dir : "build/captures", full, sizeof full)) return;
+    plat_file_mkdir_p(full);
+    snprintf(tmpl, sizeof tmpl, "%s/totk", full);
     api->SetCaptureFilePathTemplate(tmpl);
     rt_log("rdoc: ready, %d frame(s), captures %s", n_targets, full);
 }
@@ -75,7 +81,7 @@ void rdoc_after_present(uint64_t frame) {
     if (capturing) {
         api->EndFrameCapture(NULL, NULL);
         capturing = 0;
-        char path[MAX_PATH];
+        char path[PLAT_PATH_MAX];
         uint32_t len = sizeof path, n = api->GetNumCaptures();
         if (n && api->GetCapture(n - 1, path, &len, NULL)) rt_log("rdoc: frame %llu captured: %s", (unsigned long long)frame, path);
         else rt_log("rdoc: frame %llu capture failed", (unsigned long long)frame);

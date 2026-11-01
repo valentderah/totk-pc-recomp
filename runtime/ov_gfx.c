@@ -5,24 +5,24 @@
 //   nv::*        record the game's allocator callbacks and graphics work memory (guest addresses) for the NVN layer
 //   nn::vi::*    display, layer and native window identities; the vsync event is bound here
 //   nvnBootstrapLoader   the end of --boot (rt_boot_event "nvn"); otherwise the synthetic address of an NVN proc (nvn_procs.c)
-#include <windows.h>
 #include <stdint.h>
 
 #include "gfx.h"
 #include "host.h"
 #include "ov.h"
+#include "platform/platform.h"
 
 #define VI_R_INVALID 0xf601u   // MacNativeGames' result for a call on an unknown display or layer
 
 static OvNvState nv;
-static SRWLOCK lock = SRWLOCK_INIT;
+static PlatMutex lock = PLAT_MUTEX_INIT;
 
 const OvNvState *ov_nv_state(void) { return &nv; }
 
 static void set_allocator(Cpu *c, OvNvAllocator *a) {
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     *a = (OvNvAllocator){arg_x(c, 0), arg_x(c, 1), arg_x(c, 2), arg_x(c, 3)};
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
 }
 
 // void nv::SetGraphicsAllocator(AllocateFunction, FreeFunction, ReallocateFunction, void *user)
@@ -35,11 +35,11 @@ static void ov_initialize_graphics(Cpu *c) {
     uint64_t mem = arg_x(c, 0), size = arg_x(c, 1);
     if (!mem || !size) rt_fatal("nv::InitializeGraphics: no graphics work memory (%#llx, %#llx)", (unsigned long long)mem,
                                 (unsigned long long)size);
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     nv.memory = mem;
     nv.memory_size = size;
     nv.initialized = 1;
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
     rt_log("nv: graphics work memory %#llx+%#llx recorded", (unsigned long long)mem,
            (unsigned long long)size);
 }
@@ -51,20 +51,20 @@ static void *display, *layer, *window;
 // void nn::vi::Initialize()
 static void ov_vi_initialize(Cpu *c) {
     (void)c;
-    AcquireSRWLockExclusive(&lock);
+    plat_mutex_lock(&lock);
     if (!display) {
         display = mem_kernel_alloc(64, 16);
         layer = mem_kernel_alloc(64, 16);
         window = mem_kernel_alloc(64, 16);
     }
     vi_ready = 1;
-    ReleaseSRWLockExclusive(&lock);
+    plat_mutex_unlock(&lock);
 }
 
 static int vi_up(void) {
-    AcquireSRWLockShared(&lock);
+    plat_mutex_lock_shared(&lock);
     int r = vi_ready;
-    ReleaseSRWLockShared(&lock);
+    plat_mutex_unlock_shared(&lock);
     return r;
 }
 
@@ -105,8 +105,8 @@ static void ov_vsync_event(Cpu *c) {
 static void ov_nvn_bootstrap(Cpu *c) {
     const char *name = arg_p(c, 0);
     if (!name) name = "(null)";
-    static LONG first = 1;
-    if (rt_config()->boot && InterlockedExchange(&first, 0)) rt_boot_event("nvn", c, name);   // ends --boot; returns
+    static int32_t first = 1;
+    if (rt_config()->boot && plat_xchg32(&first, 0)) rt_boot_event("nvn", c, name);   // ends --boot; returns
                                                                                                 // when --seconds goes on
     ret_x(c, nvn_proc_address(name));
 }

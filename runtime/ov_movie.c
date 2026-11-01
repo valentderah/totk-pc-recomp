@@ -23,7 +23,6 @@
 // periods late is dropped if the next one is due too, so the picture keeps time with the movie's sound.
 // TOTK_MOVIE_PACE=0 hands every decoded frame over at the next present; TOTK_MOVIE_HOST=0 leaves every decoder to the
 // library (which aborts at the first movie).
-#include <windows.h>
 #include <emmintrin.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -35,6 +34,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "movie.h"
+#include "platform/platform.h"
 
 enum { IN_BUFS = 4, IN_CAP = 2 << 20, OUT_BUFS = 8, MAX_MOVIES = 16, VPX_THREADS = 4 };
 enum { ST_OK = 0, ST_ERROR = 0x1000, ST_NULL = 0x100b, ST_NO_OUTPUT = 0x100e, ST_NO_INPUT = 0x1011,
@@ -74,19 +74,19 @@ typedef struct {
     uint64_t t0;                             // host time of the first frame handed over (pacing)
     int64_t pts0;                            // its presentation time (us)
     MovieStats st;
-    SRWLOCK mu;
-    CONDITION_VARIABLE work, idle;
-    HANDLE thread;
+    PlatMutex mu;
+    PlatCond work, idle;
+    PlatThread *thread;
     int busy, quit;
     uint64_t gen;                            // bumped by Flush, Stop, Reset, destruction: a decode in flight is dropped
 } Movie;
 
 static MovieGuest G;
-static volatile LONG g_ready;
-static SRWLOCK g_init = SRWLOCK_INIT;
+static volatile int32_t g_ready;
+static PlatMutex g_init = PLAT_MUTEX_INIT;
 static Movie *g_movies[MAX_MOVIES];
-static volatile LONG g_count;                // live host decoders: movie_tick returns at once when 0
-static SRWLOCK g_lock = SRWLOCK_INIT;        // lock order: g_lock, then Movie.mu
+static volatile int32_t g_count;                // live host decoders: movie_tick returns at once when 0
+static PlatMutex g_lock = PLAT_MUTEX_INIT;        // lock order: g_lock, then Movie.mu
 static uint64_t (*g_clock)(void) = kern_now_ns;
 static int g_pace = -1;
 
@@ -117,7 +117,7 @@ static uint64_t need(const char *name) {
 // The guest functions, resolved the first time any entry runs (the modules are loaded and relocated by then).
 static void guest_init(void) {
     if (g_ready) return;
-    AcquireSRWLockExclusive(&g_init);
+    plat_mutex_lock(&g_init);
     if (!g_ready) {
         G.signal_event = need("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
         G.buf_set_range = need("_ZN5movie6Buffer8SetRangeEii");
@@ -131,16 +131,16 @@ static void guest_init(void) {
         G.md_set_string = need("_ZN5movie9MediaData9SetStringEPKcS2_");
         G.vptr = need("_ZTVN5movie7DecoderE") + 0x10;
         for (int i = 0; i < MOVIE_ENTRIES; i++) G.orig[i] = need(movie_symbols[i]);
-        InterlockedExchange(&g_ready, 1);
+        plat_xchg32(&g_ready, 1);
     }
-    ReleaseSRWLockExclusive(&g_init);
+    plat_mutex_unlock(&g_init);
 }
 
 void movie_set_guest(const MovieGuest *g) {
-    AcquireSRWLockExclusive(&g_init);
+    plat_mutex_lock(&g_init);
     G = *g;
-    InterlockedExchange(&g_ready, 1);
-    ReleaseSRWLockExclusive(&g_init);
+    plat_xchg32(&g_ready, 1);
+    plat_mutex_unlock(&g_init);
 }
 
 #define U(x) ((uint64_t)(uintptr_t)(x))
@@ -161,10 +161,10 @@ static void pass(Cpu *c, int which) {
 
 static Movie *find(uint64_t guest) {
     Movie *m = NULL;
-    AcquireSRWLockShared(&g_lock);
+    plat_mutex_lock_shared(&g_lock);
     for (int i = 0; i < MAX_MOVIES && !m; i++)
         if (g_movies[i] && g_movies[i]->guest == guest) m = g_movies[i];
-    ReleaseSRWLockShared(&g_lock);
+    plat_mutex_unlock_shared(&g_lock);
     return m;
 }
 
@@ -236,12 +236,12 @@ static int vpx_open(Movie *m) {
 }
 
 // The worker: takes inputs in order, decodes them outside the lock into a reserved output slot, publishes the frame.
-static DWORD WINAPI worker(void *arg) {
+static void worker(void *arg) {
     Movie *m = arg;
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     for (;;) {
         while (!m->quit && !(m->started && m->vpx_live && m->npending && can_take(m, &m->pending[0])))
-            SleepConditionVariableSRW(&m->work, &m->mu, INFINITE, 0);
+            plat_cond_wait(&m->work, &m->mu);
         if (m->quit) break;
         Pending p = m->pending[0];
         memmove(m->pending, m->pending + 1, (size_t)--m->npending * sizeof *m->pending);
@@ -256,7 +256,7 @@ static DWORD WINAPI worker(void *arg) {
         vpx_codec_err_t e = VPX_CODEC_OK;
         const char *bad = NULL;
         m->busy = 1;
-        ReleaseSRWLockExclusive(&m->mu);
+        plat_mutex_unlock(&m->mu);
         if (p.size > 0) {
             uint64_t t0 = kern_now_ns();
             e = vpx_codec_decode(&m->vpx, m->in[p.index] + p.offset, (unsigned)p.size, NULL, 0);
@@ -271,9 +271,9 @@ static DWORD WINAPI worker(void *arg) {
             }
             dt = kern_now_ns() - t0;
         }
-        AcquireSRWLockExclusive(&m->mu);
+        plat_mutex_lock(&m->mu);
         m->busy = 0;
-        WakeAllConditionVariable(&m->idle);
+        plat_cond_broadcast(&m->idle);
         if (m->gen != gen) continue;   // flushed, stopped or reset meanwhile: the queues were reset after this
         m->in_free[m->nin_free++] = p.index;
         m->owed |= 1u << MOVIE_EV_INPUT;
@@ -314,8 +314,8 @@ static DWORD WINAPI worker(void *arg) {
                    m->st.max_ns / 1e6, (unsigned long long)m->st.errors);
         }
     }
-    ReleaseSRWLockExclusive(&m->mu);
-    return 0;
+    plat_mutex_unlock(&m->mu);
+    return;
 }
 
 // With m->mu held: invalidate a decode in flight and wait for the worker to leave it. Returns whether the calling guest
@@ -325,12 +325,12 @@ static int quiesce(Movie *m) {
     m->gen++;
     while (m->busy) {
         if (!away) away = kern_core_away();
-        SleepConditionVariableSRW(&m->idle, &m->mu, INFINITE, 0);
+        plat_cond_wait(&m->idle, &m->mu);
     }
     return away;
 }
 static void unlock_back(Movie *m, int away) {
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     kern_core_back(&away);
 }
 
@@ -383,7 +383,7 @@ static void release_due(Movie *m, uint64_t now) {
         m->out_held[m->decoded[0].index] = 0;
         m->st.dropped++;
         memmove(m->decoded, m->decoded + 1, (size_t)--m->ndecoded * sizeof *m->decoded);
-        WakeConditionVariable(&m->work);
+        plat_cond_signal(&m->work);
     }
     Ready d = m->decoded[0];
     if (!(d.flags & MOVIE_FLAG_EOS)) {
@@ -402,34 +402,34 @@ static void release_due(Movie *m, uint64_t now) {
 void movie_tick(Cpu *c) {
     if (!g_count) return;
     Signals s = {0};
-    AcquireSRWLockShared(&g_lock);
+    plat_mutex_lock_shared(&g_lock);
     for (int i = 0; i < MAX_MOVIES; i++) {
         Movie *m = g_movies[i];
         if (!m) continue;
-        AcquireSRWLockExclusive(&m->mu);
+        plat_mutex_lock(&m->mu);
         if (m->started) release_due(m, g_clock());
         collect(m, &s);
-        ReleaseSRWLockExclusive(&m->mu);
+        plat_mutex_unlock(&m->mu);
     }
-    ReleaseSRWLockShared(&g_lock);
+    plat_mutex_unlock_shared(&g_lock);
     fire(c, &s);
 }
 
 int movie_stats(uint64_t obj, MovieStats *out) {
     Movie *m = find(obj);
     if (!m) return 0;
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     *out = m->st;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     return 1;
 }
 
 int movie_quiet(uint64_t obj) {
     Movie *m = find(obj);
     if (!m) return 1;
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     int q = !m->busy && !(m->started && m->vpx_live && m->npending && can_take(m, &m->pending[0]));
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     return q;
 }
 
@@ -449,19 +449,19 @@ static void ov_ctor(Cpu *c) {
     if (!m) rt_fatal("movie: decoder allocation");
     m->guest = obj;
     m->format = format;
-    InitializeSRWLock(&m->mu);
-    InitializeConditionVariable(&m->work);
-    InitializeConditionVariable(&m->idle);
-    m->thread = CreateThread(NULL, 0, worker, m, 0, NULL);
-    if (!m->thread) rt_fatal("movie: worker thread (error %lu)", GetLastError());
-    AcquireSRWLockExclusive(&g_lock);
+    plat_mutex_init(&m->mu);
+    plat_cond_init(&m->work);
+    plat_cond_init(&m->idle);
+    m->thread = plat_thread_new(worker, m, "movie");
+    if (!m->thread) rt_fatal("movie: cannot start the worker thread");
+    plat_mutex_lock(&g_lock);
     int i = 0;
     while (i < MAX_MOVIES && g_movies[i] && g_movies[i]->guest != obj) i++;
     if (i == MAX_MOVIES) rt_fatal("movie: more than %d live decoders", MAX_MOVIES);
     if (g_movies[i]) rt_fatal("movie: decoder object %#llx constructed twice", (unsigned long long)obj);
     g_movies[i] = m;
-    InterlockedIncrement(&g_count);
-    ReleaseSRWLockExclusive(&g_lock);
+    plat_inc32(&g_count);
+    plat_mutex_unlock(&g_lock);
     ST64(obj, G.vptr);
     ST64(obj + 8, U(m));
     rt_log("movie: VP9 decoder %#llx on the host (libvpx %s), output format %d", (unsigned long long)obj,
@@ -471,24 +471,23 @@ static void ov_ctor(Cpu *c) {
 static void destroy(Cpu *c, uint64_t obj) {
     (void)c;
     Movie *m = NULL;
-    AcquireSRWLockExclusive(&g_lock);
+    plat_mutex_lock(&g_lock);
     for (int i = 0; i < MAX_MOVIES; i++)
         if (g_movies[i] && g_movies[i]->guest == obj) {
             m = g_movies[i];
             g_movies[i] = NULL;
-            InterlockedDecrement(&g_count);
+            plat_dec32(&g_count);
         }
-    ReleaseSRWLockExclusive(&g_lock);
+    plat_mutex_unlock(&g_lock);
     if (!m) return;
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     m->quit = 1;
     m->gen++;
-    WakeAllConditionVariable(&m->work);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_cond_broadcast(&m->work);
+    plat_mutex_unlock(&m->mu);
     int away = kern_core_away();
-    WaitForSingleObject(m->thread, INFINITE);
+    plat_thread_join(m->thread);
     kern_core_back(&away);
-    CloseHandle(m->thread);
     rt_log("movie: decoder %#llx destroyed after %llu frames (%llu dropped to keep time)", (unsigned long long)obj,
            (unsigned long long)m->st.frames, (unsigned long long)m->st.dropped);
     release_codec(m);
@@ -531,7 +530,7 @@ static void ov_configure(Cpu *c) {
         ret_x(c, ST_UNSUPPORTED);
         return;
     }
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int away = quiesce(m);
     release_codec(m);
     m->w = w;
@@ -554,9 +553,9 @@ static void ov_configure(Cpu *c) {
 static void ov_register_events(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_REGISTER_EVENTS); return; }
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     m->events = arg_x(c, 1);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     ret_x(c, ST_OK);
 }
 
@@ -583,9 +582,9 @@ static void ov_get_output_format(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_GET_OUTPUT_FORMAT); return; }
     if (!md) { ret_x(c, ST_NULL); return; }
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     int ok = m->configured, w = m->w, h = m->h;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     if (!ok) { ret_x(c, ST_ERROR); return; }
     set_format(c, w, h, md);
     ret_x(c, ST_OK);
@@ -595,16 +594,16 @@ static void ov_start(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_START); return; }
     Signals s = {0};
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int st = ST_NOT_CONFIGURED;
     if (m->configured) {
         m->started = 1;
         m->owed |= 1u << MOVIE_EV_INPUT;
-        WakeConditionVariable(&m->work);
+        plat_cond_signal(&m->work);
         st = ST_OK;
     }
     collect(m, &s);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     fire(c, &s);
     ret_x(c, (uint32_t)st);
 }
@@ -612,7 +611,7 @@ static void ov_start(Cpu *c) {
 static void ov_stop(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_STOP); return; }
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int away = quiesce(m);
     rt_log("movie: stop after %llu frames (%llu dropped to keep time; decode %.2f ms per frame, max %.2f)",
            (unsigned long long)m->st.frames, (unsigned long long)m->st.dropped,
@@ -625,7 +624,7 @@ static void ov_stop(Cpu *c) {
 static void ov_reset(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_RESET); return; }
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int away = quiesce(m);
     release_codec(m);
     m->last_error = 0;
@@ -637,7 +636,7 @@ static void ov_reset(Cpu *c) {
 static void ov_flush(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_FLUSH); return; }
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int away = quiesce(m);
     if (m->configured) {
         vpx_codec_destroy(&m->vpx);
@@ -656,7 +655,7 @@ static void ov_acquire_input(Cpu *c) {
     if (!m) { pass(c, MOVIE_ACQUIRE_INPUT); return; }
     if (!index || !remaining) { ret_x(c, ST_NULL); return; }
     Signals s = {0};
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     *index = -1;
     *remaining = 0;
     int st = ST_NO_INPUT;
@@ -667,7 +666,7 @@ static void ov_acquire_input(Cpu *c) {
         st = ST_OK;
     }
     collect(m, &s);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     fire(c, &s);
     ret_x(c, (uint32_t)st);
 }
@@ -679,9 +678,9 @@ static void ov_get_input(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_GET_INPUT); return; }
     if (!buf) { ret_x(c, ST_NULL); return; }
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     uint8_t *p = index >= 0 && index < IN_BUFS ? m->in[index] : NULL;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     buf_set_range(c, buf, 0, p ? IN_CAP : 0);
     buf_set_data(c, buf, U(p), p ? IN_CAP : 0);
     ret_x(c, p ? ST_OK : ST_ERROR);
@@ -699,7 +698,7 @@ static void ov_send_input(Cpu *c) {
         return;
     }
     Signals s = {0};
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int st = ST_OK;
     if (!m->started || m->npending == IN_BUFS) st = ST_ERROR;
     else if (m->eos_in) {   // after end of stream: hand the buffer back
@@ -707,10 +706,10 @@ static void ov_send_input(Cpu *c) {
         m->owed |= 1u << MOVIE_EV_INPUT;
     } else {
         m->pending[m->npending++] = (Pending){index, offset, size, time, flags};
-        WakeConditionVariable(&m->work);
+        plat_cond_signal(&m->work);
     }
     collect(m, &s);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     fire(c, &s);
     ret_x(c, (uint32_t)st);
 }
@@ -724,7 +723,7 @@ static void ov_acquire_output(Cpu *c) {
     if (!m) { pass(c, MOVIE_ACQUIRE_OUTPUT); return; }
     if (!index || !time || !flags || !remaining) { ret_x(c, ST_NULL); return; }
     Signals s = {0};
-    AcquireSRWLockExclusive(&m->mu);   // paced frames become ready only at presents (movie_tick)
+    plat_mutex_lock(&m->mu);   // paced frames become ready only at presents (movie_tick)
     *index = -1;
     *time = 0;
     *flags = 0;
@@ -740,7 +739,7 @@ static void ov_acquire_output(Cpu *c) {
         st = ST_OK;
     }
     collect(m, &s);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     fire(c, &s);
     ret_x(c, (uint32_t)st);
 }
@@ -750,7 +749,7 @@ static int get_output(Cpu *c, Movie *m, int index, uint64_t buf) {
     uint8_t *dst = (uint8_t *)(uintptr_t)rt_call(c, G.buf_base, 1, buf);
     uint64_t cap = rt_call(c, G.buf_capacity, 1, buf);
     int st = ST_ERROR, bytes = 0;
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
         bytes = m->out_bytes[index];
         if (!bytes) st = ST_OK;
@@ -762,7 +761,7 @@ static int get_output(Cpu *c, Movie *m, int index, uint64_t buf) {
             bytes = 0;
         }
     }
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     if (st == ST_OK && bytes) buf_set_range(c, buf, 0, bytes);
     return st;
 }
@@ -782,10 +781,10 @@ static void ov_get_output_size(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_GET_OUTPUT_SIZE); return; }
     if (!size || !count) { ret_x(c, ST_NULL); return; }
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     *count = 1;
     *size = m->configured ? frame_bytes(m) : 0;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     ret_x(c, ST_OK);
 }
 
@@ -795,7 +794,7 @@ static void ov_release_output(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_RELEASE_OUTPUT); return; }
     Signals s = {0};
-    AcquireSRWLockExclusive(&m->mu);
+    plat_mutex_lock(&m->mu);
     int st = ST_ERROR;
     if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
         int queued = 0;
@@ -803,12 +802,12 @@ static void ov_release_output(Cpu *c) {
         for (int i = 0; i < m->ndecoded; i++) queued |= m->decoded[i].index == index;
         if (!queued) {
             m->out_held[index] = 0;
-            WakeConditionVariable(&m->work);
+            plat_cond_signal(&m->work);
             st = ST_OK;
         }
     }
     collect(m, &s);
-    ReleaseSRWLockExclusive(&m->mu);
+    plat_mutex_unlock(&m->mu);
     fire(c, &s);
     ret_x(c, (uint32_t)st);
 }
@@ -816,16 +815,16 @@ static void ov_release_output(Cpu *c) {
 static void ov_get_last_error(Cpu *c) {
     Movie *m = find(arg_x(c, 0));
     if (!m) { pass(c, MOVIE_GET_LAST_ERROR); return; }
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     int e = m->last_error;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     ret_x(c, (uint32_t)e);
 }
 
 static int output_format(Cpu *c, Movie *m, int index, uint64_t md) {
-    AcquireSRWLockShared(&m->mu);
+    plat_mutex_lock_shared(&m->mu);
     int ok = index >= 0 && index < OUT_BUFS && m->out_held[index], w = m->w, h = m->h;
-    ReleaseSRWLockShared(&m->mu);
+    plat_mutex_unlock_shared(&m->mu);
     if (!ok) return ST_ERROR;
     set_format(c, w, h, md);
     return ST_OK;

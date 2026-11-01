@@ -12,6 +12,8 @@
 //
 // Patch page: +16 the scene size {w, h} as floats, +32 the output size and +48 the swapchain size as {w, h} in one
 // 64-bit word, +40 the renderer (1.2.1) or display configuration (1.4.3) the patched code stores there.
+// +56 the camera's aspect ratio as a float when the output is not 16:9 (set aspect), +60 the field-of-view factor
+// (set fov, res_fov_live).
 // 1.4.3 scales the scene it reads by output width / 1920 (a 2560x1440 output renders its 1600x900 scene at 2128x1200;
 // MacNativeGames measured the same), so its page holds the wanted size divided by that factor and the game's 5/6 needs
 // no scene patch. 1.2.1 renders the size it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and
@@ -41,6 +43,7 @@
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
 #define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
 static struct {
     int decided;
@@ -48,6 +51,7 @@ static struct {
     int scene_set;             // the scene differs from the game's 5/6 of the output
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
+    unsigned shadow;           // fixed sun shadow map size (TOTK_SHADOW_RES), 0: the game's own
 } R;
 
 static void decide(void) {
@@ -81,19 +85,31 @@ static void decide(void) {
     if (fit < 1.0) R.scene_set = 1;
     R.sw = (unsigned)(sw * fit + 0.5);
     R.sh = (unsigned)(sh * fit + 0.5);
+    const char *sr = cfg_value("TOTK_SHADOW_RES");
+    if (strcmp(sr, "game")) {
+        unsigned n = (unsigned)atoi(sr);
+        if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
+        else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
+    }
+}
+
+// Texture heap for a sun shadow map above the base size: the four layers of 2 bytes, three maps in flight (the engine
+// makes the array anew each frame).
+static uint64_t shadow_kib(void) {
+    return R.shadow > SHADOW_BASE ? ((uint64_t)R.shadow * R.shadow - SHADOW_BASE * SHADOW_BASE) * 8 * 3 / 1024 : 0;
 }
 
 static int bigger(void) {
     decide();
-    return R.ow != BASE_W || R.oh != BASE_H || R.scene_set;
+    return R.ow != BASE_W || R.oh != BASE_H || R.scene_set || shadow_kib();
 }
 
 uint64_t res_heap_extra_kib(void) {
     if (!bigger()) return 0;
     double grow = fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0) +
                   fmax(0.0, (double)R.sw * R.sh / (SCENE_W * SCENE_H) - 1.0);
-    if (grow <= 0) return 0;
-    return (uint64_t)ceil(DTA_KIB * (1.0 + grow) / 1024.0) * 1024 - DTA_KIB;
+    uint64_t kib = grow > 0 ? (uint64_t)ceil(DTA_KIB * (1.0 + grow) / 1024.0) * 1024 - DTA_KIB : 0;
+    return kib + ((shadow_kib() + 1023) & ~1023ull);   // whole MiB
 }
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
@@ -188,12 +204,32 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
 
 void res_heapdef_served(void) { R.heapdef_ok = 1; }
 
+// ---- sun shadow map size: each frame the engine sizes its shadow cascades to the area they cover, down to about 400 near
+// the ground, which draws foliage shadows blocky, and each change of size moves the shadow texels, so leaf shadows jump.
+// A fixed size (the shadow set, recomp/patches-v121.txt) keeps them still and sharper. Page +92.
+static void shadow_init(uint8_t *page) {
+    if (!R.shadow) {
+        rt_log("resolution: sun shadow map sized by the game (TOTK_SHADOW_RES=game)");
+        return;
+    }
+    int set = rt_patch_set("shadow");
+    if (set < 0) {
+        rt_log("resolution: the generated C has no shadow patch set: the game sizes its shadow map");
+        return;
+    }
+    int32_t n = (int32_t)R.shadow;
+    memcpy(page + 92, &n, 4);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: sun shadow map %ux%u (TOTK_SHADOW_RES)", R.shadow, R.shadow);
+}
+
 // ---- start: the patch page and the sets
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
 void res_init(void) {
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
+        shadow_init(rt_patch_page());
         return;
     }
     int output = rt_patch_set("output"), scene = rt_patch_set("scene");
@@ -218,8 +254,67 @@ void res_init(void) {
     rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
+    // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
+    // patches-v143.txt, set aspect), so a 21:9 output shows more of the world at the sides instead of a stretched 16:9 view. The HUD's layouts
+    // for that shape come from romfs-patches-<w>x<h> (romfs.c overlay_init, tools/make_romfs_patches.py --aspect).
+    double ratio = (double)R.ow / R.oh, game = (double)BASE_W / BASE_H;
+    int aspect = rt_patch_set("aspect");
+    if (!res_is_16x9(R.ow, R.oh)) {
+        if (aspect < 0) {
+            rt_log("resolution: output %ux%u is not 16:9 and this game version has no camera aspect patch; the view "
+                   "is stretched", R.ow, R.oh);
+        } else {
+            float r = (float)ratio;
+            memcpy(page + 56, &r, sizeof r);
+            rt_patch_switch(aspect, 1);
+            rt_log("resolution: camera aspect ratio %.4f (16:9 is %.4f)", ratio, game);
+        }
+    } else {
+        rt_patch_switch(aspect, 0);   // the page holds no ratio
+    }
+    shadow_init(page);
     rt_log("resolution: output %ux%u, scene %ux%u%s; texture heap +%llu KiB", R.ow, R.oh, R.sw, R.sh,
            scene_on ? "" : " (the game's own 5/6 of the output)", (unsigned long long)res_heap_extra_kib());
+}
+
+// 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.
+int res_is_16x9(unsigned w, unsigned h) {
+    double rel = ((double)w / h) / ((double)BASE_W / BASE_H);
+    return rel >= 0.99 && rel <= 1.01;
+}
+
+// The game resolution asks for a romfs-patches-<w>x<h> overlay: it is not 16:9 and the game version has the camera
+// aspect patch (set aspect); the UI layouts of another shape only fit a camera that follows the same shape.
+int res_wants_wide_overlay(const unsigned out[2]) {
+    return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
+}
+
+// Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the
+// factor on page +60 (recomp/patches-v143.txt, set fov). The horizontal angle follows through the aspect ratio. 100
+// switches the set off, so the camera code is the game's own. Runs on a settings change (gfx_present.c
+// window_settings_live), the first time at the first present.
+#define FOV_MIN 70
+#define FOV_MAX 140
+void res_fov_live(void) {
+    static int set = -2, shown = 100;
+    if (set == -2) set = rt_patch_set("fov");
+    int pct = cfg_int("TOTK_FOV");
+    pct = pct < FOV_MIN ? FOV_MIN : pct > FOV_MAX ? FOV_MAX : pct;
+    if (pct == shown) return;
+    shown = pct;
+    if (set < 0) {
+        rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d does nothing", pct);
+        return;
+    }
+    float k = pct / 100.0f;
+    memcpy((uint8_t *)rt_patch_page() + 60, &k, sizeof k);   // before the switch: a site that sees it on reads k
+    rt_patch_switch(set, pct != 100);
+    rt_log("resolution: field of view %d%% of the game's", pct);
+}
+
+void res_wanted(unsigned out[2]) {
+    decide();
+    out[0] = R.ow, out[1] = R.oh;
 }
 
 void res_sizes(unsigned out[2], unsigned scene[2]) {

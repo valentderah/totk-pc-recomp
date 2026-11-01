@@ -3,7 +3,6 @@
 // PLT stub for nn::os::GetSystemTick, through the lifted sdk function, to rt_ticks.
 //
 // Every probe thread is created with SVC 0x08 and drives the kernel through rt_svc, the entry the lifted code uses.
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,10 +110,10 @@ static void user_unlock(Cpu *c, volatile uint32_t *a, uint32_t tag) {
 // ---- lock handoff order
 typedef struct { volatile uint32_t *lock, *key; uint32_t tag, r; int idx, held; } LockJob;
 static volatile uint32_t g_lockw __attribute__((aligned(8))), g_keyw __attribute__((aligned(8)));
-static volatile long g_order_n;
+static volatile int32_t g_order_n;
 static int g_order[8];
 
-static void record(int idx) { g_order[InterlockedIncrement(&g_order_n) - 1] = idx; }
+static void record(int idx) { g_order[plat_inc32(&g_order_n) - 1] = idx; }
 
 static void lock_waiter(Cpu *c) {
     LockJob *j = arg_p(c, 0);
@@ -388,18 +387,18 @@ static void test_events(Cpu *c) {
 }
 
 // ---- virtual cores: count the threads running guest code at once, and that no two of them share a core number
-static volatile long g_running, g_run_max, g_core_use[3], g_core_clash;
+static volatile int32_t g_running, g_run_max, g_core_use[3], g_core_clash;
 
 static void core_worker(Cpu *c) {
     for (int i = 0; i < CORE_RUNS; i++) {
         uint32_t core = sv(c, 0x10, 0, 0, 0, 0);
-        if (core > 2 || InterlockedIncrement(&g_core_use[core > 2 ? 0 : core]) != 1) InterlockedIncrement(&g_core_clash);
-        long n = InterlockedIncrement(&g_running), m;
-        while (n > (m = g_run_max) && InterlockedCompareExchange(&g_run_max, n, m) != m) {}
+        if (core > 2 || plat_inc32(&g_core_use[core > 2 ? 0 : core]) != 1) plat_inc32(&g_core_clash);
+        long n = plat_inc32(&g_running), m;
+        while (n > (m = g_run_max) && plat_cas32(&g_run_max, n, m) != m) {}
         uint64_t until = kern_now_ns() + 20000;
         while (kern_now_ns() < until) {}
-        InterlockedDecrement(&g_running);
-        InterlockedDecrement(&g_core_use[core > 2 ? 0 : core]);
+        plat_dec32(&g_running);
+        plat_dec32(&g_core_use[core > 2 ? 0 : core]);
         sv(c, 0x0B, i % 8 == 7 ? 50000 : 0, 0, 0, 0);
     }
     exit_thread(c);
@@ -416,18 +415,18 @@ static void test_cores(Cpu *c) {
     for (int i = 0; i < CORE_WORKERS; i++) join(c, h[i]);
     int now, held_max;
     kern_core_stats(&now, &held_max);
-    DWORD cpus = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    uint32_t cpus = plat_cpu_usable();
     int gate = !cfg_bool("TOTK_FREE_CORES");   // the kernel's own switch
     int ok = g_run_max <= 3 && held_max <= 3 && !g_core_clash && (cpus < 4 || g_run_max == 3);
-    printf("virtual cores: %d threads x %d runs on %lu host CPUs: at most %ld running guest code at once, at most %d "
-           "core holders (kernel count), %ld core-number clashes: %s\n", CORE_WORKERS, CORE_RUNS, cpus, g_run_max,
+    printf("virtual cores: %d threads x %d runs on %u host CPUs: at most %d running guest code at once, at most %d "
+           "core holders (kernel count), %d core-number clashes: %s\n", CORE_WORKERS, CORE_RUNS, cpus, g_run_max,
            held_max, g_core_clash, !gate ? "not checked (TOTK_FREE_CORES is set)" : ok ? "ok" : "FAIL");
     CHECK(ok || !gate, "virtual cores");
 }
 
 // ---- fibers: two fibers switch to each other; each checks its callee-saved registers, sp and tpidr survive
 typedef struct { uint64_t self, other; int id; } FiberJob;
-static volatile long g_switches, g_runs[3];
+static volatile int32_t g_switches, g_runs[3];
 static volatile int g_last_fiber;
 static long g_fiber_bad, g_fiber_turns;
 
@@ -487,7 +486,7 @@ static void test_fibers(Cpu *c) {
     rt_call(c, a_fib_fin, 1, fb);
     int ok = g_switches == FIBER_SWITCHES && g_runs[1] == FIBER_SWITCHES / 2 && g_runs[2] == FIBER_SWITCHES / 2 &&
              !g_fiber_turns && !g_fiber_bad && base_ok;
-    printf("fibers: %ld switches (fiber 1 %ld, fiber 2 %ld, %ld out of turn) in %.1f ms (%.3f us each), %ld register "
+    printf("fibers: %d switches (fiber 1 %d, fiber 2 %d, %ld out of turn) in %.1f ms (%.3f us each), %ld register "
            "mismatches, thread context %s: %s\n", g_switches, g_runs[1], g_runs[2], g_fiber_turns, ms,
            ms * 1000.0 / (double)(g_switches ? g_switches : 1), g_fiber_bad, base_ok ? "preserved" : "CHANGED",
            ok ? "ok" : "FAIL");
@@ -593,14 +592,14 @@ static void test_lifted_ticks(Cpu *c) {
 
 // svc 0x07 ExitProcess: the path up to the final ExitProcess (logged, pipeline cache saved, logs flushed) runs with the
 // test hook in its place, which must see exit code 0; the SVC then returns to the probe.
-static volatile long exit_calls;
+static volatile int32_t exit_calls;
 static volatile unsigned exit_code = 99;
 static void exit_hook(unsigned code) { exit_code = code, exit_calls++; }
 static void test_exit_process(Cpu *c) {
     svc_test_exit_hook = exit_hook;
     sv(c, 0x07, 0, 0, 0, 0);
     svc_test_exit_hook = NULL;
-    CHECK(exit_calls == 1 && exit_code == 0, "ExitProcess reached the exit %ld times with code %u", exit_calls, exit_code);
+    CHECK(exit_calls == 1 && exit_code == 0, "ExitProcess reached the exit %d times with code %u", exit_calls, exit_code);
     printf("ExitProcess: exit path reached once with code %u\n", exit_code);
 }
 

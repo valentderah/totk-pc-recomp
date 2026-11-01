@@ -304,7 +304,7 @@ static void sampler(void *arg) {
     sysinfo_cpu_name(s.cpu_name, sizeof s.cpu_name);
     if (!nv.tried) nvml_open(s.gpu_name);
     if (!nv.ok && !adl.tried) adl_open(s.gpu_name, bus);
-    PlatLoad *l = plat_load_open(have_luid ? luid : NULL);
+    PlatLoad *l = plat_load_open(have_luid ? luid : NULL, bus);
     plat_mutex_lock(&g_lock);
     while (g_smp.want) {
         plat_mutex_unlock(&g_lock);

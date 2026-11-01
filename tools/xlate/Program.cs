@@ -104,6 +104,9 @@ static class SwshXlate
         // "softfloat64": true lowers FP64 operations to FP32 (Ryujinx's DoubleToFloat pass), for a host without shaderFloat64.
         public bool QueryHostSupportsShaderFloat64() => _job["softfloat64"] is not JsonValue v || !(v.TryGetValue<bool>(out bool b) && b);
         public bool QueryHostSupportsTextureShadowLod() => true;
+        // Sub-texel precision bits of a host whose gathers round differently from Maxwell (AMD, Intel): Ryujinx then
+        // biases gather coordinates so the same texels are picked (TexturePass.InsertCoordGatherBias). 0: no bias.
+        public int QueryHostGatherBiasPrecision() => _job["gather_bias"] is JsonNode n ? (int)n : 0;
         // 作业 reduced = true：放宽精度——翻译器只给强制精确的运算打 NoContraction（缺省全部打：保持 Maxwell 分开舍入的逐位结果，代价是 MSL 里大量禁优化的 spvFMul 等）
         // Job reduced = true: relaxed precision - the translator marks NoContraction only on operations that must be exact (the default marks all: keeps the bit-exact results of Maxwell's separate rounding, at the cost of many optimization-disabled spvFMul etc. in the MSL)
         public bool QueryHostReducedPrecision() => _job["reduced"] is JsonNode n && (bool)n;

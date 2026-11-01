@@ -1,0 +1,23 @@
+#version 450
+// Colour adjustment on the present (runtime/vk_color.c): the game's picture, crop rectangle at offset, into an RGBA16F
+// image the FSR 1 pass or the blit then scales to the window. Brightness, contrast around mid-grey, saturation against
+// Rec. 709 luma, then a power curve: the order and ranges of STS78721's colour profiles (issue #136).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, rgba16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P {
+    ivec2 offset;   // the crop rectangle's corner in src
+    ivec2 size;     // its size, the size of dst
+    vec4 adj;       // brightness (added), contrast, saturation, gamma (exponent)
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size))) return;
+    vec3 c = texelFetch(src, p + pc.offset, 0).rgb;
+    c += pc.adj.x;
+    c = (c - 0.5) * pc.adj.y + 0.5;
+    c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, pc.adj.z);
+    c = pow(max(c, vec3(0.0)), vec3(pc.adj.w));
+    imageStore(dst, p, vec4(clamp(c, 0.0, 1.0), 1.0));
+}

@@ -1,6 +1,6 @@
 // The in-game menu (ui/menu.cpp, Dear ImGui) and its seams to the platform side: the window and its input (ui/menu_win.cpp
-// on Windows; an SDL3 window gets its own adapter later), the gamepad (input_pad_read, input.h) and the present path
-// (gfx_window.c). The menu core calls no window system: events come in through menu_event_*, the drawing happens in the
+// on Windows, ui/menu_sdl.cpp with SDL), the gamepad (input_pad_read, input.h) and the present path
+// (gfx_present.c). The menu core calls no window system: events come in through menu_event_*, the drawing happens in the
 // present path's command buffer.
 //
 // F1 or Esc on the keyboard and Minus and Plus held together (consumed in poll_merged, input_menu_gate in input.h) open it;
@@ -34,7 +34,7 @@ void menu_event_mouse_button(int button, int down);   // 0 left, 1 right, 2 midd
 void menu_event_wheel(float dx, float dy);
 void menu_event_focus(int focused);
 
-// ---- the overlay, drawn into the swapchain image after the game image (gfx_window.c, present lock held)
+// ---- the overlay, drawn into the swapchain image after the game image (gfx_present.c, present lock held)
 typedef struct {
     VkInstance instance;
     VkPhysicalDevice phys;
@@ -53,8 +53,11 @@ int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot);
 // Records the frame menu_overlay_frame laid out into cb, which is inside dynamic rendering on the image.
 void menu_overlay_draw(VkCommandBuffer cb);
 void menu_vk_release(void);               // before the device goes away (gfx_window_release_vk)
+// The check the font atlas runs on a system font, on the embedded font and damaged copies of it: 1 when it takes the
+// whole font and refuses a cut-off one, one without a character map and one with an unknown tag (--probe-window).
+int menu_font_check(void);
 
-// ---- what the menu asks of the platform side (gfx_window.c)
+// ---- what the menu asks of the platform side (gfx_window_win.c, gfx_window_sdl.c)
 void gfx_window_apply_settings(void);     // TOTK_FULLSCREEN or TOTK_WINDOW_SIZE changed: the window follows
 void gfx_window_request_close(void);      // as the window's close button: the process ends
 int gfx_window_monitor_size(int *w, int *h);   // pixels of the monitor the window is on; 0 when unknown

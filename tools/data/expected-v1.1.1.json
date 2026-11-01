@@ -1,0 +1,25 @@
+{
+  "_comment": "Written locally for the player's own 1.1.x update (version value 0x20000, seen as 1.1.1). RomFS hashes filled in after the first merge; no game data here. No rewritten_sha256: this dump was not run through MacNativeGames' NSO rewriter, so the three digests of the other versions have no reference here and none of the tools read them.",
+  "title_id": "0100F2C0115B6000",
+  "version": 131072,
+  "display_version": "1.1.1",
+  "exefs_sha256": {
+    "main": "1664b8cf664524d90ca64deb3ce41709266457df966dcb499485267554eb8cec",
+    "main.npdm": "fa3f60922406ab9e2488c2b8d77b12e9869b435033fd8c27c543c347bc185587",
+    "rtld": "28317605926caa40a5cbee3e3cb290c65783b4d9f8c3697b43ca41ab2866a44d",
+    "sdk": "91573d4444d0dcd07080db78fece2b098b76080d77cdb2e1d301a2a41d7c4eea",
+    "subsdk0": "9d04c98997977e99c12a48a2dbfd3064b8da96b5152e0119064957a43f6c3f99"
+  },
+  "romfs": {
+    "size": 17051891304,
+    "sha256": "02ed5792f2f6ccff563c035d4a5408a49c1e941760785e8321b42c98e96dbe9b"
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "a04eb490283d8393b2c49c52e315132461d790ac73996cb43ac869ce72003938",
+    "chinese-simplified-extension": "f5784e7a553fef9a05b3b7dba94e77e79162ace9db8dafc715ace0be1fd9b9ff",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}

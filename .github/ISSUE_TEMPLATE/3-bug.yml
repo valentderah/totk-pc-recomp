@@ -1,0 +1,65 @@
+name: Other bug
+description: Sound, controls, performance, the settings menu, the installer, or game logic.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the pinned issues at the top of the issue list first.
+
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this bug.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Audio
+        - Controls and input
+        - Performance and stutter
+        - Settings menu and overlay
+        - Installer
+        - Game logic and physics
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3".
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: GPU, driver and Windows version
+      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+    validations:
+      required: true
+  - type: dropdown
+    id: blocker
+    attributes:
+      label: Can you keep playing?
+      options:
+        - "Yes"
+        - "No, it stops the game or a quest"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened and how to reproduce it
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach logs\totk.log from the folder of totk.exe.

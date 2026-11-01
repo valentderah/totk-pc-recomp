@@ -12,7 +12,6 @@
 // recording into host memory; the handle is that copy (a flat OP_BEGIN ... OP_END sequence) and lives until the game
 // adds the same control memory again. CallCommands and CopyCommands inline the called recording, so copies hold no
 // OP_CALL or OP_JUMP.
-#include <windows.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,6 +21,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "platform/platform.h"
 
 #define CMD_MAGIC MAGIC('C', 'M', 'D', 'B')
 #define COPY_MAGIC 0x59504f43444d43ull     // "CMDCOPY": prefix of a live recording copy
@@ -39,23 +39,23 @@ static cmd_t *cmd_of(const Cpu *c) { return arg_p(c, 0); }
 // without any command memory, or ends without any control memory. It runs on the calling guest thread through
 // rt_call; whatever memory it adds is accounted. Set{Command,Control}MemoryCallbackEnabled(false) suppress it.
 enum { CB_NO_COMMAND = 1, CB_NO_CONTROL = 2 };
-static SRWLOCK cb_lock = SRWLOCK_INIT;
+static PlatMutex cb_lock = PLAT_MUTEX_INIT;
 static nvn_hmap cb_off = {.klen = 8};       // command buffer -> disabled callback kinds | 0x100
 
 static unsigned cb_disabled(const cmd_t *o) {
-    AcquireSRWLockShared(&cb_lock);
+    plat_mutex_lock_shared(&cb_lock);
     uintptr_t v = (uintptr_t)nvn_hm_get(&cb_off, &o);
-    ReleaseSRWLockShared(&cb_lock);
+    plat_mutex_unlock_shared(&cb_lock);
     return (unsigned)v & 0xff;
 }
 
 static void cb_set_disabled(const cmd_t *o, unsigned kind, int disabled) {
-    AcquireSRWLockExclusive(&cb_lock);
+    plat_mutex_lock(&cb_lock);
     unsigned v = (unsigned)(uintptr_t)nvn_hm_get(&cb_off, &o) & 0xff;
     v = disabled ? v | kind : v & ~kind;
     if (v) nvn_hm_put(&cb_off, &o, (void *)(uintptr_t)(v | 0x100));
     else nvn_hm_del(&cb_off, &o);
-    ReleaseSRWLockExclusive(&cb_lock);
+    plat_mutex_unlock(&cb_lock);
 }
 
 static void memory_event(Cpu *c, cmd_t *o, int event, uint64_t min) {
@@ -75,14 +75,118 @@ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) {
     memcpy(p, &h, sizeof h);
 }
 
+// 1.4.3 initializes and finalizes command buffers about 2000 times a second while a scene loads and several times a
+// frame in play, and its two largest per-frame recordings take 1-2 MiB. Freeing the recording buffer at Finalize made
+// every new recording grow again from 64 KiB through up to five reallocations and copies, the last ones fresh 1-2 MiB
+// blocks the heap takes from the system: new commit and zero-filled pages twice a frame. Those growths were most of the
+// process's new commit requests, so when the system ran short for a moment (a Depths load at render scale 200 on 16 GB)
+// a 1 MiB growth was the allocation that failed. Finalized buffers therefore wait in a small pool for the next
+// recording, and a failed allocation waits for memory instead of ending the game (realloc_wait).
+#define POOL_SLOTS 16
+#define POOL_MAX_BYTES ((size_t)4 << 20)   // a larger buffer (a recording that inlined a big one) goes back to the heap
+static PlatMutex pool_lock = PLAT_MUTEX_INIT;
+static struct { uint8_t *p; size_t size; } pool[POOL_SLOTS];
+static uint32_t npool;
+
+// The largest pooled buffer and its size, or NULL: the largest, so the big per-frame recordings stop growing once the
+// pool holds enough buffers of their size.
+static uint8_t *pool_take(size_t *size) {
+    uint8_t *p = NULL;
+    plat_mutex_lock(&pool_lock);
+    if (npool) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < npool; i++)
+            if (pool[i].size > pool[best].size) best = i;
+        p = pool[best].p;
+        *size = pool[best].size;
+        pool[best] = pool[--npool];
+    }
+    plat_mutex_unlock(&pool_lock);
+    return p;
+}
+
+// Keeps a finalized buffer when the pool has room or holds a smaller one (which is freed instead).
+static void pool_put(uint8_t *p, size_t size) {
+    if (!p) return;
+    if (size <= POOL_MAX_BYTES) {
+        plat_mutex_lock(&pool_lock);
+        if (npool < POOL_SLOTS) {
+            pool[npool].p = p;
+            pool[npool++].size = size;
+            p = NULL;
+        } else {
+            uint32_t small = 0;
+            for (uint32_t i = 1; i < npool; i++)
+                if (pool[i].size < pool[small].size) small = i;
+            if (pool[small].size < size) {
+                uint8_t *drop = pool[small].p;
+                pool[small].p = p;
+                pool[small].size = size;
+                p = drop;
+            }
+        }
+        plat_mutex_unlock(&pool_lock);
+    }
+    free(p);
+}
+
+static void pool_drain(void) {
+    plat_mutex_lock(&pool_lock);
+    while (npool) free(pool[--npool].p);
+    plat_mutex_unlock(&pool_lock);
+}
+
+// realloc that waits out a short commit shortage: Windows refuses commit beyond the current limit while it grows a
+// system-managed page file, so the same request succeeds a moment later, and a stall of some frames is better than
+// ending the game. Frees the pooled buffers first. NULL only after about 30 s without memory; the caller ends the game.
+// Never called with a lock held.
+static void *realloc_wait(void *old, size_t n, const char *what) {
+    void *p = realloc(old, n);
+    if (p) return p;
+    pool_drain();
+    static uint32_t reports;
+    int report = __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8;
+    if (report) {
+        double proc, used, limit;
+        plat_commit_info(&proc, &used, &limit);
+        rt_log("nvn: %s of %zu bytes failed (memory commit: this process %.0f MB, the system %.0f of %.0f MB); waiting "
+               "for memory", what, n, proc, used, limit);
+    }
+    uint64_t t0 = plat_now_ms();
+    while (plat_now_ms() - t0 < 30000) {
+        plat_sleep_ms(10);
+        if ((p = realloc(old, n))) {
+            if (report)
+                rt_log("nvn: %s of %zu bytes succeeded after %llu ms", what, n,
+                       (unsigned long long)(plat_now_ms() - t0));
+            return p;
+        }
+    }
+    return NULL;
+}
+
 static void cmd_reserve(cmd_t *o, size_t need) {
     if (o->seg && o->cur + need + OP_RESERVE <= o->end) return;
+    if (!o->seg) {   // the first record since Initialize: a pooled buffer when one waits
+        size_t size = 0;
+        uint8_t *p = pool_take(&size);
+        if (p) {
+            o->seg = o->cur = p;
+            o->end = p + size;
+            if (need + OP_RESERVE <= size) return;
+        }
+    }
     size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
     if (!cap) cap = 64 << 10;
     while (used + need + OP_RESERVE > cap) cap *= 2;
-    uint8_t *b = realloc(o->seg, cap);
-    if (!b) rt_fatal("nvn: command recording buffer of %zu bytes", cap);
+    uint8_t *b = realloc_wait(o->seg, cap, "command recording buffer");
+    // Still failing after the wait: the system has no commit left (the fatal report states it), or seg is no block of
+    // ours: a command buffer object the game overwrote or copied shows a wrong magic or more used than its old size.
+    if (!b)
+        rt_fatal("nvn: command recording buffer of %zu bytes (command buffer %p, magic %#x, buffer %p of %zu bytes, %zu "
+                 "used, %zu asked)", cap, (void *)o, o->magic, (void *)o->seg, o->seg ? (size_t)(o->end - o->seg) : 0,
+                 used, need);
     o->seg = b;
     o->cur = b + used;
     o->end = b + cap;
@@ -132,7 +236,7 @@ static void copy_view(view_t *dst, uint8_t *has, const NVNtextureView *v) {
 // Recordings refer to textures by pointer, but the game may finalize or reuse an NVNtexture after recording and before
 // the submit (NVN itself captured only GPU state). Records therefore point at an immutable host copy per texture
 // initialization (tex_t.serial). The copies are kept for the whole run (MacNativeGames sweeps them for long sessions).
-static SRWLOCK pin_lock = SRWLOCK_INIT;
+static PlatMutex pin_lock = PLAT_MUTEX_INIT;
 static nvn_hmap pins = {.klen = 8};         // serial -> tex_t copy
 
 static const tex_t *tex_pin(const NVNtexture *nt) {
@@ -140,11 +244,11 @@ static const tex_t *tex_pin(const NVNtexture *nt) {
     if (!t) return NULL;
     uint64_t serial = t->serial;
     if (!serial) rt_fatal("nvn: a recording references the uninitialized texture object %p", (const void *)t);
-    AcquireSRWLockShared(&pin_lock);
+    plat_mutex_lock_shared(&pin_lock);
     const tex_t *r = nvn_hm_get(&pins, &serial);
-    ReleaseSRWLockShared(&pin_lock);
+    plat_mutex_unlock_shared(&pin_lock);
     if (r) return r;
-    AcquireSRWLockExclusive(&pin_lock);
+    plat_mutex_lock(&pin_lock);
     r = nvn_hm_get(&pins, &serial);
     if (!r) {
         tex_t *copy = malloc(sizeof *copy);
@@ -153,7 +257,7 @@ static const tex_t *tex_pin(const NVNtexture *nt) {
         nvn_hm_put(&pins, &serial, copy);
         r = copy;
     }
-    ReleaseSRWLockExclusive(&pin_lock);
+    plat_mutex_unlock(&pin_lock);
     return r;
 }
 
@@ -166,7 +270,7 @@ typedef struct { uint64_t magic, bytes, made_at, used_at, deferred; } copy_prefi
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
-static SRWLOCK copy_lock = SRWLOCK_INIT;    // guards the two maps, the counters and every prefix
+static PlatMutex copy_lock = PLAT_MUTEX_INIT;    // guards the two maps, the counters and every prefix
 static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
 static uint64_t ncopies, copy_bytes, copies_made, nsubmits;
@@ -200,27 +304,27 @@ static copy_prefix *copy_find(uint64_t handle) {   // copy_lock held
 }
 
 int nvn_handle_live(uint64_t handle) {
-    AcquireSRWLockShared(&copy_lock);
+    plat_mutex_lock_shared(&copy_lock);
     int live = copy_find(handle) != NULL;
-    ReleaseSRWLockShared(&copy_lock);
+    plat_mutex_unlock_shared(&copy_lock);
     return live;
 }
 
 uint64_t nvn_handle_bytes(uint64_t handle) {
-    AcquireSRWLockShared(&copy_lock);
+    plat_mutex_lock_shared(&copy_lock);
     const copy_prefix *pf = copy_find(handle);
     uint64_t n = pf ? pf->bytes : 0;
-    ReleaseSRWLockShared(&copy_lock);
+    plat_mutex_unlock_shared(&copy_lock);
     return n;
 }
 
 // Marks a live copy used by submission now; its size from OP_BEGIN to OP_END inclusive.
 static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
-    AcquireSRWLockShared(&copy_lock);
+    plat_mutex_lock_shared(&copy_lock);
     copy_prefix *pf = copy_find(handle);
     uint64_t bytes = 0;
     if (pf) __atomic_store_n(&pf->used_at, now, __ATOMIC_RELAXED), bytes = pf->bytes;
-    ReleaseSRWLockShared(&copy_lock);
+    plat_mutex_unlock_shared(&copy_lock);
     if (!pf) rt_fatal("nvn: %s: command handle %#llx is not a live recording (released or never recorded)", what,
                       (unsigned long long)handle);
     return bytes;
@@ -230,7 +334,7 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
 // game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
 static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = malloc(sizeof(copy_prefix) + n);
+    uint8_t *out = realloc_wait(NULL, sizeof(copy_prefix) + n, "command copy");
     if (!out) rt_fatal("nvn: command copy allocation");
     memcpy(out + sizeof(copy_prefix), p, n);
     for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
@@ -253,7 +357,7 @@ static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
     copy_prefix *pf = (copy_prefix *)copy - 1;
     uint64_t handle = (uintptr_t)copy;
     uintptr_t page = lo >> COPY_PAGE_SHIFT;
-    AcquireSRWLockExclusive(&copy_lock);
+    plat_mutex_lock(&copy_lock);
     pf->made_at = nsubmits;
     copy_bucket *b = nvn_hm_get(&copy_pages, &page);
     if (!b) {
@@ -273,14 +377,14 @@ static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
     if (++copies_made % 20000 == 0)
         NVN_LOG("recording copies: %llu made, %llu live, %.1f MiB, submit %llu", (unsigned long long)copies_made,
                 (unsigned long long)ncopies, copy_bytes / 1048576.0, (unsigned long long)nsubmits);
-    ReleaseSRWLockExclusive(&copy_lock);
+    plat_mutex_unlock(&copy_lock);
 }
 
 // Adding control memory again retires every recording copy made in it (the driver's handle lived there).
 static void release_copies(uintptr_t lo, uintptr_t hi) {
     if (hi <= lo) return;
     uint64_t replayed = gfx_replayed_submits();
-    AcquireSRWLockExclusive(&copy_lock);
+    plat_mutex_lock(&copy_lock);
     if (nzombies) zombie_sweep(replayed);
     for (uintptr_t pg = lo >> COPY_PAGE_SHIFT; pg <= (hi - 1) >> COPY_PAGE_SHIFT; pg++) {
         copy_bucket *b = nvn_hm_get(&copy_pages, &pg);
@@ -304,7 +408,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
             free(b);
         }
     }
-    ReleaseSRWLockExclusive(&copy_lock);
+    plat_mutex_unlock(&copy_lock);
 }
 
 // ---------- CommandBuffer: object and memory
@@ -312,6 +416,12 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
 // at ~0 / 0 so NVN 55 inline code never finds room and calls the API (nvn_obj.h cmd_t)
 NVN_API(nvnCommandBufferInitialize) {
     cmd_t *o = cmd_of(c);
+    // Initialize over an object that was never finalized drops its recording buffer (seg lives in host memory). Logged
+    // only: the old bytes may be a copy whose buffer another object owns, so freeing it here is not safe.
+    static uint32_t reinits;
+    if (o->magic == CMD_MAGIC && o->seg && __atomic_fetch_add(&reinits, 1, __ATOMIC_RELAXED) < 8)
+        rt_log("nvn: Initialize over the command buffer %p, which was not finalized; its %zu-byte recording buffer %p "
+               "is dropped", (void *)o, (size_t)(o->end - o->seg), (void *)o->seg);
     memset(o, 0, sizeof *o);
     o->magic = CMD_MAGIC;
     o->dev = arg_p(c, 1);
@@ -323,7 +433,7 @@ NVN_API(nvnCommandBufferInitialize) {
 // void nvnCommandBufferFinalize(NVNcommandBuffer *cmd): handles outlive their recorder
 NVN_API(nvnCommandBufferFinalize) {
     cmd_t *o = cmd_of(c);
-    free(o->seg);
+    pool_put(o->seg, (size_t)(o->end - o->seg));
     o->seg = o->cur = o->end = NULL;
     o->magic = 0;
     cb_set_disabled(o, CB_NO_COMMAND | CB_NO_CONTROL, 0);
@@ -910,12 +1020,12 @@ void nvn_submit_prepare(const uint64_t *handles, int n) {
 void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
     uint64_t replayed = gfx_replayed_submits();
-    AcquireSRWLockExclusive(&copy_lock);
+    plat_mutex_lock(&copy_lock);
     if (nzombies) zombie_sweep(replayed);
     for (int i = 0; i < n; i++) {
         copy_prefix *pf = copy_find(handles[i]);
         if (!pf) {
-            ReleaseSRWLockExclusive(&copy_lock);
+            plat_mutex_unlock(&copy_lock);
             rt_fatal("nvn: QueueSubmitCommands: command handle %#llx is not a live recording (released or never recorded)",
                      (unsigned long long)handles[i]);
         }
@@ -934,7 +1044,7 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
             pf->used_at = now;
         }
     }
-    ReleaseSRWLockExclusive(&copy_lock);
+    plat_mutex_unlock(&copy_lock);
     for (int i = 0; i < n; i++) {
         int nd = resolve_deferred((const uint8_t *)(uintptr_t)out[i], 0);
         if (out[i] == handles[i]) ((copy_prefix *)(uintptr_t)out[i] - 1)->deferred = nd ? 2 : 1;

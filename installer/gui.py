@@ -2,14 +2,15 @@
 
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
 install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Decisions live in guilogic.py;
-this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
+this file only draws. The window text is in installer/text/<en|ru|pt-BR>.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
-    --lang en|ru               window language (default: the Windows display language)
+    --selftest [--shots DIR]   build every screen in every language and close by itself (PNG per screen with --shots)
+    --lang en|ru|pt-BR         window language (default: the Windows display language)
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -58,11 +59,17 @@ class App:
 
         root.title(self.cat('ui.title'))
         icon = layout.runtime / 'totk.ico'
+        png = layout.runtime / 'totk.png'   # Tk loads no .ico off Windows; the Linux release converts it
         if os.name == 'nt' and icon.is_file():
             root.iconbitmap(default=str(icon))
+        elif png.is_file():
+            self.icon = tk.PhotoImage(file=str(png))
+            root.iconphoto(True, self.icon)
         root.protocol('WM_DELETE_WINDOW', self.on_close)
+        self.ui_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
+        self.mono_font = 'Consolas' if os.name == 'nt' else 'DejaVu Sans Mono'
         style = ttk.Style(root)
-        style.configure('Title.TLabel', font=('Segoe UI', 15, 'bold'))
+        style.configure('Title.TLabel', font=(self.ui_font, 15, 'bold'))
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=8)
         style.configure('Err.TLabel', foreground='#c01c28')
         style.configure('Version.TLabel', foreground='#808080')
@@ -214,7 +221,7 @@ class App:
         self.cancel_button.pack(side='right')
         self.log_toggle = self.button(bar, 'ui.show_log', self.toggle_log)
         self.log_toggle.pack(side='left')
-        self.run_header = ttk.Label(f, font=('Segoe UI', 11, 'bold'))
+        self.run_header = ttk.Label(f, font=(self.ui_font, 11, 'bold'))
         self.run_header.pack(anchor='w')
         self.step_rows = {}
         self.steps_box = ttk.Frame(f)
@@ -228,7 +235,7 @@ class App:
         self.warn_label = ttk.Label(f, wraplength=620, justify='left', foreground='#9a6700')
         self.warn_label.pack(anchor='w')
         self.log_frame = ttk.Frame(f)
-        self.log = tk.Text(self.log_frame, height=10, wrap='word', state='disabled', font=('Consolas', 9))
+        self.log = tk.Text(self.log_frame, height=10, wrap='word', state='disabled', font=(self.mono_font, 9))
         scroll = ttk.Scrollbar(self.log_frame, command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right', fill='y')
@@ -373,7 +380,7 @@ class App:
             glyph.configure(text=GLYPH[state], foreground=COLOR[state])
             name.configure(text=self.cat('step.' + s) + (f'  ({self.cat("ui.state_" + state)})'
                                                           if state in (SKIPPED, FAILED) else ''),
-                           font=('Segoe UI', 10, 'bold') if state == RUNNING else ('Segoe UI', 10))
+                           font=(self.ui_font, 10, 'bold') if state == RUNNING else (self.ui_font, 10))
         mode = m.mode or 'install'
         self.run_header.configure(text=self.cat('ui.running_' + mode if mode in ('install', 'resume', 'update')
                                                 else 'ui.running_install'))
@@ -478,7 +485,11 @@ class App:
     def open_folder(self):
         dest = self.model.dest
         if dest and Path(dest).is_dir():
-            os.startfile(dest)
+            if os.name == 'nt':
+                os.startfile(dest)
+            else:
+                subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------
@@ -523,7 +534,7 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None):
-    """Every screen in both languages; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen in every language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')

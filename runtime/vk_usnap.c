@@ -18,11 +18,11 @@
 // with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 #define ALIGN 256u
 #define MAX_RANGE (64u << 10)
@@ -57,7 +57,7 @@ static struct {
 } U;
 
 static Arena *free_arenas;
-static SRWLOCK free_lock = SRWLOCK_INIT;
+static PlatMutex free_lock = PLAT_MUTEX_INIT;
 
 static void *grow(void *p, int *cap, size_t elem) {
     int n = *cap ? *cap * 2 : 1024;
@@ -68,14 +68,14 @@ static void *grow(void *p, int *cap, size_t elem) {
 }
 
 static Arena *arena_get(uint64_t need) {
-    AcquireSRWLockExclusive(&free_lock);
+    plat_mutex_lock(&free_lock);
     Arena **pp = &free_arenas, *a = NULL;
     for (; *pp; pp = &(*pp)->next)
         if ((*pp)->size >= need) {
             a = *pp, *pp = a->next;
             break;
         }
-    ReleaseSRWLockExclusive(&free_lock);
+    plat_mutex_unlock(&free_lock);
     if (a) return a;
     a = calloc(1, sizeof *a);
     if (!a) rt_fatal("vk_usnap: out of memory");
@@ -101,9 +101,9 @@ static Arena *arena_get(uint64_t need) {
 
 static void arena_done(void *arg) {   // completion thread: the GPU has read it
     Arena *a = arg;
-    AcquireSRWLockExclusive(&free_lock);
+    plat_mutex_lock(&free_lock);
     a->next = free_arenas, free_arenas = a;
-    ReleaseSRWLockExclusive(&free_lock);
+    plat_mutex_unlock(&free_lock);
 }
 
 static void collect(const op_hdr *h, int depth) {
@@ -302,8 +302,8 @@ uint64_t vk_usnap_gen(void) { return U.gen; }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
-    AcquireSRWLockExclusive(&free_lock);
+    plat_mutex_lock(&free_lock);
     for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
     free_arenas = NULL;
-    ReleaseSRWLockExclusive(&free_lock);
+    plat_mutex_unlock(&free_lock);
 }

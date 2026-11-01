@@ -1,0 +1,17 @@
+name: Feature request
+description: A setting, option or support for something the port does not do yet.
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) and the Planned section of the README for this request.
+          required: true
+  - type: textarea
+    id: request
+    attributes:
+      label: What you want and why
+    validations:
+      required: true

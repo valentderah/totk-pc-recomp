@@ -42,6 +42,9 @@ __pycache__/
 *.o
 *.lib
 *.a
+*.so
+*.so.*
+*.AppImage
 
 # .NET build output of the shader translator (tools/build_xlate.py)
 /tools/xlate/bin/

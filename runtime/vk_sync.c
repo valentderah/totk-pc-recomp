@@ -13,24 +13,24 @@
 // jhaizhou; origin d2r-mobile).
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 #define WEAK __attribute__((weak))
 
 typedef struct { uint64_t fence; void (*fn)(void *); void *arg; } Pending;
 typedef struct { VkCommandBuffer cb; uint64_t fence; } CmdSlot;   // reusable once the timeline reached fence
 
-static SRWLOCK start_lock = SRWLOCK_INIT;
+static PlatMutex start_lock = PLAT_MUTEX_INIT;
 static int started;
-static HANDLE completion_thread;
+static PlatThread *completion_thread;
 
 // Submissions: one at a time, so timeline values are signalled in the order they are handed out.
-static SRWLOCK sub_lock = SRWLOCK_INIT;
+static PlatMutex sub_lock = PLAT_MUTEX_INIT;
 static VkCommandPool cmd_pool;
 static CmdSlot *slots;
 static int nslots;
@@ -38,9 +38,9 @@ static int cur_slot;          // the slot vk_sync_submit records into now (an in
 static uint64_t cur_fence;    // the value of the submission being recorded
 
 // Shared with the completion thread (st_lock).
-static SRWLOCK st_lock = SRWLOCK_INIT;
-static CONDITION_VARIABLE cv_work = CONDITION_VARIABLE_INIT;   // a submission, a callback or stop
-static CONDITION_VARIABLE cv_done = CONDITION_VARIABLE_INIT;   // done advanced
+static PlatMutex st_lock = PLAT_MUTEX_INIT;
+static PlatCond cv_work = PLAT_COND_INIT;   // a submission, a callback or stop
+static PlatCond cv_done = PLAT_COND_INIT;   // done advanced
 static uint64_t issued, done;     // newest submitted value; newest value whose side effects ran
 static uint64_t reserved;         // asynchronous replay: newest value handed out before its submission (>= issued)
 static int stop;
@@ -60,7 +60,15 @@ static uint32_t ts_next;                   // submitting thread (sub_lock): next
 static volatile uint8_t ts_busy[TS_PAIRS]; // written until the completion thread read the pair
 static int ts_cur = -1;                    // the pair of the part being recorded, -1 untimed
 static uint64_t ts_last_end;               // completion thread: end of the latest part read (ticks)
-static volatile LONG64 ts_busy_ns, ts_parts, ts_missed;
+static volatile int64_t ts_busy_ns, ts_parts, ts_missed;
+// GPU idle (with calibrated timestamps): the gap before each timed part, split by whether the part was submitted after
+// the previous one had ended (the GPU waited for the CPU: starved) or before (it waited for untimed work or a wait).
+static uint64_t ts_sub_ns[TS_PAIRS];       // CPU time the part was handed to vkQueueSubmit2
+static int ts_unsent[4], ts_n_unsent;      // pairs closed and not yet submitted (sub_lock)
+static uint64_t ts_last_end_ns;            // completion thread: ts_last_end on the CPU clock
+static volatile int64_t ts_idle_ns, ts_starved_ns, ts_gaps, ts_max_gap_ns, ts_queued_ns;
+static int64_t cal_tick, cal_ns, cal_at;   // completion thread: a calibrated (GPU tick, CPU ns) pair and when it was taken
+static PFN_vkGetCalibratedTimestampsKHR cal_fn;
 
 // On the first submission that wants timing (perf_gpu_timing: TOTK_TRACE=perf or the full performance overlay).
 static void ts_setup(VkCtx *c) {
@@ -91,6 +99,49 @@ static void ts_setup(VkCtx *c) {
 
 typedef struct { uint32_t pair; } TsRead;
 
+// Completion thread: refresh the GPU tick / CPU clock pair every 250 ms; 0 when there is no calibration. The host
+// domain is the clock plat_now_ns reads (QPC on Windows, CLOCK_MONOTONIC elsewhere), plat_counter_hz ticks a second.
+static int cal_refresh(VkCtx *c) {
+    if (!c->has_calibrated) return 0;
+    if (!cal_fn) {
+        cal_fn = (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(c->device, c->has_calibrated == 2 ? "vkGetCalibratedTimestampsKHR"
+                                                                                                        : "vkGetCalibratedTimestampsEXT");
+        if (!cal_fn) { c->has_calibrated = 0; return 0; }
+    }
+    int64_t now = (int64_t)plat_now_ns();
+    if (cal_at && now - cal_at < 250000000) return 1;
+    VkCalibratedTimestampInfoKHR ci[2] = {{.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_DEVICE_KHR},
+#ifdef _WIN32
+                                          {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR}};
+#else
+                                          {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR}};
+#endif
+    uint64_t v[2], dev;
+    if (cal_fn(c->device, 2, ci, v, &dev) != VK_SUCCESS) {
+        if (!cal_at) {   // the domain pair is not supported: no split
+            rt_log("vk: calibrated timestamps failed: the perf line shows no GPU idle split");
+            c->has_calibrated = 0;
+        }
+        return cal_at != 0;
+    }
+    cal_tick = (int64_t)(v[0] & ts_mask), cal_ns = (int64_t)((double)v[1] * 1e9 / (double)plat_counter_hz()), cal_at = now;
+    return 1;
+}
+
+static int64_t tick_ns(uint64_t t) { return cal_ns + (int64_t)((double)((int64_t)t - cal_tick) * ts_period); }
+
+static void max64(volatile int64_t *m, int64_t v) {
+    int64_t o = __atomic_load_n(m, __ATOMIC_RELAXED);
+    while (v > o && !__atomic_compare_exchange_n(m, &o, v, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+// Just before vkQueueSubmit2 (sub_lock held): the parts closed since the last submit leave the CPU now.
+static void ts_submitted(void) {
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < ts_n_unsent; i++) ts_sub_ns[ts_unsent[i]] = now;
+    ts_n_unsent = 0;
+}
+
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
     TsRead *t = arg;
     VkCtx *c = vk_ctx();
@@ -98,16 +149,28 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
     if (vkGetQueryPoolResults(c->device, ts_pool, 2 * t->pair, 2, sizeof v, v, sizeof v[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         uint64_t s = v[0] & ts_mask, e = v[1] & ts_mask;
         if (e >= s) {
+            if (cal_refresh(c)) {
+                int64_t sn = tick_ns(s), en = tick_ns(e), sub = (int64_t)ts_sub_ns[t->pair];
+                if (ts_last_end_ns && sn > ts_last_end_ns) {
+                    int64_t gap = sn - ts_last_end_ns, late = sub - ts_last_end_ns;
+                    plat_add64(&ts_idle_ns, gap);
+                    if (late > 0) plat_add64(&ts_starved_ns, late < gap ? late : gap);
+                    if (gap > 500000) plat_inc64(&ts_gaps);
+                    max64(&ts_max_gap_ns, gap);
+                }
+                if (sub && sn > sub) plat_add64(&ts_queued_ns, sn - sub);
+                if (en > ts_last_end_ns) ts_last_end_ns = en;
+            }
             uint64_t from = s > ts_last_end ? s : ts_last_end;
             if (e > from) {
-                LONG64 ns = (LONG64)((double)(e - from) * ts_period);
-                InterlockedAdd64(&ts_busy_ns, ns);
+                int64_t ns = (int64_t)((double)(e - from) * ts_period);
+                plat_add64(&ts_busy_ns, ns);
                 perf_gpu_busy((uint64_t)ns);
             }
             if (e > ts_last_end) ts_last_end = e;
-            InterlockedIncrement64(&ts_parts);
-        } else InterlockedIncrement64(&ts_missed);   // the counter wrapped
-    } else InterlockedIncrement64(&ts_missed);
+            plat_inc64(&ts_parts);
+        } else plat_inc64(&ts_missed);   // the counter wrapped
+    } else plat_inc64(&ts_missed);
     __atomic_store_n(&ts_busy[t->pair], 0, __ATOMIC_RELEASE);
     free(t);
 }
@@ -120,7 +183,7 @@ static int ts_open(VkCommandBuffer cb) {
         if (ts_state != 1) return -1;
     }
     uint32_t p = ts_next % TS_PAIRS;
-    if (__atomic_load_n(&ts_busy[p], __ATOMIC_ACQUIRE)) { InterlockedIncrement64(&ts_missed); return -1; }
+    if (__atomic_load_n(&ts_busy[p], __ATOMIC_ACQUIRE)) { plat_inc64(&ts_missed); return -1; }
     ts_next++;
     ts_busy[p] = 1;
     vkCmdResetQueryPool(cb, ts_pool, 2 * p, 2);
@@ -132,6 +195,8 @@ static int ts_open(VkCommandBuffer cb) {
 static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence) {
     if (pair < 0) return;
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)pair + 1);
+    ts_sub_ns[pair] = 0;
+    if (ts_n_unsent < 4) ts_unsent[ts_n_unsent++] = pair;
     TsRead *t = malloc(sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
     t->pair = (uint32_t)pair;
@@ -155,10 +220,16 @@ static void ts_drop(void) {
 
 static void gpu_stats(PerfGpu *g) {
     g->have_gpu = ts_state == 1;
-    g->gpu_ns = (uint64_t)InterlockedExchange64(&ts_busy_ns, 0);
-    g->gpu_parts = (uint64_t)InterlockedExchange64(&ts_parts, 0);
-    g->gpu_missed = (uint64_t)InterlockedExchange64(&ts_missed, 0);
+    g->gpu_ns = (uint64_t)plat_xchg64(&ts_busy_ns, 0);
+    g->gpu_parts = (uint64_t)plat_xchg64(&ts_parts, 0);
+    g->gpu_missed = (uint64_t)plat_xchg64(&ts_missed, 0);
     g->have_vram = vk_mem_vram(&g->vram_used, &g->vram_budget, &g->vram_exact);
+    g->have_idle = vk_ctx()->has_calibrated != 0 && cal_at != 0;
+    g->idle_ns = (uint64_t)plat_xchg64(&ts_idle_ns, 0);
+    g->starved_ns = (uint64_t)plat_xchg64(&ts_starved_ns, 0);
+    g->queued_ns = (uint64_t)plat_xchg64(&ts_queued_ns, 0);
+    g->idle_gaps = (uint64_t)plat_xchg64(&ts_gaps, 0);
+    g->max_gap_ns = (uint64_t)plat_xchg64(&ts_max_gap_ns, 0);
 }
 
 // Weak stand-in for vk_exec.c's replay: only empty recordings ({OP_BEGIN, OP_END}) can be submitted.
@@ -172,17 +243,17 @@ WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint
     return 0;
 }
 
-static DWORD WINAPI completion_main(void *arg) {
+static void completion_main(void *arg) {
     VkCtx *c = arg;
-    AcquireSRWLockExclusive(&st_lock);
+    plat_mutex_lock(&st_lock);
     for (;;) {
         while (!stop && done == issued && !(qn && queue[qhead].fence <= done))
-            SleepConditionVariableSRW(&cv_work, &st_lock, INFINITE, 0);
+            plat_cond_wait(&cv_work, &st_lock);
         if (stop) break;
         uint64_t reached = done;
         if (issued > done) {
             uint64_t want = done + 1;
-            ReleaseSRWLockExclusive(&st_lock);
+            plat_mutex_unlock(&st_lock);
             VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
                                       .pSemaphores = &c->timeline, .pValues = &want};
             VkResult r = vkWaitSemaphores(c->device, &wi, 100000000ull);   // 100 ms: stop is checked between waits
@@ -191,31 +262,31 @@ static DWORD WINAPI completion_main(void *arg) {
                 rt_fatal("vk: vkWaitSemaphores failed (%d; device lost?)", (int)r);
             }
             vkGetSemaphoreCounterValue(c->device, c->timeline, &reached);
-            AcquireSRWLockExclusive(&st_lock);
+            plat_mutex_lock(&st_lock);
             if (reached > issued) reached = issued;
         }
         while (qn && queue[qhead].fence <= reached) {
             Pending p = queue[qhead++];
             qn--;
-            ReleaseSRWLockExclusive(&st_lock);
+            plat_mutex_unlock(&st_lock);
             p.fn(p.arg);
-            AcquireSRWLockExclusive(&st_lock);
+            plat_mutex_lock(&st_lock);
         }
         if (reached > done) {
-            ReleaseSRWLockExclusive(&st_lock);
+            plat_mutex_unlock(&st_lock);
             vk_mem_collect();
-            AcquireSRWLockExclusive(&st_lock);
+            plat_mutex_lock(&st_lock);
             __atomic_store_n(&done, reached, __ATOMIC_RELEASE);
-            WakeAllConditionVariable(&cv_done);
+            plat_cond_broadcast(&cv_done);
         }
     }
-    ReleaseSRWLockExclusive(&st_lock);
-    return 0;
+    plat_mutex_unlock(&st_lock);
+    return;
 }
 
 void vk_sync_start(void) {
     if (__atomic_load_n(&started, __ATOMIC_ACQUIRE)) return;
-    AcquireSRWLockExclusive(&start_lock);
+    plat_mutex_lock(&start_lock);
     if (!started) {
         if (!vk_init()) rt_fatal("vk: no usable Vulkan device (see the vk: lines above; TOTK_GPU=null runs without a GPU)");
         VkCtx *c = vk_ctx();
@@ -233,18 +304,18 @@ void vk_sync_start(void) {
             if (vkSignalSemaphore(c->device, &si) != VK_SUCCESS) rt_fatal("vk: timeline restart at %llu", (unsigned long long)issued);
             now = issued;
         }
-        AcquireSRWLockExclusive(&st_lock);
+        plat_mutex_lock(&st_lock);
         issued = done = now;
         if (reserved < now) reserved = now;
         stop = 0;
-        ReleaseSRWLockExclusive(&st_lock);
+        plat_mutex_unlock(&st_lock);
         vk_mem_note_submit(now);
-        completion_thread = CreateThread(NULL, 0, completion_main, c, 0, NULL);
-        if (!completion_thread) rt_fatal("vk: cannot start the completion thread (error %lu)", GetLastError());
+        completion_thread = plat_thread_new(completion_main, c, "vk completion");
+        if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
         vk_astc_mode();   // decides TOTK_ASTC and builds the ASTC decoder now, not at the first ASTC upload
     }
-    ReleaseSRWLockExclusive(&start_lock);
+    plat_mutex_unlock(&start_lock);
 }
 
 // The index of a command buffer the GPU no longer uses, claimed for value `fence`. Called with sub_lock held; may move
@@ -276,7 +347,9 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // The copies the replay's first accesses to VRAM mirrors queued (vk_memory.c), in a command buffer of their own that is
 // submitted right before the part that needs them and timed like a part; VK_NULL_HANDLE when there are none. After the
 // part was recorded, sub_lock held; may move slots[].
+// First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
+    vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
     if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
@@ -301,6 +374,7 @@ VkCommandBuffer vk_sync_split(void) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
+    ts_submitted();
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
@@ -323,17 +397,17 @@ VkCommandBuffer vk_sync_split(void) {
 // out in queue order and the replay thread submits them in that order, so each vk_sync_submit gets exactly its value.
 uint64_t vk_sync_reserve(void) {
     vk_sync_start();
-    AcquireSRWLockExclusive(&st_lock);
+    plat_mutex_lock(&st_lock);
     if (reserved < issued) reserved = issued;
     uint64_t v = ++reserved;
-    ReleaseSRWLockExclusive(&st_lock);
+    plat_mutex_unlock(&st_lock);
     return v;
 }
 
 uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_sync_start();
     VkCtx *c = vk_ctx();
-    AcquireSRWLockExclusive(&sub_lock);
+    plat_mutex_lock(&sub_lock);
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
@@ -364,6 +438,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    ts_submitted();
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
@@ -373,18 +448,18 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     }
     s->fence = recorded ? fence : 0;
     vk_mem_note_submit(fence);
-    AcquireSRWLockExclusive(&st_lock);
+    plat_mutex_lock(&st_lock);
     __atomic_store_n(&issued, fence, __ATOMIC_RELEASE);
-    WakeAllConditionVariable(&cv_work);
-    ReleaseSRWLockExclusive(&st_lock);
+    plat_cond_broadcast(&cv_work);
+    plat_mutex_unlock(&st_lock);
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
-    ReleaseSRWLockExclusive(&sub_lock);
+    plat_mutex_unlock(&sub_lock);
     return fence;
 }
 
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
-    AcquireSRWLockExclusive(&st_lock);
+    plat_mutex_lock(&st_lock);
     if (qhead + qn == qcap) {
         if (qhead) {
             memmove(queue, queue + qhead, sizeof *queue * (size_t)qn);
@@ -399,8 +474,8 @@ void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
     queue[qhead + qn++] = (Pending){fence, fn, arg};
     // The completion thread sleeps only while nothing is issued beyond done: a callback for a later value (the replay's,
     // for the submission it records: counter reports, freed resources) becomes due through the submit, which wakes it.
-    if (fence <= done) WakeAllConditionVariable(&cv_work);
-    ReleaseSRWLockExclusive(&st_lock);
+    if (fence <= done) plat_cond_broadcast(&cv_work);
+    plat_mutex_unlock(&st_lock);
 }
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns);
@@ -415,25 +490,24 @@ int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns) {
     vk_sync_start();
-    AcquireSRWLockExclusive(&st_lock);
+    plat_mutex_lock(&st_lock);
     int ok;
     if (value > issued && value > reserved) {
         ok = 0;   // never submitted nor queued: never reached (as in the null back end)
     } else {
         uint64_t t0 = kern_now_ns();
         while (done < value) {
-            DWORD ms = INFINITE;
             if (timeout_ns < (1ull << 62)) {
                 uint64_t el = kern_now_ns() - t0;
                 if (el >= timeout_ns) break;
-                uint64_t left = (timeout_ns - el + 999999) / 1000000;
-                ms = left >= INFINITE ? INFINITE - 1 : (DWORD)left;
+                plat_cond_wait_ns(&cv_done, &st_lock, timeout_ns - el);
+            } else {
+                plat_cond_wait(&cv_done, &st_lock);
             }
-            SleepConditionVariableSRW(&cv_done, &st_lock, ms, 0);
         }
         ok = done >= value;
     }
-    ReleaseSRWLockExclusive(&st_lock);
+    plat_mutex_unlock(&st_lock);
     return ok;
 }
 
@@ -448,20 +522,19 @@ void vk_sync_finish(void) {
 }
 
 void vk_sync_shutdown(void) {
-    AcquireSRWLockExclusive(&start_lock);
+    plat_mutex_lock(&start_lock);
     if (started) {
         vk_sync_finish();
-        AcquireSRWLockExclusive(&st_lock);
+        plat_mutex_lock(&st_lock);
         stop = 1;
-        WakeAllConditionVariable(&cv_work);
-        ReleaseSRWLockExclusive(&st_lock);
-        WaitForSingleObject(completion_thread, INFINITE);
-        CloseHandle(completion_thread);
+        plat_cond_broadcast(&cv_work);
+        plat_mutex_unlock(&st_lock);
+        plat_thread_join(completion_thread);
         completion_thread = NULL;
-        AcquireSRWLockExclusive(&st_lock);
+        plat_mutex_lock(&st_lock);
         qhead = qn = 0;   // callbacks of values never submitted
-        ReleaseSRWLockExclusive(&st_lock);
-        AcquireSRWLockExclusive(&sub_lock);
+        plat_mutex_unlock(&st_lock);
+        plat_mutex_lock(&sub_lock);
         VkCtx *c = vk_ctx();
         if (c && cmd_pool) vkDestroyCommandPool(c->device, cmd_pool, NULL);
         perf_gpu_stats = NULL;
@@ -474,8 +547,8 @@ void vk_sync_shutdown(void) {
         free(slots);
         slots = NULL;
         nslots = 0;
-        ReleaseSRWLockExclusive(&sub_lock);
+        plat_mutex_unlock(&sub_lock);
         __atomic_store_n(&started, 0, __ATOMIC_RELEASE);
     }
-    ReleaseSRWLockExclusive(&start_lock);
+    plat_mutex_unlock(&start_lock);
 }

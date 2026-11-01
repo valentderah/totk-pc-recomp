@@ -1,0 +1,89 @@
+// RGBA8 texels to BC3 blocks on the GPU, one invocation per 4x4 block: the second pass of the ASTC decode when
+// TOTK_ASTC_BC is on (vk_astc.c), so a decoded ASTC texture takes 8 bits per texel in video memory instead of 32.
+// Texels past the right or bottom edge repeat the last column or row.
+//
+// Colour: the BC1 four-colour block of the box around the block's colours, its diagonal turned to the sign of the
+// colours' covariance and inset by 1/16 of the range (the bounding-box method of stb_dxt and of yuzu's BC1 recompression),
+// then each texel takes the nearest of the four palette entries along that axis. Alpha: the eight-value BC3 alpha
+// block between the block's smallest and largest alpha. The bytes are what the texels hold, so an sRGB image keeps
+// sRGB-encoded values, as BC3_SRGB expects.
+// Compiled to runtime/bc3_encode_spv.h by tools/build_shaders.py; vk_astc.c records the dispatch.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Texels { uint px[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Blocks { uvec4 blk[]; };
+
+layout(push_constant) uniform Params {
+    uint in_base;    // first texel of slice 0 (index into px)
+    uint out_base;   // first block of slice 0 (uvec4 index into blk)
+    uint width, height;
+    uint bx;         // blocks per row
+    uint bslice;     // blocks per slice
+} pc;
+
+vec4 texel(uint x, uint y, uint z) {
+    x = min(x, pc.width - 1u), y = min(y, pc.height - 1u);
+    return unpackUnorm4x8(px[pc.in_base + (z * pc.height + y) * pc.width + x]) * 255.0;
+}
+
+uint to565(vec3 c) {
+    uvec3 q = uvec3(round(clamp(c, 0.0, 255.0) * vec3(31.0, 63.0, 31.0) / 255.0));
+    return q.r << 11 | q.g << 5 | q.b;
+}
+
+vec3 from565(uint v) {
+    return vec3(float(v >> 11 & 31u) * 255.0 / 31.0, float(v >> 5 & 63u) * 255.0 / 63.0, float(v & 31u) * 255.0 / 31.0);
+}
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    uint by = (pc.height + 3u) / 4u;
+    if (id.x >= pc.bx || id.y >= by) return;
+    vec4 t[16];
+    vec4 lo = vec4(255.0), hi = vec4(0.0), mean = vec4(0.0);
+    for (uint i = 0u; i < 16u; i++) {
+        t[i] = texel(id.x * 4u + (i & 3u), id.y * 4u + (i >> 2), id.z);
+        lo = min(lo, t[i]), hi = max(hi, t[i]), mean += t[i];
+    }
+    mean /= 16.0;
+
+    // alpha: a0 > a1 selects the eight-value mode; index 0 is a0, 1 is a1, 2..7 the six steps from a0 to a1
+    uint a0 = uint(hi.a), a1 = uint(lo.a);
+    uvec2 ab = uvec2(a0 | a1 << 8, 0u);
+    if (a0 > a1) {
+        float range = float(a0 - a1);
+        for (uint i = 0u; i < 16u; i++) {
+            uint s = uint(clamp(round((float(a0) - t[i].a) * 7.0 / range), 0.0, 7.0));   // 0 = a0 .. 7 = a1
+            uint code = s == 0u ? 0u : s == 7u ? 1u : s + 1u;
+            uint bit = 16u + 3u * i;
+            if (bit < 32u) ab.x |= code << bit;
+            if (bit + 3u > 32u) ab.y |= code >> (32u - min(bit, 32u)) << (bit > 32u ? bit - 32u : 0u);
+        }
+    }
+
+    // colour: the box diagonal along the covariance of red and blue with green
+    vec3 cmin = lo.rgb, cmax = hi.rgb;
+    float crg = 0.0, cbg = 0.0;
+    for (uint i = 0u; i < 16u; i++) {
+        vec3 d = t[i].rgb - mean.rgb;
+        crg += d.r * d.g, cbg += d.b * d.g;
+    }
+    if (crg < 0.0) { float s = cmin.r; cmin.r = cmax.r; cmax.r = s; }
+    if (cbg < 0.0) { float s = cmin.b; cmin.b = cmax.b; cmax.b = s; }
+    vec3 inset = (cmax - cmin) / 16.0;
+    uint c0 = to565(cmax - inset), c1 = to565(cmin + inset);
+    uint idx = 0u;
+    if (c0 != c1) {
+        if (c0 < c1) { uint s = c0; c0 = c1; c1 = s; }   // c0 > c1: the four-colour mode
+        vec3 e0 = from565(c0), e1 = from565(c1), axis = e1 - e0;
+        float len2 = max(dot(axis, axis), 1e-6);
+        for (uint i = 0u; i < 16u; i++) {
+            uint s = uint(clamp(round(dot(t[i].rgb - e0, axis) / len2 * 3.0), 0.0, 3.0));   // 0 = e0 .. 3 = e1
+            uint code = s == 0u ? 0u : s == 3u ? 1u : s + 1u;   // palette order e0, e1, 2/3 e0 + 1/3 e1, 1/3 e0 + 2/3 e1
+            idx |= code << (2u * i);
+        }
+    }
+    blk[pc.out_base + id.z * pc.bslice + id.y * pc.bx + id.x] = uvec4(ab.x, ab.y, c0 | c1 << 16, idx);
+}

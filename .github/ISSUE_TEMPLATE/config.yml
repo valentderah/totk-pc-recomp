@@ -1,1 +1,5 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Question or help with setup
+    url: https://github.com/valentderah/totk-pc-recomp/discussions
+    about: Installing, updating and configuring the port. Ask in Discussions.

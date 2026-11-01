@@ -7,8 +7,9 @@ Input comes from the first SDL3 gamepad, the keyboard and the mouse, merged into
 - `nintendo`: by position, as on a Switch (the table below).
 - `xbox`: south A, east B, west X, north Y, as an Xbox pad labels them; on a PlayStation pad cross is A, circle B, square X, triangle Y.
 - `auto` (default): `nintendo` for a pad whose east button SDL reports labelled A (Switch Pro Controller, Nintendo-layout pads), `xbox` for the others.
+- `xbox_prompts`: the buttons as `nintendo`, and the game's prompts name the Xbox labels (see Xbox button prompts below).
 
-The log names the layout in effect (`input: gamepad layout ...`); the menu shows it under *Automatic*. The game's button prompts stay Switch letters either way.
+The log names the layout in effect (`input: gamepad layout ...`); the menu shows it under *Automatic*. With `nintendo`, `xbox` and `auto` the game's button prompts stay Switch letters; `xbox_prompts` changes them.
 
 | Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse | Action in the world |
 |---|---|---|---|
@@ -30,12 +31,25 @@ The log names the layout in effect (`input: gamepad layout ...`); the menu shows
 
 Esc is unbound in the game; it opens the settings menu and releases the mouse cursor (see Mouse camera). Z and X duplicate ZL and ZR so menu pages turn with two neighbouring keys; the menu tabs (L, R) are Q and R. The mouse wheel is unbound. The bindings are the tables of `input_map` in `runtime/input_map.c`: the keys (platform-neutral key ids) and one gamepad table per layout (gamepad inputs by position); `runtime/input_win.c` translates Win32 virtual keys and SDL buttons.
 
+## Xbox button prompts
+
+`pad_layout = xbox_prompts` (*Xbox prompts (A right)* on the Controls tab) is for an Xbox pad played by position. The buttons work as with `nintendo`: the right button, labelled B, does Switch A (interact, confirm), and the bottom one, labelled A, does Switch B (run, cancel). The letters the game shows are swapped to match the labels, A with B and X with Y, so each prompt names the button to press. The other layouts leave the prompts alone: with `xbox` the Switch letters already match the labels.
+
+The swapped letters are part of the game's textures, fonts and messages, so they follow the layout and not the bindings. A button remapped with a `bind_` line or on the Controls tab keeps the letter the game draws for it, and the prompt then names the wrong button. Use `xbox_prompts` with the default bindings.
+
+The buttons change at once, but the game reads its UI archive and fonts once at boot, so the prompts change at the next start (the menu says *prompts change after restart*). `xbox_prompts` loads `romfs-patches-xbox` next to `romfs-index.bin` in place of `romfs-patches` (`runtime/romfs.c`, `overlay_init`): the same 60 fps patches, with the swap made from the game's own files by `tools/make_romfs_patches.py --xbox-prompts`, which the setup runs next to the plain one:
+
+- the action prompt (`DoCommand_00`) draws the letter images `Nt_KeyTexA/B/X/Y_00`, whose image data is swapped, in a diamond that names the other face buttons. The diamond's letters are text the game takes from `LayoutMsg/DoCommand_00.msbt` of each language's `Mals` archive (and the layout's own text panes behind it); both are swapped. The diamond's shape shows the button's position and stays.
+- every other prompt is text in the button font (`scft/External.bfotf` in each `Font/Font*.Nin_NX_NVN.bfarc.zs`, glyphs U+E040 to U+E043); the A and B, X and Y glyphs are swapped.
+
+Without the folder (an install made by an older setup, or one where the setup could not prepare it and showed a warning) the menu says the files are missing, the log has `RomFS overlay: pad_layout = xbox_prompts, but ...`, and the Switch prompts stay; running the setup again on the install folder writes it. In a source build, `.venv-py314\Scripts\python tools\make_romfs_patches.py --version <ver> --xbox-prompts` writes `build\<ver>\romfs-patches-xbox`.
+
 ## Window keys
 
 | Key | Gamepad | Action |
 |---|---|---|
 | F1 or Esc | Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
-| F10 | | performance overlay: off, frame rate, full panel |
+| F10 | L3 + R3 (both stick clicks) | performance overlay: off, frame rate, full panel |
 | F11 | | borderless fullscreen on or off, saved to `totk.ini` |
 
 The Minus+Plus combo never reaches the game. In the menu the arrow keys, the D-pad or the left stick move, Enter or A selects, Q and E or L and R switch tabs, Esc or B goes back (Switch button names, as in the table above).
@@ -46,7 +60,7 @@ The *Controls* tab of the settings menu lists, under the button layout, every Sw
 
 The tab writes `totk.ini` lines, one per Switch button or stick direction: `bind_<button> = <entry>, <entry>, ...`. The button is `A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK`, or a stick direction `LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN` (movement, W A S D by default) and `RSTICK_...` (camera, the arrow keys). An entry is `pad:<name>` or `key:<name>`:
 
-- pad names: `south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down` (`zl`, `zr` are the triggers)
+- pad names: `south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down lpaddle1 rpaddle1 lpaddle2 rpaddle2` (`zl`, `zr` are the triggers; the paddles are the back buttons of an Xbox Elite, DualSense Edge or Steam Controller, upper pair 1, lower pair 2, and no Switch button has them by default)
 - key names: `a` to `z`, `0` to `9`, `f2` to `f7`, `f9`, `f12`, `num0` to `num9`, `space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert delete home end pageup pagedown up down left right`, `num_add num_sub num_mul num_div num_decimal`, `minus equals lbracket rbracket semicolon apostrophe comma period slash backslash grave`, `mouse_l mouse_r mouse_m mouse_x1 mouse_x2`
 - `key:default` and `pad:default` keep that part's defaults (`pad:default` is each layout's own button).
 - `none` leaves the button unbound.
@@ -72,6 +86,12 @@ Mouse motion (raw input) becomes right-stick deflection. Each presented frame ta
 
 The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sticks at 50% deflection. A gamepad plugged in later is picked up within one second; with none connected the log says `input: no gamepad`.
 
+## Nintendo Switch 2 controllers
+
+Windows does not present the Switch 2 Pro Controller as a gamepad SDL can open (the log says `input: no gamepad`), so it needs a bridge program that wakes it and creates a virtual gamepad. The DS4Windows fork by hbashton ([github.com/hbashton/DS4Windows](https://github.com/hbashton/DS4Windows), tested with release VIIPERRC4.5.1, a pre-release) with the output set to an emulated DualSense gives buttons, rumble, gyro and accelerometer, and reads the sticks through the controller's calibration (they rest at 0 to 2%). The game reads its virtual DualSense directly; the log then shows `input: gamepad "DualSense Wireless Controller" (rumble, gyro and accelerometer, ...)` and `input: motion sensors on`. Its release notes also list Joy-Con 2 support, which is untested here.
+
+Bridges that output a ViGEm DualShock 4 (ProCon2Windows, connectyourpro as tested) give buttons and rumble but no motion: their virtual DualShock 4 reports a gyro and an accelerometer that never change, so motion aiming and Ultrahand rotation do nothing. Run one bridge at a time; Steam Input can also claim the controller, so close Steam if the bridge does not find it.
+
 ## Scripted input
 
 `TOTK_INPUT_SCRIPT=<file>` replays presses. It is ORed with real input and still applies under `TOTK_INPUT=none`. One event per line, `#` starts a comment:
@@ -86,6 +106,8 @@ The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sti
 `<frame>` counts 60 Hz ticks of game time since the first frame (presented frames at 60 fps), so the title menus get the presses at the same game time at any frame limit. `@<ms>` counts milliseconds of the world clock: game time stepped since the end of the first save load (the player leaves the title screen's origin), so a timed event lands at the same game time at any frame rate and load length. A later load, such as fast travel, still shifts what follows. In a script with timed lines the untimed ones stop when the world clock starts, as the load ends at another tick in each run. Each event logs once (`input: script frame N tick T: A`). `tools/input/load_save.txt` loads the first save from the title screen.
 
 `TOTK_INPUT_RECORD=<file>` (`input_record` in `totk.ini`, or Input recording in the menu) writes the merged input in the same format, one line per button press and per stick segment: events before the world clock starts by tick, the rest timed; a button or stick held when the world clock starts is cut there and goes on as a timed event. The file replays as a script, which makes it the repro to attach to a bug report.
+
+`TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry>` attaches an SDL virtual gamepad at start whose sticks rest at these raw SDL axis values (-32768 to 32767, down is +y), so a drifting or held stick can be tested without a controller: the values go through the gamepad mapping and `TOTK_STICK_DEADZONE` like a real pad's, and `TOTK_INPUT_RECORD` shows what reached the game.
 
 ## RenderDoc capture (blocked)
 

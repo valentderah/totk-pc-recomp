@@ -11,7 +11,11 @@ Lifted code cannot be byte-patched when the game runs, so a patch is applied whe
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
 the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
 encoded for the site's address. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
-of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents.
+of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents. Words in use, by byte offset:
++0..15 the frame-rate step (runtime/frame_rate.c), +16..55 the output, swapchain and scene sizes
+(runtime/resolution.c res_init), +56..59 the camera's aspect ratio (runtime/resolution.c res_init, set aspect), +60..63
+the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +92..95 the sun shadow map size
+(runtime/resolution.c shadow_init, set shadow). A new set takes words outside these.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
 `if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Replacement

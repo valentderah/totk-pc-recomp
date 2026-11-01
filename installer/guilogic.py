@@ -11,6 +11,7 @@ import ctypes
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -23,11 +24,12 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR')
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
+LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
 
 
 def load_texts(lang):
@@ -75,12 +77,16 @@ def flat(value):
 
 
 def windows_ui_language():
-    """'ru' when the Windows display language is Russian, else 'en'."""
+    """'ru' when the display language (Windows; elsewhere LC_ALL, LC_MESSAGES or LANG) is Russian, 'pt-BR' when it is
+    Brazilian Portuguese (LANGID 0x0416, or a pt_BR locale), else 'en'."""
+    if os.name != 'nt':
+        loc = (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').lower()
+        return 'ru' if loc.startswith('ru') else 'pt-BR' if loc.startswith(('pt_br', 'pt-br')) else 'en'
     try:
         langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
     except (AttributeError, OSError):
         return 'en'
-    return 'ru' if langid & 0x3ff == LANG_RU else 'en'
+    return 'ru' if langid & 0x3ff == LANG_RU else 'pt-BR' if langid == LANG_PT_BR else 'en'
 
 
 def default_game_language(ui):
@@ -316,7 +322,14 @@ else:
 
 def send_break(proc, python=None):
     """Ctrl+Break to the process group of proc (started with CREATE_NEW_PROCESS_GROUP). The window itself may have no
-    console (pythonw), so a short helper process attaches to the child's console and sends it."""
+    console (pythonw), so a short helper process attaches to the child's console and sends it. Elsewhere SIGTERM to
+    proc's session (Process starts it in one of its own), which installer/cli.py handles as Ctrl+Break."""
+    if os.name != 'nt':
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            return True
+        except OSError:
+            return False
     helper = [str(python or sys.executable), '-c', _BREAK, str(proc.pid)]
     flags = CREATE_NO_WINDOW if os.name == 'nt' else 0
     r = subprocess.run(helper, creationflags=flags, capture_output=True)
@@ -332,10 +345,14 @@ class Process:
         self.command = command
         self.helper_python = helper_python
         self.lines = queue.Queue()
-        flags = (CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW) if creationflags is None else creationflags
         env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1', PYTHONUNBUFFERED='1')
+        if os.name == 'nt':
+            flags = (CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW) if creationflags is None else creationflags
+            group = {'creationflags': flags}
+        else:
+            group = {'start_new_session': True}
         self.proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, creationflags=flags)
+                                     stderr=subprocess.STDOUT, **group)
         self.cancelled_at = None
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()

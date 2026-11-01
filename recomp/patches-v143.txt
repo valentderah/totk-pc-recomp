@@ -10,6 +10,7 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set shadow   TOTK_PATCH_SHADOW   0
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -31,6 +32,13 @@ site realtime main 2daa6c 5e21d800 d503201f   # scvtf s0, s0 -> nop
 site realtime main 2daa70 1e201820 d503201f   # fdiv s0, s1, s0 -> nop
 site realtime main 2daa74 1e2c1001 d503201f   # fmov s1, #0.5 -> nop
 site realtime main 2daa78 1e210800 d503201f   # fmul s0, s0, s1 -> nop
+
+# Equipment-switch cooldown (issue #18, found by JieML1100): the player update (main+0x2b0368) steps the countdown at
+# player state +0x109c through the timer step (main+0x1b0834, value += ratio * rate) only while it is above FLT_EPSILON,
+# but the equipment gate (main+0x31cc7c) blocks weapon, shield and bow changes while it is above 0. Whole 30 Hz steps
+# reach exactly 0; a measured ratio leaves a rounding remainder, and one in (0, FLT_EPSILON] is never stepped again and
+# keeps equipment locked until a load. Stepping while above 0 takes the remainder below 0 like any other last step.
+site realtime main 2b036c 0f016681 0f000401   # movi v1.2s, #0x34, lsl #24 (FLT_EPSILON) -> movi v1.2s, #0
 
 # Hair and cloth: the actor animation update builds a second clock {seconds = factor / 30, ratio = factor} per
 # rendered frame. 1.4.3 inlines it in two actor paths, where the factor was just stored to the ratio slot: the
@@ -72,6 +80,27 @@ site scene main 585e48 1e220160 @page:x3    # scvtf s0, w11 -> adrp x3, page
 site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x3, #16]
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
+
+# Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
+# aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
+# switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
+# (update and setup) load the camera's copy of DefaultAspect 1.777778, two viewport routines divide width by height.
+# The replacement loads the ratio from the page instead, so a 21:9 output shows more of the world at the sides with
+# the vertical view kept (Hor+). x10 is kept on the stack, so no register liveness is assumed.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main 628c74 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x19, #0x140] (camera update)
+site aspect main b43460 bd406ac0 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0, [x22, #0x68] (camera setup)
+site aspect main 1ff04f4 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+site aspect main 253fbb0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+
+# Field of view (runtime/resolution.c res_fov_live writes TOTK_FOV / 100 to page +60 and switches the set). The same two
+# camera routines as the aspect set load the camera's vertical view angle (radians) a few words before the ratio and
+# hand it to sead's perspective projection (+0xa0, then sin / cos / tan of half of it at +0xa4..+0xac). The replacement
+# loads the angle as before and multiplies it by the factor on the page; s8 holds the factor because the next
+# instruction (fmul s8, s0, s1) overwrites it. Zooms the game makes itself (the bow, the scope) scale with it.
+set fov      TOTK_FOV_PATCH      0
+site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of
@@ -948,3 +977,8 @@ spin subsdk0 1c4e54 1c4e60   # 4 instructions; loads
 spin sdk 2d3654 2d3668   # 6 instructions; loads
 spin sdk 443864 443884   # 9 instructions; loads
 spin sdk 541e54 541f98   # 32 instructions; loads
+
+# Sun shadow map size (patches-v121.txt explains the set and the page). 1.4.3 interpolates the size between a minimum
+# and the base and rounds it up to 8 at main+0x683604; the rounded value is the width (+0x3d8) and, through the packed
+# store at +0xf4, the height (+0x3f8). The page's size goes in just before the rounding.
+site shadow main 683604 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
