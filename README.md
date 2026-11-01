@@ -25,6 +25,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - In-game settings menu (F1) and performance overlay (F10)
 - Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
+- Stereo or 5.1 surround sound output
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
 - Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
