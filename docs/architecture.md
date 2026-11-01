@@ -104,13 +104,13 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   stretched.
 - RomFS overlay limits. `romfs.c` `overlay_load` checks every overlay file against its `manifest.tsv` line (size and
   SHA-256) at start, so a file that changes needs its line rewritten. The game also has its own size table,
-  `System/Resource/ResourceSizeTable.Product.121.rsizetable.zs` (1.2.1), which lists an archive at its decompressed size
-  plus 256 bytes: `Font/Font.Nin_NX_NVN.bfarc` at 6744800 for 6744544 bytes, and
-  `UI/LayoutArchive/Common.Product.110.Nin_NX_NVN.blarc` at 43697792 for 43697532 (the entries are keyed by the CRC-32 of the
-  path without `.zs`). In tests on 1.2.1, a button-font archive that grew by 160 bytes played normally, and one that grew
-  by 320 bytes stopped at start with a null read in game code (`FATAL: exception 0xc0000005 ... reading address 0x10`).
-  Keep a patched archive within that allowance, as the same-size edits of `make_romfs_patches.py` do. An overlay copy of the
-  size table with one entry raised crashed the start as well, with the font unchanged, so the table itself stays alone.
+  `System/Resource/ResourceSizeTable.Product.121.rsizetable.zs` (1.2.1), keyed by the CRC-32 of the path without `.zs`.
+  Its entries sit a little above the decompressed size of the archive: `Font/Font.Nin_NX_NVN.bfarc` is 6744800 for 6744544
+  bytes (256 more), and `UI/LayoutArchive/Common.Product.110.Nin_NX_NVN.blarc` is 43697792 for 43697532 (260 more). In
+  tests on 1.2.1, a button-font archive that grew by 160 bytes played normally, and one that grew by 320 bytes stopped at
+  start (`FATAL: exception 0xc0000005 ... reading address 0x10`). The allowance is my reading of those numbers and was not
+  checked in the game's code, so a patched archive should stay within it, as the same-size edits of `make_romfs_patches.py`
+  do. Raising one entry of the table in an overlay also stopped the start in my test, with a font that had played before.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
