@@ -14,6 +14,15 @@
 // (slower frames slow the game down, as on the console) and at least 1/240 s, so a higher frame-rate cap only changes
 // the pacer (frame_step_cap_ns, TOTK_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
 //
+// Breath of the Wild (patches-botw190.txt realtime; adapted from Savage Wind Recomp runtime/hle/framepace.c
+// rt_vfr_update @ bf6146c, MIT, Copyright (c) 2026 Revivedx and the Savage Wind Recomp contributors): the game steps
+// its time by ksys::VFR's interval ratio (interval / 2: 1 at 30 fps), and the patched VFR::updateInterval takes the
+// ratio from the patch page (+0, the same seconds * 30) and the interval from +96: 1 above about 43 fps, 2 below
+// about 35, 3 below about 23, from the ratio averaged over about 20 presents, so the code that switches between the
+// game's 60 and 30 fps ways never flips from one frame to the next. +100 holds half the ratio, the sound system's
+// floor of its frame step. Its longest step is the console's 1/20 s, and while VFR's interval override is on (stage
+// loading asks for single frames) no step is longer than 1/30 s.
+//
 // The floor: with a shorter step (ratio below 0.125) 1.4.3 aborts within seconds of some save loads (issue #241, a
 // 280 Hz monitor): Havok's hkDefaultMemoryImpl reports "Out of memory" for the buffer the physics pre-solve (profiler
 // scope "TtPreSolve") resizes in main+0x1261630. Forced steps on the Depths save: 1/240 s plays, 1/244 s and shorter
@@ -41,7 +50,8 @@
 //
 // TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
 // TOTK_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
-// any frame rate when game time follows wall time).
+// any frame rate when game time follows wall time); for Breath of the Wild VFR's ratio and interval and the seconds its
+// own delta frames add up to.
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -60,15 +70,39 @@
 #define STEP_RESET_S 0.25          // a gap this long (loading, a debugger) restarts the average
 #define STEP_FIRST_S (1.0 / 60.0)
 #define STEP_MIN_S (1.0 / 240.0)   // shortest step; a shorter one makes the game's physics run out of memory
+#define BOTW_STEP_MAX_S (1.0 / 20.0)
+#define BOTW_MAX_HZ 60   // Savage Wind's fixes above 60 fps (physics microsteps, keyframed turns) are not here yet
+#define BOTW_VFR 0x1e93890         // main: the ksys::VFR instance pointer
+#define BOTW_VFR_OVERRIDE 0x29     // VFR: its interval override is on
 
 static _Atomic uint64_t *step_word;   // patch page +0: ratio (low float), seconds (high float)
 static double step_now = STEP_FIRST_S;   // the step the patch page holds: what the game steps each frame
 static _Atomic uint32_t *step_interval;   // patch page +8: seconds * 60 (patches-v143.txt realtime)
+static double step_max = STEP_MAX_S;
+static _Atomic uint32_t *botw_words;   // Breath of the Wild: patch page +96 VFR's interval, +100 the sound floor
+static double botw_slow = 1;           // the ratio averaged over about 20 presents
+static uint32_t botw_interval = 2;
 static uint64_t last_ns;
 static double samples[STEP_SAMPLES];
 static unsigned sample_count, sample_next;
 
+static int botw_override(void);
+
+static void botw_store(float ratio) {
+    botw_slow += (ratio - botw_slow) * 0.05;
+    if (botw_interval == 1 && botw_slow > 0.85) botw_interval = 2;
+    else if (botw_interval == 2 && botw_slow < 0.7) botw_interval = 1;
+    else if (botw_interval == 2 && botw_slow > 1.3) botw_interval = 3;
+    else if (botw_interval == 3 && botw_slow < 1.15) botw_interval = 2;
+    float floor = 0.5f * ratio;
+    uint32_t f;
+    memcpy(&f, &floor, 4);
+    atomic_store_explicit(&botw_words[0], botw_interval, memory_order_release);
+    atomic_store_explicit(&botw_words[1], f, memory_order_release);
+}
+
 static void step_store(float seconds) {
+    if (botw_words && seconds > 1.0f / 30.0f && botw_override()) seconds = 1.0f / 30.0f;
     step_now = seconds;
     float ratio = seconds * 30.0f, interval = seconds * 60.0f;
     uint32_t lo, hi, iv;
@@ -77,6 +111,7 @@ static void step_store(float seconds) {
     memcpy(&iv, &interval, 4);
     atomic_store_explicit(step_word, (uint64_t)lo | (uint64_t)hi << 32, memory_order_release);
     atomic_store_explicit(step_interval, iv, memory_order_release);
+    if (botw_words) botw_store(ratio);
 }
 
 static void frame_limit_live(void);
@@ -94,11 +129,19 @@ void frame_step_init(void) {
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
         step_interval = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 8);
+        if (RT_BOTW) botw_words = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 96), step_max = BOTW_STEP_MAX_S;
         step_store((float)STEP_FIRST_S);
     }
     frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
-    rt_log("frame rate: present interval %s, %s", rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
-           step_word ? "real-time step (5-frame average of display intervals, at most 1/15 s)" : "whole-vsync steps");
+    if (RT_BOTW)
+        rt_log("frame rate: %s", step_word ? "real-time step into ksys::VFR (5-frame average of display intervals, "
+                                             "at most 1/20 s)"
+                                           : "the game's own 30 fps steps (TOTK_REALTIME=0)");
+    else
+        rt_log("frame rate: present interval %s, %s",
+               rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
+               step_word ? "real-time step (5-frame average of display intervals, at most 1/15 s)"
+                         : "whole-vsync steps");
 }
 
 int frame_step_realtime(void) { return step_word != NULL; }
@@ -138,9 +181,12 @@ static void frame_limit_live(void) {
     if (limit_read && v == limit_seen) return;
     limit_read = 1;
     limit_seen = v;
-    int hz = limit_parse();
+    int hz = limit_parse(), asked = hz;
+    if (RT_BOTW && (hz == 0 || hz > BOTW_MAX_HZ)) hz = BOTW_MAX_HZ;
     if (hz == limit_hz) return;
     limit_hz = hz;
+    if (asked != hz)
+        rt_log("frame rate: Breath of the Wild runs at %d fps at most for now (docs/botw.md)", BOTW_MAX_HZ);
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
     if ((hz > 60 || hz == 0) && !step_word)
@@ -170,7 +216,7 @@ double frame_step_limit_hz(void) {
 
 // ---- TOTK_TRACE=perf speed lines
 static uint64_t win_t0, win_frames, win_hist[4];   // win_hist: frames by present interval 1, 2, 3+ ([0] unused)
-static double win_game;
+static double win_game, win_vfr;   // win_vfr: Breath of the Wild's own delta frames, seconds (TOTK_SPEED_PROBE=1)
 static int probe = -1;
 static float last_pos[3];
 static uint64_t last_pos_ns;
@@ -179,6 +225,11 @@ static int read_guest(uint64_t a, void *out, size_t n) { return a && plat_mem_re
 static uint64_t read_ptr(uint64_t a) {
     uint64_t p = 0;
     return read_guest(a, &p, 8) ? p : 0;
+}
+static int botw_override(void) {
+    uint64_t vfr = read_ptr(MOD_MAIN_BASE + BOTW_VFR);
+    uint8_t on = 0;
+    return vfr && read_guest(vfr + BOTW_VFR_OVERRIDE, &on, 1) && on;
 }
 // 1.2.1: [main+0x4728538] (1.1.0: [main+0x4630a68], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
@@ -205,22 +256,34 @@ static int player_pos(float xyz[3]) {
 }
 
 static void speed_report(uint64_t now, double step, int interval) {
+    if (probe < 0) {
+        const char *e = cfg_get("TOTK_SPEED_PROBE");
+        probe = e && !strcmp(e, "1");
+    }
     if (!win_t0) {
         win_t0 = now;
         return;
     }
     win_frames++;
     win_game += step;
+    if (RT_BOTW && probe == 1) {   // what the game stepped: VFR's delta frame of core 0 (+0x98), in console frames
+        float df = 0;
+        uint64_t vfr = read_ptr(MOD_MAIN_BASE + BOTW_VFR);
+        if (vfr && read_guest(vfr + 0x98, &df, 4)) win_vfr += df / 30.0;
+    }
     win_hist[interval < 1 ? 1 : interval > 3 ? 3 : interval]++;
     if (win_frames < 120) return;
-    if (probe < 0) {
-        const char *e = cfg_get("TOTK_SPEED_PROBE");
-        probe = e && !strcmp(e, "1");
-    }
     double wall = (double)(now - win_t0) * 1e-9;
     char pos[160] = "";
     float p[3];
-    if (probe && player_pos(p)) {
+    if (probe && RT_BOTW) {
+        uint64_t vfr = read_ptr(MOD_MAIN_BASE + BOTW_VFR);
+        float ratio = 0;
+        uint32_t iv = 0;
+        if (vfr && read_guest(vfr + 0x3c, &ratio, 4) && read_guest(vfr + 0x34, &iv, 4))
+            snprintf(pos, sizeof pos, "; VFR ratio %.3f, interval %u, its delta frames %.3f s = speed %.3f", ratio, iv,
+                     win_vfr, win_vfr / wall);
+    } else if (probe && player_pos(p)) {
         double d = last_pos_ns ? hypot(p[0] - last_pos[0], p[2] - last_pos[2]) : 0,
                s = last_pos_ns ? (double)(now - last_pos_ns) * 1e-9 : 0;
         snprintf(pos, sizeof pos, "; player %.1f %.1f %.1f, %.2f m in %.3f s = %.2f m/s", p[0], p[1], p[2], d, s,
@@ -239,6 +302,7 @@ static void speed_report(uint64_t now, double step, int interval) {
     win_t0 = now;
     win_frames = 0;
     win_game = 0;
+    win_vfr = 0;
     memset(win_hist, 0, sizeof win_hist);
 }
 
@@ -272,7 +336,7 @@ void frame_step_present(uint64_t display_ns, int interval) {
         if (dt > STEP_RESET_S || dt < 0.001) {
             sample_count = sample_next = 0;
         } else {
-            if (dt > STEP_MAX_S) dt = STEP_MAX_S;
+            if (dt > step_max) dt = step_max;
             samples[sample_next++ % STEP_SAMPLES] = dt;
             if (sample_count < STEP_SAMPLES) sample_count++;
             double sum = 0;

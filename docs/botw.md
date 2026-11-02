@@ -12,16 +12,22 @@ Tested on Windows (RTX 4080 SUPER) with the 1.9.0 update (v1114112) over the bas
 
 - The start: the system logo, the title screen and its menu (Continue, New Game, Options, amiibo, DLC), the save list
   and a save load. Text and voices follow the system language.
-- Play in the Shrine of Resurrection with the HUD, sound and voices, at the game's own 30 fps; autosaves are written
-  and load again.
+- Play in the Shrine of Resurrection with the HUD, sound and voices; autosaves are written and load again.
 - Three minutes of play with no crash.
+- The frame limit (`fps_limit`, `TOTK_FPS_LIMIT`) at 60, the default, or 30, with the game's clock right at either:
+  `TOTK_TRACE=perf` with `TOTK_SPEED_PROBE=1` logs VFR's ratio (0.5 at 60 fps, 1 at 30) and its interval (1 and 2),
+  and the seconds the game's own delta frames add up to keep pace with the wall clock (speed 1.000). The menus hold
+  60 fps; the shrine averages about 55, with about one frame in fifteen held a second vsync while the presenting
+  thread waits for the game's other threads.
 
 Not done or not checked yet:
 
 - The Great Plateau and the rest of the world, prerendered movies, a gamepad (the keyboard works), long sessions.
 - The game's colours are wrong for one or two seconds after a load, then right.
-- The features made for *Tears of the Kingdom*: 60 fps and the other frame-rate patches, the resolution, field of
-  view and shadow patches, the RomFS patches, cheats. The game runs at its own 30 fps and 1080p.
+- Frame rates above 60: the limit stops there for now, as Savage Wind Recomp needed more fixes above it (the
+  physics solver's microsteps, keyframed bodies' turns, the shield-surf takeoff).
+- The features made for *Tears of the Kingdom*: the resolution, field of view and shadow patches, the RomFS patches,
+  cheats. The game renders at its own 1080p.
 - The DLC (`aoc: no add-on content`), the installer, `tools/run_game.py` and `--seconds`: their world clock starts
   at *Tears of the Kingdom*'s player actor, which this game does not have.
 - Textures that the game places 512 bytes into a 1 KiB block (NVN aligns them to 512, the NVIDIA Vulkan driver binds
@@ -66,6 +72,13 @@ Saves go to `build\profile-botw190`.
   at once and keeps calling the first handle thousands of frames later. Hardware runs what the block holds then, the
   newer recording, and so does a released handle here. Savage Wind Recomp models the same thing differently, with
   shadow copies of command memory that a later recording over their bytes retires (`runtime/nvn/cmdbuf.c`).
+- The frame rate ([recomp/patches-botw190.txt](../recomp/patches-botw190.txt), set realtime, after Savage Wind
+  Recomp's `runtime/hle/framepace.c`): the game steps its time by `ksys::VFR`'s interval ratio, and the patched
+  `VFR::updateInterval` takes the ratio, the interval and its changed flag from the patch page, which
+  `runtime/frame_rate.c` fills at every present from the display intervals (the same real-time step as *Tears of the
+  Kingdom*'s). The menus' speed, the held buttons' repeat, the arrows' fall and the sound system's frame follow the
+  same ratio. The pacer holds the presents to the limit, so the game's own 30 fps interval only feeds VFR.
+  `TOTK_REALTIME=0` gives the game its own clock and 30 fps back.
 - System calls *Tears of the Kingdom* does not make, answered by the runtime: the Labo VR sensor and VR mode, the gyro
   drift mode, the Joy-Con assignment and the controller applet (`ov_input.c`), `ListAllUsers`, the steady clock's time
   point and span (`ov_system.c`), `CommitSaveData` (`fs_host.c`), and the audio renderer's voice drop parameter

@@ -1,5 +1,34 @@
-# Code patches for Breath of the Wild 1.9.0 (recomp/patches.py; docs/botw.md). No patch sets yet: the game runs at its
-# own 30 fps and resolution.
+# Code patches for Breath of the Wild 1.9.0 (recomp/patches.py; docs/botw.md). The frame-rate sites, their fields and
+# what they need come from Savage Wind Recomp @ bf6146c (MIT, Copyright (c) 2026 Revivedx and the Savage Wind Recomp
+# contributors): tools/game_sites.py (the 1.9.0 addresses), tools/patches.py and runtime/hle/framepace.c, where they are
+# C calls; here they read the patch page that runtime/frame_rate.c writes at every present: +0 the frame step in
+# console frames (ratio = seconds * 30), +96 VFR's interval, +100 the sound system's floor (ratio / 2).
+
+set realtime TOTK_REALTIME 1
+
+# The game's clock: ksys::VFR::updateInterval (main+0x151d3d0, x19 = VFR) has set the interval (+0x34; +0x38 the one
+# before), the interval ratio (+0x3c, and +0x30 the new ratio) and the changed flag (+0x28) from the frame loop's
+# present interval; the per-core loop that follows turns the ratio into every delta frame the game steps by. Before
+# it, the ratio and the interval come from the page, and changed = (interval != the one before) without flags
+# (eor, clz >> 5, eor 1). x8 is loaded by the original word, x9 and x10 are free; the next word sets the flags.
+site realtime main 151d494 b9407a68 @page:x9 b940012a b9003e6a b900326a b9406128 b9403a6a b9003668 4a08014a 5ac0114a 53057d4a 5200014a 3900a26a b9407a68
+
+# The menus' speed: the game stores its interval * 0.5 as the GUI speed (+0xb20 of a UI object): 1 at 30 fps, 0.5 at
+# 60, never lower. The frame's length in console frames instead (Cemu's FPS++ does the same on the Wii U). s0 stays.
+site realtime main 1280ee8 bd0b2100 @page:x9 b9400129 b90b2109   # str s0, [x8, #0xb20] -> str w9 (page +0)
+
+# Held buttons (sead::ControllerBase::updateDerivativeParams_): each held button's count goes up by a constant 1.0 per
+# frame (the float behind the GOT entry in x8), and its repeat delay and pulse count those frames. The frame's length
+# in console frames instead, so a hold lasts as long as on the console.
+site realtime main eb0f88 bd400108 @page:x8 bd400108   # ldr s8, [x8] -> the page's ratio
+
+# Arrows in their fall add a gravity vector (0, ArrowGravity, 0) to their velocity once per update, unscaled: above 30
+# fps they fell faster per second and landed short (Savage Wind issue #144). The Y part times the ratio; s16 is free.
+site realtime main 5ee734 bd410a81 bd410a81 @page:x9 bd400130 1e300821   # ldr s1, [x20, #0x108]; s1 *= ratio
+
+# The sound system's frame: the game hands it the delta frame, at least 0.5 (a 60 fps frame); above 60 fps its timers
+# ran ahead of the game (Savage Wind issue #145). The floor is half the ratio instead, 0.5 at 30 fps as on the console.
+site realtime main 1551004 1e2c1001 @page:x9 bd406521   # fmov s1, #0.5 -> ldr s1, [page + 100]
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/botw190/exefs: loops that only another thread can end;
 # their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core. Without them the game's job
