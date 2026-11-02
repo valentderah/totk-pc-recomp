@@ -2060,12 +2060,34 @@ static struct { uint64_t ev; uint32_t wh; } g_se[512];
 static int g_nse;
 static PlatMutex g_se_lock = PLAT_MUTEX_INIT;
 
+// nn::os::SystemEventType keeps its state in the byte at +0x28: 0 is not initialized. DestroySystemEvent clears it and
+// closes the event's handles; TryWaitSystemEvent aborts the game on it (both read from the SDK's own code).
+#define SE_STATE_OFF 0x28
+static int se_alive(uint64_t ev) { return *(volatile uint8_t *)(uintptr_t)(ev + SE_STATE_OFF) != 0; }
+
+// The writable handle bound for ev, or 0. The game may destroy a bound event and create one again at the same address
+// (nn::nfp's activate and deactivate events, on every StopDetection): the entry of a destroyed event is dropped, so
+// kern_bind_system_event creates the new one instead of handing back the closed handle.
 static uint32_t se_find(uint64_t ev) {
     plat_mutex_lock_shared(&g_se_lock);
     uint32_t wh = 0;
-    for (int i = 0; i < g_nse && !wh; i++)
-        if (g_se[i].ev == ev) wh = g_se[i].wh;
+    int stale = 0;
+    for (int i = 0; i < g_nse; i++) {
+        if (g_se[i].ev != ev) continue;
+        if (se_alive(ev)) wh = g_se[i].wh;
+        else stale = 1;
+        break;
+    }
     plat_mutex_unlock_shared(&g_se_lock);
+    if (stale) {
+        plat_mutex_lock(&g_se_lock);
+        for (int i = 0; i < g_nse; i++)
+            if (g_se[i].ev == ev && !se_alive(ev)) {
+                g_se[i] = g_se[--g_nse];
+                break;
+            }
+        plat_mutex_unlock(&g_se_lock);
+    }
     return wh;
 }
 
@@ -2096,6 +2118,21 @@ void kern_signal_system_event(uint64_t ev) {
         wh = se_find(ev);
     }
     kern_event_signal(wh);
+}
+
+// Signals ev only if it is bound and the game has not destroyed it; never binds, so any thread may call it. Returns 1
+// if signaled. The handle is checked under the kernel lock, so an event the game destroys meanwhile is skipped.
+int kern_signal_bound_system_event(uint64_t ev) {
+    uint32_t wh = se_find(ev);
+    if (!wh) return 0;
+    lock();
+    Event *e = h_peek(wh, O_EVENT_W);
+    if (e) {
+        e->signaled = 1;
+        wake_sync_waiters();
+    }
+    unlock();
+    return e != NULL;
 }
 
 // ---- fibers

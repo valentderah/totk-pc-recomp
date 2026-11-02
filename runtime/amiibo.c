@@ -23,15 +23,25 @@ static float g_auto_remove_delay_s = 2.5f;
 
 static uint64_t g_tap_timestamp_ns = 0;
 static bool g_timer_active = false;
+static bool g_tag_removed = false;          // the tag left the reader while detection ran (DeviceState TagRemoved)
+static void (*g_tag_listener)(bool present);
+
+// Called outside the lock: the listener signals the game's nfp events.
+static void notify_tag(bool present) {
+    void (*fn)(bool) = g_tag_listener;
+    if (fn) fn(present);
+}
+
+void amiibo_set_tag_listener(void (*fn)(bool present)) { g_tag_listener = fn; }
 
 static bool amiibo_validate_dump(const uint8_t *data, uint64_t size) {
     if (size != AMIIBO_DUMP_SIZE) {
         return false;
     }
 
-    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C).
-    // Byte 0x0C must be 0xE1 (NDEF Magic / Type 2 Tag CC container byte).
-    if (data[0x0C] != 0xE1) {
+    // Capability Container at page 3 (offset 0x0C): amiibo carry F1 10 FF EE there, other NTAG215 dumps the NDEF
+    // magic E1.
+    if (data[0x0C] != 0xF1 && data[0x0C] != 0xE1) {
         return false;
     }
 
@@ -72,11 +82,11 @@ static void parse_dump_info(const char *path) {
     memcpy(g_info.uuid, g_dump, 7);
     g_info.uuid_len = 7;
 
-    // Amiibo ID at offset 0x54 (8 bytes)
+    // Amiibo ID at offset 0x54 (8 bytes): character ID and variant, figure type, model number (big-endian), series, 02
     memcpy(g_info.character_id, g_dump + 0x54, 3);
-    g_info.series_id = g_dump[0x57];
+    g_info.nfp_type = g_dump[0x57];
     g_info.numbering_id = ((uint16_t)g_dump[0x58] << 8) | g_dump[0x59];
-    g_info.nfp_type = g_dump[0x5A];
+    g_info.series_id = g_dump[0x5A];
     g_info.version = g_dump[0x5B];
 }
 
@@ -109,6 +119,7 @@ bool amiibo_is_device_present(void) {
 void amiibo_start_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
     g_detecting = true;
+    g_tag_removed = false;
     rt_log("amiibo: start detection");
     plat_mutex_unlock(&g_amiibo_lock);
 }
@@ -116,6 +127,7 @@ void amiibo_start_detection(void) {
 void amiibo_stop_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
     g_detecting = false;
+    g_tag_removed = false;
     rt_log("amiibo: stop detection");
     plat_mutex_unlock(&g_amiibo_lock);
 }
@@ -163,9 +175,15 @@ AmiiboDeviceState amiibo_get_device_state(void) {
         plat_mutex_unlock(&g_amiibo_lock);
         return AMIIBO_DEV_STATE_TAG_MOUNTED;
     }
-    if (g_tag_present) {
+    // A tag on the reader is found only while detection runs: the game starts detection only from Initialized, so
+    // TagFound outside it would leave the game waiting for an activation that never comes.
+    if (g_tag_present && g_detecting) {
         plat_mutex_unlock(&g_amiibo_lock);
         return AMIIBO_DEV_STATE_TAG_FOUND;
+    }
+    if (g_tag_removed) {
+        plat_mutex_unlock(&g_amiibo_lock);
+        return AMIIBO_DEV_STATE_TAG_REMOVED;
     }
     if (g_detecting) {
         plat_mutex_unlock(&g_amiibo_lock);
@@ -215,12 +233,14 @@ void amiibo_tap_tag(void) {
         return;
     }
     g_tag_present = true;
+    g_tag_removed = false;
     g_tap_timestamp_ns = plat_now_ns();
     if (g_auto_remove) {
         g_timer_active = true;
     }
     rt_log("amiibo: tag tapped on reader ('%s')", g_info.filename);
     plat_mutex_unlock(&g_amiibo_lock);
+    notify_tag(true);
 }
 
 bool amiibo_scan_and_tap(const char *path) {
@@ -231,16 +251,20 @@ bool amiibo_scan_and_tap(const char *path) {
 
 void amiibo_remove_tag(void) {
     plat_mutex_lock(&g_amiibo_lock);
-    if (g_tag_present || g_mounted) {
+    bool removed = g_tag_present || g_mounted;
+    if (removed) {
         g_tag_present = false;
         g_mounted = false;
         g_timer_active = false;
+        g_tag_removed = g_detecting;
         rt_log("amiibo: tag removed from reader");
     }
     plat_mutex_unlock(&g_amiibo_lock);
+    if (removed) notify_tag(false);
 }
 
 void amiibo_tick(void) {
+    bool removed = false;
     plat_mutex_lock(&g_amiibo_lock);
     if (g_timer_active && g_tag_present) {
         uint64_t now = plat_now_ns();
@@ -250,10 +274,13 @@ void amiibo_tick(void) {
             g_tag_present = false;
             g_mounted = false;
             g_timer_active = false;
+            g_tag_removed = g_detecting;
+            removed = true;
             rt_log("amiibo: auto-removed tag after %.1fs timeout", (double)g_auto_remove_delay_s);
         }
     }
     plat_mutex_unlock(&g_amiibo_lock);
+    if (removed) notify_tag(false);
 }
 
 void amiibo_set_auto_remove(bool enable) {
@@ -316,15 +343,15 @@ void amiibo_get_model_info(void *out_model_info) {
     plat_mutex_lock(&g_amiibo_lock);
     uint8_t *out = (uint8_t *)out_model_info;
     memset(out, 0, 0x40);
-    // Character ID at 0x00 (3 bytes)
-    memcpy(out + 0x00, g_dump + 0x54, 3);
-    // Series ID at 0x03 (1 byte)
-    out[0x03] = g_dump[0x57];
-    // Numbering ID at 0x04 (2 bytes, big-endian from 0x58)
-    out[0x04] = g_dump[0x58];
-    out[0x05] = g_dump[0x59];
-    // NFP Type at 0x06 (1 byte)
-    out[0x06] = g_dump[0x5A];
+    // nn::nfp::ModelInfo from the amiibo ID at 0x54 (character ID u16, variant, figure type, model number u16 big-endian,
+    // series, 02): character ID and variant keep the tag's byte order, then series, the model number little-endian and
+    // the figure type. Layout as in libnx's NfpModelInfo and emuiibo's produce_model_info (amiibo emulation on the
+    // console, whose bin.rs swaps the model number); the game tells figures of one character apart by the model number.
+    memcpy(out + 0x00, g_dump + 0x54, 3);   // character ID, variant
+    out[0x03] = g_dump[0x5A];               // series
+    out[0x04] = g_dump[0x59];               // model number, little-endian
+    out[0x05] = g_dump[0x58];
+    out[0x06] = g_dump[0x57];               // figure type
     plat_mutex_unlock(&g_amiibo_lock);
 }
 

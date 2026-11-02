@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "amiibo.h"
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
@@ -348,11 +349,75 @@ static int event_works(uint64_t ev, int autoclear) {
     return !before && after && again == !autoclear;
 }
 
-// A manual-clear system event an override signalled when binding it: set, and still set on a second wait.
-static int event_set(uint64_t ev) {
+// An auto-clear system event an override signalled when binding it: set on the first wait, clear on the second.
+static int event_set_once(uint64_t ev) {
     static uint64_t try_wait;
     if (!try_wait && !(try_wait = ldr_symbol(TRY_WAIT_SYSTEM_EVENT))) rt_fatal("probe-services: no %s", TRY_WAIT_SYSTEM_EVENT);
-    return (uint8_t)rt_call(gc, try_wait, 1, ev) && (uint8_t)rt_call(gc, try_wait, 1, ev);
+    return (uint8_t)rt_call(gc, try_wait, 1, ev) && !(uint8_t)rt_call(gc, try_wait, 1, ev);
+}
+
+// The rune's amiibo cycle as the game runs it: detection stops, the game destroys its activate and deactivate events
+// and attaches them again at the same address, then searches. Then a dump tapped in the amiibo menu: activate set,
+// Mount, ModelInfo with the model number little-endian, removal sets deactivate.
+static int probe_amiibo_cycle(const uint8_t *handles, uint64_t activate, uint64_t deactivate) {
+    static const char destroy_sym[] = "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE";
+    uint64_t destroy = ldr_symbol(destroy_sym), try_wait = ldr_symbol(TRY_WAIT_SYSTEM_EVENT);
+    if (!destroy || !try_wait) rt_fatal("probe-services: no %s", destroy ? TRY_WAIT_SYSTEM_EVENT : destroy_sym);
+    int ok = 1;
+#define ACHECK(cond, ...) do { int c_ = !!(cond); ok &= c_; CHECK(c_, __VA_ARGS__); } while (0)
+    for (int round = 0; round < 2; round++) {
+        rt_call(gc, destroy, 1, activate);
+        rt_call(gc, destroy, 1, deactivate);
+        ACHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent again");
+        ACHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent again");
+        ACHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection again");
+        // The game's TryWaitSystemEvent on an event attached again: aborted in 0.3.1 (a stale kernel binding)
+        ACHECK(!(uint8_t)rt_call(gc, try_wait, 1, activate), "activate set with no amiibo, round %d", round);
+        ACHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 1, "device state not SearchingForTag");
+        if (round == 0) ACHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    }
+    // Link (Archer): character 0x0100, variant 0, figure type 0, model number 0x0353, series 9; CC F1 10 FF EE
+    uint8_t dump[540] = {0x04, 0xD6, 0x41, 0x0B, 0x7A, 0x25, 0x45, 0x80, 0x9A, 0x48, 0x0F, 0xE0,
+                         0xF1, 0x10, 0xFF, 0xEE, 0xA5};
+    dump[3] = (uint8_t)(0x88 ^ dump[0] ^ dump[1] ^ dump[2]);
+    dump[8] = (uint8_t)(dump[4] ^ dump[5] ^ dump[6] ^ dump[7]);
+    static const uint8_t id[8] = {0x01, 0x00, 0x00, 0x00, 0x03, 0x53, 0x09, 0x02};
+    memcpy(dump + 0x54, id, sizeof id);
+    char path[600];
+    if (!plat_temp_dir(path, 512)) rt_fatal("probe-services: no temporary directory");
+    strcat(path, "/totk-probe-amiibo.bin");
+    if (!plat_file_write(path, dump, sizeof dump)) rt_fatal("probe-services: cannot write %s", path);
+    amiibo_set_auto_remove(false);
+    ACHECK(amiibo_scan_and_tap(path), "a genuine amiibo dump (CC F1) is refused");
+    ACHECK((uint8_t)rt_call(gc, try_wait, 1, activate), "the activate event is not set by a tap while searching");
+    ACHECK(!(uint8_t)rt_call(gc, try_wait, 1, activate), "the activate event stays set after a wait");
+    ACHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 2, "device state not TagFound after a tap");
+    ACHECK((uint32_t)CALL("nfp.Mount", U(handles), 0, 1) == 0, "nfp Mount");
+    uint8_t mi[0x40];
+    memset(mi, 0xCC, sizeof mi);
+    ACHECK(CALL("nfp.GetModelInfo", U(mi), U(handles)) == 0, "nfp GetModelInfo");
+    static const uint8_t want[7] = {0x01, 0x00, 0x00, 0x09, 0x53, 0x03, 0x00};
+    ACHECK(!memcmp(mi, want, sizeof want), "ModelInfo %02x %02x %02x %02x %02x %02x %02x", mi[0], mi[1], mi[2], mi[3],
+           mi[4], mi[5], mi[6]);
+    ACHECK(!(uint8_t)rt_call(gc, try_wait, 1, deactivate), "deactivate set while the amiibo is on the reader");
+    amiibo_remove_tag();
+    ACHECK((uint8_t)rt_call(gc, try_wait, 1, deactivate), "the deactivate event is not set when the amiibo leaves");
+    ACHECK(!(uint8_t)rt_call(gc, try_wait, 1, deactivate), "the deactivate event stays set after a wait");
+    ACHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 3, "device state not TagRemoved after removal");
+    ACHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection after the amiibo");
+    // An amiibo put on the reader before the game searches: Initialized until detection starts, which activates it
+    ACHECK(amiibo_scan_and_tap(path), "a second tap");
+    ACHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 0, "device state not Initialized with an amiibo on an "
+           "idle reader");
+    ACHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection with an amiibo on the reader");
+    ACHECK((uint8_t)rt_call(gc, try_wait, 1, activate), "the activate event is not set by StartDetection over an amiibo");
+    ACHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 2, "device state not TagFound");
+    ACHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    amiibo_remove_tag();
+    remove(path);
+    amiibo_set_auto_remove(true);
+#undef ACHECK
+    return ok;
 }
 
 static void probe_applet(void) {
@@ -368,9 +433,10 @@ static void probe_applet(void) {
     CHECK((uint32_t)CALL("nfp.ListDevices", U(handles), U(&count), 4) == 0 && count == 1, "nfp ListDevices");
     uint64_t ev = U(guest_alloc(0x100));
     CHECK(CALL("nfp.AttachAvailabilityChangeEvent", ev) == 0, "AttachAvailabilityChangeEvent");
-    // The emulated reader is there from the start (amiibo.c), so the availability event is set when it is attached.
-    int nfp_event = event_set(ev);
-    CHECK(nfp_event, "the nfp availability event is not set for the emulated reader, or clears itself");
+    // The emulated reader is there from the start (amiibo.c), so the availability event is set when it is attached;
+    // it is auto-clear, as the game polls it every frame and sets the reader up again whenever it is set.
+    int nfp_event = event_set_once(ev);
+    CHECK(nfp_event, "the nfp availability event is not set once for the emulated reader");
     CHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 0, "nfp device state");
     static const char *const none[] = {"nfp.Mount", "nfp.GetTagInfo", "nfp.GetModelInfo"};
     uint8_t out[0x100];
@@ -383,9 +449,10 @@ static void probe_applet(void) {
     uint64_t activate = U(guest_alloc(0x100)), deactivate = U(guest_alloc(0x100));
     CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent");
     CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent");
-    CHECK(event_works(activate, 0), "the nfp activate event is set without an amiibo on the reader");
+    CHECK(event_works(activate, 1), "the nfp activate event is set without an amiibo on the reader, or stays set");
     CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection");
     CHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    int amiibo_ok = probe_amiibo_cycle(handles, activate, deactivate);
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);
@@ -396,6 +463,8 @@ static void probe_applet(void) {
     CALL("diag.InitializeApplicationAbortObserver", 0);
     printf("applet/prepo/nfp/err: launch parameter none, volume balance, play reports local, an NFC reader without "
            "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s\n", nfp_event ? "ok" : "FAILED");
+    printf("nfp: amiibo cycle (events destroyed and attached again, a dump tapped while searching activates, Mount, "
+           "ModelInfo, removal deactivates): %s\n", amiibo_ok ? "ok" : "FAILED");
 }
 
 static void probe_account(void) {
