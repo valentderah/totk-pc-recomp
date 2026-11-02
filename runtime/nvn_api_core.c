@@ -193,6 +193,11 @@ NVN_API(nvnDeviceInitialize) {
     memset(o, 0, sizeof *o);
     o->magic = DEV_MAGIC;
     o->flags = b->flags;
+    // NVN's default depth mode is near = -w (docs/maxwell.md 1.5). Tears of the Kingdom sets it with SetDepthMode;
+    // Breath of the Wild never calls that and draws its final copy at z = -1, which the 0..w clip range drops (a
+    // black window).
+    o->depth_mode = NVN_DEPTH_MODE_NEAR_IS_MINUS_W;
+    __atomic_store_n(&depth_minus_w, 1, __ATOMIC_RELAXED);
     NVN_LOG("DeviceInitialize %p flags %#x, back end %s", (void *)o, o->flags, gfx_backend()->name);
     ret_x(c, 1);
 }
