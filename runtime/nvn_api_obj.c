@@ -197,6 +197,7 @@ NVN_API(nvnTextureInitialize) {
     o->magic = NVN_TEX_MAGIC;
     o->d = s->d;
     o->pool = s->pool;
+    o->pool_flags = s->pool ? (uint16_t)s->pool->flags : 0;
     o->off = s->off;
     o->has_layout = s->has_layout;
     memcpy(o->layout, s->layout, 8);

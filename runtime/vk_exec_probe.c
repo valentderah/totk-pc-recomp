@@ -175,7 +175,7 @@ static void init_tex(tex_t *t, pool_t *pool, int64_t off, int format) {
     t->d.target = NVN_TEXTURE_TARGET_2D, t->d.format = format, t->d.width = TEX_W, t->d.height = TEX_H;
     t->d.depth = 1, t->d.levels = 1;
     nvn_tex_layout(&t->d, &t->L);
-    t->pool = pool, t->off = off, t->mem = pool->mem + off, t->serial = 100 + (uint64_t)off;
+    t->pool = pool, t->pool_flags = (uint16_t)pool->flags, t->off = off, t->mem = pool->mem + off, t->serial = 100 + (uint64_t)off;
 }
 
 // Pixel of the RGBA8 target after the stream: the scissored second clear inside the rectangle, the first elsewhere.
