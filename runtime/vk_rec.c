@@ -144,10 +144,15 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence) {
         // past it). Keeping objects until their submission completed and ending a part from the recorder
         // (rec_end_cb) fixed the white scene on an RX 6700 XT, but not this: 0.2.8 turned the recorder on for every
         // GPU and the AMD reports came back the same day. TOTK_VK_RECORDER=1 turns it on for an A/B run.
+        // Off for Breath of the Wild too (RTX 4080 SUPER, the Shrine of Resurrection at a 60 fps limit): with the
+        // recorder about one frame in eight came out whole-screen wrong (over-exposed or a buffer's raw contents) and
+        // the frames averaged 55 fps; without it, no wrong frame in 241 and a steady 60. Turning off the uniform
+        // snapshot (vk_usnap.c) also removed the wrong frames, so the two meet somewhere not found yet.
         const char *set = cfg_get("TOTK_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
-        if (!mode && vk_caps.amd && !(set && *set))
-            rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
+        mode = rt_knob("VK_RECORDER", vk_caps.amd || RT_BOTW ? "0" : "1");
+        if (!mode && (vk_caps.amd || RT_BOTW) && !(set && *set))
+            rt_log("vk_rec: no recorder thread on %s (TOTK_VK_RECORDER=1 turns it on)",
+                   vk_caps.amd ? "AMD GPUs" : "Breath of the Wild");
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();

@@ -16,14 +16,17 @@ Tested on Windows (RTX 4080 SUPER) with the 1.9.0 update (v1114112) over the bas
 - Three minutes of play with no crash.
 - The frame limit (`fps_limit`, `TOTK_FPS_LIMIT`) at 60, the default, or 30, with the game's clock right at either:
   `TOTK_TRACE=perf` with `TOTK_SPEED_PROBE=1` logs VFR's ratio (0.5 at 60 fps, 1 at 30) and its interval (1 and 2),
-  and the seconds the game's own delta frames add up to keep pace with the wall clock (speed 1.000). The menus hold
-  60 fps; the shrine averages about 55, with about one frame in fifteen held a second vsync while the presenting
-  thread waits for the game's other threads.
+  and the seconds the game's own delta frames add up to keep pace with the wall clock (speed 1.000). The menus and
+  the shrine hold 60 fps.
+- No recorder thread (`vk_rec.c`): with it about one frame in eight came out whole-screen wrong (over-exposed, or a
+  buffer's raw contents: the flicker) and the shrine averaged 55 fps. `TOTK_VK_RECORDER=1` turns it on again. Turning
+  off the uniform snapshot (`TOTK_UBO_SNAPSHOT=0`) also removed the wrong frames, so the cause lies where the two
+  meet and is not found yet; a frame dumped with `TOTK_DUMP` never came out wrong. The wrong colours for a second
+  or two after a load were the same thing and went with it.
 
 Not done or not checked yet:
 
 - The Great Plateau and the rest of the world, prerendered movies, a gamepad (the keyboard works), long sessions.
-- The game's colours are wrong for one or two seconds after a load, then right.
 - Frame rates above 60: the limit stops there for now, as Savage Wind Recomp needed more fixes above it (the
   physics solver's microsteps, keyframed bodies' turns, the shield-surf takeoff).
 - The features made for *Tears of the Kingdom*: the resolution, field of view and shadow patches, the RomFS patches,
