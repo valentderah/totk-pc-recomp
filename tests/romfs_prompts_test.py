@@ -294,7 +294,9 @@ BUTTONS = {cp: (600 + 4 * (cp - 0xE040), lambda pen, i=cp - 0xE040: rect(pen, 20
 LETTERS_1 = {ord('L'): (560, polygon((60, 0), (480, 0), (480, 100), (160, 100), (160, 700), (60, 700))),
              ord('B'): (560, lambda pen: [rect(pen, 60, 0, 460, 700), rect(pen, 160, 100, 360, 300, True),
                                           rect(pen, 160, 400, 360, 600, True)]),
-             ord('R'): (560, lambda pen: [rect(pen, 60, 0, 460, 700), rect(pen, 160, 400, 360, 600, True)])}
+             ord('R'): (560, lambda pen: [rect(pen, 60, 0, 460, 700), rect(pen, 160, 400, 360, 600, True)]),
+             **{c: (560, lambda pen: rect(pen, 60, 100, 460, 600)) for c in range(32, 127)
+                if c not in (ord('L'), ord('B'), ord('R'), ord('T'))}}
 LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600), (520, 700), (40, 700), (40, 600), (230, 600)))}
 
 
@@ -317,6 +319,8 @@ class Romfs:
         images.update({'Nt_KeyTexL_00^z': (l_format, size, rnd.randbytes(IMAGE)),
                        'Nt_KeyTexZL_00': (R8_UNORM, size, rnd.randbytes(IMAGE)),
                        'Nt_KeyTexLSt_00': (R8_UNORM, size, rnd.randbytes(IMAGE))})
+        if version == 'v143':
+            images['Nt_KeyTexLSt_01'] = (R8_UNORM, size, rnd.randbytes(IMAGE))
         self.text_fonts = [bfotf(cff_font('Text1', LETTERS_1), 0x01020304), bfotf(cff_font('Text2', LETTERS_2), 0x0a0b0c0d)]
         default = {'scft/External.bfotf': bfotf(cff_font('External', BUTTONS), 0x5a17c3e9), 'fnt/rest.bin': rnd.randbytes(700)}
         if text_fonts:
@@ -388,7 +392,7 @@ class PromptsTest(unittest.TestCase):
         cls.romfs = {v: Romfs(cls.base / v / 'romfs', v) for v in VERSIONS}
         cls.outs = {}
         for v, romfs in cls.romfs.items():
-            for style in ('plain', 'xbox', 'xbox-label'):
+            for style in ('plain', 'xbox', 'xbox-label', 'keyboard'):
                 out = cls.base / v / style
                 proc = romfs.run(out, *(() if style == 'plain' else ('--prompts', style)))
                 assert proc.returncode == 0, proc.stderr
@@ -485,7 +489,7 @@ class PromptsTest(unittest.TestCase):
                         self.assertEqual(after[member], before[member], member)
 
     def test_resource_size_table_grows_with_the_fonts(self):
-        for romfs, style, out, summary in self.each():
+        for romfs, style, out, summary in self.each(('xbox', 'xbox-label', 'keyboard')):
             with self.subTest(version=romfs.version, style=style):
                 table = restbl_sizes(romfs.read(out, romfs.restbl))
                 original = restbl_sizes(romfs.contents[romfs.restbl])
@@ -501,7 +505,7 @@ class PromptsTest(unittest.TestCase):
                 self.assertEqual(set(table), set(original))
 
     def test_manifest_lists_what_changed_with_both_hashes(self):
-        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label')):
+        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label', 'keyboard')):
             with self.subTest(version=romfs.version, style=style):
                 expect = {romfs.common}
                 if style != 'plain':
@@ -512,6 +516,56 @@ class PromptsTest(unittest.TestCase):
                     data = (out / path).read_bytes()
                     self.assertEqual((int(size), sha), (len(data), hashlib.sha256(data).hexdigest()), path)
                     self.assertEqual(original, hashlib.sha256(romfs.files[path]).hexdigest(), path)
+
+    def test_keyboard_prompts_drawings_and_textures(self):
+        for romfs, style, out, summary in self.each(('keyboard',)):
+            with self.subTest(version=romfs.version):
+                after = sarc_files(romfs.read(out, romfs.common))
+                panes = pane_texts(after['blyt/DoCommand_00.bflyt'])
+                self.assertEqual({b: panes[f'T_{b}_00'] for b in FACE}, {'A': 'A', 'B': 'B', 'X': 'X', 'Y': 'Y'})
+                for font_path in (DEFAULT_FONT, REGIONAL_FONT):
+                    drawn = font(sarc_files(romfs.read(out, font_path))['scft/External.bfotf'])
+                    self.assertEqual(glyph(drawn, 0xE040)[1], 640)    # A -> 'E' (640)
+                    self.assertEqual(glyph(drawn, 0xE041)[1], 880)    # B -> 'Shift' (880)
+                    self.assertEqual(glyph(drawn, 0xE042)[1], 880)    # X -> 'Space' (880)
+                    self.assertEqual(glyph(drawn, 0xE043)[1], 700)    # Y -> mouse_l (700)
+                    self.assertEqual(glyph(drawn, 0xE044)[1], 640)    # L -> 'Q' (640)
+                    self.assertEqual(glyph(drawn, 0xE046)[1], 700)    # ZL -> mouse_r (700)
+                    self.assertEqual(glyph(drawn, 0xE05E)[1], 880)    # LClick -> 'Ctrl' (880)
+                    self.assertEqual(glyph(drawn, 0xE050)[1], 880)    # Stick -> 'WASD' (880)
+                    self.assertEqual(glyph(drawn, 0xE051)[1], 700)    # Look -> mouse (700)
+                    self.assertEqual(glyph(drawn, 0xE068)[1], 700)    # Look -> mouse (700)
+                    self.assertEqual(glyph(drawn, 0xE049)[1], 640)    # All D-pad -> (640)
+                    self.assertEqual(glyph(drawn, 0xE064)[1], 640)    # Up/Down -> (640)
+                    self.assertEqual(glyph(drawn, 0xE065)[1], 640)    # Left/Right -> (640)
+                bntx = bntx_images(after['timg/__Combined.bntx'])
+                for name, cp in icons.HUD_KEYBOARD_TEXTURES.items():
+                    if name == 'Nt_KeyTexLSt_01' and romfs.version == 'v121':
+                        self.assertNotIn(name, bntx)
+                    else:
+                        self.assertIn(name, bntx)
+                        pixels = bntx[name][2]
+                        self.assertEqual(len(pixels), IMAGE)
+                        self.assertIn(255, pixels)
+
+    def test_keyboard_prompts_custom_ini(self):
+        romfs = self.romfs['v121']
+        ini_file = self.base / 'custom.ini'
+        ini_file.write_text("""
+[input]
+bind_a = key:space
+bind_b = none
+bind_y = key:r
+bind_lstick_up = key:up
+""", encoding='utf-8')
+        out = self.base / 'v121' / 'custom-keyboard'
+        proc = romfs.run(out, '--prompts', 'keyboard', '--ini', str(ini_file))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        drawn = font(sarc_files(romfs.read(out, DEFAULT_FONT))['scft/External.bfotf'])
+        self.assertEqual(glyph(drawn, 0xE040)[1], 880)    # Space (880)
+        self.assertEqual(glyph(drawn, 0xE041)[1], 640)    # none bar (640)
+        self.assertEqual(glyph(drawn, 0xE043)[1], 640)    # R (640)
+        self.assertEqual(glyph(drawn, 0xE050)[1], 880)    # Move (880)
 
     def test_same_input_same_output_and_the_older_flag(self):
         romfs = self.romfs['v121']

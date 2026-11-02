@@ -113,9 +113,10 @@ of them.
    ```
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
-   For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
-   they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`.
+   For Xbox or keyboard button prompts, run `make_romfs_patches.py` with `--prompts xbox`, `--prompts xbox-label`, or
+   `--prompts keyboard [--ini totk.ini]`: they write `build\<ver>\romfs-patches-xbox`, `romfs-patches-xbox-label` and
+   `romfs-patches-keyboard` ([controls.md](controls.md), "Button prompts"), which `build_game.py` copies next to `totk.exe`
+   like `romfs-patches`.
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:

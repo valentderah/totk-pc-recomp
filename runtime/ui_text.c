@@ -241,10 +241,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Which controller's buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, "
                              "RB, LT, RT, Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button "
                              "the layout above presses (with Nintendo (A right) the right button is labelled B, so the "
-                             "prompts for A show B). The game reads its prompts at start, so they change after a "
+                             "prompts for A show B). Keyboard and mouse: keycaps for your keys and mouse icons for clicks "
+                             "and camera look. The game reads its prompts at start, so they change after a "
                              "restart. They are part of the game's files, so a button you remap in Controls keeps its "
                              "old prompt on screen.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Keyboard and mouse",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
@@ -696,10 +698,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Кнопки какого контроллера показывают подсказки игры. Nintendo: как в самой игре. Xbox: "
                              "LB, RB, LT, RT, Menu, View и крестовина, а A, B, X и Y подписаны так же, как кнопка, "
                              "которую нажимает раскладка выше (в Nintendo (A справа) правая кнопка подписана B, и "
-                             "подсказки A показывают B). Игра читает подсказки при запуске, так что они меняются после "
+                             "подсказки A показывают B). Клавиатура и мышь: клавиши для назначенных кнопок и значки мыши "
+                             "для кликов и обзора. Игра читает подсказки при запуске, так что они меняются после "
                              "перезапуска. Подсказки записаны в файлах игры, поэтому у кнопки, переназначенной на "
                              "вкладке управления, на экране остаётся прежняя подсказка.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Клавиатура и мышь",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
@@ -1325,11 +1329,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Os botões de qual controle os ícones do jogo mostram. Nintendo: os do próprio jogo. "
                              "Xbox: LB, RB, LT, RT, Menu, Exibir e uma cruz direcional, e A, B, X e Y com a letra do "
                              "botão que o layout acima aperta (com Nintendo (A à direita) o botão da direita tem a "
-                             "letra B, então os ícones de A mostram B). O jogo lê os ícones ao iniciar, então eles "
+                             "letra B, então os ícones de A mostram B). Teclado e mouse: teclas para as suas ações e "
+                             "ícones de mouse para cliques e câmera. O jogo lê os ícones ao iniciar, então eles "
                              "mudam depois de reiniciar. Eles fazem parte dos arquivos do jogo, então um botão "
                              "remapeado em Controles continua com o ícone antigo na tela.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Teclado e mouse",
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
@@ -1923,9 +1929,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS] = "按键提示",
     [UI_MENU_PROMPTS_DESC] = "游戏的按键提示显示哪种手柄的按键。Nintendo：游戏原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
-                             "B）。游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
+                             "B）。键盘和鼠标：按键显示对应键帽，鼠标点击与视角移动显示鼠标图标。游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "键盘和鼠标",
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",

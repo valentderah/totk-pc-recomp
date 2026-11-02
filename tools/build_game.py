@@ -244,7 +244,7 @@ def copy_romfs_patches(version, out):
     menus' captured background turned black). Copies them when their manifest differs; romfs-patches-xbox and
     romfs-patches-xbox-label (the same with Xbox button prompts, make_romfs_patches.py --prompts) the same way when they
     were made."""
-    for name in ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label'):
+    for name in ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label', 'romfs-patches-keyboard'):
         src = ROOT / 'build' / version / name
         dst = out / name
         if src.resolve() == dst.resolve() or not (src / 'manifest.tsv').is_file():

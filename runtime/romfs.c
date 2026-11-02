@@ -750,14 +750,14 @@ static void camera_overlay(void) {
 // The button prompts' folders (input_prompts_folder) and whether each had a manifest next to romfs-index.bin at start;
 // the one the settings asked for at start, the one overlay_init loaded (NULL: the game's own prompts) and why the first
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
-static struct { const char *name; int ready; } prompts_folders[2];
+static struct { const char *name; int ready; } prompts_folders[3];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -820,6 +820,10 @@ static void overlay_init(void) {
             snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[i].name) < (int)sizeof path &&
             plat_file_exists(path);
     }
+    prompts_folders[2].name = input_prompts_folder(PROMPTS_KEYBOARD, NULL);
+    prompts_folders[2].ready =
+        snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[2].name) < (int)sizeof path &&
+        plat_file_exists(path);
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
     prompts_wanted = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
@@ -829,17 +833,19 @@ static void overlay_init(void) {
                                                           : ROMFS_PROMPTS_OK;
     restbl_find();
     size_t first = noverlay;
+    int is_kb = prompts_wanted && !strcmp(prompts_wanted, "romfs-patches-keyboard");
     if (prompts_wanted && prompts_off == ROMFS_PROMPTS_OK) {
         snprintf(path, sizeof path, "%s/%s", index_dir, prompts_wanted);   // fits: its manifest path did
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
-            rt_log("RomFS overlay: Xbox button prompts (%s)", path);
+            rt_log("RomFS overlay: %s button prompts (%s)", is_kb ? "keyboard and mouse" : "Xbox", path);
         } else {
             prompts_off = ROMFS_PROMPTS_FAILED;
             rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", path);
         }
     } else if (prompts_wanted) {
-        rt_log("RomFS overlay: prompts = xbox, but %s; Switch prompts stay",
+        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay",
+               is_kb ? "keyboard" : "xbox",
                prompts_off == ROMFS_PROMPTS_SHAPE     ? "the game resolution takes its own UI layout"
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
@@ -856,7 +862,8 @@ static void overlay_init(void) {
     mods_overlay_init();
     const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
     if (clash) {
-        rt_log("RomFS overlay: a RomFS mod replaces %s, which the Xbox prompts change too; Switch prompts stay", clash);
+        rt_log("RomFS overlay: a RomFS mod replaces %s, which %s change too; Switch prompts stay", clash,
+               is_kb ? "the keyboard and mouse prompts" : "the Xbox prompts");
         overlay_drop(first, prompts_end);
         prompts_loaded = NULL;
         prompts_off = ROMFS_PROMPTS_MODS;
