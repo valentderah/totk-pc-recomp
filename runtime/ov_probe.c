@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "amiibo.h"
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
@@ -398,6 +399,18 @@ static void probe_applet(void) {
     int reattached = event_works(activate, 0) && event_works(deactivate, 0);
     CHECK(reattached, "the nfp events do not work after DestroySystemEvent and a second Attach");
     CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection again");
+    // An amiibo's NTAG215 header: UID with its two check bytes, static lock 0F E0, capability container F1 10 FF EE.
+    // The loader takes it and refuses the same file with a plain NDEF container (E1).
+    static const uint8_t head[16] = {0x04, 0x11, 0x22, 0x88 ^ 0x04 ^ 0x11 ^ 0x22, 0x33, 0x44, 0x55, 0x66,
+                                     0x33 ^ 0x44 ^ 0x55 ^ 0x66, 0x48, 0x0F, 0xE0, 0xF1, 0x10, 0xFF, 0xEE};
+    uint8_t dump[AMIIBO_DUMP_SIZE] = {0};
+    memcpy(dump, head, sizeof head);
+    const char *dump_path = "probe-amiibo.bin";
+    int amiibo_ok = plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    dump[0x0C] = 0xE1;
+    amiibo_ok = amiibo_ok && plat_file_write(dump_path, dump, sizeof dump) && !amiibo_load_file(dump_path);
+    plat_fs_unlink(dump_path);
+    CHECK(amiibo_ok, "the amiibo loader refuses a dump with the amiibo capability container, or takes a plain NDEF one");
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);

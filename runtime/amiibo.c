@@ -29,9 +29,10 @@ static bool amiibo_validate_dump(const uint8_t *data, uint64_t size) {
         return false;
     }
 
-    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C).
-    // Byte 0x0C must be 0xE1 (NDEF Magic / Type 2 Tag CC container byte).
-    if (data[0x0C] != 0xE1) {
+    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C). An amiibo's is F1 10 FF EE, not the E1 of a plain
+    // NDEF tag (3dbrew, "Amiibo"); the CC is not encrypted, so encrypted dumps carry it too.
+    static const uint8_t amiibo_cc[4] = {0xF1, 0x10, 0xFF, 0xEE};
+    if (memcmp(data + 0x0C, amiibo_cc, sizeof amiibo_cc)) {
         return false;
     }
 
