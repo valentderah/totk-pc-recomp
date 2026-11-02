@@ -188,6 +188,38 @@ uint64_t plat_thread_cpu_ns(uint32_t tid) {
 enum { INTR_IDLE, INTR_REQ, INTR_STOPPED, INTR_GO };
 #define INTR_WAIT_NS 200000u
 
+// The interrupted program counter and stack pointer, and the fault kind in the shape of the x86 page-fault error code
+// (bit 1 = write, bit 4 = instruction fetch), so the handlers below stay the same on both hosts.
+#if defined(__aarch64__)
+#include <asm/sigcontext.h>
+static inline uint64_t uc_pc(const ucontext_t *u) { return u->uc_mcontext.pc; }
+static inline uint64_t uc_sp(const ucontext_t *u) { return u->uc_mcontext.sp; }
+static inline void uc_set_pc(ucontext_t *u, uint64_t pc) { u->uc_mcontext.pc = pc; }
+static long uc_fault_err(const ucontext_t *u) {
+    // The kernel appends an esr_context record to the signal frame for synchronous faults.
+    const unsigned char *p = (const unsigned char *)u->uc_mcontext.__reserved;
+    const unsigned char *end = p + sizeof u->uc_mcontext.__reserved;
+    while (p + sizeof(struct _aarch64_ctx) <= end) {
+        const struct _aarch64_ctx *h = (const struct _aarch64_ctx *)p;
+        if (!h->magic || h->size < sizeof *h) break;
+        if (h->magic == ESR_MAGIC && p + sizeof(struct esr_context) <= end) {
+            uint64_t esr = ((const struct esr_context *)p)->esr;
+            unsigned ec = (unsigned)(esr >> 26);
+            if (ec == 0x20 || ec == 0x21) return 16;           // instruction abort
+            if ((ec == 0x24 || ec == 0x25) && (esr & (1u << 6))) return 2;   // data abort caused by a write (WnR)
+            return 0;
+        }
+        p += h->size;
+    }
+    return 0;
+}
+#else
+static inline uint64_t uc_pc(const ucontext_t *u) { return (uint64_t)u->uc_mcontext.gregs[REG_RIP]; }
+static inline uint64_t uc_sp(const ucontext_t *u) { return (uint64_t)u->uc_mcontext.gregs[REG_RSP]; }
+static inline void uc_set_pc(ucontext_t *u, uint64_t pc) { u->uc_mcontext.gregs[REG_RIP] = (greg_t)pc; }
+static long uc_fault_err(const ucontext_t *u) { return u->uc_mcontext.gregs[REG_ERR]; }
+#endif
+
 struct PlatIntr {
     pthread_t pt;
     volatile int32_t state;
@@ -202,12 +234,12 @@ static void intr_handler(int sig, siginfo_t *si, void *uc) {
     PlatIntr *t = intr_me;
     ucontext_t *u = uc;
     if (!t) return;
-    t->rip = (uint64_t)u->uc_mcontext.gregs[REG_RIP];
-    t->rsp = (uint64_t)u->uc_mcontext.gregs[REG_RSP];
+    t->rip = uc_pc(u);
+    t->rsp = uc_sp(u);
     int32_t req = INTR_REQ;
     if (!__atomic_compare_exchange_n(&t->state, &req, INTR_STOPPED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
     while (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != INTR_GO) plat_pause();
-    if (t->to) u->uc_mcontext.gregs[REG_RIP] = (greg_t)t->to;
+    if (t->to) uc_set_pc(u, t->to);
     __atomic_store_n(&t->state, INTR_IDLE, __ATOMIC_RELEASE);
 }
 
@@ -277,6 +309,7 @@ struct PlatFiber {
 
 void plat_fiber_swap(void **save, void *load);
 void plat_fiber_entry(void);
+#if defined(__x86_64__)
 __asm__(".text\n"
         ".globl plat_fiber_swap\n"
         ".type plat_fiber_swap, @function\n"
@@ -314,6 +347,54 @@ __asm__(".text\n"
         "    callq *%r12\n"
         "    ud2\n"
         ".size plat_fiber_entry, .-plat_fiber_entry\n");
+#elif defined(__aarch64__)
+// aarch64: the frame is 176 bytes: x19-x30 (0..95), d8-d15 (96..159), FPCR (160). A new fiber starts in
+// plat_fiber_entry with fn in x19 and arg in x20.
+__asm__(".text\n"
+        ".globl plat_fiber_swap\n"
+        ".type plat_fiber_swap, %function\n"
+        ".p2align 4\n"
+        "plat_fiber_swap:\n"
+        "    sub sp, sp, #176\n"
+        "    stp x19, x20, [sp, #0]\n"
+        "    stp x21, x22, [sp, #16]\n"
+        "    stp x23, x24, [sp, #32]\n"
+        "    stp x25, x26, [sp, #48]\n"
+        "    stp x27, x28, [sp, #64]\n"
+        "    stp x29, x30, [sp, #80]\n"
+        "    stp d8, d9, [sp, #96]\n"
+        "    stp d10, d11, [sp, #112]\n"
+        "    stp d12, d13, [sp, #128]\n"
+        "    stp d14, d15, [sp, #144]\n"
+        "    mrs x2, fpcr\n"
+        "    str x2, [sp, #160]\n"
+        "    mov x3, sp\n"
+        "    str x3, [x0]\n"
+        "    mov sp, x1\n"
+        "    ldr x2, [sp, #160]\n"
+        "    msr fpcr, x2\n"
+        "    ldp x19, x20, [sp, #0]\n"
+        "    ldp x21, x22, [sp, #16]\n"
+        "    ldp x23, x24, [sp, #32]\n"
+        "    ldp x25, x26, [sp, #48]\n"
+        "    ldp x27, x28, [sp, #64]\n"
+        "    ldp x29, x30, [sp, #80]\n"
+        "    ldp d8, d9, [sp, #96]\n"
+        "    ldp d10, d11, [sp, #112]\n"
+        "    ldp d12, d13, [sp, #128]\n"
+        "    ldp d14, d15, [sp, #144]\n"
+        "    add sp, sp, #176\n"
+        "    ret\n"
+        ".size plat_fiber_swap, .-plat_fiber_swap\n"
+        ".globl plat_fiber_entry\n"
+        ".type plat_fiber_entry, %function\n"
+        ".p2align 4\n"
+        "plat_fiber_entry:\n"
+        "    mov x0, x20\n"
+        "    blr x19\n"
+        "    brk #0\n"
+        ".size plat_fiber_entry, .-plat_fiber_entry\n");
+#endif
 
 static __thread PlatFiber *fiber_cur;
 static __thread PlatFiber fiber_own;
@@ -338,6 +419,15 @@ PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg) {
     mprotect(m, 4096, PROT_NONE);
     f->stack = m, f->size = stack;
     uint64_t *top = (uint64_t *)(((uintptr_t)m + stack) & ~(uintptr_t)15);
+#if defined(__aarch64__)
+    uint64_t *sp = top - 22;   // the 176-byte frame plat_fiber_swap leaves (see above)
+    memset(sp, 0, 176);
+    sp[0] = (uint64_t)(uintptr_t)fn;     // x19
+    sp[1] = (uint64_t)(uintptr_t)arg;    // x20
+    sp[11] = (uint64_t)(uintptr_t)plat_fiber_entry;   // x30, the return address
+    f->sp = sp;
+    return f;
+#else
     uint64_t *sp = top - 10;   // fpu state (2 words), r15, r14, r13, r12, rbx, rbp, return address, padding
     sp[0] = 0x037f;            // x87 control word: the default
     sp[1] = 0x1f80;            // MXCSR: the default
@@ -349,6 +439,7 @@ PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg) {
     sp[9] = 0;
     f->sp = sp;
     return f;
+#endif
 }
 
 void plat_fiber_switch(PlatFiber *to) {
@@ -923,9 +1014,9 @@ static void (*crash_fn)(const PlatCrash *c);
 
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
-    long err = u->uc_mcontext.gregs[REG_ERR];
+    long err = uc_fault_err(u);
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
-    uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
+    uintptr_t rip = (uintptr_t)uc_pc(u);
     Dl_info at, self;
     if (crash_fn && dladdr((void *)rip, &at) && dladdr((void *)plat_crash_hook, &self) && at.dli_fbase == self.dli_fbase) {
         PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
