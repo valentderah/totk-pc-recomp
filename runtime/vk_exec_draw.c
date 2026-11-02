@@ -198,6 +198,21 @@ static void cb_done(void *arg) {   // completion thread
 
 void vk_exec_draw_new_cb(void) { memset(&B, 0, sizeof B); }
 
+void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs) {
+    *vs = B.st_valid ? B.st.vs : NULL;
+    *fs = B.st_valid ? B.st.fs : NULL;
+}
+
+// Marks a dispatch about to be recorded (vk.h vk_pass_mark_begin); the caller ends it after the dispatch.
+static VkPassMark *dispatch_mark(VkExec *ex, const GfxShader *cs, uint32_t x, uint32_t y, uint32_t z) {
+    VkPassMark *m = vk_pass_mark_begin(ex->cb, VK_MARK_DISPATCH, ex->fence);
+    if (!m) return NULL;
+    m->step = ex->mark_dispatches++;
+    m->w = x, m->h = y, m->d = z, m->draws = 0, m->ncolor = 0;
+    m->first[0] = cs, m->first[1] = m->last[0] = m->last[1] = NULL;
+    return m;
+}
+
 static CbRes *cb_res(VkExec *ex) {
     if (cur && cur_fence == ex->fence) return cur;
     cur = calloc(1, sizeof *cur);
@@ -2167,6 +2182,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         vk_pipeline_set_dynamic(ex->cb, &s);
         ex->recorded++;
         B.st = s, B.st_valid = 1;
+        if (ex->mark && vk_exec_frame.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
     vk_dlaa_draw(ex);
     record_fixed(ex);
@@ -2318,7 +2334,9 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
+    VkPassMark *m = dispatch_mark(ex, cs, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
+    vk_pass_mark_end(ex->cb, m);
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
@@ -2353,7 +2371,9 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
         vk_exec_barrier(ex);
         B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
     }
+    VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
+    vk_pass_mark_end(ex->cb, m);
     ex->recorded++;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDispatchIndirectCommand));
     VK_MEM_BOUND(ip);
