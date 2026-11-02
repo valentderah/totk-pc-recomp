@@ -12,7 +12,8 @@
 # 320 Hz monitor 80, 64, 40 and 32 divide it and 90 does not: 90 fps alternates 3 and 4 refreshes per frame, which reads
 # as judder while the frame counter still shows 90. Likewise on 240 Hz 60, 48 and 40 divide it and on 144 Hz 72, 48 and
 # 36 do, while 60 does not. vk_present = immediate shows a frame as soon as it is presented, without this quantisation,
-# at the cost of tearing.
+# at the cost of tearing. A monitor running with variable refresh (FreeSync, G-Sync) follows the frames instead, so
+# there any limit inside its range is even.
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
