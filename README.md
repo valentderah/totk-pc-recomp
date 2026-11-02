@@ -2,6 +2,8 @@
 
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
+🇬🇧 🇷🇺 🇧🇷 🇨🇳 🇩🇪 🇫🇷 🇪🇸 🇮🇹 🇳🇱 🇯🇵 🇰🇷 🇹🇼 The setup and the in-game menu speak your language: [Languages](#languages).
+
 > [!IMPORTANT]
 > **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.1.0, 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
 >
@@ -23,8 +25,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
-- In-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese; the setup also in German, French,
-  Spanish, Italian, Dutch, Japanese, Korean and Traditional Chinese
+- Setup and in-game menu in 11 languages, the setup also in Traditional Chinese ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
@@ -32,6 +33,30 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
   mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches
   ([docs/tester-guide.md](docs/tester-guide.md), "Mods")
 - Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
+
+## Languages
+
+The game itself has its text and voices in all the languages it shipped with; the port adds its own setup and in-game
+menu (F1) in these. Both follow the Windows display language, and the menu has its own choice on its Menu tab.
+
+| | Language | Setup | In-game menu |
+|---|---|:---:|:---:|
+| 🇬🇧 | English | ✅ | ✅ |
+| 🇷🇺 | Русский | ✅ | ✅ |
+| 🇧🇷 | Português (Brasil) | ✅ | ✅ |
+| 🇨🇳 | 简体中文 | ✅ | ✅ |
+| 🇩🇪 | Deutsch | ✅ | ✅ |
+| 🇫🇷 | Français | ✅ | ✅ |
+| 🇪🇸 | Español | ✅ | ✅ |
+| 🇮🇹 | Italiano | ✅ | ✅ |
+| 🇳🇱 | Nederlands | ✅ | ✅ |
+| 🇯🇵 | 日本語 | ✅ | ✅ |
+| 🇰🇷 | 한국어 | ✅ | ✅ |
+| 🇹🇼 | 繁體中文 | ✅ | 简体中文 |
+
+Spotted a clumsy phrase, or want your language added? The setup texts are in `installer/text/<language>.json`, the
+menu texts in `runtime/ui_text.c`; open an issue or a pull request ([CONTRIBUTING.md](CONTRIBUTING.md)). Native
+speakers' fixes are very welcome.
 
 ## Planned
 
