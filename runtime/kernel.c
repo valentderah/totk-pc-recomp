@@ -1952,8 +1952,13 @@ int kern_svc(Cpu *c, uint32_t imm) {
         int idx = -1;
         lock();
         g_sync_calls++;
+        // Horizon's order (mesosphere KSynchronizationObject::Wait): a signalled object, then timeout 0, then a pending
+        // CancelSynchronization. The cancel is for the next wait that would block: a poll or a wait on a signalled
+        // object leaves it pending. A cancel that wakes this wait (CancelSynchronization wakes it with R_CANCELLED; a
+        // signal wakes it with -1 to look again) ends it cancelled, signalled objects or not.
+        uint32_t woke = 0;
         for (;;) {
-            if (t->cancel) {
+            if (woke == R_CANCELLED) {
                 t->cancel = 0;
                 r = R_CANCELLED;
                 break;
@@ -1969,6 +1974,15 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 r = R_OK;
                 break;
             }
+            if (ns == 0) {
+                r = R_TIMEOUT;
+                break;
+            }
+            if (t->cancel) {
+                t->cancel = 0;
+                r = R_CANCELLED;
+                break;
+            }
             int64_t left = ns;
             if (ns > 0) {
                 uint64_t spent = kern_now_ns() - start;
@@ -1980,7 +1994,8 @@ int kern_svc(Cpu *c, uint32_t imm) {
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
             g_sync_blocks++;
-            if (block(t, W_SYNC, left) == R_TIMEOUT) {
+            woke = block(t, W_SYNC, left);
+            if (woke == R_TIMEOUT) {
                 r = R_TIMEOUT;
                 break;
             }
@@ -1995,7 +2010,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         RtThread *t = h_get((uint32_t)x[0], O_THREAD);
         if (t) {
             t->cancel = 1;
-            if (t->wkind == W_SYNC) wake(t, (uint32_t)-1);
+            if (t->wkind == W_SYNC) wake(t, R_CANCELLED);
         }
         unlock();
         x[0] = t ? R_OK : R_BAD_HANDLE;
