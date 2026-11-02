@@ -558,7 +558,8 @@ def _retry(fn, *args):
 _W = {}  # worker state: 'mods' {name: (path, base)}, 'starts' {name: sorted array}, 'emitters' {name: Emitter}
 
 
-def _worker_init(mods, starts, table, opts):
+def _worker_init(mods, starts, table, opts, jobs):
+    _W['jobs'] = jobs
     _W['mods'] = mods
     _W['starts'] = starts
     _W['patches'] = table
@@ -581,6 +582,10 @@ def _emit_chunk(task):
     """Worker: write one chunk. Returns its statistics."""
     name, number, path, fns = task
     t0 = time.perf_counter()
+    # Test hook: a pool wider than this raises the MemoryError a busy machine does, so the retry can be exercised.
+    limit = os.environ.get('TOTK_LIFT_TEST_OOM_ABOVE')
+    if limit and _W['jobs'] > int(limit) and number % 2 == 1:
+        raise MemoryError
     e = _emitter(name)
     e.stats.clear()
     e.unsupported.clear()
@@ -632,6 +637,14 @@ def pick_jobs(requested):
     """Worker count and the reason for it: --jobs if given, else the CPU count capped by the free memory."""
     if requested:
         return requested, '--jobs'
+    env = os.environ.get('TOTK_LIFT_JOBS', '').strip()
+    if env:
+        try:
+            if int(env) >= 1:
+                return int(env), 'TOTK_LIFT_JOBS'
+        except ValueError:
+            pass
+        print(f'ignoring TOTK_LIFT_JOBS={env!r}: not a positive integer', file=sys.stderr, flush=True)
     cpus = os.cpu_count() or 4
     free = hostmem.available_ram()
     if free is None:
@@ -705,16 +718,31 @@ def main():
     t_emit = time.perf_counter()
     ctx = mp.get_context('spawn')
     jobs, why = pick_jobs(args.jobs)
-    print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
-    with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts)) as pool:
-        for i, r in enumerate(pool.imap_unordered(_emit_chunk, [t for _, t in tasks], chunksize=1)):
-            results[r['module']].append(r)
-            if r['error']:
-                errors.append(r['error'])
-            done_at[r['module']] = time.perf_counter() - t_emit
-            if (i + 1) % 200 == 0 or i + 1 == len(tasks):
-                print(f'emitted {i + 1}/{len(tasks)} chunks, {time.perf_counter() - t_emit:.0f}s', file=sys.stderr,
-                      flush=True)
+    pending = [t for _, t in tasks]
+    emitted = 0
+    while True:
+        print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
+        try:
+            # Chunk writes are atomic and idempotent, so a chunk lost with a failed pool is simply emitted again.
+            with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts, jobs)) as pool:
+                for r in pool.imap_unordered(_emit_chunk, pending, chunksize=1):
+                    results[r['module']].append(r)
+                    if r['error']:
+                        errors.append(r['error'])
+                    done_at[r['module']] = time.perf_counter() - t_emit
+                    emitted += 1
+                    if emitted % 200 == 0 or emitted == len(tasks):
+                        print(f'emitted {emitted}/{len(tasks)} chunks, {time.perf_counter() - t_emit:.0f}s',
+                              file=sys.stderr, flush=True)
+            break
+        except MemoryError:
+            if jobs == 1:
+                raise
+            smaller = jobs // 2
+            print(f'emit: out of memory with {jobs} workers, retrying with {smaller}', file=sys.stderr, flush=True)
+            jobs, why = smaller, 'after out of memory'
+            done = {(r['module'], r['number']) for rs in results.values() for r in rs}
+            pending = [t for t in pending if (t[0], t[1]) not in done]
 
     for name, d in info.items():
         rs = sorted(results[name], key=lambda r: r['number'])

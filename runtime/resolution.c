@@ -36,6 +36,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "platform/platform.h"
 
 #define BASE_W 1920
 #define BASE_H 1080
@@ -55,6 +56,22 @@ static struct {
     double dlss_k;             // TOTK_DLSS quality/balanced/performance: the scene's share of the output, else 0
 } R;
 
+// The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
+// next to totk.exe (vk_dlaa.c vk_dlaa_init): without that file DLSS never runs, and a DLSS mode would leave the game's
+// plain scaling at 50..67 % of the output. Off Windows vk_dlaa.c is built as no-op stubs, so there is no DLSS at all.
+static int dlss_dll(void) {
+#ifdef _WIN32
+    char exe[1024], path[1024 + 32];
+    if (!plat_exe_path(exe, sizeof exe)) return 1;
+    char *last = plat_last_sep(exe);
+    if (!last) return 1;
+    snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
+    return plat_file_exists(path);
+#else
+    return 0;
+#endif
+}
+
 static void decide(void) {
     if (R.decided) return;
     R.decided = 1;
@@ -71,11 +88,21 @@ static void decide(void) {
     }
     const char *s = cfg_value("TOTK_RENDER_SCALE");
     double k = 5.0 / 6.0;
-    const char *m = cfg_value("TOTK_DLSS");   // a DLSS mode other than dlaa sets the scene size
+    // a DLSS mode other than dlaa sets the scene size, only while DLSS/DLAA is on: switched off, the mode the menu
+    // still holds would shrink the scene for the plain upscaler
+    const char *m = cfg_value("TOTK_DLSS");
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; cfg_bool("TOTK_DLAA") && i < 3; i++)
         if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
+    if (R.dlss_k && !dlss_dll()) {
+#ifdef _WIN32
+        rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows render_scale", m);
+#else
+        rt_log("resolution: DLSS %s runs on Windows only: the scene follows render_scale", m);
+#endif
+        R.dlss_k = 0;
+    }
     if (R.dlss_k) {
         k = R.dlss_k;
         R.scene_set = 1;

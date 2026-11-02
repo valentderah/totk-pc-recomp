@@ -305,9 +305,18 @@ static void test_arbiter(Cpu *c) {
     CHECK(sig(c, 2, 5, 0) == 0 && g_arb == 6, "signal type 2, no waiter, count 0: value %d (want 6)", (int32_t)g_arb);
     ArbJob jc = {.type = 2, .value = 6, .timeout = -1};
     h = arb_spawn(c, &jc);
-    CHECK(sig(c, 2, 6, -1) == 0 && g_arb == 5, "signal type 2, 1 waiter, count -1: value %d (want 5)", (int32_t)g_arb);
+    // Waking all (count <= 0) with waiters subtracts 2 (mesosphere KAddressArbiter::SignalAndModifyByWaitingCountIfEqual).
+    CHECK(sig(c, 2, 6, -1) == 0 && g_arb == 4, "signal type 2, 1 waiter, count -1: value %d (want 4)", (int32_t)g_arb);
     join(c, h);
-    CHECK(ja.r == 0 && jb.r == 0 && jc.r == 0, "wait type 2 results %#x %#x %#x", ja.r, jb.r, jc.r);
+    g_arb = 6;
+    ArbJob jd = {.type = 2, .value = 6, .timeout = -1}, je = jd;
+    uint32_t hd = arb_spawn(c, &jd), he = arb_spawn(c, &je);
+    CHECK(sig(c, 2, 6, 0) == 0 && g_arb == 4, "signal type 2, 2 waiters, count 0: value %d (want 4)", (int32_t)g_arb);
+    join(c, hd);
+    join(c, he);
+    CHECK(ja.r == 0 && jb.r == 0 && jc.r == 0 && jd.r == 0 && je.r == 0, "wait type 2 results %#x %#x %#x %#x %#x", ja.r,
+          jb.r, jc.r, jd.r, je.r);
+    g_arb = 5;
     CHECK(sig(c, 2, 7, 1) == KERN_R_BAD_STATE, "signal type 2 with a different value");
     // timeout, invalid type
     uint64_t t0 = kern_now_ns();
@@ -320,11 +329,17 @@ static void test_arbiter(Cpu *c) {
 }
 
 // ---- events
-typedef struct { uint32_t h, r, idx; int64_t timeout; volatile int delay, go; } EvJob;
+// pre: a first wait on h0 with timeout t0 (result r0, index idx0) before the wait on h.
+typedef struct { uint32_t h, r, idx, h0, r0, idx0; int64_t timeout, t0; volatile int delay, go; int pre; } EvJob;
 
 static void event_waiter(Cpu *c) {
     EvJob *j = arg_p(c, 0);
     while (j->delay && !j->go) sleep_ms(c, 1);
+    if (j->pre) {
+        uint32_t h0[1] = {j->h0};
+        j->r0 = sv(c, 0x18, 0, ga(h0), 1, (uint64_t)j->t0);
+        j->idx0 = (uint32_t)c->x[1];
+    }
     uint32_t hs[1] = {j->h};
     j->r = sv(c, 0x18, 0, ga(hs), 1, (uint64_t)j->timeout);
     j->idx = (uint32_t)c->x[1];
@@ -375,6 +390,26 @@ static void test_events(Cpu *c) {
     join(c, h);
     CHECK(g.r == KERN_R_CANCELLED, "wait after a cancel: %#x", g.r);
 
+    // A pending cancel is for the next WaitSynchronization that would block (mesosphere KSynchronizationObject::Wait:
+    // signalled objects first, then timeout 0, then the cancel): a poll times out and a wait on a signalled object
+    // succeeds, both leaving it pending; the next blocking wait ends cancelled. The blocking waits have a 500 ms
+    // timeout, so a cancel used up too early shows as a timeout instead of a hang.
+    CHECK(sv(c, 0x11, hw2, 0, 0, 0) == 0, "SignalEvent of the second event");
+    EvJob p = {.h = hr, .timeout = 500000000, .delay = 1, .pre = 1, .h0 = hr, .t0 = 0};
+    EvJob q = {.h = hr, .timeout = 500000000, .delay = 1, .pre = 1, .h0 = hr2, .t0 = -1};
+    EvJob *pq[2] = {&p, &q};
+    for (int i = 0; i < 2; i++) {
+        h = create(c, a_event_waiter, pq[i], 44, -2);
+        start(c, h);
+        CHECK(sv(c, 0x19, h, 0, 0, 0) == 0, "CancelSynchronization before the %s", i ? "signalled wait" : "poll");
+        pq[i]->go = 1;
+        join(c, h);
+    }
+    CHECK(p.r0 == KERN_R_TIMEOUT, "poll (timeout 0) with a cancel pending: %#x (want timeout)", p.r0);
+    CHECK(p.r == KERN_R_CANCELLED, "blocking wait after the poll: %#x (want cancelled)", p.r);
+    CHECK(q.r0 == 0 && q.idx0 == 0, "wait on a signalled event with a cancel pending: %#x (want success)", q.r0);
+    CHECK(q.r == KERN_R_CANCELLED, "blocking wait after the signalled wait: %#x (want cancelled)", q.r);
+
     uint32_t sw = kern_event_new(), sr = kern_event_readable(sw);
     CHECK(wait1(c, sr, 0) == KERN_R_TIMEOUT, "service event before the signal");
     kern_event_signal(sw);
@@ -382,7 +417,8 @@ static void test_events(Cpu *c) {
     uint32_t handles[] = {sr, sw, hr2, hw2, hr, hw};
     for (unsigned i = 0; i < 6; i++) CHECK(sv(c, 0x16, handles[i], 0, 0, 0) == 0, "CloseHandle %#x", handles[i]);
     CHECK(sv(c, 0x16, hr, 0, 0, 0) == KERN_R_BAD_HANDLE, "CloseHandle twice");
-    printf("events: signal, clear, reset, two handles, cancel while waiting and before, service events, 10 ms "
+    printf("events: signal, clear, reset, two handles, cancel while waiting and before, a pending cancel kept by a poll "
+           "and a signalled wait, service events, 10 ms "
            "timeout after %.2f ms: %s\n", ms, failures == before ? "ok" : "FAIL");
 }
 

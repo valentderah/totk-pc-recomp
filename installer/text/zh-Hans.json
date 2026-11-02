@@ -51,6 +51,7 @@
  "check.vulkan_missing": "未安装 Vulkan 驱动。请为你的显卡安装最新的驱动程序。",
  "check.vulkan_no_device": "Vulkan 找不到显卡。请为你的显卡安装最新的驱动程序。",
  "check.vulkan_too_old": "游戏需要支持 Vulkan 1.3 的显卡；检测到：{devices}。请更新显卡驱动程序。",
+ "check.no_display": "准备着色器需要显示器。请在桌面会话中运行安装程序，或执行 export DISPLAY=:0（Steam Deck 游戏模式下还需 XDG_RUNTIME_DIR=/run/user/1000）。",
  "check.inputs_needed": "需要游戏文件：请选择游戏本体、1.1.0、1.2.1 或 1.4.3 更新以及 prod.keys。",
  "check.input_missing": "找不到文件（{input}）：{path}",
  "check.keys_unreadable": "无法读取密钥文件。请选择一个 prod.keys 文件。",
@@ -93,7 +94,7 @@
  "prepare.pack_failed": "打包着色器缓存失败（退出代码 {code}）。详情：{log}",
  "cleanup.ini_failed": "无法写入 totk.ini：{detail}",
 
- "warn.lang_needs_fonts": "{lang}文本需要 Switch 系统字体，而安装程序不会提取这些字体；部分文字可能无法显示。",
+ "warn.lang_needs_fonts": "{lang}文本需要 Switch 系统字体，但未提供。在添加这些字体之前，游戏无法以该语言启动。请选择固件文件夹（Contents/registered），或参阅 docs/installer.md 中的“Switch system fonts”一节。",
  "warn.cheats_skipped": "无法构建 mods 文件夹中修改游戏代码的金手指；游戏将不含它们进行安装。详情：{log}",
  "warn.exefs_skipped": "无法构建模组的 ExeFS 补丁（.ips、.pchtxt）；游戏将不含它们进行安装。详情：{log}",
  "warn.npdm_differs": "main.npdm 与参考的 {version} 导出不同；只使用其中的代码模块。",

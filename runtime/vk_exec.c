@@ -612,6 +612,20 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) da = a;
         if (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = a;
     }
+    // The start mark goes between the barrier and vkCmdBeginRendering, its end right after vkCmdEndRendering
+    // (vk_exec_pass_end): outside the pass, and without breaking it.
+    VkPassMark *m = ex->mark = vk_pass_mark_begin(ex->cb, VK_MARK_PASS, ex->fence);
+    if (m) {
+        m->step = ex->mark_passes++;
+        m->w = ex->pass_w, m->h = ex->pass_h, m->d = ex->pass_layers;
+        m->ncolor = (uint8_t)(ex->pass_ncolor < 8 ? ex->pass_ncolor : 8);
+        for (int i = 0; i < m->ncolor; i++) m->color[i] = ex->pass_color[i];
+        m->depth = ex->pass_depth ? ex->pass_depth : ex->pass_stencil;
+        // The shaders bound now are the first draw's when it repeats the pipeline state; when it does not,
+        // vk_exec_draw.c prepare_draw replaces them as it records the new state.
+        vk_exec_draw_shaders(&m->first[0], &m->first[1]);
+        ex->mark_draws0 = vk_exec_frame.draws;
+    }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
                           .layerCount = ex->pass_layers, .colorAttachmentCount = ex->pass_ncolor,
                           .pColorAttachments = ca,
@@ -629,6 +643,14 @@ void vk_exec_pass_end(VkExec *ex) {
     vkCmdEndRendering(ex->cb);
     ex->recorded++;
     ex->in_pass = 0;
+    if (ex->mark) {
+        // vk_exec_frame_log resets the frame counters at a present (TOTK_TRACE=gfx): then only the draws since it count
+        uint64_t d = vk_exec_frame.draws, d0 = ex->mark_draws0;
+        ex->mark->draws = (uint32_t)(d >= d0 ? d - d0 : d);
+        if (ex->mark->draws) vk_exec_draw_shaders(&ex->mark->last[0], &ex->mark->last[1]);
+        vk_pass_mark_end(ex->cb, ex->mark);
+        ex->mark = NULL;
+    }
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
@@ -901,6 +923,8 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->fence = fence;
     ex->recorded = 0;
     ex->in_pass = 0;
+    ex->mark = NULL;
+    ex->mark_passes = ex->mark_dispatches = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;
     ex->rt_resolved = 0;   // images may have changed since the last command buffer
     ex->nviews = 0;

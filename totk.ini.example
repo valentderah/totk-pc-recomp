@@ -7,6 +7,13 @@
 # Frame rate limit: 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the refresh rate of the
 # window's monitor, at most 240). A higher rate gives 240: above it the game's physics runs out of memory. Above 60
 # is experimental and needs realtime = 1. Changes while the game runs take effect at once.
+# With mailbox or fifo presentation (vk_present, the default) a frame reaches the screen at a vertical blank, so a limit
+# that does not divide the monitor's refresh rate keeps each frame on screen for a different number of refreshes. On a
+# 320 Hz monitor 80, 64, 40 and 32 divide it and 90 does not: 90 fps alternates 3 and 4 refreshes per frame, which reads
+# as judder while the frame counter still shows 90. Likewise on 240 Hz 60, 48 and 40 divide it and on 144 Hz 72, 48 and
+# 36 do, while 60 does not. vk_present = immediate shows a frame as soon as it is presented, without this quantisation,
+# at the cost of tearing. A monitor running with variable refresh (FreeSync, G-Sync) follows the frames instead, so
+# there any limit inside its range is even.
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
@@ -57,7 +64,10 @@
 # astc = auto
 # Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
-# every copy; slow).
+# every copy; slow). On a discrete GPU import can be far slower than mirror, not slightly slower: the GPU reads the
+# game's pools over PCIe. A 5070 Ti Laptop went from 6 ms to 135-230 ms of GPU time per frame with import (5 fps on the
+# title screen, bound: gpu, every line of the perf window waiting on a fence). The log names the mode in use: "mem:
+# mode import" or "mem: mode mirror".
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
@@ -160,8 +170,8 @@
 # color_saturation = 100
 # color_gamma = 1
 # Sun shadow map size: game (the game's own, which changes with the view and drops to about 400 near the ground, so
-# leaf shadows look blocky and jump) or a fixed 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with it.
-# Read at start.
+# leaf shadows look blocky and jump) or a fixed 256, 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with
+# it. 256 is coarser than the game's own and is for integrated GPUs short of memory bandwidth. Read at start.
 # shadow_res = game
 
 # Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game
@@ -185,8 +195,9 @@
 # totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
 # dlaa = 0
 # What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
-# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). With dlaa
-# = 0 the game's own scaling is used at that size. Read at start.
+# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). They apply
+# only with dlaa = 1 and nvngx_dlss.dll next to totk.exe, on Windows; otherwise the scene follows render_scale. Read at
+# start.
 # dlss = dlaa
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
@@ -325,6 +336,10 @@
 # takes longer than flight_spike_ms (0 to 60000).
 # flight = 0
 # flight_spike_ms = 100
+# GPU pass marks: after a GPU crash (device lost) the log names the render pass or dispatch the GPU had started and the
+# last one it finished. Unset: on AMD GPUs (VK_AMD_buffer_marker). 1: also on NVIDIA GPUs
+# (VK_NV_device_diagnostic_checkpoints), which NVIDIA says costs a little. 0: off.
+# pass_crumbs = 1
 # Largest render target (bytes, 0 to 1073741824) that goes back to its game memory when the game waits for a GPU fence.
 # A game that reads a larger target without invalidating it sees stale bytes at the default. With trace = gfx the log
 # names each dirty target over the limit that stays on the GPU ("fence write-back skipped-for-size") and each one over

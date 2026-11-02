@@ -202,6 +202,8 @@ void vk_dlaa_init(void) {
            driver ? "; the driver needs an update" : "");
 }
 
+int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
 // the scene depth (d32f at the scene size), one of them the R11G11B10F light target; lighting and the transparents
@@ -254,6 +256,8 @@ static struct {
     uint64_t mv_frames, mv_none;
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
+    int scaler_skipped;          // this frame: the game's scaling draw over DLSS's picture was skipped
+    uint64_t scaler_missed;      // frames DLSS scaled whose scaling draw was not found (vk_dlaa_skip_draw)
 } D = {.mv_ok = -1};
 
 static int dl_active(void) { return N.available && !D.failed && D.on; }
@@ -624,7 +628,10 @@ void vk_dlaa_frame(void) {
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = 0;
+    if (D.up && !D.scaler_skipped && ++D.scaler_missed == 1)
+        rt_log("dlaa: the game's scaling draw over DLSS's picture was not found (its fragment shader is not in FXAA_FS): "
+               "the jittered scene reaches the screen and shakes");
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.scaler_skipped = 0;
     D.cam_addr = 0;
 }
 
@@ -638,8 +645,10 @@ void vk_dlaa_frame(void) {
 // scaled picture into the output-sized target, in a pass without the depth attachment the in-place FXAA has: there it
 // is always drawn, whatever fxaa says (skipping it would leave the 3D picture out), unless DLSS already wrote that
 // target this frame.
-// The stock translator's hash, and the one with tools/xlate patch 0010 (PCSS, PR #89) applied.
-static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull};
+// The stock translator's hash, the one with tools/xlate patch 0010 (PCSS, PR #89) applied, and the one with patches
+// 0010 and 0011 (the shadow filter spread) applied. A translator change that gives the shader another hash is reported
+// by vk_dlaa_frame: the game's scaling draw then covers DLSS's picture with the jittered scene, which shakes.
+static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull};
 
 static uint64_t spirv_hash(const GfxShader *s) {
     static struct { const GfxShader *s; uint64_t h; } tab[8192];
@@ -660,13 +669,30 @@ static uint64_t spirv_hash(const GfxShader *s) {
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     static uint64_t frame_read = ~0ull;
     static int fxaa = 1;
+    // fxaa = 0 reports once whether it found the game's FXAA draw: the first skip, or a minute of frames (3600) with
+    // none, which is what a translator change that moves FXAA_FS looks like on every GPU, with or without DLSS
+    static uint64_t fx_off_frames;
+    static int fx_found, fx_reported;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-    if (f != frame_read) frame_read = f, fxaa = cfg_bool("TOTK_FXAA");   // once a frame: the menu switches it live
+    if (f != frame_read) {   // once a frame: the menu switches it live
+        frame_read = f, fxaa = cfg_bool("TOTK_FXAA");
+        if (!fxaa && !fx_found && !fx_reported && ++fx_off_frames == 3600) {
+            fx_reported = 1;
+            rt_log("dlaa: fxaa = 0 found no draw of the game's FXAA in %llu frames (its fragment shader is not in "
+                   "FXAA_FS): the FXAA stays on", (unsigned long long)fx_off_frames);
+        }
+    }
     if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
     uint64_t h = spirv_hash(fs);
-    if (h != FXAA_FS[0] && h != FXAA_FS[1]) return 0;
-    if (!ex->depth.image) return D.up;   // the scaling pass
+    int known = 0;
+    for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
+    if (!known) return 0;
+    if (!ex->depth.image) return D.scaler_skipped = D.up;   // the scaling pass
+    if (!fxaa && !fx_found) {
+        fx_found = 1;
+        rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);
+    }
     return !fxaa;
 }
 
@@ -680,6 +706,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
     (void)have, (void)nhave, (void)ext, (void)n, (void)max;
 }
 void vk_dlaa_init(void) {}
+int vk_dlaa_available(void) { return 0; }
 void vk_dlaa_pass(VkExec *ex) { (void)ex; }
 void vk_dlaa_frame(void) {}
 void vk_dlaa_draw(VkExec *ex) { (void)ex; }
