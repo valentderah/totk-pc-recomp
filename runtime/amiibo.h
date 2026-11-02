@@ -51,6 +51,9 @@ bool amiibo_is_mounted(void);
 
 // State query
 AmiiboDeviceState amiibo_get_device_state(void);
+// The state the menu shows: searching also within a second after a stop, since the game restarts detection many times
+// a second while it waits for a tag. The game reads amiibo_get_device_state.
+AmiiboDeviceState amiibo_get_reader_state(void);
 
 // File loading & triggering actions
 bool amiibo_load_file(const char *path);
