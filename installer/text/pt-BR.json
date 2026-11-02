@@ -5,6 +5,7 @@
  "step.lift": "Traduzindo o código do jogo para C",
  "step.compile": "Compilando o {game_exe}",
  "step.prepare": "Preparando os shaders",
+ "step.dlss": "Baixando o NVIDIA DLSS",
  "step.cleanup": "Finalizando",
 
  "phase.check.host": "Verificando o processador e a placa de vídeo",
@@ -30,6 +31,7 @@
  "phase.prepare.translate": "Traduzindo os shaders",
  "phase.prepare.libraries": "Montando os shaders para o driver de vídeo",
  "phase.prepare.pack": "Juntando o cache de shaders num único arquivo",
+ "phase.dlss.download": "Baixando o nvngx_dlss.dll do DLSS SDK da NVIDIA",
  "phase.cleanup.ini": "Gravando o totk.ini",
  "phase.cleanup.temp": "Removendo os arquivos temporários",
 
@@ -100,6 +102,9 @@
  "warn.xbox_prompts_failed": "Não foi possível preparar os ícones de botão do Xbox (código de saída {code}); o jogo mantém os ícones do Switch. Detalhes: {log}",
  "warn.shaders_skipped": "O driver gráfico travou ao compilar alguns shaders, então {count} ficaram fora da preparação. O jogo os compila quando precisar deles pela primeira vez, e o driver pode travar ali também; uma atualização do driver pode resolver. Detalhes: {log}",
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
+ "warn.dlss_no_rtx": "Nenhuma placa de vídeo NVIDIA RTX foi encontrada, então o NVIDIA DLSS não foi baixado; o jogo funciona sem ele.",
+ "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",
+ "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
 
  "ui.title": "Instalação do TotK",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
@@ -121,6 +126,8 @@
  "ui.pick_firmware": "Escolha a pasta de firmware do Switch (Contents/registered)",
  "ui.pick_dest": "Escolha a pasta de instalação",
  "ui.firmware_help": "Para textos em chinês, coreano e chinês tradicional: a pasta Contents/registered do firmware, por exemplo do Ryujinx ou do Yuzu. A instalação copia dela as fontes do sistema do Switch para a pasta de instalação.",
+ "ui.dlss": "Baixar o NVIDIA DLSS (nvngx_dlss.dll) para placas de vídeo NVIDIA RTX",
+ "ui.dlss_help": "Do DLSS SDK da NVIDIA no GitHub, sob a licença NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Sem ele as opções dlaa e DLSS não fazem nada.",
  "ui.type_game": "Arquivos de jogo (NSP, XCI)",
  "ui.type_nsp": "Arquivos NSP",
  "ui.type_keys": "Arquivos de chaves (*.keys)",

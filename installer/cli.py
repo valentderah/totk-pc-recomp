@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -7,6 +7,9 @@ Traditional Chinese. On a folder with totk-install.json (resume after a cancel o
 release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed only when the
 extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed, 2 bad command
 line, 3 cancelled (Ctrl+C or Ctrl+Break).
+
+--dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
+Windows with an NVIDIA RTX GPU (steps.py, Dlss).
 """
 import argparse
 import hashlib
@@ -58,6 +61,8 @@ def main(argv=None):
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
                                               'the install folder on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
+    ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
+                                                      'to the game, for dlaa and the DLSS modes')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
