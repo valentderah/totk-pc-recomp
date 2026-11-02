@@ -71,10 +71,12 @@ static void decide(void) {
     }
     const char *s = cfg_value("TOTK_RENDER_SCALE");
     double k = 5.0 / 6.0;
-    const char *m = cfg_value("TOTK_DLSS");   // a DLSS mode other than dlaa sets the scene size
+    // a DLSS mode other than dlaa sets the scene size, only while DLSS/DLAA is on: switched off, the mode the menu
+    // still holds would shrink the scene for the plain upscaler
+    const char *m = cfg_value("TOTK_DLSS");
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; cfg_bool("TOTK_DLAA") && i < 3; i++)
         if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
     if (R.dlss_k) {
         k = R.dlss_k;
