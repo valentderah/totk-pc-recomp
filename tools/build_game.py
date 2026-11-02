@@ -68,6 +68,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+import check_isa
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -715,6 +716,16 @@ def elf_sections(path):
     return out, hi - (lo or 0)
 
 
+def objdump_tool():
+    """The disassembler for tools/check_isa.py: llvm-objdump of --toolchain, else MSYS2's or the one on PATH."""
+    suffix = '.exe' if WIN else ''
+    for d in (TOOLCHAIN_BIN, UCRT if WIN else None):
+        for name in ('llvm-objdump', 'objdump'):
+            if d and (d / (name + suffix)).is_file():
+                return str(d / (name + suffix))
+    return check_isa.find_objdump()
+
+
 def mib(n):
     return f'{n / (1 << 20):,.1f} MiB'
 
@@ -886,6 +897,12 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    if args.cpu == 'v2':
+        # Inline assembly, target attributes and intrinsics pass -march=x86-64-v2 by; one vmovdqa of a YMM register
+        # stops a CPU without AVX (tools/check_isa.py)
+        fail = check_isa.check_objects(objs['runtime'], objdump_tool(), out / 'obj' / 'runtime' / 'isa-v2.json')
+        if fail:
+            sys.exit(f'build_game: {fail}')
     if args.compile_only:
         return
     if args.make_runtime_lib:
