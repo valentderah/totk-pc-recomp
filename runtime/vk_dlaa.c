@@ -471,10 +471,16 @@ void vk_dlaa_draw(VkExec *ex) {
 // The jitter moves on right after DLAA ran, not at the present: the replay can record the next frame's scene before
 // the present of this one is handled, and a step taken there landed in the middle of a frame (worse after an off/on
 // switch, which shifted that order). Jitter needs a frame DLSS ran on; a frame without the DLAA point stops it.
-static void next_jitter(void) {
+// The sequence is as long as NVIDIA's DLSS guide asks for the upscaling ratio, 8 x (output / scene)^2 phases (18 in
+// Quality, 24 in Balanced, 32 in Performance), and 16 at least, the length DLAA has used from the start.
+static void next_jitter(uint32_t w, uint32_t ow) {
     static int nj = -1;
     if (nj < 0) nj = !rt_knob("DLAA_JITTER", "1");   // TOTK_DLAA_JITTER=0: no jitter (test)
-    uint32_t i = D.jframe++ % 16 + 1;
+    double r = w ? (double)ow / w : 1.0;
+    uint32_t phases = (uint32_t)ceil(8.0 * r * r - 1e-6);
+    if (phases < 16) phases = 16;
+    if (phases > 64) phases = 64;
+    uint32_t i = D.jframe++ % phases + 1;
     D.jx = halton(i, 2) - 0.5f, D.jy = halton(i, 3) - 0.5f;
     D.jit_ok = !D.hold && !nj;
 }
@@ -566,7 +572,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     ex->recorded += 4;
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
-    next_jitter();
+    next_jitter(w, ow);
     if (++D.evals == 1 || D.evals % 3600 == 0)
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
                "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target)",
