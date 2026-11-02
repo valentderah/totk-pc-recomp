@@ -9,13 +9,14 @@ holds only the game; the installer and its tools stay outside it.
 1. Downloads `TotK-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
    starts `TotK-Setup.exe`.
 2. Picks:
-   - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP);
+   - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP); an NSZ or XCZ (compressed by the nsz
+     tool) works as it is, the setup unpacks it itself;
    - their `prod.keys`;
    - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
      needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
+4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
@@ -44,7 +45,7 @@ loads the saves 1.4.3 wrote.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
+1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
@@ -213,8 +214,15 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   the file and asks to copy it again (`extract.DamagedFile`). A failed merge checks the base Program NCA alone to tell
   which file is damaged.
 - Unsigned exe: SmartScreen warns on first start.
+- NSZ and XCZ input (game files compressed by the nsz tool: NCAs stored as NCZ, their sections decrypted and
+  compressed with zstd): the check step tells them by their content, not their name (an NSP or XCI holding NCZ files),
+  so the file dialog has one filter for all four. It unpacks each into `<temp>/unpacked/<base|update>.nsp`
+  (`tools/ncz.py`), an NSP of the NSZ's files or of the XCZ's secure partition, and the extraction reads that.
+  Unpacking encrypts the sections again, so every NCA comes back byte for byte, and checks each against the hash its
+  name carries; a mismatch is `check.input_damaged`. It needs the unpacked size free in the temp folder (checked
+  first), runs at about 500 MB/s, and an interrupted setup reuses a finished NSP of the same file. The extract step
+  deletes the folder when it is done. An XCZ update is refused like an XCI one.
 
 ## Later
 
 - Re-warm the driver cache on start after a move, GPU or driver change.
-- NSZ and XCZ input.

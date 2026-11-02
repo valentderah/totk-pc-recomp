@@ -9,10 +9,11 @@ with the bundled clang (hostcheck.c).
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
 and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
-Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
-logs/. The cleanup keeps gen/, build/ and logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites
-only the chunks whose C changed, and Ninja in build/ recompiles only those. A change of the mods' code cheats then
-costs the lift (about a minute) and the chunks it touches, not a full compile.
+Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
+or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
+logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
+in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
+it touches, not a full compile.
 
 Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
 its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
@@ -36,6 +37,7 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import ncz  # noqa: E402
 import shader_list  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory,  # noqa: E402
                            program_nca)
@@ -172,6 +174,12 @@ def raise_if_damaged(error, name, path):
     (extract.DAMAGE_TEXT)."""
     if extract.DAMAGE_TEXT.search(str(error)):
         raise InstallError('check.input_damaged', input=name, path=str(path), detail=str(error)) from None
+
+
+def game_file(ctx, name):
+    """The file the extraction reads for the base or the update: the NSP that Check.unpack made from an NSZ or XCZ,
+    else the chosen file itself."""
+    return getattr(ctx, 'unpacked', {}).get(name) or Path(getattr(ctx.options, name))
 
 
 def game_version(ctx):
@@ -432,13 +440,72 @@ class Check(Step):
             raise InstallError('check.keys_unreadable') from None
         if 'header_key' not in keys:
             raise InstallError('check.keys_no_header_key')
+        self.unpack(ctx)
         total = 0
         for name, is_update in (('base', False), ('update', True)):
-            path = Path(getattr(o, name))
+            path = game_file(ctx, name)
             with path.open('rb') as f:
                 total += self.open_input(f, path, keys, name, is_update)
         del keys
         return total
+
+    def unpack(self, ctx):
+        """Unpack an NSZ or XCZ (a game file compressed by the nsz tool) into <temp>/unpacked/<base|update>.nsp with
+        tools/ncz.py, which checks every NCA against its hash; the extraction then reads that NSP. An earlier run's NSP
+        of the same file is reused. The extract step removes the folder once it is done."""
+        o, rep, folder = ctx.options, ctx.reporter, ctx.temp / 'unpacked'
+        ctx.unpacked = {}
+        jobs = []
+        for name in ('base', 'update'):
+            path = Path(getattr(o, name))
+            try:
+                found = ncz.compressed(path)
+                if found is None:
+                    continue
+                if name == 'update' and found[0] != 'nsz':
+                    raise InstallError('check.update_not_nsp')
+                size = ncz.unpacked_size(path)
+            except ValueError as e:
+                raise_if_damaged(e, name, path)
+                raise InstallError('check.not_game_file', input=name) from None
+            st = path.stat()
+            jobs.append((name, path, size, f'{path.resolve()}\n{st.st_size}\n{st.st_mtime_ns}\n{size}\n'))
+        if not jobs:
+            remove(folder)
+            return
+        done = []
+        for name, path, size, tag in jobs:
+            target, stamp = folder / f'{name}.nsp', folder / f'{name}.source'
+            try:
+                if target.stat().st_size == size and stamp.read_text(encoding='utf-8') == tag:
+                    done.append(name)
+                    ctx.unpacked[name] = target
+            except OSError:
+                pass
+        need = sum(size for name, _, size, _ in jobs if name not in done)
+        free, _ = free_bytes(folder)
+        rep.log(f'unpack: {", ".join(name for name, *_ in jobs)}: {need / GiB:.1f} GiB to write, '
+                f'{free / GiB:.1f} free')
+        if need > free:
+            raise InstallError('check.disk_space', path=str(folder), need_gb=round(need / 1e9, 1),
+                               free_gb=round(free / 1e9, 1))
+        for name, path, size, tag in jobs:
+            if name in done:
+                continue
+            target, stamp = folder / f'{name}.nsp', folder / f'{name}.source'
+            remove(stamp)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                ncz.unpack(path, target, lambda d, t, n=name: rep.progress('check', 'unpack_' + n, d, t, 'bytes'))
+                stamp.write_text(tag, encoding='utf-8')
+            except ncz.DamagedFile as e:
+                raise InstallError('check.input_damaged', input=name, path=str(e.path), detail=e.detail) from None
+            except ValueError as e:
+                raise_if_damaged(e, name, path)
+                raise InstallError('check.unpack_failed', input=name, detail=str(e)) from None
+            except OSError as e:
+                raise InstallError('check.unpack_failed', input=name, detail=str(e)) from None
+            ctx.unpacked[name] = target
 
     @staticmethod
     def open_input(f, path, keys, name, is_update):
@@ -520,9 +587,10 @@ class Check(Step):
             out = work / name
             remove(out)
             try:
-                extract.extract_exefs(Path(getattr(o, name)), Path(o.keys), out, logs, update=is_update)
+                extract.extract_exefs(game_file(ctx, name), Path(o.keys), out, logs, update=is_update)
             except extract.DamagedFile as e:
-                raise InstallError('check.input_damaged', input=name, path=str(e.path), detail=e.detail) from None
+                raise InstallError('check.input_damaged', input=name, path=str(getattr(o, name)),
+                                   detail=e.detail) from None
             except ValueError:
                 raise InstallError('check.exefs_failed', input=name, log=str(logs / f'extract_exefs-{name}.log')) \
                     from None
@@ -641,9 +709,9 @@ class Extract(Step):
     def run(self, ctx):
         o, dest, rep = ctx.options, ctx.dest, ctx.reporter
         expected = expected_update(ctx)
-        base, update, keys = Path(o.base), Path(o.update), Path(o.keys)
+        keys = Path(o.keys)
         inputs = {}
-        for name, path in (('base', base), ('update', update)):
+        for name, path in (('base', Path(o.base)), ('update', Path(o.update))):
             known = ctx.state['inputs'].get(name, {})
             st = path.stat()
             if known.get('size') == st.st_size and known.get('mtime_ns') == st.st_mtime_ns and known.get('sha256'):
@@ -653,6 +721,7 @@ class Extract(Step):
             inputs[name] = {'name': path.name, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'sha256': digest}
         ctx.state['inputs'] = inputs
         ctx.save()
+        base, update = game_file(ctx, 'base'), game_file(ctx, 'update')
 
         dest.mkdir(parents=True, exist_ok=True)
         for stale in dest.glob('update-merge-*'):   # a killed merge leaves its NCA copies (and key copies) behind
@@ -664,7 +733,7 @@ class Extract(Step):
             try:
                 extract.extract_exefs(update, keys, ctx.temp / 'check' / 'update', ctx.temp / 'logs', update=True)
             except extract.DamagedFile as e:
-                raise InstallError('check.input_damaged', input='update', path=str(e.path), detail=e.detail) from None
+                raise InstallError('check.input_damaged', input='update', path=str(o.update), detail=e.detail) from None
             except ValueError:
                 raise InstallError('check.exefs_failed', input='update',
                                    log=str(ctx.temp / 'logs' / 'extract_exefs-update.log')) from None
@@ -686,6 +755,7 @@ class Extract(Step):
             raise InstallError('extract.romfs_mismatch', version=game_version(ctx), size=report['romfs_size'],
                                sha256=report['romfs_sha256'][:16])
         (dest / 'profile').mkdir(exist_ok=True)
+        remove(ctx.temp / 'unpacked')   # the NSPs unpacked from an NSZ or XCZ (Check.unpack)
         st = (romfs / 'romfs.bin').stat()
         return {'romfs_size': st.st_size, 'romfs_mtime_ns': st.st_mtime_ns}
 
@@ -707,7 +777,8 @@ class Extract(Step):
         try:
             extract.merge_update_romfs(base, update, keys, ctx.layout.hactool, romfs, logs, phase=phase)
         except extract.DamagedFile as e:
-            raise InstallError('check.input_damaged', input='base' if e.path == base else 'update', path=str(e.path),
+            name = 'base' if e.path == base else 'update'
+            raise InstallError('check.input_damaged', input=name, path=str(getattr(ctx.options, name)),
                                detail=e.detail) from None
         except ValueError as e:
             raise InstallError('extract.romfs_merge_failed', detail=str(e), log=str(logs / 'merge_romfs-'
@@ -1040,7 +1111,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('check', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
+        for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
         write_rebuild_command(ctx)
