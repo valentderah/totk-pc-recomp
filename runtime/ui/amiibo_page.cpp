@@ -227,7 +227,7 @@ void tab_amiibo(float scale) {
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1.0f), "%s", menu_text(UI_MENU_AMIIBO_READER));
     ImGui::Separator();
 
-    AmiiboDeviceState state = amiibo_get_device_state();
+    AmiiboDeviceState state = amiibo_get_reader_state();
     UiTextId state_id = UI_MENU_AMIIBO_STATE_IDLE;
     ImVec4 state_col = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
     switch (state) {
