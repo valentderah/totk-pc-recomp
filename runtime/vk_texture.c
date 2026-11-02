@@ -26,6 +26,7 @@
 #include "nvn_tex.h"
 #include "tex.h"
 #include "vk.h"
+#include "vk_dlaa.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
 
@@ -1680,8 +1681,9 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias, bias = d->lod_bias;
     // DLSS upscaling (resolution.c): the scene's material textures, the filtered mipmapped ones that repeat, are
-    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias.
-    if (!d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
+    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias. Without DLSS
+    // running (dlaa = 0, or NGX without DLSS) nothing accumulates the extra detail, and the sharper mips only shimmer.
+    if (vk_dlaa_available() && !d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
         (si.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeU == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ||
          si.addressModeV == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT))
         bias += res_dlss_lod_bias();

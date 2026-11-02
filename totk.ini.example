@@ -196,7 +196,8 @@
 # dlaa = 0
 # What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
 # 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). With dlaa
-# = 0 the game's own scaling is used at that size. Read at start.
+# = 0 the game's own scaling is used at that size, without the sharper filtering. With dlaa = 1 but no nvngx_dlss.dll
+# next to totk.exe the scene follows render_scale. Read at start.
 # dlss = dlaa
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.

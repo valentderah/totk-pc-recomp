@@ -36,6 +36,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "platform/platform.h"
 
 #define BASE_W 1920
 #define BASE_H 1080
@@ -54,6 +55,23 @@ static struct {
     unsigned shadow;           // fixed sun shadow map size (TOTK_SHADOW_RES), 0: the game's own
     double dlss_k;             // TOTK_DLSS quality/balanced/performance: the scene's share of the output, else 0
 } R;
+
+// The scene size is decided before the device exists, so NGX cannot be asked yet. With dlaa on, NGX loads DLSS from
+// nvngx_dlss.dll next to totk.exe (vk_dlaa.c vk_dlaa_init): without that file DLSS never runs, and a DLSS mode would
+// leave the game's plain scaling at 50..67 % of the output. dlaa = 0 keeps the documented size with the game's scaling.
+static int dlss_dll(void) {
+#ifdef _WIN32
+    if (!cfg_bool("TOTK_DLAA")) return 1;
+    char exe[1024], path[1024 + 32];
+    if (!plat_exe_path(exe, sizeof exe)) return 1;
+    char *last = plat_last_sep(exe);
+    if (!last) return 1;
+    snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
+    return plat_file_exists(path);
+#else
+    return 1;
+#endif
+}
 
 static void decide(void) {
     if (R.decided) return;
@@ -78,6 +96,10 @@ static void decide(void) {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
     for (int i = 0; cfg_bool("TOTK_DLAA") && i < 3; i++)
         if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
+    if (R.dlss_k && !dlss_dll()) {
+        rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows render_scale", m);
+        R.dlss_k = 0;
+    }
     if (R.dlss_k) {
         k = R.dlss_k;
         R.scene_set = 1;
