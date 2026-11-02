@@ -110,6 +110,7 @@ typedef struct {
     int active;
     float yaw, pitch;
     float zoom, zoom_target;
+    float base_r;          // radius frozen while orbiting, so the orbit stays a perfect circle
     float off_yaw, off_pitch;
     float rate_yaw, rate_pitch;
     uint64_t last_move_ns, last_ns;
@@ -138,14 +139,16 @@ static void apply(float *cam, float dx, float dy, float scroll, int reset, const
 
     if (moving) {
         ml.last_move_ns = now;
-        if (!ml.active) {
+        if (!ml.active) {   // activating: freeze the radius so the orbit stays a circle
             ml.yaw = atan2f(vx, vz);
             ml.pitch = asinf(clampf(vy / r, -1, 1));
+            ml.base_r = r;
             ml.active = 1;
         }
     } else if (ml.active && now - ml.last_move_ns > idle_ns()) {
         ml.active = 0;
     }
+    if (!ml.active) ml.base_r = r;   // inactive: track the game's radius for zoom
 
     if (reset) ml.zoom_target = 0;
     if (fabsf(scroll) > 0.01f) ml.zoom_target -= scroll * ZOOM_STEP;
@@ -153,7 +156,8 @@ static void apply(float *cam, float dx, float dy, float scroll, int reset, const
     float k = 1.0f - powf(1.0f - ZOOM_EASE_PER_60HZ, dt * 60.0f);
     float diff = ml.zoom_target - ml.zoom;
     ml.zoom = fabsf(diff) < 0.01f ? ml.zoom_target : ml.zoom + diff * k;
-    float R = clampf(r + ml.zoom, MIN_RADIUS, MAX_RADIUS);
+    float base = ml.active ? ml.base_r : r;
+    float R = clampf(base + ml.zoom, MIN_RADIUS, MAX_RADIUS);
     if (!isfinite(R)) { ml.zoom = ml.zoom_target = 0; R = r; }
 
     if (ml.active) {
@@ -370,6 +374,7 @@ static void apply_rel(float *cam, float dx, float dy, float scroll, int reset, f
     float vx = pos[0] - foc[0], vy = pos[1] - foc[1], vz = pos[2] - foc[2];
     float r = sqrtf(vx * vx + vy * vy + vz * vz);
     if (!isfinite(r) || r < 0.1f) return;
+    if (!ml.active) ml.base_r = r;   // inactive: track game radius (capture on activation)
     uint64_t now = kern_now_ns();
 
     // step of the game's raw focus per camera update (smoothed over ~4 updates)
@@ -432,7 +437,8 @@ static void apply_rel(float *cam, float dx, float dy, float scroll, int reset, f
     float kz = 1.0f - powf(1.0f - ZOOM_EASE_PER_60HZ, dt * 60.0f);
     float diff = ml.zoom_target - ml.zoom;
     ml.zoom = fabsf(diff) < 0.01f ? ml.zoom_target : ml.zoom + diff * kz;
-    float R = clampf(r + ml.zoom, MIN_RADIUS, MAX_RADIUS);
+    float base = (fabsf(ml.off_yaw) > 1e-4f || fabsf(ml.off_pitch) > 1e-4f) ? ml.base_r : r;
+    float R = clampf(base + ml.zoom, MIN_RADIUS, MAX_RADIUS);
     if (!isfinite(R)) { ml.zoom = ml.zoom_target = 0; R = r; }
 
     float foc_raw[3] = {foc[0], foc[1], foc[2]};
