@@ -56,12 +56,11 @@ static struct {
     double dlss_k;             // TOTK_DLSS quality/balanced/performance: the scene's share of the output, else 0
 } R;
 
-// The scene size is decided before the device exists, so NGX cannot be asked yet. With dlaa on, NGX loads DLSS from
-// nvngx_dlss.dll next to totk.exe (vk_dlaa.c vk_dlaa_init): without that file DLSS never runs, and a DLSS mode would
-// leave the game's plain scaling at 50..67 % of the output. dlaa = 0 keeps the documented size with the game's scaling.
+// The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
+// next to totk.exe (vk_dlaa.c vk_dlaa_init): without that file DLSS never runs, and a DLSS mode would leave the game's
+// plain scaling at 50..67 % of the output. Off Windows vk_dlaa.c is built as no-op stubs, so there is no DLSS at all.
 static int dlss_dll(void) {
 #ifdef _WIN32
-    if (!cfg_bool("TOTK_DLAA")) return 1;
     char exe[1024], path[1024 + 32];
     if (!plat_exe_path(exe, sizeof exe)) return 1;
     char *last = plat_last_sep(exe);
@@ -69,7 +68,7 @@ static int dlss_dll(void) {
     snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
     return plat_file_exists(path);
 #else
-    return 1;
+    return 0;
 #endif
 }
 
@@ -97,7 +96,11 @@ static void decide(void) {
     for (int i = 0; cfg_bool("TOTK_DLAA") && i < 3; i++)
         if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
     if (R.dlss_k && !dlss_dll()) {
+#ifdef _WIN32
         rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows render_scale", m);
+#else
+        rt_log("resolution: DLSS %s runs on Windows only: the scene follows render_scale", m);
+#endif
         R.dlss_k = 0;
     }
     if (R.dlss_k) {

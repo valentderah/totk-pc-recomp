@@ -669,8 +669,19 @@ static uint64_t spirv_hash(const GfxShader *s) {
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     static uint64_t frame_read = ~0ull;
     static int fxaa = 1;
+    // fxaa = 0 reports once whether it found the game's FXAA draw: the first skip, or a minute of frames (3600) with
+    // none, which is what a translator change that moves FXAA_FS looks like on every GPU, with or without DLSS
+    static uint64_t fx_off_frames;
+    static int fx_found, fx_reported;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-    if (f != frame_read) frame_read = f, fxaa = cfg_bool("TOTK_FXAA");   // once a frame: the menu switches it live
+    if (f != frame_read) {   // once a frame: the menu switches it live
+        frame_read = f, fxaa = cfg_bool("TOTK_FXAA");
+        if (!fxaa && !fx_found && !fx_reported && ++fx_off_frames == 3600) {
+            fx_reported = 1;
+            rt_log("dlaa: fxaa = 0 found no draw of the game's FXAA in %llu frames (its fragment shader is not in "
+                   "FXAA_FS): the FXAA stays on", (unsigned long long)fx_off_frames);
+        }
+    }
     if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
     uint64_t h = spirv_hash(fs);
@@ -678,6 +689,10 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
     if (!known) return 0;
     if (!ex->depth.image) return D.scaler_skipped = D.up;   // the scaling pass
+    if (!fxaa && !fx_found) {
+        fx_found = 1;
+        rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);
+    }
     return !fxaa;
 }
 
