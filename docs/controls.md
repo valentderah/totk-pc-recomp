@@ -90,7 +90,31 @@ bind_Y = pad:north, key:mouse_l
 
 ## Mouse camera
 
-Mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
+`mouse_mode = direct` enables experimental mouse hooks on game 1.4.3. The free-orbit camera receives raw-count
+angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1, with
+no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with the output.
+Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and velocity
+filters cannot process it a second time. Other camera modes receive input after the radial dead zone, unit-circle
+clamp and stick response exponent; Ultrahand has a separate hook after its manipulation input's power curves.
+The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw counts; its scale
+differs from the stick-emulation mode. Start at 1.
+The Controls tab can switch between *Stick emulation* (the default, `mouse_mode = stick`) and *Direct (experimental)*.
+The orbit camera keeps its desired pitch at the final angular output, including stationary frames, so a later game
+filter cannot recenter it. The persistent filter state accounts for the camera's current vertical offset instead of
+accumulating corrections. A gamepad vertical input or the game's lock-on/override releases that mouse target.
+While L is held, mouse counts move the ability wheel's virtual cursor, which stays where it was when the mouse stops.
+The horizontal quick lists (D-pad up/left/right: materials, shields and weapons) use separate 32 ms right-stick steps,
+with at least 32 ms of neutral between them. At sensitivity 1, 32 horizontal counts request a step; a large flick
+cannot queue continued scrolling after the mouse stops. Vertical movement is ignored in these lists. Switching or
+releasing a selector resets its cursor/step state without sending the last movement to the camera. Selector input is
+not consumed by the direct camera or Ultrahand hooks.
+With a held object, three substantial reversals on one mouse axis, with at most 400 ms between strokes, begin a
+short stick-shake gesture for the game's own detach detector. Those gesture pulses are excluded from camera and object movement input.
+The mapping below is still used when the camera-input hook is unavailable or the game disables camera input.
+This hook needs in-game checks of aiming, Ultrahand and menu transitions before it can be considered complete mouse
+support. Games 1.1.0 and 1.2.1 have no hook and keep stick emulation.
+
+In stick-emulation mode, mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
 
 `TOTK_MOUSE_SENS` (0 to 10, default 1; higher turns faster, 0 turns the mouse camera and the cursor capture off). While the window is the foreground window the cursor is hidden and confined to the client area. It is released on focus loss, minimise, while F11 changes the window, during a size or move loop and while a text entry is open. Esc releases it by hand: the cursor shows, the mouse camera and mouse buttons stop, and the window can be moved, minimised or closed. A mouse click inside the client area captures it again; that click does not reach the game. Activating the window by a click on its title bar or border does not capture, so it can be dragged or closed right away; Alt+Tab or a click in the client area captures as before. `TOTK_INPUT=none` disables the capture too.
 
@@ -111,13 +135,19 @@ Bridges that output a ViGEm DualShock 4 (ProCon2Windows, connectyourpro as teste
 ```
 <frame> <button> [hold_frames]            # A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK; hold defaults to 4
 <frame> LSTICK|RSTICK <x> <y> [hold_frames]   # -32767..32767, up is +y
+<frame> MOUSE <dx> <dy>                  # direct-mode raw counts, once; down is +dy
 @<ms> <button> [hold_ms]                  # timed on the world clock
 @<ms> LSTICK|RSTICK <x> <y> [hold_ms]
+@<ms> MOUSE <dx> <dy>
 ```
 
 `<frame>` counts 60 Hz ticks of game time since the first frame (presented frames at 60 fps), so the title menus get the presses at the same game time at any frame limit. `@<ms>` counts milliseconds of the world clock: game time stepped since the end of the first save load (the player leaves the title screen's origin), so a timed event lands at the same game time at any frame rate and load length. A later load, such as fast travel, still shifts what follows. In a script with timed lines the untimed ones stop when the world clock starts, as the load ends at another tick in each run. Each event logs once (`input: script frame N tick T: A`). `tools/input/load_save.txt` loads the first save from the title screen.
 
 `TOTK_INPUT_RECORD=<file>` (`input_record` in `totk.ini`, or Input recording in the menu) writes the merged input in the same format, one line per button press and per stick segment: events before the world clock starts by tick, the rest timed; a button or stick held when the world clock starts is cut there and goes on as a timed event. The file replays as a script, which makes it the repro to attach to a bug report.
+
+In direct mouse mode the recording also writes one `MOUSE` event per consumed raw displacement. These are one-shot
+displacements rather than held stick segments. They replay without cursor capture, including with `input = none`;
+the game must be accepting camera input when the event reaches its camera update.
 
 `TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry>` attaches an SDL virtual gamepad at start whose sticks rest at these raw SDL axis values (-32768 to 32767, down is +y), so a drifting or held stick can be tested without a controller: the values go through the gamepad mapping and `TOTK_STICK_DEADZONE` like a real pad's, and `TOTK_INPUT_RECORD` shows what reached the game.
 

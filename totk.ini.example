@@ -259,6 +259,10 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
+# Mouse camera mode: stick (default) or direct (experimental, game 1.4.3 only). Direct free-camera input uses
+# raw displacement with equal horizontal/vertical sensitivity and bypasses stick response curves. Other game versions
+# keep stick emulation. The Controls tab changes this while the game runs.
+# mouse_mode = stick
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
