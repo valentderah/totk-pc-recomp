@@ -271,7 +271,8 @@ static int vk_up(const MenuTarget *t) {
 // Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
 // and Chinese language names merged in from a system font when there is one (each language is named in its own script).
 // A catalog row also holds menu text (Simplified Chinese), so every string of the row goes into the builder: the merged
-// font must cover the whole menu of that language, not only its name. Made again when the window height changes; the old
+// font must cover the whole menu of that language, not only its name. The cheat names (read at start, cheats.c) go with
+// the Simplified Chinese font, as Chinese cheat files are common. Made again when the window height changes; the old
 // texture goes after the queue is idle (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
@@ -346,6 +347,8 @@ static int fonts_up(float scale) {
         ImFontGlyphRangesBuilder b;
         b.AddText(ui_text_in("en", kCjk[i].name));
         ui_text_visit(kCjk[i].lang, add_row_glyphs, &b);
+        if (!strcmp(kCjk[i].lang, "zh-Hans"))
+            for (int k = 0; k < cheats_count(); k++) b.AddText(cheats_info(k)->name);
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
