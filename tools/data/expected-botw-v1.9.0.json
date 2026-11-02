@@ -1,0 +1,17 @@
+{
+  "_comment": "Breath of the Wild 1.9.0 (update v1114112) over the base game: ExeFS of the update and the merged RomFS, from tools/extract.py --game botw. sdk, subsdk0 and rtld are the Tears of the Kingdom 1.4.3 builds.",
+  "title_id": "01007EF00011E000",
+  "version": 1114112,
+  "display_version": "1.9.0",
+  "exefs_sha256": {
+    "main": "f6f0b20bb1f2b67d164c24871cd473147eef1d285f12e7bd492e3126c6022e27",
+    "main.npdm": "38a7484e19b7a51dffda5e58c5c95a54f72c4d04bdf4bb76cbae81611fa29565",
+    "rtld": "49308064fddb52dfe9140c11a32cc6333a0917546c871967d013dcb076402817",
+    "sdk": "1d187f29784cd0af46e9e123fc2a62c77b3b07c5a39c8633d90d6c80de64e4ad",
+    "subsdk0": "767c35bcd7d23e78f9063c69b638290b8b83f91e839beb10799e6576960179b1"
+  },
+  "romfs": {
+    "size": 15132662100,
+    "sha256": "826b373b80cea5c581749a09dfbd9bb21e8d7a9cd3ed161c4d5315b9ae429dad"
+  }
+}

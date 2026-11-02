@@ -9,6 +9,9 @@ Steps, each skipped when its verified output already exists:
 Steps 1 and 3 run for every file in `input.updates`. Each update's version is identified by the SHA-256 of its `main`,
 not by its file name. Output: build/extracted/v0/{exefs,romfs} and build/extracted/v<version>/{exefs,romfs}.
 
+The game is told by the base package's title ID (tools/games.py). Breath of the Wild builds only from its 1.9.0 update,
+so for it step 2 and the base ExeFS are skipped and the output is build/extracted/botw190/{exefs,romfs}.
+
 --base, --update, --keys and --work name the files and the output directory instead of the config (the installer
 imports the functions instead). Runs under .venv-py314. Key values are read by the tools from the keys file and never
 printed.
@@ -33,6 +36,7 @@ from extract_exefs import (common_tickets, container_entries, load_keys, nca_inv
                            record_offset, require)
 from extract_romfs import index_romfs  # noqa: E402
 from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
+from games import TOTK, by_title  # noqa: E402
 
 DATA = ROOT / 'tools' / 'data'
 EXEFS_CODE = ('main', 'sdk', 'subsdk0', 'rtld')
@@ -73,31 +77,37 @@ def sha256(path):
         return hashlib.file_digest(f, 'sha256').hexdigest()
 
 
-def load_expected():
+def load_expected(game=TOTK):
     versions = {}
-    for path in sorted(DATA.glob('expected-v*.json')):
+    for path in sorted(DATA.glob(f'{game.data}*.json')):
         data = json.loads(path.read_text())
         versions[data['display_version']] = data
     return versions
 
 
 def version_dir(expected):
-    return 'v0' if expected['version'] == 0 else 'v' + expected['display_version'].replace('.', '')
+    game = by_title(expected['title_id']) or TOTK
+    return 'v0' if expected['version'] == 0 else game.version_name(expected['display_version'])
 
 
 # The embeddable Python (a ._pth file) does not put a script's directory on sys.path, so a vendored script that imports
 # its siblings fails when started by path. This stub adds the directory, then runs the script as __main__.
 RUN_SCRIPT = ('import os, runpy, sys; p = sys.argv[1]; sys.path.insert(0, os.path.dirname(p)); sys.argv = sys.argv[1:]; '
               "runpy.run_path(p, run_name='__main__')")
+# The vendored ExeFS extractor for another game: its program_nca accepts Tears of the Kingdom only, so the game's own
+# (tools/games.py) replaces it before main runs. Arguments: the script, the game, this folder, the script's arguments.
+GAME_EXEFS = ('import os, sys; p, g, tools = sys.argv[1:4]; sys.path[:0] = [os.path.dirname(p), tools]; '
+              'sys.argv = [p] + sys.argv[4:]; import extract_exefs, games; '
+              'extract_exefs.program_nca = games.GAMES[g].program_nca; extract_exefs.main()')
 
 
-def run_logged(command, log, source=None):
+def run_logged(command, log, source=None, script=RUN_SCRIPT):
     """Run a vendored script with its output in log. source: the game file it reads; a failed hash check or a short
     read of that file raises DamagedFile."""
     args = [str(c) for c in command]
     env = dict(os.environ, PYTHONIOENCODING='utf-8')   # its messages may name non-ASCII paths
     with log.open('wb') as out:
-        code = subprocess.run([args[0], '-c', RUN_SCRIPT, *args[1:]], stdout=out, stderr=subprocess.STDOUT,
+        code = subprocess.run([args[0], '-c', script, *args[1:]], stdout=out, stderr=subprocess.STDOUT,
                               env=env).returncode
     if code and source:
         damage = DAMAGE.search(log.read_text(encoding='utf-8', errors='replace'))
@@ -116,13 +126,19 @@ def exefs_problems(exefs, expected):
     return problems
 
 
-def extract_exefs(game, keys, out, logs, *, update):
+def extract_exefs(package, keys, out, logs, *, update, game=TOTK):
     exefs = out / 'exefs'
     if exefs.exists():
         shutil.rmtree(exefs)
     out.mkdir(parents=True, exist_ok=True)
-    command = [sys.executable, VENDOR / 'extract_exefs.py', game, '--keys', keys, '--output', exefs]
-    run_logged(command + (['--update'] if update else []), logs / f'extract_exefs-{out.name}.log', source=game)
+    script = VENDOR / 'extract_exefs.py'
+    command = [sys.executable, script, package, '--keys', keys, '--output', exefs] + (['--update'] if update else [])
+    log = logs / f'extract_exefs-{out.name}.log'
+    if game is TOTK:
+        run_logged(command, log, source=package)
+    else:
+        run_logged([sys.executable, script, game.key, Path(__file__).parent, *command[2:]], log, source=package,
+                   script=GAME_EXEFS)
     return exefs
 
 
@@ -167,9 +183,10 @@ def extract_base_romfs(out, keys, logs, base=None):
                source=base)
 
 
-def program_ncas(base, update, keys_path):
+def program_ncas(base, update, keys_path, game=TOTK):
     """(tickets, [(source, record, header)] of the base and the update Program NCA). Raises ValueError for a file
-    that is no TotK base game or update, or keys that cannot open it."""
+    that is no base game or update of the game, or keys that cannot open it."""
+    pick = program_nca if game is TOTK else game.program_nca
     keys = load_keys(keys_path)
     tickets = {}
     inputs = []
@@ -180,16 +197,16 @@ def program_ncas(base, update, keys_path):
             for rights, key in common_tickets(f, entries).items():
                 require(tickets.get(rights, key) == key, 'Conflicting common tickets')
                 tickets[rights] = key
-            record, header = program_nca(nca_inventory(f, entries, keys), update=is_update)
+            record, header = pick(nca_inventory(f, entries, keys), update=is_update)
             rights = header[0x230:0x240]
             require(rights == bytes(16) or rights in tickets, 'Missing common ticket')
             inputs.append((source, record, header))
     return tickets, inputs
 
 
-def merge_space(base, update, keys_path):
+def merge_space(base, update, keys_path, game=TOTK):
     """Bytes merge_update_romfs needs free next to its output, beyond the merged image itself: the two Program NCAs."""
-    _, inputs = program_ncas(base, update, keys_path)
+    _, inputs = program_ncas(base, update, keys_path, game)
     return inputs[0][1]['size'] + inputs[1][1]['size']
 
 
@@ -221,7 +238,8 @@ def damaged_merge_input(hactool, hactool_keys, environment, base, update, base_n
                       f'damaged or incomplete. Copy them again from their source and retry; see {shown(log_path)}')
 
 
-def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lambda name: say(MERGE_PHASES[name])):
+def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lambda name: say(MERGE_PHASES[name]),
+                       game=TOTK):
     """extract_update_romfs.merge() without its Darwin-only bounded view of the base: the base Program NCA is copied out.
 
     Needs room for both Program NCAs (about 17 GB together) and the merged image (about 17 GB). phase(name) is called
@@ -229,7 +247,7 @@ def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lam
     """
     if output.exists():
         shutil.rmtree(output)
-    tickets, inputs = program_ncas(base, update, keys_path)
+    tickets, inputs = program_ncas(base, update, keys_path, game)
     sections = [i for i in range(4) if inputs[1][2][0x400 + i * 512 + 4] == 4]
     require(len(sections) == 1, 'Expected one BKTR section')
     need = inputs[0][1]['size'] + inputs[1][1]['size'] + 18 * (1 << 30)
@@ -296,7 +314,14 @@ def main():
     work = args.work or ROOT / config.get('work', {}).get('dir', 'build')
     extracted, logs = work / 'extracted', work / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
-    versions = load_expected()
+    game = game_of(base, keys)
+    versions = load_expected(game)
+    if game is not TOTK:
+        say(f'{game.name}: only its updates are built, the base game is not extracted')
+        require(updates, f'{game.name} needs its update ({", ".join(versions)})')
+        for update in updates:
+            extract_update(base, Path(update), keys, args.hactool, extracted, logs, versions, game)
+        return
     v0 = versions['1.0.0']
 
     say('Base game')
@@ -317,15 +342,26 @@ def main():
         extract_update(base, Path(update), keys, args.hactool, extracted, logs, versions)
 
 
-def extract_update(base, update, keys, hactool, extracted, logs, versions):
+def game_of(base, keys_path):
+    """The game (tools/games.py) of a base game package, by the title ID of its Program NCA."""
+    with base.open('rb') as f:
+        _, entries = container_entries(f, base.stat().st_size)
+        titles = {r['title_id'] for r, _ in nca_inventory(f, entries, load_keys(keys_path)) if r['content_type'] == 0}
+    games = {by_title(t) for t in titles} - {None}
+    require(len(games) == 1, f'{base.name} is no base game of a supported game (title IDs {", ".join(sorted(titles))})')
+    return games.pop()
+
+
+def extract_update(base, update, keys, hactool, extracted, logs, versions, game=TOTK):
     say(f'Update {update.name}')
     staging = extracted / 'update-staging'
-    known = [d for d in extracted.glob('v*') if d.name != 'v0' and (d / 'extraction-manifest.json').is_file()]
+    known = [d for d in extracted.glob(f'{game.prefix}*')
+             if d.name != 'v0' and (d / 'extraction-manifest.json').is_file()]
     current = next((d for d in known if json.loads((d / 'extraction-manifest.json').read_text())['source']
                     == str(update.resolve())), None)
     if current is None or not any(not exefs_problems(current / 'exefs', e) for e in versions.values() if e['version']):
         say('  extracting ExeFS')
-        exefs = extract_exefs(update, keys, staging, logs, update=True)
+        exefs = extract_exefs(update, keys, staging, logs, update=True, game=game)
         expected = identify_update(exefs, versions)
         current = extracted / version_dir(expected)
         if current.exists():
@@ -338,7 +374,7 @@ def extract_update(base, update, keys, hactool, extracted, logs, versions):
     report_npdm(current / 'exefs', expected)
     if not romfs_verified(current / 'romfs', expected):
         say('  merging RomFS with the update')
-        merge_update_romfs(base, update, keys, hactool, current / 'romfs', logs)
+        merge_update_romfs(base, update, keys, hactool, current / 'romfs', logs, game=game)
     check_romfs(current / 'romfs', expected)
 
 

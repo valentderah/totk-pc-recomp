@@ -16,8 +16,9 @@ first (rpath $ORIGIN). docs/building.md lists the packages.
         --out build/v121-llvmmingw                                    # llvm-mingw instead of MSYS2 UCRT64
 
 Every runtime/*.c is compiled. build/<version>/modules.c carries the layout, the linked function tables, the
-expected SHA-256 of each ExeFS file (tools/data/expected-<display version>.json) and the default game paths
-(--exefs, --romfs, --profile), which totk.exe uses unless its own command line names others. --exefs and --romfs
+expected SHA-256 of each ExeFS file (tools/data/expected-<display version>.json; tools/games.py names the files), the
+game and its version (rt_game, rt_game_version) and the default game paths (--exefs, --romfs, --profile), which
+totk.exe uses unless its own command line names others. --exefs and --romfs
 default to extracted/<version> in the work folder: the [work] dir of config.local.toml, where tools/extract.py writes
 them, else build/. tools/romfs_index.py writes build/<version>/romfs-index.bin and romfs_config.h from the RomFS
 directory's index.json (runtime/romfs.c reads the index next to totk.exe). Without that index.json the build stops:
@@ -70,6 +71,7 @@ from pathlib import Path
 
 import check_isa
 import romfs_index
+from games import TOTK, VERSIONS
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
 
@@ -163,8 +165,6 @@ AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
-# tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v110': '1.1.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -323,8 +323,10 @@ def module_glue(layout, linked, hashes, paths, version):
     out += ['};', f'const int rt_exefs_sha256_count = {len(hashes)};', '']
     for name in ('exefs', 'romfs', 'profile'):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
-    number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
-    out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};', '']
+    game, display = VERSIONS.get(version, (TOTK, '0'))   # tools/games.py
+    number = int(display.replace('.', ''))   # 1.4.3 -> 143
+    out += [f'const int rt_game = {game.runtime};', f'const int rt_game_version = {number};',
+            f'const char rt_port_version[] = {c_string(port_version())};', '']
     return '\n'.join(out)
 
 
@@ -732,7 +734,8 @@ def mib(n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--version', default='v121', help='game version (default v121)')
+    ap.add_argument('--version', default='v121',
+                    help='game version: v0, v110, v112, v121, v143, or botw190 for Breath of the Wild (default v121)')
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='target CPU level: v3 (AVX2/FMA, default) or v2 (SSE4.2, for older CPUs; slower)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
@@ -770,7 +773,7 @@ def main():
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
-                    help='expected hashes (default tools/data/expected-<display version>.json)')
+                    help='expected hashes (default tools/data/expected-<display version>.json, tools/games.py)')
     args = ap.parse_args()
     set_cpu(args.cpu)
 
@@ -788,9 +791,10 @@ def main():
                  '--romfs DIR, or --no-romfs to build without it')
     expected = args.expected
     if not expected:
-        if args.version not in DISPLAY_VERSIONS:
+        if args.version not in VERSIONS:
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
-        expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
+        game, display = VERSIONS[args.version]
+        expected = ROOT / 'tools' / 'data' / f'{game.data}{display}.json'
     hashes = json.loads(Path(expected).read_text())['exefs_sha256']
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:
