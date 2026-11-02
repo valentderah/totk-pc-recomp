@@ -40,7 +40,7 @@ Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
 4. Play `totk.exe` from the install folder.
 
-To update, run a newer `TotK-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
+To update, run a newer `TotK-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md). Intel GPUs: [docs/intel-anv.md](docs/intel-anv.md).
 
 ## Credits
 

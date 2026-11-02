@@ -557,6 +557,15 @@ static int spirv_complete(const uint32_t *w, uint64_t n) {
     return i == n;
 }
 
+// A loadable module: the SPIR-V magic, a whole number of words, and a complete instruction stream. The override and
+// the packed/loose cache both go through this one check.
+static int spirv_valid(const uint8_t *spv, uint64_t size) {
+    uint32_t magic = 0;
+    if (!spv || size < 20 || size % 4) return 0;
+    memcpy(&magic, spv, 4);
+    return magic == 0x07230203 && spirv_complete((const uint32_t *)spv, size / 4);
+}
+
 // Reads <key>.spv and <key>.res.json from the pack (packed 1) or the loose files; NULL if either is missing or
 // malformed. iid: the input id, NULL when the caller sets it.
 static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int packed) {
@@ -573,13 +582,22 @@ static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int 
         free(res);
         return NULL;
     }
-    snprintf(p, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
-    uint8_t *spv = packed ? pack_read(PACK_SPV, key, &spv_size) : read_file(p, &spv_size);
-    uint32_t magic = 0;
-    if (spv && spv_size >= 20) memcpy(&magic, spv, 4);
-    if (!spv || spv_size % 4 || magic != 0x07230203 || !spirv_complete((const uint32_t *)spv, spv_size / 4)) {
-        free(res), free(spv);
-        return NULL;
+    // <cache>/override/<key>.spv: a hand-fixed module wins over the pack and the loose cache. Used for a translation
+    // the driver cannot run (a divergent workgroup barrier in one Intel compute shader, see tools/fix_divergent_barrier.py).
+    uint8_t *spv = NULL;
+    snprintf(p, PATH_CAP + 80, "%s/override/%s.spv", cache_dir, hex);
+    spv = read_file(p, &spv_size);
+    if (spv && !spirv_valid(spv, spv_size)) {
+        rt_log("gfx_shader: override/%s.spv is malformed; using the cache copy", hex);
+        free(spv), spv = NULL, spv_size = 0;
+    }
+    if (!spv) {
+        snprintf(p, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
+        spv = packed ? pack_read(PACK_SPV, key, &spv_size) : read_file(p, &spv_size);
+        if (!spirv_valid(spv, spv_size)) {
+            free(res), free(spv);
+            return NULL;
+        }
     }
     GfxShader *s = calloc(1, sizeof *s);
     memcpy(s->key, key, 32);
