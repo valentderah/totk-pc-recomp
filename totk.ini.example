@@ -211,6 +211,10 @@
 # it is none of them.
 # menu_lang = en
 
+[amiibo]
+# Folder used by the in-game amiibo picker; also selectable on the Amiibo settings tab.
+# amiibo_dir = ./amiibo
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default
