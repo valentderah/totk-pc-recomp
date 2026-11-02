@@ -160,8 +160,8 @@
 # color_saturation = 100
 # color_gamma = 1
 # Sun shadow map size: game (the game's own, which changes with the view and drops to about 400 near the ground, so
-# leaf shadows look blocky and jump) or a fixed 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with it.
-# Read at start.
+# leaf shadows look blocky and jump) or a fixed 256, 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with
+# it. 256 is coarser than the game's own and is for integrated GPUs short of memory bandwidth. Read at start.
 # shadow_res = game
 
 # Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game

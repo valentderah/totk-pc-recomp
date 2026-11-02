@@ -74,7 +74,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RES] = "Shadow map size",
     [UI_MENU_SHADOW_RES_DESC] = "Size of the sun's shadow map. The game's own size changes with the view, down to about 400 "
                                 "near the ground, so leaf shadows look blocky and jump; a fixed size keeps them still and "
-                                "sharper. Above 1024 the shadows cost more GPU time and video memory.",
+                                "sharper. Above 1024 the shadows cost more GPU time and video memory; 256 is coarser than the "
+                                "game's own and is for integrated GPUs short of memory bandwidth.",
     [UI_MENU_SHADOW_RES_GAME] = "Game (changes)",
     [UI_MENU_ANISO] = "Texture filtering",
     [UI_MENU_ANISO_DESC] = "Anisotropic filtering of surface textures: ground, roads and walls seen at a shallow angle stay sharp into the distance instead of blurring. Game: the level the game asks for, as on the Switch.",
@@ -226,6 +227,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_CONFIRM] = "Restart the game now? Progress since your last save is lost.",
     [UI_MENU_RESTART_YES] = "Restart",
     [UI_MENU_RESTART_SAVING] = "The game is saving: Restart is possible in a moment.",
+    [UI_MENU_GROUP_STICKS] = "Analog sticks",
     [UI_MENU_LSTICK_DEADZONE] = "Left stick dead zone", [UI_MENU_RSTICK_DEADZONE] = "Right stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own: let go of the stick, read \"stick now\" and set the dead zone a few percent above it.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
@@ -498,7 +500,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
     [UI_MENU_SHADOW_RES_DESC] = "Размер карты теней от солнца. Собственный размер игры меняется вместе с видом, у земли до "
                                 "примерно 400, поэтому тени листвы выглядят квадратными и дёргаются; постоянный размер делает "
-                                "их ровными и чётче. Выше 1024 тени требуют больше времени GPU и видеопамяти.",
+                                "их ровными и чётче. Выше 1024 тени требуют больше времени GPU и видеопамяти; 256 грубее "
+                                "собственного размера игры и предназначен для встроенных GPU с нехваткой пропускной способности памяти.",
     [UI_MENU_SHADOW_RES_GAME] = "Как в игре (меняется)",
     [UI_MENU_ANISO] = "Фильтрация текстур",
     [UI_MENU_ANISO_DESC] = "Анизотропная фильтрация текстур поверхностей: земля, дороги и стены под острым углом остаются чёткими вдали, а не размываются. Игра: уровень, который запрашивает игра, как на Switch.",
@@ -648,6 +651,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_CONFIRM] = "Перезапустить игру сейчас? Прогресс после последнего сохранения будет потерян.",
     [UI_MENU_RESTART_YES] = "Перезапустить",
     [UI_MENU_RESTART_SAVING] = "Игра сохраняется: перезапуск будет доступен через мгновение.",
+    [UI_MENU_GROUP_STICKS] = "Стики",
     [UI_MENU_LSTICK_DEADZONE] = "Мёртвая зона левого стика", [UI_MENU_RSTICK_DEADZONE] = "Мёртвая зона правого стика",
     [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами: отпустите стик, посмотрите «стик сейчас» и поставьте мёртвую зону на несколько процентов выше.",
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
@@ -998,6 +1002,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_AUTO] = "Automático", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A à direita)",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A embaixo)",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "em uso: %s",
+    [UI_MENU_GROUP_STICKS] = "Analógicos",
     [UI_MENU_LSTICK_DEADZONE] = "Zona morta do analógico esquerdo",
     [UI_MENU_RSTICK_DEADZONE] = "Zona morta do analógico direito",
     [UI_MENU_STICK_DEADZONE_DESC] = "Quanto um analógico do controle precisa se mover antes que o jogo perceba. Aumente "
@@ -1196,7 +1201,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do jogo muda com a vista, até cerca de "
                                 "400 perto do chão, então as sombras das folhas ficam quadriculadas e pulam; um "
                                 "tamanho fixo as deixa paradas e mais nítidas. Acima de 1024 as sombras custam mais "
-                                "tempo de GPU e memória de vídeo.",
+                                "tempo de GPU e memória de vídeo; 256 é mais grosseiro que o do jogo e serve para GPUs "
+                                "integradas com pouca largura de banda de memória.",
     [UI_MENU_SHADOW_RES_GAME] = "Do jogo (varia)",
     [UI_MENU_ANISO] = "Filtragem de texturas",
     [UI_MENU_ANISO_DESC] = "Filtragem anisotrópica das texturas de superfície: chão, estradas e paredes vistos em "
@@ -1497,6 +1503,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo（A 在右）",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox（A 在下）",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "使用中：%s",
+    [UI_MENU_GROUP_STICKS] = "摇杆",
     [UI_MENU_LSTICK_DEADZONE] = "左摇杆死区", [UI_MENU_RSTICK_DEADZONE] = "右摇杆死区",
     [UI_MENU_STICK_DEADZONE_DESC] = "手柄摇杆要推动多远游戏才会响应。如果角色或视角会自己移动，"
                                     "请调高此值：松开摇杆，查看“当前摇杆”，把死区设得比它高几个百分点。",
@@ -1795,7 +1802,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALE_BILINEAR] = "双线性",
     [UI_MENU_SHADOW_RES] = "阴影贴图尺寸",
     [UI_MENU_SHADOW_RES_DESC] = "太阳阴影贴图的尺寸。游戏自身的尺寸随视角变化，靠近地面时降到约 400，因此树叶阴影显得块状并且跳动；固定尺寸能让阴影稳定、更清晰。高于 1024 时阴影会占用更多 "
-                                "GPU 时间和显存。",
+                                "GPU 时间和显存；256 比游戏自身的尺寸更粗糙，适合显存带宽不足的集成显卡。",
     [UI_MENU_SHADOW_RES_GAME] = "游戏默认（会变化）",
     [UI_MENU_ANISO] = "纹理过滤",
     [UI_MENU_ANISO_DESC] = "表面纹理的各向异性过滤：以小角度看到的地面、道路和墙壁在远处依然清晰，而不会模糊。游戏：使用游戏请求的级别，与 Switch 上相同。",
