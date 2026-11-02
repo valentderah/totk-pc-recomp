@@ -199,6 +199,11 @@ A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
 files); a change to the settings passes `totk.exe --probe-cfg`.
 
+`python tests/amiibo_check.py` builds the synthetic tag/IPC and Dear ImGui gamepad checks with Clang and clang++.
+No game files, amiibo dumps or keys are needed; all test files are made under `build/`. Use `--cc` and `--cxx` to
+select compiler paths. The Windows C++ test links its runtime statically so it runs without extra DLLs.
+`totk.exe --probe-services` additionally checks the real SDK's NFC event auto-clear and destroy/reattach behaviour.
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
 
