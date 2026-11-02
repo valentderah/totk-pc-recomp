@@ -518,7 +518,7 @@ static void row_render_scale(void) {
 }
 
 static void row_shadow_res(void) {
-    static const char *const vals[] = {"game", "512", "768", "1024", "1536", "2048"};
+    static const char *const vals[] = {"game", "256", "512", "768", "1024", "1536", "2048"};
     enum { N = sizeof vals / sizeof *vals };
     const char *names[N];
     names[0] = menu_text(UI_MENU_SHADOW_RES_GAME);
