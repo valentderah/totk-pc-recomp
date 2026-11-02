@@ -2143,6 +2143,21 @@ void kern_signal_system_event(uint64_t ev) {
     kern_event_signal(wh);
 }
 
+// Signals ev only if it is bound and the game has not destroyed it; never binds, so any thread may call it (the amiibo
+// menu taps on the render thread). Returns 1 if signaled. The handle is checked under the kernel lock.
+int kern_signal_bound_system_event(uint64_t ev) {
+    uint32_t wh = se_find(ev);
+    if (!wh || !se_live(ev)) return 0;
+    lock();
+    Event *e = h_peek(wh, O_EVENT_W);
+    if (e) {
+        e->signaled = 1;
+        wake_sync_waiters();
+    }
+    unlock();
+    return e != NULL;
+}
+
 // ---- fibers
 // The SDK switches fibers by swapping register context, which breaks "RET = C return". Each guest fiber gets a host
 // fiber (own 256 MiB reserved host stack) and its own Cpu, so a suspended fiber's registers and host frames stay

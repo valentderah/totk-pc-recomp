@@ -64,6 +64,9 @@ void amiibo_remove_tag(void);
 // Timer tick called during menu / frame updates
 void amiibo_tick(void);
 
+// One listener hears the tag arrive (true) or leave (false), outside the amiibo lock, on the thread that changed it.
+void amiibo_set_tag_listener(void (*fn)(bool present));
+
 // Options
 void amiibo_set_auto_remove(bool enable);
 bool amiibo_get_auto_remove(void);

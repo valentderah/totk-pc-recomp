@@ -269,11 +269,36 @@ static void ov_result_ok(Cpu *c) { ret_x(c, 0); }   // RequestImmediateTransmiss
 
 // nn::nfp: NFC reader & amiibo support
 static volatile int32_t nfp_state;
-static void ov_nfp_initialize(Cpu *c) { plat_xchg32(&nfp_state, 1); ret_x(c, 0); }
+// The game's activate and deactivate events (guest SystemEventType addresses). The game destroys them on
+// StopDetection and attaches them again, often at the same address, for the next detection. All three nfp events are
+// auto-clear: the game polls them with TryWaitSystemEvent every frame and never clears them, so a manual-clear event
+// set once makes it read the tag again (activate) or set the reader up again (availability) on every frame.
+static volatile uint64_t nfp_activate_ev, nfp_deactivate_ev;
+static volatile int32_t nfp_activated;  // activate signaled for the tag on the reader; its removal signals deactivate
+
+// A tag tapped in the amiibo menu while the game searches activates it, as the console's reader does; one leaving
+// after that deactivates it. Runs on the thread that changed the tag (the menu's or the game's).
+static void nfp_signal_activate(void) {
+    if (nfp_activate_ev && kern_signal_bound_system_event(nfp_activate_ev)) plat_xchg32(&nfp_activated, 1);
+}
+static void nfp_tag_changed(bool present) {
+    if (present) {
+        if (amiibo_is_detecting()) nfp_signal_activate();
+    } else if (plat_xchg32(&nfp_activated, 0) && nfp_deactivate_ev) {
+        kern_signal_bound_system_event(nfp_deactivate_ev);
+    }
+}
+
+static void ov_nfp_initialize(Cpu *c) {
+    plat_xchg32(&nfp_state, 1);
+    amiibo_set_tag_listener(nfp_tag_changed);
+    ret_x(c, 0);
+}
 static void ov_nfp_finalize(Cpu *c) {
     plat_xchg32(&nfp_state, 0);
     amiibo_stop_detection();
     amiibo_unmount();
+    plat_xchg32(&nfp_activated, 0);
     ret_x(c, 0);
 }
 static void ov_nfp_state(Cpu *c) { ret_x(c, (uint64_t)nfp_state); }
@@ -296,11 +321,11 @@ static void ov_nfp_list(Cpu *c) {
     ret_x(c, 0);
 }
 
-// Result AttachAvailabilityChangeEvent(os::SystemEventType *event)
+// Result AttachAvailabilityChangeEvent(os::SystemEventType *event): set once, the reader is there from the start
 static void ov_nfp_availability(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (!ev) rt_fatal("nn::nfp::AttachAvailabilityChangeEvent: null event");
-    kern_bind_system_event(c, ev, 0);
+    kern_bind_system_event(c, ev, 1);
     kern_signal_system_event(ev);
     ret_x(c, 0);
 }
@@ -333,8 +358,9 @@ static void ov_nfp_get_npad_id(Cpu *c) {
 static void ov_nfp_attach_activate(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (ev) {
-        kern_bind_system_event(c, ev, 0);
-        if (amiibo_has_tag()) kern_signal_system_event(ev);
+        kern_bind_system_event(c, ev, 1);
+        nfp_activate_ev = ev;
+        if (amiibo_is_detecting() && amiibo_has_tag()) nfp_signal_activate();
     }
     ret_x(c, 0);
 }
@@ -343,22 +369,25 @@ static void ov_nfp_attach_activate(Cpu *c) {
 static void ov_nfp_attach_deactivate(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (ev) {
-        kern_bind_system_event(c, ev, 0);
+        kern_bind_system_event(c, ev, 1);
+        nfp_deactivate_ev = ev;
     }
     ret_x(c, 0);
 }
 
-// Result StartDetection(const DeviceHandle &)
+// Result StartDetection(const DeviceHandle &): a tag already on the reader activates at once.
 static void ov_nfp_start_detection(Cpu *c) {
-    (void)c;
     amiibo_start_detection();
+    plat_xchg32(&nfp_activated, 0);
+    if (amiibo_has_tag()) nfp_signal_activate();
     ret_x(c, 0);
 }
 
 // Result StopDetection(const DeviceHandle &)
 static void ov_nfp_stop_detection(Cpu *c) {
-    (void)c;
     amiibo_stop_detection();
+    amiibo_unmount();
+    plat_xchg32(&nfp_activated, 0);
     ret_x(c, 0);
 }
 
