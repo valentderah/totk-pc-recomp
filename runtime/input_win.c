@@ -83,6 +83,8 @@ uint32_t input_key_char(int key) {
 
 // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
+static volatile LONG look_scroll;          // wheel notches * 120 (WHEEL_DELTA) since the last look take
+static volatile LONG look_reset;           // middle-click edge for mousecam (1 = reset zoom)
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
@@ -137,10 +139,18 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     case WM_INPUT: {
         RAWINPUT ri;
         UINT sz = sizeof ri;
-        if (cur_captured && GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
-            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            InterlockedAdd(&mouse_dx, ri.data.mouse.lLastX);
-            InterlockedAdd(&mouse_dy, ri.data.mouse.lLastY);
+        if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+            ri.header.dwType == RIM_TYPEMOUSE) {
+            if (!(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
+                if (cur_captured) {
+                    InterlockedAdd(&mouse_dx, ri.data.mouse.lLastX);
+                    InterlockedAdd(&mouse_dy, ri.data.mouse.lLastY);
+                }
+            }
+            if (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL)
+                InterlockedAdd(&look_scroll, (LONG)(SHORT)ri.data.mouse.usButtonData);
+            if ((ri.data.mouse.usButtonFlags & RI_MOUSE_BUTTON_3_DOWN) && cur_captured)
+                InterlockedExchange(&look_reset, 1);
         }
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
@@ -154,6 +164,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         if (w == VK_ESCAPE && !(cur_rel & CUR_REL)) { cur_rel_update(rel_esc); cursor_update(h); }
         break;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:   // client area only; poll_merged drops the click
+        if (m == WM_MBUTTONDOWN && cur_captured) InterlockedExchange(&look_reset, 1);
         if (cur_rel & CUR_REL) { cur_rel_update(rel_clear); cursor_update(h); }
         break;
     case WM_MOUSEACTIVATE:   // sent before WM_ACTIVATEAPP: a title bar or border click must not capture
@@ -206,6 +217,23 @@ int ikb_captured(void) { return cur_captured != 0; }
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);
     *dy = InterlockedExchange(&mouse_dy, 0);
+}
+
+int ikb_look_take(float *dx, float *dy, float *scroll, int *reset) {
+    if (!cur_captured) {
+        InterlockedExchange(&mouse_dx, 0);
+        InterlockedExchange(&mouse_dy, 0);
+        InterlockedExchange(&look_scroll, 0);
+        InterlockedExchange(&look_reset, 0);
+        *dx = *dy = *scroll = 0;
+        *reset = 0;
+        return 0;
+    }
+    *dx = (float)InterlockedExchange(&mouse_dx, 0);
+    *dy = (float)InterlockedExchange(&mouse_dy, 0);
+    *scroll = (float)InterlockedExchange(&look_scroll, 0) / 120.0f;
+    *reset = InterlockedExchange(&look_reset, 0) != 0;
+    return 1;
 }
 
 void ikb_cursor_update(void) { cursor_update(gfx_window_handle()); }

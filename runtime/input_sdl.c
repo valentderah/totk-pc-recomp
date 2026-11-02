@@ -6,6 +6,7 @@
 // The capture follows the Win32 back end's rules (input_win.c): captured while the window has the focus, the mouse
 // camera is on and no text entry or menu is open; Esc releases it until a click in the window (and closing the menu
 // opened by that Esc gives it back); losing the focus releases it until the window has the focus again.
+#include <math.h>
 #include <string.h>
 
 #include <SDL3/SDL.h>
@@ -21,6 +22,8 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+static volatile int32_t look_scroll;          // wheel notches * 120 since the last look take
+static volatile int32_t look_reset;           // middle-click edge for mousecam
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t captured;             // relative mouse mode is on
 enum { CUR_REL = 1, CUR_ESC = 2 };            // as input_win.c: released by Esc or a click elsewhere; by Esc
@@ -185,9 +188,13 @@ void input_sdl_event(const SDL_Event *e) {
         int down = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         int k = mouse_key(e->button.button);
         if (k) key_held[k] = (uint8_t)down;
+        if (down && e->button.button == SDL_BUTTON_MIDDLE && captured) plat_xchg32(&look_reset, 1);
         if (down && (cur_rel & CUR_REL)) plat_xchg32(&cur_rel, 0);   // a click in the window captures again
         break;
     }
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (captured) plat_add32(&look_scroll, (int32_t)lroundf(e->wheel.y * 120.0f));
+        break;
     case SDL_EVENT_MOUSE_MOTION:
         if (captured) {
             rem_x += e->motion.xrel;
@@ -221,4 +228,21 @@ int ikb_captured(void) { return captured != 0; }
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
+}
+
+int ikb_look_take(float *dx, float *dy, float *scroll, int *reset) {
+    if (!captured) {
+        plat_xchg32(&mouse_dx, 0);
+        plat_xchg32(&mouse_dy, 0);
+        plat_xchg32(&look_scroll, 0);
+        plat_xchg32(&look_reset, 0);
+        *dx = *dy = *scroll = 0;
+        *reset = 0;
+        return 0;
+    }
+    *dx = (float)plat_xchg32(&mouse_dx, 0);
+    *dy = (float)plat_xchg32(&mouse_dy, 0);
+    *scroll = (float)plat_xchg32(&look_scroll, 0) / 120.0f;
+    *reset = plat_xchg32(&look_reset, 0) != 0;
+    return 1;
 }

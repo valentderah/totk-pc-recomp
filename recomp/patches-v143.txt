@@ -119,6 +119,14 @@ site zstd   main 5f574c 97e912a5 94d3aa25   # bl ZSTD_decompress_usingDDict -> p
 site zstd   main bdc910 97d17634 94bc0db4   # bl ZSTD_decompress_usingDDict -> page+0xfe0
 site zstd   main 1852314 979f9fb3 948a3733  # bl ZSTD_decompress_usingDDict -> page+0xfe0
 
+# Mouselook (runtime/mousecam.c): every `bl` of the camera update function
+# (main+0x71986c on 1.4.3, the same body as the FOV sites above) goes to a host function on the patch page
+# (+0xfd0). It calls the guest function (rt_call: v0 still holds deltaTime) and rewrites the nine camera
+# floats from the mouse's yaw / pitch / radius. TOTK_MOUSECAM=0 keeps the guest path; F3 toggles at run time.
+set mousecam TOTK_MOUSECAM    1
+site mousecam main 718b80 9400033b 94cf1d14   # bl 0x71986c -> page+0xfd0
+site mousecam main 1b87468 97ae4901 947d62da  # bl 0x71986c -> page+0xfd0
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v143/exefs --patches recomp/patches-v143.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main 231dc 231ec   # 5 instructions; loads
