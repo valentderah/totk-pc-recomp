@@ -352,12 +352,22 @@ static void render_thread(void *p) {
     plat_thread_priority(PLAT_PRIO_HIGHEST);
     const uint64_t frame_ns = (uint64_t)r->param.sample_count * 1000000000ull / (uint64_t)r->param.sample_rate;
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
-    uint64_t next = kern_now_ns();
+    // When the device pulls a period (1024 samples on PipeWire, 4-5 frames) the ring drops below its target
+    // and the frames would otherwise render back to back. On hardware the DSP renders one frame every 5 ms and
+    // the game's audio thread works in between; AUX effects need that time to fill the return ring, or mix_aux
+    // reads stale samples and the frame clicks at its seams. Device-paced frames stay at least 4/5 of a frame
+    // apart, which still refills a period well before the device drains it.
+    const uint64_t gap_ns = frame_ns * 4 / 5;
+    uint64_t next = kern_now_ns(), last = 0;
     while (plat_cas32(&r->running, 0, 0)) {
         uint64_t now = kern_now_ns();
         int64_t pace = audio_mixer_pace_ns(r, now);
         if (pace > 0) {
             plat_wait_ns((uint64_t)pace);
+            continue;
+        }
+        if (pace == 0 && last && now - last < gap_ns) {
+            plat_wait_ns(gap_ns - (now - last));
             continue;
         }
         if (pace == 0) {
@@ -367,6 +377,7 @@ static void render_thread(void *p) {
             else if (now - next > 100000000ull) next = now;   // fell far behind (debugger, sleep): resynchronise
             next += frame_ns;
         }
+        last = kern_now_ns();
         plat_mutex_lock(&r->lock);
         if (r->state == 0) {
             voices_prepare(r);
