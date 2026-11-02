@@ -274,6 +274,12 @@ static PlatMutex copy_lock = PLAT_MUTEX_INIT;    // guards the two maps, the cou
 static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
 static uint64_t ncopies, copy_bytes, copies_made, nsubmits;
+// Breath of the Wild hands a recorder's 512-byte control block to the next recorder at once and still
+// calls the first handle thousands of frames later. The hardware then runs whatever the block holds now, the newer
+// recording, so a released handle leads to the live copy recorded at its control position (copy_touch).
+static nvn_hmap pos_live = {.klen = 8};   // control position -> handle of the live copy recorded there
+static nvn_hmap dead_pos = {.klen = 8};   // released handle -> its control position + 1
+static uint64_t n_redirects;
 // Asynchronous replay: copies released by the game, and per-submission clones, that a queued submission still reads.
 // Freed once gfx_replayed_submits() reaches their used_at. Empty with synchronous replay.
 static copy_prefix **zombies;
@@ -319,9 +325,21 @@ uint64_t nvn_handle_bytes(uint64_t handle) {
 }
 
 // Marks a live copy used by submission now; its size from OP_BEGIN to OP_END inclusive.
-static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
+static uint64_t copy_touch(uint64_t *hp, int redirect, uint64_t now, const char *what) {
+    uint64_t handle = *hp;
     plat_mutex_lock_shared(&copy_lock);
     copy_prefix *pf = copy_find(handle);
+    if (!pf && redirect && RT_BOTW) {
+        uintptr_t pos1 = (uintptr_t)nvn_hm_get(&dead_pos, &handle);
+        uint64_t pos = pos1 - 1, h2 = pos1 ? (uintptr_t)nvn_hm_get(&pos_live, &pos) : 0;
+        if (h2 && (pf = copy_find(h2))) {
+            *hp = h2;
+            if (__atomic_fetch_add(&n_redirects, 1, __ATOMIC_RELAXED) % 1000 == 0)
+                rt_log("nvn: %s: released handle %#llx runs the live recording %#llx at its control position %#llx "
+                       "(%llu so far)", what, (unsigned long long)handle, (unsigned long long)h2,
+                       (unsigned long long)pos, (unsigned long long)n_redirects);
+        }
+    }
     uint64_t bytes = 0;
     if (pf) __atomic_store_n(&pf->used_at, now, __ATOMIC_RELAXED), bytes = pf->bytes;
     plat_mutex_unlock_shared(&copy_lock);
@@ -372,6 +390,7 @@ static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
     }
     b->v[b->n++] = (cmd_copy){lo, hi, copy};
     nvn_hm_put(&copy_live, &handle, pf);
+    if (RT_BOTW && hi) nvn_hm_put(&pos_live, &lo, (void *)(uintptr_t)handle);
     ncopies++;
     copy_bytes += pf->bytes;
     if (++copies_made % 20000 == 0)
@@ -395,6 +414,11 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
             uint64_t handle = (uintptr_t)k->copy;
             copy_prefix *pf = (copy_prefix *)k->copy - 1;
             nvn_hm_del(&copy_live, &handle);
+            if (RT_BOTW) {
+                uintptr_t pos1 = k->lo + 1;
+                nvn_hm_put(&dead_pos, &handle, (void *)pos1);
+                if ((uintptr_t)nvn_hm_get(&pos_live, &k->lo) == handle) nvn_hm_del(&pos_live, &k->lo);
+            }
             ncopies--;
             copy_bytes -= pf->bytes;
             pf->magic = 0;
@@ -519,7 +543,7 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 // bytes as record by record.
 static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
     if (!handle) rt_fatal("nvn: %s with a null handle", what);
-    uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
+    uint64_t bytes = copy_touch(&handle, 1, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
     cmd_reserve(o, body);
@@ -1011,7 +1035,10 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
 
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
-    for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
+    for (int i = 0; i < n; i++) {
+        uint64_t h = handles[i];
+        copy_touch(&h, 0, now, "QueueSubmitCommands");
+    }
     for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
 }
 

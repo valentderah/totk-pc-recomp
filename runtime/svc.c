@@ -16,7 +16,6 @@
 #define ST_FREE 0u
 #define ST_STACK 0xBu
 #define PERM_RW 3u
-#define PROGRAM_ID 0x0100f2c0115b6000ull
 
 static uint64_t g_svcs;
 void (*volatile svc_test_exit_hook)(unsigned code);
@@ -118,7 +117,7 @@ static void get_info(Cpu *c, uint64_t pc) {
     case 11:                                    // random entropy
         if (!plat_random(&v, sizeof v)) rt_fatal("GetInfo 11: no random bytes from the system");
         break;
-    case 18: v = PROGRAM_ID; break;
+    case 18: v = RT_PROGRAM_ID; break;
     case 20: v = user_exception_context(); break;   // the SDK keeps e.g. the dying message at +0x1C0
     case 23: v = 1; break;
     default: {

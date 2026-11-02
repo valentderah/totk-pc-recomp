@@ -26,9 +26,10 @@
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.0 and 1.2.1 from this port's analysis of main;
-// 1.4.3 from MacNativeGames' scripts/verify_boot.py) and of the first nvnBootstrapLoader call, per game version.
-#define CHECKPOINT_RET (RT_V143 ? 0xbdb48cull : RT_V110 ? 0xeb8c14ull : 0xe7a954ull)
-#define NVN_RET (RT_V143 ? 0xbe0360ull : RT_V110 ? 0xebcdecull : 0xe7eb2cull)
+// 1.4.3 from MacNativeGames' scripts/verify_boot.py; Breath of the Wild 1.9.0 measured here) and of the first
+// nvnBootstrapLoader call, per game version.
+#define CHECKPOINT_RET (RT_BOTW ? 0xc617e8ull : RT_V143 ? 0xbdb48cull : RT_V110 ? 0xeb8c14ull : 0xe7a954ull)
+#define NVN_RET (RT_BOTW ? 0xe93a88ull : RT_V143 ? 0xbe0360ull : RT_V110 ? 0xebcdecull : 0xe7eb2cull)
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
 
 // The init_array sizes (1.1.0 and 1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); MacNativeGames' boot check
@@ -37,7 +38,8 @@ typedef struct { const char *name; uint64_t entries; } InitCount;
 static const InitCount inits_110[] = {{"main", 10668}, {"subsdk0", 45}, {"sdk", 116}};
 static const InitCount inits_121[] = {{"main", 10673}, {"subsdk0", 45}, {"sdk", 116}};
 static const InitCount inits_143[] = {{"main", 10717}, {"subsdk0", 45}, {"sdk", 83}};
-#define expected_inits (RT_V143 ? inits_143 : RT_V110 ? inits_110 : inits_121)
+static const InitCount inits_botw190[] = {{"main", 1040}, {"subsdk0", 45}, {"sdk", 83}};
+#define expected_inits (RT_BOTW ? inits_botw190 : RT_V143 ? inits_143 : RT_V110 ? inits_110 : inits_121)
 
 static volatile int32_t inits_done, checkpoint_seen;
 uint64_t rt_guest_start_ns;

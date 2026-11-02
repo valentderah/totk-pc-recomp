@@ -944,3 +944,45 @@ HOST_OVERRIDE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKN
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
 HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size);
+
+// ---- System calls Breath of the Wild makes and Tears of the Kingdom does not: no VR mode, no recording switch, the
+// shared fonts are read on demand (RequestSharedFontLoad has nothing to start), one local user.
+// int ListAllUsers(int *count, Uid *out, int max)
+static void ov_list_all_users(Cpu *c) {
+    int32_t *count = arg_p(c, 0);
+    Uid *out = arg_p(c, 1);
+    int max = (int)arg_x(c, 2);
+    plat_mutex_lock(&account_lock);
+    load_uid();
+    if (out && max > 0) out[0] = local;
+    plat_mutex_unlock(&account_lock);
+    if (count) *count = out && max > 0;
+    ret_x(c, 0);
+}
+
+// Result StandardSteadyClock::GetCurrentTimePoint(SteadyClockTimePoint *out)
+static void ov_steady_time_point(Cpu *c) {
+    SteadyClockTimePoint *out = arg_p(c, 0);
+    if (out) *out = steady_now();
+    ret_x(c, out ? 0 : TIME_R_INVALID);
+}
+
+// Result GetSpanBetween(int64_t *seconds, const SteadyClockTimePoint &from, const SteadyClockTimePoint &to)
+static void ov_steady_span(Cpu *c) {
+    int64_t *out = arg_p(c, 0);
+    const SteadyClockTimePoint *a = arg_p(c, 1), *b = arg_p(c, 2);
+    if (!out || !a || !b || memcmp(a->source, b->source, 16)) { ret_x(c, TIME_R_INVALID); return; }
+    *out = b->value - a->value;
+    ret_x(c, 0);
+}
+
+HOST_OVERRIDE("_ZN2nn2pl8IsVrModeEv", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn2pl11BeginVrModeEv", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn2pl9EndVrModeEv", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn4pctl27CheckStereoVisionPermissionEb", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn2oe15EnableRecordingEv", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", ov_list_all_users);
+HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE",
+              ov_steady_time_point);
+HOST_OVERRIDE("_ZN2nn4time14GetSpanBetweenEPlRKNS0_20SteadyClockTimePointES4_", ov_steady_span);

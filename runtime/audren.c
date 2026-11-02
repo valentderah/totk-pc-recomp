@@ -446,6 +446,8 @@ static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
     case 7: rs->copy[rs->ncopy++] = kern_event_readable(r->event); return;   // QuerySystemEvent
     case 8: r->time_limit = IPC_ARG(rq, uint32_t, 0); return;                // SetRenderingTimeLimit
     case 9: { uint32_t v = r->time_limit ? r->time_limit : 100; IPC_OUT(rs, v); return; }   // GetRenderingTimeLimit
+    case 12: r->voice_drop = IPC_ARG(rq, float, 0); IPC_OUT(rs, r->voice_drop); return;   // SetVoiceDropParameter
+    case 13: { float v = r->voice_drop ? r->voice_drop : 1.0f; IPC_OUT(rs, v); return; }   // GetVoiceDropParameter
     default: ipc_unimplemented(s, rq);
     }
 }

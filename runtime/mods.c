@@ -27,7 +27,6 @@
 #include "mods.h"
 #include "platform/platform.h"
 
-#define TITLE "0100F2C0115B6000"
 #define MAX_MODS 512
 
 static ModInfo *mods;
@@ -57,10 +56,10 @@ static int has_file_cb(const char *name, int kind, uint64_t size, void *ctx) {
 
 // The first of the emulator and Atmosphere places of <mod>/<part> that is a folder, into out ("" none).
 static void find_root(const char *mod, const char *part, char *out, size_t cap) {
-    static const char *const forms[] = {"%s/%s", "%s/atmosphere/contents/" TITLE "/%s", "%s/contents/" TITLE "/%s",
-                                        "%s/" TITLE "/%s"};
+    static const char *const forms[] = {"%s/%s", "%s/atmosphere/contents/%s/%s", "%s/contents/%s/%s", "%s/%s/%s"};
     for (size_t i = 0; i < sizeof forms / sizeof *forms; i++) {
-        if (snprintf(out, cap, forms[i], mod, part) < (int)cap && plat_dir_exists(out)) return;
+        int n = i ? snprintf(out, cap, forms[i], mod, RT_TITLE, part) : snprintf(out, cap, forms[i], mod, part);
+        if (n < (int)cap && plat_dir_exists(out)) return;
     }
     out[0] = 0;
 }

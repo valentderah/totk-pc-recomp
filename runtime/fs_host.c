@@ -25,7 +25,6 @@
 #include "platform/platform.h"
 #include "romfs_path.h"
 
-#define TOTK_APPLICATION_ID 0x0100f2c0115b6000ull
 #define FILE_BASE 0x200000000ull
 #define DIR_BASE 0x300000000ull
 #define NFILES 1024
@@ -741,7 +740,7 @@ static uint32_t mount_save(const char *name, const uint64_t *uid) {
 
 static uint8_t save_exists(uint64_t application, const uint64_t *uid) {
     ready();
-    return application == TOTK_APPLICATION_ID && my_uid(uid);
+    return application == RT_PROGRAM_ID && my_uid(uid);
 }
 
 // Other titles' save data (data-link bonuses) is not present on this host.
@@ -1602,7 +1601,7 @@ static void probe_save_tx(const uint64_t *uid) {
     committed = pending;
 
     // the read-only mount shows the committed save and refuses changes
-    CHECK(tx_write(a, 99) && RES(S_MOUNT_SAVE_RO, U("ro"), TOTK_APPLICATION_ID, U(uid)) == 0 &&
+    CHECK(tx_write(a, 99) && RES(S_MOUNT_SAVE_RO, U("ro"), RT_PROGRAM_ID, U(uid)) == 0 &&
           tx_read("ro:/tx_a.sav") == committed && RES(S_OPEN_FILE, U(&h), U("ro:/tx_a.sav"), FS_OPEN_WRITE) ==
           FS_R_UNSUPPORTED_OPEN && RES(S_CREATE_FILE, U("ro:/x"), 0) == FS_R_UNSUPPORTED_OPEN &&
           RES(S_RENAME_FILE, U("save:/tx_a.sav"), U("ro:/y")) == FS_R_INVALID_PATH, "MountSaveDataReadOnly");
@@ -1642,9 +1641,9 @@ static void probe_storage(void) {
     CHECK(RES(S_MOUNT_SAVE, U("save"), U(other)) == FS_R_TARGET_NOT_FOUND, "MountSaveData for another user");
     CHECK(RES(S_MOUNT_SAVE, U("save"), U(uid)) == 0, "MountSaveData");
     CHECK(RES(S_MOUNT_SAVE, U("save"), U(uid)) == FS_R_ALREADY_EXISTS, "MountSaveData twice");
-    CHECK((CALL(S_SAVE_EXISTS, TOTK_APPLICATION_ID, U(uid)) & 0xff) == 1 &&
-          (CALL(S_SAVE_EXISTS, TOTK_APPLICATION_ID + 0x1000, U(uid)) & 0xff) == 0, "IsSaveDataExisting");
-    CHECK(RES(S_MOUNT_SAVE_RO, U("other"), TOTK_APPLICATION_ID + 0x1000, U(uid)) == FS_R_TARGET_NOT_FOUND,
+    CHECK((CALL(S_SAVE_EXISTS, RT_PROGRAM_ID, U(uid)) & 0xff) == 1 &&
+          (CALL(S_SAVE_EXISTS, RT_PROGRAM_ID + 0x1000, U(uid)) & 0xff) == 0, "IsSaveDataExisting");
+    CHECK(RES(S_MOUNT_SAVE_RO, U("other"), RT_PROGRAM_ID + 0x1000, U(uid)) == FS_R_TARGET_NOT_FOUND,
           "MountSaveDataReadOnly of another title");
     CHECK(!fs_save_busy(), "idle at start");
 
@@ -1789,3 +1788,6 @@ int probe_fs(void) {
     printf("probe-fs: passed (%llu files, %d sampled)\n", (unsigned long long)files, SAMPLES);
     return 0;
 }
+
+// Result CommitSaveData(const char *mount): the older name of Commit, which Breath of the Wild calls
+HOST_OVERRIDE("_ZN2nn2fs14CommitSaveDataEPKc", ov_commit);

@@ -686,9 +686,9 @@ static void probe_media_gfx(void) {
 // ---- software keyboard (swkbd.c): ShowKeyboardArg built by the SDK's own setters, as the horse naming does
 enum { KB_TYPE = 0x00, KB_DISABLED = 0x1c, KB_HEADER = 0x24, KB_GUIDE = 0x1a8, KB_MAX_LEN = 0x3ac, KB_MIN_LEN = 0x3b0,
        KB_UTF8 = 0x3bd, KB_INIT_LEN = 0x3c4, STRING_SIZE = 0x7d4, SWKBD_CANCELED = 0x29f };
-#define ARG_WORK (RT_V143 ? 0x518 : 0x4d0)   // SDK 20.5 grew KeyboardConfig (swkbd.c)
+#define ARG_WORK (RT_SDK20 ? 0x518 : 0x4d0)   // SDK 20.5 grew KeyboardConfig (swkbd.c)
 #define ARG_WORK_SIZE (ARG_WORK + 8)
-#define ARG_SIZE (RT_V143 ? 0x548 : 0x500)
+#define ARG_SIZE (RT_SDK20 ? 0x548 : 0x500)
 
 static uint64_t sdk(const char *name) {
     uint64_t a = ldr_symbol(name);

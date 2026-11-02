@@ -187,10 +187,19 @@ typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
-extern const int rt_game_version;                          // the game build: 110 (1.1.0), 121 (1.2.1) or 143 (1.4.3)
+enum { RT_GAME_TOTK, RT_GAME_BOTW };
+extern const int rt_game;                                  // RT_GAME_TOTK or RT_GAME_BOTW (tools/games.py)
+extern const int rt_game_version;                          // the game build: 110 (1.1.0), 121 (1.2.1) or 143 (1.4.3);
+                                                           // Breath of the Wild 190 (1.9.0)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
-#define RT_V110 (rt_game_version == 110)                    // 1.1.0: its own boot constants and data slots
-#define RT_V143 (rt_game_version >= 143)
+#define RT_BOTW (rt_game == RT_GAME_BOTW)                   // Breath of the Wild 1.9.0 (docs/botw.md)
+#define RT_V110 (!RT_BOTW && rt_game_version == 110)        // 1.1.0: its own boot constants and data slots
+#define RT_V143 (!RT_BOTW && rt_game_version >= 143)
+// SDK 20.5.22: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 run the same sdk and subsdk0 builds, so what
+// depends on the SDK (structure sizes, sdk offsets) is the same for both
+#define RT_SDK20 (RT_BOTW || RT_V143)
+#define RT_PROGRAM_ID (RT_BOTW ? 0x01007ef00011e000ull : 0x0100f2c0115b6000ull)   // the base game's title ID
+#define RT_TITLE (RT_BOTW ? "01007EF00011E000" : "0100F2C0115B6000")
 
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;

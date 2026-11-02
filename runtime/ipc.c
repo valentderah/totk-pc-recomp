@@ -699,8 +699,8 @@ static void sdk_prepare(Cpu *c) {
     ST32(LD64(c->tpidrro + 0x1F8) + 0x1B0, kern_main_thread(&again));
     const RtLoaded *sdk = ldr_module(2);
     static const uint64_t ctors_121[] = {0x1dcbd0, 0x1de8a0}, ctors_143[] = {0x221fb0};
-    const uint64_t *heap_ctors = RT_V143 ? ctors_143 : ctors_121;
-    unsigned nctors = RT_V143 ? sizeof ctors_143 / sizeof *ctors_143 : sizeof ctors_121 / sizeof *ctors_121;
+    const uint64_t *heap_ctors = RT_SDK20 ? ctors_143 : ctors_121;
+    unsigned nctors = RT_SDK20 ? sizeof ctors_143 / sizeof *ctors_143 : sizeof ctors_121 / sizeof *ctors_121;
     for (unsigned k = 0; k < nctors; k++) {
         int found = 0;
         for (uint64_t e = 0; e < sdk->init_array_size; e += 8)
@@ -720,7 +720,7 @@ static void probe_sdk_client(Cpu *c) {
     rt_call(c, stub(SYM_INIT_PARAM), 1, (uint64_t)(uintptr_t)param);
     printf("sdk: InitializeAudioRendererParameter -> %d Hz x%d, mix buffers %d, revision word %#x (REV%d)\n", param[0],
            param[1], param[2], (uint32_t)param[13], revision_number_of((uint32_t)param[13]));
-    CHECK(param[0] == 48000 && param[1] == 240 && (uint32_t)param[13] == AUDREN_REV(RT_V143 ? 15 : 11),
+    CHECK(param[0] == 48000 && param[1] == 240 && (uint32_t)param[13] == AUDREN_REV(RT_SDK20 ? 15 : 11),
           "SDK default parameter (TotK 1.2.1 builds REV11 requests, 1.4.3 REV15)");
     param[2] = g_param.mix_buffer_count, param[3] = g_param.submix_count, param[4] = g_param.voice_count;
     param[5] = g_param.sink_count, param[6] = g_param.effect_count;
@@ -766,8 +766,8 @@ static void probe_sdk_client(Cpu *c) {
            ipc_sessions_live());
     // The 1.2.1 SDK closes the renderer, device and manager sessions and keeps sm; the 1.4.3 SDK keeps the
     // audren:u manager it created lazily, beside sm.
-    CHECK(audren_renderers_live() == 0 && ipc_sessions_released() - released0 >= (RT_V143 ? 1u : 3u) &&
-              ipc_sessions_live() == (RT_V143 ? 2 : 1),
+    CHECK(audren_renderers_live() == 0 && ipc_sessions_released() - released0 >= (RT_SDK20 ? 1u : 3u) &&
+              ipc_sessions_live() == (RT_SDK20 ? 2 : 1),
           "SDK CloseAudioRenderer");
     rt_trace = trace;
 }

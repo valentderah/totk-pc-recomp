@@ -154,6 +154,7 @@ typedef struct AudioRenderer {
     PlatThread *thread;
     volatile int32_t running;
     uint32_t state, revision, time_limit, event;   // state 0 started, 1 stopped; event: writable handle
+    float voice_drop;                              // SetVoiceDropParameter: kept and handed back, voices are never dropped
     int logged;
     uint64_t behavior_flags, elapsed_frames;
     uint64_t stop_released, empty_played, flushed, logged_released;

@@ -513,3 +513,22 @@ HOST_OVERRIDE("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorS
               ov_six_states);
 HOST_OVERRIDE("_ZN2nn3hid6detail21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE",
               ov_six_state);
+
+// ---- hid calls Breath of the Wild makes and Tears of the Kingdom does not. The seven six-axis sensor (the Labo VR
+// headset's tracking) reports no samples; the gyro drift mode, the Joy-Con assignment and the controller applet
+// change nothing here.
+static void ov_hid_ok(Cpu *c) { ret_x(c, 0); }
+
+// int GetSevenSixAxisSensorStates(SevenSixAxisSensorState *out, int count): no samples
+static void ov_seven_states(Cpu *c) { ret_x(c, 0); }
+
+HOST_OVERRIDE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid23StartSevenSixAxisSensorEv", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid22StopSevenSixAxisSensorEv", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi", ov_seven_states);
+HOST_OVERRIDE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",
+              ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", ov_hid_ok);
+HOST_OVERRIDE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", ov_hid_ok);

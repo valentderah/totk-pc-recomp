@@ -186,6 +186,7 @@ static uint64_t read_ptr(uint64_t a) {
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
 // compare) instruction for instruction.
 static int player_pos(float xyz[3]) {
+    if (RT_BOTW) return 0;   // the walk is Tears of the Kingdom's: Breath of the Wild's world clock never starts
     uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V110 ? 0x4630a68 : 0x4728538)),
              scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;

@@ -552,8 +552,9 @@ uint64_t ldr_plt_stub(const char *module, const char *name) {
 }
 
 // ---- --probe-loader
-// Expected values, measured on the 1.1.0, 1.2.1 and 1.4.3 modules; the 1.4.3 relocation totals match the ones
-// MacNativeGames' port notes give for that version. 1.1.0 shares subsdk0 and sdk with 1.2.1 down to every count.
+// Expected values, measured on the 1.1.0, 1.2.1 and 1.4.3 modules and on Breath of the Wild 1.9.0's; the 1.4.3
+// relocation totals match the ones MacNativeGames' port notes give for that version. 1.1.0 shares subsdk0 and sdk with
+// 1.2.1 down to every count.
 typedef struct {
     const char *name;
     uint64_t kinds[K_COUNT], total, sym_import, sym_own;
@@ -574,7 +575,13 @@ static const Expect expect_143[] = {
     {"subsdk0", {3424, 10927, 905, 3817}, 19073, 6557, 9092, 663, {9, 0, 654}, 0, 0x20, 45},
     {"sdk", {15013, 10135, 1079, 7832}, 34059, 10, 19036, 8, {8, 0, 0}, 0, 0x400, 83},
 };
-#define expect (RT_V143 ? expect_143 : RT_V110 ? expect_110 : expect_121)
+// Breath of the Wild 1.9.0: subsdk0 and sdk are the 1.4.3 builds, down to every count
+static const Expect expect_botw190[] = {
+    {"main", {223994, 1137, 25, 459}, 225615, 1621, 0, 487, {0, 16, 463}, 8, 0xe8e0, 1040},
+    {"subsdk0", {3424, 10927, 905, 3817}, 19073, 6557, 9092, 663, {9, 0, 654}, 0, 0x20, 45},
+    {"sdk", {15013, 10135, 1079, 7832}, 34059, 10, 19036, 8, {8, 0, 0}, 0, 0x400, 83},
+};
+#define expect (RT_BOTW ? expect_botw190 : RT_V143 ? expect_143 : RT_V110 ? expect_110 : expect_121)
 
 static int failures;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("  FAIL: " __VA_ARGS__); putchar('\n'); } } while (0)

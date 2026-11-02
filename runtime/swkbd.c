@@ -33,7 +33,7 @@
 // KeyboardConfig then the work buffer {pointer, size}: offsets read from the SDK setters (MNG) and checked against
 // the SDK by --probe-services. SDK 20.5 (1.4.3) put a text-check callback at +0x4c8 and grew KeyboardConfig from
 // 0x4d0 to 0x518 bytes (SetInitialText, SetUserWordList read the work buffer there); the fields below +0x3d8 stay.
-#define ARG_WORK (RT_V143 ? 0x518 : 0x4d0)
+#define ARG_WORK (RT_SDK20 ? 0x518 : 0x4d0)
 #define ARG_WORK_SIZE (ARG_WORK + 8)
 enum {
     KB_TYPE = 0x00, KB_OK_TEXT = 0x04, KB_DISABLED = 0x1c, KB_HEADER = 0x24, KB_SUB = 0xa6, KB_GUIDE = 0x1a8,
