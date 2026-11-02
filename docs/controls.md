@@ -98,6 +98,14 @@ Mouse motion (raw input) becomes right-stick deflection. Each presented frame ta
 
 The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sticks at 50% deflection. A gamepad plugged in later is picked up within one second; with none connected the log says `input: no gamepad`.
 
+## Mouse camera (mouselook)
+
+While the cursor is captured, mouse motion rewrites the camera's position, focus and up vector directly (runtime/mousecam.c), so turning is mouselook independent of the game's stick curve. `TOTK_MOUSECAM=1` turns it on; `TOTK_MOUSECAM=0` leaves the game's own camera and the old mouse-to-stick path serve the menus. F3 toggles at run time. While the window is the foreground window the cursor is hidden and confined to the client area; Esc releases it, a client click recaptures it. `TOTK_INPUT=none` disables capture too.
+
+The wheel zooms in and out; middle-click resets the zoom. `TOTK_MOUSECAM_MODE=relative` (default) turns the game's own camera on top of its current direction; `absolute` keeps the mouse's owned yaw / pitch instead. `TOTK_MOUSECAM_PITCH_MIN` (default -0.5 rad) limits how far down the camera can turn; `TOTK_MOUSECAM_HOLD_YAW` / `TOTK_MOUSECAM_HOLD_PITCH` (on by default) keep the view steady while running so Link stays framed. `TOTK_MOUSECAM_SHIFT_R` / `TOTK_MOUSECAM_SHIFT_B` offset the pivot right / behind Link; `TOTK_MOUSECAM_FLOOR` stops the camera below Link's feet; `TOTK_MOUSECAM_RECENTRE_MS` recentres the view after that many ms of no mouse movement (0 = never); `TOTK_MOUSE_INVERT_Y` flips the vertical axis.
+
+Research / diagnostic keys (`TOTK_MOUSECAM_PROBE`, `TOTK_MOUSECAM_DRIVE`, `TOTK_MOUSECAM_DEBUG`, ...) are off unless set and log to the runtime log.
+
 ## Nintendo Switch 2 controllers
 
 Windows does not present the Switch 2 Pro Controller as a gamepad SDL can open (the log says `input: no gamepad`), so it needs a bridge program that wakes it and creates a virtual gamepad. The DS4Windows fork by hbashton ([github.com/hbashton/DS4Windows](https://github.com/hbashton/DS4Windows), tested with release VIIPERRC4.5.1, a pre-release) with the output set to an emulated DualSense gives buttons, rumble, gyro and accelerometer, and reads the sticks through the controller's calibration (they rest at 0 to 2%). The game reads its virtual DualSense directly; the log then shows `input: gamepad "DualSense Wireless Controller" (rumble, gyro and accelerometer, ...)` and `input: motion sensors on`. Its release notes also list Joy-Con 2 support, which is untested here.

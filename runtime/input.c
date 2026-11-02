@@ -17,6 +17,7 @@
 #include "input.h"
 #include "input_map.h"
 #include "input_wsys.h"
+#include "mousecam.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -235,6 +236,31 @@ static float mouse_sens_get(void) {
     return mouse_sens;
 }
 
+float input_mouse_sens(void) { return mouse_sens_get(); }
+
+// Raw look deltas for mousecam (runtime/mousecam.c): 1 while the cursor is captured (the hook may rewrite the
+// camera), 0 otherwise (deltas dropped). While mousecam_suppress_stick the stick path does not drain the mouse, so
+// the two takes never race for the same counts.
+int input_mouse_look_take(float *dx, float *dy, float *scroll, int *reset) {
+    float sx = 0, sy = 0, sc = 0;
+    int rs = 0;
+    if (!ikb_captured()) {
+        ikb_look_take(&sx, &sy, &sc, &rs);
+        *dx = *dy = *scroll = 0;
+        *reset = 0;
+        return 0;
+    }
+    if (!ikb_look_take(&sx, &sy, &sc, &rs)) {
+        *dx = *dy = *scroll = 0;
+        *reset = 0;
+        return 0;
+    }
+    *dx = sx;
+    *dy = sy;
+    *scroll = sc;
+    *reset = rs;
+    return 1;
+}
 
 // ---- walk key: the keyboard's stick samples scaled down while a key is held (TOTK_WALK_KEY, TOTK_WALK_SCALE)
 // A keyboard key is all or nothing, so every keyboard-driven stick sample is +/-32767 and the game only ever sees a
@@ -295,6 +321,10 @@ static void mouse_camera(int32_t out[2]) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
         frame = ~0ull;
+    } else if (mousecam_suppress_stick()) {
+        // mousecam owns the mouse: leave the counts for input_mouse_look_take
+        held[0] = held[1] = 0;
+        frame = ~0ull;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         double age = frame == ~0ull ? 0 : (double)(now - t0) / 1e9;
@@ -330,6 +360,15 @@ static float stick_dead_get(int s) {
 // One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
 static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
+}
+
+// Right-stick sample for mousecam absolute mode: the gamepad alone, -32767..32767 (stick() applies the dead zone).
+void input_stick_r_pad(int32_t rs[2]) {
+    rs[0] = rs[1] = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1 && pad && SDL_GamepadConnected(pad))
+        stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), rs);
+    plat_mutex_unlock(&lock);
 }
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
@@ -546,6 +585,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();
+    // F3: mouselook on/off (edge; only while the window is in front). Off gives the mouse-to-stick path back.
+    {
+        static int f3_held;
+        int f3 = ikb_foreground() && ikb_down(KEY_F3);
+        if (f3 && !f3_held) mousecam_toggle();
+        f3_held = f3;
+    }
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
     *buttons = b; *lx = sl[0]; *ly = sl[1]; *rx = sr[0]; *ry = sr[1];
