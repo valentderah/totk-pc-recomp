@@ -346,6 +346,10 @@ static int fonts_up(float scale) {
         ImFontGlyphRangesBuilder b;
         b.AddText(ui_text_in("en", kCjk[i].name));
         ui_text_visit(kCjk[i].lang, add_row_glyphs, &b);
+        // Cheat names come from a mod's cheats/<build id>.txt at runtime, so no catalog row holds them
+        // and their glyphs would otherwise fall back to the missing-glyph box.
+        for (int k = 0; k < cheats_count(); k++)
+            if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
