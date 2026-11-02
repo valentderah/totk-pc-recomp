@@ -232,6 +232,34 @@ static void output_push(Mixer *m, const float *lr, int frames) {
     if (!m->device_ok) atomic_store(&m->rd, wr + (uint64_t)frames);   // no device: the ring only keeps the latest frames
 }
 
+// TOTK_AUDIO_DUMP=<path>: the sink mix before the clamp as raw interleaved float32 stereo, and every 5 s one log line with
+// how many frames were rendered less than 1 ms after the one before (a burst refill). File writes on the render thread:
+// for diagnosis only.
+static void sink_dump(const float *raw, int frames) {
+    static FILE *f;
+    static int opened;
+    static uint64_t last, window_start, total, bursts;
+    if (!opened) {
+        opened = 1;
+        const char *path = cfg_get("TOTK_AUDIO_DUMP");
+        if (path && *path) f = fopen(path, "wb");
+    }
+    if (!f) return;
+    fwrite(raw, sizeof(float), (size_t)frames * 2, f);
+    uint64_t now = kern_now_ns();
+    total++;
+    if (last && now - last < 1000000ull) bursts++;
+    last = now;
+    if (!window_start) window_start = now;
+    if (now - window_start >= 5000000000ull) {
+        rt_log("audio: dump: %llu frames in %.1f s, %llu rendered under 1 ms after the previous", (unsigned long long)total,
+               (now - window_start) / 1e9, (unsigned long long)bursts);
+        total = bursts = 0;
+        window_start = now;
+        fflush(f);
+    }
+}
+
 // Level meter (TOTK_TRACE=audio): one line per 5 s of output, and the first nonzero frame.
 static void level_note(AudioRenderer *r, Mixer *m, const float *lr, int frames) {
     if (!(rt_trace & RT_TRACE_AUDIO)) return;
@@ -505,8 +533,25 @@ static void walk_step(Walk *w) {   /* the same transitions as advance_voice in a
     walk_skip_empty(w);
 }
 /* Decodes `frames` output samples per channel into out[c][k]; the renderer advances the voice afterwards by the same amount. */
+static double voice_step(const AudioRenderer *r, const ServerVoice *v) {
+    return v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0) / r->param.sample_rate;
+}
+/* Source samples the voice consumes over `frames` output samples, counted with the exact accumulation voice_render steps by
+   (float rounding makes `fraction + seconds * rate * pitch` differ from it by one sample on some frames, a seam click);
+   leaves the fractional position in v->fraction. */
+uint64_t audio_voice_consumed(const AudioRenderer *r, ServerVoice *v, int frames) {
+    const double step = voice_step(r, v);
+    double frac = v->fraction;
+    uint64_t consumed = 0;
+    for (int k = 0; k < frames; k++) {
+        frac += step;
+        while (frac >= 1.0) { frac -= 1.0; consumed++; }
+    }
+    v->fraction = frac;
+    return consumed;
+}
 static void voice_render(AudioRenderer *r, ServerVoice *v, float out[6][MAX_FRAME], int frames) {
-    const double step = v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0) / r->param.sample_rate;
+    const double step = voice_step(r, v);
     Walk w = {v, v->index, v->offset, v->loops_done, {0}, 0, v->adpcm.history[0], v->adpcm.history[1], v->adpcm.buffer, v->adpcm.at};
     memcpy(w.valid, v->valid, sizeof w.valid);
     walk_skip_empty(&w);
@@ -545,6 +590,7 @@ static void mix_aux(AudioRenderer *r, int mix, const AudrenEffectIn *e) {
     uint8_t *send=ipc_guest(p.send_info,128+(uint64_t)p.capacity*4), *ret=ipc_guest(p.return_info,128+(uint64_t)p.capacity*4);
     uint32_t *sh=(uint32_t *)(send+64),*rh=(uint32_t *)(ret+64); int32_t *sd=(int32_t *)(send+128),*rd=(int32_t *)(ret+128);
     uint32_t wr=sh[1],read=rh[0],total=p.channels*(uint32_t)m->frame;
+    if(e->enabled) report_once(m,6,"auxiliary effect in use, channels",(int)p.channels);
     for(unsigned c=0;c<p.channels;c++) {
         if(p.input[c]>=r->mixes[mix].buffer_count || p.output[c]>=r->mixes[mix].buffer_count)rt_fatal("auxiliary effect mix buffer");
         float *input=mixbuf(m,m->offset[mix]+p.input[c]),*output=mixbuf(m,m->offset[mix]+p.output[c]);
@@ -798,6 +844,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     if (sink && sink->input_count >= 1 && sink->input_count <= 6) {
         const float gain = host_volume() * atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
         const float *ch[6] = {0};
+        float raw[2 * MAX_FRAME];
         for (uint32_t c = 0; c < sink->input_count; c++) if (sink->inputs[c] >= 0 && sink->inputs[c] < m->nbuf) ch[c] = mixbuf(m, sink->inputs[c]);
         for (int k = 0; k < frames; k++) {
             float l, rr;
@@ -809,8 +856,10 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
             } else if (sink->input_count >= 2) { l = ch[0] ? ch[0][k] : 0; rr = ch[1] ? ch[1][k] : 0; }
             else l = rr = ch[0] ? ch[0][k] : 0;
             l *= gain; rr *= gain;
+            raw[2 * k] = l; raw[2 * k + 1] = rr;
             lr[2 * k] = l > 1 ? 1 : l < -1 ? -1 : l; lr[2 * k + 1] = rr > 1 ? 1 : rr < -1 ? -1 : rr;
         }
+        sink_dump(raw, frames);
     } else if (!sink && !circular) report_once(m, 5, "no device sink in use", r->param.sink_count);
     level_note(r, m, lr, frames);
     output_push(m, lr, frames);

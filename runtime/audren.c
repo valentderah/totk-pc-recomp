@@ -318,11 +318,9 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
 
 // ---- render tick: one frame each time the output device has taken the ring below its target (audio_mixer_pace_ns),
 // or every sample_count / sample_rate seconds of the host clock without a device, while stopped or while it stalls
-static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) {
+static void advance_voice(AudioRenderer *r, ServerVoice *v) {
     if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate) return;
-    double want = v->fraction + out_seconds * v->in.sample_rate * (v->in.pitch > 0 ? v->in.pitch : 1.0);
-    uint64_t samples = (uint64_t)want;
-    v->fraction = want - (double)samples;
+    uint64_t samples = audio_voice_consumed(r, v, (int)r->param.sample_count);
     while (samples && v->valid[v->index]) {
         AudrenWaveBuffer *b = &v->buffers[v->index];
         uint64_t length = (uint64_t)(b->end - b->start), left = length - v->offset;
@@ -373,7 +371,7 @@ static void render_thread(void *p) {
         if (r->state == 0) {
             voices_prepare(r);
             audio_mixer_render(r, frame);
-            for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], frame);
+            for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i]);
             r->elapsed_frames++;
             uint64_t given = r->stop_released + r->empty_played + r->flushed;
             if ((rt_trace & RT_TRACE_IPC) && given != r->logged_released && r->elapsed_frames % 1000 == 0) {
