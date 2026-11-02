@@ -303,6 +303,9 @@ int probe_cfg(void) {
           "prompts: the game's own unless set to Xbox");
     CHECK(input_prompts_pick(NULL, "xbox_prompts") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox_prompts") == PROMPTS_NINTENDO,
           "prompts: 0.1.9's pad_layout = xbox_prompts means Xbox while prompts is unset");
+    CHECK(input_prompts_pick("keyboard", "nintendo") == PROMPTS_KEYBOARD &&
+              input_prompts_pick("Keyboard", "xbox") == PROMPTS_KEYBOARD,
+          "prompts: keyboard returns PROMPTS_KEYBOARD");
     CHECK(!input_prompts_folder(PROMPTS_NINTENDO, "nintendo") && !input_prompts_folder(PROMPTS_NINTENDO, "xbox"),
           "prompts: the game's own need no folder");
     CHECK(EQ(input_prompts_folder(PROMPTS_XBOX, "nintendo"), "romfs-patches-xbox") &&
@@ -311,6 +314,13 @@ int probe_cfg(void) {
               EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
               EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
           "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    CHECK(EQ(input_prompts_folder(PROMPTS_KEYBOARD, "nintendo"), "romfs-patches-keyboard") &&
+              EQ(input_prompts_folder(PROMPTS_KEYBOARD, "xbox"), "romfs-patches-keyboard") &&
+              EQ(input_prompts_folder(PROMPTS_KEYBOARD, NULL), "romfs-patches-keyboard"),
+          "prompts: keyboard prompts use romfs-patches-keyboard for every layout");
+    const CfgMeta *pmeta = cfg_meta("PROMPTS");
+    CHECK(pmeta && pmeta->values && strstr(pmeta->values, "keyboard"),
+          "cfg_meta PROMPTS values include keyboard");
     // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
     // where the layout puts A on the east button, which an Xbox pad labels B.
     input_map_reset();

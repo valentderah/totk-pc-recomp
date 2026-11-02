@@ -7,7 +7,7 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, romfs-patches-keyboard/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
@@ -1063,18 +1063,20 @@ class Prepare(Step):
                                   dest / f'romfs-patches-{size}', '--aspect', size])
             if code:
                 raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
-        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
-        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
-        # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on.
+        # The same with Xbox or keyboard button icons in the prompts (make_romfs_patches.py --prompts):
+        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto,
+        # romfs-patches-keyboard for keyboard and mouse (runtime/input_map.c input_prompts_folder). All are written on
+        # every install, so the menu choices work without another run of the setup. Optional: when one fails, the game
+        # keeps the Switch prompts with that layout and the menu says the files are missing, so the setup warns once
+        # and goes on.
         failed = None
-        for style in ('xbox', 'xbox-label'):
+        for style in ('xbox', 'xbox-label', 'keyboard'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
+            extra = ['--ini', dest / 'totk.ini'] if style == 'keyboard' and (dest / 'totk.ini').is_file() else []
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
                                  ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
-                                  '--prompts', style])
+                                  '--prompts', style, *extra])
             if code:
                 remove(out)
                 failed = failed or (code, log)

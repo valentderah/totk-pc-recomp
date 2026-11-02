@@ -87,15 +87,17 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
 // Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
-// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts).
-enum { PROMPTS_NINTENDO, PROMPTS_XBOX };
-// The prompts for a TOTK_PROMPTS value ("nintendo" or "xbox", any case). Unset or empty: Xbox while the pad layout
+// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). Keyboard:
+// keycaps for the player's keys and mouse icons for clicks and camera look (prompts = keyboard).
+enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_KEYBOARD };
+// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox" or "keyboard", any case). Unset or empty: Xbox while the pad layout
 // setting is "xbox_prompts", else Nintendo.
 int input_prompts_pick(const char *prompts, const char *pad_layout);
 // The folder next to romfs-index.bin that holds those prompts for a TOTK_PAD_LAYOUT value, NULL for the game's own. The
 // Nintendo layout plays an Xbox pad by position, so its folder names the face buttons the other way round
 // (romfs-patches-xbox: the right button does A and is labelled B); xbox and auto put every Switch button on the button
 // labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label.
+// Keyboard and mouse prompts use romfs-patches-keyboard.
 const char *input_prompts_folder(int prompts, const char *pad_layout);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
