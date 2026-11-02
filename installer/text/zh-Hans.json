@@ -5,6 +5,7 @@
  "step.lift": "将游戏代码转换为 C 代码",
  "step.compile": "编译 {game_exe}",
  "step.prepare": "准备着色器",
+ "step.dlss": "下载 NVIDIA DLSS",
  "step.cleanup": "清理",
 
  "phase.check.host": "检查处理器和显卡",
@@ -32,6 +33,7 @@
  "phase.prepare.translate": "转译着色器",
  "phase.prepare.libraries": "为显卡驱动构建着色器",
  "phase.prepare.pack": "将着色器缓存打包成一个文件",
+ "phase.dlss.download": "从 NVIDIA 的 DLSS SDK 下载 nvngx_dlss.dll",
  "phase.cleanup.ini": "写入 totk.ini",
  "phase.cleanup.temp": "删除临时文件",
 
@@ -104,6 +106,9 @@
  "warn.xbox_prompts_failed": "无法准备 Xbox 按键提示（退出代码 {code}）；游戏将继续使用 Switch 按键提示。详情：{log}",
  "warn.shaders_skipped": "显卡驱动在编译部分着色器时崩溃，因此有 {count} 个着色器未被预先准备。游戏会在首次需要时编译它们，驱动在那时也可能崩溃；更新驱动可能会解决。详情：{log}",
  "warn.kernel_old": "Linux {version} 缺少游戏依赖的写入跟踪功能（需要 6.7 或更新版本）；游戏可能运行得很慢。更新系统即可解决。",
+ "warn.dlss_no_rtx": "未找到 NVIDIA RTX 显卡，因此未下载 NVIDIA DLSS；游戏无需它也能运行。",
+ "warn.dlss_kept": "安装文件夹中已有 DLSS 库（{path}）；安装程序将保留它。",
+ "warn.dlss_download_failed": "无法从 {url} 下载 NVIDIA DLSS：{detail}。游戏无需它也能运行；下次运行安装程序时会重试。",
 
  "ui.title": "TotK 安装程序",
  "ui.rebuild_title": "正在为你的模组重新构建游戏",
@@ -125,6 +130,8 @@
  "ui.pick_firmware": "选择 Switch 固件文件夹（Contents/registered）",
  "ui.pick_dest": "选择安装文件夹",
  "ui.firmware_help": "用于中文、韩文和繁体中文文本：固件的 Contents/registered 文件夹，例如来自 Ryujinx 或 Yuzu。安装程序会从中把 Switch 系统字体复制到安装文件夹。",
+ "ui.dlss": "为 NVIDIA RTX 显卡下载 NVIDIA DLSS（nvngx_dlss.dll）",
+ "ui.dlss_help": "来自 GitHub 上 NVIDIA 的 DLSS SDK，遵循 NVIDIA RTX SDK 许可（github.com/NVIDIA/DLSS）。没有它，dlaa 和 DLSS 设置不起作用。",
  "ui.compressed_help": "压缩的 NSZ 和 XCZ 文件可以直接使用：安装程序会自行解压（在游戏数据提取完成之前，需要与解压后文件大小相同的可用空间）。",
  "ui.type_game": "游戏文件（NSP、XCI、NSZ、XCZ）",
  "ui.type_keys": "密钥文件（*.keys）",

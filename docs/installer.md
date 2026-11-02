@@ -23,6 +23,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 ```
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
+  nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -72,7 +73,13 @@ loads the saves 1.4.3 wrote.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+7. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+   `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
+   license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
+   the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
+   folder (a newer one the player put there) is kept. Without an RTX GPU the step warns and does nothing; a failed
+   download warns, the game runs without DLSS, and the next run of the setup tries again.
+8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).

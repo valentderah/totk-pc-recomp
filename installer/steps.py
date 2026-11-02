@@ -1,4 +1,4 @@
-"""The seven setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, cleanup.
+"""The eight setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, dlss, cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -7,7 +7,7 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from . import ini
@@ -1114,7 +1115,79 @@ class Prepare(Step):
         return {'xlate_sha256': file_sha256(xlate)}
 
 
-# ---- 7. clean up
+# ---- 7. NVIDIA DLSS
+
+# NVIDIA's DLSS library, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship it:
+# with --dlss it downloads NVIDIA's own copy from the DLSS SDK repository (NVIDIA RTX SDK license) at a pinned tag and
+# checks its hash. The game runs without it; dlaa and the DLSS modes then do nothing.
+DLSS_DLL = 'nvngx_dlss.dll'
+DLSS_VERSION = '310.9.1'
+DLSS_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSS_DLL}'
+DLSS_SIZE = 58956912
+DLSS_SHA256 = '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'
+DLSS_LICENSE = 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
+
+
+def nvidia_rtx(host):
+    """An NVIDIA RTX GPU among the host check's Vulkan devices: the GPUs DLSS runs on."""
+    return any('NVIDIA' in d['name'].upper() and 'RTX' in d['name'].upper() for d in (host or {}).get('devices', []))
+
+
+class Dlss(Step):
+    """With --dlss on Windows and an NVIDIA RTX GPU: nvngx_dlss.dll next to totk.exe. A DLSS library the player put
+    there (another version) is kept. A failed download warns and is tried again on the next run; the game runs
+    without it."""
+
+    id = 'dlss'
+
+    def key(self, ctx):
+        if not getattr(ctx.options, 'dlss', False):
+            return fingerprint('dlss-1', 'off')
+        return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+
+    def current(self, ctx, record):
+        if record.get('failed'):
+            return False
+        return not record.get('installed') or (ctx.dest / DLSS_DLL).is_file()
+
+    def run(self, ctx):
+        if not getattr(ctx.options, 'dlss', False):
+            return {}
+        if os.name != 'nt':
+            return {'skipped': 'not_windows'}
+        if not nvidia_rtx(getattr(ctx, 'host', None)):
+            ctx.reporter.warning('warn.dlss_no_rtx')
+            return {'skipped': 'no_rtx'}
+        rep, target = ctx.reporter, ctx.dest / DLSS_DLL
+        if target.is_file():
+            if file_sha256(target) == DLSS_SHA256:
+                return {'installed': DLSS_VERSION}
+            rep.warning('warn.dlss_kept', path=str(target))
+            return {'kept': True}
+        part = ctx.temp / (DLSS_DLL + '.part')
+        rep.progress('dlss', 'download', 0, DLSS_SIZE, 'bytes', force=True)
+        rep.log(f'dlss: {DLSS_URL} (license {DLSS_LICENSE})')
+        try:
+            part.parent.mkdir(parents=True, exist_ok=True)
+            h, done = hashlib.sha256(), 0
+            with urllib.request.urlopen(DLSS_URL, timeout=60) as r, open(part, 'wb') as f:
+                while block := r.read(1 << 20):
+                    f.write(block)
+                    h.update(block)
+                    done += len(block)
+                    rep.progress('dlss', 'download', min(done, DLSS_SIZE), DLSS_SIZE, 'bytes')
+            if done != DLSS_SIZE or h.hexdigest() != DLSS_SHA256:
+                raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
+            replace_file(part, target)
+            remove(part)
+        except OSError as e:   # urllib's errors, timeouts and a bad file
+            remove(part)
+            rep.warning('warn.dlss_download_failed', url=DLSS_URL, detail=str(e)[:300])
+            return {'failed': True}
+        return {'installed': DLSS_VERSION}
+
+
+# ---- 8. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -1182,4 +1255,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]
