@@ -95,7 +95,10 @@ of them.
    ```
 
    `--cpu v2` targets x86-64-v2 (SSE4.2, no AVX2/FMA) for older CPUs; the default `v3` needs AVX2. The v2 build links
-   `runtime/fma.c`, a correctly rounded software fma the FP lowering needs, and runs slower.
+   `runtime/fma.c`, a correctly rounded software fma the FP lowering needs, and runs slower. Inline assembly,
+   target attributes and intrinsics are not bound by `-march`, so a v2 build runs `tools/check_isa.py` over the runtime
+   objects before it links: any AVX, BMI or other instruction above x86-64-v2 outside a function listed there as
+   dispatched by a runtime CPU check stops the build.
 
    `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
 

@@ -843,7 +843,7 @@ def runtime_key(ctx):
     tools. Shader preparation depends on these, not on the code cheats a lift adds."""
     layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
     clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
-    tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
+    tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py', 'check_isa.py')]
     return fingerprint('runtime-1', cpu, layout.runtime_lib_for(cpu), layout.runtime, layout.deps or 'system',
                        layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
 
