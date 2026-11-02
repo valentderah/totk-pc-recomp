@@ -97,17 +97,24 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 # Flags for generated code as LAS Recomp builds it (Makefile GENFLAGS, Windows), plus -march for the FP/SIMD lowering.
 # --cpu v2 replaces the level for CPUs without AVX2/FMA; runtime/fma.c then supplies the correctly rounded fma the
 # lowering needs (runtime/simd.h).
+import platform as _platform
+ARM64 = _platform.machine().lower() in ('aarch64', 'arm64')
+# aarch64 hosts (Snapdragon handhelds): ARMv8.2-A has the atomics (LSE), fp16 and dot product the lifted code and the
+# compiler benefit from, and every ARMv8.2+ core runs it.
+MARCH = '-march=armv8.2-a' if ARM64 else '-march=x86-64-v3'
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
-             '-march=x86-64-v3']
-RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+             MARCH]
+RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', MARCH]
 
 
 def set_cpu(cpu):
     """Target x86-64-v3 (the default) or x86-64-v2. RT_CPU_LEVEL lets runtime/main.c's self-test check the same
     instruction set the build was compiled for."""
+    if ARM64:
+        return   # no CPU levels there: the build is armv8.2-a
     march = f'-march=x86-64-{cpu}'
-    GEN_FLAGS[GEN_FLAGS.index('-march=x86-64-v3')] = march
-    RT_FLAGS[RT_FLAGS.index('-march=x86-64-v3')] = march
+    GEN_FLAGS[GEN_FLAGS.index(MARCH)] = march
+    RT_FLAGS[RT_FLAGS.index(MARCH)] = march
     RT_FLAGS.append(f'-DRT_CPU_LEVEL={3 if cpu == "v3" else 2}')
 if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)

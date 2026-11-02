@@ -267,6 +267,9 @@ static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
 #endif
 
 static void check_cpu(void) {
+#if defined(__aarch64__)
+    printf("cpu: aarch64 (armv8.2-a build)\n");   // the build flags are the check: a core without them fails to start
+#else
     __builtin_cpu_init();
 #if RT_CPU_LEVEL >= 3
     int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
@@ -276,6 +279,7 @@ static void check_cpu(void) {
     int ok = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
     printf("cpu: x86-64-v2 (SSE4.2, POPCNT) %s\n", ok ? "present" : "MISSING");
     CHECK(ok, "the lifted code is built for x86-64-v2");
+#endif
 #endif
 }
 

@@ -21,6 +21,7 @@
 // src/games/totk, MIT); the code is ours.
 #include "vk.h"
 
+#include <stdlib.h>
 #include <math.h>
 #include <string.h>
 

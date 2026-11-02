@@ -91,6 +91,8 @@ void plat_yield(void);                    // gives the rest of the time slice to
 static inline void plat_pause(void) {     // spin-wait hint
 #if defined(__x86_64__) || defined(_M_X64)
     _mm_pause();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
 #endif
 }
 
