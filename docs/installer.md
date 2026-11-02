@@ -26,6 +26,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
   profile/                       saves
+  mods/                          the player's mods, one folder per mod (created by the menu's "Open mods folder")
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
   totk-install.json              what built this folder: release version, input hashes, finished steps
@@ -37,13 +38,13 @@ The player runs a newer installer on the same folder. It reads `totk-install.jso
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
 shaders. A newer release that changes nothing game-derived skips the rebuild.
 
-Given an update file other than the recorded one (1.1.1, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
+Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
 loads the saves 1.4.3 wrote.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the update is 1.1.1, 1.2.1 or 1.4.3 (by hash, as
+1. **Check** before writing anything: the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
@@ -52,12 +53,15 @@ loads the saves 1.4.3 wrote.
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
 3. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
 4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
-   to the installer.
+   to the installer. The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
+   (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
+   tools refuse costs those cheats or patches, not the install.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
    (`build_game.py --runtime-lib`; about 3 min on 24 cores).
-6. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
+6. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
+   patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
@@ -67,9 +71,25 @@ loads the saves 1.4.3 wrote.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
+7. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+   `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
+
+## Rebuilding for the mods
+
+The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
+Ninja recompiles only those: a new or edited code cheat costs the lift (under a minute on 24 cores, a few minutes on 4)
+and a few dozen chunks, not a full compile, and the shaders stay prepared.
+
+`build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
+(`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
+whatever the working folder), one argument per line. When an enabled mod has code cheats or ExeFS patch files the build
+lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
+window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
+offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
+again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
+needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
 
 ## Command line
 

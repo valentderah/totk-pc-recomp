@@ -29,7 +29,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",
-    [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
+    [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_MODS] = "Mods", [UI_MENU_TAB_SOUND] = "Sound",
     [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
@@ -157,6 +157,37 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "keyboard stays quiet until the window is in front again. Off, it pauses when its "
                                   "window loses focus, as on the Switch when Home is pressed; a load interrupted that "
                                   "way can stop for good.",
+
+    [UI_MENU_MODS_BUILTIN] = "Built into the port", [UI_MENU_MODS_INSTALLED] = "Installed mods",
+    [UI_MENU_MODS_NONE] = "No mods yet. Unpack a mod into the mods folder, one folder per mod with its romfs folder "
+                          "inside, and restart the game. TKMM can export its merged mods into a folder there too.",
+    [UI_MENU_MODS_OPEN] = "Open mods folder",
+    [UI_MENU_MODS_OPEN_DESC] = "Shows the folder the game loads mods from. It is created if it is missing.",
+    [UI_MENU_MODS_ROW_DESC] = "Game files it replaces: %u. New files it adds: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u of its files come from %s, which is higher in the list.",
+    [UI_MENU_MODS_MOVE_HINT] = "The top face button or Ctrl+Up moves it up, the left face button or Ctrl+Down moves it "
+                               "down. When two mods change the same file, the higher one wins. Changes apply after a "
+                               "restart.",
+    [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
+    [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
+                            "load code modules, so the whole mod stays off.",
+    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs). The game builds the patches in when it "
+                                 "starts next (a rebuild of a few minutes); until then the whole mod stays off.",
+    [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
+    [UI_MENU_MODS_CHEATS_FILE] = "Cheats for this game version are read at start from cheats\\%s in this mod.",
+    [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u of its files are made for another game version and are left out. Look for a "
+                                   "version of this mod made for your game version.",
+    [UI_MENU_MODS_UNUSED] = "not used",
+    [UI_MENU_MODS_FPS60] = "60 FPS patch",
+    [UI_MENU_MODS_FPS60_DESC] = "The port's own patch for 60 frames per second. Set it with Frame rate limit on the "
+                                "Game tab.",
+    [UI_MENU_MODS_RES] = "Resolution patch",
+    [UI_MENU_MODS_RES_DESC] = "The port's own patch for resolutions above 1080p. Set it with Game resolution on the "
+                              "Screen tab.",
+    [UI_MENU_MODS_QUICKMENU] = "Quick menu fix",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "The port's fix for the black background of the weapon, shield and material menus "
+                                    "at 60 FPS.",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Master volume of the game.",
 
@@ -384,13 +415,43 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (FSR only enlarges)",
+    [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_CHEATS_NONE] = "No cheats for this game version. A mod's cheats are an Atmosphere cheat file in its "
+                            "cheats folder, named after the game's build: mods\\<mod>\\cheats\\%s. Restart the game to "
+                            "read them. For cheats that change the game's code, the game rebuilds itself at start (a "
+                            "few minutes).",
+    [UI_MENU_CHEATS_MOD] = "%s: %d cheats",
+    [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
+    [UI_MENU_CHEAT_MASTER] = "always on",
+    [UI_MENU_CHEAT_MASTER_DESC] = "The file's master code: it is always on.",
+    [UI_MENU_CHEAT_RESTORE] = "not needed",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
+    [UI_MENU_CHEAT_REBUILD] = "after the rebuild",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "This cheat changes the game's code and is new or edited since the game was built. "
+                                   "The game builds it in when it starts next (a few minutes), or use Rebuild the game "
+                                   "now.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
+    [UI_MENU_CHEATS_REBUILD] = "Rebuild the game now",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Some cheats change the game's code and are not built into it: they are new or "
+                                    "edited, or their last rebuild failed or was cancelled. Closes the game; the setup "
+                                    "builds them in (a few minutes) and starts the game again. Progress since your "
+                                    "last save is lost.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
+                                       "whole mod stays off. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Its code patches (exefs) are made for another game version.",
+    [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
+                                      "stays off while this mod is on.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
-    [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
+    [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_MODS] = "Моды", [UI_MENU_TAB_SOUND] = "Звук",
     [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
@@ -520,6 +581,35 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "действует, пока окно не вернётся на передний план. Выключено: игра встаёт на паузу, "
                                   "когда окно теряет фокус, как на Switch при нажатии Home; прерванная так загрузка "
                                   "может остановиться насовсем.",
+
+    [UI_MENU_MODS_BUILTIN] = "Встроенные в порт", [UI_MENU_MODS_INSTALLED] = "Установленные моды",
+    [UI_MENU_MODS_NONE] = "Модов пока нет. Распакуйте мод в папку mods, каждый мод в свою папку с папкой romfs внутри, и "
+                          "перезапустите игру. TKMM тоже может выгрузить туда объединённые моды отдельной папкой.",
+    [UI_MENU_MODS_OPEN] = "Открыть папку модов",
+    [UI_MENU_MODS_OPEN_DESC] = "Показывает папку, из которой игра загружает моды. Если её нет, она будет создана.",
+    [UI_MENU_MODS_ROW_DESC] = "Заменяет файлов игры: %u. Добавляет новых файлов: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u его файлов берутся из мода %s, он выше в списке.",
+    [UI_MENU_MODS_MOVE_HINT] = "Верхняя кнопка или Ctrl+Вверх поднимает мод, левая кнопка или Ctrl+Вниз опускает. Если "
+                               "два мода меняют один файл, побеждает верхний. Изменения действуют после перезапуска.",
+    [UI_MENU_MODS_EMPTY] = "В этой папке нет файлов romfs, exefs или cheats.",
+    [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main). Порт не загружает "
+                            "модули кода, поэтому мод выключен целиком.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Этот мод меняет код игры (exefs). Игра соберёт эти патчи при следующем запуске "
+                                 "(пересборка на несколько минут); до тех пор мод выключен целиком.",
+    [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
+    [UI_MENU_MODS_CHEATS_FILE] = "Читы для этой версии игры читаются при запуске из cheats\\%s в этом моде.",
+    [UI_MENU_MODS_BAD_NAME] = "В имени папки есть символ |, которым список модов разделяет имена. Переименуйте папку.",
+    [UI_MENU_MODS_OTHER_VERSION] = "Файлов для другой версии игры: %u, они пропущены. Поищите версию этого мода для "
+                                   "вашей версии игры.",
+    [UI_MENU_MODS_UNUSED] = "не используется",
+    [UI_MENU_MODS_FPS60] = "Патч 60 FPS",
+    [UI_MENU_MODS_FPS60_DESC] = "Собственный патч порта для 60 кадров в секунду. Настраивается «Ограничением частоты "
+                                "кадров» на вкладке «Игра».",
+    [UI_MENU_MODS_RES] = "Патч разрешения",
+    [UI_MENU_MODS_RES_DESC] = "Собственный патч порта для разрешений выше 1080p. Настраивается «Разрешением игры» на "
+                              "вкладке «Экран».",
+    [UI_MENU_MODS_QUICKMENU] = "Исправление быстрого меню",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "Исправление порта: чёрный фон меню оружия, щитов и материалов при 60 FPS.",
 
     [UI_MENU_VOLUME] = "Громкость", [UI_MENU_VOLUME_DESC] = "Общая громкость игры.",
 
@@ -753,6 +843,35 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
     [UI_MENU_OV_SCALE_DOWN] = "билинейное (FSR только увеличивает)",
+    [UI_MENU_TAB_CHEATS] = "Читы",
+    [UI_MENU_CHEATS_NONE] = "Для этой версии игры читов нет. Читы мода — это файл читов Atmosphere в его папке cheats "
+                            "с именем по сборке игры: mods\\<мод>\\cheats\\%s. Перезапустите игру, чтобы они "
+                            "прочитались. Для читов, меняющих код игры, игра пересоберётся сама при запуске (несколько "
+                            "минут).",
+    [UI_MENU_CHEATS_MOD] = "%s — читов: %d",
+    [UI_MENU_CHEAT_CODE_DESC] = "Меняет код игры. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Меняет код игры, пока вы держите %s. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Пока включён, записывает память игры каждый кадр.",
+    [UI_MENU_CHEAT_MASTER] = "всегда вкл.",
+    [UI_MENU_CHEAT_MASTER_DESC] = "Главный код файла: включён всегда.",
+    [UI_MENU_CHEAT_RESTORE] = "не нужен",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Он только возвращает исходный код игры. Выключение чита уже делает это.",
+    [UI_MENU_CHEAT_REBUILD] = "после пересборки",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Этот чит меняет код игры и появился или изменился после сборки игры. Игра соберёт "
+                                   "его при следующем запуске (несколько минут), или нажмите «Пересобрать игру сейчас».",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
+    [UI_MENU_CHEATS_REBUILD] = "Пересобрать игру сейчас",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Некоторые читы меняют код игры и ещё не собраны в неё: они новые или изменены, "
+                                    "либо прошлая пересборка не удалась или была отменена. Закрывает игру; установщик "
+                                    "собирает их (несколько минут) и снова запускает игру. Прогресс после последнего "
+                                    "сохранения будет потерян.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Этот мод меняет код игры (exefs) так, как порт применить не может, поэтому мод "
+                                       "выключен целиком. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Его патчи кода (exefs) сделаны для другой версии игры.",
+    [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
+                                      "который выключен, пока этот мод включён.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -761,6 +880,37 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_TITLE] = "Configurações",
     [UI_MENU_TAB_SCREEN] = "Tela", [UI_MENU_TAB_GAME] = "Jogo", [UI_MENU_TAB_SOUND] = "Som",
     [UI_MENU_TAB_CONTROLS] = "Controles", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Avançado",
+    [UI_MENU_TAB_MODS] = "Mods",
+    [UI_MENU_MODS_BUILTIN] = "Embutidos no port", [UI_MENU_MODS_INSTALLED] = "Mods instalados",
+    [UI_MENU_MODS_NONE] = "Nenhum mod ainda. Descompacte um mod na pasta mods, uma pasta por mod com a pasta romfs dentro, "
+                          "e reinicie o jogo. O TKMM também pode exportar os mods mesclados para uma pasta ali.",
+    [UI_MENU_MODS_OPEN] = "Abrir pasta de mods",
+    [UI_MENU_MODS_OPEN_DESC] = "Mostra a pasta de onde o jogo carrega os mods. Ela é criada se não existir.",
+    [UI_MENU_MODS_ROW_DESC] = "Arquivos do jogo que substitui: %u. Arquivos novos que adiciona: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u dos seus arquivos vêm de %s, que está acima na lista.",
+    [UI_MENU_MODS_MOVE_HINT] = "O botão de cima ou Ctrl+Cima sobe o mod, o botão da esquerda ou Ctrl+Baixo desce. "
+                               "Quando dois mods mudam o mesmo arquivo, vale o de cima. As mudanças valem após reiniciar.",
+    [UI_MENU_MODS_EMPTY] = "Esta pasta não tem arquivos romfs, exefs ou cheats.",
+    [UI_MENU_MODS_SUBSDK] = "Este mod traz código próprio do jogo (um plugin subsdk ou um main substituído). O port não "
+                            "carrega módulos de código, então o mod inteiro fica desligado.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Este mod altera o código do jogo (exefs). O jogo compila esses patches na próxima "
+                                 "vez que iniciar (uma recompilação de alguns minutos); até lá o mod inteiro fica "
+                                 "desligado.",
+    [UI_MENU_MODS_CHEATS] = "Cheats: %d. Ligue-os na aba Cheats.",
+    [UI_MENU_MODS_CHEATS_FILE] = "Os cheats desta versão do jogo são lidos ao iniciar de cheats\\%s neste mod.",
+    [UI_MENU_MODS_BAD_NAME] = "O nome da pasta contém |, que a lista de mods usa entre os nomes. Renomeie a pasta.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u dos seus arquivos são de outra versão do jogo e ficam de fora. Procure uma versão "
+                                   "deste mod feita para a sua versão do jogo.",
+    [UI_MENU_MODS_UNUSED] = "não usado",
+    [UI_MENU_MODS_FPS60] = "Patch de 60 FPS",
+    [UI_MENU_MODS_FPS60_DESC] = "O patch do próprio port para 60 quadros por segundo. Ajuste em Limite de quadros na aba "
+                                "Jogo.",
+    [UI_MENU_MODS_RES] = "Patch de resolução",
+    [UI_MENU_MODS_RES_DESC] = "O patch do próprio port para resoluções acima de 1080p. Ajuste em Resolução do jogo na aba "
+                              "Tela.",
+    [UI_MENU_MODS_QUICKMENU] = "Correção do menu rápido",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "A correção do port para o fundo preto dos menus de armas, escudos e materiais a 60 "
+                                    "FPS.",
     [UI_MENU_CONTINUE] = "Continuar", [UI_MENU_QUIT] = "Sair do jogo",
     [UI_MENU_ON] = "Ligado", [UI_MENU_OFF] = "Desligado", [UI_MENU_AUTO] = "Automático",
     [UI_MENU_DEFAULT_MARK] = "padrão",
@@ -1148,6 +1298,36 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
+                            "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
+                            "Reinicie o jogo para lê-los. Para cheats que alteram o código do jogo, o jogo se recompila "
+                            "sozinho ao iniciar (alguns minutos).",
+    [UI_MENU_CHEATS_MOD] = "%s: %d cheats",
+    [UI_MENU_CHEAT_CODE_DESC] = "Altera o código do jogo. Liga e desliga na hora.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Altera o código do jogo enquanto você segura %s. Liga e desliga na hora.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Escreve na memória do jogo a cada quadro enquanto está ligado.",
+    [UI_MENU_CHEAT_MASTER] = "sempre ligado",
+    [UI_MENU_CHEAT_MASTER_DESC] = "O código mestre do arquivo: está sempre ligado.",
+    [UI_MENU_CHEAT_RESTORE] = "desnecessário",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Ele só escreve de volta o código original do jogo. Desligar um cheat já faz isso.",
+    [UI_MENU_CHEAT_REBUILD] = "após recompilar",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Este cheat altera o código do jogo e é novo ou foi editado depois que o jogo foi "
+                                   "compilado. O jogo o compila na próxima vez que iniciar (alguns minutos), ou use "
+                                   "Recompilar o jogo agora.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "não suportado",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Este cheat não pode ser usado com esta versão do jogo:",
+    [UI_MENU_CHEATS_REBUILD] = "Recompilar o jogo agora",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Alguns cheats alteram o código do jogo e ainda não foram compilados nele: são "
+                                    "novos ou editados, ou a última recompilação falhou ou foi cancelada. Fecha o "
+                                    "jogo; o instalador os compila (alguns minutos) e inicia o jogo de novo. O "
+                                    "progresso desde o último salvamento é perdido.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Este mod altera o código do jogo (exefs) de um jeito que o port não consegue "
+                                       "aplicar, então o mod inteiro fica desligado. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Os patches de código dele (exefs) são para outra versão do jogo.",
+    [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
+                                      "%s, que fica desligado enquanto este mod está ligado.",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -1164,6 +1344,30 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_AMIIBO] = "amiibo",
     [UI_MENU_TAB_MENU] = "菜单",
     [UI_MENU_TAB_ADVANCED] = "高级",
+    [UI_MENU_TAB_MODS] = "模组",
+    [UI_MENU_MODS_BUILTIN] = "移植版内置", [UI_MENU_MODS_INSTALLED] = "已安装的模组",
+    [UI_MENU_MODS_NONE] = "还没有模组。把模组解压到 mods 文件夹，每个模组一个文件夹，里面放 romfs 文件夹，然后重启游戏。"
+                          "TKMM 也可以把合并后的模组导出到那里的一个文件夹。",
+    [UI_MENU_MODS_OPEN] = "打开模组文件夹",
+    [UI_MENU_MODS_OPEN_DESC] = "显示游戏加载模组的文件夹。不存在时会创建它。",
+    [UI_MENU_MODS_ROW_DESC] = "替换的游戏文件：%u。新增的文件：%u。",
+    [UI_MENU_MODS_OVERRIDDEN] = "它的 %u 个文件改用列表中更靠上的 %s 的文件。",
+    [UI_MENU_MODS_MOVE_HINT] = "上方按钮或 Ctrl+上 上移，左侧按钮或 Ctrl+下 下移。两个模组修改同一个文件时，以靠上的为准。"
+                               "更改在重启后生效。",
+    [UI_MENU_MODS_EMPTY] = "此文件夹中没有 romfs、exefs 或 cheats 文件。",
+    [UI_MENU_MODS_SUBSDK] = "此模组带有自己的游戏代码（subsdk 插件或替换的 main）。移植版无法加载代码模块，因此整个模组保持关闭。",
+    [UI_MENU_MODS_EXEFS_LATER] = "此模组修改游戏代码（exefs）。游戏会在下次启动时把这些补丁构建进去（重新构建需要几分钟）；在此之前整个模组保持关闭。",
+    [UI_MENU_MODS_CHEATS] = "金手指：%d 个。在“金手指”标签页中开关。",
+    [UI_MENU_MODS_CHEATS_FILE] = "此游戏版本的金手指在启动时从此模组的 cheats\\%s 读取。",
+    [UI_MENU_MODS_BAD_NAME] = "文件夹名称含有 |，模组列表用它分隔名称。请重命名该文件夹。",
+    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 个文件是为其他游戏版本制作的，已被跳过。请寻找适用于你的游戏版本的此模组。",
+    [UI_MENU_MODS_UNUSED] = "未使用",
+    [UI_MENU_MODS_FPS60] = "60 FPS 补丁",
+    [UI_MENU_MODS_FPS60_DESC] = "移植版自带的 60 帧补丁。在“游戏”页的帧率上限中设置。",
+    [UI_MENU_MODS_RES] = "分辨率补丁",
+    [UI_MENU_MODS_RES_DESC] = "移植版自带的 1080p 以上分辨率补丁。在“显示”页的游戏分辨率中设置。",
+    [UI_MENU_MODS_QUICKMENU] = "快捷菜单修复",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "移植版对 60 FPS 下武器、盾牌和材料快捷菜单黑色背景的修复。",
     [UI_MENU_CONTINUE] = "继续",
     [UI_MENU_QUIT] = "退出游戏",
     [UI_MENU_ON] = "开",
@@ -1650,6 +1854,28 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "性能",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_TAB_CHEATS] = "金手指",
+    [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
+                            "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
+                            "游戏会在启动时自行重新构建（几分钟）。",
+    [UI_MENU_CHEATS_MOD] = "%s：%d 个金手指",
+    [UI_MENU_CHEAT_CODE_DESC] = "修改游戏代码。立即开关。",
+    [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 时修改游戏代码。立即开关。",
+    [UI_MENU_CHEAT_DATA_DESC] = "开启时每帧写入游戏内存。",
+    [UI_MENU_CHEAT_MASTER] = "始终开启",
+    [UI_MENU_CHEAT_MASTER_DESC] = "文件的主代码：始终开启。",
+    [UI_MENU_CHEAT_RESTORE] = "无需使用",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "它只会写回游戏原本的代码。关闭金手指时已经会这样做。",
+    [UI_MENU_CHEAT_REBUILD] = "重新构建后",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "此金手指修改游戏代码，并且是在游戏构建后新增或修改的。游戏会在下次启动时把它构建进去（几分钟），也可以使用“立即重新构建游戏”。",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "不支持",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "此金手指不能用于此游戏版本：",
+    [UI_MENU_CHEATS_REBUILD] = "立即重新构建游戏",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指会修改游戏代码，但尚未构建进游戏：它们是新增或修改的，或上次重新构建失败或被取消。将关闭游戏；安装程序会把它们构建进去（几分钟）并重新启动游戏。上次存档之后的进度会丢失。",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。%s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
+    [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

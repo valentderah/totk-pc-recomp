@@ -156,7 +156,7 @@ def main():
     extracted = ROOT / 'build' / 'extracted' / a.version
     listed = len(variants)
     shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)
-    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.1 holds 17,587 of its
+    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.0 holds 17,587 of its
     # 41,414 rows, so most rows are absent because the game does not have them, not because the walk missed them. A walk
     # that found next to nothing does say something: the shader directories have moved.
     if len(shaders) < max(64, listed // 20):

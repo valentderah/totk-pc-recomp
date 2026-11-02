@@ -273,19 +273,19 @@ int probe_cfg(void) {
           "pad stick: a square gate's corner stays on the unit circle");
     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
-    _putenv_s("TOTK_STICK_DEADZONE", "12");
-    _putenv_s("TOTK_LSTICK_DEADZONE", "");
-    _putenv_s("TOTK_RSTICK_DEADZONE", "");
+    plat_setenv("TOTK_STICK_DEADZONE", "12");
+    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
+    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
           "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
-    _putenv_s("TOTK_RSTICK_DEADZONE", "20");
+    plat_setenv("TOTK_RSTICK_DEADZONE", "20");
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
           "pad dead zone: rstick_deadzone sets the right stick alone");
-    _putenv_s("TOTK_LSTICK_DEADZONE", "80");
+    plat_setenv("TOTK_LSTICK_DEADZONE", "80");
     CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
-    _putenv_s("TOTK_STICK_DEADZONE", "");
-    _putenv_s("TOTK_LSTICK_DEADZONE", "");
-    _putenv_s("TOTK_RSTICK_DEADZONE", "");
+    plat_setenv("TOTK_STICK_DEADZONE", NULL);
+    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
+    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
           "stick percent: an axis's end is 100%, the centre 0%, round in between");
@@ -456,6 +456,11 @@ int probe_cfg(void) {
         if (!ok) fprintf(stderr, "FAIL cfg: default '%s' of %s is not one of its values '%s'\n", m->def, m->key, m->values), fails++;
     }
     CHECK(listed >= 30, "the defaults table was walked");
+    // cfg_meta answers with the first row of a key: a second row would be dead, and Reset would visit the key twice
+    for (int i = 0; cfg_meta_at(i); i++)
+        for (int j = i + 1; cfg_meta_at(j); j++)
+            if (!strcmp(cfg_meta_at(i)->key, cfg_meta_at(j)->key))
+                fprintf(stderr, "FAIL cfg: %s has two rows in the defaults table\n", cfg_meta_at(i)->key), fails++;
     printf("probe-cfg: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }

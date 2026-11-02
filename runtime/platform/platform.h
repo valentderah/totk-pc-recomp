@@ -416,6 +416,9 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read 
 // Starts this executable again with the same command line, environment and working folder, and no handle of this
 // process. 1 when it started; the caller then exits.
 int plat_restart(void);
+// Starts argv[0] with the arguments argv[1..] (NULL-terminated, UTF-8) in folder cwd, detached from this process: no
+// console, no handle of this one. 1 when it started (the setup window that rebuilds the game, runtime/cheats.c).
+int plat_spawn(const char *const *argv, const char *cwd);
 // In a process plat_restart started: waits, at most timeout_ms, until the process that started it has exited. 1 after
 // the wait, -1 on timeout, 0 when there is nothing to wait for (not started by plat_restart, or that process is gone).
 int plat_restart_wait(uint32_t timeout_ms);

@@ -26,7 +26,7 @@ from .events import render
 TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
 # what the language switch in the window's corner shows for each
-UI_LANGUAGE_LABELS = {'en': 'EN', 'ru': 'RU', 'pt-BR': 'PT-BR', 'zh-Hans': '中文'}
+UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
 STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}

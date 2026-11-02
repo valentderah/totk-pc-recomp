@@ -1181,8 +1181,10 @@ size_t plat_getenv(const char *name, char *out, size_t cap) {
 
 // Cached per thread: plat_rmutex_lock asks on every acquire, hundreds of thousands of times a second in play, and
 // gettid is a full syscall on Linux (Windows reads GetCurrentThreadId from the TEB). A thread's id never changes, and
-// the runtime starts child processes with posix_spawn only, so no forked copy inherits a stale id.
-uint32_t plat_thread_id(void) {
+// the runtime starts child processes with posix_spawn only, so no forked copy inherits a stale id. noinline: a fiber
+// may resume on another thread (platform.h), and a caller that inlined this could keep the address of tid it computed
+// before a plat_fiber_switch; as a call it reads the slot of the thread it runs on.
+__attribute__((noinline)) uint32_t plat_thread_id(void) {
     static __thread uint32_t tid;
     if (!tid) tid = (uint32_t)syscall(SYS_gettid);
     return tid;
@@ -1677,6 +1679,14 @@ static unsigned long long process_start(int pid) {
     return start;
 }
 
+// glibc 2.34 added posix_spawn_file_actions_addclosefrom_np, and the release links against the Steam Runtime's 2.31: a
+// weak reference, used when the running glibc has it. Without it the child inherits the open descriptors.
+extern int posix_spawn_file_actions_addclosefrom_np(posix_spawn_file_actions_t *fa, int from) __attribute__((weak));
+
+static void spawn_close_from(posix_spawn_file_actions_t *fa, int from) {
+    if (posix_spawn_file_actions_addclosefrom_np) posix_spawn_file_actions_addclosefrom_np(fa, from);
+}
+
 int plat_restart(void) {
     // the arguments, NUL-separated, from /proc/self/cmdline
     static char args[16384];
@@ -1693,7 +1703,7 @@ int plat_restart(void) {
     snprintf(wait, sizeof wait, "%d.%llu", (int)getpid(), process_start((int)getpid()));
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addclosefrom_np(&fa, 3);
+    spawn_close_from(&fa, 3);
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
     sigset_t none, all;
@@ -1706,6 +1716,26 @@ int plat_restart(void) {
     pid_t pid;
     int e = posix_spawn(&pid, exe, &fa, &at, argv, environ);
     unsetenv(RESTART_WAIT);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return e == 0;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    spawn_close_from(&fa, 3);
+    posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSID);
+    pid_t pid;
+    int e = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return e == 0;

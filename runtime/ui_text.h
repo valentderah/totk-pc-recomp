@@ -15,7 +15,7 @@ typedef enum {
     // Simplified Chinese texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
-    UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO,
+    UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_MODS, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO,
     UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED,
     UI_MENU_CONTINUE, UI_MENU_QUIT,
     UI_MENU_ON, UI_MENU_OFF, UI_MENU_AUTO, UI_MENU_DEFAULT_MARK,      // "default" beside the default value
@@ -66,6 +66,25 @@ typedef enum {
     UI_MENU_GAME_LANG, UI_MENU_GAME_LANG_DESC, UI_MENU_GAME_LANG_AUTO,
     UI_MENU_OPERATION_MODE, UI_MENU_OPERATION_MODE_DESC, UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD,
     UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC,
+
+    // Mods: the port's own patches and the player's mods folder (mods.c)
+    UI_MENU_MODS_BUILTIN, UI_MENU_MODS_INSTALLED,
+    UI_MENU_MODS_NONE,           // no mod folder yet: where to unpack one
+    UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
+    UI_MENU_MODS_ROW_DESC,       // printf: files it replaces, files it adds (as of this start)
+    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name
+    UI_MENU_MODS_MOVE_HINT,
+    UI_MENU_MODS_EMPTY, UI_MENU_MODS_SUBSDK, UI_MENU_MODS_EXEFS_LATER, UI_MENU_MODS_BAD_NAME,
+    UI_MENU_MODS_EXEFS_UNSUPPORTED,  // printf: the file and why
+    UI_MENU_MODS_EXEFS_OTHER,
+    UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
+    UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
+    UI_MENU_MODS_OTHER_VERSION,  // printf: files made for another game version, left out
+    UI_MENU_MODS_UNUSED,         // under the switch of a mod the port cannot use
+    UI_MENU_MODS_CHEATS,         // printf: its cheats as read at start
+    UI_MENU_MODS_CHEATS_FILE,    // printf: <build id>.txt, when none were read
+    UI_MENU_MODS_FPS60, UI_MENU_MODS_FPS60_DESC, UI_MENU_MODS_RES, UI_MENU_MODS_RES_DESC,
+    UI_MENU_MODS_QUICKMENU, UI_MENU_MODS_QUICKMENU_DESC,
 
     // Sound
     UI_MENU_VOLUME, UI_MENU_VOLUME_DESC,
@@ -196,7 +215,15 @@ typedef enum {
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
     UI_MENU_OV_SCALE_DOWN,    // FSR is selected but the image is larger than the window: FSR only enlarges
-    UI_MENU_LAST_ID = UI_MENU_OV_SCALE_DOWN,
+    // the Cheats tab (cheats.c): the file, the kinds of cheat and why one cannot be switched
+    UI_MENU_TAB_CHEATS,
+    UI_MENU_CHEATS_NONE,      // "%s": <build id>.txt
+    UI_MENU_CHEATS_MOD,       // "%s": the mod, "%d": its cheats
+    UI_MENU_CHEATS_REBUILD, UI_MENU_CHEATS_REBUILD_DESC,   // restart into the rebuild for unbuilt code cheats
+    UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
+    UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
+    UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
+    UI_MENU_LAST_ID = UI_MENU_CHEAT_UNSUPPORTED_DESC,
     UI_TEXT_COUNT
 } UiTextId;
 

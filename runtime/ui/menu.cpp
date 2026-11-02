@@ -36,10 +36,12 @@ static int g_font_bad;
 
 extern "C" {
 #include "amiibo.h"
+#include "cheats.h"
 #include "cfg.h"
 #include "fs.h"
 #include "input.h"
 #include "input_map.h"
+#include "mods.h"
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
@@ -53,6 +55,8 @@ void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
+void cheats_frame(uint64_t frame);   // cheats.c
+bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -370,7 +374,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -683,9 +687,6 @@ static void tab_screen(float scale) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
-    opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
-    opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
@@ -739,7 +740,7 @@ static void row_walk_key(void) {
     InputMap m;
     input_map_snapshot(&m);
     for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
-        if (!input_key_name(k) || _stricmp(input_key_name(k), cur)) continue;
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
         int a = key_action(&m, k);
         if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
     }
@@ -770,7 +771,9 @@ static const char *prompts_note(bool *restart) {
 
 // The confirmation of "Restart now", over the menu; Cancel has the cursor first. Restart writes totk.ini, then closes
 // the game as Quit does and starts it again (gfx_window_request_restart). It waits while the game writes a save, and
-// the game stays when totk.ini cannot be written, as the new prompts would not come back.
+// the game stays when totk.ini cannot be written, as the new prompts would not come back. From the Cheats tab
+// (restart_rebuild) Restart also lets the next start rebuild for cheats whose last rebuild failed (cheats_rebuild_allow).
+static bool restart_rebuild;
 static void restart_confirm(void) {
     g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -791,12 +794,16 @@ static void restart_confirm(void) {
     if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
     ImGui::SameLine();
     ImGui::BeginDisabled(saving);
-    if (ImGui::Button(yes, ImVec2(bw, 0)) && cfg_save()) gfx_window_request_restart();
+    if (ImGui::Button(yes, ImVec2(bw, 0)) && cfg_save()) {
+        if (restart_rebuild) cheats_rebuild_allow();
+        gfx_window_request_restart();
+    }
     ImGui::EndDisabled();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
         close = true;
     if (close) {
         ImGui::CloseCurrentPopup();
+        restart_rebuild = false;
         opt_focus_key("##restart");   // back on the row it came from
     }
     ImGui::EndPopup();
@@ -1002,12 +1009,110 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
-                                              UI_MENU_TAB_ADVANCED};
+                                              UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
+
+// A row of another tab: that tab opens with the row under the cursor.
+static void go_to(int tab, const char *key) {
+    g_tab_request = tab;
+    opt_focus_key(key);
+}
+
+// ---- Mods: the mods folder (mods.c) with switches and the load order, then the port's own patches. The folder was
+// read at start; the rows change the order and switches for the next start.
+static void mods_builtin_rows(void) {
+    opt_group(UI_MENU_MODS_BUILTIN);
+    char fps[64], res[64];
+    const char *lim = cfg_value("TOTK_FPS_LIMIT");
+    if (!strcmp(lim, "display")) snprintf(fps, sizeof fps, "%s", menu_text(UI_MENU_FPS_DISPLAY));
+    else snprintf(fps, sizeof fps, "%s FPS", lim);
+    if (opt_button("##mods_fps60", UI_MENU_MODS_FPS60, UI_MENU_MODS_FPS60_DESC, fps)) go_to(TAB_GAME, "TOTK_FPS_LIMIT");
+    int w = 0, h = 0;
+    sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &w, &h);
+    snprintf(res, sizeof res, "%d × %d", w, h);   // U+00D7, as row_output_res shows it
+    if (opt_button("##mods_res", UI_MENU_MODS_RES, UI_MENU_MODS_RES_DESC, res)) go_to(TAB_SCREEN, "TOTK_OUTPUT_RES");
+    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+    opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
+    opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_button("##mods_quickmenu", UI_MENU_MODS_QUICKMENU, UI_MENU_MODS_QUICKMENU_DESC,
+               menu_text(romfs_patches_loaded() ? UI_MENU_ON : UI_MENU_OFF));
+}
+
+static void tab_mods(float scale) {
+    opt_begin("##mods", scale);
+    opt_group(UI_MENU_MODS_INSTALLED);
+    int n = mods_count();
+    if (!n) opt_text(UI_MENU_MODS_NONE);
+    const char *after = mods_changed() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr;
+    for (int i = 0; i < n; i++) {
+        const ModInfo *m = mods_at(i);
+        char id[32], desc[1536];
+        snprintf(id, sizeof id, "##mod%d", i);
+        char over[512] = "", other[512] = "";
+        if (m->overridden) snprintf(over, sizeof over, menu_text(UI_MENU_MODS_OVERRIDDEN), m->overridden, m->overridden_by);
+        if (m->other_version) snprintf(other, sizeof other, menu_text(UI_MENU_MODS_OTHER_VERSION), m->other_version);
+        char cheat[256] = "";
+        if (m->kind & MOD_CHEATS) {   // its cheats as read at start, or the file they come from
+            int count = 0;
+            for (int j = 0; j < cheats_count(); j++)
+                count += !strcmp(cheats_info(j)->mod, m->name) && cheats_info(j)->kind != CHEAT_HEADING;
+            if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
+            else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
+        }
+        char code[512] = "", problem[512] = "";
+        if (m->nsets && m->overrides[0])
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
+        else if (m->nsets)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        switch (m->problem) {
+        case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
+        case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
+        case MOD_EXEFS_LATER: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EXEFS_LATER)); break;
+        case MOD_EXEFS_UNSUPPORTED:
+            snprintf(problem, sizeof problem, menu_text(UI_MENU_MODS_EXEFS_UNSUPPORTED), m->note);
+            break;
+        case MOD_EXEFS_OTHER: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EXEFS_OTHER)); break;
+        case MOD_BAD_NAME: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_BAD_NAME)); break;
+        default: break;
+        }
+        int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
+        const char *parts[] = {over, other, cheat, code, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        for (const char *part : parts)
+            if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
+        const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
+        int s = opt_text_row(id, m->name, menu_text(m->enabled ? UI_MENU_ON : UI_MENU_OFF), note, desc, true);
+        if (s == 2 || s == -1 || s == 1) {
+            mods_set_enabled(i, !m->enabled);
+            opt_save_soon();
+        } else if ((s == 3 && i > 0) || (s == 4 && i + 1 < n)) {
+            int to = s == 3 ? i - 1 : i + 1;
+            mods_move(i, to - i);
+            snprintf(id, sizeof id, "##mod%d", to);
+            opt_focus_key(id);   // the cursor follows the mod
+            opt_save_soon();
+        }
+    }
+    bool rebuild =
+        cheats_rebuild_pending() && opt_button("##restart", UI_MENU_CHEATS_REBUILD, UI_MENU_CHEATS_REBUILD_DESC);
+    static uint64_t open_failed;   // plat_now_ns until which the button says it failed
+    if (opt_button("##mods_open", UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
+                   plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : "")) {
+        bool ok = mods_dir()[0] != 0;
+        if (ok) plat_file_mkdir_p(mods_dir());
+        if (!ok || !plat_open_folder(mods_dir())) open_failed = plat_now_ns() + 3000000000ull;
+    }
+    mods_builtin_rows();
+    opt_end();
+    if (rebuild) {
+        restart_rebuild = true;
+        ImGui::OpenPopup("##restart_confirm");
+    }
+    restart_confirm();
+}
 
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
@@ -1053,10 +1158,18 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             switch (k) {
             case TAB_SCREEN: tab_screen(scale); break;
             case TAB_GAME: tab_game(scale); break;
+            case TAB_MODS: tab_mods(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
             case TAB_AMIIBO: tab_amiibo(scale); break;
             case TAB_MENU: tab_menu(scale); break;
+            case TAB_CHEATS:
+                if (tab_cheats(scale)) {
+                    restart_rebuild = true;
+                    ImGui::OpenPopup("##restart_confirm");
+                }
+                restart_confirm();
+                break;
             case TAB_ADVANCED: tab_advanced(scale); break;
             }
             ImGui::EndTabItem();
@@ -1337,6 +1450,7 @@ static void perf_draw(const MenuTarget *t, float scale) {
 
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
+    cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();

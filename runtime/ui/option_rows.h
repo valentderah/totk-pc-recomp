@@ -27,6 +27,7 @@ void opt_focus_first(void);
 void opt_focus_key(const char *key);
 // The next row is greyed out like one the environment fixes, with note under its label and in its description.
 void opt_disable_next(UiTextId note);
+void opt_disable_next_text(const char *note);   // note must outlive the frame
 
 // Page text that is not a row: a group heading in the accent colour, a wrapped paragraph (warn: the warning colour).
 void opt_group(UiTextId title);
@@ -47,6 +48,17 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
 // A row that runs an action: true on A or a click. id: unique on the page and not a setting ("##copy_info"); value:
 // shown on the right ("" none).
 bool opt_button(const char *id, UiTextId label, UiTextId desc, const char *value = "");
+// A row whose label, value, note (under the value) and description are text, not catalog ids: a mod's folder name.
+// Returns 2 (A / click), -1 / +1 (left / right), 3 / 4 (move up / down: the top / left face buttons, Ctrl+Up /
+// Ctrl+Down, the drawn arrows; movable rows only) or 0.
+int opt_text_row(const char *id, const char *label, const char *value, const char *note, const char *desc,
+                 bool movable);
+// Rows and text that are not settings of the cfg table: a label and description of the caller's own (the cheats of
+// the cheat files). opt_toggle_text shows on / off (value: shown instead, NULL for On / Off) and returns true on A, a
+// click, left or right; the caller changes its state. id: unique on the page, the environment check uses it.
+bool opt_toggle_text(const char *id, const char *label, const char *desc, bool on, const char *value = nullptr);
+void opt_group_text(const char *title);
+void opt_text_str(const char *text, bool warn = false);
 // lo..hi in steps of step (left and right held for a second go ten times as fast); fmt formats the value ("%.0f %%").
 // note: a short line under the value in place of the "default" mark (NULL: none). fallback: the setting that applies
 // while key is unset; the row shows its value then, and a change sets key.

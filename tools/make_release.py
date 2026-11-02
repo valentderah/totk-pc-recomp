@@ -25,6 +25,8 @@ Both need one game version extracted and lifted first (tools/extract.py, recomp/
 it, generated/v143, and for --prove its build/extracted/<version> (they are read, nothing is written to them). The
 runtime library reads only what both versions' layout.h share (MOD_COUNT, MOD_MAIN_BASE), so either serves.
 
+A release also needs build/xlate built from the current sources (tools/build_xlate.py); the script stops first if not.
+
 The folder contains nothing derived from the game: check_content runs over it before the script finishes. Then the
 folder's own python runs a check-only installer pass (no game files: it must get through the release, toolchain and host
 checks and stop at the missing game files) and the window's --selftest.
@@ -45,6 +47,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_xlate  # noqa: E402
 import check_content  # noqa: E402
 import shader_list  # noqa: E402
 
@@ -104,7 +107,7 @@ LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 # tools/ files the installer steps run (and what they import), copied from the repo.
 TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'button_icons.py', 'check_content.py', 'extract.py', 'hostmem.py',
                'make_romfs_patches.py', 'pack_shader_cache.py', 'prepare_shaders.py', 'romfs_index.py', 'shader_census.py',
-               'shader_list.py', 'ultrawide_layout.py']
+               'shader_list.py', 'ultrawide_layout.py', 'cheats.py', 'exefs_patches.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
@@ -292,6 +295,17 @@ def build_llvm(out):
 
 
 # ---- bin/ and deps ---------------------------------------------------------------------------------------------------
+
+def check_translator():
+    """Stop on a translator older than the sources. build/xlate is built by hand and only copied here (the Linux release
+    builds its own), so without a rebuild a translator change reaches no Windows release, and nothing fails: the runtime
+    sends job fields the old exe ignores, as happened to gather_bias."""
+    idf = MAIN_ROOT / 'build' / 'xlate' / 'totk_xlate.id'
+    have = idf.read_text(encoding='ascii').strip() if idf.is_file() else 'none'
+    want = build_xlate.identity()
+    if have != want:
+        sys.exit(f'build/xlate has translator {have[:16]}, the sources are {want[:16]}: run tools/build_xlate.py')
+
 
 def build_bin(out):
     b = out / 'bin'
@@ -545,6 +559,7 @@ def main():
     if args.prove:
         prove(out, args.cpu)
         return
+    check_translator()
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)

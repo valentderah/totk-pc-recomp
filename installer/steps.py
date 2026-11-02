@@ -10,7 +10,13 @@ Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ 
 and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
-logs/ (kept by the cleanup).
+logs/. The cleanup keeps gen/, build/ and logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites
+only the chunks whose C changed, and Ninja in build/ recompiles only those. A change of the mods' code cheats then
+costs the lift (about a minute) and the chunks it touches, not a full compile.
+
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
+its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
+when an enabled mod has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
 import json
@@ -779,12 +785,63 @@ EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
 
 
+CHEAT_PLACES = ('cheats', 'atmosphere/contents/0100F2C0115B6000/cheats', 'contents/0100F2C0115B6000/cheats',
+                '0100F2C0115B6000/cheats')
+
+
+def cheat_files(ctx):
+    """The Atmosphere cheat files of the mods folder (<dest>/mods/<mod>/cheats/*.txt and the Atmosphere places, as
+    tools/cheats.py finds them), for the lift key. All of them: the ones the build reads go by the build id of the
+    installed main, and the keys are computed before Extract runs (runner plan), when a fresh install has no main and an
+    update may still have another version's."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    return sorted(f for mod in mods.iterdir() if mod.is_dir() for where in CHEAT_PLACES
+                  for f in ((mod / where).glob('*.txt') if (mod / where).is_dir() else ()))
+
+
+EXEFS_PLACES = ('exefs', 'atmosphere/contents/0100F2C0115B6000/exefs', 'contents/0100F2C0115B6000/exefs',
+                '0100F2C0115B6000/exefs')
+
+
+def exefs_files(ctx):
+    """The ExeFS patch files of the mods folder (.ips and .pchtxt in each mod's exefs places and its
+    atmosphere/exefs_patches/<name>/, as tools/exefs_patches.py finds them), for the lift key."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    out = []
+    for mod in (m for m in mods.iterdir() if m.is_dir()):
+        folders = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
+        patches = mod / 'atmosphere' / 'exefs_patches'
+        folders += [d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else []
+        out += [f for d in folders for f in d.iterdir() if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt')]
+    return sorted(out)
+
+
+def exefs_status(ctx):
+    """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
+    return ctx.dest / 'build-cache' / 'exefs.status'
+
+
+def cheats_status(ctx):
+    """The build's cheat status file (tools/cheats.py --status), which runtime/cheats.c reads: in build-cache, not in a
+    mod's own cheats folder, which the player (or TKMM's merge) may empty."""
+    return ctx.dest / 'build-cache' / 'cheats.status'
+
+
 class Lift(Step):
     id = 'lift'
     transient = True
 
     def key(self, ctx):
-        return fingerprint('lift-1', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)))
+        # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
+        # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
+        files = cheat_files(ctx) + exefs_files(ctx)
+        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
+                           *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
@@ -792,8 +849,10 @@ class Lift(Step):
         return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
 
     def run(self, ctx):
+        # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
+        # partition no longer has), so Ninja recompiles only those
         layout, rep, gen = ctx.layout, ctx.reporter, ctx.temp / 'gen'
-        remove(gen)
+        (gen / STAMP).unlink(missing_ok=True)
         rep.progress('lift', 'discover', force=True)
 
         def parse(line):
@@ -801,10 +860,38 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
-        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py',
-                             ['--exefs', ctx.dest / 'exefs', '--out', gen, '--patches', layout.patches(game_version(ctx))], parse)
+        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
+        # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
+        # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
+        # without them and the setup warns.
+        plain = layout.patches(game_version(ctx))
+        stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
+                  ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
+        patches, skipped = plain, {}
+        for tool, out, status, inputs, warn in stages:
+            status.unlink(missing_ok=True)   # no status: the runtime treats every such file as not built
+            if not inputs:
+                continue
+            code, log = run_tool(ctx, 'lift', layout.tools / tool,
+                                 ['--exefs', ctx.dest / 'exefs', '--mods', ctx.dest / 'mods', '--patches', patches,
+                                  '--out', ctx.temp / out, '--status', status])
+            if code:
+                status.unlink(missing_ok=True)
+                skipped[warn] = log
+            else:
+                patches = ctx.temp / out
+        args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
+        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
+        if code and patches != plain:
+            for tool, out, status, inputs, warn in stages:
+                if inputs and warn not in skipped:
+                    status.unlink(missing_ok=True)
+                    skipped[warn] = log
+            code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
+        for warn, log in skipped.items():
+            rep.warning(warn, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')
         return {}
 
@@ -814,16 +901,21 @@ class Lift(Step):
 NINJA_LINE = re.compile(r'^\[(\d+)/(\d+)\] ')
 
 
+def runtime_key(ctx):
+    """Fingerprint of what totk.exe is built from besides the lifted code: the runtime, the toolchain and the build
+    tools. Shader preparation depends on these, not on the code cheats a lift adds."""
+    layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
+    clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
+    tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
+    return fingerprint('runtime-1', cpu, layout.runtime_lib_for(cpu), layout.runtime, layout.deps or 'system',
+                       layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
+
+
 class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
-        clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
-        tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py')]
-        return fingerprint('compile-2', cpu, layout.runtime_lib_for(cpu), ctx.keys['lift'], layout.runtime,
-                           layout.deps or 'system', layout.sysroot or 'host', *tools, clang,
-                           *[d.name for d in layout.dlls])
+        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx))
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -891,7 +983,9 @@ class Prepare(Step):
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
-        return fingerprint('prepare-1', ctx.keys['compile'], layout.xlate, xlate_id, shader_list_text(layout), *tools)
+        # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
+        return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
+                           shader_list_text(layout), *tools)
 
     @staticmethod
     def done_file():
@@ -910,10 +1004,18 @@ class Prepare(Step):
             # Another translator: its cache keys differ, so the old translations would only take space.
             for name in ('shader-cache', 'shader-prepared.bin'):
                 remove(dest / name)
-        replace_file(layout.xlate, xlate)
+        # totk.exe starts totk_xlate.exe as a child while it prepares shaders; a preparation that was stopped from
+        # outside leaves that child holding this file, and Windows then refuses to replace it (issue #174).
+        try:
+            replace_file(layout.xlate, xlate)
+        except PermissionError:
+            raise InstallError('prepare.xlate_in_use', path=str(xlate)) from None
         xlate_id = layout.xlate.with_suffix('.id')
         if xlate_id.is_file():
-            replace_file(xlate_id, xlate.with_suffix('.id'))
+            try:
+                replace_file(xlate_id, xlate.with_suffix('.id'))
+            except PermissionError:
+                raise InstallError('prepare.xlate_in_use', path=str(xlate.with_suffix('.id'))) from None
         else:
             remove(xlate.with_suffix('.id'))
 
@@ -1013,9 +1115,38 @@ class Cleanup(Step):
         for stale in dest.glob('update-merge-*'):
             remove(stale)
         for name in ('gen', 'build', 'check', 'split', 'shader_list.tsv', 'shared-fonts'):
+        for name in ('check', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
+        write_rebuild_command(ctx)
         return {}
+
+
+# Puts the release folder (the argument after -c) on sys.path and runs installer.gui with the rest. `-m installer.gui`
+# finds the package only through the release Python's ._pth: the Linux release's Python and the dev-mode embeddable one
+# lack that entry, and totk.exe starts the command in the install folder.
+REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
+                "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)")
+
+
+def rebuild_command(ctx):
+    """The command that starts the setup window in its rebuild mode on this install folder (installer/gui.py
+    --rebuild): pythonw beside the setup's Python on Windows, so no console opens. In a repository that is the Python
+    running this setup: the tools' embeddable Python there has no tkinter."""
+    layout = ctx.layout
+    python = Path(sys.executable) if layout.dev else layout.python
+    if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
+        python = python.with_name('pythonw.exe')
+    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)]
+
+
+def write_rebuild_command(ctx):
+    """build-cache/rebuild.txt in the install folder: rebuild_command, one argument per line, for totk.exe."""
+    cache = ctx.dest / 'build-cache'
+    cache.mkdir(exist_ok=True)
+    tmp = cache / 'rebuild.txt.tmp'
+    tmp.write_text('\n'.join(rebuild_command(ctx)) + '\n', encoding='utf-8', newline='\n')
+    os.replace(tmp, cache / 'rebuild.txt')
 
 
 def romfs_problem(romfs, expected):

@@ -278,12 +278,32 @@
 # bind_X = pad:west, key:space
 # bind_Y = pad:north, key:mouse_l
 
+[mods]
+# Folder with the player's mods, one subfolder per mod (<name>/romfs, <name>/exefs, <name>/cheats). Default: mods next
+# to totk.exe.
+# mods_dir =
+# Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
+# mods_order =
+# Mods switched off, names separated by |.
+# mods_disabled =
+# auto: when an enabled mod has cheats that change the game's code and the game was built without them, the game starts
+# the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
+# A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
+# mods_rebuild = auto
+
 [files]
-# Folder with RomFS mod files that replace or add game files. Default: none.
+# Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put
+# their mods into the mods folder instead ([mods]). Default: none.
 # romfs_mods =
 # Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
 # Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
 # shared_fonts =
+
+[cheats]
+# One line per cheat of the mods' cheat files, mods\<mod>\cheats\<build id>.txt (docs/cheats.md); the Cheats tab of
+# the menu writes them. cheat_<hash> = 1 switches a cheat on, the hash being FNV-1a 32 of "<mod folder>/<cheat name>".
+# Default: every cheat off.
+# cheat_0123abcd = 1
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

@@ -1554,6 +1554,51 @@ int plat_restart(void) {
     return 1;
 }
 
+// One argument of a command line as CommandLineToArgvW reads it back: in quotes, a backslash run doubled before a quote
+// and at the end, a quote escaped.
+static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
+#define PUT(c) do { if (at + 1 < cap) out[at] = (c); at++; } while (0)
+    PUT(L'"');
+    for (const wchar_t *p = a;; p++) {
+        size_t slashes = 0;
+        while (*p == L'\\') p++, slashes++;
+        size_t times = !*p || *p == L'"' ? 2 : 1;
+        for (size_t k = 0; k < slashes * times; k++) PUT(L'\\');
+        if (!*p) break;
+        if (*p == L'"') PUT(L'\\');
+        PUT(*p);
+    }
+    PUT(L'"');
+    PUT(L' ');
+#undef PUT
+    return at;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    enum { CMD = 32768 };
+    wchar_t *cmd = calloc(CMD, sizeof *cmd), *arg = malloc(WPATH * sizeof *arg), *dir = malloc(WPATH * sizeof *dir);
+    int ok = cmd && arg && dir && argv[0] && widen(cwd, dir, WPATH);
+    size_t at = 0;
+    for (int i = 0; ok && argv[i]; i++) {
+        ok = widen(argv[i], arg, WPATH);
+        if (ok) at = quote_arg(arg, cmd, CMD, at);
+    }
+    ok = ok && at < CMD && at > 0;
+    if (ok) cmd[at - 1] = 0;   // the last separator
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    ok = ok && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, dir, &si,
+                              &pi);
+    if (ok) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    free(cmd);
+    free(arg);
+    free(dir);
+    return ok;
+}
+
 int plat_restart_wait(uint32_t timeout_ms) {
     char v[48];
     if (!plat_getenv(RESTART_WAIT, v, sizeof v)) return 0;

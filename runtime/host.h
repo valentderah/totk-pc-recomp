@@ -187,9 +187,9 @@ typedef struct { const char *file, *sha256; } RtFileHash;
 extern const RtFileHash rt_exefs_sha256[];                 // tools/data/expected-<version>.json "exefs_sha256"
 extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
-extern const int rt_game_version;                          // the game build: 111 (1.1.1), 121 (1.2.1) or 143 (1.4.3)
+extern const int rt_game_version;                          // the game build: 110 (1.1.0), 121 (1.2.1) or 143 (1.4.3)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
-#define RT_V111 (rt_game_version == 111)                    // 1.1.1: its own boot constants and data slots
+#define RT_V110 (rt_game_version == 110)                    // 1.1.0: its own boot constants and data slots
 #define RT_V143 (rt_game_version >= 143)
 
 // ---- kernel (kernel.c)
@@ -308,6 +308,7 @@ void rt_boot(void);                                        // boot.c
 // process exit code.
 int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
+int probe_mods(void);                                      // mods_probe.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
 int probe_vkdevice(void);                                 // vk_device.c

@@ -211,7 +211,7 @@ class Emitter:
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None):
         self.mod = mod
         self.starts = starts
-        self.patched = patched or {}   # {address: (set index, [replacement words])} (recomp/patches.py)
+        self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
@@ -250,33 +250,54 @@ class Emitter:
                     self.unsupported[re.sub(r'\b[0-9a-f]{8}\b', '', msg).strip()] += 1
             elif k == 'asm':
                 raise ValueError(f'{entry + 4 * i:#x}: asm instruction from the portable lifter')
+        for a in self.patched:   # a replacement's branch into the function needs its label
+            if entry <= a < end:
+                for words in self.replacements(a):
+                    r = words[-1]
+                    if r.kind in ('b', 'bcond') and entry <= r.target < end:
+                        labels.add(r.target)
         return labels, tables
 
     def replacements(self, a):
-        """Lifted replacement words of the patched site a."""
-        return [self.mod.lifter.lift(w, a) for w in self.patched[a][1]]
+        """The lifted words of each alternative of the patched site a, in set order. Only the last word of an
+        alternative may branch (bl, b, b.cond / cbz / tbz, ret)."""
+        out = []
+        for _, words in self.patched[a]:
+            lifted = [self.mod.lifter.lift(w, a) for w in words]
+            for j, r in enumerate(lifted):
+                last = j == len(lifted) - 1
+                if r.kind != 'op' and not (last and r.kind in ('bl', 'b', 'bcond', 'ret')):
+                    raise patches.PatchError(f'{a:#x}: replacement word {words[j]:08x} is a {r.kind}')
+            out.append(lifted)
+        return out
 
-    @staticmethod
-    def flow(insns, entry, end, tables):
+    def flow(self, insns, entry, end, tables):
         """Successors of each instruction inside the function [entry, end). Index len(insns) stands for falling
-        through into the next function and has none."""
+        through into the next function and has none. A patched site has the successors of all its alternatives."""
         def idx(t):
             return [(t - entry) // 4] if entry <= t < end else []
 
-        succ = []
-        for i, ins in enumerate(insns):
+        def of(ins, i):
             k = ins.kind
             if k in ('op', 'bl', 'blr'):
-                succ.append([i + 1])
-            elif k == 'b':
-                succ.append(idx(ins.target))
-            elif k == 'bcond':
-                succ.append(idx(ins.target) + [i + 1])
-            elif k == 'br':
+                return [i + 1]
+            if k == 'b':
+                return idx(ins.target)
+            if k == 'bcond':
+                return idx(ins.target) + [i + 1]
+            if k == 'br':
                 jt = tables.get(entry + 4 * i)
-                succ.append([t for x in jt for t in idx(x)] if jt and jt != 'all' else [])
-            else:   # ret, trap
-                succ.append([])
+                return [t for x in jt for t in idx(x)] if jt and jt != 'all' else []
+            return []   # ret, trap
+
+        succ = []
+        for i, ins in enumerate(insns):
+            s = of(ins, i)
+            a = entry + 4 * i
+            if a in self.patched:
+                for words in self.replacements(a):
+                    s += [t for t in of(words[-1], i) if t not in s]
+            succ.append(s)
         succ.append([])
         return succ
 
@@ -294,27 +315,34 @@ class Emitter:
                 exits.add(i)   # through rt_dispatch, also a table's default
             if a in self.patched:
                 effects.append(self.patched_effect(ins, a))
-                if any(r.kind == 'bl' for r in self.replacements(a)):
-                    calls.add(i)
+                for words in self.replacements(a):
+                    r = words[-1]
+                    if r.kind == 'bl':
+                        calls.add(i)
+                    elif r.kind in ('b', 'bcond') and not entry <= r.target < end:
+                        exits.add(i)
             else:
                 effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
         effects.append((False, None))
         return flags.plan(effects, succ, calls, exits)
 
     def patched_effect(self, ins, a):
-        """Flag effect of a patched site: both alternatives must have the same one, in at most one word each."""
+        """Flag effect of a patched site: every alternative (the original and each replacement) must write the same
+        flags, in at most one word each; the site reads flags when any alternative does (a b.cond reads them)."""
         alts = []
-        for words in ([ins], self.replacements(a)):
-            fx = [flags.effect(w.code or '') for w in words if w.kind == 'op']
+        for words in [[ins]] + self.replacements(a):
+            fx = [flags.effect(w.code or '') if w.kind == 'op' else flags.effect(w.cond) for w in words
+                  if w.kind in ('op', 'bcond')]
             fx = [e for e in fx if e[0] or e[1]]
             if len(fx) > 1:
                 raise patches.PatchError(f'{a:#x}: several flag-using words in one alternative')
             alts.append(fx[0] if fx else (False, None))
-        if alts[0][1] != alts[1][1]:
-            raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({alts[0][1]}, {alts[1][1]})')
-        if (alts[0][1] or alts[0][0] or alts[1][0]) and ins.kind == 'bl':
+        if any(e[1] != alts[0][1] for e in alts):
+            raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({[e[1] for e in alts]})')
+        reads = any(e[0] for e in alts)
+        if (alts[0][1] or reads) and (ins.kind == 'bl' or any(w[-1].kind == 'bl' for w in self.replacements(a))):
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
-        return alts[0][0] or alts[1][0], alts[0][1]
+        return reads, alts[0][1]
 
     def function(self, entry, end):
         """(lines of C, referenced function starts) for the guest function [entry, end)."""
@@ -385,23 +413,30 @@ class Emitter:
             code = fx(i, code)
             return f'{spill}{code}{reload}' if regs.ESCAPE.search(code) else code
 
+        def one(i, r, a):
+            """C of one lifted word of a patched site."""
+            if r.kind == 'op':
+                return op(i, r.code)
+            if r.kind == 'bl':
+                return call(r.target, a)
+            if r.kind == 'b':
+                return jump(r.target, i)
+            if r.kind == 'bcond':
+                return f'if ({fx(i, r.cond)}) {{ {jump(r.target, i)} }}'
+            if r.kind == 'ret':
+                return f'{spill}return;'
+            raise patches.PatchError(f'{a:#x}: patched instruction is a {r.kind}')
+
         def patch(i, ins, a):
-            """if (switch) { replacement } else { original } for a patched site (recomp/patches.py)."""
-            k, words = self.patched[a]
-            if ins.kind not in ('op', 'bl'):
+            """if (switch) { replacement } else if ... else { original } for a patched site (recomp/patches.py)."""
+            if ins.kind not in ('op', 'bl', 'b', 'bcond'):
                 raise patches.PatchError(f'{a:#x}: patched instruction is a {ins.kind}')
-            repl = []
-            for j, (w, r) in enumerate(zip(words, self.replacements(a))):
-                if r.kind == 'op':
-                    repl.append(op(i, r.code))
-                elif r.kind == 'bl' and j == len(words) - 1:
-                    repl.append(call(r.target, a))
-                else:
-                    raise patches.PatchError(f'{a:#x}: replacement word {w:08x} is a {r.kind}')
-            orig = op(i, ins.code) if ins.kind == 'op' else call(ins.target, a)
+            line = '   '
+            for (k, _), words in zip(self.patched[a], self.replacements(a)):
+                line += f' if (rt_patch_on[{k}]) {{ {" ".join(one(i, r, a) for r in words)} }} else'
             self.uses_patches = True
             self.stats['patched_sites'] += 1
-            return f'    if (rt_patch_on[{k}]) {{ {" ".join(repl)} }} else {{ {orig} }}'
+            return f'{line} {{ {one(i, ins, a)} }}'
 
         body = []   # (instruction index or None for a label, line); a line belongs to the instruction it lifts
 
@@ -445,7 +480,7 @@ class Emitter:
             else:
                 raise ValueError(f'{a:#x}: unknown instruction kind {k!r}')
         n = len(insns)
-        if k not in TERMINATORS:  # falls through into the next function
+        if k not in TERMINATORS or end - 4 in self.patched:  # falls through into the next function
             if end < mod.hi:
                 emit(n, '    ' + jump(end, n))
             else:

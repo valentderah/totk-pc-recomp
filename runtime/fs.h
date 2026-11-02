@@ -38,6 +38,7 @@ uint64_t romfs_file_count(void);                           // files in the index
 const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size);   // path, image offset and size of index row i
 const char *romfs_image_path(void);                        // the romfs.bin path fs_init opened
 size_t romfs_overlay_count(void);
+int romfs_patches_loaded(void);                            // a romfs-patches manifest gave at least one file
 // The button prompts (input_prompts_folder): the folder loaded at start, NULL for the game's own prompts; whether a
 // folder had a manifest at start; and why the folder the settings asked for at start was not loaded (ROMFS_PROMPTS_OK
 // for any other folder: it was not asked for).

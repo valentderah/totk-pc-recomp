@@ -25,6 +25,7 @@
 
 #define CHILD_ENV "TOTK_PROBE_SERVICES_CHILD"
 #define TRY_WAIT_SYSTEM_EVENT "_ZN2nn2os18TryWaitSystemEventEPNS0_15SystemEventTypeE"
+#define DESTROY_SYSTEM_EVENT "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"
 
 typedef struct { const char *key, *name; int fatal; uint64_t addr; int bound, calls; } Ov;
 static Ov ovs[] = {
@@ -386,6 +387,17 @@ static void probe_applet(void) {
     CHECK(event_works(activate, 0), "the nfp activate event is set without an amiibo on the reader");
     CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection");
     CHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    // The game attaches again before each detection: DestroySystemEvent on the attached event, then Attach* on the
+    // same SystemEventType. Both events must work again afterwards.
+    static uint64_t destroy;
+    if (!destroy && !(destroy = ldr_symbol(DESTROY_SYSTEM_EVENT))) rt_fatal("probe-services: no %s", DESTROY_SYSTEM_EVENT);
+    rt_call(gc, destroy, 1, activate);
+    rt_call(gc, destroy, 1, deactivate);
+    CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent again");
+    CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent again");
+    int reattached = event_works(activate, 0) && event_works(deactivate, 0);
+    CHECK(reattached, "the nfp events do not work after DestroySystemEvent and a second Attach");
+    CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection again");
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);
@@ -395,7 +407,8 @@ static void probe_applet(void) {
     CALL("pctl.Initialize", 0);
     CALL("diag.InitializeApplicationAbortObserver", 0);
     printf("applet/prepo/nfp/err: launch parameter none, volume balance, play reports local, an NFC reader without "
-           "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s\n", nfp_event ? "ok" : "FAILED");
+           "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s, activate and deactivate events "
+           "destroyed and attached again %s\n", nfp_event ? "ok" : "FAILED", reattached ? "ok" : "FAILED");
 }
 
 static void probe_account(void) {

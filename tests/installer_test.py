@@ -197,6 +197,87 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(e.exception.id, 'state.newer_format')
 
 
+class ReleaseFilesTest(unittest.TestCase):
+    def test_release_ships_every_tool_the_steps_run(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import make_release
+        text = (ROOT / 'installer' / 'steps.py').read_text(encoding='utf-8')
+        used = set(re.findall(r"layout\.tools / '(\w+\.py)'", text))
+        for names in re.findall(r"layout\.tools / n for n in \((.*?)\)", text, re.S):
+            used |= set(re.findall(r"'(\w+\.py)'", names))
+        self.assertIn('cheats.py', used)
+        self.assertEqual(used - set(make_release.TOOLS_FILES), set())
+
+
+class LiftKeyTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dest = Path(tmp.name)
+        layout = SimpleNamespace(recomp=self.dest / 'no-recomp', tools=self.dest / 'no-tools',
+                                 patches=lambda version: self.dest / 'no-patches')
+        self.ctx = SimpleNamespace(dest=self.dest, layout=layout, keys={'extract': 'x'}, state={'version': '1.4.3'})
+
+    def key(self):
+        return steps.Lift().key(self.ctx)
+
+    def add_cheats(self, name, text, mod='Cheats', where='cheats'):
+        folder = self.dest / 'mods' / mod / where
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text(text)
+
+    def test_extracting_main_keeps_the_key(self):
+        before = self.key()
+        (self.dest / 'exefs').mkdir()
+        (self.dest / 'exefs' / 'main').write_bytes(bytes(0x48))
+        self.assertEqual(self.key(), before)
+
+    def test_cheat_files_change_the_key(self):
+        before = self.key()
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
+        added = self.key()
+        self.assertNotEqual(added, before)
+        self.add_cheats('277178B7DBA1B6D4.txt', '[b]')
+        edited = self.key()
+        self.assertNotEqual(edited, added)
+        self.add_cheats('277178B7DBA1B6D4.txt', '[c]', mod='Other', where='atmosphere/contents/0100F2C0115B6000/cheats')
+        self.assertNotEqual(self.key(), edited)
+
+    def test_exefs_patch_files_change_the_key(self):
+        before = self.key()
+        self.add_cheats('dynamic-fps.pchtxt', '@nsobid-277178B7DBA1B6D4', mod='Fps', where='exefs')
+        added = self.key()
+        self.assertNotEqual(added, before)
+        self.add_cheats('277178B7DBA1B6D4.ips', 'PATCHEOF', mod='Ips', where='atmosphere/exefs_patches/x')
+        both = self.key()
+        self.assertNotEqual(both, added)
+        self.add_cheats('main.npdm', 'not a patch', mod='Fps', where='exefs')
+        self.assertEqual(self.key(), both)
+
+    def test_renaming_a_mod_folder_changes_the_key(self):
+        # tools/cheats.py and tools/exefs_patches.py name a patch set after "<mod folder>/<cheat or file>": a renamed
+        # folder needs a lift even though its files are the same
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]', mod='MyNXCheats')
+        self.add_cheats('dynamic-fps.pchtxt', '@nsobid-277178B7DBA1B6D4', mod='Fps', where='exefs')
+        before = self.key()
+        mods = self.dest / 'mods'
+        (mods / 'MyNXCheats').rename(mods / 'MyNXCheats 1.4.3')
+        cheats_renamed = self.key()
+        self.assertNotEqual(cheats_renamed, before)
+        (mods / 'Fps').rename(mods / 'Fps 2')
+        self.assertNotEqual(self.key(), cheats_renamed)
+
+    def test_status_and_other_files_keep_the_key(self):
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
+        before = self.key()
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'cheats.status').write_text('written by lift')
+        self.add_cheats('readme.md', 'not a cheat file')
+        (self.dest / 'mods' / 'Cheats' / 'romfs').mkdir()
+        (self.dest / 'mods' / 'Cheats' / 'romfs' / 'a.txt').write_text('a RomFS file')
+        self.assertEqual(self.key(), before)
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
@@ -258,7 +339,8 @@ class CleanupTest(unittest.TestCase):
         self.expected = {'romfs': {'size': len(image), 'sha256': digest}}
         self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO(), log_path=base / 'x.log'), dest=self.dest,
                                    temp=temp, lang='en-US', state={},
-                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example'))
+                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example', dev=False,
+                                                          python=base / 'python' / 'python.exe', root=base / 'release'))
         self.saved = steps.expected_update
         steps.expected_update = lambda ctx: self.expected
 
@@ -276,6 +358,16 @@ class CleanupTest(unittest.TestCase):
 
     def test_intact_romfs_passes(self):
         self.assertEqual(self.run_cleanup(), 'ok')
+
+    def test_keeps_build_and_writes_rebuild_command(self):
+        for name in ('gen', 'build', 'check'):
+            (self.ctx.temp / name).mkdir()
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertTrue((self.ctx.temp / 'gen').is_dir() and (self.ctx.temp / 'build').is_dir())
+        self.assertFalse((self.ctx.temp / 'check').exists())
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
+                                     str(self.ctx.layout.root), '--rebuild', str(self.dest)])
 
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():

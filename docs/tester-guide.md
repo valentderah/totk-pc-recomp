@@ -9,7 +9,7 @@ from it may be shared.
 - Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA recommended: they build the default, faster version), about
   60 GB free.
 - A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
-- *Tears of the Kingdom* base game (1.0.0) and the 1.1.1, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
+- *Tears of the Kingdom* base game (1.0.0) and the 1.1.0, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 
 ## Build
@@ -51,6 +51,13 @@ A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the t
 - `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
 
 The line `vk: using gpu N: <name>` says which one ran.
+
+## Mods
+
+Mods and cheats made for the emulators go into `mods/` next to `totk.exe`, one folder per mod. [mods.md](mods.md) covers
+installing them, their order, code patches, what does not work and what to check when something looks wrong;
+[cheats.md](cheats.md) covers cheat files. The log names every mod at the start (`mods: <name>: ...`); when you
+report a problem with mods, list them with their download links.
 
 ## What to send back
 

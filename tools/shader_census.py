@@ -173,7 +173,7 @@ def startup_package(name):
 
 
 # The RomFS directories that can hold shaders: the agl and gsys packages, the effects, terrain, the UI layout archives
-# and the game's own shader packs. Every shader of 1.1.1 (27,576) comes from these six; they are 1,996 entries and
+# and the game's own shader packs. Every shader of 1.1.0 (27,576) comes from these six; they are 1,996 entries and
 # 147 MiB, 0.9% of a RomFS whose every file the walk below used to read and decompress first (65 s against 2.8 s).
 SHADER_DIRS = ('Shader/', 'Effect/', 'Lib/agl/', 'Lib/Terrain/', 'Lib/gsys/', 'UI/LayoutArchive/')
 

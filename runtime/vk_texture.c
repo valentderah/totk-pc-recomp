@@ -656,9 +656,14 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
                (unsigned long long)n_texels, (unsigned long long)n_diff_tex);
 }
 
+// Staging bytes of one part of a texture upload decoded or copied on the CPU (see upload). With TOTK_ASTC=cpu a
+// large ASTC array decodes to RGBA8 in one go: a staging buffer of 676682336 bytes failed (-2) on an Intel UHD with
+// 8 GB of shared memory and the game closed before the title screen.
+#define UPLOAD_PART (32ull << 20)   // fits the staging pool (vk_staging takes up to half of its 64 MiB block)
+
 // Copies the whole storage into the image (every level and layer the image has).
 static void upload(Tex *e) {
-    static volatile int32_t n_bad, n_undecoded;
+    static volatile int32_t n_bad, n_undecoded, n_split;
     const tex_t *t = &e->t;
     const nvn_texdesc *d = &t->d;
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
@@ -682,16 +687,27 @@ static void upload(Tex *e) {
             total += (out + 15) & ~15ull;
             decoded += texels * 4;
         }
-    VkCommandBuffer cb = vk_upload_begin();
     VkBuffer sb, rbuf = VK_NULL_HANDLE;
     VmaAllocation ralloc = NULL;
-    uint8_t *stg = vk_staging(total, &sb, NULL), *rmap = acheck ? vk_staging(decoded, &rbuf, &ralloc) : NULL;
-    k = 0;
-    for (uint32_t lv = 0; lv < levels; lv++)
-        for (uint32_t ly = 0; ly < layers; ly++, k++) {
+    uint8_t *rmap = NULL, *raw_copy = NULL;
+    int checked = 0, parts = 1;
+    // A CPU decode or copy stages at most UPLOAD_PART bytes per staging buffer (a region larger than that alone) and
+    // records one copy per buffer; every part stays in the same upload batch, submitted as before. The GPU decoder
+    // takes the raw blocks of every region from one buffer.
+    for (uint32_t k0 = 0, k1; k0 < n; k0 = k1) {
+        VkDeviceSize base = rg[k0].bufferOffset, size;
+        for (k1 = k0 + 1; k1 < n && (agpu || (k1 + 1 < n ? rg[k1 + 1].bufferOffset : total) - base <= UPLOAD_PART);) k1++;
+        size = (k1 < n ? rg[k1].bufferOffset : total) - base;
+        if (k0) parts++;
+        VkCommandBuffer cb = vk_upload_begin();
+        uint8_t *stg = vk_staging(size, &sb, NULL);
+        if (acheck) rmap = vk_staging(decoded, &rbuf, &ralloc);
+        for (k = k0; k < k1; k++) {
+            uint32_t lv = rg[k].imageSubresource.mipLevel, ly = rg[k].imageSubresource.baseArrayLayer;
             uint32_t w = rg[k].imageExtent.width, h = rg[k].imageExtent.height, sl = rg[k].imageExtent.depth;
             uint32_t rb = (w + bw - 1) / bw * (uint32_t)bpb, rows = (h + bh - 1) / bh;
             size_t raw = (size_t)rb * rows * sl;
+            rg[k].bufferOffset -= base;
             uint8_t *dst = stg + rg[k].bufferOffset, *tmp = (astc && !agpu) || rgb ? malloc(raw) : NULL;
             if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
                 log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
@@ -715,23 +731,29 @@ static void upload(Tex *e) {
             }
             free(tmp);
         }
-    uint8_t *raw_copy = acheck ? malloc(total) : NULL;
-    if (raw_copy) memcpy(raw_copy, stg, total);
-    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    int checked = 0;
-    if (agpu) {
-        uint64_t a0 = perf_begin();
-        checked = vk_astc_record(cb, sb, total, ar, (int)n, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc, e->pub.image,
-                                 e->pub.aspect, rbuf);
-        perf_end(PERF_ASTC, a0);
-        if (!checked)
-            log_limited(&n_undecoded, "ASTC texture %#llx (fmt %#x %ux%u) not decoded on the GPU: left as it was",
-                        (unsigned long long)e->pub.addr, d->format, d->width, d->height);
-    } else {
-        vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
+        if (acheck) {
+            raw_copy = malloc(size);
+            memcpy(raw_copy, stg, size);
+        }
+        barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        if (agpu) {
+            uint64_t a0 = perf_begin();
+            checked = vk_astc_record(cb, sb, size, ar, (int)n, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc,
+                                     e->pub.image, e->pub.aspect, rbuf);
+            perf_end(PERF_ASTC, a0);
+            if (!checked)
+                log_limited(&n_undecoded, "ASTC texture %#llx (fmt %#x %ux%u) not decoded on the GPU: left as it was",
+                            (unsigned long long)e->pub.addr, d->format, d->width, d->height);
+        } else {
+            vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, k1 - k0, rg + k0);
+        }
+        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+        vk_upload_end();
     }
-    barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
-    vk_upload_end();
+    if (parts > 1)
+        log_limited(&n_split, "texture %#llx fmt %#x %ux%u, %u levels, %u layers: %.1f MiB staged in %d parts",
+                    (unsigned long long)e->pub.addr, d->format, d->width, d->height, levels, layers, total / 1048576.0,
+                    parts);
     if (acheck) {   // waits for the GPU
         vk_upload_flush(1);
         if (checked) {
