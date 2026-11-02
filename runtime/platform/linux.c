@@ -898,6 +898,7 @@ static void ps_set(uint64_t addr, uint64_t n, uint8_t v) {
     if (addr < PS_LIMIT) memset(pstate + addr / PG, v, (size_t)((n + PG - 1) / PG));
 }
 
+static void soft_open(void);
 static void ww_open(void) {
     int fd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
     struct uffdio_api api = {.api = UFFD_API,
@@ -906,6 +907,7 @@ static void ww_open(void) {
         fprintf(stderr, "platform: no asynchronous userfaultfd write protection (%s): written memory is not tracked\n",
                 strerror(errno));
         if (fd >= 0) close(fd);
+        soft_open();
         return;
     }
     pm_fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
@@ -914,6 +916,111 @@ static void ww_open(void) {
         return;
     }
     ww_fd = fd;
+}
+
+
+// ---- software write watch, for kernels without userfaultfd (Armada OS has CONFIG_USERFAULTFD off).
+// A page the platform wants to know writes of is armed: mprotect read-only. The first write faults, the handler marks
+// the page dirty and makes it writable again. plat_mem_written lists the dirty pages and arms them again. A page
+// that was dirty at several syncs in a row is hot: it stays writable and is listed every time, because copying
+// 4 KiB costs less than a fault; every 16th sync it is armed again to find out whether it is still written.
+// shortcut: syscalls that write into guest memory (pread) unarm their buffer first; any other such syscall into an
+// armed page fails with EFAULT.
+enum { SW_ARMED = 1, SW_DIRTY = 2, SW_HOT_SHIFT = 2, SW_HOT_MASK = 3 << SW_HOT_SHIFT };
+static int soft_on;
+static uint8_t *swpg;   // a byte per guest page, mapped lazily like pstate
+static uint64_t soft_gen, soft_faults, soft_listed, soft_armed;
+
+static void soft_open(void) {
+    const char *e = getenv("TOTK_SOFT_WATCH");
+    if (soft_on || (e && !strcmp(e, "0"))) return;
+    void *p = mmap(NULL, PS_LIMIT / PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) return;
+    swpg = p;
+    soft_on = 1;
+    fprintf(stderr, "platform: software write watch (mprotect and a fault handler) over the watched memory\\n");
+}
+
+// Handler: a write to an armed page. 1 = retry the write.
+static int soft_fault(uint64_t a) {
+    if (!soft_on || a >= PS_LIMIT) return 0;
+    uint8_t *s = &swpg[a / PG], v = __atomic_load_n(s, __ATOMIC_ACQUIRE);
+    while (v & SW_ARMED)
+        if (__atomic_compare_exchange_n(s, &v, (uint8_t)((v & ~SW_ARMED) | SW_DIRTY), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            mprotect((void *)(uintptr_t)(a & ~(PG - 1)), PG, PROT_READ | PROT_WRITE);
+            __atomic_add_fetch(&soft_faults, 1, __ATOMIC_RELAXED);
+            return 1;
+        }
+    return 0;
+}
+
+// Pages in [addr, addr+n) stop being armed (and count as written): before the memory changes protection, or before a
+// syscall writes into it. make_rw = also make armed pages writable (the caller does not set the protection itself).
+static void soft_unarm(uint64_t addr, uint64_t n, int make_rw) {
+    if (!soft_on || addr >= PS_LIMIT) return;
+    uint64_t end = addr + n < PS_LIMIT ? addr + n : PS_LIMIT, run = 0, run_at = 0;
+    for (uint64_t pg = addr & ~(PG - 1); pg < end; pg += PG) {
+        uint8_t *s = &swpg[pg / PG], v = __atomic_load_n(s, __ATOMIC_ACQUIRE);
+        int hit = 0;
+        while (v & SW_ARMED)
+            if (__atomic_compare_exchange_n(s, &v, (uint8_t)((v & ~SW_ARMED) | SW_DIRTY), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                hit = 1;
+                break;
+            }
+        if (hit && make_rw) {
+            if (!run) run_at = pg;
+            run += PG;
+        } else if (run) {
+            mprotect((void *)(uintptr_t)run_at, run, PROT_READ | PROT_WRITE);
+            run = 0;
+        }
+    }
+    if (run) mprotect((void *)(uintptr_t)run_at, run, PROT_READ | PROT_WRITE);
+}
+
+// Arm a run of pages: protect first, flag second. A write in between faults, finds no flag, retries (the hook says the
+// page is writable) and is caught by the handler as soon as the flag is there.
+static void soft_arm_run(uint64_t at, uint64_t len) {
+    mprotect((void *)(uintptr_t)at, len, PROT_READ);
+    for (uint64_t pg = at; pg < at + len; pg += PG) __atomic_or_fetch(&swpg[pg / PG], SW_ARMED, __ATOMIC_ACQ_REL);
+    soft_armed += len / PG;
+}
+
+static uint64_t soft_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
+    if (addr >= PS_LIMIT) return 0;
+    uint64_t end = addr + n < PS_LIMIT ? addr + n : PS_LIMIT, got = 0, run = 0, run_at = 0;
+    uint64_t gen = reset ? __atomic_add_fetch(&soft_gen, 1, __ATOMIC_RELAXED) : soft_gen;
+    for (uint64_t pg = addr & ~(PG - 1); pg < end && got < max; pg += PG) {
+        int arm = 0;
+        if (pstate[pg / PG] == PS_RW) {   // anything else is not committed read-write: the CPU cannot have written it
+            uint8_t *s = &swpg[pg / PG], v = __atomic_load_n(s, __ATOMIC_ACQUIRE);
+            unsigned hot = (v & SW_HOT_MASK) >> SW_HOT_SHIFT;
+            if (!(v & SW_ARMED) || (v & SW_DIRTY)) {   // unarmed: written at any time since the last sync
+                pages[got++] = pg;
+                if (reset) {
+                    if (hot < 3) hot++;
+                    arm = hot < 3 || (gen & 15) == 0;   // hot pages stay writable, except for the periodic re-test
+                    __atomic_store_n(s, (uint8_t)(hot << SW_HOT_SHIFT), __ATOMIC_RELEASE);
+                }
+            } else if (reset && hot) {
+                __atomic_store_n(s, (uint8_t)(v & ~SW_HOT_MASK), __ATOMIC_RELEASE);
+            }
+        }
+        if (arm) {
+            if (!run) run_at = pg;
+            run += PG;
+        } else if (run) {
+            soft_arm_run(run_at, run);
+            run = 0;
+        }
+    }
+    if (run) soft_arm_run(run_at, run);
+    soft_listed += got;
+    if (reset && gen % 1200 == 0)
+        fprintf(stderr, "platform: soft write watch: %llu faults, %llu pages listed, %llu armed in %llu syncs\n",
+                (unsigned long long)soft_faults, (unsigned long long)soft_listed, (unsigned long long)soft_armed,
+                (unsigned long long)gen);
+    return got;
 }
 
 int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
@@ -949,12 +1056,14 @@ void *plat_mem_alloc(size_t n) {
 }
 
 int plat_mem_commit(uint64_t addr, size_t n) {
+    soft_unarm(addr, n, 0);
     if (mprotect((void *)(uintptr_t)addr, n, PROT_READ | PROT_WRITE)) return 0;
     ps_set(addr, n, PS_RW);
     return 1;
 }
 
 int plat_mem_decommit(uint64_t addr, uint64_t n) {
+    soft_unarm(addr, n, 0);
     if (madvise((void *)(uintptr_t)addr, n, MADV_DONTNEED) || mprotect((void *)(uintptr_t)addr, n, PROT_NONE)) return 0;
     ps_set(addr, n, PS_RESERVED);
     return 1;
@@ -962,6 +1071,7 @@ int plat_mem_decommit(uint64_t addr, uint64_t n) {
 
 int plat_mem_protect(uint64_t addr, uint64_t n, int prot) {
     int p = prot == PLAT_PROT_RW ? PROT_READ | PROT_WRITE : prot == PLAT_PROT_READ ? PROT_READ : PROT_NONE;
+    soft_unarm(addr, n, 0);
     if (mprotect((void *)(uintptr_t)addr, n, p)) return 0;
     ps_set(addr, n, (uint8_t)(PS_NONE + prot));
     return 1;
@@ -981,7 +1091,7 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
 
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !n) return 0;
-    if (ww_fd < 0) return UINT64_MAX;
+    if (ww_fd < 0) return soft_on ? soft_written(addr, n, pages, max, reset) : UINT64_MAX;
     struct page_region r[256];
     uint64_t got = 0;
     for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
@@ -1015,6 +1125,7 @@ static void (*crash_fn)(const PlatCrash *c);
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = uc_fault_err(u);
+    if (sig == SIGSEGV && (err & 2) && soft_fault((uint64_t)(uintptr_t)si->si_addr)) return;
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)uc_pc(u);
     Dl_info at, self;
@@ -1108,6 +1219,7 @@ void plat_file_close(PlatFile *f) {
 
 int64_t plat_file_pread(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     ssize_t k;
+    soft_unarm((uint64_t)(uintptr_t)buf, n, 1);   // the kernel cannot take a write fault into an armed page
     do k = pread(fd_of(f), buf, n, (off_t)off);
     while (k < 0 && errno == EINTR);
     return k >= 0 ? k : errno == EFAULT ? -2 : -1;
