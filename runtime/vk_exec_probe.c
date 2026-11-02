@@ -845,6 +845,31 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     return 0;
 }
 
+// A pool of zero bytes (TotK makes some now and then; MacNativeGames hit one on 1.2.1) initialises as an empty pool: no
+// Vulkan buffer or memory (a buffer or import of 0 bytes is invalid usage) and no pool index entry, so a lookup at its
+// address still finds the pool that starts there, before and after the empty pool's Finalize.
+static int test_empty_pool(const GfxBackend *b, uint8_t *guest) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0xE00000, .size = 0x100000,
+                   .game_mem = guest + 0xE00000};
+    pool_t empty = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0xE00000, .size = 0,
+                    .game_mem = guest + 0xE00000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the empty-pool part");
+    long errors = vk_validation_errors_total();
+    CHECK(b->pool_init(&empty), "pool_init of a zero-byte pool");
+    uint64_t a = (uint64_t)(uintptr_t)pool.mem;
+    VkMemSpan whole, at, after;
+    CHECK(vk_mem_resolve(a + 16, 16, &whole) && whole.buffer, "the pool beside an empty pool is not resolved");
+    CHECK(vk_mem_resolve(a, 0, &at) && at.buffer == whole.buffer && at.offset == whole.offset - 16,
+          "a lookup at the start of a pool finds the empty pool there");
+    CHECK(vk_validation_errors_total() == errors, "the zero-byte pool raised %ld validation errors",
+          vk_validation_errors_total() - errors);
+    b->pool_fini(&empty);
+    CHECK(vk_mem_resolve(a + 16, 16, &after) && after.buffer == whole.buffer,
+          "the empty pool's Finalize took the pool beside it out of the index");
+    b->pool_fini(&pool);
+    return 0;
+}
+
 int probe_vkexec(void) {
     vk_hdr_off();   // the present checks read 8-bit swapchain pixels
     layouts_equal = 0;
@@ -866,6 +891,7 @@ int probe_vkexec(void) {
     int nvnx_bytes = 0, mirror_bytes = 0;
     if (!bad) bad = test_nvnx(b, guest, &nvnx_bytes);
     if (!bad) bad = test_mirror(b, guest, &mirror_bytes);
+    if (!bad) bad = test_empty_pool(b, guest);
     b->finish();
     vk_pipeline_shutdown();   // the pipelines and the draw part's stand-ins go before the device
     vk_exec_draw_shutdown();
@@ -910,5 +936,7 @@ int probe_vkexec(void) {
                "between submissions mirrored, CPU bytes beside a fill kept, %d bytes compared)\n", mirror_bytes);
     else
         printf("probe-vkexec: mirror part skipped (memory mode import)\n");
+    printf("probe-vkexec: empty pool part passed (a zero-byte pool at the start of another: no Vulkan objects, lookups "
+           "there find the other pool before and after its Finalize)\n");
     return 0;
 }

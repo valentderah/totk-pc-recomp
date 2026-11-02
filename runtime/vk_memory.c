@@ -245,6 +245,11 @@ int vk_pool_init(pool_t *p) {
     // virtual pools that map it. Either gets device-local memory: 1.4.3's CPU never writes its 0x18c pool's storage
     // (unchanged over 3600 frames of the intro), so the guest storage and the GPU copy need no sync.
     if ((p->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS) && !(p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL)) return 1;
+    // A pool of zero bytes (TotK makes some now and then) holds no address the GPU can use: it gets no record. A record
+    // would import 0 bytes (invalid usage; the driver refuses the memory) and put an empty range into the index at the
+    // pool's address, where a lookup of the pool that starts there found the empty one first. vk_pool_fini finds no
+    // record for it and does nothing.
+    if (!p->size) return 1;
     PoolRec *r = calloc(1, sizeof *r);
     if (!r) rt_fatal("vk: out of memory for a pool record");
     r->key = p;
