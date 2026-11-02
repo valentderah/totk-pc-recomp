@@ -962,6 +962,7 @@ static void tab_advanced(float scale) {
     row_set_or_not("TOTK_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
     opt_toggle("TOTK_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
     opt_slider("TOTK_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
+    opt_choice("TOTK_PASS_CRUMBS", UI_MENU_PASS_CRUMBS, dyn, 3, UI_MENU_PASS_CRUMBS_DESC);   // vk_crumbs.c pass marks
     static char rec_path[600];   // the recording goes beside the log
     if (!rec_path[0]) {
         char dir[512];
