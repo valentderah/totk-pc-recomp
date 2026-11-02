@@ -57,7 +57,10 @@
 # astc = auto
 # Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
-# every copy; slow).
+# every copy; slow). On a discrete GPU import can be far slower than mirror, not slightly slower: the GPU reads the
+# game's pools over PCIe. A 5070 Ti Laptop went from 6 ms to 135-230 ms of GPU time per frame with import (5 fps on the
+# title screen, bound: gpu, every line of the perf window waiting on a fence). The log names the mode in use: "mem:
+# mode import" or "mem: mode mirror".
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
