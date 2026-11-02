@@ -556,6 +556,12 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
 // g_block: 0 off, 1 text entry open, 2 closed, waiting for the release. The cursor is released while it is open.
 static volatile int32_t g_block;
 static volatile int32_t g_menu;   // the in-game menu, the same way (input_menu)
+// When g_block and g_menu last went to 2 (plat_now_ns). The wait for the release ends after RELEASE_WAIT_NS even with
+// something held: an input that never reads as released (a button another program holds down, a key whose release
+// went to another window, a stick that rests outside its dead zone) would otherwise keep the game deaf until restart
+// (#462, #494). A press that closed the menu is let go well within the wait; one still held after it is meant.
+static volatile uint64_t g_block_closed, g_menu_closed;
+#define RELEASE_WAIT_NS 1000000000ull
 
 int input_cursor_allowed(void) {
     const char *in = cfg_get("TOTK_INPUT");
@@ -563,6 +569,7 @@ int input_cursor_allowed(void) {
 }
 
 void input_block(int on) {
+    if (!on) __atomic_store_n(&g_block_closed, plat_now_ns(), __ATOMIC_RELEASE);
     plat_xchg32(&g_block, on ? 1 : 2);
     ikb_cursor_update();
 }
@@ -570,25 +577,35 @@ void input_block(int on) {
 // The in-game menu (ui/menu.cpp) blocks the game's input the same way: g_menu 0 closed, 1 open, 2 closed, waiting for
 // the release. The cursor is released while it is open, for the menu's mouse.
 void input_menu(int open) {
+    if (!open) __atomic_store_n(&g_menu_closed, plat_now_ns(), __ATOMIC_RELEASE);
     plat_xchg32(&g_menu, open ? 1 : 2);
     if (!open) ikb_menu_closed();   // the capture before Esc comes back
     ikb_cursor_update();
 }
 
-// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held. A stick
-// axis counts as held as well: with the walk key the keyboard's sticks move part way without setting a direction bit, so
-// a gate that watched the buttons alone would let that movement through the moment the menu or the text entry closes.
-static int blocked(volatile int32_t *flag, uint64_t buttons, const int32_t *axes) {
+// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held, or with
+// something still held RELEASE_WAIT_NS after closed. A stick axis counts as held as well: with the walk key the
+// keyboard's sticks move part way without setting a direction bit, so a gate that watched the buttons alone would let
+// that movement through the moment the menu or the text entry closes.
+static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char *what, uint64_t buttons,
+                   const int32_t *axes) {
     int32_t k = *flag;
+    if (k != 2) return k != 0;
     int held = buttons != 0;
     for (int i = 0; i < 4; i++) held |= axes[i] != 0;
-    return k && !(k == 2 && !held && plat_cas32(flag, 0, 2) == 2);
+    if (held && plat_now_ns() - __atomic_load_n(closed, __ATOMIC_ACQUIRE) < RELEASE_WAIT_NS) return 1;
+    if (plat_cas32(flag, 0, 2) != 2) return *flag != 0;   // reopened meanwhile
+    if (held)
+        rt_log("input: the %s closed 1 s ago and input is still held (buttons %#llx, sticks %d %d %d %d); the game "
+               "gets it from now on", what, (unsigned long long)buttons, axes[0], axes[1], axes[2], axes[3]);
+    return 0;
 }
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
-    int text = blocked(&g_block, *buttons, axes), menu = blocked(&g_menu, *buttons, axes);
+    int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
+        menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);
     if (!text && !menu) return;
     *buttons = 0; *lx = *ly = *rx = *ry = 0;
 }
