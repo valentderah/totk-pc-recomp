@@ -20,6 +20,7 @@
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "vk.h"
+#include "vk_exec.h"
 #include "platform/platform.h"
 
 // Timestamps for the tracking cost, in ns; qpc_ms converts.
@@ -1937,8 +1938,19 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
-    // The open batch may record into the object: it counts as the newest user.
-    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl_noted};
+    // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
+    // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
+    // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
+    // slot_resolve hands a draw a released entry, and entry_of destroys released entries at that address later in
+    // the same submission. Stamped with the last submitted value, the object went as soon as the GPU reached it,
+    // before the submission that names it ran, and with the recorder thread (vk_rec.c) behind, before the recorder
+    // made the call that names it. LAS Recomp and Savage Wind Recomp stamp every deferral with the submission being
+    // recorded (runtime/nvn/vulkan/textures.c defer: vk_pending_seq). TOTK_DEFER_STAMP=0 brings back the old stamp.
+    static int stamp = -1;
+    if (stamp < 0) stamp = rt_knob("DEFER_STAMP", "1") != 0;
+    uint64_t tl = tl_noted, rf = stamp ? vk_exec_recording_fence() : 0;
+    if (rf > tl) tl = rf;
+    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
     plat_rmutex_unlock(&cmd_lock);
 }
 
