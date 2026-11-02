@@ -305,9 +305,18 @@ static void test_arbiter(Cpu *c) {
     CHECK(sig(c, 2, 5, 0) == 0 && g_arb == 6, "signal type 2, no waiter, count 0: value %d (want 6)", (int32_t)g_arb);
     ArbJob jc = {.type = 2, .value = 6, .timeout = -1};
     h = arb_spawn(c, &jc);
-    CHECK(sig(c, 2, 6, -1) == 0 && g_arb == 5, "signal type 2, 1 waiter, count -1: value %d (want 5)", (int32_t)g_arb);
+    // Waking all (count <= 0) with waiters subtracts 2 (mesosphere KAddressArbiter::SignalAndModifyByWaitingCountIfEqual).
+    CHECK(sig(c, 2, 6, -1) == 0 && g_arb == 4, "signal type 2, 1 waiter, count -1: value %d (want 4)", (int32_t)g_arb);
     join(c, h);
-    CHECK(ja.r == 0 && jb.r == 0 && jc.r == 0, "wait type 2 results %#x %#x %#x", ja.r, jb.r, jc.r);
+    g_arb = 6;
+    ArbJob jd = {.type = 2, .value = 6, .timeout = -1}, je = jd;
+    uint32_t hd = arb_spawn(c, &jd), he = arb_spawn(c, &je);
+    CHECK(sig(c, 2, 6, 0) == 0 && g_arb == 4, "signal type 2, 2 waiters, count 0: value %d (want 4)", (int32_t)g_arb);
+    join(c, hd);
+    join(c, he);
+    CHECK(ja.r == 0 && jb.r == 0 && jc.r == 0 && jd.r == 0 && je.r == 0, "wait type 2 results %#x %#x %#x %#x %#x", ja.r,
+          jb.r, jc.r, jd.r, je.r);
+    g_arb = 5;
     CHECK(sig(c, 2, 7, 1) == KERN_R_BAD_STATE, "signal type 2 with a different value");
     // timeout, invalid type
     uint64_t t0 = kern_now_ns();

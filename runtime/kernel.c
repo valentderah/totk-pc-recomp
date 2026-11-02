@@ -1888,7 +1888,9 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (type != 0) {
             int32_t nv = val + 1;
             if (type == 2) {
-                if (cnt <= 0) nv = nw > 0 ? val - 1 : val + 1;
+                // Waking all (count <= 0) with waiters subtracts 2, not 1 (mesosphere
+                // KAddressArbiter::SignalAndModifyByWaitingCountIfEqual; yuzu, LAS Recomp and nxnative agree).
+                if (cnt <= 0) nv = nw > 0 ? val - 2 : val + 1;
                 else nv = nw == 0 ? val + 1 : nw <= cnt ? val - 1 : val;
             }
             uint32_t e = (uint32_t)val;
