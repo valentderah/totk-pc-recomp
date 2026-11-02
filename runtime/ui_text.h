@@ -150,6 +150,7 @@ typedef enum {
 
     // Menu tab
     UI_MENU_MENU_LANG, UI_MENU_MENU_LANG_DESC, UI_MENU_MENU_LANG_AUTO,
+    UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC,
 
     // Language names, each in its own language and the same in every row (game language and menu language lists)
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,

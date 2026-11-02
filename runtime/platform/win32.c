@@ -1527,6 +1527,56 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     return (long)got;
 }
 
+// ---- local IPC (platform.h): Discord's Rich Presence named pipe
+struct PlatIpc { HANDLE h; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    wchar_t wname[128], path[152];
+    if (!widen(name, wname, 128)) return NULL;
+    swprintf(path, 152, L"\\\\.\\pipe\\%ls", wname);
+    HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;   // no listener, or the pipe is busy: the caller retries later
+    PlatIpc *p = malloc(sizeof *p);
+    if (!p) {
+        CloseHandle(h);
+        return NULL;
+    }
+    p->h = h;
+    return p;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    uint64_t deadline = plat_now_ms() + ms;
+    for (;;) {
+        DWORD have = 0;
+        if (!PeekNamedPipe(p->h, NULL, 0, NULL, &have, NULL)) return -1;   // the writer closed the pipe
+        if (have) {
+            DWORD got = 0;
+            if (!ReadFile(p->h, buf, have < n ? have : (DWORD)n, &got, NULL) || !got) return -1;
+            return (int)got;
+        }
+        if (plat_now_ms() >= deadline) return 0;
+        plat_sleep_ms(5);
+    }
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        DWORD put = 0;
+        if (!WriteFile(p->h, at, n > (1u << 30) ? 1u << 30 : (DWORD)n, &put, NULL) || !put) return 0;
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    CloseHandle(p->h);
+    free(p);
+}
+
+
 // ---- restart
 // TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
 // reused the id is not waited for. Waiting keeps the new process off the old one's files (the log it moves at start,

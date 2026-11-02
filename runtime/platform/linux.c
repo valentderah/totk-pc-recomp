@@ -22,9 +22,11 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -1653,6 +1655,62 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     while (k < 0 && errno == EINTR);
     return (long)k;
 }
+
+// ---- local IPC (platform.h): Discord's Rich Presence Unix domain socket
+struct PlatIpc { int fd; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    const char *dirs[] = {getenv("DISCORD_IPC_PATH"), getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"), "/tmp"};
+    for (size_t d = 0; d < sizeof dirs / sizeof *dirs; d++) {
+        if (!dirs[d] || !*dirs[d]) continue;
+        char path[sizeof ((struct sockaddr_un *)0)->sun_path];
+        if ((size_t)snprintf(path, sizeof path, "%s/%s", dirs[d], name) >= sizeof path) continue;
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return NULL;
+        struct sockaddr_un sa = {0};
+        sa.sun_family = AF_UNIX;
+        strcpy(sa.sun_path, path);
+        if (connect(fd, (struct sockaddr *)&sa, sizeof sa) == 0) {
+            PlatIpc *p = malloc(sizeof *p);
+            if (!p) {
+                close(fd);
+                return NULL;
+            }
+            p->fd = fd;
+            return p;
+        }
+        close(fd);   // nothing listens at this path: the next directory may have it
+    }
+    return NULL;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    struct pollfd pf = {.fd = p->fd, .events = POLLIN};
+    int r = poll(&pf, 1, (int)ms);
+    if (r <= 0) return r < 0 && errno != EINTR ? -1 : 0;
+    ssize_t got = recv(p->fd, buf, n, 0);
+    return got > 0 ? (int)got : -1;   // 0 bytes: the peer closed the socket
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        ssize_t put = send(p->fd, at, n, MSG_NOSIGNAL);   // a closed peer is an error, not a SIG_PIPE
+        if (put <= 0) {
+            if (put < 0 && errno == EINTR) continue;
+            return 0;
+        }
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    close(p->fd);
+    free(p);
+}
+
 
 // ---- restart
 // TOTK_RESTART_WAIT names the process that called plat_restart, as its id and start time (field 22 of /proc/<pid>/stat,

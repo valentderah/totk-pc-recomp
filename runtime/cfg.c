@@ -37,7 +37,7 @@ static const char *const known[] = {
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLSS", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLSS", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_IDLE", "FREE_CORES",
     "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS",
@@ -72,6 +72,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"HDR_UI_NITS", "display"}, {"SHADOW_RES", "display"},
     {"DLAA", "display"}, {"DLSS", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
+    {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
     {"PCSS", "display"},
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
@@ -145,6 +146,11 @@ static const CfgMeta metas[] = {
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
+    // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it. The app
+    // id is the one this was developed against, registered as "TotK Recomp"; the image, the key of its art asset.
+    {"DISCORD_RPC", "0", "0|1", LIVE},
+    {"DISCORD_APP_ID", "1566609987453722727", NULL, LIVE},
+    {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},

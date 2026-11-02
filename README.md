@@ -23,6 +23,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
+- Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
 - Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout

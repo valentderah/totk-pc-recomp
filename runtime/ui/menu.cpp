@@ -849,6 +849,7 @@ static void tab_menu(float scale) {
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
                                      UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
+    opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
     opt_end();
 }
 
