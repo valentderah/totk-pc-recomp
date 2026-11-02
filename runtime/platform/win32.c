@@ -866,7 +866,11 @@ const void *plat_file_map(PlatFile *f) {
     return v;
 }
 
+static __thread DWORD fs_last_error;
+int plat_fs_os_error(void) { return (int)fs_last_error; }
+
 static int fs_err(DWORD e) {
+    fs_last_error = e;
     switch (e) {
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_DIRECTORY: return PLAT_FS_NOT_FOUND;
     case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return PLAT_FS_EXISTS;
@@ -876,12 +880,28 @@ static int fs_err(DWORD e) {
     }
 }
 
+// A symbolic link or junction is a link: removed as a link, never followed. Any other reparse point (OneDrive's cloud
+// placeholders, deduplicated files) is an ordinary file or directory whose content the file system fetches on access.
+static int fs_kind_of(const WIN32_FIND_DATAW *fd) {
+    DWORD a = fd->dwFileAttributes;
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT && (fd->dwReserved0 == IO_REPARSE_TAG_SYMLINK || fd->dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT))
+        return PLAT_FS_LINK;
+    return a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+}
+
 int plat_fs_kind(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return PLAT_FS_MISSING;
     DWORD a = GetFileAttributesW(w);
     if (a == INVALID_FILE_ATTRIBUTES) return PLAT_FS_MISSING;
-    return a & FILE_ATTRIBUTE_REPARSE_POINT ? PLAT_FS_LINK : a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT)) return a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+    // the reparse tag comes with the find data only; FindFirstFileW is asked only here, since it fails on a path
+    // with a trailing separator and reads wildcards
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(w, &fd);
+    if (h == INVALID_HANDLE_VALUE) return PLAT_FS_LINK;
+    FindClose(h);
+    return fs_kind_of(&fd);
 }
 
 int plat_fs_mkdir(const char *path) {
@@ -893,7 +913,15 @@ int plat_fs_mkdir(const char *path) {
 int plat_fs_rmdir(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return PLAT_FS_ERROR;
-    return RemoveDirectoryW(w) ? PLAT_FS_OK : fs_err(GetLastError());
+    if (RemoveDirectoryW(w)) return PLAT_FS_OK;
+    DWORD e = GetLastError(), a = GetFileAttributesW(w);
+    if (e == ERROR_ACCESS_DENIED && a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY)) {
+        // a read-only directory (copied over from another emulator's save folder) refuses RemoveDirectoryW
+        SetFileAttributesW(w, a & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+        if (RemoveDirectoryW(w)) return PLAT_FS_OK;
+        e = GetLastError();
+    }
+    return fs_err(e);
 }
 
 int plat_fs_unlink(const char *path) {
@@ -1038,9 +1066,7 @@ int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
         char name[1024];
         if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) continue;
-        DWORD a = fd.dwFileAttributes;
-        int kind = a & FILE_ATTRIBUTE_REPARSE_POINT ? PLAT_FS_LINK : a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR
-                                                                                                   : PLAT_FS_FILE;
+        int kind = fs_kind_of(&fd);
         if (!cb(name, kind, (uint64_t)fd.nFileSizeHigh << 32 | fd.nFileSizeLow, ctx)) break;
     } while (FindNextFileW(h, &fd));
     FindClose(h);

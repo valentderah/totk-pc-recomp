@@ -48,6 +48,9 @@ typedef struct {
 } tex_builder_t;                                                                             FITS(tex_builder_t, NVNtextureBuilder);
 typedef struct {
     uint32_t magic; nvn_texdesc d; uint8_t has_layout, layout[8];
+    uint16_t pool_flags;                 // the pool's flags at Initialize (in the padding): a game may finalize and free
+                                         // the pool object while the back end still looks the texture up, and the
+                                         // driver keeps no pointer to it either
     nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off;
     uint64_t serial;                     // Initialization serial: the back end uses it to find its texture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);

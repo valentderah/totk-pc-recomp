@@ -759,6 +759,67 @@ out:
     free(loc), free(packed), free(ttype), free(tcomps), free(pointee);
 }
 
+// Every gradient sample (OpImageSampleExplicitLod with Grad) whose two gradients are each built from two components gets
+// them transposed, dx = (a, c) and dy = (b, d) from dx = (a, b) and dy = (c, d), by two new OpCompositeConstruct before
+// it. TotK's shaders fill a TXD's gradient registers per coordinate (du/dx, du/dy, dv/dx, dv/dy), and the translator
+// (Ryujinx, InstEmitTexture EmitTxd) builds dx = (first two registers), dy = (last two) = (du/dx, du/dy) and
+// (dv/dx, dv/dy): a mip level chosen from the wrong derivatives, too sharp on terrain faces turned across the screen,
+// which crawled in patches that followed the faces (1.4.3, the Depths). TOTK_TXD_TRANSPOSE=0 turns it off.
+// Applied to the SPIR-V after it is loaded, so the shader cache is untouched.
+enum { OP_COMPOSITE_CONSTRUCT = 80, OP_SAMPLE_EXPLICIT = 88, IO_GRAD = 4 };
+
+static void patch_txd_transpose(GfxShader *s) {
+    static int on = -1;
+    static volatile int32_t n_logged;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_TXD_TRANSPOSE");
+        on = !(e && *e == '0');
+    }
+    uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    if (!on || n < 5) return;
+    uint32_t bound = w[3] < (1u << 20) ? w[3] : (1u << 20);
+    uint64_t *cc = calloc(bound, sizeof *cc);   // word index of a 2-constituent OpCompositeConstruct defining the id
+    int found = 0;
+    if (!cc) return;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        if (op == OP_COMPOSITE_CONSTRUCT && len == 5 && w[i + 2] < bound) cc[w[i + 2]] = i;
+        if (op == OP_SAMPLE_EXPLICIT && len >= 8 && w[i + 5] == IO_GRAD && w[i + 6] < bound && w[i + 7] < bound &&
+            cc[w[i + 6]] && cc[w[i + 7]] && w[cc[w[i + 6]] + 1] == w[cc[w[i + 7]] + 1])
+            found++;
+        i += len;
+    }
+    if (!found) goto out;
+    uint32_t *o = malloc((n + (uint64_t)found * 10) * sizeof *o);
+    if (!o) goto out;
+    uint64_t k = 0;
+    uint32_t next = w[3];
+    for (uint64_t i = 0; i < 5; i++) o[k++] = w[i];
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (op == OP_SAMPLE_EXPLICIT && len >= 8 && w[i + 5] == IO_GRAD && w[i + 6] < bound && w[i + 7] < bound &&
+            cc[w[i + 6]] && cc[w[i + 7]] && w[cc[w[i + 6]] + 1] == w[cc[w[i + 7]] + 1]) {
+            const uint32_t *dx = w + cc[w[i + 6]], *dy = w + cc[w[i + 7]];   // [hdr, type, id, a, b], [hdr, type, id, c, d]
+            uint32_t ndx = next++, ndy = next++;
+            o[k++] = 5u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = dx[1], o[k++] = ndx, o[k++] = dx[3], o[k++] = dy[3];
+            o[k++] = 5u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = dx[1], o[k++] = ndy, o[k++] = dx[4], o[k++] = dy[4];
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+            o[k - len + 6] = ndx, o[k - len + 7] = ndy;
+        } else {
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        }
+        i += len;
+    }
+    o[3] = next;
+    free(s->spirv);
+    s->spirv = o, s->words = k;
+    if (plat_inc32(&n_logged) <= 4) rt_log("gfx_shader: %d gradient samples now read their derivatives per coordinate", found);
+out:
+    free(cc);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
@@ -771,6 +832,7 @@ static void reflect(GfxShader *s) {
         json_objects(js, kinds[k], add_res, s, k);
     }
     reflect_spirv(s);
+    patch_txd_transpose(s);
 }
 
 // ---- use masks (see the cache key at the top)

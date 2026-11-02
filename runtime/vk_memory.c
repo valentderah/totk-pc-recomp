@@ -20,6 +20,7 @@
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "vk.h"
+#include "vk_exec.h"
 #include "platform/platform.h"
 
 // Timestamps for the tracking cost, in ns; qpc_ms converts.
@@ -245,6 +246,11 @@ int vk_pool_init(pool_t *p) {
     // virtual pools that map it. Either gets device-local memory: 1.4.3's CPU never writes its 0x18c pool's storage
     // (unchanged over 3600 frames of the intro), so the guest storage and the GPU copy need no sync.
     if ((p->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS) && !(p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL)) return 1;
+    // A pool of zero bytes (TotK makes some now and then) holds no address the GPU can use: it gets no record. A record
+    // would import 0 bytes (invalid usage; the driver refuses the memory) and put an empty range into the index at the
+    // pool's address, where a lookup of the pool that starts there found the empty one first. vk_pool_fini finds no
+    // record for it and does nothing.
+    if (!p->size) return 1;
     PoolRec *r = calloc(1, sizeof *r);
     if (!r) rt_fatal("vk: out of memory for a pool record");
     r->key = p;
@@ -1801,6 +1807,8 @@ static void collect_locked(VkCtx *c) {
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
         if (d->seq > done_seq || d->tl > tl) { dead[k++] = *d; continue; }
+        rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
+                         d->tl, tl);
         switch (d->kind) {
         case DEAD_IMAGE: vkDestroyImage(c->device, (VkImage)(uintptr_t)d->handle, NULL); break;
         case DEAD_IMAGE_VMA: vmaDestroyImage(c->vma, (VkImage)(uintptr_t)d->handle, d->alloc); break;
@@ -1932,8 +1940,21 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
-    // The open batch may record into the object: it counts as the newest user.
-    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl_noted};
+    // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
+    // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
+    // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
+    // slot_resolve hands a draw a released entry, and entry_of destroys released entries at that address later in
+    // the same submission. Stamped with the last submitted value, the object went as soon as the GPU reached it,
+    // before the submission that names it ran, and with the recorder thread (vk_rec.c) behind, before the recorder
+    // made the call that names it. LAS Recomp and Savage Wind Recomp stamp every deferral with the submission being
+    // recorded (runtime/nvn/vulkan/textures.c defer: vk_pending_seq). TOTK_DEFER_STAMP=0 brings back the old stamp.
+    static int stamp = -1;
+    if (stamp < 0) stamp = rt_knob("DEFER_STAMP", "1") != 0;
+    uint64_t tl = tl_noted, rf = stamp ? vk_exec_recording_fence() : 0;
+    if (rf > tl) tl = rf;
+    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
+    rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
+                     vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
 }
 

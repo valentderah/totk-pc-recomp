@@ -8,6 +8,8 @@ int vk_dlaa_wanted(void);   // the setting is on (the device may still lack DLSS
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max);
 void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max);
 void vk_dlaa_init(void);
+// 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
+int vk_dlaa_available(void);
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the
 // scene's light target or, at the first quarter-width pass after it, runs DLAA on that target. Each present ends the
 // frame (vk_dlaa_frame).
