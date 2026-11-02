@@ -19,7 +19,7 @@ from . import layout as layouts
 from . import state as statefile
 from .events import Reporter
 from .runner import Context, run_steps
-from .steps import all_steps
+from .steps import all_steps, migrate_state
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -79,6 +79,7 @@ def main(argv=None):
         rep.emit('end', result='failed', seconds=0)
         return 1
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
+    migrate_state(ctx)
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
              steps=[s.id for s in steps])

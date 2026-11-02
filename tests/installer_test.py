@@ -209,6 +209,41 @@ class ReleaseFilesTest(unittest.TestCase):
         self.assertEqual(used - set(make_release.TOOLS_FILES), set())
 
 
+class RenamedVersionTest(unittest.TestCase):
+    """An install the setup before 0.3.1 recorded as 1.1.1 is the 1.1.0 update (#332)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(__file__).resolve().parents[1]
+        layout = Layout(root=root, dev=True, release='9.9', python=Path('python'), tools=root / 'tools',
+                        recomp=root / 'recomp', llvm=Path('llvm'), deps=Path('deps'), runtime=Path('rt'),
+                        runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        state = {'format': 1, 'release': '0.2.8', 'version': '1.1.1', 'inputs': {},
+                 'steps': {'extract': {'key': 'recorded by 0.2.8', 'release': '0.2.8'}}}
+        out = io.StringIO()
+        self.ctx = runner.Context(layout, Path(tmp.name), Path(tmp.name), Reporter(out=out), SimpleNamespace(),
+                                  state=state)
+
+    def test_old_name_is_read_as_1_1_0(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(steps.game_version(self.ctx), '1.1.0')
+        self.assertEqual(steps.version_tag(steps.game_version(self.ctx)), 'v110')
+        self.assertEqual(steps.expected_update(self.ctx)['display_version'], '1.1.0')
+        self.assertTrue(self.ctx.layout.patches(steps.game_version(self.ctx)).is_file())
+
+    def test_extraction_is_kept_under_the_new_name(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], steps.Extract().key(self.ctx))
+        self.assertEqual(self.ctx.state['steps']['extract']['release'], '0.2.8')   # full check of kept output runs
+
+    def test_other_versions_are_untouched(self):
+        self.ctx.state['version'] = '1.4.3'
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['version'], '1.4.3')
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], 'recorded by 0.2.8')
+
+
 class LiftKeyTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
