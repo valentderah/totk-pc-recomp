@@ -211,6 +211,18 @@
 # it is none of them.
 # menu_lang = en
 
+[discord]
+# Rich Presence: "Playing TotK Recomp" with the play time in your Discord status while the game runs, through the
+# local IPC of a running Discord client. 1 = on; the Menu tab of the settings menu (F1) switches it too, and the
+# change reaches the presence thread at once.
+# discord_rpc = 0
+# The application whose name and artwork the status shows. The default is the app this feature was developed
+# against, registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
+# discord.com/developers (name and art are yours to choose) and put its id here.
+# discord_app_id = 1566609987453722727
+# The key of the application's uploaded art asset shown as the status's large image.
+# discord_image = totk_512x512
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default

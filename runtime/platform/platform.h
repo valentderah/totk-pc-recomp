@@ -412,6 +412,17 @@ void plat_child_stop(PlatChild *c);                       // kills the child and
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
 
+// ---- local IPC: a stream connection to another program of this machine, one listen location per name (Discord's
+// Rich Presence, discord_rpc.c). On Windows the named pipe \\.\pipe\<name>; on Linux the Unix domain socket
+// <dir>/<name> with <dir> the first of $DISCORD_IPC_PATH, $XDG_RUNTIME_DIR, $TMPDIR and /tmp that has one.
+typedef struct PlatIpc PlatIpc;
+PlatIpc *plat_ipc_connect(const char *name);   // NULL when nothing listens under that name
+// Up to n bytes, waiting at most ms for the first of them: bytes read, 0 none in time, -1 the connection broke.
+// The rest of what the peer wrote may still be in its buffer: a caller that needs a whole frame loops.
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms);
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n);   // 1 when all n bytes were written, 0 the connection broke
+void plat_ipc_close(PlatIpc *p);
+
 // ---- restart: this program again, in a new process that starts once this one is gone
 // Starts this executable again with the same command line, environment and working folder, and no handle of this
 // process. 1 when it started; the caller then exits.
