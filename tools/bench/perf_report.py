@@ -56,11 +56,9 @@ def summarise(lines):
         match = FRAME_RE.search(line)
         if match:
             intervals.append(float(match.group(2)))
-            continue
         match = GPU_RE.search(line)
         if match:
             gpu.append(float(match.group(2)))
-            continue
         match = BOUND_RE.search(line)
         if match:
             bounds[match.group(1)] = bounds.get(match.group(1), 0) + 1
@@ -129,11 +127,47 @@ def print_text(report):
         print(f"warning:          {warning}")
 
 
+def selftest():
+    """Parse a synthetic log with known numbers: the windows, percentiles, bound counts and exit line must match."""
+    lines = [
+        "[host] frame step: world clock starts at present 12, 3.00 s after the guest started (the player at 0.0 0.0 0.0)\n",
+        "[host] perf: frame 60: interval avg 10.00 ms max 11.00 ms (100.0 fps); render thread blocked: pacing 90%\n",
+        "[host] perf: frame 60: gpu avg 5.00 ms (120 parts timed, 0 not); vram 1 of 2 MiB; bound: cpu\n",
+        "[host] perf: frame 120: interval avg 20.00 ms max 21.00 ms (50.0 fps); render thread blocked: pacing 0%\n",
+        "[host] perf: frame 120: gpu avg 5.00 ms (120 parts timed, 0 not); vram 1 of 2 MiB; bound: pace\n",
+        "[host] frametime: exit: 120 frames in 2.0 s, mean 60.0 fps, 1% low 50.0 fps, "
+        "over 25 ms 0, 50 ms 0, 100 ms 0\n",
+    ]
+    report = summarise(lines)
+    checks = [
+        ("windows", report["windows"] == 2),
+        ("percentiles", report["frame_ms"]["p50"] == 10.0 and report["frame_ms"]["p99"] == 10.0),
+        ("gpu mean", report["gpu_ms"] is not None and report["gpu_ms"]["mean"] == 5.0),
+        ("bound counts", report["bound"] == {"cpu": 1, "pace": 1}),
+        ("exit line", report["exit"] is not None and report["exit"]["mean_fps"] == 60.0
+         and report["exit"]["one_percent_low_fps"] == 50.0),
+    ]
+    failed = [name for name, ok in checks if not ok]
+    for name, ok in checks:
+        print(f"  {name}: {'ok' if ok else 'FAILED'}")
+    if failed:
+        print("selftest: failed (" + ", ".join(failed) + ")")
+        return 1
+    print("selftest: passed")
+    return 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("log", help="logs/totk.log of a run started with TOTK_TRACE=perf")
+    parser.add_argument("log", nargs="?", help="logs/totk.log of a run started with TOTK_TRACE=perf")
     parser.add_argument("--json", action="store_true", help="print the summary as JSON")
+    parser.add_argument("--selftest", action="store_true", help="parse a synthetic log and check the numbers")
     args = parser.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+    if not args.log:
+        parser.error("a log path is needed unless --selftest is given")
 
     report = summarise(load(args.log))
     if args.json:

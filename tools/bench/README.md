@@ -7,6 +7,7 @@ It reads only the log, needs nothing but Python 3, and works on Windows and Linu
 ```sh
 python tools/bench/perf_report.py logs/totk.log
 python tools/bench/perf_report.py logs/totk.log --json > run.json
+python tools/bench/perf_report.py --selftest     # parses a synthetic log and checks the numbers
 ```
 
 Output of a 0.3.1 run (2560x1440, `fps_limit = 80`, DLAA, 5070 Ti Laptop):
@@ -16,7 +17,7 @@ gameplay windows: 2176
 frame time ms:    p50  14.81  p70  16.30  p80  17.29  p90  18.53  p95  19.43  p99  21.15
 fps at:           p50   67.5  p90   54.0  p99   47.3
 gpu ms per frame: mean 6.06  max 8.30
-bound:            cpu 66%, pace 34%
+bound:            cpu 68%, pace 31%
 exit:             66.3 fps mean, 32.3 fps 1% low over 3370 frames in 50.8 s; over 25 ms 134, over 50 ms 1, over 100 ms 0
 ```
 
