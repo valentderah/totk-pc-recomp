@@ -3,7 +3,8 @@
 // the completion thread; a guest-memory word a callback writes is visible once fence_wait returns; finish drains every
 // submission; a present of a cleared vk_texture.c image (layout GENERAL) reads back exactly through the swapchain
 // capture. Clear part: a hand-built op stream (SET_RT to an RGBA8 and a D32 texture, whole-target clears,
-// then scissored clears) through submit reads back exactly with read_texels.
+// then scissored clears) through submit reads back exactly with read_texels. Pass marks part (test_marks): the GPU's
+// buffer marks and the ring records name the last pass of a submission, and the device-lost report text says so.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -175,7 +176,7 @@ static void init_tex(tex_t *t, pool_t *pool, int64_t off, int format) {
     t->d.target = NVN_TEXTURE_TARGET_2D, t->d.format = format, t->d.width = TEX_W, t->d.height = TEX_H;
     t->d.depth = 1, t->d.levels = 1;
     nvn_tex_layout(&t->d, &t->L);
-    t->pool = pool, t->off = off, t->mem = pool->mem + off, t->serial = 100 + (uint64_t)off;
+    t->pool = pool, t->pool_flags = (uint16_t)pool->flags, t->off = off, t->mem = pool->mem + off, t->serial = 100 + (uint64_t)off;
 }
 
 // Pixel of the RGBA8 target after the stream: the scissored second clear inside the rectangle, the first elsewhere.
@@ -386,6 +387,74 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
     return q;
 }
 
+// ---- pass marks part (vk_crumbs.c): one submission with a pass of 2 draws into the draw part's target, a dispatch and
+// a pass of 3 draws into a second target. Once its fence is done, the buffer marks must name the last pass as both
+// started and finished, the ring records must hold what the three were, and vk_pass_marks_format (the text
+// vk_device_fault_report logs) must name it. Without VK_AMD_buffer_marker or with TOTK_PASS_CRUMBS=0 it is skipped:
+// NVIDIA's checkpoints can only be read once the device is lost.
+static char marks_text[2048];
+static int marks_skipped;
+
+static int test_marks(const GfxBackend *b, pool_t *pool, tex_t *color, prog_t *gfx, prog_t *cs) {
+    uint32_t s0, f0;
+    if (!vk_pass_marks_read(&s0, &f0)) {
+        marks_skipped = 1;
+        return 0;
+    }
+    static tex_t second;
+    init_tex(&second, pool, 0x40000, NVN_FORMAT_RGBA8);
+    CHECK(0x40000 + second.L.size <= 0x80000, "pass-marks target exceeds its pool slot");
+    static _Alignas(8) uint8_t stream[8192];
+    uint8_t *q = draw_prefix(stream, gfx, pool, color);
+    const p_draw d = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3, 0, 0};
+    for (int i = 0; i < 2; i++) q = put(q, OP_DRAW, &d, sizeof d);
+    const p_bind_program bc = {cs, 1 << 5};
+    q = put(q, OP_BIND_PROGRAM, &bc, sizeof bc);
+    const p_dispatch dp = {2, 1, 1, 0};
+    q = put(q, OP_DISPATCH, &dp, sizeof dp);
+    const p_bind_program bg = {gfx, 3};
+    q = put(q, OP_BIND_PROGRAM, &bg, sizeof bg);
+    p_set_rt rt;
+    memset(&rt, 0, sizeof rt);
+    rt.n = 1, rt.color[0] = &second;
+    q = put(q, OP_SET_RT, &rt, sizeof rt);
+    for (int i = 0; i < 3; i++) q = put(q, OP_DRAW, &d, sizeof d);
+    q = put(q, OP_END, NULL, 0);
+    CHECK(q <= stream + sizeof stream, "pass-marks op stream overflow");
+    uint64_t handle = (uint64_t)(uintptr_t)stream;
+    uint64_t f = b->submit(&handle, 1);
+    CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the pass-marks submission timed out");
+    uint32_t started = 0, finished = 0;
+    vk_pass_marks_read(&started, &finished);
+    CHECK(started && started == finished, "after the fence the GPU last started mark %u and finished mark %u (before "
+          "the submission: %u and %u)", started, finished, s0, f0);
+    const VkPassMark *p1 = vk_pass_mark_record(finished), *dm = vk_pass_mark_record(finished - 1),
+                     *p0 = vk_pass_mark_record(finished - 2);
+    CHECK(p1 && p1->kind == VK_MARK_PASS && p1->fence == f && p1->step == 1,
+          "the last finished mark %u is not pass 1 of submission %llu", finished, (unsigned long long)f);
+    CHECK(p1->w == TEX_W && p1->h == TEX_H && p1->d == 1 && p1->ncolor == 1 &&
+              p1->color[0] == VK_FORMAT_R8G8B8A8_UNORM && p1->depth == VK_FORMAT_UNDEFINED,
+          "pass 1 has %ux%u, %u layers, %u colour targets, format %d, depth %d", p1->w, p1->h, p1->d, p1->ncolor,
+          (int)p1->color[0], (int)p1->depth);
+    CHECK(p1->draws == 3 && p1->first[0] && p1->first[1] && p1->first[0] == p1->last[0] && p1->first[1] == p1->last[1],
+          "pass 1 has %u draws (3 expected) and shaders %p %p ... %p %p", p1->draws, (const void *)p1->first[0],
+          (const void *)p1->first[1], (const void *)p1->last[0], (const void *)p1->last[1]);
+    CHECK(dm && dm->kind == VK_MARK_DISPATCH && dm->fence == f && dm->step == 0 && dm->w == 2 && dm->h == 1 &&
+              dm->d == 1 && dm->first[0],
+          "the mark before pass 1 is not dispatch 0 of 2x1x1 groups of submission %llu", (unsigned long long)f);
+    CHECK(p0 && p0->kind == VK_MARK_PASS && p0->fence == f && p0->step == 0 && p0->draws == 2 &&
+              p0->first[0] == p1->first[0],
+          "the mark before the dispatch is not pass 0 of submission %llu with 2 draws", (unsigned long long)f);
+    vk_pass_marks_format("VK_AMD_buffer_marker", started, finished, marks_text, sizeof marks_text);
+    char want[128];
+    snprintf(want, sizeof want, "last finished %u: pass 1 of submission %llu: %ux%u, 1 layer, colour formats %d, ",
+             finished, (unsigned long long)f, TEX_W, TEX_H, (int)VK_FORMAT_R8G8B8A8_UNORM);
+    CHECK(strstr(marks_text, want) && strstr(marks_text, ", 3 draws; first vs "),
+          "the report text lacks \"%s\" or the draw count:\n%s", want, marks_text);
+    b->texture_release(&second);
+    return 0;
+}
+
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
     CHECK(probe_census_dir(root, sizeof root), "no build/v%d/shaders/jobs.json above the exe (run tools/shader_census.py)",
@@ -503,10 +572,12 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
 
     // Compute: a few census compute shaders, one dispatch each, resources unbound (zero buffers and stand-in images).
     int dispatched = 0;
+    prog_t *cs_prog = NULL;
     for (int t = 0; t < 4 && t < nc; t++) {
         const DrawEnt *one[1] = {&e[cs[(long long)t * nc / (nc < 4 ? nc : 4)]]};
         prog_t *prog = dr_prog(root, one, 1);
         CHECK(prog, "census code file of %.16s is missing", one[0]->key);
+        cs_prog = prog;
         uint8_t *q = stream;
         q = put(q, OP_BEGIN, NULL, 0);
         const p_bind_program bp = {prog, 1 << 5};
@@ -530,6 +601,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         dispatched++;
         ind_dispatches++;
     }
+    if (test_marks(b, &pool, &color, hit, cs_prog)) return 1;
     b->texture_release(&color);
     b->pool_fini(&pool);
     free(pairs), free(cs), free(e), free(jobs);
@@ -845,6 +917,31 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     return 0;
 }
 
+// A pool of zero bytes (TotK makes some now and then; MacNativeGames hit one on 1.2.1) initialises as an empty pool: no
+// Vulkan buffer or memory (a buffer or import of 0 bytes is invalid usage) and no pool index entry, so a lookup at its
+// address still finds the pool that starts there, before and after the empty pool's Finalize.
+static int test_empty_pool(const GfxBackend *b, uint8_t *guest) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0xE00000, .size = 0x100000,
+                   .game_mem = guest + 0xE00000};
+    pool_t empty = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0xE00000, .size = 0,
+                    .game_mem = guest + 0xE00000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the empty-pool part");
+    long errors = vk_validation_errors_total();
+    CHECK(b->pool_init(&empty), "pool_init of a zero-byte pool");
+    uint64_t a = (uint64_t)(uintptr_t)pool.mem;
+    VkMemSpan whole, at, after;
+    CHECK(vk_mem_resolve(a + 16, 16, &whole) && whole.buffer, "the pool beside an empty pool is not resolved");
+    CHECK(vk_mem_resolve(a, 0, &at) && at.buffer == whole.buffer && at.offset == whole.offset - 16,
+          "a lookup at the start of a pool finds the empty pool there");
+    CHECK(vk_validation_errors_total() == errors, "the zero-byte pool raised %ld validation errors",
+          vk_validation_errors_total() - errors);
+    b->pool_fini(&empty);
+    CHECK(vk_mem_resolve(a + 16, 16, &after) && after.buffer == whole.buffer,
+          "the empty pool's Finalize took the pool beside it out of the index");
+    b->pool_fini(&pool);
+    return 0;
+}
+
 int probe_vkexec(void) {
     vk_hdr_off();   // the present checks read 8-bit swapchain pixels
     layouts_equal = 0;
@@ -866,6 +963,7 @@ int probe_vkexec(void) {
     int nvnx_bytes = 0, mirror_bytes = 0;
     if (!bad) bad = test_nvnx(b, guest, &nvnx_bytes);
     if (!bad) bad = test_mirror(b, guest, &mirror_bytes);
+    if (!bad) bad = test_empty_pool(b, guest);
     b->finish();
     vk_pipeline_shutdown();   // the pipelines and the draw part's stand-ins go before the device
     vk_exec_draw_shutdown();
@@ -910,5 +1008,12 @@ int probe_vkexec(void) {
                "between submissions mirrored, CPU bytes beside a fill kept, %d bytes compared)\n", mirror_bytes);
     else
         printf("probe-vkexec: mirror part skipped (memory mode import)\n");
+    if (marks_skipped)
+        printf("probe-vkexec: pass marks part skipped (no VK_AMD_buffer_marker, or TOTK_PASS_CRUMBS=0)\n");
+    else
+        printf("probe-vkexec: pass marks part passed (pass, dispatch, pass in one submission: the GPU's last started and "
+               "finished mark is the last pass, ring records exact); the report reads:\n%s\n", marks_text);
+    printf("probe-vkexec: empty pool part passed (a zero-byte pool at the start of another: no Vulkan objects, lookups "
+           "there find the other pool before and after its Finalize)\n");
     return 0;
 }

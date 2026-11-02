@@ -26,6 +26,7 @@
 #include "nvn_tex.h"
 #include "tex.h"
 #include "vk.h"
+#include "vk_dlaa.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
 
@@ -166,8 +167,7 @@ static int same_but_swizzle(const TexKey *a, const TexKey *b) {
 static int tex_mirrored(const tex_t *t) {
     if (!t->mem || nvn_gpu_only((uintptr_t)t->mem)) return 0;
     if (t->has_layout) return 1;
-    const pool_t *p = t->pool;
-    if (!p || !(p->flags & (NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_CPU_CACHED))) return 0;
+    if (!(t->pool_flags & (NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_CPU_CACHED))) return 0;
     if (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_ADAPTIVE_ZCULL |
                       NVN_TEXTURE_FLAGS_DEPTH16_PREFER_FAST_CLEAR | NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL))
         return 0;
@@ -1681,8 +1681,9 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias, bias = d->lod_bias;
     // DLSS upscaling (resolution.c): the scene's material textures, the filtered mipmapped ones that repeat, are
-    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias.
-    if (!d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
+    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias. Without DLSS
+    // running (dlaa = 0, or NGX without DLSS) nothing accumulates the extra detail, and the sharper mips only shimmer.
+    if (vk_dlaa_available() && !d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
         (si.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeU == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ||
          si.addressModeV == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT))
         bias += res_dlss_lod_bias();

@@ -51,6 +51,7 @@
  "check.vulkan_missing": "No Vulkan driver is installed. Install the latest driver for your graphics card.",
  "check.vulkan_no_device": "Vulkan finds no graphics card. Install the latest driver for your graphics card.",
  "check.vulkan_too_old": "The game needs a graphics card with Vulkan 1.3; found: {devices}. Update the graphics driver.",
+ "check.no_display": "Preparing the shaders needs a display. Run the setup from the desktop session, or export DISPLAY=:0 (on a Steam Deck in Game Mode also XDG_RUNTIME_DIR=/run/user/1000).",
  "check.inputs_needed": "The game files are needed: choose the base game, the 1.1.0 or 1.2.1 or 1.4.3 update and prod.keys.",
  "check.input_missing": "File not found ({input}): {path}",
  "check.keys_unreadable": "The keys file cannot be read. Choose a prod.keys file.",
@@ -93,7 +94,7 @@
  "prepare.pack_failed": "Packing the shader cache failed (exit code {code}). Details: {log}",
  "cleanup.ini_failed": "totk.ini cannot be written: {detail}",
 
- "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts. Choose the firmware folder (Contents/registered) to install them; without it some text may not show.",
+ "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts, and none were given. The game will not start in this language until they are added. Choose the firmware folder (Contents/registered), or see \"Switch system fonts\" in docs/installer.md.",
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.cheats_skipped": "The cheats of the mods folder that change the game's code could not be built; the game installs without them. Details: {log}",
  "warn.exefs_skipped": "The mods' ExeFS patches (.ips, .pchtxt) could not be built; the game installs without them. Details: {log}",
