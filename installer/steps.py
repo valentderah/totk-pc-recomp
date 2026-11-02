@@ -768,9 +768,12 @@ class Lift(Step):
     transient = True
 
     def key(self, ctx):
+        # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
+        # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
+        files = cheat_files(ctx) + exefs_files(ctx)
         return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
-                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *cheat_files(ctx),
-                           *exefs_files(ctx))
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
+                           *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
