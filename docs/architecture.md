@@ -26,6 +26,7 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Verification: MacNativeGames' `expected-v*.json` hashes of ExeFS, RomFS and fonts.
 - Primary version: 1.4.3, the last update; performance work targets it. It replaced all three modules of the earlier updates (new SDK 20.5.22, RELR relocations, audio renderer REV15) and builds with `--version v143`, `recomp/patches-v143.txt`. 1.2.1 is a second target on the same build path; 1.0.0, 1.1.2 and 1.2.1 share `sdk`, `subsdk0` and `rtld` byte for byte, so only `main` differs among them. Saves load on either.
 - Windows driver: `tools/extract.py` runs the vendored extractors (`tools/vendor/macnativegames/`) and identifies the update by the SHA-256 of its `main`. hactool has no Darwin `funopen` here, so the base Program NCA is copied out of the NSP before the BKTR merge (about 17 GB of temporary space).
+- Second game: *Breath of the Wild* 1.9.0 (`01007EF00011E000`, update `01007EF00011E800`) builds on the same path as `botw190` ([botw.md](botw.md)). Its `sdk`, `subsdk0` and `rtld` are 1.4.3's byte for byte. `tools/games.py` holds each game's title IDs and version names; `build_game.py` writes the game into `modules.c` (`rt_game`), and the runtime asks `RT_BOTW` (`runtime/host.h`) where the games differ.
 
 ### 2. CPU: lift ARM64 to C
 

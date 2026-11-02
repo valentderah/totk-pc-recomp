@@ -11,6 +11,9 @@
 
 Early development. The game is playable on Windows and Linux; visual bugs and crashes are still expected.
 
+*Breath of the Wild* 1.9.0 also builds from this repository, for developers only so far: its start and the Shrine of
+Resurrection play ([docs/botw.md](docs/botw.md)).
+
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features

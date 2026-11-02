@@ -55,7 +55,7 @@ hactool reads `-k <prod.keys>`; MSYS2 shells set `HOME`, which hides its default
 
 From the repository root, in PowerShell. Every step that depends on the game version takes it as `<ver>`: `v143` for
 1.4.3, `v121` for 1.2.1 or `v110` for 1.1.0. The tools default to `v121` when `--version` is left out. Saves load on any
-of them.
+of them. *Breath of the Wild* 1.9.0 builds the same way as `botw190`, with a few steps left out ([botw.md](botw.md)).
 
 1. Python environments (once). `.venv` runs the lifter and the build; `.venv-py314` runs the extraction scripts, which
    need the stdlib `compression.zstd` of Python 3.14:
