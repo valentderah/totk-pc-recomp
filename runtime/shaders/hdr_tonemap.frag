@@ -11,13 +11,15 @@
 // - MacLeod-Boynton hue/purity transfer is performed through XYZ/LMS in BT.2020, using RenoDX's default 70% hue
 //   emulation and 65% SDR blowout;
 // - the game's saturation grade is applied after a temporary neutral max-channel compression, then expanded back;
-// - the result is constrained to non-negative BT.709 and display-mapped with per-channel Neutwo in linear BT.2020.
+// - the result is constrained to non-negative BT.709 and display-mapped with per-channel Neutwo in linear BT.2020;
+// - RenoDX's default 2.2 gamma correction is folded into the native linear path: the Neutwo peak is corrected before
+//   display mapping and the corresponding sRGB-to-gamma-2.2 appearance correction is applied after tone mapping.
 // The output remains linear BT.709 relative to the HUD's white (1.0), so the game's later HUD passes and the existing
 // HDR10 present encoder continue to work unchanged.
 //
-// Color reconstruction and Neutwo math adapted from RenoDX (MIT), clshortfuse/renodx commit
+// Color reconstruction, gamma correction and Neutwo math adapted from RenoDX (MIT), clshortfuse/renodx commit
 // 43c067b755a6a741f6500b2b936570f1462dcfbe, notably src/games/totk/tonemap.slang,
-// src/games/totk/macleod_boynton.hlsli and src/shaders/tonemap/neutwo.hlsl.
+// src/games/totk/macleod_boynton.hlsli, src/shaders/colorcorrect.hlsl and src/shaders/tonemap/neutwo.hlsl.
 // Bindings are those of the game's translated shader: vk_hdr.c rewrites them from the original's names.
 layout(location = 0) in vec4 uv;
 layout(location = 0) out vec4 color;
@@ -34,6 +36,7 @@ layout(set = 0, binding = 4, std140) uniform C3 { vec4 v[4096]; } fp_c3;
 const float PIVOT = 0.18;
 const float HUE_STRENGTH = 0.70;
 const float PURITY_STRENGTH = 0.65;
+const float GAMMA = 2.2;
 const float MB_EPSILON = 1e-20;
 const float MB_INTERVAL_MAX = 1e30;
 const float MB_NEAR_WHITE_EPSILON = 1e-14;
@@ -71,6 +74,32 @@ float div_safe(float a, float b, float fallback) { return b == 0.0 ? fallback : 
 
 vec3 to_bt2020(vec3 c) { return XYZ_TO_BT2020 * (BT709_TO_XYZ * c); }
 vec3 to_bt709(vec3 c) { return XYZ_TO_BT709 * (BT2020_TO_XYZ * c); }
+
+// RenoDX GammaSafe(c, true, 2.2): sRGBDecode(GammaEncode(c, 2.2)). Used on the peak ratio before Neutwo.
+float srgb_decode(float c) {
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+float gamma22_to_srgb_linear(float c) {
+    float a = abs(c);
+    float v = srgb_decode(pow(a, 1.0 / GAMMA));
+    return c < 0.0 ? -v : v;
+}
+
+// RenoDX GammaSafe(c, false, 2.2): GammaDecode(sRGBEncode(c), 2.2). In RenoDX this is paired with a gamma-2.2
+// intermediate encode/decode. The native recomp stays linear, so applying this once here gives the same linear result.
+float srgb_encode(float c) {
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+float srgb_linear_to_gamma22_linear(float c) {
+    float a = abs(c);
+    float v = pow(srgb_encode(a), GAMMA);
+    return c < 0.0 ? -v : v;
+}
+vec3 srgb_linear_to_gamma22_linear(vec3 c) {
+    return vec3(srgb_linear_to_gamma22_linear(c.r),
+                srgb_linear_to_gamma22_linear(c.g),
+                srgb_linear_to_gamma22_linear(c.b));
+}
 
 float vanilla_curve(float x) { return 1.0 - exp(-x); }
 float extended_curve(float x) {
@@ -269,6 +298,10 @@ void main() {
     float game = support_buffer.hdr.x > 0.0 ? support_buffer.hdr.x : 1.0;
     float peak = support_buffer.hdr.y > 1.0 ? support_buffer.hdr.y : 1.0;
 
+    // RenoDX's default Gamma Correction = 2.2 adjusts the peak in the opposite direction of its post-tonemap
+    // appearance correction. At 1000/203 this raises the Neutwo peak from about 4.926 to about 5.33.
+    peak = gamma22_to_srgb_linear(peak);
+
     // Extended HDR carrier plus the original bounded SDR rendering used as RenoDX's color donor.
     vec3 c = extended_vanilla_tonemap(x);
     vec3 donor = clamp(vanilla_tonemap(x), vec3(0.0), vec3(1.0));
@@ -283,6 +316,11 @@ void main() {
     // which allows bright colors to converge toward white instead of preserving max-channel RGB ratios.
     c = max(c, vec3(0.0));
     c = per_channel_neutwo_bt2020(c, peak);
+
+    // Fold RenoDX's default 2.2 intermediate gamma correction into this native linear path. RenoDX first maps the
+    // linear result from an sRGB display response to a pure 2.2 response, then encodes/decodes the intermediate as 2.2;
+    // those latter two operations cancel, leaving this corrected linear value for HDR output.
+    c = srgb_linear_to_gamma22_linear(c);
 
     color = vec4(max(c, vec3(0.0)) * game, 0.0);
 }
