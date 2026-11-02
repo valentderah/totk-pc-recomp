@@ -21,6 +21,7 @@
 #include "host.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_dlaa_select.h"
 #include "vk_exec.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
@@ -222,7 +223,8 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 // HUD, drawn afterwards into the same target, is never jittered nor passed through DLSS.
 static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
-    int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
+    VkDlaaSceneSelection target; // this frame's first G-buffer depth and its following scene-colour candidate
+    int done;                    // this frame: DLAA ran
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
     struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
         uint32_t w, h, ow, oh;   // render size, output size
@@ -575,28 +577,42 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                (unsigned long long)D.why[0], (unsigned long long)D.why[1], (unsigned long long)D.why[2]);
 }
 
-static int scene_color(VkFormat f) {
-    return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
-}
-
 void vk_dlaa_pass(VkExec *ex) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
     if (!dl_active() || D.done) return;
-    // The G-buffer: several colour targets with a D32F depth of at least 640 wide. Only the light target drawn after it
-    // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
-    // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
-    if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= 640) {
-        D.gbuf = 1, D.armed = 0;
+    // The first coherent multi-colour D32 pass anchors this frame's scene depth. Later G-buffer-like chains cannot
+    // replace it; dynamic scene extents come from the current attachments, not the startup resolution request. The
+    // light target drawn after the anchor arms the frame. At night it is also drawn alone with scene depth before the
+    // G-buffer, so it cannot arm DLAA early.
+    if (ex->pass_ncolor >= 3 && c->image && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
+        (z->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+        VkDlaaDepthKey depth_key = {(uintptr_t)z->image, z->level, z->base_layer, z->layers,
+                                    z->width, z->height, z->aspect};
+        int coherent = vk_dlaa_gbuffer_coherent(ex->pass_ncolor, (uintptr_t)c->image,
+                                                 z->format == VK_FORMAT_D32_SFLOAT,
+                                                 (c->aspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0,
+                                                 (z->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0, c->width, c->height,
+                                                 c->samples, c->is3d, z->samples, &depth_key);
+        vk_dlaa_anchor_gbuffer(&D.target, coherent, &depth_key, ex->pass_serial);
         return;
     }
     // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents
-    if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= 640 &&
-        c->samples <= 1 && !c->is3d) {
-        D.color = *c, D.depth = *z, D.armed = 1;
+    if (D.target.anchor.valid && ex->pass_ncolor == 1 && c->image && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
+        (z->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+        VkDlaaDepthKey depth_key = {(uintptr_t)z->image, z->level, z->base_layer, z->layers,
+                                    z->width, z->height, z->aspect};
+        int allowed = vk_dlaa_scene_color_allowed(&D.target, 1, ex->pass_ncolor == 1,
+                                                  vk_dlaa_scene_color_format(c->format) &&
+                                                      (c->aspect & VK_IMAGE_ASPECT_COLOR_BIT),
+                                                  z->format == VK_FORMAT_D32_SFLOAT, (uintptr_t)c->image,
+                                                  c->width, c->height, c->samples,
+                                                  c->view_type == VK_IMAGE_VIEW_TYPE_2D, &depth_key,
+                                                  ex->pass_serial);
+        if (!vk_dlaa_scene_select_color(&D.target, allowed, (uintptr_t)c->image)) return;
+        D.color = *c, D.depth = *z;
         return;
     }
-    if (!D.armed) return;
+    if (!D.target.armed) return;
     if (!D.ended) {
         if (!ex->pass_w || ex->pass_w * 4 > D.color.width) return;
         D.ended = 1;
@@ -606,7 +622,7 @@ void vk_dlaa_pass(VkExec *ex) {
         return;
     }
     // the game's scaling pass: one colour target wider than the scene, no depth
-    if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
+    if (ex->pass_ncolor == 1 && c->image && !z->image && vk_dlaa_scene_color_format(c->format) && c->width > D.color.width &&
         c->samples <= 1 && !c->is3d) {
         D.done = D.up = 1;
         evaluate(ex, c);
@@ -619,7 +635,8 @@ void vk_dlaa_frame(void) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
-        D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
+        D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.done = D.ended = D.up = 0;
+        vk_dlaa_scene_selection_reset(&D.target);
         D.hold = 0;
         return;
     }
@@ -631,7 +648,8 @@ void vk_dlaa_frame(void) {
     if (D.up && !D.scaler_skipped && ++D.scaler_missed == 1)
         rt_log("dlaa: the game's scaling draw over DLSS's picture was not found (its fragment shader is not in FXAA_FS): "
                "the jittered scene reaches the screen and shakes");
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.scaler_skipped = 0;
+    D.done = D.jit_used = D.ended = D.up = D.scaler_skipped = 0;
+    vk_dlaa_scene_selection_reset(&D.target);
     D.cam_addr = 0;
 }
 
