@@ -356,8 +356,14 @@ static void render_thread(void *p) {
     // and the frames would otherwise render back to back. On hardware the DSP renders one frame every 5 ms and
     // the game's audio thread works in between; AUX effects need that time to fill the return ring, or mix_aux
     // reads stale samples and the frame clicks at its seams. Device-paced frames stay at least 4/5 of a frame
-    // apart, which still refills a period well before the device drains it.
+    // apart, which still refills a period well before the device drains it. Linux only: on Windows SDL pulls
+    // 480-sample periods, and a sink dump (TOTK_AUDIO_DUMP) of the bursts there showed no more seam spikes than
+    // chance, so a wait on this thread buys nothing.
+#ifdef __linux__
     const uint64_t gap_ns = frame_ns * 4 / 5;
+#else
+    const uint64_t gap_ns = 0;
+#endif
     uint64_t next = kern_now_ns(), last = 0;
     while (plat_cas32(&r->running, 0, 0)) {
         uint64_t now = kern_now_ns();
