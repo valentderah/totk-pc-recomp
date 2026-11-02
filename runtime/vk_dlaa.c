@@ -202,6 +202,8 @@ void vk_dlaa_init(void) {
            driver ? "; the driver needs an update" : "");
 }
 
+int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
 // the scene depth (d32f at the scene size), one of them the R11G11B10F light target; lighting and the transparents
@@ -680,6 +682,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
     (void)have, (void)nhave, (void)ext, (void)n, (void)max;
 }
 void vk_dlaa_init(void) {}
+int vk_dlaa_available(void) { return 0; }
 void vk_dlaa_pass(VkExec *ex) { (void)ex; }
 void vk_dlaa_frame(void) {}
 void vk_dlaa_draw(VkExec *ex) { (void)ex; }
