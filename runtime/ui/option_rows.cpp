@@ -353,7 +353,10 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
     const char *set = cfg_get(key);
     const char *src = fallback && !(set && *set) ? fallback : key;   // unset: show the value in effect, the fallback's
     const CfgMeta *m = cfg_meta(src);
-    double v = cfg_double(src), def = m ? strtod(m->def, NULL) : lo;
+    // A key without a table default of its own (the per-stick dead zones) defaults to its fallback: the "default" mark
+    // follows the fallback's default, not 0, even once the key is set.
+    if (fallback && m && !m->def[0]) m = cfg_meta(fallback);
+    double v = cfg_double(src), def = m && m->def[0] ? strtod(m->def, NULL) : lo;
     char shown[48];
     snprintf(shown, sizeof shown, fmt, v);
     RowView rv = {shown, fabs(v - def) < step * 0.01, true, note};
@@ -367,7 +370,8 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
     char out[32];
     if (step >= 1) snprintf(out, sizeof out, "%d", (int)lround(n));
     else snprintf(out, sizeof out, "%g", round(n / step) * step);
-    apply(key, out);
+    // Landing on the fallback's value unsets the key (its line leaves totk.ini), so the row follows the fallback again.
+    apply(key, fallback && fabs(n - cfg_double(fallback)) < step * 0.01 ? "" : out);
     return true;
 }
 
