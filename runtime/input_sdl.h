@@ -11,6 +11,7 @@ extern "C" {
 // gfx_window_sdl.c
 SDL_Window *gfx_window_sdl(void);         // the game window, NULL before gfx_window_start; any thread
 double gfx_window_sdl_density(void);      // pixels per window unit (mouse positions are in units); any thread
+void gfx_window_sdl_run(void (*fn)(void *arg), void *arg);   // runs fn on the window thread and waits; any thread
 
 // input_sdl.c
 void input_sdl_window(SDL_Window *w);     // the game window was created

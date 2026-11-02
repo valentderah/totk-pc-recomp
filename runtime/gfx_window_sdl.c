@@ -64,6 +64,8 @@ double gfx_window_sdl_density(void) { return __atomic_load_n(&g_density_milli, _
 
 SDL_Window *gfx_window_sdl(void) { return g_win; }
 
+void gfx_window_sdl_run(void (*fn)(void *arg), void *arg) { run_on_window(fn, arg); }
+
 // ---- settings: size and fullscreen
 static char g_applied_size[32];
 static int g_applied_fs;
