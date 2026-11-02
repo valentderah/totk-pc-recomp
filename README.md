@@ -23,7 +23,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
-- Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
+- In-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese; the setup also in German, French,
+  Spanish, Italian, Dutch, Japanese, Korean and Traditional Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
