@@ -1578,6 +1578,8 @@ int kern_thread_state(uint32_t h) {
 }
 
 // CloseHandle: an event goes with its last end; a thread object once it has also exited.
+static void se_forget_handle(uint32_t h);
+
 static uint32_t handle_close(uint32_t h) {
     unsigned i = h - 0x1000;
     int ok = 0, kind = 0;
@@ -1587,6 +1589,9 @@ static uint32_t handle_close(uint32_t h) {
         int type = g_h[i].type;
         void *o = g_h[i].obj;
         if (type == O_EVENT_R || type == O_EVENT_W) {
+            // DestroySystemEvent closes this handle. Its guest address can be reused on the next amiibo scan.
+            // Invalidate the binding before the handle slot can be allocated to another object.
+            if (type == O_EVENT_W) se_forget_handle(h);
             Event *e = o;
             if (--e->refs == 0) free(e);
             ok = 1;
@@ -2060,6 +2065,15 @@ static struct { uint64_t ev; uint32_t wh; } g_se[512];
 static int g_nse;
 static PlatMutex g_se_lock = PLAT_MUTEX_INIT;
 
+static void se_forget_handle(uint32_t h) {
+    plat_mutex_lock(&g_se_lock);
+    for (int i = 0; i < g_nse;) {
+        if (g_se[i].wh == h) g_se[i] = g_se[--g_nse];
+        else ++i;
+    }
+    plat_mutex_unlock(&g_se_lock);
+}
+
 static uint32_t se_find(uint64_t ev) {
     plat_mutex_lock_shared(&g_se_lock);
     uint32_t wh = 0;
@@ -2086,6 +2100,20 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
     g_se[g_nse].ev = ev;
     g_se[g_nse++].wh = wh;
     plat_mutex_unlock(&g_se_lock);
+}
+
+// A host callback may race the SDK's destructor. Check the binding and signal while handle closure is excluded.
+bool kern_try_signal_system_event(uint64_t ev) {
+    lock();
+    uint32_t wh = se_find(ev);
+    Event *e = wh ? h_peek(wh, O_EVENT_W) : NULL;
+    if (e) {
+        e->signaled = 1;
+        wake_sync_waiters();
+    }
+    bool signaled = e != NULL;
+    unlock();
+    return signaled;
 }
 
 // An event not bound yet is bound on the spot with manual clear, which needs a guest thread.

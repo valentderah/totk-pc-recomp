@@ -348,13 +348,6 @@ static int event_works(uint64_t ev, int autoclear) {
     return !before && after && again == !autoclear;
 }
 
-// A manual-clear system event an override signalled when binding it: set, and still set on a second wait.
-static int event_set(uint64_t ev) {
-    static uint64_t try_wait;
-    if (!try_wait && !(try_wait = ldr_symbol(TRY_WAIT_SYSTEM_EVENT))) rt_fatal("probe-services: no %s", TRY_WAIT_SYSTEM_EVENT);
-    return (uint8_t)rt_call(gc, try_wait, 1, ev) && (uint8_t)rt_call(gc, try_wait, 1, ev);
-}
-
 static void probe_applet(void) {
     uint8_t *report = guest_alloc(0x100);
     uint64_t uid[2] = {1, 2};
@@ -368,9 +361,9 @@ static void probe_applet(void) {
     CHECK((uint32_t)CALL("nfp.ListDevices", U(handles), U(&count), 4) == 0 && count == 1, "nfp ListDevices");
     uint64_t ev = U(guest_alloc(0x100));
     CHECK(CALL("nfp.AttachAvailabilityChangeEvent", ev) == 0, "AttachAvailabilityChangeEvent");
-    // The emulated reader is there from the start (amiibo.c), so the availability event is set when it is attached.
-    int nfp_event = event_set(ev);
-    CHECK(nfp_event, "the nfp availability event is not set for the emulated reader, or clears itself");
+    // Attaching a change event must not announce a change: the game would stop and restart detection every frame.
+    int nfp_event = event_works(ev, 1);
+    CHECK(nfp_event, "nfp availability event must start clear and signal only on a change");
     CHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 0, "nfp device state");
     static const char *const none[] = {"nfp.Mount", "nfp.GetTagInfo", "nfp.GetModelInfo"};
     uint8_t out[0x100];
@@ -383,9 +376,28 @@ static void probe_applet(void) {
     uint64_t activate = U(guest_alloc(0x100)), deactivate = U(guest_alloc(0x100));
     CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent");
     CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent");
-    CHECK(event_works(activate, 0), "the nfp activate event is set without an amiibo on the reader");
+    CHECK(event_works(activate, 1), "nfp activate must start clear and be consumed by one wait");
     CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection");
     CHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    // The amiibo tool destroys its events between uses and attaches new ones at the same addresses.
+    // Exercise the real SDK destructor and TryWaitSystemEvent, including a second attach without a tap.
+    uint64_t destroy = ldr_symbol("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
+    CHECK(destroy != 0, "DestroySystemEvent is not loaded");
+    if (destroy) {
+        for (int scan = 0; scan < 3; ++scan) {
+            rt_call(gc, destroy, 1, activate);
+            rt_call(gc, destroy, 1, deactivate);
+            rt_call(gc, destroy, 1, ev);
+            CHECK(!kern_try_signal_system_event(activate), "late callback signalled a destroyed event");
+            CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "reattach activate event");
+            CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "reattach deactivate event");
+            CHECK(event_works(activate, 1), "reused activate event, scan %d", scan);
+            CHECK(event_works(deactivate, 1), "reused deactivate event, scan %d", scan);
+            CHECK(CALL("nfp.AttachAvailabilityChangeEvent", ev) == 0, "reattach availability event");
+            CHECK(event_works(ev, 1), "reused availability event, scan %d", scan);
+        }
+        printf("nfp: three destroy/reattach cycles at the same event addresses passed\n");
+    }
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);

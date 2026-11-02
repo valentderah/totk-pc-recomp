@@ -20,6 +20,7 @@
 #include <time.h>
 
 #include "amiibo.h"
+#include "nfp.h"
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
@@ -271,6 +272,8 @@ static void ov_result_ok(Cpu *c) { ret_x(c, 0); }   // RequestImmediateTransmiss
 static volatile int32_t nfp_state;
 static void ov_nfp_initialize(Cpu *c) { plat_xchg32(&nfp_state, 1); ret_x(c, 0); }
 static void ov_nfp_finalize(Cpu *c) {
+    nfp_set_system_event(true, 0);
+    nfp_set_system_event(false, 0);
     plat_xchg32(&nfp_state, 0);
     amiibo_stop_detection();
     amiibo_unmount();
@@ -300,8 +303,8 @@ static void ov_nfp_list(Cpu *c) {
 static void ov_nfp_availability(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (!ev) rt_fatal("nn::nfp::AttachAvailabilityChangeEvent: null event");
-    kern_bind_system_event(c, ev, 0);
-    kern_signal_system_event(ev);
+    kern_bind_system_event(c, ev, 1);
+    // ListDevices reports the reader already present. This event is for subsequent availability changes.
     ret_x(c, 0);
 }
 
@@ -318,8 +321,7 @@ static void ov_nfp_mount(Cpu *c) {
         ret_x(c, NFP_R_DEVICE_NOT_FOUND);
         return;
     }
-    amiibo_mount();
-    ret_x(c, 0);
+    ret_x(c, amiibo_mount() ? 0 : NFP_R_DEVICE_NOT_FOUND);
 }
 
 // Result GetNpadId(u32 *npad_id, const DeviceHandle &)
@@ -333,7 +335,9 @@ static void ov_nfp_get_npad_id(Cpu *c) {
 static void ov_nfp_attach_activate(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (ev) {
-        kern_bind_system_event(c, ev, 0);
+        // Match the SDK's AttachActivateEvent: one successful wait consumes each tag notification.
+        kern_bind_system_event(c, ev, 1);
+        nfp_set_system_event(true, ev);
         if (amiibo_has_tag()) kern_signal_system_event(ev);
     }
     ret_x(c, 0);
@@ -343,7 +347,8 @@ static void ov_nfp_attach_activate(Cpu *c) {
 static void ov_nfp_attach_deactivate(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (ev) {
-        kern_bind_system_event(c, ev, 0);
+        kern_bind_system_event(c, ev, 1);
+        nfp_set_system_event(false, ev);
     }
     ret_x(c, 0);
 }
@@ -383,8 +388,6 @@ static void ov_nfp_get_model_info(Cpu *c) {
     if (out) amiibo_get_model_info(out);
     ret_x(c, 0);
 }
-
-static void ov_nfp_no_device(Cpu *c) { ret_x(c, NFP_R_DEVICE_NOT_FOUND); }
 
 // void err::ShowError(Result): the game's error dialog, logged
 static void ov_show_error(Cpu *c) {
