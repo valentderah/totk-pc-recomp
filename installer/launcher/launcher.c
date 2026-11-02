@@ -12,9 +12,8 @@
 #define LANGID_PT_BR 0x0416     /* the whole LANGID: Portugal's Portuguese stays English */
 #define PATH_CHARS (MAX_PATH * 2)
 
-/* The language of the window (installer/guilogic.py ui_language_for_langid): Brazilian Portuguese, Simplified Chinese
-   (zh-CN, zh-SG) and Traditional Chinese (zh-TW, zh-HK, zh-MO) by the whole LANGID, the rest by the primary language,
-   else English. */
+/* The language of the window (installer/guilogic.py ui_language_for_langid): Brazilian Portuguese by the whole LANGID,
+   the rest by the primary language (every Chinese gets Simplified Chinese), else English. */
 static void fail(void)
 {
     static const struct { WORD primary; const wchar_t *title, *text; } by_primary[] = {
@@ -26,18 +25,12 @@ static void fail(void)
         { LANG_DUTCH, LAUNCHER_TITLE_NL, LAUNCHER_PYTHON_MISSING_NL },
         { LANG_JAPANESE, LAUNCHER_TITLE_JA, LAUNCHER_PYTHON_MISSING_JA },
         { LANG_KOREAN, LAUNCHER_TITLE_KO, LAUNCHER_PYTHON_MISSING_KO },
+        { LANG_CHINESE, LAUNCHER_TITLE_ZH_HANS, LAUNCHER_PYTHON_MISSING_ZH_HANS },
     };
     LANGID ui = GetUserDefaultUILanguage();
     const wchar_t *title = LAUNCHER_TITLE_EN, *text = LAUNCHER_PYTHON_MISSING_EN;
     if (ui == LANGID_PT_BR) {
         title = LAUNCHER_TITLE_PT_BR; text = LAUNCHER_PYTHON_MISSING_PT_BR;
-    } else if (ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
-               ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE)) {
-        title = LAUNCHER_TITLE_ZH_HANS; text = LAUNCHER_PYTHON_MISSING_ZH_HANS;
-    } else if (ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL) ||
-               ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_HONGKONG) ||
-               ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_MACAU)) {
-        title = LAUNCHER_TITLE_ZH_HANT; text = LAUNCHER_PYTHON_MISSING_ZH_HANT;
     } else {
         for (size_t i = 0; i < sizeof by_primary / sizeof by_primary[0]; i++)
             if (PRIMARYLANGID(ui) == by_primary[i].primary) { title = by_primary[i].title; text = by_primary[i].text; }

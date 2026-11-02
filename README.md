@@ -25,7 +25,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
-- Setup and in-game menu in 11 languages, the setup also in Traditional Chinese ([Languages](#languages))
+- Setup and in-game menu in 11 languages ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
@@ -52,7 +52,7 @@ menu (F1) in these. Both follow the Windows display language, and the menu has i
 | 🇳🇱 | Nederlands | ✅ | ✅ |
 | 🇯🇵 | 日本語 | ✅ | ✅ |
 | 🇰🇷 | 한국어 | ✅ | ✅ |
-| 🇹🇼 | 繁體中文 | ✅ | 简体中文 |
+| 🇹🇼 | 繁體中文 | 简体中文 | 简体中文 |
 
 Spotted a clumsy phrase, or want your language added? The setup texts are in `installer/text/<language>.json`, the
 menu texts in `runtime/ui_text.c`; open an issue or a pull request ([CONTRIBUTING.md](CONTRIBUTING.md)). Native

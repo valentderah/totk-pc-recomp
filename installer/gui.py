@@ -6,7 +6,7 @@ events. Decisions live in guilogic.py; this file only draws. The window text is 
 installer/text/<lang>.json under "ui.*" and "launcher.*" ids.
 
     --selftest [--shots DIR]   build every screen in every language and close by itself (PNG per screen with --shots)
-    --lang en|ru|pt-BR|zh-Hans|de|fr|es|it|nl|ja|ko|zh-Hant window language (default: the Windows display language)
+    --lang en|ru|pt-BR|zh-Hans|de|fr|es|it|nl|ja|ko window language (default: the Windows display language)
     --rebuild DIR              rebuild the install folder DIR for its mods (totk.exe starts this, build-cache/rebuild.txt):
                                the run starts at once with that folder, and the game starts again when it succeeds
 """
