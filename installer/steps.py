@@ -184,6 +184,25 @@ def expected_update(ctx):
     return extract.load_expected()[game_version(ctx)]
 
 
+# Releases before 0.3.1 recorded the 0x20000 update as 1.1.1 (pull request #220); it is 1.1.0 (#371), with the same
+# files, hashes and patch sites under new names.
+RENAMED_VERSIONS = {'1.1.1': '1.1.0'}
+
+
+def migrate_state(ctx):
+    """Read a recorded update by its current name. The extraction it recorded stays: its record gets the key of the
+    renamed expected file, and Extract.current and the full check of output another release kept
+    (runner.Context.verify_kept) still test the files against the expected hashes."""
+    old = ctx.state.get('version')
+    if old not in RENAMED_VERSIONS:
+        return
+    ctx.state['version'] = RENAMED_VERSIONS[old]
+    record = ctx.state['steps'].get('extract')
+    if record:
+        record['key'] = Extract().key(ctx)
+    ctx.reporter.log(f'state: the update recorded as {old} is {ctx.state["version"]}')
+
+
 def shader_list_text(layout):
     if layout.shader_list:
         return layout.shader_list.read_text(encoding='utf-8')
