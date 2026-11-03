@@ -220,6 +220,11 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 // with no depth, and the HUD is drawn over that target at the output size. DLSS runs at the begin of that pass: it
 // reads the light target and its result is blitted into the pass's target, whose scaling draw is then skipped. The
 // HUD, drawn afterwards into the same target, is never jittered nor passed through DLSS.
+// The scaling draw is not always that FXAA shader: at a 1280x720 scene and 1920x1080 output (1.4.3, dlss = quality)
+// the game's tonemap (guest fs 7e114c4330dc212a) reads the light target and writes the output-sized target itself,
+// over DLSS's picture, so the jittered scene reached the screen and the whole picture shook. So from DLSS's evaluation
+// to the frame's end, draws in passes larger than the light target sample DLSS's output in its place
+// (vk_dlaa_swap_img, applied by vk_exec_draw.c tex_info): whichever shader scales, it scales DLSS's picture.
 static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
     int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
@@ -245,9 +250,8 @@ static struct {
     uint64_t holds;
     // camera (vk_dlaa_draw) and motion vectors (mv_pass)
     uint64_t cam_addr;           // this frame's scene camera block (c4 of a scene draw's vertex stage), 0: none seen
-    VkBuffer camb;               // two 256-byte slots: this frame's block and last frame's
-    VmaAllocation camb_mem;
-    int cam_slot, cam_prev_ok;   // the slot this frame writes / the other slot holds last frame's camera
+    double cam_prev[16];         // last frame's view-projection (row-major), valid while cam_prev_ok
+    int cam_prev_ok;
     VkDescriptorSetLayout mv_dsl;
     VkPipelineLayout mv_layout;
     VkPipeline mv_pipe;
@@ -256,9 +260,10 @@ static struct {
     uint64_t mv_frames, mv_none;
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
-    int scaler_skipped;          // this frame: the game's scaling draw over DLSS's picture was skipped
-    uint64_t scaler_missed;      // frames DLSS scaled whose scaling draw was not found (vk_dlaa_skip_draw)
 } D = {.mv_ok = -1};
+
+const VkTexImage *vk_dlaa_swap_img;
+VkImageView vk_dlaa_swap_view;
 
 static int dl_active(void) { return N.available && !D.failed && D.on; }
 
@@ -352,25 +357,53 @@ static NgxResourceVK res_image(VkImageView v, VkImage img, VkFormat f, uint32_t 
 }
 
 // ---------------------------------------------------------------- motion vectors
-// Camera motion only (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the replay's
-// uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other, and the
-// compute pass reprojects every pixel's depth through both. Characters and anything else that moves on its own get
-// the camera's motion only, which DLSS mostly copes with by rejecting their history.
+// Camera motion only (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is read from the replay's uniform
+// snapshot (vk_usnap.c, as of the submit call), and the compute pass takes every pixel through last frame's
+// view-projection times the inverse of this frame's. That matrix is made here in double precision: the shader once
+// inverted the view-projection itself in 32-bit floats, and the rounding gave a still camera a few hundredths of a
+// pixel of motion that changed with every jitter step, which DLSS followed, so the whole picture wobbled. Characters
+// and anything else that moves on its own get the camera's motion only, which DLSS mostly copes with by rejecting
+// their history.
 #define CAM_BYTES 256u   // vec4 rows 0-15: view, view-projection (3-6), projection, inverse view
+
+// m inverted in place (row-major 4x4, Gauss-Jordan with partial pivoting). 0: singular.
+static int invert4(double m[16]) {
+    double a[4][8];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 8; c++) a[r][c] = c < 4 ? m[r * 4 + c] : (c - 4 == r);
+    for (int c = 0; c < 4; c++) {
+        int p = c;
+        for (int r = c + 1; r < 4; r++)
+            if (fabs(a[r][c]) > fabs(a[p][c])) p = r;
+        if (fabs(a[p][c]) < 1e-30) return 0;
+        for (int k = 0; k < 8; k++) {
+            double t = a[c][k];
+            a[c][k] = a[p][k], a[p][k] = t;
+        }
+        double inv = 1.0 / a[c][c];
+        for (int k = 0; k < 8; k++) a[c][k] *= inv;
+        for (int r = 0; r < 4; r++) {
+            if (r == c || a[r][c] == 0.0) continue;
+            double f = a[r][c];
+            for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k];
+        }
+    }
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) m[r * 4 + c] = a[r][c + 4];
+    return 1;
+}
 
 static int mv_init(void) {
     if (D.mv_ok >= 0) return D.mv_ok;
     D.mv_ok = 0;
     const VkCtx *c = vk_ctx();
-    VkDescriptorSetLayoutBinding b[4] = {
+    VkDescriptorSetLayoutBinding b[2] = {
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
-                                           .bindingCount = 4, .pBindings = b};
-    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+                                           .bindingCount = 2, .pBindings = b};
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 80};
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
                               .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -379,16 +412,12 @@ static int mv_init(void) {
     VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof dlaa_mv_spv,
                                    .pCode = dlaa_mv_spv};
     VkShaderModule m = VK_NULL_HANDLE;
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 2 * CAM_BYTES,
-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (vkCreateDescriptorSetLayout(c->device, &dci, NULL, &D.mv_dsl) != VK_SUCCESS) goto fail;
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
                                      .pSetLayouts = &D.mv_dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
     if (vkCreatePipelineLayout(c->device, &li, NULL, &D.mv_layout) != VK_SUCCESS ||
         vkCreateSampler(c->device, &si, NULL, &D.mv_samp) != VK_SUCCESS ||
-        vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS ||
-        vmaCreateBuffer(c->vma, &bi, &ai, &D.camb, &D.camb_mem, NULL) != VK_SUCCESS)
+        vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS)
         goto fail;
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -407,34 +436,37 @@ fail:
 // zero and DLSS starts a new history).
 static int mv_pass(VkCommandBuffer cb, const struct Size *e, VkImageView zv, float jx, float jy) {
     uint32_t w = e->w, h = e->h;
-    VkDescriptorBufferInfo cam;
-    if (!mv_init() || !D.cam_addr || !vk_usnap_find(D.cam_addr, CAM_BYTES, 4, &cam)) {
+    const float *cam = D.cam_addr ? vk_usnap_host(D.cam_addr, CAM_BYTES, 4) : NULL;
+    if (!mv_init() || !cam) {
         D.mv_none++;
         D.cam_prev_ok = 0;
         return 0;
     }
-    int s = D.cam_slot, had_prev = D.cam_prev_ok;
-    VkBufferCopy bc = {cam.offset, (VkDeviceSize)s * CAM_BYTES, CAM_BYTES};
-    vkCmdCopyBuffer(cb, cam.buffer, D.camb, 1, &bc);
-    full_barrier(cb);
-    D.cam_slot ^= 1, D.cam_prev_ok = 1;
-    if (!had_prev) return 0;   // nothing to reproject into: zero motion, new history
+    double cur[16], prev[16], m[16];
+    for (int i = 0; i < 16; i++) cur[i] = cam[12 + i];   // rows 3-6
+    int had_prev = D.cam_prev_ok;
+    memcpy(prev, D.cam_prev, sizeof prev);
+    memcpy(D.cam_prev, cur, sizeof cur), D.cam_prev_ok = 1;
+    if (!had_prev || !invert4(cur)) return 0;   // nothing to reproject into: zero motion, new history
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double v = 0;
+            for (int k = 0; k < 4; k++) v += prev[r * 4 + k] * cur[k * 4 + c];
+            m[r * 4 + c] = v;
+        }
     VkDescriptorImageInfo zi = {D.mv_samp, zv, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo oi = {VK_NULL_HANDLE, e->mv_view, VK_IMAGE_LAYOUT_GENERAL};
-    VkDescriptorBufferInfo cur = {D.camb, (VkDeviceSize)s * CAM_BYTES, CAM_BYTES};
-    VkDescriptorBufferInfo prev = {D.camb, (VkDeviceSize)(s ^ 1) * CAM_BYTES, CAM_BYTES};
-    VkWriteDescriptorSet wr[4] = {
+    VkWriteDescriptorSet wr[2] = {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &zi},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi},
-        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &cur},
-        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 3, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &prev}};
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_pipe);
-    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_layout, 0, 4, wr);
-    float pc[4] = {(float)w, (float)h, jx, jy};
+    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_layout, 0, 2, wr);
+    float pc[20];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) pc[c * 4 + r] = (float)m[r * 4 + c];   // GLSL mat4 is column-major
+    pc[16] = (float)w, pc[17] = (float)h, pc[18] = jx, pc[19] = jy;
     vkCmdPushConstants(cb, D.mv_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
     vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
     full_barrier(cb);
@@ -563,6 +595,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                      .dstOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}}};
     vkCmdBlitImage(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
     full_barrier(cb);
+    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
@@ -589,9 +622,13 @@ void vk_dlaa_pass(VkExec *ex) {
         D.gbuf = 1, D.armed = 0;
         return;
     }
-    // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents
+    // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents.
+    // A smaller pair never takes over an armed one: the camera rune draws a half-size RGBA16F target with a half-size
+    // D32F depth after the lighting (852x480 under a 1704x960 scene), and DLSS ran on that and wrote its picture into
+    // the scene's own light target, which left every object black.
     if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
         c->width == z->width && c->height == z->height && c->width >= 640 &&
+        (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d) {
         D.color = *c, D.depth = *z, D.armed = 1;
         return;
@@ -605,15 +642,18 @@ void vk_dlaa_pass(VkExec *ex) {
         if (D.color.width >= o[0]) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
         return;
     }
-    // the game's scaling pass: one colour target wider than the scene, no depth
+    // the game's scaling pass: one colour target of the output size, no depth
+    unsigned o[2], s[2];
+    res_sizes(o, s);
     if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
-        c->samples <= 1 && !c->is3d) {
+        c->width == o[0] && c->height == o[1] && c->samples <= 1 && !c->is3d) {
         D.done = D.up = 1;
         evaluate(ex, c);
     }
 }
 
 void vk_dlaa_frame(void) {
+    vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
@@ -628,10 +668,7 @@ void vk_dlaa_frame(void) {
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    if (D.up && !D.scaler_skipped && ++D.scaler_missed == 1)
-        rt_log("dlaa: the game's scaling draw over DLSS's picture was not found (its fragment shader is not in FXAA_FS): "
-               "the jittered scene reaches the screen and shakes");
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.scaler_skipped = 0;
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = 0;
     D.cam_addr = 0;
 }
 
@@ -646,8 +683,8 @@ void vk_dlaa_frame(void) {
 // is always drawn, whatever fxaa says (skipping it would leave the 3D picture out), unless DLSS already wrote that
 // target this frame.
 // The stock translator's hash, the one with tools/xlate patch 0010 (PCSS, PR #89) applied, and the one with patches
-// 0010 and 0011 (the shadow filter spread) applied. A translator change that gives the shader another hash is reported
-// by vk_dlaa_frame: the game's scaling draw then covers DLSS's picture with the jittered scene, which shakes.
+// 0010 and 0011 (the shadow filter spread) applied. A scaling draw this list misses still scales DLSS's picture, not
+// the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull};
 
 static uint64_t spirv_hash(const GfxShader *s) {
@@ -688,7 +725,7 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
     if (!known) return 0;
-    if (!ex->depth.image) return D.scaler_skipped = D.up;   // the scaling pass
+    if (!ex->depth.image) return D.up;   // the scaling pass, which DLSS replaced
     if (!fxaa && !fx_found) {
         fx_found = 1;
         rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);
@@ -699,6 +736,10 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
 #else
 // NGX is loaded as a Windows DLL; elsewhere DLAA, the DLSS modes' scaling and the FXAA switch do nothing.
 #include "vk_dlaa.h"
+#include "vk_exec.h"
+
+const VkTexImage *vk_dlaa_swap_img;
+VkImageView vk_dlaa_swap_view;
 
 int vk_dlaa_wanted(void) { return 0; }
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) { (void)ext, (void)n, (void)max; }
