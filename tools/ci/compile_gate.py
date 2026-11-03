@@ -6,7 +6,7 @@ dump can run, and it catches what a real build only catches at the link: an incl
 platform function used but not implemented here (with --undefined), a header that drifted.
 
     python tools/ci/compile_gate.py              # this OS's file set, the project's flags
-    python tools/ci/compile_gate.py --undefined  # also fail when a plat_/rt_/gfx_/vk_ symbol is never defined
+    python tools/ci/compile_gate.py --undefined  # also fail when a plat_* or os_* symbol is never defined
 
 The file set and the per-OS exclusion are build_game's own, so the gate cannot drift from the build.
 """
