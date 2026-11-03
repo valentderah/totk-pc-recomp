@@ -91,16 +91,18 @@ static int name_is(const uint32_t *a, uint32_t len, const char *s) {   // OpName
     return (len - 2) * 4 >= n + 1 && !memcmp(a + 1, s, n + 1);
 }
 
-// The game's FSR 1 upscale after the tonemap (some frames take it in place of the plain upscale; what picks it is not
-// known yet, the scene size alone does not) ends with clamp(colour, 0.0, 1.0) per channel, which cuts the HDR
-// highlights back to the HUD's white for as long as the game takes it. Its own 0..1 clamps of the filter weights each feed a float bit trick (OpBitcast), so only
-// the clamps whose result goes to the shader's output change, to clamp(x, 0.0, x): the same instruction length, no new
-// constant, and the r11g11b10f target stores no negative anyway. Recognised by FSR's two reciprocal constants
-// (0x7ef07ebb, 0x7ef19fff) and its one texture fp_t_tcb_8. Returns the clamps changed.
+// The game's FSR 1 pass after the tonemap (some frames take it in place of the plain pass, at 1:1 as well as when it
+// scales up; what picks it is not known yet) ends with clamp(colour, 0.0, 1.0) per channel, which cuts the HDR
+// highlights back to the HUD's white for as long as the game takes it. Its own 0..1 clamps of the filter weights each
+// feed a float bit trick (OpBitcast), so only the clamps whose result is stored to the shader's output change, to
+// max(x, 0.0): one word shorter, so the words after it move down and the module shrinks. Recognised by FSR's two
+// reciprocal constants (0x7ef07ebb, 0x7ef19fff) and its one texture fp_t_tcb_8. Returns the clamps changed, -1 for
+// that shader with no output clamp found (a translator that stores the colour another way), 0 for any other shader.
 enum { SPV_OP_EXT_INST_IMPORT = 11, SPV_OP_EXT_INST = 12, SPV_OP_VARIABLE = 59, SPV_OP_STORE = 62,
-       SPV_OP_ACCESS_CHAIN = 65, SPV_SC_OUTPUT = 3, GLSL_FCLAMP = 43 };
+       SPV_OP_ACCESS_CHAIN = 65, SPV_SC_OUTPUT = 3, GLSL_FMAX = 40, GLSL_FCLAMP = 43 };
 
-static int fsr_unclamp(uint32_t *w, uint64_t n) {
+static int fsr_unclamp(uint32_t *w, uint64_t *words) {
+    uint64_t n = *words;
     uint32_t bound = w[3], glsl = 0, float_type = 0, zero = 0, one = 0;
     int magic = 0, tex = 0;
     for (uint64_t i = 5; i < n;) {
@@ -116,7 +118,8 @@ static int fsr_unclamp(uint32_t *w, uint64_t n) {
         } else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "fp_t_tcb_8")) tex = 1;
         i += len;
     }
-    if (magic != 3 || !tex || !glsl || !zero || !one || !bound) return 0;
+    if (magic != 3 || !tex) return 0;
+    if (!glsl || !zero || !one || !bound) return -1;
     uint8_t *out = calloc(bound, 1);   // id -> 1: a pointer into an Output variable, 2: a value stored through one
     if (!out) return 0;
     for (uint64_t i = 5; i < n; i += w[i] >> 16) {
@@ -127,24 +130,39 @@ static int fsr_unclamp(uint32_t *w, uint64_t n) {
         else if (op == SPV_OP_STORE && len >= 3 && a[0] < bound && out[a[0]] == 1 && a[1] < bound) out[a[1]] = 2;
     }
     int changed = 0;
-    for (uint64_t i = 5; i < n; i += w[i] >> 16) {
+    uint64_t k = 5;   // the write position: never past the read position, as instructions only shrink
+    for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
-        uint32_t *a = w + i + 1;   // result type, result, set, instruction, x, min, max
+        const uint32_t *a = w + i + 1;   // result type, result, set, instruction, x, min, max
         if (op == SPV_OP_EXT_INST && len == 8 && a[2] == glsl && a[3] == GLSL_FCLAMP && a[1] < bound && out[a[1]] == 2 &&
-            a[5] == zero && a[6] == one)
-            a[6] = a[4], changed++;
+            a[5] == zero && a[6] == one) {
+            uint32_t ins[7] = {7u << 16 | SPV_OP_EXT_INST, a[0], a[1], a[2], GLSL_FMAX, a[4], zero};
+            memmove(w + k, ins, sizeof ins);
+            k += 7, changed++;
+        } else {
+            memmove(w + k, w + i, len * sizeof *w);
+            k += len;
+        }
+        i += len;
     }
     free(out);
-    return changed;
+    *words = k;
+    return changed ? changed : -1;
 }
 
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
     if (!vk_hdr_wanted() || !*spirv || *words < 5) return;
-    int unclamped = fsr_unclamp(*spirv, *words);
-    if (unclamped) {
+    int unclamped = fsr_unclamp(*spirv, words);
+    if (unclamped > 0) {
         static volatile int32_t fsrs;
-        rt_log("hdr: the game's FSR upscale keeps values above 1 (%d output clamps; %d so far)", unclamped,
+        rt_log("hdr: the game's FSR pass keeps values above 1 (%d output clamps; %d so far)", unclamped,
                plat_inc32(&fsrs));
+        return;
+    }
+    if (unclamped < 0) {
+        static volatile int32_t missed;
+        if (plat_inc32(&missed) == 1)
+            rt_log("hdr: the game's FSR pass was found but no clamp of its output; it still clips HDR highlights");
         return;
     }
     const uint32_t *w = *spirv;
