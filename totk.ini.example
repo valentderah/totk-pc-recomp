@@ -199,11 +199,17 @@
 # NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with nvngx_dlss.dll (from NVIDIA's DLSS SDK) next to
 # totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
-# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). They apply
-# only with dlaa = 1 and nvngx_dlss.dll next to totk.exe, on Windows; otherwise the scene follows render_scale. Read at
-# start.
+# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
+# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
+# to match). They apply only with dlaa = 1 and nvngx_dlss.dll next to totk.exe, on Windows; otherwise the scene follows
+# render_scale. Changes while the game runs take effect at once. The DLSS model follows NVIDIA's advice per mode
+# (preset K for dlaa, quality and balanced, M for performance, L for ultra_performance); on slower RTX cards the older
+# model E is cheaper: TOTK_DLSS_PRESET=E in the environment.
 # dlss = dlaa
+# Per-object motion vectors for DLSS: characters, animals and moving objects get their own motion instead of the
+# camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
+# on a laptop CPU); 0 leaves camera-only motion. Read at start.
+# dlaa_objmv = 1
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
