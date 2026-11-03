@@ -268,7 +268,10 @@ MovieFit *movie_fit_new(int w, int h, unsigned ow, unsigned oh) {
     double movie = (double)w / h, out = (double)ow / oh, r = out / movie;
     if (r > 0.99 && r < 1.01) return NULL;
     MovieFit *f = calloc(1, sizeof *f);
-    if (!f) return NULL;
+    if (!f) {
+        rt_log("movie: out of memory for the picture-shape tables; this movie is stretched");
+        return NULL;
+    }
     f->w = w, f->h = h, f->pw = w, f->ph = h;
     if (r > 1) f->pw = (int)(w / r / 2 + 0.5) * 2;   // wider output: squeeze sideways
     else f->ph = (int)(h * r / 2 + 0.5) * 2;         // taller output: squeeze vertically
@@ -282,6 +285,7 @@ MovieFit *movie_fit_new(int w, int h, unsigned ow, unsigned oh) {
     f->tmp = malloc((size_t)f->pw * h);
     f->acc = malloc((size_t)f->pw * sizeof *f->acc);
     if (!ok || !f->tmp || !f->acc) {
+        rt_log("movie: out of memory for the picture-shape tables; this movie is stretched");
         movie_fit_free(f);
         return NULL;
     }
@@ -289,14 +293,21 @@ MovieFit *movie_fit_new(int w, int h, unsigned ow, unsigned oh) {
 }
 
 // One output row of the horizontal pass: dst gets the shrunk src row (dstep 2 writes every other byte, for U and V).
-static void fit_row_h(const FitAxis *a, const uint8_t *src, uint8_t *dst, int dstep) {
+// The tap count is a constant in the 3 and 4 tap copies (what 2x and below squeezes need), so the compiler unrolls the sum.
+static inline __attribute__((always_inline)) void fit_row_taps(const FitAxis *a, const uint8_t *src, uint8_t *dst,
+                                                               int dstep, int taps) {
     for (int i = 0; i < a->n; i++) {
         const uint8_t *p = src + a->start[i];
-        const uint16_t *w = a->wt + (size_t)i * a->taps;
+        const uint16_t *w = a->wt + (size_t)i * taps;
         uint32_t v = FIT_ONE / 2;
-        for (int t = 0; t < a->taps; t++) v += w[t] * p[t];
+        for (int t = 0; t < taps; t++) v += w[t] * p[t];
         dst[(size_t)i * dstep] = (uint8_t)(v / FIT_ONE);
     }
+}
+static void fit_row_h(const FitAxis *a, const uint8_t *src, uint8_t *dst, int dstep) {
+    if (a->taps == 3) fit_row_taps(a, src, dst, dstep, 3);
+    else if (a->taps == 4) fit_row_taps(a, src, dst, dstep, 4);
+    else fit_row_taps(a, src, dst, dstep, a->taps);
 }
 
 // One plane (sw x sh) shrunk into the pw x ph picture whose corner (ox, oy) is in dst; ax/ay NULL = that axis is kept.
@@ -320,14 +331,21 @@ static void fit_plane(const MovieFit *f, const uint8_t *src, int ss, int sw, int
         in = f->tmp, is = pw;
     }
     for (int y = 0; y < ph; y++) {
-        memset(f->acc, 0, (size_t)pw * sizeof *f->acc);
         const uint16_t *w = ay->wt + (size_t)y * ay->taps;
+        const uint8_t *r0 = in + (size_t)ay->start[y] * is;
+        uint8_t *o = base + (size_t)y * ds;
+        if (ay->taps == 3) {   // the common case, summed in registers
+            const uint8_t *r1 = r0 + is, *r2 = r1 + is;
+            for (int x = 0; x < pw; x++)
+                o[(size_t)x * dstep] = (uint8_t)((FIT_ONE / 2 + w[0] * r0[x] + w[1] * r1[x] + w[2] * r2[x]) / FIT_ONE);
+            continue;
+        }
+        memset(f->acc, 0, (size_t)pw * sizeof *f->acc);
         for (int t = 0; t < ay->taps; t++) {
-            const uint8_t *row = in + (size_t)(ay->start[y] + t) * is;
+            const uint8_t *row = r0 + (size_t)t * is;
             uint32_t k = w[t];
             for (int x = 0; x < pw; x++) f->acc[x] += k * row[x];
         }
-        uint8_t *o = base + (size_t)y * ds;
         for (int x = 0; x < pw; x++) o[(size_t)x * dstep] = (uint8_t)((f->acc[x] + FIT_ONE / 2) / FIT_ONE);
     }
 }
@@ -336,8 +354,20 @@ static void fit_plane(const MovieFit *f, const uint8_t *src, int ss, int sw, int
 void movie_fit_apply(const MovieFit *f, const uint8_t *const plane[3], const int stride[3], uint8_t *dst) {
     int w = f->w, h = f->h, cw = w / 2, ch = h / 2;
     uint8_t *uv = dst + (size_t)w * h;
-    memset(dst, FIT_Y_BLACK, (size_t)w * h);
-    memset(uv, FIT_UV_BLACK, (size_t)w * ch);
+    // Black only where the picture does not go: whole rows above and below it, the strips left and right of it.
+    int rx = f->x0 + f->pw, ry = f->y0 + f->ph;
+    memset(dst, FIT_Y_BLACK, (size_t)f->y0 * w);
+    memset(dst + (size_t)ry * w, FIT_Y_BLACK, (size_t)(h - ry) * w);
+    memset(uv, FIT_UV_BLACK, (size_t)(f->y0 / 2) * w);
+    memset(uv + (size_t)(ry / 2) * w, FIT_UV_BLACK, (size_t)(ch - ry / 2) * w);
+    for (int y = f->y0; y < ry; y++) {
+        memset(dst + (size_t)y * w, FIT_Y_BLACK, (size_t)f->x0);
+        memset(dst + (size_t)y * w + rx, FIT_Y_BLACK, (size_t)(w - rx));
+    }
+    for (int y = f->y0 / 2; y < ry / 2; y++) {
+        memset(uv + (size_t)y * w, FIT_UV_BLACK, (size_t)f->x0);
+        memset(uv + (size_t)y * w + rx, FIT_UV_BLACK, (size_t)(w - rx));
+    }
     fit_plane(f, plane[0], stride[0], w, h, dst, w, 1, f->x0, f->y0, f->lx.n ? &f->lx : NULL, f->ly.n ? &f->ly : NULL,
               f->pw, f->ph);
     for (int c = 0; c < 2; c++)
@@ -389,7 +419,8 @@ static void worker(void *arg) {
             m->out_held[slot] = 1;   // reserved: in no queue, so the game cannot release it
         }
         uint64_t gen = m->gen, dt = 0, fit_ns = 0;
-        const MovieFit *fit = m->fit;
+        // A plan made for another frame size (a start that found the worker busy) is not used: it would overrun dst.
+        const MovieFit *fit = m->fit && m->fit->w == m->w && m->fit->h == m->h ? m->fit : NULL;
         int got = 0, w = m->w, h = m->h;
         uint8_t *dst = slot >= 0 ? m->out[slot] : NULL;
         vpx_codec_err_t e = VPX_CODEC_OK;
