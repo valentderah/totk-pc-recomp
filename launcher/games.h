@@ -30,9 +30,11 @@ struct Build {
     bool install = false; // an install folder of the setup (totk-install.json)
 };
 
-// launcher.ini beside the launcher: "last = <game key>" and "<game key> = <path of its totk.exe>", one per line.
+// launcher.ini beside the launcher: "last = <game key>", "lang = <window language>" and "<game key> = <path of its
+// executable>", one per line.
 struct Settings {
     std::string last;
+    std::string lang;   // en, ru, pt-BR, zh-Hans (the installer window's languages); empty: the system's
     fs::path exe[GAME_COUNT];
 };
 Settings load_settings(const fs::path &file);

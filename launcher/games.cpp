@@ -50,6 +50,7 @@ Settings load_settings(const fs::path &file) {
     for (auto &[k, v] : read_pairs(file)) {
         int g = game_index(k);
         if (k == "last") s.last = v;
+        else if (k == "lang") s.lang = v;
         else if (g >= 0 && !v.empty()) s.exe[g] = from_utf8(v);
     }
     return s;
@@ -59,6 +60,7 @@ bool save_settings(const fs::path &file, const Settings &s) {
     std::ofstream out(file, std::ios::trunc);
     out << "# The game launcher's choices (docs/launcher.md): the last game started and each game's executable.\n";
     if (!s.last.empty()) out << "last = " << s.last << "\n";
+    if (!s.lang.empty()) out << "lang = " << s.lang << "\n";
     for (int g = 0; g < GAME_COUNT; g++)
         if (!s.exe[g].empty()) out << kGames[g].key << " = " << to_utf8(s.exe[g]) << "\n";
     return bool(out);

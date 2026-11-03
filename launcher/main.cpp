@@ -4,9 +4,9 @@
 // totk.exe in its own folder and closes the launcher. Dear ImGui over SDL3's 2D renderer, the toolkit of the in-game
 // menu (runtime/ui/menu.cpp), with its font.
 //
-//   launcher [--list] [--lang en|ru] [--select totk|botw] [--shot FILE.png] [--size WxH]
+//   launcher [--list] [--lang en|ru|pt-BR|zh-Hans] [--select totk|botw] [--shot FILE.png] [--size WxH]
 //     --list     print the builds found and exit
-//     --lang     window language (default: the system's; Russian or English)
+//     --lang     window language (default: the one picked in the window's corner, else the system's)
 //     --select   the card selected at start (default: the last game started)
 //     --shot     draw the window, save it as PNG and exit (docs and tests)
 //     --size     window size in points (default 960x760)
@@ -92,7 +92,84 @@ static const Text kRussian = {
     "Ни одна игра пока не установлена. Нажмите «Установить» на карточке игры и укажите её файлы, либо укажите "
     "игру, установленную в другом месте.",
 };
+static const Text kPortuguese = {
+    "Escolha um jogo",
+    "TotK Recomp",
+    "Jogar",
+    "Instalar",
+    "Instalando…",
+    "Não instalado",
+    "Instale-o a partir dos seus próprios arquivos do jogo",
+    "Versão %s",
+    "Versão desconhecida",
+    "Localizar o jogo…",
+    "Outra pasta…",
+    "Não foi possível iniciar: %s",
+    "Não há instalador ao lado do launcher (installer/).",
+    "Não há dados do jogo ao lado desse arquivo (romfs-index.bin).",
+    "Setas ou direcional: escolher      Enter ou A: jogar ou instalar      Esc: sair",
+    "Nenhum jogo instalado ainda. Escolha Instalar no cartão de um jogo e indique os arquivos dele, ou localize um "
+    "jogo instalado em outro lugar.",
+};
+static const Text kChinese = {
+    "选择游戏",
+    "TotK Recomp",
+    "开始游戏",
+    "安装",
+    "正在安装…",
+    "未安装",
+    "用你自己的游戏文件安装",
+    "版本 %s",
+    "版本未知",
+    "指定游戏…",
+    "其他文件夹…",
+    "无法启动：%s",
+    "启动器旁边没有安装程序（installer/）。",
+    "该文件旁边没有游戏数据（romfs-index.bin）。",
+    "方向键或十字键：选择      Enter 或 A：开始或安装      Esc：退出",
+    "尚未安装任何游戏。在游戏卡片上选择“安装”并指定其文件，或指定安装在其他位置的游戏。",
+};
+
+// The window languages, those of the installer window (installer/guilogic.py UI_LANGUAGES), with their own names
+struct Language {
+    const char *code, *name;
+    const Text *text;
+};
+static const Language kLanguages[] = {
+    {"en", "English", &kEnglish},
+    {"ru", "Русский", &kRussian},
+    {"pt-BR", "Português (Brasil)", &kPortuguese},
+    {"zh-Hans", "简体中文", &kChinese},
+};
+enum { LANGUAGE_COUNT = sizeof kLanguages / sizeof *kLanguages };
+static int g_lang = 0;   // index into kLanguages
 static const Text *T = &kEnglish;
+
+static int language_index(const char *code) {
+    for (int i = 0; code && i < LANGUAGE_COUNT; i++)
+        if (!strcmp(code, kLanguages[i].code)) return i;
+    return -1;
+}
+
+// The system's language as the installer window picks it (installer/guilogic.py ui_language_for_langid): Russian,
+// Brazilian Portuguese, Simplified Chinese (zh-CN, zh-SG, zh-Hans), else English.
+static int system_language() {
+    int n = 0, out = 0;
+    SDL_Locale **locales = SDL_GetPreferredLocales(&n);
+    if (locales && n > 0 && locales[0]->language) {
+        const char *lang = locales[0]->language, *country = locales[0]->country ? locales[0]->country : "";
+        if (!strcmp(lang, "ru")) out = 1;
+        else if (!strcmp(lang, "pt") && !strcmp(country, "BR")) out = 2;
+        else if (!strcmp(lang, "zh") && (!strcmp(country, "CN") || !strcmp(country, "SG") || !*country)) out = 3;
+    }
+    SDL_free(locales);
+    return out;
+}
+
+static void set_language(int i) {
+    g_lang = i;
+    T = kLanguages[i].text;
+}
 
 // Each game's colours: the accent of its button and glow, the gradient of its card when it has no icon.
 struct Look {
@@ -175,15 +252,44 @@ static void put(ImDrawList *dl, ImFont *f, ImVec2 pos, ImU32 col, const char *s)
     dl->AddText(f, size_of(f), pos, col, s);
 }
 
+// A system font with Chinese glyphs (Roboto has none), merged into each size with only the glyphs the Chinese texts
+// and the language's name use, as the in-game menu merges one (runtime/ui/menu.cpp fonts_up).
+static const char *const kCjkFonts[] = {
+    "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc", "C:/Windows/Fonts/simhei.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+};
+
 static void build_fonts(float px_scale) {
     static const ImWchar ranges[] = {0x0020, 0x00FF, 0x0400, 0x04FF, 0x2010, 0x2027, 0};
+    static ImVector<ImWchar> cjk_ranges;
+    if (cjk_ranges.empty()) {
+        ImFontGlyphRangesBuilder b;
+        const char *const *text = (const char *const *)&kChinese;
+        for (size_t i = 0; i < sizeof(Text) / sizeof(char *); i++) b.AddText(text[i]);
+        b.AddText(kLanguages[3].name);
+        b.BuildRanges(&cjk_ranges);
+    }
+    const char *cjk = nullptr;
+    for (const char *path : kCjkFonts) {
+        std::error_code ec;
+        if (fs::is_regular_file(fs::path(path), ec)) {
+            cjk = path;
+            break;
+        }
+    }
     ImFontAtlas *fa = ImGui::GetIO().Fonts;
     fa->Clear();
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     fc.OversampleH = 2;
     auto add = [&](float size) {
-        return fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, size * px_scale, &fc, ranges);
+        ImFont *f = fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, size * px_scale, &fc, ranges);
+        if (cjk) {
+            ImFontConfig mc;
+            mc.MergeMode = true;
+            fa->AddFontFromFileTTF(cjk, size * px_scale, &mc, cjk_ranges.Data);
+        }
+        return f;
     };
     F.body = add(19);
     F.small = add(15);
@@ -331,7 +437,8 @@ static void install(int g) {
     const char *boot = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); "
                        "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)";
     const char *args[] = {py.c_str(), "-c", boot, root.c_str(), "--root", root.c_str(), "--game", kGames[g].key,
-                          "--dest", dest.c_str(), "--launcher-ini", ini.c_str(), nullptr};
+                          "--dest", dest.c_str(), "--launcher-ini", ini.c_str(), "--lang", kLanguages[g_lang].code,
+                          nullptr};
     SDL_PropertiesID p = SDL_CreateProperties();
     SDL_SetPointerProperty(p, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
     SDL_SetStringProperty(p, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, root.c_str());
@@ -601,6 +708,24 @@ static void backdrop(ImDrawList *dl, ImVec2 ds) {
                                 shade);
 }
 
+// The window language, in the top right corner; the pick is saved in launcher.ini.
+static void language_picker(ImVec2 ds, float margin, float s) {
+    float w = 200 * s;
+    ImGui::SetCursorScreenPos(ImVec2(ds.x - margin - w, margin * 0.9f));
+    ImGui::SetNextItemWidth(w);
+    ImGui::PushFont(F.small);
+    if (ImGui::BeginCombo("##lang", kLanguages[g_lang].name)) {
+        for (int i = 0; i < LANGUAGE_COUNT; i++)
+            if (ImGui::Selectable(kLanguages[i].name, i == g_lang) && i != g_lang) {
+                set_language(i);
+                g_settings.lang = kLanguages[i].code;
+                save();
+            }
+        ImGui::EndCombo();
+    }
+    ImGui::PopFont();
+}
+
 // ---- main
 
 static bool key_pressed(std::initializer_list<ImGuiKey> keys) {
@@ -620,7 +745,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &win_w, &win_h);
         else {
-            fprintf(stderr, "usage: launcher [--list] [--lang en|ru] [--select totk|botw] [--shot FILE.png] [--size WxH]\n");
+            fprintf(stderr, "usage: launcher [--list] [--lang en|ru|pt-BR|zh-Hans] [--select totk|botw] [--shot FILE.png] [--size WxH]\n");
             return 2;
         }
     }
@@ -640,13 +765,9 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (!lang) {
-        int n = 0;
-        SDL_Locale **locales = SDL_GetPreferredLocales(&n);
-        if (locales && n > 0 && locales[0]->language) lang = !strcmp(locales[0]->language, "ru") ? "ru" : "en";
-        SDL_free(locales);
-    }
-    T = lang && !strcmp(lang, "ru") ? &kRussian : &kEnglish;
+    // --lang, else the one picked in the window (launcher.ini), else the system's
+    int li = language_index(lang ? lang : g_settings.lang.c_str());
+    set_language(li >= 0 ? li : system_language());
     g_sel = game_index(select ? select : g_settings.last);
     if (g_sel < 0) g_sel = chosen_build(GAME_BOTW) || !chosen_build(GAME_TOTK) ? GAME_BOTW : GAME_TOTK;
 
@@ -763,6 +884,7 @@ int main(int argc, char **argv) {
         } else {
             put(dl, F.small, ImVec2(margin, ds.y - 34 * s), with_alpha(kTextLo, 0.8f), T->hint);
         }
+        language_picker(ds, margin, s);
         const char *ver = "TotK Recomp " LAUNCHER_VERSION;
         ImVec2 vs = measure(F.small, ver);
         put(dl, F.small, ImVec2(ds.x - margin - vs.x, ds.y - 34 * s), with_alpha(kTextLo, 0.5f),

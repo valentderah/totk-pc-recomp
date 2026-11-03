@@ -51,11 +51,16 @@ Next to `launcher.exe`, written by the launcher and by the setup window it start
 
 ```ini
 last = botw
+lang = ru
 botw = D:\Games\TotK-Recomp\BotW\botw.exe
 totk = C:\Games\TOTK\totk.exe
 ```
 
-`last` is the game started last, which is selected at the next start. A game's line is the build it was started with,
+`last` is the game started last, which is selected at the next start. `lang` is the window language picked in the
+window's top right corner: English, Russian, Brazilian Portuguese or Simplified Chinese, the installer window's
+languages; without it the launcher takes the system's as the installer does, and it passes its language to the setup
+window it opens (`--lang`). For Chinese it merges a system font (Microsoft YaHei, SimSun or SimHei on Windows, Noto
+Sans CJK on Linux) with the glyphs its texts use, as the in-game menu does. A game's line is the build it was started with,
 picked in the list, chosen with *Locate the game...* or *Other folder...*, or the one the setup window installed. A file
 picked there that has no game data next to it is refused. A file with game data but no `game.ini` counts as the game of
 the card it was picked on.
@@ -96,8 +101,8 @@ colours and name. The selected game's icon, blurred, also tints the window behin
 *Play* starts the executable in its own folder (as a double click does) and closes the launcher. A game that cannot
 start leaves the launcher open with the error on its card.
 
-Command line: `--list` prints the builds found and exits; `--lang en|ru` picks the language (default: the system's,
-Russian or English); `--select totk|botw` selects a card at start; `--shot FILE.png` draws the window, saves it and
+Command line: `--list` prints the builds found and exits; `--lang en|ru|pt-BR|zh-Hans` picks the language for this
+run; `--select totk|botw` selects a card at start; `--shot FILE.png` draws the window, saves it and
 exits; `--size WxH` sets the window size in points. The window is a GUI program, so `--list` prints only when its output
 is redirected or piped.
 
@@ -105,7 +110,5 @@ is redirected or piped.
 
 - No shortcut or uninstall entry: the launcher is a file in the release folder.
 - The setup window keeps its own look (Tk); setup screens drawn in the launcher would match it.
-- Languages other than English and Russian (they get English): the installer's Brazilian Portuguese and Simplified
-  Chinese need the catalog and, for Chinese, a system font as the in-game menu merges one.
 - Linux: SDL3, its process start and file dialog are portable and `build_launcher.py` links the system's libSDL3 there,
   but the Linux build has not been tried.
