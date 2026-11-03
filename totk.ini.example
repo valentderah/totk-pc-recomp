@@ -63,6 +63,9 @@
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU
 # has it, gpu otherwise).
 # astc = auto
+# With astc = gpu: re-encode the decoded ASTC textures to BC3, a quarter of the video memory, textures slightly blockier,
+# 0 or 1. Default: on when the GPU has less than 5 GB of video memory, off otherwise.
+# astc_bc = 1
 # Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
 # every copy; slow). On a discrete GPU import can be far slower than mirror, not slightly slower: the GPU reads the
