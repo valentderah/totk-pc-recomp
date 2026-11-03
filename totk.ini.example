@@ -144,10 +144,16 @@
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
 # render_scale = game
-# Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
-# from 0 (off) to 100. Changes while the game runs take effect at once.
+# Scaling to the window when it is larger than the game resolution: dlss (NVIDIA DLSS 4 / 4.5 / 3), fsr4 (AMD FSR 4.1.2),
+# fsr (AMD FSR 1.0) or bilinear, and FSR's sharpening from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
+# upscaler_preset = quality
+# dlss_preset = preset_k
 # sharpness = 80
+# NVIDIA Reflex low latency (VK_NV_low_latency2): off, on, or boost (keeps GPU clocks high during CPU-bound command replay).
+# reflex = off
+# Ambient occlusion mode: native (game's own AO + contact shadows), ssao (enhanced), hbao (horizon-based) or off.
+# ao_mode = native
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen
 # window): fit, the default, keeps the shape, with black bars at the sides or above and below, so a 16:9 game in a wider
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at

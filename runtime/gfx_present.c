@@ -227,6 +227,8 @@ unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+static void reflex_apply_locked(void);
+
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
@@ -241,11 +243,105 @@ static void window_settings_live(void) {
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started) gfx_window_apply_settings();
+    reflex_apply_locked();
     started = 1;
 }
 
 // ---- swapchain
 static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
+
+// ---- NVIDIA Reflex Low Latency (VK_NV_low_latency2)
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    VkBool32 lowLatencyMode;
+    VkBool32 lowLatencyBoost;
+    uint32_t minimumIntervalUs;
+} ReflexModeInfoNV;
+
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    VkSemaphore sleepSemaphore;
+    uint64_t value;
+} ReflexSleepInfoNV;
+
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    uint64_t presentID;
+    int marker;
+} ReflexMarkerInfoNV;
+
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    uint32_t presentIDCount;
+    const uint64_t *pPresentIDs;
+} PresentIdKHR;
+
+typedef VkResult(VKAPI_PTR *ReflexSetModeFn)(VkDevice, VkSwapchainKHR, const ReflexModeInfoNV *);
+typedef VkResult(VKAPI_PTR *ReflexSleepFn)(VkDevice, VkSwapchainKHR, const ReflexSleepInfoNV *);
+typedef void(VKAPI_PTR *ReflexMarkerFn)(VkDevice, VkSwapchainKHR, const ReflexMarkerInfoNV *);
+
+static ReflexSetModeFn g_reflex_set_mode;
+static ReflexSleepFn g_reflex_sleep;
+static ReflexMarkerFn g_reflex_marker;
+static VkSemaphore g_reflex_sem;
+static uint64_t g_reflex_val;
+static uint64_t g_reflex_present_id = 1;
+static int g_reflex_mode = -1;   // 0=off, 1=on, 2=boost
+static uint32_t g_reflex_min_us = 1;
+
+static void reflex_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_sc) return;
+    if (!g_reflex_set_mode) {
+        g_reflex_set_mode = (ReflexSetModeFn)vkGetDeviceProcAddr(c->device, "vkSetLatencySleepModeNV");
+        g_reflex_sleep = (ReflexSleepFn)vkGetDeviceProcAddr(c->device, "vkLatencySleepNV");
+        g_reflex_marker = (ReflexMarkerFn)vkGetDeviceProcAddr(c->device, "vkSetLatencyMarkerNV");
+    }
+    if (!g_reflex_set_mode) return;
+    if (!g_reflex_sem) {
+        VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
+        VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
+        vkCreateSemaphore(c->device, &si, NULL, &g_reflex_sem);
+        g_reflex_val = 0;
+    }
+    const char *m = cfg_value("TOTK_REFLEX");
+    int mode = !strcmp(m, "boost") ? 2 : !strcmp(m, "on") ? 1 : 0;
+    double hz = frame_step_limit_hz();
+    uint32_t min_us = hz > 0 ? (uint32_t)(1000000.0 / hz + 0.5) : 0;
+    if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
+    g_reflex_mode = mode;
+    g_reflex_min_us = min_us;
+    ReflexModeInfoNV mi = {.sType = (VkStructureType)1000505000, .lowLatencyMode = mode > 0 ? VK_TRUE : VK_FALSE,
+                           .lowLatencyBoost = mode == 2 ? VK_TRUE : VK_FALSE, .minimumIntervalUs = min_us};
+    VkResult r = g_reflex_set_mode(c->device, g_sc, &mi);
+    vk_upscaler_log("REFLEX: NVIDIA Reflex Low Latency -> %s (minInterval=%u us, VK_NV_low_latency2=%s)",
+                    mode == 2 ? "ON + BOOST" : mode == 1 ? "ON" : "OFF", min_us, r == VK_SUCCESS ? "OK" : "ERR");
+}
+
+void vk_reflex_marker(int marker) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_marker || g_reflex_mode <= 0 || !g_sc) return;
+    uint64_t pid = __atomic_load_n(&g_reflex_present_id, __ATOMIC_RELAXED);
+    ReflexMarkerInfoNV mi = {.sType = (VkStructureType)1000505003, .presentID = pid, .marker = marker};
+    g_reflex_marker(c->device, g_sc, &mi);
+}
+
+void vk_reflex_sleep(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_sleep || !g_reflex_sem || g_reflex_mode <= 0 || !g_sc) return;
+    uint64_t val = __atomic_add_fetch(&g_reflex_val, 1, __ATOMIC_RELAXED);
+    ReflexSleepInfoNV si = {.sType = (VkStructureType)1000505001, .sleepSemaphore = g_reflex_sem, .value = val};
+    if (g_reflex_sleep(c->device, g_sc, &si) == VK_SUCCESS) {
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                  .pSemaphores = &g_reflex_sem, .pValues = &val};
+        vkWaitSemaphores(c->device, &wi, 50000000ull);
+    }
+}
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     const char *e = cfg_value("TOTK_VK_PRESENT");
@@ -276,12 +372,15 @@ static void flip_locked(void) {
     if (!g_flip_on) return;
     g_flip_on = 0;
     if (!g_sc) return;
+    vk_reflex_marker(4);   //VK_LATENCY_MARKER_PRESENT_START_NV
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
     VkResult r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
+    vk_reflex_marker(5);   //VK_LATENCY_MARKER_PRESENT_END_NV
+    __atomic_add_fetch(&g_reflex_present_id, 1, __ATOMIC_RELAXED);
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
 }
@@ -364,6 +463,8 @@ static int create_swapchain(void) {
     }
     free_capture();
     vk_queue_unlock();
+    g_reflex_mode = -1;
+    reflex_apply_locked();
     plat_xchg32(&g_dirty, 0);
     return 1;
 }
@@ -778,9 +879,11 @@ void gfx_window_release_vk(void) {
             g_sc_view[i] = VK_NULL_HANDLE;
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
+        if (g_reflex_sem) vkDestroySemaphore(c->device, g_reflex_sem, NULL);
         if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
-        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
+        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_reflex_sem = VK_NULL_HANDLE; g_sc_n = 0;
+        g_reflex_mode = -1;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);

@@ -90,9 +90,11 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 // NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
 // loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
 // dlaa applies after a restart; switched off, nothing else of DLAA runs.
+static int core_load(void);
+
 int vk_dlaa_wanted(void) {
     static int wanted = -1;
-    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA");
+    if (wanted < 0) wanted = core_load();
     return wanted;
 }
 
@@ -486,6 +488,24 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// TOTK_DLSS_PRESET: the NGX render preset hint (the neural model). Values are NVSDK_NGX_DLSS_Hint_Render_Preset.
+static int preset_value(void) {
+    static const struct { const char *name; int v; } t[] = {
+        {"preset_k", 11}, {"preset_j", 10}, {"preset_m", 13}, {"preset_l", 12}, {"preset_e", 5}, {"preset_c", 3},
+        {"default", 0}};
+    const char *s = cfg_value("TOTK_DLSS_PRESET");
+    for (size_t i = 0; s && i < sizeof t / sizeof *t; i++)
+        if (!strcmp(s, t[i].name)) return t[i].v;
+    return 11;
+}
+
+static const char *dlss_gen_name(int pv, int is_upscale) {
+    if (pv == 12 || pv == 13) return is_upscale ? "NVIDIA DLSS 4.5 (Transformer 2)" : "NVIDIA DLAA 4.5 (Transformer 2)";
+    if (pv == 11 || pv == 10) return is_upscale ? "NVIDIA DLSS 4 (Transformer 1)" : "NVIDIA DLAA 4 (Transformer 1)";
+    if (pv == 5 || pv == 3) return is_upscale ? "NVIDIA DLSS 3 (CNN)" : "NVIDIA DLAA 3 (CNN)";
+    return is_upscale ? "NVIDIA DLSS (Auto)" : "NVIDIA DLAA (Auto)";
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -493,6 +513,15 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
+    static int cur_preset = -1;
+    int pv = preset_value();
+    if (pv != cur_preset) {   // the model changed in the menu: every feature is made again with the new hint
+        if (cur_preset >= 0)
+            for (size_t i = 0; i < sizeof D.sizes / sizeof *D.sizes; i++)
+                if (D.sizes[i].feat) N.release(D.sizes[i].feat), D.sizes[i].feat = NULL;
+        cur_preset = pv;
+        D.reset = 1;
+    }
     struct Size *e = size_for(cb, w, h, ow, oh);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++;   // another size's history is from another moment
@@ -522,11 +551,19 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
         p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
+        if (pv) {
+            p_setu(p, "DLSS.Hint.Render.Preset.DLAA", (unsigned)pv);
+            p_setu(p, "DLSS.Hint.Render.Preset.Quality", (unsigned)pv);
+            p_setu(p, "DLSS.Hint.Render.Preset.Balanced", (unsigned)pv);
+            p_setu(p, "DLSS.Hint.Render.Preset.Performance", (unsigned)pv);
+            p_setu(p, "DLSS.Hint.Render.Preset.UltraPerformance", (unsigned)pv);
+        }
         NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, &e->feat);
         if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r);
         D.reset = 1;
-        rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d (scene format %d, depth format %d)", w,
-               h, ow, oh, perf_quality(w, ow), (int)t->format, (int)z->format);
+        vk_upscaler_log("ENGAGED: %s | Model: %s [NGX=%d] | Scene: %ux%u -> Output: %ux%u (%.1f%%, PerfQuality=%d) | Jitter+MotionVectors: ON",
+                        dlss_gen_name(pv, w < ow), cfg_value("TOTK_DLSS_PRESET"), pv, w, h, ow,
+                        oh, ow ? w * 100.0 / ow : 100.0, perf_quality(w, ow));
     }
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
@@ -567,21 +604,26 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     next_jitter();
-    if (++D.evals == 1 || D.evals % 3600 == 0)
-        rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
-               "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target)",
-               (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.frames_missed,
-               (unsigned long long)D.mv_frames, (unsigned long long)D.mv_none, (unsigned long long)D.holds,
-               (unsigned long long)D.why[0], (unsigned long long)D.why[1], (unsigned long long)D.why[2]);
+    if (++D.evals == 1 || D.evals % 600 == 0)
+        vk_upscaler_log("STATUS: %s active for %llu frames | Model: %s [NGX=%d] | Scene: %ux%u -> Output: %ux%u | MotionVectors: %llu frames | Native Scaler Skipped: %s",
+                        dlss_gen_name(pv, w < ow), (unsigned long long)D.evals,
+                        cfg_value("TOTK_DLSS_PRESET"), pv, w, h, ow, oh, (unsigned long long)D.mv_frames,
+                        w < ow ? "YES" : "N/A (100% DLAA)");
 }
 
 static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+static int fsr_scene_active(void) {
+    const char *up = cfg_value("TOTK_UPSCALER");
+    return !dl_active() && (!strcmp(up, "fsr4") || !strcmp(up, "fsr"));
+}
+
 void vk_dlaa_pass(VkExec *ex) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
-    if (!dl_active() || D.done) return;
+    int dl = dl_active(), fsr = !dl && fsr_scene_active();
+    if ((!dl && !fsr) || D.done) return;
     // The G-buffer: several colour targets with a D32F depth of at least 640 wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
@@ -602,28 +644,69 @@ void vk_dlaa_pass(VkExec *ex) {
         D.ended = 1;
         unsigned o[2], s[2];
         res_sizes(o, s);
-        if (D.color.width >= o[0]) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
+        if (D.color.width >= o[0]) {
+            if (dl) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
+            else if (fsr && !strcmp(cfg_value("TOTK_UPSCALER"), "fsr4")) {
+                vk_exec_barrier(ex);
+                VkImageView cv = vk_exec_target_view(D.color.img, D.color.format, VK_IMAGE_VIEW_TYPE_2D,
+                                                     VK_IMAGE_ASPECT_COLOR_BIT, D.color.level, D.color.base_layer, 1, 0);
+                if (vk_fsr_scene(ex->cb, cv, D.color.image, D.color.width, D.color.height, D.color.image, D.color.level,
+                                 D.color.base_layer, D.color.width, D.color.height)) {
+                    D.done = 1;
+                    ex->recorded += 4;
+                    vk_exec_draw_new_cb();
+                }
+            }
+        }
         return;
     }
     // the game's scaling pass: one colour target wider than the scene, no depth
     if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
         c->samples <= 1 && !c->is3d) {
-        D.done = D.up = 1;
-        evaluate(ex, c);
+        if (dl) {
+            D.done = D.up = 1;
+            evaluate(ex, c);
+        } else if (fsr) {
+            vk_exec_barrier(ex);
+            VkImageView cv = vk_exec_target_view(D.color.img, D.color.format, VK_IMAGE_VIEW_TYPE_2D,
+                                                 VK_IMAGE_ASPECT_COLOR_BIT, D.color.level, D.color.base_layer, 1, 0);
+            if (vk_fsr_scene(ex->cb, cv, D.color.image, D.color.width, D.color.height, c->image, c->level,
+                             c->base_layer, c->width, c->height)) {
+                D.done = D.up = 1;
+                ex->recorded += 4;
+                vk_exec_draw_new_cb();
+            }
+        }
     }
 }
 
 void vk_dlaa_frame(void) {
-    int on = N.available && cfg_bool("TOTK_DLAA");
+    static char last_up[32], last_preset[32], last_model[32];
+    const char *up = cfg_value("TOTK_UPSCALER"), *pr = cfg_value("TOTK_UPSCALER_PRESET"),
+               *md = cfg_value("TOTK_DLSS_PRESET");
+    if (strcmp(up, last_up) || strcmp(pr, last_preset) || strcmp(md, last_model)) {
+        snprintf(last_up, sizeof last_up, "%s", up);
+        snprintf(last_preset, sizeof last_preset, "%s", pr);
+        snprintf(last_model, sizeof last_model, "%s", md);
+        unsigned o[2], s[2];
+        res_sizes(o, s);
+        vk_upscaler_log("CONFIG: Upscaler=%s | Preset=%s (RenderScale=%s%%) | DLSSModel=%s [NGX=%d] | Active Target: %ux%u -> %ux%u",
+                        up, pr, cfg_value("TOTK_RENDER_SCALE"), md, preset_value(), s[0], s[1], o[0], o[1]);
+    }
+    int on = N.available && (cfg_bool("TOTK_DLAA") || !strcmp(up, "dlss"));
     if (on != D.on) {
-        rt_log("dlaa: %s", on ? "on" : "off");
+        vk_upscaler_log("DLSS/DLAA state: %s", on ? "ENABLED" : "DISABLED");
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
         D.hold = 0;
         return;
     }
-    if (!dl_active()) return;
+    if (!dl_active()) {
+        D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.scaler_skipped = 0;
+        D.cam_addr = 0;
+        return;
+    }
     if (!D.done) D.frames_missed++;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;

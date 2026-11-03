@@ -92,8 +92,9 @@ static void decide(void) {
     // still holds would shrink the scene for the plain upscaler
     const char *m = cfg_value("TOTK_DLSS");
     static const struct { const char *name; double k; } dlss[] = {
-        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
-    for (int i = 0; cfg_bool("TOTK_DLAA") && i < 3; i++)
+        {"dlaa", 1.0}, {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
+    int dlss_on = cfg_bool("TOTK_DLAA") || !strcmp(cfg_value("TOTK_UPSCALER"), "dlss");
+    for (int i = 0; dlss_on && i < 5; i++)
         if (!strcmp(m, dlss[i].name)) R.dlss_k = dlss[i].k;
     if (R.dlss_k && !dlss_dll()) {
 #ifdef _WIN32
@@ -111,7 +112,7 @@ static void decide(void) {
         char *end;
         double pct = strtod(s, &end);
         if (end != s && !*end && pct >= 25 && pct <= 400) {
-            k = pct / 100.0;
+            k = !strcmp(s, "67") ? 2.0 / 3.0 : !strcmp(s, "33") ? 1.0 / 3.0 : pct / 100.0;
             R.scene_set = 1;
         } else {
             rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; game", s);
@@ -336,7 +337,8 @@ void res_init(void) {
 // of log2(render / output)), so their detail survives the scaling. 0 without a DLSS mode.
 float res_dlss_lod_bias(void) {
     decide();
-    return R.dlss_k ? (float)log2(R.dlss_k) : 0.0f;
+    double k = R.dlss_k ? R.dlss_k : (R.ow > 0 && R.sw < R.ow && strcmp(cfg_value("TOTK_UPSCALER"), "bilinear") ? (double)R.sw / R.ow : 0.0);
+    return k > 0.0 && k < 1.0 ? (float)log2(k) : 0.0f;
 }
 
 // 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.
@@ -383,4 +385,36 @@ void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on ? R.ow : BASE_W, out[1] = R.on ? R.oh : BASE_H;
     scene[0] = R.on ? R.sw : SCENE_W, scene[1] = R.on ? R.sh : SCENE_H;
+}
+
+void res_wanted_scene(unsigned scene[2]) {
+    decide();
+    unsigned ow = R.ow, oh = R.oh, w = 0, h = 0;
+    char tail;
+    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u%c", &w, &h, &tail) == 2 && w >= 1280 && h >= 720 && w <= 7680 && h <= 4320)
+        ow = w & ~1u, oh = h & ~1u;
+    double k = 5.0 / 6.0;
+    const char *m = cfg_value("TOTK_DLSS");
+    static const struct { const char *name; double k; } dlss[] = {
+        {"dlaa", 1.0}, {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
+    int dlss_on = cfg_bool("TOTK_DLAA") || !strcmp(cfg_value("TOTK_UPSCALER"), "dlss");
+    double dk = 0;
+    for (int i = 0; dlss_on && i < 5; i++)
+        if (!strcmp(m, dlss[i].name)) dk = dlss[i].k;
+    if (dk && dlss_dll()) {
+        k = dk;
+    } else {
+        const char *s = cfg_value("TOTK_RENDER_SCALE");
+        if (!strcmp(s, "67")) k = 2.0 / 3.0;
+        else if (!strcmp(s, "33")) k = 1.0 / 3.0;
+        else if (strcmp(s, "game")) {
+            char *end;
+            double pct = strtod(s, &end);
+            if (end != s && !*end && pct >= 25 && pct <= 400) k = pct / 100.0;
+        }
+    }
+    double sw = ow * k, sh = oh * k;
+    double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
+    scene[0] = (unsigned)(sw * fit + 0.5);
+    scene[1] = (unsigned)(sh * fit + 0.5);
 }

@@ -439,9 +439,11 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
+    if (recorded) vk_reflex_marker(2);   //VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
+    if (recorded) vk_reflex_marker(3);   //VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);

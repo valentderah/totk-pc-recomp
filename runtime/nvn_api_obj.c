@@ -16,6 +16,7 @@
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
+#include "vk.h"
 #include "platform/platform.h"
 
 // ---------- Descriptor pools
@@ -682,6 +683,9 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
+    vk_reflex_sleep();
+    vk_reflex_marker(0);   //VK_LATENCY_MARKER_SIMULATION_START_NV
+    vk_reflex_marker(6);   //VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is
     // already satisfied: fenced = 3 with fence 0.
     if (s) {
@@ -703,6 +707,7 @@ NVN_API(nvnQueuePresentTexture) {
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
+    vk_reflex_marker(1);   //VK_LATENCY_MARKER_SIMULATION_END_NV
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);

@@ -703,6 +703,13 @@ NVN_API(nvnCommandBufferSetPointSize) {
     r->kind = 6;
     memcpy(r->bytes, &s, sizeof s);
 }
+// void nvnCommandBufferSetLineWidth(NVNcommandBuffer *cmd, float width): bind-state kind 7 with the float as payload
+NVN_API(nvnCommandBufferSetLineWidth) {
+    p_bind_state *r = REC(cmd_of(c), OP_BIND_STATE, p_bind_state);
+    float w = arg_s(c, 0);
+    r->kind = 7;
+    memcpy(r->bytes, &w, sizeof w);
+}
 // void nvnCommandBufferBindVertexAttribState(NVNcommandBuffer *cmd, int n, const NVNvertexAttribState *states)
 NVN_API(nvnCommandBufferBindVertexAttribState) {
     cmd_t *o = cmd_of(c);

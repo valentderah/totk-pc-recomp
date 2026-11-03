@@ -36,7 +36,8 @@ typedef struct VkCtx {
         has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
-        has_hdr_metadata;                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -143,6 +144,11 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
+int vk_fsr_scene(VkCommandBuffer cb, VkImageView src_view, VkImage src_img, uint32_t sw, uint32_t sh, VkImage dst_img,
+                 uint32_t dst_level, uint32_t dst_layer, uint32_t dw, uint32_t dh);
+void vk_upscaler_log(const char *fmt, ...);
+void vk_reflex_marker(int marker);
+void vk_reflex_sleep(void);
 void vk_fsr_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
@@ -467,6 +473,7 @@ typedef struct VkPipeState {
     uint8_t prim;                          // NVN_DRAW_PRIMITIVE_* of the draw
     uint8_t depth_minus_w;                 // nvn_depth_minus_w(): clip-space depth is -w..w
     uint8_t depth_clamp, raster_discard;   // OP_DEPTH_CLAMP, OP_RASTER_DISCARD
+    float line_width;                      // OP_BIND_STATE kind 7 (SetLineWidth), scaled by the render scale; dynamic only
     uint8_t y_flip;                        // the replay's viewports have negative heights (upper-left origin): the
                                            // front face is not mirrored
     uint8_t prim_restart;                  // the draw's indices restart its strip or fan at the all-ones value

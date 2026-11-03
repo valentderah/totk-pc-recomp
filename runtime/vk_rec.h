@@ -93,6 +93,7 @@ void rec_pass_mark(VkCommandBuffer cb, uint32_t id, int end);
     X(SetDepthTestEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v))                                                     \
     X(SetDepthWriteEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v))                                                    \
     X(SetFrontFace, (VkCommandBuffer cb, VkFrontFace v), (cb, v))                                                        \
+    X(SetLineWidth, (VkCommandBuffer cb, float w), (cb, w))                                                              \
     X(SetPrimitiveRestartEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v))                                              \
     X(SetPrimitiveTopology, (VkCommandBuffer cb, VkPrimitiveTopology v), (cb, v))                                        \
     X(SetRasterizerDiscardEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v))                                             \
@@ -141,6 +142,7 @@ REC_CMDS(REC_DECL)
 #define vkCmdSetBlendConstants rc_vkCmdSetBlendConstants
 #define vkCmdSetCullMode rc_vkCmdSetCullMode
 #define vkCmdSetDepthBias rc_vkCmdSetDepthBias
+#define vkCmdSetLineWidth rc_vkCmdSetLineWidth
 #define vkCmdSetDepthBiasEnable rc_vkCmdSetDepthBiasEnable
 #define vkCmdSetDepthCompareOp rc_vkCmdSetDepthCompareOp
 #define vkCmdSetDepthTestEnable rc_vkCmdSetDepthTestEnable

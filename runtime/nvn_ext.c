@@ -376,10 +376,7 @@ NVN_API(nvnVertexStreamStateGetDivisor) { ret_x(c, ST(vs_st)->divisor); }
 // shader. Non-default values are reported once; the drawing proceeds without them.
 #define ONCE(...) do { static int once_; if (!once_++) rt_log("nvn: " __VA_ARGS__); } while (0)
 // void nvnCommandBufferSetLineWidth / SetPointSize(NVNcommandBuffer *cmd, float value)
-NVN_API(nvnCommandBufferSetLineWidth) {
-    float w = arg_s(c, 0);
-    if (w != 1.0f) ONCE("SetLineWidth %g: lines are drawn 1 pixel wide", w);
-}
+// SetLineWidth is recorded in nvn_api_cmd.c (OP_BIND_STATE kind 7).
 // SetPointSize is recorded in nvn_api_cmd.c (OP_BIND_STATE kind 6): the replay feeds it to the vertex shaders through the
 // support buffer (translator patch 0008).
 // void nvnCommandBufferSetConservativeRasterEnable(NVNcommandBuffer *cmd, NVNboolean enable)

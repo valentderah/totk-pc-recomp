@@ -79,7 +79,7 @@ static struct {
     struct { uint64_t links, wlinks, dlinks, requeued, link_fail, defer, lib_n[4], lib_fail, swaps, slow, pre_used[4]; double link_ms, link_max, lib_ms[4], lib_max[4], dlink_ms, dlink_max; } g;
     int vs_outs_all;                   // TOTK_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
     int dyn_vi, dyn_clamp, dyn_poly, dyn_blend_en, dyn_blend_eq, dyn_wmask, dyn_a2c;
-    int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src;
+    int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src, f_wide_lines;
     int pv_last;                       // provokingVertexLast enabled: NVN's default is the last vertex
     VkShaderStageFlags sg32_stages;    // stages that accept requiredSubgroupSize = 32 (0: not available)
     VkDynamicState dyn[32];
@@ -243,6 +243,7 @@ static int ensure_init(void) {
     P.f_depth_clamp = f2.features.depthClamp;
     P.f_fill_non_solid = f2.features.fillModeNonSolid;
     P.f_dual_src = f2.features.dualSrcBlend;
+    P.f_wide_lines = f2.features.wideLines;
 #define PROC(field, name) (P.field = (void *)vkGetDeviceProcAddr(c->device, name))
     PROC(push, "vkCmdPushDescriptorSetKHR");
     // Descriptor update templates (core 1.1; the push variant comes with VK_KHR_push_descriptor on 1.1): the driver
@@ -294,7 +295,7 @@ static int ensure_init(void) {
         VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
         VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
-        VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE};
+        VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH};
     P.n_dyn = 0;
     for (size_t i = 0; i < sizeof core / sizeof *core; i++) P.dyn[P.n_dyn++] = core[i];
     P.dyn[P.n_dyn++] = P.dyn_vi ? VK_DYNAMIC_STATE_VERTEX_INPUT_EXT : VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
@@ -531,6 +532,7 @@ static VkFormat target_format(int nvn_format, int *depth, int *stencil) {
 void vk_pipe_state_defaults(VkPipeState *s) {
     memset(s, 0, sizeof *s);
     s->samples = 1;
+    s->line_width = 1.0f;
     s->prim = NVN_DRAW_PRIMITIVE_TRIANGLES;
     for (int i = 0; i < 8; i++)
         s->blend[i] = (blend_st){(uint64_t)i, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE,
@@ -3134,6 +3136,11 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
     vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) != 0);
     vkCmdSetRasterizerDiscardEnable(cb, s->raster_discard != 0);
+    {
+        float lw = s->line_width > 0.0f ? s->line_width : 1.0f;
+        if (lw > 1.0f && !P.f_wide_lines) lw = 1.0f;
+        vkCmdSetLineWidth(cb, lw);
+    }
     vkCmdSetPrimitiveRestartEnable(cb, s->prim_restart != 0);
     if (P.dyn_vi && s->vs) {
         VtxInput v;

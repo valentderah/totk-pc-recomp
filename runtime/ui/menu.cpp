@@ -52,6 +52,8 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+void res_wanted(unsigned out[2]);
+void res_wanted_scene(unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
@@ -427,6 +429,7 @@ static void test_apply_sets(uint64_t frame) {
         const TestSet &t = g_test.sets[g_test.next_set];
         rt_log("menu: test hook: frame %llu: %s=%s", (unsigned long long)frame, t.key, t.value);
         if (!strcmp(t.key, "TOTK_SAVE")) rt_log("menu: test hook: cfg_save %s", cfg_save() ? "wrote" : "failed");
+        else if (!strcmp(t.key, "TOTK_FOCUS")) opt_focus_key(t.value);
         else cfg_set(t.key, t.value);
     }
 }
@@ -505,7 +508,7 @@ static void row_output_res(void) {
 }
 
 static void row_render_scale(void) {
-    static const char *const vals[] = {"game", "50", "67", "75", "100", "125", "150", "200"};
+    static const char *const vals[] = {"game", "33", "50", "58", "67", "75", "100", "125", "150", "200"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
@@ -514,7 +517,89 @@ static void row_render_scale(void) {
         snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
         names[i] = shown[i];
     }
-    opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC);
+    if (opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
+        static const struct { const char *scale, *preset, *dlss, *model; } s[] = {
+            {"100", "native", "dlaa", "preset_k"}, {"67", "quality", "quality", "preset_k"},
+            {"58", "balanced", "balanced", "preset_k"}, {"50", "performance", "performance", "preset_m"},
+            {"33", "ultra_performance", "ultra_performance", "preset_l"}};
+        for (const auto &e : s)
+            if (!strcmp(cfg_value("TOTK_RENDER_SCALE"), e.scale)) {
+                cfg_set("TOTK_UPSCALER_PRESET", e.preset), cfg_set("TOTK_DLSS", e.dlss);
+                cfg_set("TOTK_DLSS_PRESET", e.model);
+                cfg_save();
+            }
+    }
+}
+
+// Unified upscaler & anti-aliasing rows: DLSS 4 / 4.5, FSR 4.1.2, FSR 1.0, and Bilinear in one place.
+// Selecting FSR or Bilinear forces TOTK_DLAA off; selecting DLSS turns it on.
+// Only the active upscaler's sub-options (DLSS model vs FSR sharpness) are shown.
+static bool rows_upscaler(void) {
+    bool ask_restart = false;
+    static const char *const up_vals[] = {"dlss", "fsr4", "fsr", "bilinear"};
+    const char *dp = cfg_value("TOTK_DLSS_PRESET");
+    const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
+                           : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
+                           : (!strcmp(dp, "preset_e") || !strcmp(dp, "preset_c")) ? "NVIDIA DLSS 3 (CNN)"
+                                                                                   : "NVIDIA DLSS 4 / 4.5";
+    const char *up_names[] = {dlss_title, "AMD FSR 4.1.2", menu_text(UI_MENU_UPSCALER_FSR),
+                              menu_text(UI_MENU_UPSCALER_BILINEAR)};
+    if (cfg_bool("TOTK_DLAA") && strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) cfg_set("TOTK_UPSCALER", "dlss");
+    if (opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC)) {
+        cfg_set("TOTK_DLAA", !strcmp(cfg_value("TOTK_UPSCALER"), "dlss") ? "1" : "0");
+        cfg_save();
+    }
+    const char *up = cfg_value("TOTK_UPSCALER");
+    bool is_dlss = !strcmp(up, "dlss");
+    bool is_fsr = !strcmp(up, "fsr4") || !strcmp(up, "fsr");
+    static const struct { const char *name, *label, *dlss, *scale, *model; } p[] = {
+        {"native", "Native / DLAA (100%)", "dlaa", "100", "preset_k"},
+        {"quality", "Quality (67%)", "quality", "67", "preset_k"},
+        {"balanced", "Balanced (58%)", "balanced", "58", "preset_k"},
+        {"performance", "Performance (50%)", "performance", "50", "preset_m"},
+        {"ultra_performance", "Ultra Performance (33%)", "ultra_performance", "33", "preset_l"}};
+    static const char *vals[5], *names[5];
+    for (int i = 0; i < 5; i++) vals[i] = p[i].name, names[i] = p[i].label;
+    if (is_dlss || is_fsr) {
+        unsigned out_sz[2], cur_sc[2], want_sc[2];
+        res_sizes(out_sz, cur_sc);
+        res_wanted_scene(want_sc);
+        static char scale_note[128];
+        const char *snote = nullptr;
+        if (cur_sc[0] != want_sc[0] || cur_sc[1] != want_sc[1]) {
+            snprintf(scale_note, sizeof scale_note, "active: %u├ù%u -> %u├ù%u after restart", cur_sc[0], cur_sc[1],
+                     want_sc[0], want_sc[1]);
+            snote = scale_note;
+        }
+        if (opt_choice_list("TOTK_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC,
+                            -1, snote)) {
+            for (const auto &e : p)
+                if (!strcmp(cfg_value("TOTK_UPSCALER_PRESET"), e.name)) {
+                    cfg_set("TOTK_DLSS", e.dlss), cfg_set("TOTK_RENDER_SCALE", e.scale);
+                    cfg_set("TOTK_DLSS_PRESET", e.model);
+                    cfg_save();
+                }
+        }
+        if (snote && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC))
+            ask_restart = true;
+    }
+    if (is_dlss) {
+        static const char *const model_vals[] = {"preset_k", "preset_j", "preset_m", "preset_l", "preset_e", "preset_c",
+                                                 "default"};
+        static const char *const model_names[] = {
+            "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
+            "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)",
+            "DLSS 3 CNN (Preset E)", "DLSS 3 CNN (Preset C)", "Default (Auto)"};
+        opt_choice_list("TOTK_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 7, UI_MENU_DLSS_MODEL_DESC);
+    }
+    if (is_fsr) {
+        opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    }
+    static const char *const reflex_vals[] = {"off", "on", "boost"};
+    static const char *const reflex_names[] = {"Off", "On", "On + Boost"};
+    opt_choice_list("TOTK_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC);
+    opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+    return ask_restart;
 }
 
 static void row_shadow_res(void) {
@@ -536,6 +621,23 @@ static void row_shadow_range(void) {
     static const char *const vals[] = {"100", "150", "200", "300"};
     static const char *const names[] = {"160 m (1x)", "240 m (1.5x)", "320 m (2x)", "480 m (3x)"};
     opt_choice_list("TOTK_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC);
+}
+
+static void rows_ao(void) {
+    static const char *const vals[] = {"native", "ssao", "hbao", "off"};
+    static const char *const names[] = {"Native AO (Default)", "SSAO (Enhanced)", "HBAO (Horizon-Based)", "Off"};
+    if (opt_choice_list("TOTK_AO_MODE", UI_MENU_AO_MODE, vals, names, 4, UI_MENU_AO_MODE_DESC)) {
+        const char *m = cfg_value("TOTK_AO_MODE");
+        if (!strcmp(m, "hbao")) cfg_set("TOTK_CONTACT_SHADOWS", "100");
+        else if (!strcmp(m, "ssao")) cfg_set("TOTK_CONTACT_SHADOWS", "50");
+        else cfg_set("TOTK_CONTACT_SHADOWS", "0");
+        cfg_save();
+    }
+    if (opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%")) {
+        int s = cfg_int("TOTK_CONTACT_SHADOWS");
+        cfg_set("TOTK_AO_MODE", s >= 80 ? "hbao" : s >= 30 ? "ssao" : "native");
+        cfg_save();
+    }
 }
 
 static void row_gpu(void) {
@@ -644,6 +746,8 @@ static void rows_color(void) {
     }
 }
 
+static void restart_confirm(void);
+
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
     opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
@@ -656,10 +760,8 @@ static void tab_screen(float scale) {
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
+    bool ask = rows_upscaler();
     row_shadow_res();
-    static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
-    opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
-    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
@@ -669,12 +771,7 @@ static void tab_screen(float scale) {
     row_shadow_scale();
     row_shadow_range();
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
-    opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
-    opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
-    static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
-                                    UI_MENU_DLSS_PERFORMANCE};
-    opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 4, UI_MENU_DLSS_DESC);
-    opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+    rows_ao();
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);
     opt_toggle("TOTK_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
@@ -682,6 +779,8 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f");
     opt_slider("TOTK_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f");
     opt_end();
+    if (ask) ImGui::OpenPopup("##restart_confirm");   // at the level BeginPopupModal looks it up
+    restart_confirm();
 }
 
 static void tab_game(float scale) {
@@ -775,7 +874,6 @@ static const char *prompts_note(bool *restart) {
 // (restart_rebuild) Restart also lets the next start rebuild for cheats whose last rebuild failed (cheats_rebuild_allow).
 static bool restart_rebuild;
 static void restart_confirm(void) {
-    g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("##restart_confirm", nullptr,
                                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize))
@@ -984,7 +1082,6 @@ static void tab_advanced(float scale) {
     if (ask) ImGui::OpenPopup("##reset_confirm");   // at the level BeginPopupModal looks it up
 
     // the confirmation, over the menu; Cancel has the cursor first
-    g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("##reset_confirm", nullptr,
                                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -1120,6 +1217,8 @@ static void tab_mods(float scale) {
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
 static void layout_menu(uint32_t w, uint32_t h, float scale) {
+    bool was_modal = g_modal || binds_modal();
+    g_modal = false;
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
     float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1181,21 +1280,51 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         ImGui::EndTabBar();
     }
 
-    // bottom row: the save status on the left, the two buttons on the right
+    // bottom row: the save status on the left, the buttons on the right
     ImGui::Spacing();
     float y = ImGui::GetCursorPosY();
     if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
         ImGui::SetCursorPosY(y + st.FramePadding.y);
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
     }
-    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
+    static int boot_snap_done;
+    static char boot_vals[128][64];
+    bool restart_needed = false;
+    for (int i = 0; i < 128; i++) {
+        const CfgMeta *m = cfg_meta_at(i);
+        if (!m) break;
+        if (m->live) continue;
+        char full[64];
+        snprintf(full, sizeof full, "TOTK_%s", m->key);
+        const char *v = cfg_value(full);
+        if (!boot_snap_done) snprintf(boot_vals[i], sizeof boot_vals[i], "%s", v ? v : "");
+        else if (strcmp(boot_vals[i], v ? v : "") != 0) restart_needed = true;
+    }
+    boot_snap_done = 1;
+    unsigned out_sz[2], cur_sc[2], want_sc[2];
+    res_sizes(out_sz, cur_sc);
+    res_wanted_scene(want_sc);
+    if (cur_sc[0] != want_sc[0] || cur_sc[1] != want_sc[1] || mods_changed() || cheats_rebuild_pending())
+        restart_needed = true;
+
+    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT), *rest = menu_text(UI_MENU_RESTART);
     float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 2 - st.ItemSpacing.x, y));
+    float rw = ImGui::CalcTextSize(rest).x + st.FramePadding.x * 4;
+    float total_w = bw * 2 + st.ItemSpacing.x + (restart_needed ? rw + st.ItemSpacing.x : 0);
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - total_w, y));
+    if (restart_needed) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72f, 0.45f, 0.12f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.55f, 0.16f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.62f, 0.38f, 0.10f, 1.00f));
+        if (ImGui::Button(rest, ImVec2(rw, 0))) ImGui::OpenPopup("##restart_confirm");
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+    }
     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
-    bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
+    restart_confirm();
+    was_modal = was_modal || g_modal || binds_modal();
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();
@@ -1328,13 +1457,18 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (t->scaler == 2) {
-        int s = cfg_int("TOTK_SHARPNESS");
-        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
+    const char *up = cfg_value("TOTK_UPSCALER");
+    int s = cfg_int("TOTK_SHARPNESS");
+    s = s < 0 ? 0 : s > 100 ? 100 : s;
+    if (!strcmp(up, "dlss") || cfg_bool("TOTK_DLAA")) {
+        snprintf(v[3], sizeof v[3], "%s (%s)", scene[0] < out[0] ? "NVIDIA DLSS 4.5" : "NVIDIA DLAA",
+                 cfg_value("TOTK_DLSS_PRESET"));
+    } else if (!strcmp(up, "fsr4")) {
+        snprintf(v[3], sizeof v[3], "AMD FSR 4.1.2 (sharp %d%%)", s < 68 ? 68 : s);
+    } else if (!strcmp(up, "fsr") && (scene[0] < out[0] || t->scaler == 2)) {
+        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s);
     } else {
-        // FSR enlarges only (vk_fsr_record): an image larger than the window is shrunk by the blit even with FSR selected
-        int down = t->scaler == 1 && !strcmp(cfg_value("TOTK_UPSCALER"), "fsr") &&
-                   (t->image_w > (int)t->width || t->image_h > (int)t->height);
+        int down = t->scaler == 1 && !strcmp(up, "fsr") && (t->image_w > (int)t->width || t->image_h > (int)t->height);
         snprintf(v[3], sizeof v[3], "%s",
                  menu_text(down ? UI_MENU_OV_SCALE_DOWN : t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }

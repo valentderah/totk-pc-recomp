@@ -267,6 +267,7 @@ void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
+void res_wanted_scene(unsigned scene[2]);                  // the scene size the current settings ask for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch

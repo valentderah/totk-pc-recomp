@@ -230,7 +230,7 @@ static void oq_cb(void *arg) {
     if (s->reset) oq_count = 0;
     else {
         oq_count += sum;
-        if (s->lost && !oq_count) oq_count = 1;
+        if (!oq_count) oq_count = 1;
         if (s->addr) write_counter(s->addr, oq_count);
     }
     free(s);

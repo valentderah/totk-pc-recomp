@@ -36,17 +36,19 @@ static struct {
 } C;
 
 int vk_contact_strength(void) {
-    if (!C.tried) {
-        int s = cfg_int("TOTK_CONTACT_SHADOWS");
-        C.strength = s < 0 ? 0 : s > 100 ? 100 : s;
+    int s = cfg_int("TOTK_CONTACT_SHADOWS");
+    if (!s) {
+        const char *ao = cfg_value("TOTK_AO_MODE");
+        if (!strcmp(ao, "hbao")) s = 100;
+        else if (!strcmp(ao, "ssao")) s = 50;
     }
+    C.strength = s < 0 ? 0 : s > 100 ? 100 : s;
     return C.strength;
 }
 
 static int init(VkCtx *c) {
     C.tried = 1;
     vk_contact_strength();
-    if (!C.strength) return 0;
     const char *e = cfg_get("TOTK_CONTACT_DEBUG");   // 1: the frame shows the contact shadow factor in grey
     C.debug = e && *e && strcmp(e, "0");
     C.push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
@@ -158,6 +160,10 @@ static int is_composite(const VkExec *ex) {
 }
 
 void vk_contact_pass_begin(VkExec *ex) {
+    if (!vk_contact_strength()) {
+        C.pending = 0;
+        return;
+    }
     if (!C.tried && !init(vk_ctx())) return;
     if (!C.ok) return;
     const VkTexImage *scene, *depth;

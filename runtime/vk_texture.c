@@ -360,9 +360,9 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (!ds && (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && samples == 1)
         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    // contact shadows (vk_contact.c) darken the game's B10G11R11 scene colour in place from a compute shader
+    // contact shadows / AO (vk_contact.c) darken the game's B10G11R11 scene colour in place from a compute shader
     if (f.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && samples == 1 &&
-        (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && w >= 640 && vk_contact_strength())
+        (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && w >= 640)
         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageCreateFlags flags = ds ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // format-reinterpreting views
     // Cube compatible only for cube targets: the replay makes cube views of nothing else (vk_exec_draw.c get_view checks
@@ -998,7 +998,7 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
 // Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
 // dirty. wb_limit is the largest target (bytes) that goes back when the CPU waits for a fence: TOTK_WB_FENCE_LIMIT,
 // read once. wb_trace: TOTK_TRACE=gfx, read together with it.
-enum { WB_SMALL_DEFAULT = 64 << 10 };
+enum { WB_SMALL_DEFAULT = 2048 << 10 };
 static int small_pending;
 static uint64_t wb_limit = WB_SMALL_DEFAULT;
 static int wb_trace;

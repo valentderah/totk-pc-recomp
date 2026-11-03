@@ -1446,7 +1446,7 @@ static void support_in(const VkExec *ex, float in[3]) {   // what support_fill r
     float k = ex->pass_scale > 1 ? (float)ex->pass_scale : 1.0f;
     in[0] = ex->in_pass && ex->has_vp ? ex->vp[0][2] * k : (float)ex->pass_w;
     in[1] = ex->in_pass && ex->has_vp ? ex->vp[0][3] * k : (float)ex->pass_h;
-    in[2] = ex->point_size > 0 ? ex->point_size : 1.0f;
+    in[2] = (ex->point_size > 0 ? ex->point_size : 1.0f) * (ex->point_size > 1.0f ? k : 1.0f);
 }
 
 // TOTK_PCSS (percent, 0 = off): the pcss field of the support buffer, which translator patch 0010 reads in every
@@ -2432,6 +2432,12 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         case 4: memcpy(&ex->pipe.poly, b->bytes, sizeof ex->pipe.poly); break;
         case 5: memcpy(&ex->pipe.ds, b->bytes, sizeof ex->pipe.ds); break;
         case 6: memcpy(&ex->point_size, b->bytes, sizeof ex->point_size); break;
+        case 7: {
+            float w, k = ex->pass_scale > 1 ? (float)ex->pass_scale : 1.0f;
+            memcpy(&w, b->bytes, sizeof w);
+            ex->pipe.line_width = w > 1.0f ? w * k : w;
+            break;
+        }
         }
         break;
     }

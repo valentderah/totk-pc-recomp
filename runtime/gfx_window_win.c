@@ -313,11 +313,20 @@ static void window_main(void *arg) {
         // The frame was measured at the system DPI; the window may have opened on a monitor at another scale.
         plat_xchg32(&g_dpi, (int32_t)GetDpiForWindow(g_hwnd));
         outer_size(g_hwnd, cw, ch, &ow, &oh);
-        SetWindowPos(g_hwnd, HWND_BOTTOM, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        if (!background) {
-            FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
-            FlashWindowEx(&fw);
-            g_fs_pending = cfg_fullscreen();
+        if (background) {
+            SetWindowPos(g_hwnd, HWND_BOTTOM, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        } else {
+            HWND con = GetConsoleWindow();
+            if (con) ShowWindow(con, SW_MINIMIZE);
+            SetWindowPos(g_hwnd, HWND_TOP, 0, 0, ow, oh, SWP_NOMOVE | SWP_SHOWWINDOW);
+            if (cfg_fullscreen()) {
+                input_cursor_suspend(1);
+                toggle_fullscreen(g_hwnd);
+                input_cursor_suspend(0);
+            }
+            ShowWindow(g_hwnd, SW_SHOWNORMAL);
+            SetForegroundWindow(g_hwnd);
+            SetFocus(g_hwnd);
         }
         note_applied();
         refresh_rate_update(g_hwnd, 1);

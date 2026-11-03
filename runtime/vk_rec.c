@@ -40,7 +40,7 @@ enum {
     R_CopyImage, R_CopyImageToBuffer, R_Dispatch, R_DispatchIndirect, R_Draw, R_DrawIndexed, R_DrawIndexedIndirect,
     R_EndQuery, R_EndRendering, R_FillBuffer, R_PipelineBarrier2, R_PushConstants, R_ResetQueryPool, R_ResolveImage,
     R_SetBlendConstants, R_SetCullMode, R_SetDepthBias, R_SetDepthBiasEnable, R_SetDepthCompareOp, R_SetDepthTestEnable,
-    R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
+    R_SetDepthWriteEnable, R_SetFrontFace, R_SetLineWidth, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
     R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
@@ -349,6 +349,8 @@ FIXED(SetDepthCompareOp, (VkCommandBuffer cb, VkCompareOp v), (cb, v), VkCompare
 FIXED(SetDepthTestEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v), VkBool32 v)
 #define PACK_SetDepthWriteEnable a->v = v
 FIXED(SetDepthWriteEnable, (VkCommandBuffer cb, VkBool32 v), (cb, v), VkBool32 v)
+#define PACK_SetLineWidth a->v = w
+FIXED(SetLineWidth, (VkCommandBuffer cb, float w), (cb, w), float v)
 #define PACK_SetFrontFace a->v = v
 FIXED(SetFrontFace, (VkCommandBuffer cb, VkFrontFace v), (cb, v), VkFrontFace v)
 #define PACK_SetPrimitiveRestartEnable a->v = v
@@ -655,6 +657,7 @@ static void exec_packet(uint32_t op, void *p) {
     F(SetDepthTestEnable, a->v)
     F(SetDepthWriteEnable, a->v)
     F(SetFrontFace, a->v)
+    F(SetLineWidth, a->v)
     F(SetPrimitiveRestartEnable, a->v)
     F(SetPrimitiveTopology, a->v)
     F(SetRasterizerDiscardEnable, a->v)

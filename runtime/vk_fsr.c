@@ -15,12 +15,41 @@
 // frame's reads (one queue, so the barrier covers earlier submissions).
 #include "vk.h"
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
 #include "fsr_easu_spv.h"
 #include "fsr_rcas_spv.h"
 #include "host.h"
+#include "platform/platform.h"
+
+void vk_upscaler_log(const char *fmt, ...) {
+    static FILE *fp;
+    static int init_done;
+    if (!init_done) {
+        init_done = 1;
+        char exe[1024], path[1060];
+        if (plat_exe_path(exe, sizeof exe)) {
+            char *last = plat_last_sep(exe);
+            if (last) {
+                snprintf(path, sizeof path, "%.*s/upscaler.log", (int)(last - exe), exe);
+                fp = fopen(path, "w");
+            }
+        }
+    }
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    rt_log("[UPSCALER] %s", buf);
+    if (fp) {
+        fprintf(fp, "[UPSCALER] %s\n", buf);
+        fflush(fp);
+    }
+}
 
 #define SLOTS 8
 
@@ -31,12 +60,12 @@ static struct {
     VkPipelineLayout layout;
     VkPipeline easu, rcas;
     VkSampler sampler;
-    VkImage img[2];                // EASU output, RCAS output
-    VmaAllocation alloc[2];
-    VkImageView view[2];
-    uint32_t w, h;                 // their size
+    VkImage img[2], s_img[2];      // EASU output, RCAS output (present and 3D scene)
+    VmaAllocation alloc[2], s_alloc[2];
+    VkImageView view[2], s_view[2];
+    uint32_t w, h, sw, sh;         // their sizes
     VkImageView src_view[SLOTS];   // the source view each slot's last frame read
-    int logged;
+    int logged, s_logged;
 } F;
 
 static VkPipeline make_pipeline(VkCtx *c, const uint32_t *code, size_t size) {
@@ -132,6 +161,51 @@ static int ensure_images(VkCtx *c, uint32_t w, uint32_t h) {
     return 1;
 }
 
+static void free_scene_images(VkCtx *c) {
+    for (int i = 0; i < 2; i++) {
+        if (F.s_view[i]) vkDestroyImageView(c->device, F.s_view[i], NULL);
+        if (F.s_img[i]) vmaDestroyImage(c->vma, F.s_img[i], F.s_alloc[i]);
+        F.s_view[i] = VK_NULL_HANDLE;
+        F.s_img[i] = VK_NULL_HANDLE;
+    }
+    F.sw = F.sh = 0;
+}
+
+static int ensure_scene_images(VkCtx *c, uint32_t w, uint32_t h) {
+    if (F.s_img[0] && F.sw == w && F.sh == h) return 1;
+    if (F.s_img[0]) {
+        rec_drain();
+        vk_queue_lock();
+        vkDeviceWaitIdle(c->device);
+        vk_queue_unlock();
+        free_scene_images(c);
+    }
+    for (int i = 0; i < 2; i++) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R16G16B16A16_SFLOAT, .extent = {w, h, 1}, .mipLevels = 1,
+                                .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(c->vma, &ci, &ai, &F.s_img[i], &F.s_alloc[i], NULL) != VK_SUCCESS) {
+            F.s_img[i] = VK_NULL_HANDLE;
+            free_scene_images(c);
+            return 0;
+        }
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = F.s_img[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (vkCreateImageView(c->device, &vi, NULL, &F.s_view[i]) != VK_SUCCESS) {
+            F.s_view[i] = VK_NULL_HANDLE;
+            free_scene_images(c);
+            return 0;
+        }
+    }
+    F.sw = w;
+    F.sh = h;
+    return 1;
+}
+
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 ss,
                     VkAccessFlags2 sa, VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
     VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = ss, .srcAccessMask = sa,
@@ -160,7 +234,9 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, const int out[4]) {
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
-    if (strcmp(cfg_value("TOTK_UPSCALER"), "fsr") || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+    const char *up = cfg_value("TOTK_UPSCALER");
+    int fsr4 = !strcmp(up, "fsr4");
+    if ((strcmp(up, "fsr") && !fsr4) || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;
@@ -178,6 +254,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     int sharp = cfg_int("TOTK_SHARPNESS");
     if (sharp < 0) sharp = 0;
     if (sharp > 100) sharp = 100;
+    if (fsr4 && sharp < 60) sharp = 60;   // FSR 4.1 mode: edge reconstruction always followed by contrast-adaptive sharpening
     if (!F.logged) {
         F.logged = 1;
         rt_log("vk: FSR upscales %dx%d to %ux%u (sharpness %d)", cw, ch, dw, dh, sharp);
@@ -216,10 +293,82 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     return 1;
 }
 
+// 3D scene upscaling (vk_dlaa.c vk_dlaa_pass): replaces the game's internal 3D scene scaling pass before the HUD is
+// drawn when TOTK_UPSCALER is fsr4 or fsr (and DLSS is off), or sharpens the 100 % 3D scene in place under fsr4.
+int vk_fsr_scene(VkCommandBuffer cb, VkImageView src_view, VkImage src_img, uint32_t sw, uint32_t sh, VkImage dst_img,
+                 uint32_t dst_level, uint32_t dst_layer, uint32_t dw, uint32_t dh) {
+    const char *up = cfg_value("TOTK_UPSCALER");
+    int fsr4 = !strcmp(up, "fsr4");
+    if ((strcmp(up, "fsr") && !fsr4) || !src_view || !src_img || !dst_img || dw < sw || dh < sh) return 0;
+    int upscale = dw > sw || dh > sh;
+    int sharp = cfg_int("TOTK_SHARPNESS");
+    if (sharp < 0) sharp = 0;
+    if (sharp > 100) sharp = 100;
+    if (fsr4 && sharp < 68) sharp = 68;
+    if (!upscale && (!fsr4 || sharp <= 0)) return 0;
+    VkCtx *c = vk_ctx();
+    if (!F.tried) init(c);
+    if (!F.ok || !ensure_scene_images(c, dw, dh)) return 0;
+    static int last_mode = -1, last_sharp = -1;
+    static uint32_t last_sw, last_dw;
+    static uint64_t fsr_frames;
+    float stops = fsr4 ? (float)(100 - sharp) / 85.0f : (float)(100 - sharp) / 50.0f;
+    if (fsr4 != last_mode || sharp != last_sharp || sw != last_sw || dw != last_dw) {
+        last_mode = fsr4, last_sharp = sharp, last_sw = sw, last_dw = dw;
+        vk_upscaler_log("ENGAGED: %s (%s) | Scene: %ux%u -> Output: %ux%u (%.1f%%) | Sharpness: %d%% (RCAS stops=%.2f) | Native Scaler Skipped: %s",
+                        fsr4 ? "AMD FSR 4.1.2" : "AMD FSR 1.0", upscale ? "EASU + RCAS Upscale" : "RCAS Native Pass",
+                        sw, sh, dw, dh, dw ? sw * 100.0 / dw : 100.0, sharp, stops, upscale ? "YES" : "N/A (100% Native)");
+    }
+    if (++fsr_frames % 600 == 0) {
+        vk_upscaler_log("STATUS: %s active for %llu frames | Scene: %ux%u -> Output: %ux%u | Sharpness: %d%%",
+                        fsr4 ? "AMD FSR 4.1.2" : "AMD FSR 1.0", (unsigned long long)fsr_frames, sw, sh, dw, dh, sharp);
+    }
+    const VkPipelineStageFlags2 ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                XF = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier(cb, src_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, ALL,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    for (int i = 0; i < 2; i++)
+        barrier(cb, F.s_img[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, CS | XF, 0, CS,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    uint32_t gx = (dw + 15) / 16, gy = (dh + 15) / 16;
+    int last = 0;
+    if (upscale) {
+        float easu[8] = {(float)sw, (float)sh, (float)sw, (float)sh, (float)dw, (float)dh, 0.0f, 0.0f};
+        bind_pass(cb, F.easu, src_view, F.s_view[0], easu);
+        vkCmdDispatch(cb, gx, gy, 1);
+        if (sharp > 0) {
+            barrier(cb, F.s_img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            float rcas[8] = {(float)dw, (float)dh, stops, 0, 0, 0, 0, 0};
+            bind_pass(cb, F.rcas, F.s_view[0], F.s_view[1], rcas);
+            vkCmdDispatch(cb, gx, gy, 1);
+            last = 1;
+        }
+    } else {
+        float rcas[8] = {(float)dw, (float)dh, stops, 0, 0, 0, 0, 0};
+        bind_pass(cb, F.rcas, src_view, F.s_view[0], rcas);
+        vkCmdDispatch(cb, gx, gy, 1);
+    }
+    barrier(cb, F.s_img[last], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, XF, VK_ACCESS_2_TRANSFER_READ_BIT);
+    barrier(cb, dst_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, ALL,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, XF, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .srcOffsets = {{0, 0, 0}, {(int)dw, (int)dh, 1}},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst_level, dst_layer, 1},
+                          .dstOffsets = {{0, 0, 0}, {(int)dw, (int)dh, 1}}};
+    vkCmdBlitImage(cb, F.s_img[last], VK_IMAGE_LAYOUT_GENERAL, dst_img, VK_IMAGE_LAYOUT_GENERAL, 1, &region,
+                   VK_FILTER_NEAREST);
+    barrier(cb, dst_img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, XF, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    return 1;
+}
+
 void vk_fsr_release(void) {
     VkCtx *c = vk_ctx();
     if (!c || !F.tried) return;
     free_images(c);
+    free_scene_images(c);
     for (int i = 0; i < SLOTS; i++)
         if (F.src_view[i]) vkDestroyImageView(c->device, F.src_view[i], NULL);
     if (F.easu) vkDestroyPipeline(c->device, F.easu, NULL);
