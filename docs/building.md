@@ -143,6 +143,10 @@ of them. *Breath of the Wild* 1.9.0 builds the same way as `botw190`, with a few
 Settings live in `totk.ini` next to `totk.exe` ([totk.ini.example](../totk.ini.example) lists them). Saves go to
 `build\profile` for `v121` and `build\profile-<ver>` for other versions (`build_game.py --profile` changes it).
 
+`.venv\Scripts\python tools\build_launcher.py` builds `build\launcher\launcher.exe`, a window with a card per game that
+starts the build you pick ([launcher.md](launcher.md)). `build_game.py` writes the `game.ini` and copies the `icon.jpg`
+it shows next to each `totk.exe`.
+
 ### Portable folder
 
 `.venv\Scripts\python tools\package_build.py --version <ver>` writes `build\<ver>-portable`, which runs on another of

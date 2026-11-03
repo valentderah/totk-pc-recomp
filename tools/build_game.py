@@ -330,6 +330,19 @@ def module_glue(layout, linked, hashes, paths, version):
     return '\n'.join(out)
 
 
+def write_game_info(version, paths, out):
+    """game.ini next to totk.exe: the game and version of this build for the launcher (launcher/games.cpp), and the
+    game's icon.jpg next to it when the extraction wrote one (tools/game_icon.py)."""
+    lines = ['# Written by tools/build_game.py: the game of this build, for the launcher.']
+    if version in VERSIONS:
+        game, display = VERSIONS[version]
+        lines += [f'game = {game.key}', f'version = {display}']
+    write_if_changed(out / 'game.ini', '\n'.join(lines + [f'build = {version}', '']))
+    icon = paths['exefs'].parent / 'icon.jpg'
+    if icon.is_file():
+        shutil.copy2(icon, out / 'icon.jpg')
+
+
 def port_version():
     """VERSION at the root: the repository's semver, or in a release folder the release string (make_release.py
     version)."""
@@ -922,6 +935,7 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    write_game_info(args.version, paths, exe.parent)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

@@ -1,0 +1,4 @@
+/* The launcher's manifest (runtime/totk.manifest: UTF-8 code page, per-monitor DPI) and icon (runtime/totk.ico, the
+   icon of totk.exe). tools/build_launcher.py compiles it with windres -I runtime. */
+1 24 "totk.manifest"
+1 ICON "totk.ico"

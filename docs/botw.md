@@ -51,7 +51,7 @@ build\botw190\totk.exe
 ```
 
 `extract.py` tells the game by the base package's title ID and writes only `build\extracted\botw190`: the base game
-alone is no build here. `make_romfs_patches.py` and `prepare_shaders.py` are *Tears of the Kingdom*'s and are skipped.
+alone is no build here. `build\launcher\launcher.exe` ([launcher.md](launcher.md)) starts either game. `make_romfs_patches.py` and `prepare_shaders.py` are *Tears of the Kingdom*'s and are skipped.
 Saves go to `build\profile-botw190`.
 
 ## What differs from Tears of the Kingdom

@@ -7,7 +7,8 @@ Steps, each skipped when its verified output already exists:
 3. Update RomFS: hactool merges the base Program NCA with the update's BKTR section.
 
 Steps 1 and 3 run for every file in `input.updates`. Each update's version is identified by the SHA-256 of its `main`,
-not by its file name. Output: build/extracted/v0/{exefs,romfs} and build/extracted/v<version>/{exefs,romfs}.
+not by its file name. Output: build/extracted/v0/{exefs,romfs} and build/extracted/v<version>/{exefs,romfs}, and each
+update's icon.jpg for the launcher (tools/game_icon.py).
 
 The game is told by the base package's title ID (tools/games.py). Breath of the Wild builds only from its 1.9.0 update,
 so for it step 2 and the base ExeFS are skipped and the output is build/extracted/botw190/{exefs,romfs}.
@@ -36,6 +37,7 @@ from extract_exefs import (common_tickets, container_entries, load_keys, nca_inv
                            record_offset, require)
 from extract_romfs import index_romfs  # noqa: E402
 from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
+import game_icon  # noqa: E402
 from games import TOTK, by_title  # noqa: E402
 
 DATA = ROOT / 'tools' / 'data'
@@ -376,6 +378,12 @@ def extract_update(base, update, keys, hactool, extracted, logs, versions, game=
         say('  merging RomFS with the update')
         merge_update_romfs(base, update, keys, hactool, current / 'romfs', logs, game=game)
     check_romfs(current / 'romfs', expected)
+    if not (current / 'icon.jpg').is_file():   # the launcher's picture of the game; the build goes on without it
+        try:
+            game_icon.write(update, keys, current / 'icon.jpg')
+            say('  icon for the launcher written')
+        except (OSError, ValueError) as error:
+            say(f'  no icon for the launcher: {error}')
 
 
 if __name__ == '__main__':
