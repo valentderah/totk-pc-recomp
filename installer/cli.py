@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import events
 from . import layout as layouts
 from . import state as statefile
 from .layout import SUPPORTED
@@ -89,6 +90,7 @@ def main(argv=None):
         return 1
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
     ctx.state['game'] = recorded or args.game or 'totk'
+    events.GAME_EXE = layouts.GAMES[ctx.state['game']].exe + layouts.EXE   # {game_exe} in the log's texts
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
              steps=[s.id for s in steps])
