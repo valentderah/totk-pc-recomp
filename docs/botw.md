@@ -154,6 +154,22 @@ run, but two fixes aimed at it changed nothing (3, 2, 4 and 0, 3, 2 flickering f
 slot's registration at record time (Savage Wind resolves textures when the commands are recorded), and a slot that
 follows the live entries at its storage following the one the GPU wrote last. Both were taken out again.
 
+Measured again over 1200 frames (`TOTK_SHOTS=4200-5400:1`, the same save and input, the in-process AudioRenderer
+on), the count of one run says little: the defaults gave 20, and runs that should have matched them gave 29 and 46
+(the last with a dump switch that did not take effect). Against that spread none of these changed the count:
+
+| Tried over 1200 frames | Frames |
+|---|---|
+| defaults | 20; 29 and 46 in runs meant to match them |
+| every dirty mirrored target written back at a fence wait (`TOTK_WB_FENCE_LIMIT=67108864`; the trace lists 128x128 to 1024x1024 targets in CPU-cached pools above the 64 KiB default) | 21 |
+| region freezing off (`TOTK_FREEZE_IDLE=0`) | 18 |
+| a direct page query at every texture binding as well as the submission's snapshot | 13 |
+
+The earlier 360-frame counts above are within the same spread, so the leads they suggested (the dump's binding
+descriptions, freezing) are not established. The two kinds of glitch frame stay apart in the counter's output: a
+whole-frame change (mean difference about 111 of 255: the over-exposed purple frame) and a smaller one (13 to 38: the
+shadows and haze gone).
+
 Frame rates above 60 (the physics microsteps, keyframed bodies, the shield-surf takeoff), the resolution, field of
 view, draw distance and shadow settings, and the input and HUD work follow once the game looks and sounds right.
 
