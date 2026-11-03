@@ -1,7 +1,8 @@
-// The game launcher (docs/launcher.md): a card per game this repository builds, with the builds launcher/games.cpp
-// finds on disk. A game with no build is shown greyed out and cannot start; Play starts the chosen build's totk.exe in
-// its own folder and closes the launcher. Dear ImGui over SDL3's 2D renderer, the toolkit of the in-game menu
-// (runtime/ui/menu.cpp), with its font.
+// The game launcher (docs/launcher.md): a card per game this repository builds, Breath of the Wild and Tears of the
+// Kingdom, with the builds launcher/games.cpp finds on disk. A game with no build is shown greyed out and cannot start;
+// its Install opens the setup window for it (installer/gui.py --game). Play starts the chosen build's botw.exe or
+// totk.exe in its own folder and closes the launcher. Dear ImGui over SDL3's 2D renderer, the toolkit of the in-game
+// menu (runtime/ui/menu.cpp), with its font.
 //
 //   launcher [--list] [--lang en|ru] [--select totk|botw] [--shot FILE.png] [--size WxH]
 //     --list     print the builds found and exit
@@ -50,40 +51,46 @@ static const unsigned char roboto_ttf[] = {
 #pragma clang diagnostic pop
 
 struct Text {
-    const char *heading, *subheading, *play, *not_installed, *not_found, *version, *unknown_version, *locate,
-        *other_folder, *start_failed, *not_a_game, *hint, *none;
+    const char *heading, *subheading, *play, *install, *installing, *not_installed, *not_found, *version,
+        *unknown_version, *locate, *other_folder, *start_failed, *no_setup, *not_a_game, *hint, *none;
 };
 static const Text kEnglish = {
     "Choose a game",
     "TotK Recomp",
     "Play",
+    "Install",
+    "Installing...",
     "Not installed",
-    "Not found next to the launcher",
+    "Install it from your own game files",
     "Version %s",
     "Version unknown",
     "Locate the game...",
     "Other folder...",
     "Could not start it: %s",
+    "No setup next to the launcher (installer/).",
     "No game data next to that file (romfs-index.bin).",
-    "Arrows or D-pad: choose      Enter or A: play      Esc: quit",
-    "No game is installed yet. Install one with TotK-Setup.exe or build it (docs/building.md), then start the "
-    "launcher again, or locate the game's totk.exe.",
+    "Arrows or D-pad: choose      Enter or A: play or install      Esc: quit",
+    "No game is installed yet. Choose Install on a game's card and pick its files, or locate a game installed "
+    "elsewhere.",
 };
 static const Text kRussian = {
     "Выберите игру",
     "TotK Recomp",
     "Играть",
+    "Установить",
+    "Устанавливается…",
     "Не установлена",
-    "Не найдена рядом с лаунчером",
+    "Установите её из своих файлов игры",
     "Версия %s",
     "Версия неизвестна",
     "Указать игру…",
     "Другая папка…",
     "Не удалось запустить: %s",
+    "Рядом с лаунчером нет установщика (installer/).",
     "Рядом с этим файлом нет данных игры (romfs-index.bin).",
-    "Стрелки или крестовина — выбор      Enter или A — играть      Esc — выход",
-    "Ни одна игра пока не установлена. Установите её через TotK-Setup.exe или соберите (docs/building.md) и "
-    "запустите лаунчер снова, либо укажите totk.exe игры.",
+    "Стрелки или крестовина — выбор      Enter или A — играть или установить      Esc — выход",
+    "Ни одна игра пока не установлена. Нажмите «Установить» на карточке игры и укажите её файлы, либо укажите "
+    "игру, установленную в другом месте.",
 };
 static const Text *T = &kEnglish;
 
@@ -91,9 +98,9 @@ static const Text *T = &kEnglish;
 struct Look {
     ImU32 accent, accent_text, art_top, art_bottom;
 };
-static const Look kLook[GAME_COUNT] = {
-    {IM_COL32(226, 190, 96, 255), IM_COL32(28, 22, 8, 255), IM_COL32(58, 108, 78, 255), IM_COL32(16, 36, 26, 255)},
+static const Look kLook[GAME_COUNT] = {   // GAME_BOTW: Sheikah blue; GAME_TOTK: gold over green
     {IM_COL32(88, 198, 238, 255), IM_COL32(6, 22, 32, 255), IM_COL32(36, 86, 118, 255), IM_COL32(10, 26, 40, 255)},
+    {IM_COL32(226, 190, 96, 255), IM_COL32(28, 22, 8, 255), IM_COL32(58, 108, 78, 255), IM_COL32(16, 36, 26, 255)},
 };
 static const ImU32 kBgTop = IM_COL32(14, 17, 22, 255), kBgBottom = IM_COL32(8, 10, 13, 255);
 static const ImU32 kCard = IM_COL32(24, 28, 35, 240), kTextHi = IM_COL32(240, 243, 247, 255),
@@ -275,6 +282,86 @@ static bool launch(int g) {
     return true;
 }
 
+// ---- installing
+
+// The setup next to the launcher: the release folder it sits in (python/ beside installer/), else a repository
+// checkout above it, run by the Python in TOTK_SETUP_PYTHON, else by .venv-py314's (docs/launcher.md).
+struct Setup {
+    fs::path python, root;
+};
+
+static bool find_setup(const fs::path &dir, Setup &out) {
+    std::error_code ec;
+    fs::path root;
+    for (fs::path d = dir; !d.empty(); d = d.parent_path()) {
+        if (fs::is_regular_file(d / "installer" / "gui.py", ec)) {
+            root = d;
+            break;
+        }
+        if (d == d.parent_path()) break;
+    }
+    if (root.empty()) return false;
+#ifdef _WIN32
+    fs::path release = root / "python" / "pythonw.exe", venv = root / ".venv-py314" / "Scripts" / "pythonw.exe";
+#else
+    fs::path release = root / "python" / "bin" / "python3", venv = root / ".venv-py314" / "bin" / "python3";
+#endif
+    const char *env = SDL_getenv("TOTK_SETUP_PYTHON");
+    out.root = root;
+    out.python = fs::is_regular_file(release, ec) ? release : env && *env ? from_utf8(env) : venv;
+    return fs::is_regular_file(out.python, ec);
+}
+
+static SDL_Process *g_setup = nullptr;   // the installer window while it runs
+static int g_setup_game = -1;
+
+// Opens the installer window for game g with the folder next to the launcher and this launcher.ini; a finished
+// install writes its executable there (installer/gui.py --launcher-ini), and the launcher reads it when the window
+// closes (poll_setup).
+static void install(int g) {
+    Setup s;
+    if (g_setup) return;
+    if (!find_setup(g_settings_file.parent_path(), s)) {
+        g_games[g].error = T->no_setup;
+        return;
+    }
+    std::string py = to_utf8(s.python), root = to_utf8(s.root), ini = to_utf8(g_settings_file);
+    std::string dest = to_utf8(g_settings_file.parent_path() / kGames[g].folder);
+    // installer/steps.py REBUILD_BOOT: the folder goes on sys.path, as only the release Python's ._pth puts it there
+    const char *boot = "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); "
+                       "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)";
+    const char *args[] = {py.c_str(), "-c", boot, root.c_str(), "--root", root.c_str(), "--game", kGames[g].key,
+                          "--dest", dest.c_str(), "--launcher-ini", ini.c_str(), nullptr};
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetPointerProperty(p, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    SDL_SetStringProperty(p, SDL_PROP_PROCESS_CREATE_WORKING_DIRECTORY_STRING, root.c_str());
+    g_setup = SDL_CreateProcessWithProperties(p);
+    SDL_DestroyProperties(p);
+    if (!g_setup) {
+        char msg[512];
+        snprintf(msg, sizeof msg, T->start_failed, SDL_GetError());
+        g_games[g].error = msg;
+        return;
+    }
+    SDL_Log("launcher: installer started for %s into %s", kGames[g].key, dest.c_str());
+    g_setup_game = g;
+    g_games[g].error.clear();
+}
+
+// When the installer window has closed: read launcher.ini again and look for the games anew.
+static void poll_setup() {
+    int code = 0;
+    if (!g_setup || !SDL_WaitProcess(g_setup, false, &code)) return;
+    SDL_DestroyProcess(g_setup);
+    g_setup = nullptr;
+    SDL_Log("launcher: installer closed (exit code %d)", code);
+    g_settings = load_settings(g_settings_file);
+    g_builds = find_builds(g_settings_file.parent_path(), g_settings);
+    index_builds();
+    if (chosen_build(g_setup_game)) select_card(g_setup_game, "installed");
+    g_setup_game = -1;
+}
+
 static void SDLCALL picked(void *user, const char *const *files, int filter) {
     (void)filter;
     if (!files || !files[0]) return;
@@ -285,9 +372,9 @@ static void SDLCALL picked(void *user, const char *const *files, int filter) {
 
 static void locate(SDL_Window *w, int g) {
 #ifdef _WIN32
-    static const SDL_DialogFileFilter filter[] = {{"totk.exe", "exe"}};
+    static const SDL_DialogFileFilter filter[] = {{"botw.exe, totk.exe", "exe"}};
 #else
-    static const SDL_DialogFileFilter filter[] = {{"totk", "*"}};
+    static const SDL_DialogFileFilter filter[] = {{"botw, totk", "*"}};
 #endif
     const Build *b = chosen_build(g);
     std::string start = b ? to_utf8(b->exe.parent_path()) : std::string();
@@ -342,16 +429,21 @@ static void glow(ImDrawList *dl, ImVec2 a, ImVec2 b, float rounding, ImU32 col, 
     }
 }
 
-// A button drawn by hand; true when pressed.
+// A button drawn by hand, filled, or outlined in fill when outline; true when pressed.
 static bool pill(const char *id, ImVec2 pos, ImVec2 size, ImU32 fill, ImU32 text, const char *label,
-                 bool enabled = true) {
+                 bool enabled = true, bool outline = false) {
     ImGui::SetCursorScreenPos(pos);
     bool pressed = ImGui::InvisibleButton(id, size) && enabled;
     bool hovered = enabled && ImGui::IsItemHovered(), held = enabled && ImGui::IsItemActive();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImU32 c = held ? lighten(fill, 0.05f) : hovered ? lighten(fill, 0.18f) : fill;
-    dl->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), c, size.y / 2);
+    ImVec2 end(pos.x + size.x, pos.y + size.y);
+    if (outline) {
+        dl->AddRectFilled(pos, end, with_alpha(fill, held ? 0.28f : hovered ? 0.2f : 0.08f), size.y / 2);
+        dl->AddRect(pos, end, fill, size.y / 2, 0, 2);
+    } else {
+        dl->AddRectFilled(pos, end, held ? lighten(fill, 0.05f) : hovered ? lighten(fill, 0.18f) : fill, size.y / 2);
+    }
     text_centered(dl, F.body, ImVec2(pos.x + size.x / 2, pos.y + size.y / 2), text, label);
     return pressed;
 }
@@ -464,13 +556,18 @@ static bool card(int g, ImVec2 pos, float k, float s, SDL_Window *window) {
         locate(window, g);
     y += 22 * s;
 
-    // the button
+    // the button: Play, else Install (outlined: the card stays grey until the game is there)
     ImVec2 bpos(x, y), bsize(w - 2 * pad, 52 * s * k);
     if (installed) {
         ImU32 fill = with_alpha(look.accent, 0.82f + 0.18f * t);
         if (pill("play", bpos, bsize, fill, look.accent_text, T->play)) play = true;
-    } else {
-        pill("play", bpos, bsize, IM_COL32(40, 44, 51, 255), with_alpha(kTextLo, 0.45f), T->play, false);
+    } else if (g_setup) {   // one installer at a time
+        bool mine = g_setup_game == g;
+        pill("install", bpos, bsize, IM_COL32(40, 44, 51, 255), with_alpha(kTextLo, mine ? 0.9f : 0.45f),
+             mine ? T->installing : T->install, false);
+    } else if (pill("install", bpos, bsize, with_alpha(look.accent, 0.55f + 0.45f * t), kTextHi, T->install, true,
+                    true)) {
+        install(g);
     }
     ImGui::PopID();
     return play;
@@ -551,7 +648,7 @@ int main(int argc, char **argv) {
     }
     T = lang && !strcmp(lang, "ru") ? &kRussian : &kEnglish;
     g_sel = game_index(select ? select : g_settings.last);
-    if (g_sel < 0) g_sel = chosen_build(GAME_TOTK) || !chosen_build(GAME_BOTW) ? GAME_TOTK : GAME_BOTW;
+    if (g_sel < 0) g_sel = chosen_build(GAME_BOTW) || !chosen_build(GAME_TOTK) ? GAME_BOTW : GAME_TOTK;
 
     SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");   // launcher.rc
     SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
@@ -617,6 +714,7 @@ int main(int argc, char **argv) {
             font_scale = px;
         }
         take_pick();
+        poll_setup();
         update_art(renderer);
 
         ImGui_ImplSDLRenderer3_NewFrame();
@@ -679,9 +777,10 @@ int main(int argc, char **argv) {
                 select_card(1, "right");
             if (key_pressed({ImGuiKey_Tab})) select_card((g_sel + 1) % GAME_COUNT, "tab");
             if (key_pressed({ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space, ImGuiKey_GamepadFaceDown,
-                             ImGuiKey_GamepadStart}) &&
-                chosen_build(g_sel))
-                play = g_sel;
+                             ImGuiKey_GamepadStart})) {
+                if (chosen_build(g_sel)) play = g_sel;
+                else if (!shot) install(g_sel);
+            }
             if (key_pressed({ImGuiKey_Escape, ImGuiKey_GamepadBack})) quit = true;
         }
         if (play >= 0 && !shot && launch(play)) quit = true;

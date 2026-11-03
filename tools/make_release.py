@@ -17,6 +17,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
+    launcher.exe    the game launcher (launcher/, docs/launcher.md) built with llvm/ by tools/build_launcher.py, and a
+                    copy of bin/SDL3.dll next to it: a card per game; Install opens the setup window for that game
 
 --prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
@@ -466,6 +468,16 @@ def build_launcher(out, llvm):
          ROOT / 'installer' / 'launcher' / 'launcher.c', res, '-o', out / 'TotK-Setup.exe'], env=env)
 
 
+def build_game_launcher(out, llvm):
+    """launcher.exe in the folder's root (docs/launcher.md), built with llvm/ against runtime/deps, with the SDL3.dll it
+    imports next to it."""
+    work = MAIN_ROOT / 'build' / 'release-check' / 'game-launcher'
+    run([sys.executable, ROOT / 'tools' / 'build_launcher.py', '--toolchain', llvm, '--deps', out / 'runtime' / 'deps',
+         '--out', work], env=clean_env(llvm / 'bin'))
+    shutil.copy2(work / 'launcher.exe', out / 'launcher.exe')
+    shutil.copy2(out / 'bin' / 'SDL3.dll', out / 'SDL3.dll')
+
+
 # ---- checks ----------------------------------------------------------------------------------------------------------
 
 def check_folder(out):
@@ -571,6 +583,7 @@ def main():
     runtime_lib(out, llvm)
     build_sources(out)
     build_launcher(out, llvm)
+    build_game_launcher(out, llvm)
     collect_licenses(out)
     check_folder(out)
     check_bundle(out)

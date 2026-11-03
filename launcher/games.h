@@ -7,20 +7,25 @@
 
 namespace fs = std::filesystem;
 
-enum { GAME_TOTK, GAME_BOTW, GAME_COUNT };
+enum { GAME_BOTW, GAME_TOTK, GAME_COUNT };   // the cards from left to right, in the order the games came out
 
 struct GameInfo {
-    const char *key;      // tools/games.py Game.key, the game = line of game.ini
+    const char *key;      // tools/games.py Game.key, the game = line of game.ini, the installer's --game
     const char *series;
     const char *title;
     const char *prefix;   // build folder names: prefix + the version's digits (v143, botw190)
+    const char *exe;      // the executable (tools/games.py Game.exe; .exe added on Windows)
+    const char *folder;   // the install folder the launcher offers, next to itself
 };
 extern const GameInfo kGames[GAME_COUNT];
+
+std::string exe_name(int game);   // botw.exe, totk.exe
 
 struct Build {
     int game = -1;        // GAME_*
     std::string version;  // display version ("1.4.3"), empty when the folder does not say
-    fs::path exe;         // totk.exe (totk off Windows)
+    fs::path exe;         // botw.exe or totk.exe (no .exe off Windows); a Breath of the Wild build made before the
+                          // rename has a totk.exe
     fs::path icon;        // icon.jpg beside it (tools/game_icon.py), empty when there is none
     bool install = false; // an install folder of the setup (totk-install.json)
 };

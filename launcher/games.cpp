@@ -7,16 +7,18 @@
 #include <set>
 #include <sstream>
 
-#ifdef _WIN32
-#define GAME_EXE "totk.exe"
-#else
-#define GAME_EXE "totk"
-#endif
-
 const GameInfo kGames[GAME_COUNT] = {
-    {"totk", "The Legend of Zelda", "Tears of the Kingdom", "v"},
-    {"botw", "The Legend of Zelda", "Breath of the Wild", "botw"},
+    {"botw", "The Legend of Zelda", "Breath of the Wild", "botw", "botw", "BotW"},
+    {"totk", "The Legend of Zelda", "Tears of the Kingdom", "v", "totk", "TotK"},
 };
+
+std::string exe_name(int game) {
+#ifdef _WIN32
+    return std::string(kGames[game].exe) + ".exe";
+#else
+    return kGames[game].exe;
+#endif
+}
 
 static std::string trim(const std::string &s) {
     size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
@@ -58,7 +60,7 @@ bool save_settings(const fs::path &file, const Settings &s) {
     out << "# The game launcher's choices (docs/launcher.md): the last game started and each game's executable.\n";
     if (!s.last.empty()) out << "last = " << s.last << "\n";
     for (int g = 0; g < GAME_COUNT; g++)
-        if (!s.exe[g].empty()) out << kGames[g].key << " = " << s.exe[g].string() << "\n";
+        if (!s.exe[g].empty()) out << kGames[g].key << " = " << to_utf8(s.exe[g]) << "\n";
     return bool(out);
 }
 
@@ -90,12 +92,10 @@ static bool from_folder_name(const std::string &name, Build &out) {
     return false;
 }
 
-// The "version" member of totk-install.json (installer/state.py writes it as "version": "1.4.3").
-static std::string install_version(const fs::path &file) {
-    std::ifstream in(file);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string text = ss.str(), key = "\"version\"";
+// A string member of totk-install.json, which installer/state.py writes with one member per line: "version": "1.4.3",
+// "game": "botw". The top-level ones come after the steps', none of which has these names.
+static std::string install_member(const std::string &text, const char *name) {
+    std::string key = std::string("\"") + name + "\"";
     size_t at = text.find(key);
     if (at == std::string::npos) return {};
     size_t q1 = text.find('"', text.find(':', at + key.size()));
@@ -115,13 +115,20 @@ bool identify(const fs::path &exe, Build &out, int fallback_game) {
             else if (k == "version") b.version = v;
         }
     } else if (fs::is_regular_file(dir / "totk-install.json", ec)) {
-        b.game = GAME_TOTK;
-        b.version = install_version(dir / "totk-install.json");
+        std::ifstream in(dir / "totk-install.json");
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string game = install_member(ss.str(), "game");
+        b.game = game.empty() ? GAME_TOTK : game_index(game);   // an install from before BotW support is TotK
+        b.version = install_member(ss.str(), "version");
         b.install = true;
     } else if (!from_folder_name(to_utf8(dir.filename()), b)) {
         b.game = fallback_game;
     }
     if (b.game < 0) return false;
+    // The game's own executable; another one in its folder is a leftover (a BotW build's totk.exe from before the
+    // rename to botw.exe), unless it is the only one there.
+    if (exe.filename() != exe_name(b.game) && fs::is_regular_file(dir / exe_name(b.game), ec)) return false;
     b.install = b.install || fs::is_regular_file(dir / "totk-install.json", ec);
     if (fs::is_regular_file(dir / "icon.jpg", ec)) b.icon = dir / "icon.jpg";
     out = b;
@@ -142,10 +149,13 @@ int compare_versions(const std::string &a, const std::string &b) {
 std::vector<Build> find_builds(const fs::path &dir, const Settings &s) {
     std::vector<fs::path> exes;
     std::error_code ec;
+    auto add = [&](const fs::path &d) {
+        for (int g = 0; g < GAME_COUNT; g++) exes.push_back(d / exe_name(g));
+    };
     auto scan = [&](const fs::path &d) {
-        exes.push_back(d / GAME_EXE);
+        add(d);
         for (auto it = fs::directory_iterator(d, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
-            if (it->is_directory(ec)) exes.push_back(it->path() / GAME_EXE);
+            if (it->is_directory(ec)) add(it->path());
     };
     scan(dir);
     if (dir.has_parent_path() && dir.parent_path() != dir) scan(dir.parent_path());
