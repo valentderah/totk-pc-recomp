@@ -246,6 +246,11 @@ void plat_aligned_free(void *p);
 
 // ---- process
 _Noreturn void plat_exit(int code);       // ends the process at once: other threads stop, no atexit handlers run
+// A build made with -fprofile-instr-generate (tools/build_game.py --pgo gen) counts branches in memory and writes the
+// counters from an atexit handler, which plat_exit skips. plat_exit calls the flush itself; a training build also calls
+// it now and then, so a crash costs minutes rather than the whole session. Both are no-ops in a normal build.
+void plat_profile_flush(void);
+int plat_profile_instrumented(void);
 int plat_setenv(const char *name, const char *value);    // value NULL removes it; 1 on success
 uint32_t plat_process_id(void);
 // CPU time of the process since it started (user and kernel), and wall time since it started, in ns; 0 when unknown.

@@ -86,3 +86,15 @@ int plat_event_wait_ns(PlatEvent *e, uint64_t ns) {
     plat_mutex_unlock(&e->m);
     return got;
 }
+
+// ---- profile counters (PGO training builds, tools/build_game.py --pgo gen)
+
+// The LLVM profile runtime's writer, weak: a build without -fprofile-instr-generate has no such symbol and the two
+// functions below do nothing. It rewrites the file LLVM_PROFILE_FILE names (profile.profraw by default) in full.
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+
+int plat_profile_instrumented(void) { return __llvm_profile_write_file != NULL; }
+
+void plat_profile_flush(void) {
+    if (__llvm_profile_write_file) __llvm_profile_write_file();
+}

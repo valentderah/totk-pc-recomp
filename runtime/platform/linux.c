@@ -1276,6 +1276,7 @@ int plat_stderr_path(char *out, size_t cap) {
 // ---- process
 
 void plat_exit(int code) {
+    plat_profile_flush();   // a training build (PGO): _exit runs no atexit handler, and the counters are written from one
     fflush(stdout);
     fflush(stderr);
     _exit(code);
