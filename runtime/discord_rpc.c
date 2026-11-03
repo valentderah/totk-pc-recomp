@@ -157,18 +157,21 @@ static uint32_t next_nonce(void) {
     return (uint32_t)plat_inc32(&n);
 }
 
-// The activity as one SET_ACTIVITY frame: the game update as the details line, the process's start as the timestamp
-// Discord counts the elapsed time from, and the application's art asset. 1 when the client answered (a slow answer
-// that ran out of the 2 s read is fine: the next drain takes it), 0 when the connection broke.
+// The activity as one SET_ACTIVITY frame: the game update and the port version as the details line ("Game 1.4.3 ·
+// Recomp 0.3.7": the port version without its +commit suffix, the art's hover text keeps the full one; the dot goes
+// as a JSON escape), the process's start as the timestamp Discord counts the elapsed time from, and the application's
+// art asset. 1 when the client answered (a slow answer that ran out of the 2 s read is fine: the next drain takes
+// it), 0 when the connection broke.
 static int send_activity(PlatIpc *p, const char *image) {
     char json[512];
     int v = rt_game_version;
     uint64_t start = (plat_unix_time_ns() - plat_process_uptime_ns()) / 1000000000ull;
+    int port_len = (int)strcspn(rt_port_version, "+");
     snprintf(json, sizeof json,
-             "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{\"details\":\"Update "
-             "%d.%d.%d\",\"timestamps\":{\"start\":%llu},\"assets\":{\"large_image\":\"%s\",\"large_text\":\"TotK "
-             "Recomp %s\"}}}}",
-             next_nonce(), (unsigned long)plat_process_id(), v / 100, v / 10 % 10, v % 10,
+             "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{\"details\":\"Game "
+             "%d.%d.%d \\u00b7 Recomp %.*s\",\"timestamps\":{\"start\":%llu},\"assets\":{\"large_image\":\"%s\","
+             "\"large_text\":\"TotK Recomp %s\"}}}}",
+             next_nonce(), (unsigned long)plat_process_id(), v / 100, v / 10 % 10, v % 10, port_len, rt_port_version,
              (unsigned long long)start, image, rt_port_version);
     if (!write_frame(p, OP_FRAME, json)) return 0;
     uint32_t op = 0;
