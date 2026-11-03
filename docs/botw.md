@@ -107,12 +107,36 @@ trace's underruns, a dump of the mix).
 |---|---|---|
 | The game's own AudioRenderer: the `sdk`'s server and DSP command processor run in the process (CPU render device, manual execution), its DeviceSink mix goes to SDL; the HLE `audren:u` mixer stays behind a switch ("Audio") | crackle the runtime does not see: no underrun, a clean mix | to port; `sdk` is TotK 1.4.3's, so both games get it |
 | Images the GPU drew kept after release, with a sum of the memory they cover, and taken back by a texture made again there (the save dialog's thumbnail, UI panels drawn once) | black save thumbnails (`caption.jpg`) | to port |
-| Constant buffers copied when the commands are translated; the CPU's wait on the frame's fence one frame late, at most two frames queued; CPU-read targets (sky, exposure, eight 128x128 in turn) one frame late | frames without fog and shadows, a whole over-exposed frame now and then | partly: uniform snapshot (`vk_usnap.c`), no recorder thread, one part per submission (1 to 6 such frames in 360) |
+| Constant buffers copied when the commands are translated; the CPU's wait on the frame's fence one frame late, at most two frames queued; CPU-read targets (sky, exposure, eight 128x128 in turn) one frame late | frames without fog and shadows, a whole over-exposed frame now and then | partly: uniform snapshot (`vk_usnap.c`), no recorder thread, one part per submission (1 to 6 such frames in 360); see "Open-world flicker" |
 | Grass draw slots split in halves read two frames apart (round 4 of the draw distance work) | grass patches flickering | to check |
 | Depth clamp for the sun's shadow cascades | shadows of trees cut and moving with the camera | recorded here (`OP_DEPTH_CLAMP`); to check on the plateau |
 | Sun occlusion query (`ReportCounter` `SAMPLES_PASSED`) | the sun's glare | done here for *Tears of the Kingdom* |
 | A draw whose shaders are being built waits when its targets were not drawn the frame before (captures, thumbnails) | a black pause menu background | to check |
 | Command lists kept until a recording writes over their memory (`cmdbuf.c` shadows) | lights not composed, wrong records | done differently here (`nvn_api_cmd.c` copy_touch) |
+
+### Open-world flicker
+
+On the Great Plateau about one frame in 100 loses the sun's shadows and the haze (rarely a whole frame turns
+over-exposed purple). Counted as frames that differ from both neighbours while the neighbours agree, over 360 frames
+captured one by one (`TOTK_SHOTS=4200-4560:1`) from the same save and input; the count varies by 2 to 4 between runs.
+
+| Tried | Frames in 360 |
+|---|---|
+| defaults before the change (replay parts every 64 draws) | 10, 15 |
+| one part per submission (now the default for this game) | 1 to 6 |
+| the same at a 30 fps limit | 9 |
+| every submission waited for on the submitting thread | 3 |
+| uniform snapshot off; fence write-back limit 1 MiB; texture aliases off; mirror off (`TOTK_MEMORY=import`) | 2 to 9 |
+| descriptor, texture, shader and pipeline reuse off, pipeline skips strict | 2 |
+| asynchronous preemption off | 4 |
+| the sun's occlusion report written at once; its counts logged (3000 to 4000, never 0) | 2 |
+| no write-back dropped for CPU writes to the target's pages (logged) | 4 |
+| no draw skipped for a pipeline being built (perf trace) | 2 |
+| `TOTK_DUMP_LOG` over the frames (a copy after every pass) | 0 in 240 |
+
+So none of the CPU-side timing changes removes it, and the dump, whose per-pass copies slow the GPU and add work
+between passes, does. Next: what the dump changes on the GPU side (a hazard between passes or draws that its copies
+hide), then Savage Wind's late fence wait.
 
 Frame rates above 60 (the physics microsteps, keyframed bodies, the shield-surf takeoff), the resolution, field of
 view, draw distance and shadow settings, and the input and HUD work follow once the game looks and sounds right.
