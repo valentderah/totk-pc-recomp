@@ -105,7 +105,7 @@ trace's underruns, a dump of the mix).
 
 | Savage Wind fix | Symptom here | State here |
 |---|---|---|
-| The game's own AudioRenderer: the `sdk`'s server and DSP command processor run in the process (CPU render device, manual execution), its DeviceSink mix goes to SDL; the HLE `audren:u` mixer stays behind a switch ("Audio") | crackle the runtime does not see: no underrun, a clean mix | to port; `sdk` is TotK 1.4.3's, so both games get it |
+| The game's own AudioRenderer: the `sdk`'s server and DSP command processor run in the process (CPU render device, manual execution), its DeviceSink mix goes to SDL; the HLE `audren:u` mixer stays behind a switch ("Audio") | crackle the runtime does not see: no underrun, a clean mix | ported (`audio_sdk.c`), on for this game (`TOTK_AUDIO_SDK=0`: the HLE mixer); one 5 ms frame renders in about 0.2 ms on the plateau, and the mix has no more steps at frame edges than anywhere else |
 | Images the GPU drew kept after release, with a sum of the memory they cover, and taken back by a texture made again there (the save dialog's thumbnail, UI panels drawn once) | black save thumbnails (`caption.jpg`) | to port |
 | Constant buffers copied when the commands are translated; the CPU's wait on the frame's fence one frame late, at most two frames queued; CPU-read targets (sky, exposure, eight 128x128 in turn) one frame late | frames without fog and shadows, a whole over-exposed frame now and then | partly: uniform snapshot (`vk_usnap.c`), no recorder thread, one part per submission (1 to 6 such frames in 360); see "Open-world flicker" |
 | Grass draw slots split in halves read two frames apart (round 4 of the draw distance work) | grass patches flickering | to check |

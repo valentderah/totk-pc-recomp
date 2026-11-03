@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audren.h"
 #include "cfg.h"
 #include "cheats.h"
 #include "fs.h"
@@ -353,6 +354,7 @@ void rt_boot(void) {
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
+    audio_sdk_init();   // the entry points of the sdk renderer's threads (audio_sdk.c)
     hostfn_seal();
     uint64_t held = plat_now_ms();
     if (warm) plat_thread_join(warm);

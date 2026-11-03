@@ -188,3 +188,7 @@ int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now);
 uint64_t audio_voice_consumed(const AudioRenderer *r, ServerVoice *v, int frames);   // source samples over one frame; advances v->fraction
 int audio_buffer_empty(const AudrenWaveBuffer *b);   // no samples to decode: played as soon as it is reached
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // IAudioDevice
+
+// audio_sdk.c: the game's own AudioRenderer in the process (TOTK_AUDIO_SDK); registers its threads' entry points,
+// before hostfn_seal.
+void audio_sdk_init(void);
