@@ -415,10 +415,10 @@ static void times_begin(VkCommandBuffer cb) {
 }
 
 // ---------------------------------------------------------------- motion vectors
-// Camera motion only (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the replay's
-// uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other, and the
-// compute pass reprojects every pixel's depth through both. Characters and anything else that moves on its own get
-// the camera's motion only, which DLSS mostly copes with by rejecting their history.
+// The camera's motion first (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the
+// replay's uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other,
+// and the compute pass reprojects every pixel's depth through the two (inv4 and mv_pass below). Then the per-object
+// pass (vk_exec_draw.c, vk_mvobj_execute) writes the motion of whatever moves on its own over it.
 #define CAM_BYTES 256u   // vec4 rows 0-15: view, view-projection (3-6), projection, inverse view
 #define CAM_BLOCK 0x940u   // the whole block, kept for the per-object motion pass's vertex shaders (vk_exec_draw.c)
 #define CAM_SLOT 0xa00u    // camb slot stride

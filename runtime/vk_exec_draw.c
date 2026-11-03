@@ -2215,16 +2215,18 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
 }
 
 // ---- per-object motion
-// DLAA's motion vectors come from the camera alone (vk_dlaa.c mv_pass), so a character that moves with the camera, or
-// on its own, gets the wrong ones and DLSS throws its history away there. Each skinned scene draw (bones bound at c5)
-// is therefore drawn a second time (listed during the replay, MQ, and recorded by mv_pass), with its vertex shader's last-frame variant
-// (translator patch 0012: the position again from last frame's camera, bones and place at slots 18-20, written to a
-// spare output) and the fragment shader of vk_mvobj_fs.h, which writes last frame's window position minus this
-// frame's. The draw keeps everything else of the original: vertex and index buffers, the other uniform blocks, the
-// jittered viewport and the scene depth, tested EQUAL without writes, so only the visible surface writes its vector.
-// mv_pass runs the buffer over the camera vectors (vk_mvobj_execute). Last frame's blocks: vk_mvprev_find; the camera:
-// vk_dlaa_prev_camera. A draw whose variant or pipeline is still building, or whose last-frame blocks are not in the
-// snapshot, keeps the camera's motion. TOTK_DLAA_OBJMV=0 turns it off (vk_mvprev.c).
+// The camera pass (vk_dlaa.c mv_pass) gives everything the camera's motion, so a character that moves with the camera,
+// or on its own, gets the wrong one and DLSS throws its history away there. Each solid scene draw whose position reads
+// an object's own uniform blocks (bones c5, place c7, c6; mvobj_draw_ says which are left out and why) is therefore
+// drawn a second time (listed during the replay, MQ, and recorded by mv_pass) with its vertex shader's last-frame
+// variant (translator patch 0012: the position again from last frame's blocks, bound at slot bank + 15, and last
+// frame's camera, written to a spare output) and the fragment shader of vk_mvobj_fs.h, which writes last frame's window
+// position minus this frame's. The draw keeps everything else of the original: vertex and index buffers, the other
+// uniform blocks, the jittered viewport and the scene depth, tested with the game's own test and its equal case
+// (LEQUAL, GEQUAL) without writes, so only the visible surface writes its vector. Last frame's blocks:
+// vk_mvprev_find and mo_prev_block; the camera: vk_dlaa_prev_camera. A draw whose variant or pipeline is still
+// building, or whose last-frame blocks are not in the snapshot, keeps the camera's motion. TOTK_DLAA_OBJMV=0 turns it
+// off (vk_mvprev.c).
 #include "vk_mvobj_fs.h"
 static const char MO_FS_RES[] = "{\"key\":\"mvobj\",\"stage\":\"ps\",\"notes\":[],\"cbufs\":[{\"binding\":1,\"slot\":3}],"
                                 "\"sbufs\":[],\"textures\":[],\"images\":[]}";

@@ -1,4 +1,6 @@
-// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA).
+// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA). The banks kept
+// start as c5, c7 and c14 and grow with what the vertex shader variants read (vk_mvprev_want); c7 and c5 are described
+// here, the others follow the same two-copy rule.
 //
 // The scene's vertex shaders read an object's place from bank c7 (gsys_shape: one 3x4 matrix at the start of a
 // 0x100 block) and a skinned object's bones from c5 (gsys_skeleton: a run of 3x4 matrices), of this frame only. The
@@ -9,7 +11,8 @@
 // (vk_usnap.c) also copies both neighbours of these blocks, and vk_mvprev_find picks last frame's:
 //   self    the block was bound at the same address last frame too (an object the game did not write again): itself
 //   side    one neighbour was bound in that bank last frame: that one
-//   nearer  both were (the copies of adjacent objects interleave): the one whose translation is nearer this frame's
+//   nearer  both were (the copies of adjacent objects interleave): the one with more of its first 16 words equal to
+//           this frame's
 //   none    neither: a new object, no motion of its own
 // The pick is checked against what was snapshotted of that block last frame (intact: the same first CHECK bytes), and
 // a summary goes to the log every SUMMARY frames:
