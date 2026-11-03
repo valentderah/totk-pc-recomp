@@ -81,6 +81,14 @@ site scene main cc3f68 5e21d900 @page:x9    # scvtf s0, s8 -> adrp x9, page
 site scene main cc3f70 bd0cc660 2d420520    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cc3f74 5e21d921 bd0cc660    # scvtf s1, s9 -> str s0, [x19, #0xcc4]
 
+# Fixed scene size (MacNativeGames game_patches_v143.c patch_fixed_res, 1.4.3 main+0x5848a8; runtime/resolution.c
+# res_dynres_live switches the set on unless TOTK_DYNAMIC_RES=1). The game's dynamic resolution controller
+# (main+0xcc26f4, called once per frame from the renderer at main+0xcc0fa0) steps the scene through tiers of 100, 90 and
+# 80 % by a cost model that grows with the scene width squared (runtime/resolution.c res_dynres_live), and the renderer stores scene width * tier / output width at +0xccc (main+0xcc1150).
+# Every path leaves through one epilogue, where the tier's scale moves into the result: 1.0 there makes every tier 100 %.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main cc2c00 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
 # Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches.c, the 1.2.1 sites of aspect_install;
 # runtime/resolution.c res_init writes the output's width / height to page +56 and switches the set on). The same four
 # sites as patches-v143.txt, with the same original words: two camera sites (update and setup) load the camera's copy of
