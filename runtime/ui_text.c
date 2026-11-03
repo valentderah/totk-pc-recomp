@@ -1289,6 +1289,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                            "ângulo raso continuam nítidos ao longe em vez de borrar. Jogo: o nível que o jogo pede, "
                            "como no Switch.",
     [UI_MENU_ANISO_GAME] = "Jogo",
+    [UI_MENU_LOD_DETAIL] = "Detalhe de modelos distantes",
+    [UI_MENU_LOD_DETAIL_DESC] = "Modelos distantes mantêm o detalhe que têm de perto em vez de trocar por versões "
+                                "mais simples. Só na versão 1.2.1 do jogo.",
+    [UI_MENU_LOD_STEADY] = "Detalhe estável sob carga",
+    [UI_MENU_LOD_STEADY_DESC] = "Pula a configuração do jogo que reduz o detalhe de modelos e texturas quando a taxa "
+                                "de quadros cai, como faz o mod de emulador Disable LOD Quality Reduction. Só na "
+                                "versão 1.2.1 do jogo.",
     [UI_MENU_COLOR] = "Cor",
     [UI_MENU_COLOR_PRESET] = "Perfil de cor",
     [UI_MENU_COLOR_PRESET_DESC] = "Define os quatro valores abaixo. Vívido: mais contraste e saturação, sombras um "
@@ -1910,6 +1917,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "纹理过滤",
     [UI_MENU_ANISO_DESC] = "表面纹理的各向异性过滤：以小角度看到的地面、道路和墙壁在远处依然清晰，而不会模糊。游戏：使用游戏请求的级别，与 Switch 上相同。",
     [UI_MENU_ANISO_GAME] = "游戏",
+    [UI_MENU_LOD_DETAIL] = "远处模型细节",
+    [UI_MENU_LOD_DETAIL_DESC] = "远处的模型保持近处的细节，而不会切换为简化版本。仅适用于游戏版本 1.2.1。",
+    [UI_MENU_LOD_STEADY] = "负载下保持细节",
+    [UI_MENU_LOD_STEADY_DESC] = "跳过游戏在帧率下降时降低模型和纹理细节的设置，与模拟器模组 Disable LOD Quality "
+                                "Reduction 的作用相同。仅适用于游戏版本 1.2.1。",
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 输出",
     [UI_MENU_HDR_DESC] = "在 HDR 显示器上呈现明亮的高光。需要在 Windows 中开启 HDR（“使用 HDR”），或使用带色彩管理的 Wayland 合成器；否则画面保持 "
