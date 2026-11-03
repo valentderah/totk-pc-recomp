@@ -33,6 +33,7 @@ typedef struct VkCtx {
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
+        has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata;                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
@@ -86,6 +87,45 @@ void vk_crumbs_release(void);
 // thread that records cb may call it: never into a replay part while the recorder thread owns it (vk_rec.h).
 void vk_crumb(VkCommandBuffer cb, int kind, uint64_t n);
 void vk_crumbs_report(void);         // logs the two codes and what they name
+
+// ---- pass marks (vk_crumbs.c): the replay (vk_exec.c vk_exec_pass_begin / vk_exec_pass_end, vk_exec_draw.c
+// op_dispatch) marks where each render pass and dispatch starts and where it ends, so that a device loss names the
+// pass the GPU was in. A mark is a number; a ring of VK_PASS_MARKS records keeps what it was. With
+// VK_AMD_buffer_marker the GPU writes the number of the last mark it started (TOP_OF_PIPE, before vkCmdBeginRendering
+// or the dispatch) and of the last it finished (BOTTOM_OF_PIPE, after vkCmdEndRendering or the dispatch) into the
+// breadcrumb buffer; with VK_NV_device_diagnostic_checkpoints the same two points are checkpoints, read with
+// vkGetQueueCheckpointData(2)NV after the loss. TOTK_PASS_CRUMBS: unset, AMD buffer marks only; 1, also NVIDIA
+// checkpoints (the extension is enabled at device creation); 0, none.
+#define VK_PASS_MARKS 4096   // power of two
+enum { VK_MARK_PASS = 1, VK_MARK_DISPATCH };
+typedef struct {
+    uint32_t id;                        // the mark this record belongs to (0: never written)
+    uint8_t kind;                       // VK_MARK_*
+    uint8_t ncolor;                     // colour attachments
+    uint32_t step;                      // index of the pass, or of the dispatch, within its submission, from 0
+    uint32_t w, h, d;                   // render area and layers; a dispatch: group counts (0 0 0: indirect)
+    uint32_t draws;                     // draws recorded in the pass; UINT32_MAX until its end is recorded
+    uint64_t fence;                     // the submission: the timeline value it signals
+    VkFormat color[8], depth;           // attachment formats (VK_FORMAT_UNDEFINED: none)
+    const GfxShader *first[2], *last[2];// vertex and fragment shader of the first and last draw; a dispatch: first[0]
+} VkPassMark;
+// Pass marks wanted and possible (TOTK_PASS_CRUMBS and the extensions): set by vk_crumbs_init.
+extern int vk_pass_marks_on;
+// vk_device.c create_device, before vkCreateDevice: 1 when TOTK_PASS_CRUMBS asks for NVIDIA checkpoints.
+int vk_pass_marks_want_nv(void);
+// The next mark: records its start into cb (through the recorder thread when it owns cb) and returns its ring record,
+// id, kind and fence set, for the caller to fill. NULL when pass marks are off. Replay thread only.
+VkPassMark *vk_pass_mark_begin(VkCommandBuffer cb, int kind, uint64_t fence);
+void vk_pass_mark_end(VkCommandBuffer cb, const VkPassMark *m);   // records the end of mark m into cb
+// The recorder thread's side of both (vk_rec.c): the marker and checkpoint commands themselves.
+void vk_pass_mark_cmd(VkCommandBuffer cb, uint32_t id, int end);
+// AMD only: the last mark the GPU started and the last it finished (0: none); 0 without buffer marks.
+int vk_pass_marks_read(uint32_t *started, uint32_t *finished);
+const VkPassMark *vk_pass_mark_record(uint32_t id);   // the ring record of mark id; NULL once a later mark took its slot
+// The report's text for a started and a finished mark, three lines without a trailing newline: which marks (source:
+// the extension they came from), then each with its ring record. vk_pass_marks_report logs it; the probe checks it.
+void vk_pass_marks_format(const char *source, uint32_t started, uint32_t finished, char *o, size_t size);
+void vk_pass_marks_report(void);    // vk_device_fault_report: the AMD words and the NVIDIA checkpoints, formatted
 
 // ---- window and present (gfx_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled

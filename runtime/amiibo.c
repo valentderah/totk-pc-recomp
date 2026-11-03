@@ -111,6 +111,11 @@ bool amiibo_is_device_present(void) {
     return res;
 }
 
+// While the game waits for a tag it stops and starts detection again several times a second (tens with the menu open),
+// so the log names the first few and then a count every 200th start.
+static uint64_t g_detect_starts;
+static uint64_t g_detect_stop_ns;   // the last stop: the menu holds "searching" across the game's restarts
+
 void amiibo_start_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
     if (!g_detecting) {
@@ -118,7 +123,9 @@ void amiibo_start_detection(void) {
         g_tag_removed = false;
     }
     g_detecting = true;
-    rt_log("amiibo: start detection");
+    uint64_t n = ++g_detect_starts;
+    if (n <= 3) rt_log("amiibo: start detection");
+    else if (n % 200 == 0) rt_log("amiibo: detection started %llu times so far", (unsigned long long)n);
     bool tapped = g_tag_present;
     plat_mutex_unlock(&g_amiibo_lock);
     if (tapped) nfp_notify_tag(true);
@@ -126,12 +133,13 @@ void amiibo_start_detection(void) {
 
 void amiibo_stop_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
+    if (g_detecting) g_detect_stop_ns = plat_now_ns();
     g_detecting = false;
     // Preserve an unconsumed tap across a reader restart; a completed mounted scan is released.
     if (g_mounted) g_tag_present = g_timer_active = false;
     g_mounted = false;
     g_tag_removed = false;
-    rt_log("amiibo: stop detection");
+    if (g_detect_starts <= 3) rt_log("amiibo: stop detection");
     plat_mutex_unlock(&g_amiibo_lock);
 }
 
@@ -200,6 +208,15 @@ AmiiboDeviceState amiibo_get_device_state(void) {
     }
     plat_mutex_unlock(&g_amiibo_lock);
     return AMIIBO_DEV_STATE_INITIALIZED;
+}
+
+AmiiboDeviceState amiibo_get_reader_state(void) {
+    AmiiboDeviceState state = amiibo_get_device_state();
+    if (state != AMIIBO_DEV_STATE_INITIALIZED) return state;
+    plat_mutex_lock(&g_amiibo_lock);
+    bool recent = g_detect_stop_ns && plat_now_ns() - g_detect_stop_ns < 1000000000ull;
+    plat_mutex_unlock(&g_amiibo_lock);
+    return recent ? AMIIBO_DEV_STATE_SEARCHING : state;
 }
 
 bool amiibo_load_file(const char *path) {

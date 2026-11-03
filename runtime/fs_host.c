@@ -125,12 +125,30 @@ static void make_dirs(const char *p) {
     if (!make_dir(buf)) rt_fatal("fs: cannot create directory %s", buf);
 }
 
-// Remove a directory tree; a link (reparse point, symbolic link) is removed as a link, never followed. 0 also when
+// The first path remove_tree could not delete and the OS error code, for the message of a fatal.
+static char remove_failed[1100];
+static int remove_error;
+static void remove_note(const char *path) {
+    if (*remove_failed) return;
+    snprintf(remove_failed, sizeof remove_failed, "%s", path);
+    remove_error = plat_fs_os_error();
+}
+
+// Remove a directory tree; a link (symbolic link, junction) is removed as a link, never followed. 0 also when
 // nothing is there.
 static int remove_tree(const char *path) {
     int kind = plat_fs_kind(path);
     if (kind == PLAT_FS_MISSING) return 0;
-    if (kind == PLAT_FS_FILE) return plat_fs_unlink(path) ? -1 : 0;
+    if (kind == PLAT_FS_FILE) {
+        if (!plat_fs_unlink(path)) return 0;
+        remove_note(path);
+        return -1;
+    }
+    if (kind == PLAT_FS_LINK) {   // a link to a file goes by unlink, a link to a directory by rmdir
+        if (!plat_fs_unlink(path) || !plat_fs_rmdir(path)) return 0;
+        remove_note(path);
+        return -1;
+    }
     int bad = 0;
     if (kind == PLAT_FS_DIR) {
         Listing l;
@@ -142,7 +160,23 @@ static int remove_tree(const char *path) {
         }
         listing_free(l.e, l.n);
     }
-    return bad | (plat_fs_rmdir(path) ? -1 : 0);
+    if (plat_fs_rmdir(path)) {
+        remove_note(path);
+        bad |= -1;
+    }
+    return bad;
+}
+
+// remove_tree, tried again every 50 ms for up to 2 s while another process (the previous run still exiting, a virus
+// scanner, a sync client) holds a file in the tree. The failing path and its OS error stay in remove_failed.
+#define MOVE_TRIES 40   // 2 s, also move_dir's
+static int remove_tree_retry(const char *path) {
+    for (int i = 0;; i++) {
+        *remove_failed = 0;
+        if (!remove_tree(path)) return 0;
+        if (i == MOVE_TRIES) return -1;
+        plat_sleep_ms(50);
+    }
 }
 
 // ---- save transactions
@@ -190,7 +224,6 @@ static int exists(const char *p) { return plat_fs_kind(p) != PLAT_FS_MISSING; }
 
 // Rename a directory, durably; retried every 50 ms, tries times in all, while another process (a virus scanner, the
 // indexer) holds a file in it. 0 on success.
-#define MOVE_TRIES 40   // 2 s
 static int move_dir(const char *from, const char *to, int tries) {
     for (int i = 0; i < tries; i++) {
         int e = plat_fs_rename(from, to, 1);
@@ -446,7 +479,8 @@ static void save_recover(void) {
         did = swap_in() ? "a finished commit still waits in save-tx; the game loads it from there"
                         : "completed a finished commit";
     if (exists(work_root)) {
-        if (remove_tree(work_root)) rt_fatal("fs: cannot delete the old save working copy");
+        if (remove_tree_retry(work_root))
+            rt_fatal("fs: cannot delete the old save working copy: %s (OS error %d)", remove_failed, remove_error);
         if (!strcmp(did, "nothing to recover"))
             did = "deleted the last run's working copy (changes after its last Commit)";
     }
@@ -1575,6 +1609,15 @@ static void probe_save_tx(const uint64_t *uid) {
     CALL(S_UNMOUNT, U("ro"));
     CHECK(RES(S_DELETE_FILE, U(a)) == 0 && RES(S_DELETE_FILE, U(b)) == 0 && tx_commit() == 0 &&
           tx_read_committed("tx_a.sav") == -1, "Commit of deletions");
+    // a run that left read-only folders and files in the working copy (attributes another emulator's save carried):
+    // the next start deletes them and names the failing path if it cannot
+    char *ro_dir = join(work_root, "ro_dir"), *ro_file = join(ro_dir, "ro.sav");
+    CHECK(!plat_fs_mkdir(ro_dir) && plat_file_write(ro_file, "x", 1) && plat_file_set_readonly(ro_file, 1) &&
+          plat_file_set_readonly(ro_dir, 1), "read-only leftovers in the working copy");
+    probe_restart(uid);
+    CHECK(!exists(ro_dir), "the next start deleted a working copy with read-only folders");
+    free(ro_dir);
+    free(ro_file);
     printf("save tx: uncommitted writes visible to the game and dropped by a restart and by Unmount, commits kept; a "
            "crash at each of %d commit steps recovers to the old save %d times, the new one %d times, mixed %d "
            "times; %d backups\n", steps, olds, news, mixed, backups);

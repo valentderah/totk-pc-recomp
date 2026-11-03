@@ -26,6 +26,10 @@ static VkCommandBuffer rec_cb;         // the part being recorded (set while the
 static int rec_live;                   // producer: rec_begin started the recorder for rec_cb
 static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
+static int rec_chk;                    // TOTK_REC_CHECK (rec_check_handle)
+static uint64_t rec_delay_ns;          // TOTK_REC_DELAY_US (rec_main)
+static volatile uint64_t part_h0;      // put_h at rec_begin: where the packets of the part being recorded start
+static volatile uint64_t part_fence;   // the value of the part being recorded (rec_begin)
 
 // Producer statistics, logged by rec_stats_log.
 static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
@@ -40,6 +44,7 @@ enum {
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
     R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
+    R_PassMark,
 };
 
 static uint64_t now_ns(void) { return plat_now_ns(); }
@@ -64,6 +69,9 @@ static void rec_main(void *arg) {
                 continue;
             }
         }
+        // TOTK_REC_DELAY_US (debug): the recorder falls this far behind each batch it finds, as on a slow machine,
+        // so objects the replay lets go of meet packets it has not made yet (TOTK_REC_CHECK).
+        if (rec_delay_ns) plat_sleep_ns(rec_delay_ns);
         for (int k = 0; t != h; k++) {
             uint64_t w = ring[t % RING_WORDS];
             uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);
@@ -103,6 +111,9 @@ static void *put(uint32_t op, size_t bytes) {
     }
     wait_space(n);
     ring[pos] = (uint64_t)op | n << 32;
+    // Packers reserve room for optional arrays they may leave unwritten (BeginRendering's depth and stencil); with
+    // TOTK_REC_CHECK those words would still hold handles from the ring's previous lap.
+    if (rec_chk) memset(&ring[pos + 1], 0, (n - 1) * 8);
     put_h += n;
     RS_.packets++, RS_.words += n;
     return &ring[pos + 1];
@@ -124,7 +135,7 @@ void rec_drain(void) {
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
 }
 
-void rec_begin(VkCommandBuffer cb) {
+void rec_begin(VkCommandBuffer cb, uint64_t fence) {
     static int mode = -1;
     if (mode < 0) {
         // Default off on AMD GPUs. With the recorder those drivers lost the device or hung the GPU at startup on
@@ -140,6 +151,9 @@ void rec_begin(VkCommandBuffer cb) {
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
+            rec_chk = rt_knob("REC_CHECK", "0");   // debug switches, read before the recorder starts
+            const char *d = cfg_get("TOTK_REC_DELAY_US");
+            rec_delay_ns = d && *d && atoi(d) > 0 ? (uint64_t)atoi(d) * 1000 : 0;
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
             if (!rec_thread) {
                 rt_log("vk_rec: no recorder thread: the replay makes its Vulkan calls itself");
@@ -147,6 +161,9 @@ void rec_begin(VkCommandBuffer cb) {
             } else {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
                        mode == 2 ? " in the B blocks (TOTK_AB)" : "");
+                if (rec_chk) rt_log("vk_rec: TOTK_REC_CHECK: deferred and destroyed objects are searched in the ring");
+                if (rec_delay_ns) rt_log("vk_rec: TOTK_REC_DELAY_US: the recorder waits %llu us before each batch",
+                                         (unsigned long long)(rec_delay_ns / 1000));
             }
         }
     }
@@ -154,6 +171,8 @@ void rec_begin(VkCommandBuffer cb) {
     if (!RT_KNOB_ON(mode)) return;
     RS_.parts_on++;
     rec_cb = cb;   // the recorder is idle: rec_end drained it
+    __atomic_store_n(&part_h0, put_h, __ATOMIC_RELEASE);
+    __atomic_store_n(&part_fence, fence, __ATOMIC_RELEASE);
     rec_live = 1;
 }
 
@@ -200,6 +219,64 @@ void rec_stats_log(void) {
            RS_.words * 8 / 1048576.0, (unsigned long long)RS_.drains, (unsigned long long)RS_.fallbacks,
            RS_.drain_ns / 1e6, (unsigned long long)RS_.full_waits);
     memset(&RS_, 0, sizeof RS_);
+}
+
+// TOTK_REC_CHECK=1 (debug, recorder on): the packets of the part being recorded are searched word by word for an object
+// vk_memory.c lets go of. put() zeroes each packet's room, so only words a packer wrote can match. A hit is a hazard
+// - at a deferral (destroy 0) when the stamp tl is below the part's value: vk_memory.c collect_locked may destroy the
+//   object once the GPU reaches tl, before the part ran and, with the recorder behind, before it made the call;
+// - at a destruction (destroy 1) always: a packet not made yet hands the driver a dead handle, a made one leaves it
+//   in a command buffer not yet submitted.
+// "Made" means before the tail the recorder published, which trails it by up to 64 packets. Hazards are logged (the
+// first 64) and counted by kind, packet and case for rec_check_log; named deferrals that wait long enough are only
+// counted. Reads race the producer only in words below head, which stay put until the ring
+// wraps (16 MiB later).
+static const char *const kind_name[REC_KINDS] = {"image", "view", "buffer"};
+static volatile int32_t chk_seen[2], chk_named, chk_logged, chk_hz[2][2][REC_KINDS][64];   // [destroy][made][kind][op]
+void rec_check_handle(int kind, uint64_t handle, int destroy, uint64_t tl, uint64_t gpu) {
+    if (!rec_chk || !handle || kind < 0 || kind >= REC_KINDS || !__atomic_load_n(&rec_live, __ATOMIC_RELAXED)) return;
+    uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE), p = __atomic_load_n(&part_h0, __ATOMIC_ACQUIRE);
+    uint64_t fence = __atomic_load_n(&part_fence, __ATOMIC_ACQUIRE);
+    if (p > h || h - p > RING_WORDS / 2) return;   // a part this large is not searched
+    plat_inc32(&chk_seen[destroy != 0]);
+    while (p < h) {
+        uint64_t w = ring[p % RING_WORDS];
+        uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);
+        if (!n) return;   // overwritten meanwhile
+        if (op != R_PAD)
+            for (uint32_t i = 1; i < n; i++) {
+                if (ring[(p + i) % RING_WORDS] != handle) continue;
+                int made = p < __atomic_load_n(&tail, __ATOMIC_ACQUIRE);
+                if (!destroy && tl >= fence) { plat_inc32(&chk_named); return; }
+                plat_inc32(&chk_hz[destroy][made][kind][op & 63]);
+                if (plat_inc32(&chk_logged) <= 64)
+                    rt_log("vk_rec: check: HAZARD: %s %#llx %s while packet op %u (byte %u of its arguments) of the "
+                           "part being recorded names it, %s; deferral stamp %llu, part value %llu, GPU at %llu",
+                           kind_name[kind], (unsigned long long)handle, destroy ? "destroyed" : "deferred", op,
+                           8 * (i - 1), made ? "made" : "not known made", (unsigned long long)tl,
+                           (unsigned long long)fence, (unsigned long long)gpu);
+                return;
+            }
+        p += n;
+    }
+}
+
+void rec_check_log(void) {
+    static volatile int32_t said;
+    if (!rec_chk || plat_xchg32(&said, 1)) return;
+    int any = 0;
+    for (int d = 0; d < 2; d++)
+        for (int m = 0; m < 2; m++)
+            for (int k = 0; k < REC_KINDS; k++)
+                for (int op = 0; op < 64; op++)
+                    if (chk_hz[d][m][k][op]) {
+                        any = 1;
+                        rt_log("vk_rec: check summary: %d hazards: %s %s, packet op %d %s", (int)chk_hz[d][m][k][op],
+                               kind_name[k], d ? "destroyed" : "deferred", op, m ? "made" : "not known made");
+                    }
+    rt_log("vk_rec: check summary: %s; searched for %d objects deferred and %d destroyed while a part was recorded; %d "
+           "deferred ones the part named waited for its value", any ? "hazards above" : "no hazards", (int)chk_seen[0],
+           (int)chk_seen[1], (int)chk_named);
 }
 
 #define OWNED(cb) (rec_live && (cb) == rec_cb)
@@ -531,6 +608,14 @@ void rec_polygon_mode(PFN_vkCmdSetPolygonModeEXT fn, VkCommandBuffer cb, VkPolyg
     pub();
 }
 
+typedef struct { uint32_t id; int end; } A_PassMark;
+void rec_pass_mark(VkCommandBuffer cb, uint32_t id, int end) {
+    if (!OWNED(cb)) { vk_pass_mark_cmd(cb, id, end); return; }
+    A_PassMark *a = put(R_PassMark, sizeof *a);
+    *a = (A_PassMark){id, end};
+    pub();
+}
+
 typedef struct { void *fn; uint32_t first, n; const void *v; } A_Targets;
 #define TARGET_CMD(fname, R, PFN, T)                                                                                    \
     void fname(PFN fn, VkCommandBuffer cb, uint32_t first, uint32_t n, const T *v) {                                    \
@@ -618,6 +703,7 @@ static void exec_packet(uint32_t op, void *p) {
     case R_BlendEnable: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEnableEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_BlendEquation: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEquationEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_WriteMask: { A_Targets *a = p; ((PFN_vkCmdSetColorWriteMaskEXT)a->fn)(cb, a->first, a->n, a->v); break; }
+    case R_PassMark: { A_PassMark *a = p; vk_pass_mark_cmd(cb, a->id, a->end); break; }
     case R_EndCb: {
         A_EndCb *a = p;
         if (a->kind) vk_crumb(cb, a->kind, a->n);

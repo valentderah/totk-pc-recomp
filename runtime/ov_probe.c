@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "amiibo.h"
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
@@ -25,6 +26,7 @@
 
 #define CHILD_ENV "TOTK_PROBE_SERVICES_CHILD"
 #define TRY_WAIT_SYSTEM_EVENT "_ZN2nn2os18TryWaitSystemEventEPNS0_15SystemEventTypeE"
+#define DESTROY_SYSTEM_EVENT "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"
 
 typedef struct { const char *key, *name; int fatal; uint64_t addr; int bound, calls; } Ov;
 static Ov ovs[] = {
@@ -381,7 +383,8 @@ static void probe_applet(void) {
     CHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
     // The amiibo tool destroys its events between uses and attaches new ones at the same addresses.
     // Exercise the real SDK destructor and TryWaitSystemEvent, including a second attach without a tap.
-    uint64_t destroy = ldr_symbol("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
+    uint64_t destroy = ldr_symbol(DESTROY_SYSTEM_EVENT);
+    int reattached = 1;
     CHECK(destroy != 0, "DestroySystemEvent is not loaded");
     if (destroy) {
         for (int scan = 0; scan < 3; ++scan) {
@@ -391,13 +394,25 @@ static void probe_applet(void) {
             CHECK(!kern_try_signal_system_event(activate), "late callback signalled a destroyed event");
             CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "reattach activate event");
             CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "reattach deactivate event");
-            CHECK(event_works(activate, 1), "reused activate event, scan %d", scan);
-            CHECK(event_works(deactivate, 1), "reused deactivate event, scan %d", scan);
+            reattached &= event_works(activate, 1) && event_works(deactivate, 1);
+            CHECK(reattached, "reused activate/deactivate events, scan %d", scan);
             CHECK(CALL("nfp.AttachAvailabilityChangeEvent", ev) == 0, "reattach availability event");
             CHECK(event_works(ev, 1), "reused availability event, scan %d", scan);
         }
         printf("nfp: three destroy/reattach cycles at the same event addresses passed\n");
     }
+    // An amiibo's NTAG215 header: UID with its two check bytes, static lock 0F E0, capability container F1 10 FF EE.
+    // The original amiibo header and the legacy E1 variant must both load.
+    static const uint8_t head[16] = {0x04, 0x11, 0x22, 0x88 ^ 0x04 ^ 0x11 ^ 0x22, 0x33, 0x44, 0x55, 0x66,
+                                     0x33 ^ 0x44 ^ 0x55 ^ 0x66, 0x48, 0x0F, 0xE0, 0xF1, 0x10, 0xFF, 0xEE};
+    uint8_t dump[AMIIBO_DUMP_SIZE] = {0};
+    memcpy(dump, head, sizeof head);
+    const char *dump_path = "probe-amiibo.bin";
+    int amiibo_ok = plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    dump[0x0C] = 0xE1;
+    amiibo_ok = amiibo_ok && plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    plat_fs_unlink(dump_path);
+    CHECK(amiibo_ok, "the amiibo loader refuses an F1 or legacy E1 dump");
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);
@@ -407,7 +422,8 @@ static void probe_applet(void) {
     CALL("pctl.Initialize", 0);
     CALL("diag.InitializeApplicationAbortObserver", 0);
     printf("applet/prepo/nfp/err: launch parameter none, volume balance, play reports local, an NFC reader without "
-           "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s\n", nfp_event ? "ok" : "FAILED");
+           "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s, activate and deactivate events "
+           "destroyed and attached again %s\n", nfp_event ? "ok" : "FAILED", reattached ? "ok" : "FAILED");
 }
 
 static void probe_account(void) {

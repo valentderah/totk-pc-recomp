@@ -82,6 +82,17 @@ site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 
+# Texture pool offsets past 2 GiB (MacNativeGames ca311e2d). The texture loader keeps a texture's place in its pool as a
+# 32-bit offset (main+0xad4294: sub x25, x9, x10, stored as the word w25) and widens it as a signed number for
+# nvnTextureBuilderSetStorage's offset and for SetPackagedTextureData's source (the pool's CPU address + offset). The
+# shipped heap table keeps every pool far below 2 GiB; a texture pack's heap table with TOTK_APP_POOL raised can make
+# one larger (MacNativeGames saw a 3.58 GiB pool), and every texture past 2 GiB then got storage 4 GiB below its pool.
+# The offset is widened unsigned instead, the same value below 2 GiB, right up to 4 GiB. 1.4.3 needs no patch: its
+# loaders (main+0x583c34, main+0x27ed214) keep the offset in 64 bits.
+set pooloff  TOTK_POOL_OFFSET_PATCH 1
+site pooloff main ad43f0 93407f22 2a1903e2   # sxtw x2, w25 -> mov w2, w25 (SetStorage offset)
+site pooloff main ad440c 8b39c101 8b394101   # add x1, x8, w25, sxtw -> add x1, x8, w25, uxtw (packaged data source)
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v121/exefs --patches recomp/patches-v121.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main ac600 ac620 ac630   # 13 instructions; loads
