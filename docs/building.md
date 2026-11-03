@@ -254,8 +254,10 @@ mismatch a real build does not have.
 A build made on a rolling distribution does not run on the Deck. Its glibc is older than the build's (2.41 against 2.43
 at the time of writing) and its `libvpx` has another soname (`.so.9` against `.so.12`), so a copied build stops at
 `GLIBC_2.43 not found` before it draws anything. Ship it the way a player gets it: `tools/make_release_linux.py` builds
-the setup AppImage against the sniper sysroot (glibc 2.29), and its installer compiles the game on the device, about an
-hour on the Deck's 8 threads with the shader seed.
+the setup AppImage against the sniper sysroot (glibc 2.29), and its installer compiles the game on the device: about
+an hour on the Deck's 8 threads with the shader seed. That figure is one measurement, not an estimate. Game 1.4.3
+installed from the v0.2.1 AppImage took 60.8 min end to end on a Steam Deck (kernel 6.18.50-valve2): 340 s hashing
+the dump, 1,590 s extracting and merging it, 88 s lifting, 623 s compiling and 1,018 s preparing shaders.
 
 `tools/profile_deck.sh --install <folder> --seconds 60` measures it, and prints what makes the number mean something:
 the GPU clock sampled during the run, the power supply, and the runtime's own lines about device profile, frame-rate
