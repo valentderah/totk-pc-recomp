@@ -32,8 +32,9 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game (1 = on). Adds up to a frame of latency.
-# replay_async = 0
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: on. Adds up to a
+# frame of latency; 0 replays them on the game thread.
+# replay_async = 1
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
