@@ -1381,17 +1381,30 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
     ImGui::SetWindowFontScale(0.72f);
     const ImVec4 gpu_c(0.55f, 0.83f, 0.31f, 1), cpu_c(0.18f, 0.59f, 0.80f, 1), ram_c(0.80f, 0.45f, 0.70f, 1),
         fps_c(0.95f, 0.95f, 0.95f, 1), wait_c(0.93f, 0.76f, 0.33f, 1), pic_c(0.62f, 0.70f, 0.95f, 1);
+    // the port version and the game update first, so a screenshot in a bug report carries both; formatted once per
+    // menu language
+    static char ver[96];
+    static const char *ver_fmt;
+    if (ver_fmt != menu_text(UI_MENU_VERSION)) {
+        ver_fmt = menu_text(UI_MENU_VERSION);
+        char game[16];
+        snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
+        snprintf(ver, sizeof ver, ver_fmt, rt_port_version, game);
+    }
+    ImGui::TextDisabled("%s", ver);
     if (ImGui::BeginTable("##perft", 4, ImGuiTableFlags_SizingFixedFit)) {
-        static const UiTextId labels[] = {UI_MENU_OV_GPU, UI_MENU_OV_VRAM, UI_MENU_OV_CPU, UI_MENU_OV_RAM};
-        static const PerfCol c0[] = {{UI_MENU_OV_FPS, 888}};
-        static const PerfCol c1[] = {{UI_MENU_OV_FMT_PCT, 100}, {UI_MENU_OV_FMT_GB, 888.8f}, {UI_MENU_OV_FRAME_MS, 888.8f}};
-        static const PerfCol c2[] = {{UI_MENU_OV_FMT_TEMP, 188}, {UI_MENU_OV_FMT_GB_OF, 888.8f}, {UI_MENU_OV_MAX_MS, 8888.8f}};
+        static const UiTextId labels[] = {UI_MENU_OV_GPU, UI_MENU_OV_VRAM, UI_MENU_OV_CPU, UI_MENU_OV_RAM,
+                                          UI_MENU_OV_FPS_LABEL, UI_MENU_OV_FRAME_LABEL};
+        static const PerfCol c1[] = {{UI_MENU_OV_FMT_PCT, 100}, {UI_MENU_OV_FMT_GB, 888.8f}, {UI_MENU_OV_FMT_FPS, 888},
+                                     {UI_MENU_OV_FRAME_MS, 888.8f}};
+        static const PerfCol c2[] = {{UI_MENU_OV_FMT_TEMP, 188}, {UI_MENU_OV_FMT_GB_OF, 888.8f}, {UI_MENU_OV_LOW1, 888},
+                                     {UI_MENU_OV_MAX_MS, 8888.8f}};
         static const PerfCol c3[] = {{UI_MENU_OV_FMT_POWER, 888}, {UI_MENU_OV_FMT_MHZ, 8888}, {UI_MENU_OV_GAME_PCT, 100},
-                                     {UI_MENU_OV_GAME_GB, 888.8f}};
-        perf_column("##c0", c0, 1, labels, 4);
-        perf_column("##c1", c1, 3);
-        perf_column("##c2", c2, 3);
-        perf_column("##c3", c3, 4);
+                                     {UI_MENU_OV_GAME_GB, 888.8f}, {UI_MENU_OV_LOW01, 888}};
+        perf_column("##c0", nullptr, 0, labels, 6);
+        perf_column("##c1", c1, 4);
+        perf_column("##c2", c2, 4);
+        perf_column("##c3", c3, 5);
         perf_label(UI_MENU_OV_GPU, gpu_c);
         perf_cell(UI_MENU_OV_FMT_PCT, s.gpu_pct);
         perf_cell(UI_MENU_OV_FMT_TEMP, s.gpu_temp_c);
@@ -1408,12 +1421,16 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_FMT_GB, perf_gb(s.ram_used_mb));
         perf_cell(UI_MENU_OV_FMT_GB_OF, perf_gb(s.ram_total_mb));
         perf_cell(UI_MENU_OV_GAME_GB, perf_gb(s.ram_game_mb));
-        ImGui::TableNextColumn();   // the frame row: no label, the rate in its place
-        char b[64];
-        snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS), s.fps);
-        ImGui::TextColored(fps_c, "%s", b);
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, 6 * scale);   // a gap between the machine and the frames
+        // the frames: the rate over the last second with the lows over the last ten seconds, then the frame times
+        perf_label(UI_MENU_OV_FPS_LABEL, fps_c);
+        perf_cell(UI_MENU_OV_FMT_FPS, s.fps);
+        perf_cell(UI_MENU_OV_LOW1, s.low1_fps);
+        perf_cell(UI_MENU_OV_LOW01, s.low01_fps);
+        perf_label(UI_MENU_OV_FRAME_LABEL, fps_c);
         perf_cell(UI_MENU_OV_FRAME_MS, s.frame_ms_avg);
         perf_cell(UI_MENU_OV_MAX_MS, s.frame_ms_max);
+        ImGui::TableNextColumn();
         ImGui::EndTable();
     }
     float top = s.frame_ms_max > 50 ? s.frame_ms_max : 50;
