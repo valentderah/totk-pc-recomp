@@ -152,6 +152,10 @@ void vk_reflex_submit_frame(uint64_t id);   // this thread's submissions belong 
 uint64_t vk_reflex_submit_id(void);
 void vk_reflex_present_frame(uint64_t id);  // the present thread, before the blit of frame id
 int vk_has_reflex(void);
+// SMAA on the present (vk_smaa.c): with TOTK_ANTIALIASING = smaa, records SMAA of src's crop rectangle {x, y, w, h}
+// into an RGBA16F image of that size in GENERAL (*out, *out_fmt) and returns 1; 0 = nothing recorded. src is in GENERAL.
+int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], VkImage *out, VkFormat *out_fmt);
+void vk_smaa_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.

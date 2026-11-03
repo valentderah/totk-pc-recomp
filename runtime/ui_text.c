@@ -85,6 +85,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_DESC] = "When the game resolution is not 16:9, keep the cutscene movies' own shape with black "
                                   "bars, or stretch them over the whole picture. Applies from the next movie.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
+    [UI_MENU_ANTIALIASING] = "Anti-aliasing",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA smooths jagged edges of the finished picture at the game resolution, before "
+                                  "scaling to the window. The HUD is smoothed too. Applies at once.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Off",
     [UI_MENU_FOV] = "Field of view",
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0 and 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
@@ -618,6 +622,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_DESC] = "Когда разрешение игры не 16:9: сохранить форму роликов с чёрными полосами или "
                                   "растянуть их на всю картинку. Действует со следующего ролика.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
+    [UI_MENU_ANTIALIASING] = "Сглаживание",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA сглаживает лесенки на готовой картинке в разрешении игры, до масштабирования "
+                                  "под окно. Интерфейс тоже сглаживается. Применяется сразу.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Выключено",
     [UI_MENU_FOV] = "Поле зрения",
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0 и 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
@@ -1191,6 +1199,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_DESC] = "Quando a resolução do jogo não é 16:9: manter o formato dos vídeos das cenas com "
                                   "barras pretas ou esticá-los sobre a imagem toda. Vale a partir do próximo vídeo.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Barras pretas", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Esticar",
+    [UI_MENU_ANTIALIASING] = "Antisserrilhado",
+    [UI_MENU_ANTIALIASING_DESC] = "O SMAA suaviza as bordas serrilhadas da imagem pronta na resolução do jogo, antes de "
+                                  "escalar para a janela. O HUD também é suavizado. Vale na hora.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Desligado",
     [UI_MENU_SHARPNESS] = "Nitidez do FSR",
     [UI_MENU_SHARPNESS_DESC] = "Aumento de nitidez após a ampliação do FSR; 0 desliga.",
 
@@ -1776,6 +1788,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                   "从下一段视频起生效。",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "黑边",
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
+    [UI_MENU_ANTIALIASING] = "抗锯齿",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA 在游戏分辨率下平滑成品画面的锯齿边缘，然后再缩放到窗口。HUD 也会被平滑。立即生效。",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "关闭",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
                           "支持游戏版本 1.1.0 和 1.4.3。",
