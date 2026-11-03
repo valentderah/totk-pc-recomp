@@ -218,16 +218,21 @@ static void crash_handler(const PlatCrash *x) {
     if (plat_xchg32(&busy, 1)) plat_exit(71);
     char d[160];
     uintptr_t rip = x->rip;
-    rt_logf("FATAL: %s (%#x) at host %p (totk+%#llx)", x->what, x->code, (void *)rip, (unsigned long long)x->offset);
+    rt_logf("FATAL: %s (%#x) at host %p (", x->what, x->code, (void *)rip);
+    if (x->module && !*x->module) rt_logf("outside every module)");
+    else rt_logf("%s+%#llx)", x->module ? x->module : "totk", (unsigned long long)x->offset);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
-    uint64_t f = lifted_function(rip);
+    uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    for (int i = 0; i < x->nframes; i++) {   // abort and invalid parameter: where the host code called it
+    // abort and invalid parameter: where the host code called it; a fault in another module: the host calls that led
+    // into it
+    uintptr_t exe = plat_exe_base();
+    for (int i = 0; i < x->nframes; i++) {
         uint64_t g = lifted_function(x->frames[i]);
-        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - (rip - x->offset)));
+        rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
@@ -439,11 +444,27 @@ static int selftest(void) {
     return failures ? 1 : 0;
 }
 
+// --probe-crash-call and --probe-crash-null crash on purpose, to check the report of a fault outside this executable.
+// call: strlen in the C runtime library (ucrtbase.dll, libc.so.6) reads address 8, the way a driver faults inside a
+// call the host made; the report names the library and the host frames that called it. null: a call through a null
+// function pointer, which leaves rip at 0, outside every module. Both end with exit code 71 and a FATAL line in the
+// log.
+static size_t (*volatile probe_strlen)(const char *) = strlen;
+static void (*volatile probe_null)(void);
+
+static int probe_crash(int null) {
+    if (null) probe_null();
+    else printf("%zu\n", probe_strlen((const char *)(uintptr_t)8));
+    printf("probe-crash: still running, the crash did not happen\n");
+    return 1;
+}
+
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
-                    "--probe-vkexec | --probe-astc | --probe-movie | --prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | "
+                    "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -531,6 +552,8 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(mode, "--selftest")) return selftest();
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
+    if (!strcmp(mode, "--probe-crash-call")) return probe_crash(0);
+    if (!strcmp(mode, "--probe-crash-null")) return probe_crash(1);
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
 #ifdef _WIN32
     if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
