@@ -64,6 +64,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -100,6 +101,39 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+
+# Profile-guided optimisation (--pgo). A training build (gen) instruments every object; playing it writes counters, and
+# tools/pgo.py merges them into one .profdata the optimised build (use) compiles with. -static-func-full-module-prefix
+# keeps a static function's profile name to its file name: the generated C sits under different directories in the
+# training checkout and in a player's build, and the absolute path would otherwise be part of every name.
+PGO_NAME_FLAGS = '-mllvm -static-func-full-module-prefix=false'
+PGO_MODE = 'off'      # off, gen (instrumented) or use (reads PGO_DATA)
+PGO_DATA = None       # --pgo use: the merged .profdata
+
+
+def pgo_flags():
+    """The PGO compile flags: instrumentation, the profile to read, or nothing."""
+    if PGO_MODE == 'gen':
+        return f'-fprofile-instr-generate {PGO_NAME_FLAGS}'
+    if PGO_MODE == 'use':
+        return f'-fprofile-instr-use={cmd_path(PGO_DATA)} {PGO_NAME_FLAGS}'
+    return ''
+
+
+def pgo_can_instrument(clang):
+    """Whether clang can link what -fprofile-instr-generate compiles: its profiling runtime, which MSYS2's UCRT64 clang
+    does not ship (clang64, llvm-mingw and LLVM's own install do). Tested with a trivial link, so a runtime found in
+    another place than clang's resource directory counts as well."""
+    src = 'int main(void){return 0;}\n'
+    with tempfile.TemporaryDirectory() as d:
+        c, exe = Path(d) / 'pgo_probe.c', Path(d) / ('pgo_probe' + ('.exe' if WIN else ''))
+        c.write_text(src, encoding='utf-8')
+        try:
+            r = subprocess.run([str(clang), str(c), '-fprofile-instr-generate', '-o', str(exe)],
+                               capture_output=True, text=True)
+        except OSError:
+            return False
+        return r.returncode == 0
 
 
 def set_cpu(cpu):
@@ -343,6 +377,12 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    # PGO: the mode's flags go into both compile rules (the generated code is nearly all of the run time), and an
+    # instrumented build links the profiling runtime through the same flag on the link line.
+    pgo = pgo_flags()
+    genflags = ' '.join(GEN_FLAGS) + (f' {pgo}' if pgo else '')
+    rtflags = ' '.join(RT_FLAGS) + (f' {pgo}' if pgo else '')
+    ldflags = ' '.join(LINK_FLAGS) + (' -fprofile-instr-generate' if PGO_MODE == 'gen' else '')
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
     # the cached objects save the compile step on the next build.
@@ -352,9 +392,9 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         'ninja_required_version = 1.10',
         f'builddir = {ninja_path(out)}',
         f'cc = {cache}{cmd_arg(CLANG.as_posix())}',
-        f'genflags = {" ".join(GEN_FLAGS)} {inc}',
-        f'rtflags = {" ".join(RT_FLAGS)} {rt_inc}',
-        f'ldflags = {" ".join(LINK_FLAGS)}',
+        f'genflags = {genflags} {inc}',
+        f'rtflags = {rtflags} {rt_inc}',
+        f'ldflags = {ldflags}',
         f'libs = {" ".join(libs)}',
         '',
         'pool gen',
@@ -442,7 +482,9 @@ def main_objects(gen, main_out, rt_dir, mods):
     lines = main_ninja.read_text(encoding='utf-8').splitlines()
     sources = dict(l[6:].split(': cc_gen ') for l in lines if l.startswith('build ') and ': cc_gen ' in l)
     flags = next((l for l in lines if l.startswith('genflags = ')), '')
-    if not flags.startswith('genflags = ' + ' '.join(GEN_FLAGS) + ' -I '):
+    # A PGO build's flags differ from the play build's by design: its objects cannot stand in for one, nor one for it.
+    pgo = pgo_flags()
+    if not flags.startswith('genflags = ' + ' '.join(GEN_FLAGS) + (f' {pgo}' if pgo else '') + ' -I '):
         return None, 'main build uses other compile flags'
     pairs = {}
     for mod, files in mods.items():
@@ -771,11 +813,31 @@ def main():
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--pgo', choices=('off', 'gen', 'use'), default='off',
+                    help='profile-guided optimisation: gen instruments the build (playing it writes *.profraw), use '
+                         'compiles with the profile tools/pgo.py merged from those runs (--pgo-data). The default '
+                         'output goes to build/<version>-pgo-gen / build/<version>-pgo, so the play build stays as it is')
+    ap.add_argument('--pgo-data', type=Path,
+                    help='--pgo use: the .profdata (default pgo/totk-<version>.profdata)')
     args = ap.parse_args()
+    global PGO_MODE, PGO_DATA
+    PGO_MODE = args.pgo
+    if PGO_MODE == 'use':
+        PGO_DATA = (args.pgo_data or ROOT / 'pgo' / f'totk-{args.version}.profdata').resolve()
+        if not PGO_DATA.is_file():
+            sys.exit(f'{flag_path(PGO_DATA)} not found: train with --pgo gen, play, then python tools/pgo.py merge')
+    elif args.pgo_data:
+        sys.exit('--pgo-data goes with --pgo use')
     set_cpu(args.cpu)
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
-    out = (args.out or ROOT / 'build' / args.version).resolve()
+    out = (args.out or ROOT / 'build' / (args.version + {'off': '', 'gen': '-pgo-gen', 'use': '-pgo'}[PGO_MODE])).resolve()
+    if PGO_MODE == 'gen':
+        print(f'build_game: pgo: instrumented build in {flag_path(out)}; playing it writes the counters next to totk.exe '
+              f'(LLVM_PROFILE_FILE; default profile.profraw)')
+    elif PGO_MODE == 'use':
+        print(f'build_game: pgo: {flag_path(PGO_DATA)} ({PGO_DATA.stat().st_size / (1 << 20):.1f} MiB, '
+              f'trained {time.strftime("%Y-%m-%d %H:%M", time.localtime(PGO_DATA.stat().st_mtime))})')
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
@@ -804,6 +866,12 @@ def main():
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+    # An instrumented build needs clang's profiling runtime at the link; say so before 30 minutes of compiling rather
+    # than after them. --compile-only never links, so it is left alone.
+    if PGO_MODE == 'gen' and not args.compile_only and not pgo_can_instrument(CLANG):
+        sys.exit(f'pgo: {CLANG} cannot link -fprofile-instr-generate (its profiling runtime, libclang_rt.profile, is '
+                 f'missing: MSYS2 UCRT64 clang ships none). Train with --toolchain <llvm-mingw> or MSYS2\'s clang64, or '
+                 f'pass --compile-only to compile the instrumented objects without the link')
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
