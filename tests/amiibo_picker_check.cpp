@@ -15,6 +15,10 @@ static const char *test_dir = "build/picker-test-files";
 } while (0)
 
 extern "C" {
+void plat_mutex_lock(PlatMutex *) {}
+void plat_mutex_unlock(PlatMutex *) {}
+void folder_pick(const char *, FolderPickDone done, void *ctx) { done(nullptr, ctx); }
+AmiiboDeviceState amiibo_get_reader_state(void) { return detecting ? AMIIBO_DEV_STATE_SEARCHING : AMIIBO_DEV_STATE_INITIALIZED; }
 const char *cfg_get(const char *) { return test_dir; }
 void cfg_set(const char *, const char *) {}
 const char *menu_text(UiTextId id) {
