@@ -70,7 +70,8 @@ TotK Recomp builds on the projects below. What was taken from each, with its lic
 - [LAS Recomp](https://github.com/peiikai/LASRecomp)
 - [MacNativeGames](https://github.com/ly05010419/MacNativeGames)
 - [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) and [nxnative](https://github.com/seedds/nxnative)
-- [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp)
+- [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp): *Breath of the Wild* support is based on it; its
+  findings about this game, its frame-rate sites and its fixes are what this repository's BotW work follows
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx)
 - [deko3d](https://github.com/devkitPro/deko3d)
 - [hactool](https://github.com/SciresM/hactool)

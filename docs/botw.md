@@ -5,6 +5,11 @@ renderer as *Tears of the Kingdom*, into its own `botw.exe`. This is early work.
 game and the 1.9.0 update (`--game botw`, or *Install* on its card in the launcher: [installer.md](installer.md),
 "Breath of the Wild"; [launcher.md](launcher.md)); no release is published yet.
 
+This work is based on [Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) by Revivedx and its
+contributors (MIT), a static recompilation of this game alone: its notes on the game, its 1.9.0 frame-rate sites and
+its fixes are the reference here, and the code taken from it is listed in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) with its commit.
+
 The same rule as for *Tears of the Kingdom* holds: no game files are included, you need your own copy dumped from your
 own console, and the build contains the game, so it is for your own use only.
 
