@@ -546,6 +546,10 @@ int main(int argc, char **argv) {
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
     if (!mode) {
+        // A game launched by a frontend or a shortcut gets a console of its own that only gets in the way. The log is in
+        // a file by now; with no log file, or with show_console = 1, the console stays.
+        if (rt_log_path() && !cfg_bool("TOTK_SHOW_CONSOLE") && plat_console_release_if_owned())
+            rt_log("console: owned by the game alone, released (show_console = 1 keeps it)");
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();
         return 0;
