@@ -147,8 +147,15 @@
 # tools/make_romfs_patches.py --aspect WxH. Read at start.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
-# a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
+# a percentage (25 to 400, at most 8192 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
 # render_scale = game
+# How a scene larger than the game resolution (render_scale above 100) is reduced to it: fsr (the game's own FSR 1 pass,
+# which samples a few scene pixels per output pixel) or area (averages every scene pixel, so supersampling removes
+# shimmer; the game's FXAA is then off, since the supersampled scene needs none). Game version 1.2.1. Read at start.
+# scene_filter = fsr
+# The game's dynamic resolution, which shrinks the scene under load: 1 keeps it, 0 keeps the scene at its full size (more
+# GPU time in busy places). Game version 1.2.1. Read at start.
+# dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr

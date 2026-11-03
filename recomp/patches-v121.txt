@@ -9,6 +9,7 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set fixres   TOTK_PATCH_FIXRES   0
 set shadow   TOTK_PATCH_SHADOW   0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
@@ -81,6 +82,11 @@ site aspect main cb4b10 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0
 site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0, [x19, #0x140] (camera setup)
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+
+# Fixed scene size (runtime/resolution.c res_init switches the set on with dynamic_res = 0): the dynamic resolution
+# ratio returned by main+0xcc26f4 and applied to the scene size at +0xccc stays 1, so the scene keeps its size when the
+# game would shrink it under load.
+site fixres main cc1138 1e270000 1e2e1000   # fmov s0, w0 -> fmov s0, #1.0
 
 # Texture pool offsets past 2 GiB (MacNativeGames ca311e2d). The texture loader keeps a texture's place in its pool as a
 # 32-bit offset (main+0xad4294: sub x25, x9, x10, stored as the word w25) and widens it as a signed number for

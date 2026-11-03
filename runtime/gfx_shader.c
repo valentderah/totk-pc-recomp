@@ -43,6 +43,7 @@
 #include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "scene_area_spv.h"
 
 #define CONTROL_SIZE 0x880
 #define CODE_SKIP 0x30                                     // graphics code starts after the first 0x30 bytes of the program
@@ -508,6 +509,32 @@ static void shader_free(GfxShader *s) {
 
 static void reflect(GfxShader *s);
 
+// scene_filter = area with a supersampled scene: the passes that reduce the scene, the game's FSR 1 EASU to the output
+// and its copy into the bloom input, sample a few scene pixels per output pixel, so the supersampled scene shimmers.
+// runtime/shaders/scene_area.frag takes their place and averages every scene pixel under an output pixel. The game's
+// FXAA shader goes too: its in-place pass then copies, since the supersampled scene needs no FXAA, and where it scales a
+// smaller scene the scene is not supersampled. The shaders are known by input id, which no translator change or host
+// option moves; these are 1.2.1's, and another version keeps the game's passes.
+static const uint8_t EASU_IID[32] = {0xd3, 0xb5, 0xfc, 0xce, 0x8f, 0xb8, 0x41, 0xf4, 0x7a, 0xea, 0xcc, 0xb9, 0x38, 0x57, 0x84, 0xf3,
+                                     0xc1, 0x64, 0xdf, 0xd2, 0x38, 0x9b, 0x6d, 0xeb, 0x25, 0xf2, 0x9c, 0x90, 0xef, 0x7b, 0x9f, 0x17};
+static const uint8_t FXAA_IID[32] = {0xeb, 0x5a, 0x7d, 0xc6, 0x01, 0xf7, 0x8b, 0xa8, 0xf4, 0x34, 0xd0, 0x31, 0x6a, 0x93, 0x98, 0xd5,
+                                     0x01, 0xa9, 0x43, 0xd6, 0x34, 0x5e, 0x27, 0xc0, 0xc3, 0x45, 0x1c, 0xa0, 0x2d, 0x65, 0xfc, 0x29};
+static const uint8_t COPY_IID[32] = {0xe9, 0x7b, 0x32, 0x87, 0x4f, 0x12, 0xa0, 0xcb, 0x50, 0xd0, 0xf7, 0x70, 0x86, 0xde, 0x94, 0xe6,
+                                     0x0c, 0xf8, 0x34, 0x5e, 0x76, 0x45, 0x7d, 0x32, 0xe1, 0x96, 0xf0, 0xeb, 0x53, 0xbe, 0x6c, 0x44};
+
+static void area_filter(GfxShader *s) {
+    int fxaa = !memcmp(s->iid, FXAA_IID, 32), copy = !memcmp(s->iid, COPY_IID, 32);
+    if (!fxaa && !copy && memcmp(s->iid, EASU_IID, 32)) return;
+    if (strcmp(cfg_value("TOTK_SCENE_FILTER"), "area") || !res_scene_supersampled()) return;
+    uint32_t *code = malloc(sizeof scene_area_spv);
+    if (!code) return;
+    memcpy(code, scene_area_spv, sizeof scene_area_spv);
+    free(s->spirv);
+    s->spirv = code;
+    s->words = sizeof scene_area_spv / 4;
+    rt_log("gfx_shader: the game's %s runs as the area filter", fxaa ? "FXAA" : copy ? "bloom input copy" : "FSR 1 EASU");
+}
+
 // Inserts s, or frees it and returns the entry another thread inserted first.
 static GfxShader *mem_insert(GfxShader *s) {
     plat_mutex_lock(&cache_lock);
@@ -589,6 +616,7 @@ static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int 
     s->words = spv_size / 4;
     s->reflection = (char *)res;
     s->reflection_size = res_size;
+    area_filter(s);
     reflect(s);
     if (s->stage == GFX_STAGE_FS) vk_hdr_shader_swap(&s->spirv, &s->words);   // the in-memory copy; the cache keeps its own
     return s;
@@ -1410,6 +1438,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
             plat_mutex_unlock(&cache_lock);
         }
         memcpy(s->key, mk, 32), memcpy(s->iid, miid, 32);
+        area_filter(s);   // disk_load had no input id yet
     }
     in_store(s->iid, stage, control, code, r, a);
     plat_inc64(&n_xlated);
