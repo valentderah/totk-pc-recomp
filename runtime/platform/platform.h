@@ -61,6 +61,23 @@ void plat_fiber_unself(void);             // the calling thread stops being a fi
 PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg);
 void plat_fiber_switch(PlatFiber *to);    // from the fiber the calling thread runs
 void plat_fiber_free(PlatFiber *f);       // a fiber nobody runs
+
+// A jump back to a point saved earlier on the same thread, without unwinding the frames in between (no SEH, no C++
+// cleanups): the kernel's ExitThread leaves the lifted frames this way. plat_jmp_save returns 0 when it saves and 1
+// when plat_jmp_go comes back to it; the function that called it must still be running. It keeps the callee-saved
+// registers and the floating-point control state. On Windows this is not the C runtime's setjmp: a non-unwinding
+// setjmp leaves the buffer's frame 0, and the C runtime's longjmp ends the process with 0xc0000409 (fast fail 13) on
+// such a buffer when Control Flow Guard is on for the process, which Exploit protection can force on any program.
+#ifdef _WIN32
+typedef struct { uint64_t gpr[10]; uint32_t mxcsr, fpcw; uint64_t pad; uint8_t xmm[160]; } PlatJmp;
+int plat_jmp_save(PlatJmp *j) __attribute__((returns_twice, nothrow));
+_Noreturn void plat_jmp_go(PlatJmp *j);
+#else
+#include <setjmp.h>
+typedef struct { jmp_buf b; } PlatJmp;
+#define plat_jmp_save(j) setjmp((j)->b)
+#define plat_jmp_go(j) longjmp((j)->b, 1)
+#endif
 // Scheduling priority, Windows' seven levels: of the calling thread, or of t. On Linux a thread lowered without the
 // right to raise its priority again (CAP_SYS_NICE, or an RLIMIT_NICE of 20) could never return to normal, and the
 // runtime lowers threads that later take shared locks at normal priority; without that right every change is skipped
@@ -201,19 +218,25 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
 
-// A crash in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
-// overflow) goes to fn, which reports it and must end the process. Faults in other modules (drivers) are left to the
-// OS. The write-fault hook above runs first. On Windows abort() (a failed assert, std::terminate) and an invalid
-// parameter to a C runtime function go there too, with the host frames in this executable: the C runtime ends the
-// process for both with 0xc0000409 and no exception.
+// A crash goes to fn, which reports it and must end the process. The write-fault hook above runs first.
+// - A fault in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
+//   overflow) is reported as it happens.
+// - A fault in another module (a GPU driver, a system library) is reported only when nothing handles it: on Windows
+//   from the unhandled-exception filter, with the return addresses in this executable on the faulting thread's stack,
+//   so the report shows which host call ran into the driver; on Linux from the signal handler, without frames. Drivers
+//   that raise and catch their own exceptions never reach fn.
+// - On Windows abort() (a failed assert, std::terminate) and an invalid parameter to a C runtime function go there
+//   too, with the host frames in this executable: the C runtime ends the process for both with 0xc0000409 and no
+//   exception.
 typedef struct {
     const char *what;          // "access violation", "illegal instruction", ...
     uint32_t code;             // the Windows exception code or the signal number
-    uintptr_t rip, offset;     // the faulting instruction, and its offset in the executable
+    uintptr_t rip, offset;     // the faulting instruction, and its offset in its module
     int access;                // the data access that faulted: 0 read, 1 write, 8 execute; -1 when not an access
     uint64_t addr;             // its address when access >= 0
-    int nframes;               // abort and invalid parameter: return addresses in this executable, innermost first
-    uintptr_t frames[16];      // (rip is frames[0]); 0 for a fault, whose rip is exact
+    int nframes;               // return addresses in this executable, innermost first: for abort and invalid parameter
+    uintptr_t frames[16];      // (rip is frames[0]) and for a fault in another module; 0 for a fault in this one
+    const char *module;        // the module holding rip: NULL for this executable, "" for none (a jump to address 0)
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
@@ -299,8 +322,9 @@ enum { PLAT_FS_OK, PLAT_FS_NOT_FOUND, PLAT_FS_EXISTS, PLAT_FS_NOT_EMPTY, PLAT_FS
 enum { PLAT_FS_MISSING = -1, PLAT_FS_FILE, PLAT_FS_DIR, PLAT_FS_LINK };   // plat_fs_kind; LINK: a symbolic link or
                                                                          // reparse point, never followed
 int plat_fs_kind(const char *path);
+int plat_fs_os_error(void);   // the OS error code (GetLastError, errno) of this thread's last failed plat_fs_* call
 int plat_fs_mkdir(const char *path);                      // PLAT_FS_EXISTS when something is there
-int plat_fs_rmdir(const char *path);                      // an empty directory, or a link to one
+int plat_fs_rmdir(const char *path);                      // an empty directory (a read-only one too), or a link to one
 int plat_fs_unlink(const char *path);                     // a file or a link; a read-only one too
 // Renames a file or directory; never replaces (PLAT_FS_EXISTS). durable: the change is on the disk at return.
 int plat_fs_rename(const char *from, const char *to, int durable);
@@ -350,6 +374,7 @@ uint32_t plat_thread_id(void);                            // id of the calling t
 int plat_font_path(const char *lang, char *out, size_t cap);
 // The operating system and its build ("Windows 10.0.28000") into out; 0 when unknown.
 int plat_os_version(char *out, size_t cap);
+int plat_is_wine(void);                                   // 1 when the Windows build runs under Wine; 0 elsewhere
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
 
@@ -393,3 +418,25 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err);
 void plat_child_stop(PlatChild *c);                       // kills the child and frees c
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
+
+// ---- local IPC: a stream connection to another program of this machine, one listen location per name (Discord's
+// Rich Presence, discord_rpc.c). On Windows the named pipe \\.\pipe\<name>; on Linux the Unix domain socket
+// <dir>/<name> with <dir> the first of $DISCORD_IPC_PATH, $XDG_RUNTIME_DIR, $TMPDIR and /tmp that has one.
+typedef struct PlatIpc PlatIpc;
+PlatIpc *plat_ipc_connect(const char *name);   // NULL when nothing listens under that name
+// Up to n bytes, waiting at most ms for the first of them: bytes read, 0 none in time, -1 the connection broke.
+// The rest of what the peer wrote may still be in its buffer: a caller that needs a whole frame loops.
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms);
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n);   // 1 when all n bytes were written, 0 the connection broke
+void plat_ipc_close(PlatIpc *p);
+
+// ---- restart: this program again, in a new process that starts once this one is gone
+// Starts this executable again with the same command line, environment and working folder, and no handle of this
+// process. 1 when it started; the caller then exits.
+int plat_restart(void);
+// Starts argv[0] with the arguments argv[1..] (NULL-terminated, UTF-8) in folder cwd, detached from this process: no
+// console, no handle of this one. 1 when it started (the setup window that rebuilds the game, runtime/cheats.c).
+int plat_spawn(const char *const *argv, const char *cwd);
+// In a process plat_restart started: waits, at most timeout_ms, until the process that started it has exited. 1 after
+// the wait, -1 on timeout, 0 when there is nothing to wait for (not started by plat_restart, or that process is gone).
+int plat_restart_wait(uint32_t timeout_ms);

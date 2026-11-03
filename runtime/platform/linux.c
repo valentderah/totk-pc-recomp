@@ -9,6 +9,7 @@
 #include <linux/fs.h>
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -21,9 +22,11 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -915,8 +918,9 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 }
 
 // One handler for the synchronous faults. A SIGSEGV whose page-fault error code has the write bit set goes to the
-// write-fault hook first (memory.c thaws a frozen region); a fault in this executable's code then goes to the crash
-// hook (main.c); anything else gets the default action. Runs on the thread's signal stack.
+// write-fault hook first (memory.c thaws a frozen region); any other fault, in this executable or in a library (Mesa,
+// SDL), then goes to the crash hook (main.c), which reports it and ends the process. Without a crash hook the fault
+// gets the default action. Runs on the thread's signal stack.
 static int (*fault_hook)(uint64_t addr);
 static void (*crash_fn)(const PlatCrash *c);
 
@@ -926,10 +930,17 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
     Dl_info at, self;
-    if (crash_fn && dladdr((void *)rip, &at) && dladdr((void *)plat_crash_hook, &self) && at.dli_fbase == self.dli_fbase) {
+    if (crash_fn) {
+        int found = dladdr((void *)rip, &at) && at.dli_fname;
         PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
                        : sig == SIGILL ? "illegal instruction" : "arithmetic exception",
-                       (uint32_t)sig, rip, rip - (uintptr_t)self.dli_fbase, -1, 0};
+                       (uint32_t)sig, rip, found ? rip - (uintptr_t)at.dli_fbase : rip, -1, 0};
+        if (!found) {
+            c.module = "";
+        } else if (!dladdr((void *)plat_crash_hook, &self) || at.dli_fbase != self.dli_fbase) {
+            const char *n = strrchr(at.dli_fname, '/');
+            c.module = n ? n + 1 : at.dli_fname;
+        }
         if (sig == SIGSEGV || sig == SIGBUS)
             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
         crash_fn(&c);
@@ -1036,6 +1047,8 @@ const void *plat_file_map(PlatFile *f) {
     void *v = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd_of(f), 0);
     return v == MAP_FAILED ? NULL : v;
 }
+
+int plat_fs_os_error(void) { return errno; }
 
 static int fs_err(int e) {
     switch (e) {
@@ -1180,8 +1193,10 @@ size_t plat_getenv(const char *name, char *out, size_t cap) {
 
 // Cached per thread: plat_rmutex_lock asks on every acquire, hundreds of thousands of times a second in play, and
 // gettid is a full syscall on Linux (Windows reads GetCurrentThreadId from the TEB). A thread's id never changes, and
-// the runtime starts child processes with posix_spawn only, so no forked copy inherits a stale id.
-uint32_t plat_thread_id(void) {
+// the runtime starts child processes with posix_spawn only, so no forked copy inherits a stale id. noinline: a fiber
+// may resume on another thread (platform.h), and a caller that inlined this could keep the address of tid it computed
+// before a plat_fiber_switch; as a call it reads the slot of the thread it runs on.
+__attribute__((noinline)) uint32_t plat_thread_id(void) {
     static __thread uint32_t tid;
     if (!tid) tid = (uint32_t)syscall(SYS_gettid);
     return tid;
@@ -1246,6 +1261,8 @@ int plat_os_version(char *out, size_t cap) {
     if (uname(&u)) return snprintf(out, cap, "%s", name) < (int)cap;
     return snprintf(out, cap, "%s (Linux %s)", name, u.release) < (int)cap;
 }
+
+int plat_is_wine(void) { return 0; }
 
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
@@ -1647,4 +1664,170 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     do k = read(c->out, buf, cap);
     while (k < 0 && errno == EINTR);
     return (long)k;
+}
+
+// ---- local IPC (platform.h): Discord's Rich Presence Unix domain socket
+struct PlatIpc { int fd; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    const char *dirs[] = {getenv("DISCORD_IPC_PATH"), getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"), "/tmp"};
+    for (size_t d = 0; d < sizeof dirs / sizeof *dirs; d++) {
+        if (!dirs[d] || !*dirs[d]) continue;
+        char path[sizeof ((struct sockaddr_un *)0)->sun_path];
+        if ((size_t)snprintf(path, sizeof path, "%s/%s", dirs[d], name) >= sizeof path) continue;
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return NULL;
+        struct sockaddr_un sa = {0};
+        sa.sun_family = AF_UNIX;
+        strcpy(sa.sun_path, path);
+        if (connect(fd, (struct sockaddr *)&sa, sizeof sa) == 0) {
+            PlatIpc *p = malloc(sizeof *p);
+            if (!p) {
+                close(fd);
+                return NULL;
+            }
+            p->fd = fd;
+            return p;
+        }
+        close(fd);   // nothing listens at this path: the next directory may have it
+    }
+    return NULL;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    struct pollfd pf = {.fd = p->fd, .events = POLLIN};
+    int r = poll(&pf, 1, (int)ms);
+    if (r <= 0) return r < 0 && errno != EINTR ? -1 : 0;
+    ssize_t got = recv(p->fd, buf, n, 0);
+    return got > 0 ? (int)got : -1;   // 0 bytes: the peer closed the socket
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        ssize_t put = send(p->fd, at, n, MSG_NOSIGNAL);   // a closed peer is an error, not a SIG_PIPE
+        if (put <= 0) {
+            if (put < 0 && errno == EINTR) continue;
+            return 0;
+        }
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    close(p->fd);
+    free(p);
+}
+
+
+// ---- restart
+// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and start time (field 22 of /proc/<pid>/stat,
+// clock ticks after boot): a process that has only reused the id is not waited for. Waiting keeps the new process off
+// the old one's files (the log it moves at start, the saves) until the old one is gone. The new process gets no
+// descriptor past stderr (glibc 2.34's closefrom file action), and the default signal mask and dispositions, whatever
+// the calling thread had.
+#define RESTART_WAIT "TOTK_RESTART_WAIT"
+
+// The start time of process pid (field 22 of its /proc stat line), 0 when it is gone.
+static unsigned long long process_start(int pid) {
+    char path[64], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char *p = strrchr(buf, ')');   // the command name may hold spaces
+    unsigned long long start = 0;
+    if (!p || sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %*d %*d %*d %*d %*d %*d %llu",
+                     &start) != 1)
+        return 0;
+    return start;
+}
+
+// glibc 2.34 added posix_spawn_file_actions_addclosefrom_np, and the release links against the Steam Runtime's 2.31: a
+// weak reference, used when the running glibc has it. Without it the child inherits the open descriptors.
+extern int posix_spawn_file_actions_addclosefrom_np(posix_spawn_file_actions_t *fa, int from) __attribute__((weak));
+
+static void spawn_close_from(posix_spawn_file_actions_t *fa, int from) {
+    if (posix_spawn_file_actions_addclosefrom_np) posix_spawn_file_actions_addclosefrom_np(fa, from);
+}
+
+int plat_restart(void) {
+    // the arguments, NUL-separated, from /proc/self/cmdline
+    static char args[16384];
+    char *argv[256];
+    int argc = 0;
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    size_t n = f ? fread(args, 1, sizeof args - 1, f) : 0;
+    if (f) fclose(f);
+    args[n] = 0;
+    for (size_t i = 0; i < n && argc < 255; i += strlen(args + i) + 1) argv[argc++] = args + i;
+    argv[argc] = NULL;
+    char exe[PATH_MAX], wait[64];
+    if (!argc || !plat_exe_path(exe, sizeof exe)) return 0;
+    snprintf(wait, sizeof wait, "%d.%llu", (int)getpid(), process_start((int)getpid()));
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    spawn_close_from(&fa, 3);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    setenv(RESTART_WAIT, wait, 1);
+    pid_t pid;
+    int e = posix_spawn(&pid, exe, &fa, &at, argv, environ);
+    unsetenv(RESTART_WAIT);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return e == 0;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    spawn_close_from(&fa, 3);
+    posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSID);
+    pid_t pid;
+    int e = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return e == 0;
+}
+
+int plat_restart_wait(uint32_t timeout_ms) {
+    const char *v = getenv(RESTART_WAIT);
+    if (!v) return 0;
+    int pid = 0;
+    unsigned long long start = 0;
+    int ok = sscanf(v, "%d.%llu", &pid, &start) == 2 && pid > 0 && start;
+    unsetenv(RESTART_WAIT);   // the processes this one starts do not wait again
+    if (!ok) return 0;
+    // The descriptor is taken first: a start time that still matches then proves it is that process, not a new one with
+    // the id. It reads as ready once the process has exited, reaped or not.
+    int fd = (int)syscall(SYS_pidfd_open, pid, 0);
+    if (fd < 0) return 0;   // already gone
+    int r = 0;
+    if (process_start(pid) == start) {
+        struct pollfd p = {fd, POLLIN, 0};
+        do r = poll(&p, 1, (int)timeout_ms);
+        while (r < 0 && errno == EINTR);
+        r = r > 0 ? 1 : -1;
+    }
+    close(fd);
+    return r;
 }

@@ -143,7 +143,10 @@ def romfs_verified(romfs, expected):
     index = romfs / 'index.json'
     if not index.is_file() or not (romfs / 'romfs.bin').is_file():
         return False
-    report = json.loads(index.read_text())
+    try:
+        report = json.loads(index.read_text())
+    except ValueError:   # damaged on disk (a flipped bit made it unreadable): extract again instead of failing the setup
+        return False
     return report.get('romfs_sha256') == expected['romfs']['sha256'] and report.get('romfs_size') == expected['romfs']['size']
 
 

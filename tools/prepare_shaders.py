@@ -18,6 +18,11 @@ shader-prepared.bin (one record per variant, in priority order) and builds every
 pipeline once, so the GPU driver's own disk cache holds them (vk_pipeline.c "stage library prebuild"). The seed files
 can be deleted afterwards.
 
+A driver whose shader compiler crashes on a variant crashes on it in every run (NVIDIA 615.78.08 on an RTX 5080, issue
+#30). The translations and shader-prepared.bin are written by then, and the journal the run leaves names the variants
+the driver was building (vk_pipeline.c skip_init), so only the driver step runs again (`totk.exe --warm-shaders`), up to
+RETRIES times, and skips them.
+
 Game-derived output stays in the build directory (ignored). The list is read at preparation time from tools/data/shader_list.tsv when that file exists (the installer archive
 bundles it; it stays out of the repository), else from refs/ through git with the rows its history dropped
 (tools/shader_list.py); nothing of it is copied into the repository. Needs Python 3.14 (compression.zstd), so run it in .venv-py314 or the embeddable 3.14:
@@ -54,6 +59,8 @@ TYPES = {'float': 0, 'sint': 1, 'uint': 2}
 DEFAULT = {'tex': {str(slot): '2d' for slot in range(32)}}   # answers outside a shader's use mask are dropped
 CONTROL = 0x880
 ANS_REC = 4 + 32 + 32 + 147 + 1
+JOURNAL = 'shader-prepare-journal.bin'   # vk_pipeline.c skip_init: a 64-byte slot per worker, input id first
+RETRIES = 3
 
 
 BUNDLED_LIST = ROOT / 'tools' / 'data' / 'shader_list.tsv'   # the installer archive carries a copy (no git, no refs/)
@@ -128,6 +135,13 @@ def code_hash(stage, control, code, length, c1):
                           struct.pack('<I', len(c1)) + c1).digest()
 
 
+def driver_crashed(out):
+    """totk died while the graphics driver built variants: the journal it left names at least one."""
+    p = out / JOURNAL
+    data = p.read_bytes() if p.is_file() else b''
+    return any(any(data[i:i + 32]) for i in range(0, len(data), 64))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('build', type=Path, help='build directory holding totk.exe (build\\v121)')
@@ -142,7 +156,7 @@ def main():
     extracted = ROOT / 'build' / 'extracted' / a.version
     listed = len(variants)
     shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)
-    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.1 holds 17,587 of its
+    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.0 holds 17,587 of its
     # 41,414 rows, so most rows are absent because the game does not have them, not because the walk missed them. A walk
     # that found next to nothing does say something: the shader directories have moved.
     if len(shaders) < max(64, listed // 20):
@@ -193,6 +207,12 @@ def main():
         return 0
     exe = out / ('totk.exe' if os.name == 'nt' else 'totk')
     r = subprocess.run([str(exe), '--prepare-shaders'], cwd=str(out))
+    for _ in range(RETRIES):
+        if not r.returncode or not driver_crashed(out):
+            break
+        print(f'prepare_shaders: the graphics driver crashed while building shaders (rc={r.returncode}); building them '
+              'again without the variants it was building (totk.exe --warm-shaders)', flush=True)
+        r = subprocess.run([str(exe), '--warm-shaders'], cwd=str(out))
     print(f'totk.exe --prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s')
     return r.returncode
 

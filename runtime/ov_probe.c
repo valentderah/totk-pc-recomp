@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "amiibo.h"
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
@@ -25,6 +26,7 @@
 
 #define CHILD_ENV "TOTK_PROBE_SERVICES_CHILD"
 #define TRY_WAIT_SYSTEM_EVENT "_ZN2nn2os18TryWaitSystemEventEPNS0_15SystemEventTypeE"
+#define DESTROY_SYSTEM_EVENT "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"
 
 typedef struct { const char *key, *name; int fatal; uint64_t addr; int bound, calls; } Ov;
 static Ov ovs[] = {
@@ -348,6 +350,13 @@ static int event_works(uint64_t ev, int autoclear) {
     return !before && after && again == !autoclear;
 }
 
+// A manual-clear system event an override signalled when binding it: set, and still set on a second wait.
+static int event_set(uint64_t ev) {
+    static uint64_t try_wait;
+    if (!try_wait && !(try_wait = ldr_symbol(TRY_WAIT_SYSTEM_EVENT))) rt_fatal("probe-services: no %s", TRY_WAIT_SYSTEM_EVENT);
+    return (uint8_t)rt_call(gc, try_wait, 1, ev) && (uint8_t)rt_call(gc, try_wait, 1, ev);
+}
+
 static void probe_applet(void) {
     uint8_t *report = guest_alloc(0x100);
     uint64_t uid[2] = {1, 2};
@@ -357,21 +366,65 @@ static void probe_applet(void) {
           "AddInternetConnectionStatus");
     CHECK(CALL("nfp.Initialize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 1, "nfp initialize");
     uint8_t handles[64];
-    int32_t count = 7;
-    CHECK((uint32_t)CALL("nfp.ListDevices", U(handles), U(&count), 4) == 0x8073 && count == 0, "nfp ListDevices");
+    int32_t count = 0;
+    CHECK((uint32_t)CALL("nfp.ListDevices", U(handles), U(&count), 4) == 0 && count == 1, "nfp ListDevices");
     uint64_t ev = U(guest_alloc(0x100));
     CHECK(CALL("nfp.AttachAvailabilityChangeEvent", ev) == 0, "AttachAvailabilityChangeEvent");
-    int nfp_event = event_works(ev, 0);
-    CHECK(nfp_event, "the nfp availability event does not work as a manual-clear system event");
+    // The emulated reader is there from the start (amiibo.c), so the availability event is set when it is attached.
+    int nfp_event = event_set(ev);
+    CHECK(nfp_event, "the nfp availability event is not set for the emulated reader, or clears itself");
     CHECK((uint32_t)CALL("nfp.GetDeviceState", U(handles)) == 0, "nfp device state");
-    static const char *const none[] = {"nfp.Mount", "nfp.GetNpadId", "nfp.AttachActivateEvent", "nfp.AttachDeactivateEvent",
-                                       "nfp.StartDetection", "nfp.StopDetection", "nfp.GetTagInfo", "nfp.GetModelInfo"};
+    static const char *const none[] = {"nfp.Mount", "nfp.GetTagInfo", "nfp.GetModelInfo"};
     uint8_t out[0x100];
     for (size_t i = 0; i < sizeof none / sizeof *none; i++) {
-        int first_is_handle = !strcmp(none[i], "nfp.Mount") || strstr(none[i], "Detection");
+        int first_is_handle = !strcmp(none[i], "nfp.Mount");
         uint64_t r = first_is_handle ? CALL(none[i], U(handles), 0, 0) : CALL(none[i], U(out), U(handles));
         CHECK((uint32_t)r == 0x8073, "%s: %#x, not device-not-found", none[i], (uint32_t)r);
     }
+    CHECK((uint32_t)CALL("nfp.GetNpadId", U(out), U(handles)) == 0, "nfp GetNpadId");
+    uint64_t activate = U(guest_alloc(0x100)), deactivate = U(guest_alloc(0x100));
+    CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent");
+    CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent");
+    CHECK(event_works(activate, 0), "the nfp activate event is set without an amiibo on the reader");
+    CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection");
+    CHECK((uint32_t)CALL("nfp.StopDetection", U(handles)) == 0, "nfp StopDetection");
+    // The game attaches again before each detection: DestroySystemEvent on the attached event, then Attach* on the
+    // same SystemEventType. Both events must work again afterwards.
+    static uint64_t destroy;
+    if (!destroy && !(destroy = ldr_symbol(DESTROY_SYSTEM_EVENT))) rt_fatal("probe-services: no %s", DESTROY_SYSTEM_EVENT);
+    rt_call(gc, destroy, 1, activate);
+    rt_call(gc, destroy, 1, deactivate);
+    CHECK(CALL("nfp.AttachActivateEvent", activate, U(handles)) == 0, "nfp AttachActivateEvent again");
+    CHECK(CALL("nfp.AttachDeactivateEvent", deactivate, U(handles)) == 0, "nfp AttachDeactivateEvent again");
+    int reattached = event_works(activate, 0) && event_works(deactivate, 0);
+    CHECK(reattached, "the nfp events do not work after DestroySystemEvent and a second Attach");
+    CHECK((uint32_t)CALL("nfp.StartDetection", U(handles)) == 0, "nfp StartDetection again");
+    // An amiibo's NTAG215 header: UID with its two check bytes, static lock 0F E0, capability container F1 10 FF EE.
+    // The loader takes it and refuses the same file with a plain NDEF container (E1).
+    static const uint8_t head[16] = {0x04, 0x11, 0x22, 0x88 ^ 0x04 ^ 0x11 ^ 0x22, 0x33, 0x44, 0x55, 0x66,
+                                     0x33 ^ 0x44 ^ 0x55 ^ 0x66, 0x48, 0x0F, 0xE0, 0xF1, 0x10, 0xFF, 0xEE};
+    uint8_t dump[AMIIBO_DUMP_SIZE] = {0};
+    memcpy(dump, head, sizeof head);
+    // Link (Archer): character 0x0100, variant 0, figure type 0, model number 0x0353, series 9, format 02
+    static const uint8_t id[8] = {0x01, 0x00, 0x00, 0x00, 0x03, 0x53, 0x09, 0x02};
+    memcpy(dump + 0x54, id, sizeof id);
+    const char *dump_path = "probe-amiibo.bin";
+    int amiibo_ok = plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    // TagInfo carries the 7-byte UID without its check byte; ModelInfo has the series at 3, the model number
+    // little-endian at 4 and the figure type at 6
+    uint8_t ti[0x58], mi[0x40];
+    amiibo_get_tag_info(ti);
+    amiibo_get_model_info(mi);
+    static const uint8_t want_uid[7] = {0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    static const uint8_t want_model[7] = {0x01, 0x00, 0x00, 0x09, 0x53, 0x03, 0x00};
+    CHECK(amiibo_ok && !memcmp(ti, want_uid, 7) && ti[0x0A] == 7, "amiibo TagInfo UID %02x %02x %02x %02x %02x %02x %02x",
+          ti[0], ti[1], ti[2], ti[3], ti[4], ti[5], ti[6]);
+    CHECK(amiibo_ok && !memcmp(mi, want_model, 7), "amiibo ModelInfo %02x %02x %02x %02x %02x %02x %02x", mi[0], mi[1],
+          mi[2], mi[3], mi[4], mi[5], mi[6]);
+    dump[0x0C] = 0xE1;
+    amiibo_ok = amiibo_ok && plat_file_write(dump_path, dump, sizeof dump) && !amiibo_load_file(dump_path);
+    plat_fs_unlink(dump_path);
+    CHECK(amiibo_ok, "the amiibo loader refuses a dump with the amiibo capability container, or takes a plain NDEF one");
     CHECK(CALL("nfp.Finalize", 0) == 0 && (uint32_t)CALL("nfp.GetState", 0) == 0, "nfp finalize");
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);
@@ -380,8 +433,9 @@ static void probe_applet(void) {
     CALL("err.InitializeContextWriterApi", 0);
     CALL("pctl.Initialize", 0);
     CALL("diag.InitializeApplicationAbortObserver", 0);
-    printf("applet/prepo/nfp/err: launch parameter none, volume balance, play reports local, no NFC device, "
-           "availability event (bound through the SDK's CreateSystemEvent) %s\n", nfp_event ? "ok" : "FAILED");
+    printf("applet/prepo/nfp/err: launch parameter none, volume balance, play reports local, an NFC reader without "
+           "an amiibo, availability event (bound through the SDK's CreateSystemEvent) %s, activate and deactivate events "
+           "destroyed and attached again %s\n", nfp_event ? "ok" : "FAILED", reattached ? "ok" : "FAILED");
 }
 
 static void probe_account(void) {
@@ -811,17 +865,23 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English and Russian text, the software keyboard keeps its
-// game-language rows, and menu_text follows TOTK_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
+// Chinese text, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
-    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko"};
+    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
+                                        "pt-BR"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
-        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id), "menu text id %d lacks en or ru", id);
-        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id), "menu text id %d is empty", id);
+        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
+              ui_text_defined("pt-BR", (UiTextId)id), "menu text id %d lacks en, ru or pt-BR", id);
+        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id) && *ui_text_in("pt-BR", (UiTextId)id),
+              "menu text id %d is empty", id);
         // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set)
         CHECK(strlen(ui_text_in("en", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
-              strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES, "menu text id %d is too long for the "
-              "description pane", id);
+              strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("pt-BR", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES,
+              "menu text id %d is too long for the description pane", id);
+        CHECK(ui_text_defined("zh-Hans", (UiTextId)id), "menu text id %d lacks Simplified Chinese", id);
     }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
     // other languages fall back to English for the menu, and keep their own keyboard texts
@@ -829,22 +889,49 @@ static void probe_menu_text(void) {
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_KO; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
+    // game language list: pt-BR only where the build ships USpt; the Switch variants are entries of their own
+    {
+        UiGameLang gl[16];
+        int n121 = ui_text_game_langs(121, gl, 16), has[16] = {0};
+        for (int i = 0; i < n121; i++) CHECK(strcmp(gl[i].code, "pt-BR"), "1.2.1 game language list offers pt-BR");
+        int n143 = ui_text_game_langs(143, gl, 16), pt = 0;
+        for (int i = 0; i < n143; i++) {
+            pt |= !strcmp(gl[i].code, "pt-BR");
+            for (int j = 0; j < i; j++) CHECK(strcmp(gl[i].code, gl[j].code), "duplicate game language %s", gl[i].code);
+        }
+        CHECK(pt && n143 == n121 + 1, "1.4.3 game language list lacks pt-BR");
+        static const char *const want[] = {"en-GB", "fr-CA", "es-419"};
+        for (int w = 0; w < 3; w++)
+            for (int i = 0; i < n143; i++) has[w] |= !strcmp(gl[i].code, want[w]);
+        CHECK(has[0] && has[1] && has[2], "game language list lacks en-GB, fr-CA or es-419");
+    }
     // the overlay formats keep their conversions
-    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
+    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("ru", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("ru", UI_MENU_OV_LOW01), "%.0f"),
           "overlay format lost its conversion");
+    CHECK(strstr(ui_text_in("pt-BR", UI_MENU_OV_GAME_PCT), "%.0f%%") &&
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("zh-Hans", UI_MENU_OV_LOW01), "%.0f"), "pt-BR overlay format lost its conversion");
+    // a Brazilian game language gets the Brazilian keyboard row, Portugal's Portuguese keeps its own
+    CHECK(!strcmp(ui_text_lang("pt-BR"), "pt-BR") && !strcmp(ui_text_lang("pt"), "pt") &&
+          strcmp(ui_text_in("pt-BR", UI_SWKBD_PROMPT), ui_text_in("pt", UI_SWKBD_PROMPT)), "pt-BR keyboard row not used");
     // menu_text follows the setting live
     cfg_set("TOTK_MENU_LANG", "ru");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
+    cfg_set("TOTK_MENU_LANG", "pt-BR");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("pt-BR", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=pt-BR");
     cfg_set("TOTK_MENU_LANG", "en");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
+    cfg_set("TOTK_MENU_LANG", "zh-Hans");
+    CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "menu_text ignores MENU_LANG=zh-Hans");
     cfg_set("TOTK_MENU_LANG", "");
-    const char *sys = plat_ui_language();
-    int ru = !strncmp(sys, "ru", 2);
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(ru ? "ru" : "en", UI_MENU_CONTINUE), "menu_text auto ignores the system language");
+    const char *sys_lang = ui_text_lang(plat_ui_language());
+    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang : "en";
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
 }
 
 static void probe_main(Cpu *c) {

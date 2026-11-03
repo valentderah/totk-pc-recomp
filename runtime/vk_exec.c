@@ -27,6 +27,7 @@
 #include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_dlaa.h"
 
 #define WEAK __attribute__((weak))
 #define CALL_DEPTH 8
@@ -345,6 +346,7 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
     }
     o->image = img->image;
     o->img = img;
+    o->scale = img->scale ? img->scale : 1;
     o->format = fmt;
     o->view_type = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     o->aspect = depth_slot ? img->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
@@ -380,7 +382,7 @@ static void resolve_rt(VkExec *ex) {
     ex->rt_resolved = 1;
     const p_set_rt *r = &ex->rt;
     int n = r->n < 0 ? 0 : r->n > 8 ? 8 : r->n;
-    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0;
+    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0, scale = 1;
     for (int i = 0; i < 8; i++) {
         VkExecTarget *t = &ex->color[i];
         resolve_target(i < n ? r->color[i] : NULL, &r->cview[i], i < n && r->has_cview[i], 0, t);
@@ -391,6 +393,7 @@ static void resolve_rt(VkExec *ex) {
         if (t->height < h) h = t->height;
         if (t->layers < layers) layers = t->layers;
         if (!samples) samples = t->samples;
+        if (t->scale > scale) scale = t->scale;
     }
     VkExecTarget *d = &ex->depth;
     resolve_target(r->depth, &r->dview, r->has_dview, 1, d);
@@ -402,6 +405,7 @@ static void resolve_rt(VkExec *ex) {
         if (d->height < h) h = d->height;
         if (d->layers < layers) layers = d->layers;
         if (!samples) samples = d->samples;
+        if (d->scale > scale) scale = d->scale;
     }
     ex->pass_noatt = w == UINT32_MAX;
     if (ex->pass_noatt) {
@@ -413,6 +417,7 @@ static void resolve_rt(VkExec *ex) {
                              ex->vp[0][1], ex->vp[0][2], ex->vp[0][3]);
     }
     ex->pass_w = w, ex->pass_h = h, ex->pass_layers = layers;
+    ex->pass_scale = ex->pass_noatt ? 1 : scale;
     ex->pass_ncolor = (uint32_t)n;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
@@ -571,6 +576,8 @@ void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
     resolve_rt(ex);
+    vk_contact_pass_begin(ex);
+    vk_dlaa_pass(ex);   // DLAA runs before the bloom chain's first pass (vk_dlaa.c)
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
     VkImage want[9];
     VkImageAspectFlags wasp[9];
@@ -605,6 +612,20 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) da = a;
         if (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = a;
     }
+    // The start mark goes between the barrier and vkCmdBeginRendering, its end right after vkCmdEndRendering
+    // (vk_exec_pass_end): outside the pass, and without breaking it.
+    VkPassMark *m = ex->mark = vk_pass_mark_begin(ex->cb, VK_MARK_PASS, ex->fence);
+    if (m) {
+        m->step = ex->mark_passes++;
+        m->w = ex->pass_w, m->h = ex->pass_h, m->d = ex->pass_layers;
+        m->ncolor = (uint8_t)(ex->pass_ncolor < 8 ? ex->pass_ncolor : 8);
+        for (int i = 0; i < m->ncolor; i++) m->color[i] = ex->pass_color[i];
+        m->depth = ex->pass_depth ? ex->pass_depth : ex->pass_stencil;
+        // The shaders bound now are the first draw's when it repeats the pipeline state; when it does not,
+        // vk_exec_draw.c prepare_draw replaces them as it records the new state.
+        vk_exec_draw_shaders(&m->first[0], &m->first[1]);
+        ex->mark_draws0 = vk_exec_frame.draws;
+    }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
                           .layerCount = ex->pass_layers, .colorAttachmentCount = ex->pass_ncolor,
                           .pColorAttachments = ca,
@@ -622,6 +643,14 @@ void vk_exec_pass_end(VkExec *ex) {
     vkCmdEndRendering(ex->cb);
     ex->recorded++;
     ex->in_pass = 0;
+    if (ex->mark) {
+        // vk_exec_frame_log resets the frame counters at a present (TOTK_TRACE=gfx): then only the draws since it count
+        uint64_t d = vk_exec_frame.draws, d0 = ex->mark_draws0;
+        ex->mark->draws = (uint32_t)(d >= d0 ? d - d0 : d);
+        if (ex->mark->draws) vk_exec_draw_shaders(&ex->mark->last[0], &ex->mark->last[1]);
+        vk_pass_mark_end(ex->cb, ex->mark);
+        ex->mark = NULL;
+    }
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
@@ -667,8 +696,9 @@ VkBuffer vk_exec_inline_buffer(VkDeviceSize size) {
 VkRect2D vk_exec_scissor(const VkExec *ex) {
     int64_t w = ex->pass_w, h = ex->pass_h;
     if (!ex->has_scissor) return (VkRect2D){{0, 0}, {(uint32_t)w, (uint32_t)h}};
-    int64_t x0 = ex->scissor.x, y0 = ex->scissor.y;
-    int64_t x1 = x0 + ex->scissor.w, y1 = y0 + ex->scissor.h;
+    int64_t k = ex->pass_scale > 1 ? ex->pass_scale : 1;
+    int64_t x0 = ex->scissor.x * k, y0 = ex->scissor.y * k;
+    int64_t x1 = x0 + (int64_t)ex->scissor.w * k, y1 = y0 + (int64_t)ex->scissor.h * k;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > w) x1 = w;
@@ -893,6 +923,8 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->fence = fence;
     ex->recorded = 0;
     ex->in_pass = 0;
+    ex->mark = NULL;
+    ex->mark_passes = ex->mark_dispatches = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;
     ex->rt_resolved = 0;   // images may have changed since the last command buffer
     ex->nviews = 0;

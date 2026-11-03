@@ -17,9 +17,11 @@ first (rpath $ORIGIN). docs/building.md lists the packages.
 
 Every runtime/*.c is compiled. build/<version>/modules.c carries the layout, the linked function tables, the
 expected SHA-256 of each ExeFS file (tools/data/expected-<display version>.json) and the default game paths
-(--exefs, --romfs, --profile), which totk.exe uses unless its own command line names others. tools/romfs_index.py
-writes build/<version>/romfs-index.bin and romfs_config.h from the RomFS directory's index.json (runtime/romfs.c reads
-the index next to totk.exe).
+(--exefs, --romfs, --profile), which totk.exe uses unless its own command line names others. --exefs and --romfs
+default to extracted/<version> in the work folder: the [work] dir of config.local.toml, where tools/extract.py writes
+them, else build/. tools/romfs_index.py writes build/<version>/romfs-index.bin and romfs_config.h from the RomFS
+directory's index.json (runtime/romfs.c reads the index next to totk.exe). Without that index.json the build stops:
+the exe would stop at start. --no-romfs builds it anyway.
 
 Private builds reuse the main build's objects. When --out differs from build/<version>, the main build's generated
 objects are up to date (checked with a dry run of its build.ninja) and every header they include from runtime/ is
@@ -66,6 +68,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+import check_isa
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -92,16 +95,27 @@ NINJA = UCRT / 'ninja.exe' if WIN else on_path('ninja')
 SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll'] if WIN else []
 
 # Flags for generated code as LAS Recomp builds it (Makefile GENFLAGS, Windows), plus -march for the FP/SIMD lowering.
+# --cpu v2 replaces the level for CPUs without AVX2/FMA; runtime/fma.c then supplies the correctly rounded fma the
+# lowering needs (runtime/simd.h).
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+
+
+def set_cpu(cpu):
+    """Target x86-64-v3 (the default) or x86-64-v2. RT_CPU_LEVEL lets runtime/main.c's self-test check the same
+    instruction set the build was compiled for."""
+    march = f'-march=x86-64-{cpu}'
+    GEN_FLAGS[GEN_FLAGS.index('-march=x86-64-v3')] = march
+    RT_FLAGS[RT_FLAGS.index('-march=x86-64-v3')] = march
+    RT_FLAGS.append(f'-DRT_CPU_LEVEL={3 if cpu == "v3" else 2}')
 if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
     RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
     # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
     LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/totk.map"']   # the map feeds tools/prof_report.py
-    LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
+    LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
     VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
 else:
     # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
@@ -137,7 +151,7 @@ def vma_include():
 
 
 # --toolchain: an llvm-mingw tree. The libraries, headers and DLLs MSYS2 supplies come from the deps directory instead.
-LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lvulkan-1', '-lSDL3', '-lopus',
+LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lvulkan-1', '-lSDL3', '-lopus',
                   '-l:libvpx.a', '-l:libzstd.a', '-l:libc++.a', '-l:libc++abi.a', '-l:libunwind.a', '-l:libwinpthread.a']
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
@@ -150,7 +164,7 @@ WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v111': '1.1.1', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v110': '1.1.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -227,9 +241,10 @@ def write_if_changed(path, text):
 def copy_romfs_patches(version, out):
     """totk.exe loads romfs-patches beside romfs-index.bin (runtime/romfs.c overlay_init). tools/make_romfs_patches.py
     writes them into build/<version> only, so a build in another directory ran without the 60 fps overlay (the quick
-    menus' captured background turned black). Copies them when their manifest differs; romfs-patches-xbox (the same with
-    the A/B and X/Y prompts swapped, pad_layout = xbox_prompts) the same way when it was made."""
-    for name in ('romfs-patches', 'romfs-patches-xbox'):
+    menus' captured background turned black). Copies them when their manifest differs; romfs-patches-xbox and
+    romfs-patches-xbox-label (the same with Xbox button prompts, make_romfs_patches.py --prompts) the same way when they
+    were made."""
+    for name in ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label'):
         src = ROOT / 'build' / version / name
         dst = out / name
         if src.resolve() == dst.resolve() or not (src / 'manifest.tsv').is_file():
@@ -239,6 +254,16 @@ def copy_romfs_patches(version, out):
         shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(src, dst)
         print(f'romfs patches: copied {name} from {src}')
+
+
+def work_dir():
+    """The work folder: the [work] dir of config.local.toml (relative to the checkout), where tools/extract.py writes
+    extracted/; build/ without the file or the key."""
+    cfg = ROOT / 'config.local.toml'
+    if not cfg.is_file():
+        return ROOT / 'build'
+    import tomllib
+    return ROOT / tomllib.loads(cfg.read_text(encoding='utf-8')).get('work', {}).get('dir', 'build')
 
 
 def c_string(s):
@@ -691,6 +716,16 @@ def elf_sections(path):
     return out, hi - (lo or 0)
 
 
+def objdump_tool():
+    """The disassembler for tools/check_isa.py: llvm-objdump of --toolchain, else MSYS2's or the one on PATH."""
+    suffix = '.exe' if WIN else ''
+    for d in (TOOLCHAIN_BIN, UCRT if WIN else None):
+        for name in ('llvm-objdump', 'objdump'):
+            if d and (d / (name + suffix)).is_file():
+                return str(d / (name + suffix))
+    return check_isa.find_objdump()
+
+
 def mib(n):
     return f'{n / (1 << 20):,.1f} MiB'
 
@@ -698,6 +733,8 @@ def mib(n):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--version', default='v121', help='game version (default v121)')
+    ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
+                    help='target CPU level: v3 (AVX2/FMA, default) or v2 (SSE4.2, for older CPUs; slower)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')
     ap.add_argument('--modules', help='comma-separated subset of the layout modules (default all)')
@@ -710,9 +747,12 @@ def main():
                     help='comma-separated runtime/*.c names to leave out (the link needs another definition of what they '
                          'define)')
     ap.add_argument('--exefs', type=Path,
-                    help="totk.exe's default ExeFS directory (default build/extracted/<version>/exefs)")
+                    help="totk.exe's default ExeFS directory (default <work dir>/extracted/<version>/exefs, the work "
+                         "dir being the [work] dir of config.local.toml, else build)")
     ap.add_argument('--romfs', type=Path, help="totk.exe's default RomFS directory with romfs.bin and index.json "
-                                               '(default build/extracted/<version>/romfs)')
+                                               '(default <work dir>/extracted/<version>/romfs)')
+    ap.add_argument('--no-romfs', action='store_true',
+                    help='build even when the RomFS directory has no index.json (the exe then stops at start)')
     ap.add_argument('--profile', type=Path, help="totk.exe's default profile directory (default build/profile for v121, "
                                                  "build/profile-<version> otherwise, so trying another version leaves "
                                                  "the main profile alone; saves load on 1.2.1 and 1.4.3 alike)")
@@ -732,14 +772,20 @@ def main():
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
+    set_cpu(args.cpu)
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
     out = (args.out or ROOT / 'build' / args.version).resolve()
-    extracted = ROOT / 'build' / 'extracted' / args.version
+    extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
              'profile': (args.profile or ROOT / 'build' / ('profile' if args.version == 'v121'
                                                            else f'profile-{args.version}')).resolve()}
+    has_romfs = (paths['romfs'] / 'index.json').is_file()
+    if not (has_romfs or args.no_romfs or args.make_runtime_lib or args.compile_only):
+        sys.exit(f'{paths["romfs"] / "index.json"} not found: without the RomFS the game stops at start. Run '
+                 'tools/extract.py (it writes extracted/<version> into the [work] dir of config.local.toml), pass '
+                 '--romfs DIR, or --no-romfs to build without it')
     expected = args.expected
     if not expected:
         if args.version not in DISPLAY_VERSIONS:
@@ -786,7 +832,8 @@ def main():
     if unknown:
         sys.exit(f'unknown modules {unknown}; the layout has {names}')
     linked = [m for m in names if m in wanted]
-    mods = {m: chunk_files(gen, m) for m in linked}
+    # --make-runtime-lib builds runtime/ only, so it never reads the generated chunks
+    mods = {} if args.make_runtime_lib else {m: chunk_files(gen, m) for m in linked}
 
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
@@ -795,7 +842,7 @@ def main():
     if missing:
         sys.exit(f'{expected}: no exefs_sha256 for {missing}')
     write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
-    if (paths['romfs'] / 'index.json').is_file():
+    if has_romfs:
         count, size, dt = romfs_index.write(paths['romfs'], out)
         print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
     else:
@@ -850,6 +897,12 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    if args.cpu == 'v2':
+        # Inline assembly, target attributes and intrinsics pass -march=x86-64-v2 by; one vmovdqa of a YMM register
+        # stops a CPU without AVX (tools/check_isa.py)
+        fail = check_isa.check_objects(objs['runtime'], objdump_tool(), out / 'obj' / 'runtime' / 'isa-v2.json')
+        if fail:
+            sys.exit(f'build_game: {fail}')
     if args.compile_only:
         return
     if args.make_runtime_lib:

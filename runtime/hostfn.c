@@ -121,7 +121,7 @@ __attribute__((noinline, noreturn, cold)) static void bad_entry(Cpu *c) {
 }
 
 // kern_host_track: the call counted in the thread's host depth. Not a tail call, so the host stack holds this frame
-// while fn runs; longjmp out of fn (ExitThread) leaves the depth raised on a thread that ends.
+// while fn runs; the jump out of fn (ExitThread) leaves the depth raised on a thread that ends.
 __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
     void *t = c->thread;
     int *d = kern_host_depth(t);

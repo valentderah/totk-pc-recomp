@@ -6,9 +6,10 @@ from it may be shared.
 
 ## What you need
 
-- Windows 10 or later, an x86-64 CPU with AVX2, about 60 GB free.
+- Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA recommended: they build the default, faster version), about
+  60 GB free.
 - A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
-- *Tears of the Kingdom* base game (1.0.0) and the 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
+- *Tears of the Kingdom* base game (1.0.0) and the 1.1.0, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 
 ## Build
@@ -38,6 +39,10 @@ build\<ver>\totk.exe
 `TOTK_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
 do one run with it and one without (`set TOTK_VK_VALIDATION=`).
 
+If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
+`vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
+`set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
+
 The game keeps running behind other windows (`assume_focus = 0` in `totk.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.
 Play into the open field (load a save, walk around for a minute, fight something if you can), then close the window.
@@ -50,6 +55,13 @@ A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the t
 - `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
 
 The line `vk: using gpu N: <name>` says which one ran.
+
+## Mods
+
+Mods and cheats made for the emulators go into `mods/` next to `totk.exe`, one folder per mod. [mods.md](mods.md) covers
+installing them, their order, code patches, what does not work and what to check when something looks wrong;
+[cheats.md](cheats.md) covers cheat files. The log names every mod at the start (`mods: <name>: ...`); when you
+report a problem with mods, list them with their download links.
 
 ## What to send back
 

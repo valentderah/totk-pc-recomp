@@ -33,7 +33,10 @@ typedef struct VkCtx {
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
-        has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
+        has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
+        has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
+        has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
+        has_hdr_metadata;                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -85,6 +88,45 @@ void vk_crumbs_release(void);
 void vk_crumb(VkCommandBuffer cb, int kind, uint64_t n);
 void vk_crumbs_report(void);         // logs the two codes and what they name
 
+// ---- pass marks (vk_crumbs.c): the replay (vk_exec.c vk_exec_pass_begin / vk_exec_pass_end, vk_exec_draw.c
+// op_dispatch) marks where each render pass and dispatch starts and where it ends, so that a device loss names the
+// pass the GPU was in. A mark is a number; a ring of VK_PASS_MARKS records keeps what it was. With
+// VK_AMD_buffer_marker the GPU writes the number of the last mark it started (TOP_OF_PIPE, before vkCmdBeginRendering
+// or the dispatch) and of the last it finished (BOTTOM_OF_PIPE, after vkCmdEndRendering or the dispatch) into the
+// breadcrumb buffer; with VK_NV_device_diagnostic_checkpoints the same two points are checkpoints, read with
+// vkGetQueueCheckpointData(2)NV after the loss. TOTK_PASS_CRUMBS: unset, AMD buffer marks only; 1, also NVIDIA
+// checkpoints (the extension is enabled at device creation); 0, none.
+#define VK_PASS_MARKS 4096   // power of two
+enum { VK_MARK_PASS = 1, VK_MARK_DISPATCH };
+typedef struct {
+    uint32_t id;                        // the mark this record belongs to (0: never written)
+    uint8_t kind;                       // VK_MARK_*
+    uint8_t ncolor;                     // colour attachments
+    uint32_t step;                      // index of the pass, or of the dispatch, within its submission, from 0
+    uint32_t w, h, d;                   // render area and layers; a dispatch: group counts (0 0 0: indirect)
+    uint32_t draws;                     // draws recorded in the pass; UINT32_MAX until its end is recorded
+    uint64_t fence;                     // the submission: the timeline value it signals
+    VkFormat color[8], depth;           // attachment formats (VK_FORMAT_UNDEFINED: none)
+    const GfxShader *first[2], *last[2];// vertex and fragment shader of the first and last draw; a dispatch: first[0]
+} VkPassMark;
+// Pass marks wanted and possible (TOTK_PASS_CRUMBS and the extensions): set by vk_crumbs_init.
+extern int vk_pass_marks_on;
+// vk_device.c create_device, before vkCreateDevice: 1 when TOTK_PASS_CRUMBS asks for NVIDIA checkpoints.
+int vk_pass_marks_want_nv(void);
+// The next mark: records its start into cb (through the recorder thread when it owns cb) and returns its ring record,
+// id, kind and fence set, for the caller to fill. NULL when pass marks are off. Replay thread only.
+VkPassMark *vk_pass_mark_begin(VkCommandBuffer cb, int kind, uint64_t fence);
+void vk_pass_mark_end(VkCommandBuffer cb, const VkPassMark *m);   // records the end of mark m into cb
+// The recorder thread's side of both (vk_rec.c): the marker and checkpoint commands themselves.
+void vk_pass_mark_cmd(VkCommandBuffer cb, uint32_t id, int end);
+// AMD only: the last mark the GPU started and the last it finished (0: none); 0 without buffer marks.
+int vk_pass_marks_read(uint32_t *started, uint32_t *finished);
+const VkPassMark *vk_pass_mark_record(uint32_t id);   // the ring record of mark id; NULL once a later mark took its slot
+// The report's text for a started and a finished mark, three lines without a trailing newline: which marks (source:
+// the extension they came from), then each with its ring record. vk_pass_marks_report logs it; the probe checks it.
+void vk_pass_marks_format(const char *source, uint32_t started, uint32_t finished, char *o, size_t size);
+void vk_pass_marks_report(void);    // vk_device_fault_report: the AMD words and the NVIDIA checkpoints, formatted
+
 // ---- window and present (gfx_present.c). Host threads only.
 // vk_present_image: blits the crop rectangle {x, y, w, h} of src (NULL, or w/h <= 0: the whole w x h image), scaled
 // to the swapchain extent, into the acquired swapchain image and presents it. src is in layout, which is
@@ -107,6 +149,26 @@ void vk_fsr_release(void);   // before the device goes away
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 void vk_color_release(void);   // before the device goes away
+// HDR output (vk_hdr.c). vk_hdr_wanted: TOTK_HDR, read once. vk_hdr_surface_format: the HDR10 surface format when wanted
+// and offered (1). vk_hdr_set_active: gfx_present.c says whether the swapchain is HDR10 (vk_hdr_active). vk_hdr_encode:
+// like vk_color_record, src's crop as PQ code values (RGBA16F, crop {0, 0, w, h}). vk_hdr_ui_target / vk_hdr_ui_compose:
+// the in-game menu's RGBA8 target, then blended onto the swapchain image. vk_hdr_to_srgb8: 10-bit PQ pixels to sRGB bytes.
+int vk_hdr_wanted(void);
+void vk_hdr_off(void);   // probes that read back 8-bit swapchain pixels: SDR whatever the setting
+int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceFormatKHR *out);
+void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc);
+void vk_hdr_set_active(int on);
+int vk_hdr_active(void);
+VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
+VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
+void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
+void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
+void vk_hdr_release(void);   // before the device goes away
+// The support buffer's HDR parameters (vk_exec_draw.c support_fill, read by shaders/hdr_tonemap.frag).
+void vk_hdr_support(float out[4]);
+// vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
+int vk_contact_strength(void);   // percent, 0 = off
+void vk_contact_release(void);   // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -193,9 +255,20 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
+const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy of [addr, addr+n) as of the submit, NULL: none
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
+// vk_mvprev.c: last frame's copy of the scene's object (c7) and bone (c5) blocks, for per-object motion vectors.
+// vk_mvprev_step: the distance of the game's other copy of a vertex-stage block the snapshot also copies, 0: none.
+// vk_mvprev_find: last frame's block of that object (prev, its address; how, MVPREV_*), 0: none.
+enum { MVPREV_NONE, MVPREV_SELF, MVPREV_SIDE, MVPREV_NEARER };
+uint64_t vk_mvprev_step(int stage, int index, uint64_t size);
+int vk_mvprev_on(void);
+void vk_mvprev_want(uint32_t index_mask);   // also keep these binding indices' last-frame copies (bit n: index n)   // DLAA on and TOTK_DLAA_OBJMV not 0, as of the last present
+int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int *how);
+void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
@@ -302,7 +375,14 @@ typedef struct {
     uint8_t fb_usage;              // created with ATTACHMENT_FEEDBACK_LOOP usage (VK_FEEDBACK_LAYOUT, attachable images)
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
+    uint8_t scale;                 // 1, or TOTK_SHADOW_SCALE for a shadow map made larger than the game's (vk_texture.c
+                                   // shadow_scale_of): width and height above are the larger ones, the game's regions
+                                   // are multiplied by it
 } VkTexImage;
+// The window texture the backend presents (vk_backend.c): *image and *format become the float picture the game copied
+// into it, when the last draw into it was that copy and the swapchain is HDR10.
+void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
+void vk_hdr_image_gone(VkImage image);
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
@@ -321,6 +401,7 @@ uint32_t vk_texture_slots_gen(void);
 // its storage address is created, dropped, released or taken back into use. Unlocked; read it before the lookup it
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
+void vk_sampler_dlss_bias(float bias);           // texture LOD bias added for DLSS upscaling (material samplers)
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission

@@ -199,6 +199,69 @@ void plat_fiber_free(PlatFiber *f) {
     free(f);
 }
 
+// plat_jmp_save / plat_jmp_go: PlatJmp holds rbx, rbp, rdi, rsi, r12-r15, the caller's rsp and the return address at
+// 0..72, MXCSR at 80, the x87 control word at 84 and xmm6-xmm15 from 96, the Win64 callee-saved state. Both are leaf
+// code that does not move rsp before it leaves, so they need no unwind data.
+_Static_assert(sizeof(PlatJmp) == 256 && __builtin_offsetof(PlatJmp, xmm) == 96, "plat_jmp_save layout");
+__asm__(".text\n"
+        ".globl plat_jmp_save\n"
+        ".def plat_jmp_save; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "plat_jmp_save:\n"
+        "    movq %rbx, 0(%rcx)\n"
+        "    movq %rbp, 8(%rcx)\n"
+        "    movq %rdi, 16(%rcx)\n"
+        "    movq %rsi, 24(%rcx)\n"
+        "    movq %r12, 32(%rcx)\n"
+        "    movq %r13, 40(%rcx)\n"
+        "    movq %r14, 48(%rcx)\n"
+        "    movq %r15, 56(%rcx)\n"
+        "    leaq 8(%rsp), %rdx\n"   // the caller's rsp after this call returns
+        "    movq %rdx, 64(%rcx)\n"
+        "    movq (%rsp), %rdx\n"
+        "    movq %rdx, 72(%rcx)\n"
+        "    stmxcsr 80(%rcx)\n"
+        "    fnstcw 84(%rcx)\n"
+        "    movdqu %xmm6, 96(%rcx)\n"
+        "    movdqu %xmm7, 112(%rcx)\n"
+        "    movdqu %xmm8, 128(%rcx)\n"
+        "    movdqu %xmm9, 144(%rcx)\n"
+        "    movdqu %xmm10, 160(%rcx)\n"
+        "    movdqu %xmm11, 176(%rcx)\n"
+        "    movdqu %xmm12, 192(%rcx)\n"
+        "    movdqu %xmm13, 208(%rcx)\n"
+        "    movdqu %xmm14, 224(%rcx)\n"
+        "    movdqu %xmm15, 240(%rcx)\n"
+        "    xorl %eax, %eax\n"
+        "    ret\n"
+        ".globl plat_jmp_go\n"
+        ".def plat_jmp_go; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "plat_jmp_go:\n"
+        "    movq 0(%rcx), %rbx\n"
+        "    movq 8(%rcx), %rbp\n"
+        "    movq 16(%rcx), %rdi\n"
+        "    movq 24(%rcx), %rsi\n"
+        "    movq 32(%rcx), %r12\n"
+        "    movq 40(%rcx), %r13\n"
+        "    movq 48(%rcx), %r14\n"
+        "    movq 56(%rcx), %r15\n"
+        "    ldmxcsr 80(%rcx)\n"
+        "    fldcw 84(%rcx)\n"
+        "    movdqu 96(%rcx), %xmm6\n"
+        "    movdqu 112(%rcx), %xmm7\n"
+        "    movdqu 128(%rcx), %xmm8\n"
+        "    movdqu 144(%rcx), %xmm9\n"
+        "    movdqu 160(%rcx), %xmm10\n"
+        "    movdqu 176(%rcx), %xmm11\n"
+        "    movdqu 192(%rcx), %xmm12\n"
+        "    movdqu 208(%rcx), %xmm13\n"
+        "    movdqu 224(%rcx), %xmm14\n"
+        "    movdqu 240(%rcx), %xmm15\n"
+        "    movq 64(%rcx), %rsp\n"
+        "    movl $1, %eax\n"
+        "    jmpq *72(%rcx)\n");
+
 int plat_thread_spawn(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = plat_thread_new_ex(fn, arg, name, stack);
     if (t) plat_thread_detach(t);
@@ -602,6 +665,76 @@ __attribute__((noinline)) static void crash_from_runtime(const char *what, uint3
     crash_fn(&c);
 }
 
+// The name a DLL records for itself in its export directory ("amdvlk64.dll"). Read from its mapped headers, not through
+// the loader, whose lock another thread may hold when the process crashes.
+static const char *image_name(const char *base) {
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(base + ((const IMAGE_DOS_HEADER *)base)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY *d = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!d->VirtualAddress || !d->Size) return "unnamed module";
+    return base + ((const IMAGE_EXPORT_DIRECTORY *)(base + d->VirtualAddress))->Name;
+}
+
+// The return addresses in [lo, lo + size) on the crashed thread's stack, innermost first: unwinds the faulting context
+// with the x64 unwind tables; a function without a table entry (a leaf, or address 0 after a call through a null
+// pointer) has its return address on top of the stack. The walk stops at return address 0 (the thread's first frame)
+// and when the stack pointer leaves the thread's stack, so a damaged stack ends it instead of faulting.
+static int frames_in(const CONTEXT *at, uintptr_t lo, uintptr_t size, uintptr_t *out, int max) {
+    CONTEXT c = *at;
+    ULONG_PTR low, high;
+    GetCurrentThreadStackLimits(&low, &high);
+    int n = 0;
+    for (int i = 0; i < 256 && n < max && (c.Rip || !i) && c.Rsp >= low && c.Rsp + 8 <= high; i++) {
+        DWORD64 img;
+        RUNTIME_FUNCTION *fe = RtlLookupFunctionEntry(c.Rip, &img, NULL);
+        if (fe) {
+            void *data;
+            DWORD64 frame;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, img, c.Rip, fe, &c, &data, &frame, NULL);
+        } else {
+            c.Rip = *(const DWORD64 *)c.Rsp;
+            c.Rsp += 8;
+        }
+        if (c.Rip - lo < size) out[n++] = (uintptr_t)c.Rip;
+    }
+    return n;
+}
+
+// The last-chance filter: an exception no handler took, in any module. crash_veh reports faults in this executable as
+// they happen; this one catches the rest, which used to end the process with no line in the log: a fault in a GPU
+// driver's own thread or in a driver call (vkQueueSubmit, vkAllocateMemory), a C++ exception a library let escape, a
+// call through a null pointer (rip 0, outside every module). Windows calls it only after every handler declined, so
+// the exceptions drivers raise and catch themselves never get here; it costs nothing until a crash.
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    DWORD code = er->ExceptionCode;
+    uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
+    PlatCrash c = {code == EXCEPTION_ACCESS_VIOLATION        ? "access violation"
+                   : code == EXCEPTION_ILLEGAL_INSTRUCTION   ? "illegal instruction"
+                   : code == EXCEPTION_INT_DIVIDE_BY_ZERO    ? "integer division by zero"
+                   : code == EXCEPTION_PRIV_INSTRUCTION      ? "privileged instruction"
+                   : code == EXCEPTION_STACK_OVERFLOW        ? "stack overflow"
+                   : code == EXCEPTION_IN_PAGE_ERROR         ? "in-page error"
+                   : code == EXCEPTION_BREAKPOINT            ? "breakpoint"
+                   : code == 0xe06d7363u                     ? "C++ exception"
+                   : code == 0xc0000374u                     ? "heap corruption"   // STATUS_HEAP_CORRUPTION
+                                                             : "unhandled exception",
+                   (uint32_t)code, rip, 0, -1, 0};
+    if (code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
+        c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
+    void *base = NULL;
+    RtlPcToFileHeader((void *)rip, &base);
+    MODULEINFO mi;
+    uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
+    c.offset = rip - (uintptr_t)base;
+    if (!base) c.module = "";
+    else if ((uintptr_t)base != exe) c.module = image_name(base);
+    if (c.module && GetModuleInformation(GetCurrentProcess(), (HMODULE)exe, &mi, sizeof mi))
+        c.nframes = frames_in(ep->ContextRecord, exe, mi.SizeOfImage, c.frames,
+                              (int)(sizeof c.frames / sizeof *c.frames));
+    crash_fn(&c);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static void abort_signal(int sig) { crash_from_runtime("abort", (uint32_t)sig); }
 
 static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wchar_t *file, unsigned line,
@@ -613,6 +746,7 @@ static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wc
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     AddVectoredExceptionHandler(0, crash_veh);
+    SetUnhandledExceptionFilter(crash_filter);   // replaces the C runtime's filter; crash_fn never returns
     signal(SIGABRT, abort_signal);
     _set_invalid_parameter_handler(invalid_parameter);
 }
@@ -803,7 +937,11 @@ const void *plat_file_map(PlatFile *f) {
     return v;
 }
 
+static __thread DWORD fs_last_error;
+int plat_fs_os_error(void) { return (int)fs_last_error; }
+
 static int fs_err(DWORD e) {
+    fs_last_error = e;
     switch (e) {
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_DIRECTORY: return PLAT_FS_NOT_FOUND;
     case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return PLAT_FS_EXISTS;
@@ -813,12 +951,28 @@ static int fs_err(DWORD e) {
     }
 }
 
+// A symbolic link or junction is a link: removed as a link, never followed. Any other reparse point (OneDrive's cloud
+// placeholders, deduplicated files) is an ordinary file or directory whose content the file system fetches on access.
+static int fs_kind_of(const WIN32_FIND_DATAW *fd) {
+    DWORD a = fd->dwFileAttributes;
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT && (fd->dwReserved0 == IO_REPARSE_TAG_SYMLINK || fd->dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT))
+        return PLAT_FS_LINK;
+    return a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+}
+
 int plat_fs_kind(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return PLAT_FS_MISSING;
     DWORD a = GetFileAttributesW(w);
     if (a == INVALID_FILE_ATTRIBUTES) return PLAT_FS_MISSING;
-    return a & FILE_ATTRIBUTE_REPARSE_POINT ? PLAT_FS_LINK : a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT)) return a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR : PLAT_FS_FILE;
+    // the reparse tag comes with the find data only; FindFirstFileW is asked only here, since it fails on a path
+    // with a trailing separator and reads wildcards
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(w, &fd);
+    if (h == INVALID_HANDLE_VALUE) return PLAT_FS_LINK;
+    FindClose(h);
+    return fs_kind_of(&fd);
 }
 
 int plat_fs_mkdir(const char *path) {
@@ -830,7 +984,15 @@ int plat_fs_mkdir(const char *path) {
 int plat_fs_rmdir(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return PLAT_FS_ERROR;
-    return RemoveDirectoryW(w) ? PLAT_FS_OK : fs_err(GetLastError());
+    if (RemoveDirectoryW(w)) return PLAT_FS_OK;
+    DWORD e = GetLastError(), a = GetFileAttributesW(w);
+    if (e == ERROR_ACCESS_DENIED && a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY)) {
+        // a read-only directory (copied over from another emulator's save folder) refuses RemoveDirectoryW
+        SetFileAttributesW(w, a & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+        if (RemoveDirectoryW(w)) return PLAT_FS_OK;
+        e = GetLastError();
+    }
+    return fs_err(e);
 }
 
 int plat_fs_unlink(const char *path) {
@@ -975,9 +1137,7 @@ int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
         char name[1024];
         if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) continue;
-        DWORD a = fd.dwFileAttributes;
-        int kind = a & FILE_ATTRIBUTE_REPARSE_POINT ? PLAT_FS_LINK : a & FILE_ATTRIBUTE_DIRECTORY ? PLAT_FS_DIR
-                                                                                                   : PLAT_FS_FILE;
+        int kind = fs_kind_of(&fd);
         if (!cb(name, kind, (uint64_t)fd.nFileSizeHigh << 32 | fd.nFileSizeLow, ctx)) break;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -1126,6 +1286,11 @@ int plat_os_version(char *out, size_t cap) {
     snprintf(out, cap, ubr ? "Windows %lu.%lu.%lu.%lu" : "Windows %lu.%lu.%lu", v.dwMajorVersion, v.dwMinorVersion,
              v.dwBuildNumber, ubr);
     return 1;
+}
+
+int plat_is_wine(void) {
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    return nt && GetProcAddress(nt, "wine_get_version") != NULL;
 }
 
 int plat_stderr_path(char *out, size_t cap) {
@@ -1457,4 +1622,140 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     DWORD got = 0;
     if (!ReadFile(c->out, buf, (DWORD)cap, &got, NULL)) return -1;
     return (long)got;
+}
+
+// ---- local IPC (platform.h): Discord's Rich Presence named pipe
+struct PlatIpc { HANDLE h; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    wchar_t wname[128], path[152];
+    if (!widen(name, wname, 128)) return NULL;
+    swprintf(path, 152, L"\\\\.\\pipe\\%ls", wname);
+    HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;   // no listener, or the pipe is busy: the caller retries later
+    PlatIpc *p = malloc(sizeof *p);
+    if (!p) {
+        CloseHandle(h);
+        return NULL;
+    }
+    p->h = h;
+    return p;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    uint64_t deadline = plat_now_ms() + ms;
+    for (;;) {
+        DWORD have = 0;
+        if (!PeekNamedPipe(p->h, NULL, 0, NULL, &have, NULL)) return -1;   // the writer closed the pipe
+        if (have) {
+            DWORD got = 0;
+            if (!ReadFile(p->h, buf, have < n ? have : (DWORD)n, &got, NULL) || !got) return -1;
+            return (int)got;
+        }
+        if (plat_now_ms() >= deadline) return 0;
+        plat_sleep_ms(5);
+    }
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        DWORD put = 0;
+        if (!WriteFile(p->h, at, n > (1u << 30) ? 1u << 30 : (DWORD)n, &put, NULL) || !put) return 0;
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    CloseHandle(p->h);
+    free(p);
+}
+
+
+// ---- restart
+// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
+// reused the id is not waited for. Waiting keeps the new process off the old one's files (the log it moves at start,
+// the saves) until the old one is gone; no handle is inherited, so none of them stays open in the new one either.
+#define RESTART_WAIT "TOTK_RESTART_WAIT"
+
+static uint64_t process_created(HANDLE h) {
+    FILETIME c, e, k, u;
+    return GetProcessTimes(h, &c, &e, &k, &u) ? ft64(c) : 0;
+}
+
+int plat_restart(void) {
+    char wait[48];
+    snprintf(wait, sizeof wait, "%lu.%llu", GetCurrentProcessId(), (unsigned long long)process_created(GetCurrentProcess()));
+    plat_setenv(RESTART_WAIT, wait);
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    wchar_t *cmd = _wcsdup(GetCommandLineW());   // CreateProcessW may write its command line
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(cmd);
+    plat_setenv(RESTART_WAIT, NULL);
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
+}
+
+// One argument of a command line as CommandLineToArgvW reads it back: in quotes, a backslash run doubled before a quote
+// and at the end, a quote escaped.
+static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
+#define PUT(c) do { if (at + 1 < cap) out[at] = (c); at++; } while (0)
+    PUT(L'"');
+    for (const wchar_t *p = a;; p++) {
+        size_t slashes = 0;
+        while (*p == L'\\') p++, slashes++;
+        size_t times = !*p || *p == L'"' ? 2 : 1;
+        for (size_t k = 0; k < slashes * times; k++) PUT(L'\\');
+        if (!*p) break;
+        if (*p == L'"') PUT(L'\\');
+        PUT(*p);
+    }
+    PUT(L'"');
+    PUT(L' ');
+#undef PUT
+    return at;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    enum { CMD = 32768 };
+    wchar_t *cmd = calloc(CMD, sizeof *cmd), *arg = malloc(WPATH * sizeof *arg), *dir = malloc(WPATH * sizeof *dir);
+    int ok = cmd && arg && dir && argv[0] && widen(cwd, dir, WPATH);
+    size_t at = 0;
+    for (int i = 0; ok && argv[i]; i++) {
+        ok = widen(argv[i], arg, WPATH);
+        if (ok) at = quote_arg(arg, cmd, CMD, at);
+    }
+    ok = ok && at < CMD && at > 0;
+    if (ok) cmd[at - 1] = 0;   // the last separator
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    ok = ok && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, dir, &si,
+                              &pi);
+    if (ok) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    free(cmd);
+    free(arg);
+    free(dir);
+    return ok;
+}
+
+int plat_restart_wait(uint32_t timeout_ms) {
+    char v[48];
+    if (!plat_getenv(RESTART_WAIT, v, sizeof v)) return 0;
+    plat_setenv(RESTART_WAIT, NULL);   // the processes this one starts do not wait again
+    unsigned long pid = 0;
+    unsigned long long created = 0;
+    if (sscanf(v, "%lu.%llu", &pid, &created) != 2) return 0;
+    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return 0;   // already gone
+    int r = process_created(h) != created ? 0 : WaitForSingleObject(h, timeout_ms) == WAIT_OBJECT_0 ? 1 : -1;
+    CloseHandle(h);
+    return r;
 }

@@ -1,0 +1,94 @@
+name: Other bug
+description: Sound, controls, the settings menu, the installer, or game logic.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the pinned issues at the top of the issue list first. Crashes, graphics glitches and performance have their own templates.
+
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this bug.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Audio
+        - Controls and input
+        - Settings menu and overlay
+        - Installer
+        - Game logic and physics
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3". For the installer, the version of TotK-Setup.
+    validations:
+      required: true
+  - type: input
+    id: last-good
+    attributes:
+      label: Last version that worked
+      description: If an earlier version did this correctly, which one.
+  - type: textarea
+    id: system
+    attributes:
+      label: System info
+      description: Paste what Copy system info (F1, Advanced tab) puts on the clipboard. On a Steam Deck, add LCD or OLED. For the installer, write your OS and the install disk.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods and cheats
+      description: The folders in mods/ with their download links, or "none". Say whether it also happens without them.
+    validations:
+      required: true
+  - type: dropdown
+    id: blocker
+    attributes:
+      label: Can you keep playing?
+      options:
+        - "Yes"
+        - "No, it stops the game or a quest"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened and how to reproduce it
+      description: What you expected, what happened instead, and the steps that lead there.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### What to attach for your area
+
+        Close the game with Quit game in the menu or the window's close button, then copy `logs\totk.log` from the folder of `totk.exe` before you start the game again.
+
+        **Audio.** Open `totk.ini` in the folder of `totk.exe` and add the line `trace = audio`; when the file already has `trace = perf` (Performance log on), change it to `trace = perf,audio`. Start the game, play at least two minutes where the sound goes wrong and close the game. The log then has an `audio:` line every 5 s with the buffer underruns. Name the output device and how it is connected (speakers, headphones, USB, Bluetooth, HDMI), and attach a short video with sound if you can. Remove the line afterwards.
+
+        **Controls and input.** Name the controller and how it is connected (USB, Bluetooth, Steam Input). Does it also happen with keyboard and mouse?
+
+        **Controls, game logic, anything you can trigger again.** Turn on Input recording (F1, Advanced tab, Diagnostics), restart the game, load a save, make the bug happen and close the game. Attach `input-record.txt` from the logs folder and a zip of the save you loaded: the `profile` folder next to `totk.exe`. The recording replays what you did, so we can see the bug on our machine.
+
+        **Installer.** Attach the newest `install-*.log` from `temp\logs` in the folder of `TotK-Setup.exe` (on Linux: `.setup-temp/logs` in the install folder), and the log file the error message names.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log and other files
+      description: Drag totk.log and the files your area asks for into this field.
+    validations:
+      required: true

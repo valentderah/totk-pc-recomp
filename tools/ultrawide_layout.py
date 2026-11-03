@@ -22,6 +22,25 @@ FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72}
 KEEP_ROOT = {'AppMenuBG_00', 'PauseMenuBG_00', 'ShopMenuParasailBG_00', 'ShortCutBG_00', 'TitleMenuBG_00', 'EventFade_00',
              'EventFadeWipe_00', 'CameraShutter_00', 'PaAppPictureBookDetail_00', 'AppMenuOverlay_00'}
 
+# Layouts whose markers the game places over a point in the world (the lock-on arrow, the name of the item or character
+# in front of Link, enemy life bars and notices, speech balloons): the code moves a pane under the root to the target's
+# projected position in the 1920x1080 grid, which spans the whole canvas. Under a scaled root that position would be
+# scaled too, so the marker lands short of its target, toward the middle of the screen (at half the distance on 32:9).
+# Their root keeps scale 1 and the scale goes one level down instead, to the panes listed here: ones the code does not
+# move and no animation scales, so the markers keep their 16:9 proportions.
+MARKER_ROOT = {
+    'AttentionBalloon_00': ('C_Capture_00', 'N_InOut_00'),       # N_PosRoot_00 moves; N_InOut_00 animates y and alpha
+    'AttentionLockOn_00': ('N_Offset_00',),                       # N_PosRoot_00 moves; N_Offset_00 animates y
+    'EnemyInfo_00': ('Pa_EnemyLife_00', 'Pa_EnemyNotice_00'),     # the parts move; N_EnemyLifeArea_* stay screen-sized
+    'BalloonMessage_00': (),   # the speech balloon part is pooled: its scale goes inside, see BALLOON_PART
+}
+
+# Speech balloons are pooled: the game clones Pa_BalloonMessage_00 into Pa_BalloonMessage_%02d at run time, and the clones
+# don't keep a scale set on the template part pane, so they drew at full canvas width. The scale goes on the part
+# layout's top panes instead (their offset scaled with them, so they sit where a scaled root would put them); its
+# animations only key alpha, visibility and N_Loop_00's y. (pane, x, y) as shipped.
+BALLOON_PART = (('C_CaptureBase_00', 226.0, 20.0), ('N_InOut_00', 30.0, -10.0))
+
 def edits(k, hud_corner):
     """(layout, pane, field, value) for the aspect: k = 16/9 over the aspect (the root's scale), w = how far a 1920-wide
     layout's edge moves out in its own units (960 * (1 / k - 1)). OFF moves a pane out of sight."""
@@ -54,6 +73,8 @@ def edits(k, hud_corner):
         ('PaRecipeCardList_00', 'P_BG_00', 'scale_x', wide),
         ('SaveLoadIcon_00', 'RootPane', 'x', -960 * (1 - k)),
         ('ShopMenu_00', 'N_BG_00', 'scale_x', wide), ('StaffRoll_00', 'N_BG_00', 'scale_x', wide),
+        *[e for pane, x, _ in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_x', k),
+                                                      ('PaBalloonMessage_00', pane, 'x', x * k))],
     ]
     # Menus framed by two side decorations, a header and a background: the frame stays at the screen's edges.
     for layout, deco in (('PauseMenuOverlay_00', 'P_Deco{}_00'), ('SystemLoadList_00', 'P_Deco{}_00'),
@@ -104,7 +125,9 @@ def tall_edits(k):
            *[('CameraPointer_00', p, 'scale_y', tall) for p in ('N_InOutScope_00', 'Pa_CameraFocus_00', 'S_Scissor_00',
                                                                  'W_Shadow_01')],
            ('CameraSystemWindow_00', 'N_InOut_00', 'scale_y', tall), ('MessageLog_01', 'P_Capture_00', 'scale_y', tall),
-           *[(layout, 'N_SystemBG_00', 'scale_y', tall) for layout in ('SystemActionGuide_00',) + SYSTEM_MENUS]]
+           *[(layout, 'N_SystemBG_00', 'scale_y', tall) for layout in ('SystemActionGuide_00',) + SYSTEM_MENUS],
+           *[e for pane, _, y in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_y', k),
+                                                         ('PaBalloonMessage_00', pane, 'y', y * k))]]
     # The HUD at the screen's top and bottom edges instead of the middle 16:9
     out += [(name, 'RootPane', 'y', 540 * (1 - k)) for name in (
         'AppAlbum_00', 'AppPictureBook_00', 'ChallengeLog_00', 'Challenge_00', 'InstantTipsWithPict_00', 'InstantTips_00',
@@ -222,8 +245,8 @@ def apply(blarc, members, width, height, hud_corner=True):
     assert k < 1, 'only for canvases of another shape than 16:9'
     root_scale = 'scale_x' if wide else 'scale_y'
     changed, layouts = set(), {}
-    unknown = sorted(n for n in KEEP_ROOT if f'blyt/{n}.bflyt' not in members)
-    if unknown: raise SystemExit(f'KEEP_ROOT names no layout: {unknown}')
+    unknown = sorted(n for n in KEEP_ROOT | MARKER_ROOT.keys() if f'blyt/{n}.bflyt' not in members)
+    if unknown: raise SystemExit(f'KEEP_ROOT or MARKER_ROOT names no layout: {unknown}')
     def pane_offset(layout, pane):
         member = f'blyt/{layout}.bflyt'
         if member not in members: raise SystemExit(f'{layout}: no layout {member} in the archive')
@@ -232,6 +255,14 @@ def apply(blarc, members, width, height, hud_corner=True):
         return find_pane(layouts[member], layout, pane)
     for member in sorted(m for m in members if m.startswith('blyt/') and m.endswith('.bflyt')):
         if member[5:-6] in KEEP_ROOT: continue
+        if member[5:-6] in MARKER_ROOT:   # the root stays at 1, its listed panes take the scale
+            layout = member[5:-6]
+            for pane in ('RootPane',) + MARKER_ROOT[layout]:
+                at = pane_offset(layout, pane) + FIELD[root_scale]
+                have = struct.unpack_from('<f', blarc, at)[0]
+                if abs(have - 1.0) > 1e-3: raise SystemExit(f'{layout} {pane} {root_scale}: {have}, expected 1.0')
+                if pane != 'RootPane': struct.pack_into('<f', blarc, at, k)
+            continue
         at = pane_offset(member[5:-6], 'RootPane') + FIELD[root_scale]
         have = struct.unpack_from('<f', blarc, at)[0]
         if abs(have - 1.0) > 1e-3: raise SystemExit(f'{member[5:-6]} RootPane {root_scale}: {have}, expected 1.0')

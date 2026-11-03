@@ -1,0 +1,108 @@
+name: Performance
+description: Low frame rate, freezes, hitches, stutter or long loading.
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the pinned issues at the top of the issue list first.
+
+        Shaders the setup did not prepare are built the first time they are needed, so a short hitch the first time an area or effect shows is expected. Report it when it happens again in the same place.
+
+        Do not attach or link game files, keys, firmware or builds. Issues that do are closed.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Existing issues
+      options:
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/valentderah/totk-pc-recomp/issues?q=is%3Aissue) for this problem.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3".
+    validations:
+      required: true
+  - type: input
+    id: last-good
+    attributes:
+      label: Last version that ran better
+      description: If an earlier version was faster in the same place, which one.
+  - type: textarea
+    id: system
+    attributes:
+      label: System info
+      description: Paste what Copy system info (F1, Advanced tab) puts on the clipboard. It lists the settings you changed too. On a Steam Deck, add LCD or OLED.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: machine
+    attributes:
+      label: Machine
+      options:
+        - Desktop PC
+        - Laptop, on mains power
+        - Laptop, on battery
+        - Steam Deck
+        - Other handheld PC
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods and cheats
+      description: The folders in mods/ with their download links, or "none".
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - The frame rate is low all the time
+        - Short freezes or hitches that come back in the same place
+        - The frame rate is fine, but motion is not smooth
+        - It gets slower the longer I play
+        - Loading takes long
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where and what you were doing
+      description: For example "Lookout Landing, walking to the tower", "the Depths below Hyrule Castle", "fighting a Talus in the Sky". How long into the session it started.
+    validations:
+      required: true
+  - type: textarea
+    id: overlay
+    attributes:
+      label: Performance overlay
+      description: Press F10 twice (or both stick clicks) for the full panel. Stay a minute in the place and write down the frame rate, the mean and the longest frame time, or attach a screenshot of the panel.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### Recording the log
+
+        1. In the settings menu (F1), Advanced tab, Diagnostics: turn on Performance log. For freezes and hitches, also turn on Flight recorder. Restart the game: both take effect at the next start.
+        2. Play at least three minutes in the place where it happens. The log gets a frame-time summary every 60 s, and a line for every frame over 50 ms that names what the frame waited for.
+        3. With the flight recorder on, press F8 right after a hitch. It also saves on its own after every frame longer than the freeze threshold (100 ms), at most once per 10 s.
+        4. Close the game with Quit game in the menu or the window's close button. Do not end it from Task Manager: the last summary is written when the game exits.
+        5. Copy `logs\totk.log` from the folder of `totk.exe` before you start the game again.
+        6. Each flight recorder save is a folder; the log line `flight: dump` names it. Zip the folders and attach them.
+        7. Turn both off again afterwards: they cost a little frame time.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Drag totk.log into this field.
+    validations:
+      required: true
+  - type: textarea
+    id: flight
+    attributes:
+      label: Flight recorder saves
+      description: Drag the zipped folders into this field, for freezes and hitches.

@@ -8,10 +8,6 @@
 // Cpu. The SDK's nn::os runs as lifted code; only the kernel under it is the host. Every wait hangs on one global lock
 // G with one condition variable per thread; wake order is the kernel's: lower priority value first, then first come.
 // Semantics follow the public Horizon kernel (KConditionVariable, KAddressArbiter, KSynchronization).
-#ifdef _WIN32
-#define __USE_MINGW_SETJMP_NON_SEH   // setjmp(b) = _setjmp(b, NULL): longjmp restores registers, no SEH unwinding
-#endif
-#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,7 +73,7 @@ struct RtThread {
     uint64_t cseq;
     RtThread *cnext;
     uint8_t *tlr, *tls;
-    jmp_buf exit_jmp;          // the thread start; ExitThread longjmps to it
+    PlatJmp exit_jmp;          // the thread start; ExitThread jumps back to it
     // fibers
     PlatFiber *base_fiber;     // the host thread as a host fiber, after the first switch
     Fiber *fiber;              // current guest fiber, NULL on the thread's own context
@@ -296,7 +292,13 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
 // and gives it up only where Horizon would switch threads (waits, sleep, yield, exit, blocking host calls); a free
 // core goes to the best waiting thread. A waiter better than a holder asks one holder to give its core up (core_kick),
 // which it does at its next SVC or indirect call (kern_checkpoint, rt_dispatch), as Horizon runs the better thread at
-// once; guest code without either keeps the core until it reaches one. TOTK_FREE_CORES=1 turns the gate off.
+// once; guest code without either keeps the core until it reaches one.
+//
+// free_cores = 1 (TOTK_FREE_CORES) turns the gate off, for experiments only: the game does not run that way. A thread
+// that holds no core reports its ideal core to GetCurrentProcessorNumber, so the game's job workers all report core 0
+// and run its per-core code at once: on 1.2.1 two of them add the same per-core NVN control memory, which retires the
+// command handle the other just recorded, and CallCommands finds no recording at start (#212); 1.4.3 corrupts a heap
+// in main+0x82e00 or hangs at the title menu. The start log and every crash report say so (kern_free_cores_note).
 static RtThread *g_core_owner[NCORE], *g_core_wait;
 static int g_cores_on = -1, g_held_max;
 
@@ -307,12 +309,19 @@ static int cores_enabled(void) {
     if (g_cores_on < 0) {
         g_cores_on = !cfg_bool("TOTK_FREE_CORES");   // "0" keeps the gate, like unset
         if (!g_cores_on)
-            rt_log("kernel: virtual core gate off (TOTK_FREE_CORES): guest threads run without the limit of one per "
-                   "core that the game's per-core data needs; for experiments only, the game can fail");
+            rt_log("kernel: WARNING: free_cores = 1 (TOTK_FREE_CORES) turns the virtual core gate off. This is an "
+                   "experimental mode and the game crashes or hangs in it, usually at start. Set free_cores = 0 in "
+                   "totk.ini to play");
         diag_init();
         ap_init();
     }
     return g_cores_on;
+}
+
+void kern_free_cores_note(void) {
+    if (!g_cores_on)
+        rt_log("fatal: free_cores = 1 was on: the game crashes in this experimental mode; set free_cores = 0 in "
+               "totk.ini before reporting this crash");
 }
 
 static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
@@ -406,6 +415,18 @@ static int ap_disabled(const RtThread *t) { return g_ap > 0 && ap_tlr(t)[0]; }
 // in kern_ap_yield and jumps back to kern_ap_rip(), whose value it first stores in the return slot it reserved at
 // entry, so a stack walk sees the interrupted function as its caller. No ret: the jump keeps call/return pairs
 // balanced. The waiter never writes the owner's stack.
+// An x86-64-v2 build (no __AVX__) saves XMM0-15 with SSE moves into the same 32-byte slots instead: its game code
+// keeps nothing in the upper YMM halves, and the CPUs it is for have no VEX encoding, so a vmovdqa there faults with
+// an illegal instruction the first time a core is interrupted.
+#ifdef __AVX__
+#define AP_VMOV "vmovdqa"
+#define AP_V "%ymm"
+#define AP_VZEROUPPER "    vzeroupper\n"
+#else
+#define AP_VMOV "movdqa"
+#define AP_V "%xmm"
+#define AP_VZEROUPPER ""
+#endif
 #ifdef _WIN32
 __asm__(".text\n"
         ".globl kern_ap_stub\n"
@@ -437,48 +458,48 @@ __asm__(".text\n"
         ".seh_setframe %rbp, 0\n"
         ".seh_endprologue\n"
         "    andq $-32, %rsp\n"
-        "    subq $576, %rsp\n"   // 0: shadow space, 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15
-        "    vmovdqa %ymm0, 64(%rsp)\n"
-        "    vmovdqa %ymm1, 96(%rsp)\n"
-        "    vmovdqa %ymm2, 128(%rsp)\n"
-        "    vmovdqa %ymm3, 160(%rsp)\n"
-        "    vmovdqa %ymm4, 192(%rsp)\n"
-        "    vmovdqa %ymm5, 224(%rsp)\n"
-        "    vmovdqa %ymm6, 256(%rsp)\n"
-        "    vmovdqa %ymm7, 288(%rsp)\n"
-        "    vmovdqa %ymm8, 320(%rsp)\n"
-        "    vmovdqa %ymm9, 352(%rsp)\n"
-        "    vmovdqa %ymm10, 384(%rsp)\n"
-        "    vmovdqa %ymm11, 416(%rsp)\n"
-        "    vmovdqa %ymm12, 448(%rsp)\n"
-        "    vmovdqa %ymm13, 480(%rsp)\n"
-        "    vmovdqa %ymm14, 512(%rsp)\n"
-        "    vmovdqa %ymm15, 544(%rsp)\n"
+        "    subq $576, %rsp\n"   // 0: shadow space, 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15 (XMM0-15 without AVX)
+        "    " AP_VMOV " " AP_V "0, 64(%rsp)\n"
+        "    " AP_VMOV " " AP_V "1, 96(%rsp)\n"
+        "    " AP_VMOV " " AP_V "2, 128(%rsp)\n"
+        "    " AP_VMOV " " AP_V "3, 160(%rsp)\n"
+        "    " AP_VMOV " " AP_V "4, 192(%rsp)\n"
+        "    " AP_VMOV " " AP_V "5, 224(%rsp)\n"
+        "    " AP_VMOV " " AP_V "6, 256(%rsp)\n"
+        "    " AP_VMOV " " AP_V "7, 288(%rsp)\n"
+        "    " AP_VMOV " " AP_V "8, 320(%rsp)\n"
+        "    " AP_VMOV " " AP_V "9, 352(%rsp)\n"
+        "    " AP_VMOV " " AP_V "10, 384(%rsp)\n"
+        "    " AP_VMOV " " AP_V "11, 416(%rsp)\n"
+        "    " AP_VMOV " " AP_V "12, 448(%rsp)\n"
+        "    " AP_VMOV " " AP_V "13, 480(%rsp)\n"
+        "    " AP_VMOV " " AP_V "14, 512(%rsp)\n"
+        "    " AP_VMOV " " AP_V "15, 544(%rsp)\n"
         "    stmxcsr 32(%rsp)\n"
         "    movl $0x1f80, 36(%rsp)\n"
         "    ldmxcsr 36(%rsp)\n"
         "    cld\n"
-        "    vzeroupper\n"
+        AP_VZEROUPPER
         "    call kern_ap_rip\n"
         "    movq %rax, 72(%rbp)\n"   // the return slot: rbp + 8 pushes + pushfq
         "    call kern_ap_yield\n"
         "    ldmxcsr 32(%rsp)\n"
-        "    vmovdqa 64(%rsp), %ymm0\n"
-        "    vmovdqa 96(%rsp), %ymm1\n"
-        "    vmovdqa 128(%rsp), %ymm2\n"
-        "    vmovdqa 160(%rsp), %ymm3\n"
-        "    vmovdqa 192(%rsp), %ymm4\n"
-        "    vmovdqa 224(%rsp), %ymm5\n"
-        "    vmovdqa 256(%rsp), %ymm6\n"
-        "    vmovdqa 288(%rsp), %ymm7\n"
-        "    vmovdqa 320(%rsp), %ymm8\n"
-        "    vmovdqa 352(%rsp), %ymm9\n"
-        "    vmovdqa 384(%rsp), %ymm10\n"
-        "    vmovdqa 416(%rsp), %ymm11\n"
-        "    vmovdqa 448(%rsp), %ymm12\n"
-        "    vmovdqa 480(%rsp), %ymm13\n"
-        "    vmovdqa 512(%rsp), %ymm14\n"
-        "    vmovdqa 544(%rsp), %ymm15\n"
+        "    " AP_VMOV " 64(%rsp), " AP_V "0\n"
+        "    " AP_VMOV " 96(%rsp), " AP_V "1\n"
+        "    " AP_VMOV " 128(%rsp), " AP_V "2\n"
+        "    " AP_VMOV " 160(%rsp), " AP_V "3\n"
+        "    " AP_VMOV " 192(%rsp), " AP_V "4\n"
+        "    " AP_VMOV " 224(%rsp), " AP_V "5\n"
+        "    " AP_VMOV " 256(%rsp), " AP_V "6\n"
+        "    " AP_VMOV " 288(%rsp), " AP_V "7\n"
+        "    " AP_VMOV " 320(%rsp), " AP_V "8\n"
+        "    " AP_VMOV " 352(%rsp), " AP_V "9\n"
+        "    " AP_VMOV " 384(%rsp), " AP_V "10\n"
+        "    " AP_VMOV " 416(%rsp), " AP_V "11\n"
+        "    " AP_VMOV " 448(%rsp), " AP_V "12\n"
+        "    " AP_VMOV " 480(%rsp), " AP_V "13\n"
+        "    " AP_VMOV " 512(%rsp), " AP_V "14\n"
+        "    " AP_VMOV " 544(%rsp), " AP_V "15\n"
         "    movq %rbp, %rsp\n"
         "    popq %rbp\n"
         "    popq %r11\n"
@@ -516,48 +537,48 @@ __asm__(".text\n"
         "    pushq %rbp\n"
         "    movq %rsp, %rbp\n"
         "    andq $-32, %rsp\n"
-        "    subq $576, %rsp\n"   // 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15
-        "    vmovdqa %ymm0, 64(%rsp)\n"
-        "    vmovdqa %ymm1, 96(%rsp)\n"
-        "    vmovdqa %ymm2, 128(%rsp)\n"
-        "    vmovdqa %ymm3, 160(%rsp)\n"
-        "    vmovdqa %ymm4, 192(%rsp)\n"
-        "    vmovdqa %ymm5, 224(%rsp)\n"
-        "    vmovdqa %ymm6, 256(%rsp)\n"
-        "    vmovdqa %ymm7, 288(%rsp)\n"
-        "    vmovdqa %ymm8, 320(%rsp)\n"
-        "    vmovdqa %ymm9, 352(%rsp)\n"
-        "    vmovdqa %ymm10, 384(%rsp)\n"
-        "    vmovdqa %ymm11, 416(%rsp)\n"
-        "    vmovdqa %ymm12, 448(%rsp)\n"
-        "    vmovdqa %ymm13, 480(%rsp)\n"
-        "    vmovdqa %ymm14, 512(%rsp)\n"
-        "    vmovdqa %ymm15, 544(%rsp)\n"
+        "    subq $576, %rsp\n"   // 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15 (XMM0-15 without AVX)
+        "    " AP_VMOV " " AP_V "0, 64(%rsp)\n"
+        "    " AP_VMOV " " AP_V "1, 96(%rsp)\n"
+        "    " AP_VMOV " " AP_V "2, 128(%rsp)\n"
+        "    " AP_VMOV " " AP_V "3, 160(%rsp)\n"
+        "    " AP_VMOV " " AP_V "4, 192(%rsp)\n"
+        "    " AP_VMOV " " AP_V "5, 224(%rsp)\n"
+        "    " AP_VMOV " " AP_V "6, 256(%rsp)\n"
+        "    " AP_VMOV " " AP_V "7, 288(%rsp)\n"
+        "    " AP_VMOV " " AP_V "8, 320(%rsp)\n"
+        "    " AP_VMOV " " AP_V "9, 352(%rsp)\n"
+        "    " AP_VMOV " " AP_V "10, 384(%rsp)\n"
+        "    " AP_VMOV " " AP_V "11, 416(%rsp)\n"
+        "    " AP_VMOV " " AP_V "12, 448(%rsp)\n"
+        "    " AP_VMOV " " AP_V "13, 480(%rsp)\n"
+        "    " AP_VMOV " " AP_V "14, 512(%rsp)\n"
+        "    " AP_VMOV " " AP_V "15, 544(%rsp)\n"
         "    stmxcsr 32(%rsp)\n"
         "    movl $0x1f80, 36(%rsp)\n"
         "    ldmxcsr 36(%rsp)\n"
         "    cld\n"
-        "    vzeroupper\n"
+        AP_VZEROUPPER
         "    call kern_ap_rip\n"
         "    movq %rax, 88(%rbp)\n"   // the return slot: rbp + 10 pushes + pushfq
         "    call kern_ap_yield\n"
         "    ldmxcsr 32(%rsp)\n"
-        "    vmovdqa 64(%rsp), %ymm0\n"
-        "    vmovdqa 96(%rsp), %ymm1\n"
-        "    vmovdqa 128(%rsp), %ymm2\n"
-        "    vmovdqa 160(%rsp), %ymm3\n"
-        "    vmovdqa 192(%rsp), %ymm4\n"
-        "    vmovdqa 224(%rsp), %ymm5\n"
-        "    vmovdqa 256(%rsp), %ymm6\n"
-        "    vmovdqa 288(%rsp), %ymm7\n"
-        "    vmovdqa 320(%rsp), %ymm8\n"
-        "    vmovdqa 352(%rsp), %ymm9\n"
-        "    vmovdqa 384(%rsp), %ymm10\n"
-        "    vmovdqa 416(%rsp), %ymm11\n"
-        "    vmovdqa 448(%rsp), %ymm12\n"
-        "    vmovdqa 480(%rsp), %ymm13\n"
-        "    vmovdqa 512(%rsp), %ymm14\n"
-        "    vmovdqa 544(%rsp), %ymm15\n"
+        "    " AP_VMOV " 64(%rsp), " AP_V "0\n"
+        "    " AP_VMOV " 96(%rsp), " AP_V "1\n"
+        "    " AP_VMOV " 128(%rsp), " AP_V "2\n"
+        "    " AP_VMOV " 160(%rsp), " AP_V "3\n"
+        "    " AP_VMOV " 192(%rsp), " AP_V "4\n"
+        "    " AP_VMOV " 224(%rsp), " AP_V "5\n"
+        "    " AP_VMOV " 256(%rsp), " AP_V "6\n"
+        "    " AP_VMOV " 288(%rsp), " AP_V "7\n"
+        "    " AP_VMOV " 320(%rsp), " AP_V "8\n"
+        "    " AP_VMOV " 352(%rsp), " AP_V "9\n"
+        "    " AP_VMOV " 384(%rsp), " AP_V "10\n"
+        "    " AP_VMOV " 416(%rsp), " AP_V "11\n"
+        "    " AP_VMOV " 448(%rsp), " AP_V "12\n"
+        "    " AP_VMOV " 480(%rsp), " AP_V "13\n"
+        "    " AP_VMOV " 512(%rsp), " AP_V "14\n"
+        "    " AP_VMOV " 544(%rsp), " AP_V "15\n"
         "    movq %rbp, %rsp\n"
         "    popq %rbp\n"
         "    popq %r11\n"
@@ -1435,10 +1456,10 @@ static void thread_finish(RtThread *t) {
     unlock();
 }
 
-// ExitThread: back to the thread start with a non-unwinding longjmp; no SEH unwinding through lifted frames.
-// (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame register
-// is offset, and the landing code then reads its locals through the wrong base.)
-static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
+// ExitThread: back to the thread start with plat_jmp_go, which unwinds nothing: no SEH unwinding through lifted
+// frames. (__builtin_setjmp is not usable: on Win64 LLVM saves the frame address, which is not rbp when the frame
+// register is offset, and the landing code then reads its locals through the wrong base.)
+static __attribute__((noreturn)) void exit_now(RtThread *t) { plat_jmp_go(&t->exit_jmp); }
 
 // The calling host thread, for ap_try (TOTK_ASYNC_PREEMPT) and dg_sample (TOTK_CORE_DIAG).
 static PlatIntr *ap_open_self(void) {
@@ -1460,7 +1481,7 @@ static void thread_main(void *p) {
     unlock();
     Cpu *c = t->cpu;
     c->sp = t->stack_top & ~15ull;
-    if (!setjmp(t->exit_jmp)) {
+    if (!plat_jmp_save(&t->exit_jmp)) {
         rt_call(c, t->entry, 1, t->arg);
         char d[128];
         rt_fatal("guest thread %#x: entry %s returned (Horizon threads end with ExitThread)", t->handle,
@@ -1520,7 +1541,7 @@ static void guest_main(void *p) {
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
     kern_main_thread(&c);
-    if (!setjmp(tcur->exit_jmp)) fn(c);
+    if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);
     thread_finish(tcur);
     return;
 }
@@ -1879,7 +1900,9 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (type != 0) {
             int32_t nv = val + 1;
             if (type == 2) {
-                if (cnt <= 0) nv = nw > 0 ? val - 1 : val + 1;
+                // Waking all (count <= 0) with waiters subtracts 2, not 1 (mesosphere
+                // KAddressArbiter::SignalAndModifyByWaitingCountIfEqual; yuzu, LAS Recomp and nxnative agree).
+                if (cnt <= 0) nv = nw > 0 ? val - 2 : val + 1;
                 else nv = nw == 0 ? val + 1 : nw <= cnt ? val - 1 : val;
             }
             uint32_t e = (uint32_t)val;
@@ -1943,8 +1966,13 @@ int kern_svc(Cpu *c, uint32_t imm) {
         int idx = -1;
         lock();
         g_sync_calls++;
+        // Horizon's order (mesosphere KSynchronizationObject::Wait): a signalled object, then timeout 0, then a pending
+        // CancelSynchronization. The cancel is for the next wait that would block: a poll or a wait on a signalled
+        // object leaves it pending. A cancel that wakes this wait (CancelSynchronization wakes it with R_CANCELLED; a
+        // signal wakes it with -1 to look again) ends it cancelled, signalled objects or not.
+        uint32_t woke = 0;
         for (;;) {
-            if (t->cancel) {
+            if (woke == R_CANCELLED) {
                 t->cancel = 0;
                 r = R_CANCELLED;
                 break;
@@ -1960,6 +1988,15 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 r = R_OK;
                 break;
             }
+            if (ns == 0) {
+                r = R_TIMEOUT;
+                break;
+            }
+            if (t->cancel) {
+                t->cancel = 0;
+                r = R_CANCELLED;
+                break;
+            }
             int64_t left = ns;
             if (ns > 0) {
                 uint64_t spent = kern_now_ns() - start;
@@ -1971,7 +2008,8 @@ int kern_svc(Cpu *c, uint32_t imm) {
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
             g_sync_blocks++;
-            if (block(t, W_SYNC, left) == R_TIMEOUT) {
+            woke = block(t, W_SYNC, left);
+            if (woke == R_TIMEOUT) {
                 r = R_TIMEOUT;
                 break;
             }
@@ -1986,7 +2024,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         RtThread *t = h_get((uint32_t)x[0], O_THREAD);
         if (t) {
             t->cancel = 1;
-            if (t->wkind == W_SYNC) wake(t, (uint32_t)-1);
+            if (t->wkind == W_SYNC) wake(t, R_CANCELLED);
         }
         unlock();
         x[0] = t ? R_OK : R_BAD_HANDLE;
@@ -2047,9 +2085,18 @@ void kern_event_signal(uint32_t hw) {
 
 // System events of host services: the SDK's own nn::os::CreateSystemEvent creates the kernel event (SVC 0x45) on a
 // guest thread; the writable handle is kept, so any thread (host audio tick included) can signal it later.
+// The guest may destroy such an event and attach the same SystemEventType again: the game does that with the nfp
+// activate and deactivate events before each detection. nn::os::DestroySystemEvent zeroes the state byte at +0x28
+// (0 not initialised, 1 event, 2 inter-process event; nn::os::TryWaitSystemEvent aborts on 0) and closes both
+// handles, so a kept handle counts only while that byte is nonzero.
+#define SE_STATE 0x28
 static struct { uint64_t ev; uint32_t wh; } g_se[512];
 static int g_nse;
 static PlatMutex g_se_lock = PLAT_MUTEX_INIT;
+
+static int se_live(uint64_t ev) {
+    return __atomic_load_n((const uint8_t *)(uintptr_t)(ev + SE_STATE), __ATOMIC_RELAXED) != 0;
+}
 
 static uint32_t se_find(uint64_t ev) {
     plat_mutex_lock_shared(&g_se_lock);
@@ -2060,8 +2107,9 @@ static uint32_t se_find(uint64_t ev) {
     return wh;
 }
 
+// A bound event the guest destroyed since is created again and its table entry takes the new writable handle.
 void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
-    if (se_find(ev)) return;
+    if (se_find(ev) && se_live(ev)) return;
     if (!tcur || !c) rt_fatal("kern_bind_system_event(%#llx) on a host thread", (unsigned long long)ev);
     static uint64_t create, getw;
     if (!create) {
@@ -2073,15 +2121,21 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
     if (r) rt_fatal("kern_bind_system_event: CreateSystemEvent(%#llx) failed %#x", (unsigned long long)ev, r);
     uint32_t wh = (uint32_t)rt_call(c, getw, 1, ev);
     plat_mutex_lock(&g_se_lock);
-    if (g_nse == (int)(sizeof g_se / sizeof *g_se)) rt_fatal("kern_bind_system_event: table full");
-    g_se[g_nse].ev = ev;
-    g_se[g_nse++].wh = wh;
+    int i = 0;
+    while (i < g_nse && g_se[i].ev != ev) i++;
+    if (i == g_nse) {
+        if (g_nse == (int)(sizeof g_se / sizeof *g_se)) rt_fatal("kern_bind_system_event: table full");
+        g_se[g_nse++].ev = ev;
+    }
+    g_se[i].wh = wh;
     plat_mutex_unlock(&g_se_lock);
 }
 
-// An event not bound yet is bound on the spot with manual clear, which needs a guest thread.
+// An event not bound yet is bound on the spot with manual clear, which needs a guest thread. A bound event the guest
+// destroyed is not signalled: its handles are closed and the kernel hands their numbers to new objects.
 void kern_signal_system_event(uint64_t ev) {
     uint32_t wh = se_find(ev);
+    if (wh && !se_live(ev)) return;
     if (!wh) {
         kern_bind_system_event(kern_cpu(), ev, 0);
         wh = se_find(ev);

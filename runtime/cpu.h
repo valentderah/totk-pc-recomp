@@ -109,7 +109,7 @@ EXCL(16, uint16_t)
 EXCL(32, uint32_t)
 EXCL(64, uint64_t)
 
-// Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v3 has CX16).
+// Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v2 has CX16).
 // A pair of two W registers is a 64-bit exclusive and uses ldx64/stx64.
 static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
     __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);

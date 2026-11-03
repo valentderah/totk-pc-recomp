@@ -75,15 +75,114 @@ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) {
     memcpy(p, &h, sizeof h);
 }
 
+// 1.4.3 initializes and finalizes command buffers about 2000 times a second while a scene loads and several times a
+// frame in play, and its two largest per-frame recordings take 1-2 MiB. Freeing the recording buffer at Finalize made
+// every new recording grow again from 64 KiB through up to five reallocations and copies, the last ones fresh 1-2 MiB
+// blocks the heap takes from the system: new commit and zero-filled pages twice a frame. Those growths were most of the
+// process's new commit requests, so when the system ran short for a moment (a Depths load at render scale 200 on 16 GB)
+// a 1 MiB growth was the allocation that failed. Finalized buffers therefore wait in a small pool for the next
+// recording, and a failed allocation waits for memory instead of ending the game (realloc_wait).
+#define POOL_SLOTS 16
+#define POOL_MAX_BYTES ((size_t)4 << 20)   // a larger buffer (a recording that inlined a big one) goes back to the heap
+static PlatMutex pool_lock = PLAT_MUTEX_INIT;
+static struct { uint8_t *p; size_t size; } pool[POOL_SLOTS];
+static uint32_t npool;
+
+// The largest pooled buffer and its size, or NULL: the largest, so the big per-frame recordings stop growing once the
+// pool holds enough buffers of their size.
+static uint8_t *pool_take(size_t *size) {
+    uint8_t *p = NULL;
+    plat_mutex_lock(&pool_lock);
+    if (npool) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < npool; i++)
+            if (pool[i].size > pool[best].size) best = i;
+        p = pool[best].p;
+        *size = pool[best].size;
+        pool[best] = pool[--npool];
+    }
+    plat_mutex_unlock(&pool_lock);
+    return p;
+}
+
+// Keeps a finalized buffer when the pool has room or holds a smaller one (which is freed instead).
+static void pool_put(uint8_t *p, size_t size) {
+    if (!p) return;
+    if (size <= POOL_MAX_BYTES) {
+        plat_mutex_lock(&pool_lock);
+        if (npool < POOL_SLOTS) {
+            pool[npool].p = p;
+            pool[npool++].size = size;
+            p = NULL;
+        } else {
+            uint32_t small = 0;
+            for (uint32_t i = 1; i < npool; i++)
+                if (pool[i].size < pool[small].size) small = i;
+            if (pool[small].size < size) {
+                uint8_t *drop = pool[small].p;
+                pool[small].p = p;
+                pool[small].size = size;
+                p = drop;
+            }
+        }
+        plat_mutex_unlock(&pool_lock);
+    }
+    free(p);
+}
+
+static void pool_drain(void) {
+    plat_mutex_lock(&pool_lock);
+    while (npool) free(pool[--npool].p);
+    plat_mutex_unlock(&pool_lock);
+}
+
+// realloc that waits out a short commit shortage: Windows refuses commit beyond the current limit while it grows a
+// system-managed page file, so the same request succeeds a moment later, and a stall of some frames is better than
+// ending the game. Frees the pooled buffers first. NULL only after about 30 s without memory; the caller ends the game.
+// Never called with a lock held.
+static void *realloc_wait(void *old, size_t n, const char *what) {
+    void *p = realloc(old, n);
+    if (p) return p;
+    pool_drain();
+    static uint32_t reports;
+    int report = __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8;
+    if (report) {
+        double proc, used, limit;
+        plat_commit_info(&proc, &used, &limit);
+        rt_log("nvn: %s of %zu bytes failed (memory commit: this process %.0f MB, the system %.0f of %.0f MB); waiting "
+               "for memory", what, n, proc, used, limit);
+    }
+    uint64_t t0 = plat_now_ms();
+    while (plat_now_ms() - t0 < 30000) {
+        plat_sleep_ms(10);
+        if ((p = realloc(old, n))) {
+            if (report)
+                rt_log("nvn: %s of %zu bytes succeeded after %llu ms", what, n,
+                       (unsigned long long)(plat_now_ms() - t0));
+            return p;
+        }
+    }
+    return NULL;
+}
+
 static void cmd_reserve(cmd_t *o, size_t need) {
     if (o->seg && o->cur + need + OP_RESERVE <= o->end) return;
+    if (!o->seg) {   // the first record since Initialize: a pooled buffer when one waits
+        size_t size = 0;
+        uint8_t *p = pool_take(&size);
+        if (p) {
+            o->seg = o->cur = p;
+            o->end = p + size;
+            if (need + OP_RESERVE <= size) return;
+        }
+    }
     size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
     if (!cap) cap = 64 << 10;
     while (used + need + OP_RESERVE > cap) cap *= 2;
-    uint8_t *b = realloc(o->seg, cap);
-    // A block this size fails only without commit (the fatal report states it) or when seg is no block of ours: a
-    // command buffer object the game overwrote or copied shows a wrong magic or more used than its old size.
+    uint8_t *b = realloc_wait(o->seg, cap, "command recording buffer");
+    // Still failing after the wait: the system has no commit left (the fatal report states it), or seg is no block of
+    // ours: a command buffer object the game overwrote or copied shows a wrong magic or more used than its old size.
     if (!b)
         rt_fatal("nvn: command recording buffer of %zu bytes (command buffer %p, magic %#x, buffer %p of %zu bytes, %zu "
                  "used, %zu asked)", cap, (void *)o, o->magic, (void *)o->seg, o->seg ? (size_t)(o->end - o->seg) : 0,
@@ -235,7 +334,7 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
 // game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
 static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = malloc(sizeof(copy_prefix) + n);
+    uint8_t *out = realloc_wait(NULL, sizeof(copy_prefix) + n, "command copy");
     if (!out) rt_fatal("nvn: command copy allocation");
     memcpy(out + sizeof(copy_prefix), p, n);
     for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
@@ -334,7 +433,7 @@ NVN_API(nvnCommandBufferInitialize) {
 // void nvnCommandBufferFinalize(NVNcommandBuffer *cmd): handles outlive their recorder
 NVN_API(nvnCommandBufferFinalize) {
     cmd_t *o = cmd_of(c);
-    free(o->seg);
+    pool_put(o->seg, (size_t)(o->end - o->seg));
     o->seg = o->cur = o->end = NULL;
     o->magic = 0;
     cb_set_disabled(o, CB_NO_COMMAND | CB_NO_CONTROL, 0);

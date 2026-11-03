@@ -14,9 +14,9 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                file puts the folder, tools/ and recomp/ on sys.path
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
-    runtime/   libtotkrt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, romfs.c, patches.c and
-               ov_zstd.c (compiled per install), totk.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
-               built static; SDL3, Opus and libvpx come from the sysroot)
+    runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
+               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), totk.png (the window icon),
+               deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
     AppRun, totk-setup.desktop, totk-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
@@ -205,14 +205,16 @@ def build_bin(out, llvm, sysroot):
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
 
 def runtime_lib(out, llvm, sysroot):
-    build = CHECK / 'rtlib'
-    shutil.rmtree(build, ignore_errors=True)
+    """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
     version = mr.lifted_version()
-    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm, '--sysroot', sysroot,
-         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja', '--version', version,
-         '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
     rt = out / 'runtime'
-    shutil.copy2(build / 'libtotkrt.a', rt / 'libtotkrt.a')
+    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
+        build = CHECK / f'rtlib-{cpu}'
+        shutil.rmtree(build, ignore_errors=True)
+        run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
+             '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
+             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
+        shutil.copy2(build / 'libtotkrt.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -521,7 +523,7 @@ def check_bundle(out):
     print('bundle check: the window built every screen in both languages and closed')
 
 
-def prove(out):
+def prove(out, cpu='v3'):
     """Compile the generated C and link totk with the folder's tools only, then run the probes beside it."""
     out = out.resolve()
     version = mr.lifted_version()
@@ -530,9 +532,10 @@ def prove(out):
     chk = CHECK / 'game'
     env = dict(os.environ, PATH=os.pathsep.join([str(out / 'llvm' / 'bin'), str(out / 'bin'), '/usr/bin', '/bin']))
     t0 = time.time()
-    run([out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm',
+    run([out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
          '--sysroot', out / 'llvm' / 'sysroot', '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-         '--runtime-lib', out / 'runtime' / 'libtotkrt.a', '--ninja', out / 'bin' / 'ninja', '--version', version,
+         '--runtime-lib', out / 'runtime' / ('libtotkrt-v2.a' if cpu == 'v2' else 'libtotkrt.a'),
+         '--ninja', out / 'bin' / 'ninja', '--version', version,
          '--gen', gen, '--out', chk, '--exefs', ext / 'exefs', '--romfs', ext / 'romfs', '--profile', chk / 'profile'],
         env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
@@ -559,10 +562,12 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
+    ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
+                    help='--prove: build and run the check for this CPU level (default v3)')
     args = ap.parse_args()
     out = args.out.resolve()
     if args.prove:
-        prove(out)
+        prove(out, args.cpu)
         return
     if out.exists():
         shutil.rmtree(out)

@@ -23,10 +23,23 @@ body:
     validations:
       required: true
   - type: input
+    id: last-good
+    attributes:
+      label: Last version that worked
+      description: If an earlier version did not crash at this point, which one.
+  - type: textarea
     id: system
     attributes:
-      label: GPU, driver and Windows version
-      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+      label: System info
+      description: Paste what Copy system info (F1, Advanced tab) puts on the clipboard. On a Steam Deck, add LCD or OLED.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods and cheats
+      description: The folders in mods/ with their download links, or "none". Say whether it also crashes without them.
     validations:
       required: true
   - type: dropdown
@@ -56,10 +69,32 @@ body:
       label: What you did before the crash
     validations:
       required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### The log
+
+        - The log of the run that crashed is `logs\totk.log` in the folder of `totk.exe` (F1, Advanced tab, Open log folder). Copy it before you start the game again: the next start renames it to `totk.1.log`, and after five starts it is gone.
+        - Attach the whole file. Do not cut or edit it: the crash report is at the end, the GPU and driver lines are at the start.
+        - The log says `device lost` or `VK_ERROR_DEVICE_LOST` and the GPU is an NVIDIA one: set GPU pass marks to On (F1, Advanced tab, Diagnostics), restart the game, make it crash again and attach that log. The `vk: pass marks` lines then name what the GPU was drawing.
   - type: textarea
     id: log
     attributes:
       label: Log
-      description: Attach logs\totk.log from the folder of totk.exe. Copy it before you start the game again, because the next start overwrites it.
+      description: Drag totk.log into this field.
     validations:
       required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### Save and input recording
+
+        When the crash comes back at one place in the game (an area, a shrine, a cutscene, a quest step), the save that gets there lets us crash it on our machine.
+
+        1. Zip the `profile` folder next to `totk.exe` and attach it. Say which slot you load, or that you use the autosave.
+        2. If it takes more than walking a few steps from the save: turn on Input recording (F1, Advanced tab, Diagnostics), restart the game, load the save, make it crash, and attach `input-record.txt` from the logs folder together with the `totk.log` of that run.
+  - type: textarea
+    id: save
+    attributes:
+      label: Save and input recording
+      description: Drag the zipped profile folder and input-record.txt into this field, when the crash comes back at one place.

@@ -197,6 +197,7 @@ NVN_API(nvnTextureInitialize) {
     o->magic = NVN_TEX_MAGIC;
     o->d = s->d;
     o->pool = s->pool;
+    o->pool_flags = s->pool ? (uint16_t)s->pool->flags : 0;
     o->off = s->off;
     o->has_layout = s->has_layout;
     memcpy(o->layout, s->layout, 8);
@@ -323,8 +324,11 @@ NVN_API(nvnTextureReadTexelsStrided) { read_texels(c, 1); }
 NVN_API(nvnTextureWriteTexels) { write_texels(c, 0); }
 NVN_API(nvnTextureWriteTexelsStrided) { write_texels(c, 1); }
 // void nvnTexture{Flush,Invalidate}Texels(const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r): texel
-// access is coherent
-NVN_API(nvnTextureFlushTexels) { (void)c; }
+// access is coherent; flush marks the storage as written for re-upload
+NVN_API(nvnTextureFlushTexels) {
+    const tex_t *t = arg_p(c, 0);
+    if (t && t->mem && !nvn_gpu_only((uintptr_t)t->mem)) nvn_guest_written((uintptr_t)t->mem, t->L.size);
+}
 NVN_API(nvnTextureInvalidateTexels) { (void)c; }
 
 // ---------- Samplers
@@ -633,7 +637,7 @@ NVN_API(nvnWindowSetCrop) {
 // ---------- Present pacing
 // The vsync thread ticks at a fixed 60 Hz whatever the monitor does, so one game frame lasts `interval` ticks. With
 // the real-time frame step (frame_rate.c) game speed does not depend on the interval, so a frame is shown when it is
-// ready, at most at the frame limit (TOTK_FPS_LIMIT: 30 to 360 per second or the monitor's rate): holding it to the
+// ready, at most at the frame limit (TOTK_FPS_LIMIT: 30 to 240 per second or the monitor's rate): holding it to the
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
 static uint64_t present_period(const win_t *o) {
@@ -695,6 +699,7 @@ NVN_API(nvnQueuePresentTexture) {
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
     movie_tick(c);   // ov_movie.c: hand over decoded movie frames that are due; needs the core, so before the wait
+    res_present(c);  // resolution.c: a DLSS mode change sets the game's render size again, between frames
     NVN_BLOCKING();
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);

@@ -3,6 +3,7 @@ with a newer release, totk.ini and the event stream. No game files, no tools; st
 
 Run: python tests/installer_test.py
 """
+import http.client
 import io
 import json
 import re
@@ -11,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -197,6 +199,122 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(e.exception.id, 'state.newer_format')
 
 
+class ReleaseFilesTest(unittest.TestCase):
+    def test_release_ships_every_tool_the_steps_run(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import make_release
+        text = (ROOT / 'installer' / 'steps.py').read_text(encoding='utf-8')
+        used = set(re.findall(r"layout\.tools / '(\w+\.py)'", text))
+        for names in re.findall(r"layout\.tools / n for n in \((.*?)\)", text, re.S):
+            used |= set(re.findall(r"'(\w+\.py)'", names))
+        self.assertIn('cheats.py', used)
+        self.assertEqual(used - set(make_release.TOOLS_FILES), set())
+
+
+class RenamedVersionTest(unittest.TestCase):
+    """An install the setup before 0.3.1 recorded as 1.1.1 is the 1.1.0 update (#332)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(__file__).resolve().parents[1]
+        layout = Layout(root=root, dev=True, release='9.9', python=Path('python'), tools=root / 'tools',
+                        recomp=root / 'recomp', llvm=Path('llvm'), deps=Path('deps'), runtime=Path('rt'),
+                        runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        state = {'format': 1, 'release': '0.2.8', 'version': '1.1.1', 'inputs': {},
+                 'steps': {'extract': {'key': 'recorded by 0.2.8', 'release': '0.2.8'}}}
+        out = io.StringIO()
+        self.ctx = runner.Context(layout, Path(tmp.name), Path(tmp.name), Reporter(out=out), SimpleNamespace(),
+                                  state=state)
+
+    def test_old_name_is_read_as_1_1_0(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(steps.game_version(self.ctx), '1.1.0')
+        self.assertEqual(steps.version_tag(steps.game_version(self.ctx)), 'v110')
+        self.assertEqual(steps.expected_update(self.ctx)['display_version'], '1.1.0')
+        self.assertTrue(self.ctx.layout.patches(steps.game_version(self.ctx)).is_file())
+
+    def test_extraction_is_kept_under_the_new_name(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], steps.Extract().key(self.ctx))
+        self.assertEqual(self.ctx.state['steps']['extract']['release'], '0.2.8')   # full check of kept output runs
+
+    def test_other_versions_are_untouched(self):
+        self.ctx.state['version'] = '1.4.3'
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['version'], '1.4.3')
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], 'recorded by 0.2.8')
+
+
+class LiftKeyTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dest = Path(tmp.name)
+        layout = SimpleNamespace(recomp=self.dest / 'no-recomp', tools=self.dest / 'no-tools',
+                                 patches=lambda version: self.dest / 'no-patches')
+        self.ctx = SimpleNamespace(dest=self.dest, layout=layout, keys={'extract': 'x'}, state={'version': '1.4.3'})
+
+    def key(self):
+        return steps.Lift().key(self.ctx)
+
+    def add_cheats(self, name, text, mod='Cheats', where='cheats'):
+        folder = self.dest / 'mods' / mod / where
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text(text)
+
+    def test_extracting_main_keeps_the_key(self):
+        before = self.key()
+        (self.dest / 'exefs').mkdir()
+        (self.dest / 'exefs' / 'main').write_bytes(bytes(0x48))
+        self.assertEqual(self.key(), before)
+
+    def test_cheat_files_change_the_key(self):
+        before = self.key()
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
+        added = self.key()
+        self.assertNotEqual(added, before)
+        self.add_cheats('277178B7DBA1B6D4.txt', '[b]')
+        edited = self.key()
+        self.assertNotEqual(edited, added)
+        self.add_cheats('277178B7DBA1B6D4.txt', '[c]', mod='Other', where='atmosphere/contents/0100F2C0115B6000/cheats')
+        self.assertNotEqual(self.key(), edited)
+
+    def test_exefs_patch_files_change_the_key(self):
+        before = self.key()
+        self.add_cheats('dynamic-fps.pchtxt', '@nsobid-277178B7DBA1B6D4', mod='Fps', where='exefs')
+        added = self.key()
+        self.assertNotEqual(added, before)
+        self.add_cheats('277178B7DBA1B6D4.ips', 'PATCHEOF', mod='Ips', where='atmosphere/exefs_patches/x')
+        both = self.key()
+        self.assertNotEqual(both, added)
+        self.add_cheats('main.npdm', 'not a patch', mod='Fps', where='exefs')
+        self.assertEqual(self.key(), both)
+
+    def test_renaming_a_mod_folder_changes_the_key(self):
+        # tools/cheats.py and tools/exefs_patches.py name a patch set after "<mod folder>/<cheat or file>": a renamed
+        # folder needs a lift even though its files are the same
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]', mod='MyNXCheats')
+        self.add_cheats('dynamic-fps.pchtxt', '@nsobid-277178B7DBA1B6D4', mod='Fps', where='exefs')
+        before = self.key()
+        mods = self.dest / 'mods'
+        (mods / 'MyNXCheats').rename(mods / 'MyNXCheats 1.4.3')
+        cheats_renamed = self.key()
+        self.assertNotEqual(cheats_renamed, before)
+        (mods / 'Fps').rename(mods / 'Fps 2')
+        self.assertNotEqual(self.key(), cheats_renamed)
+
+    def test_status_and_other_files_keep_the_key(self):
+        self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
+        before = self.key()
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'cheats.status').write_text('written by lift')
+        self.add_cheats('readme.md', 'not a cheat file')
+        (self.dest / 'mods' / 'Cheats' / 'romfs').mkdir()
+        (self.dest / 'mods' / 'Cheats' / 'romfs' / 'a.txt').write_text('a RomFS file')
+        self.assertEqual(self.key(), before)
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
@@ -258,7 +376,8 @@ class CleanupTest(unittest.TestCase):
         self.expected = {'romfs': {'size': len(image), 'sha256': digest}}
         self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO(), log_path=base / 'x.log'), dest=self.dest,
                                    temp=temp, lang='en-US', state={},
-                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example'))
+                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example', dev=False,
+                                                          python=base / 'python' / 'python.exe', root=base / 'release'))
         self.saved = steps.expected_update
         steps.expected_update = lambda ctx: self.expected
 
@@ -277,6 +396,16 @@ class CleanupTest(unittest.TestCase):
     def test_intact_romfs_passes(self):
         self.assertEqual(self.run_cleanup(), 'ok')
 
+    def test_keeps_build_and_writes_rebuild_command(self):
+        for name in ('gen', 'build', 'check'):
+            (self.ctx.temp / name).mkdir()
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertTrue((self.ctx.temp / 'gen').is_dir() and (self.ctx.temp / 'build').is_dir())
+        self.assertFalse((self.ctx.temp / 'check').exists())
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
+                                     str(self.ctx.layout.root), '--rebuild', str(self.dest)])
+
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
             p.unlink()
@@ -289,6 +418,133 @@ class CleanupTest(unittest.TestCase):
     def test_romfs_of_another_size_fails(self):
         (self.dest / 'romfs' / 'romfs.bin').write_bytes(b'short')
         self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+
+class BaseGameCheckTest(unittest.TestCase):
+    """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
+    BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
+
+    @staticmethod
+    def nca(content_type, title_id):
+        return ({'name': 'x.nca', 'nca_offset': 0, 'size': 0xc00, 'content_type': content_type, 'title_id': title_id}, b'')
+
+    def test_update_package_names_the_update(self):
+        # An update NSP keeps the base title id on its Program NCA; only its Meta NCA carries the update id.
+        records = [self.nca(0, self.BASE), self.nca(1, self.UPDATE)]
+        with self.assertRaises(ValueError):
+            steps.program_nca(records)
+        self.assertEqual(steps.base_misuse(records), 'check.base_is_update')
+
+    def test_combined_package_is_named(self):
+        records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(1, self.UPDATE)]
+        self.assertEqual(steps.base_misuse(records), 'check.base_combined')
+
+    def test_plain_base_game_passes(self):
+        records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(3, self.BASE)]
+        self.assertIsNone(steps.base_misuse(records))
+        self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
+
+
+class FontsTest(unittest.TestCase):
+    """The fonts step: keyed by language and firmware, a no-op without firmware, writes dest/shared-fonts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, self.firmware = base / 'dest', base / 'temp', base / 'firmware'
+        temp.mkdir()
+        self.firmware.mkdir()
+        (self.firmware / 'a.nca').write_bytes(b'nca')
+        self.keys = base / 'prod.keys'
+        self.keys.write_text('header_key = 00\n')
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, lang='zh-Hans', state={},
+                                   layout=SimpleNamespace(tools=ROOT / 'tools', root=ROOT),
+                                   reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(lang='zh-Hans', firmware=self.firmware, keys=str(self.keys)))
+        self.saved_run_tool = steps.run_tool
+
+    def tearDown(self):
+        steps.run_tool = self.saved_run_tool
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def fake_tool(self, files=None, code=0):
+        """Stand-in for extract_shared_fonts.py: writes the requested files where --output points."""
+        def run(ctx, step, script, args):
+            out = Path(args[args.index('--output') + 1])
+            out.mkdir(parents=True)
+            for name in steps.SHARED_FONT_FILES if files is None else files:
+                (out / name).write_bytes(b'bfttf')
+            (out / 'manifest.json').write_text('{}')
+            log = ctx.temp / 'fonts.log'
+            log.write_text('error line\n')
+            return code, log
+        steps.run_tool = run
+
+    def test_all_steps_order(self):
+        self.assertEqual([s.id for s in steps.all_steps()],
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
+
+    def test_extracts_into_the_install_folder(self):
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {'files': 6})
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+        self.assertEqual(sorted(p.name for p in (self.dest / 'shared-fonts').iterdir()),
+                         sorted((*steps.SHARED_FONT_FILES, 'manifest.json')))
+
+    def test_noop_without_firmware(self):
+        self.ctx.options.firmware = None
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertFalse((self.dest / 'shared-fonts').exists())
+
+    def test_noop_for_other_languages(self):
+        self.ctx.lang, self.ctx.options.lang = 'en-US', 'en-US'
+        self.fake_tool()
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertFalse((self.dest / 'shared-fonts').exists())
+
+    def test_failed_extraction_keeps_the_old_folder(self):
+        self.fake_tool()
+        steps.Fonts().run(self.ctx)
+        self.fake_tool(code=1)
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Fonts().run(self.ctx)
+        self.assertEqual(e.exception.id, 'fonts.failed')
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+
+    def test_incomplete_output_is_an_error(self):
+        self.fake_tool(files=steps.SHARED_FONT_FILES[:1])
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Fonts().run(self.ctx)
+        self.assertEqual(e.exception.id, 'fonts.incomplete')
+
+    def test_current_tracks_language_and_output(self):
+        fonts = steps.Fonts()
+        self.assertFalse(fonts.current(self.ctx, {}))
+        self.fake_tool()
+        fonts.run(self.ctx)
+        self.assertTrue(fonts.current(self.ctx, {}))
+        self.ctx.options.lang = 'en-US'
+        self.assertTrue(fonts.current(self.ctx, {}))
+        self.ctx.options.lang = 'zh-Hans'
+        (self.dest / 'shared-fonts' / '0-standard.bfttf').unlink()
+        self.assertFalse(fonts.current(self.ctx, {}))
+
+    def test_key_changes_with_language_and_firmware(self):
+        fonts = steps.Fonts()
+        zh = fonts.key(self.ctx)
+        self.ctx.options.lang = 'en-US'
+        self.assertNotEqual(zh, fonts.key(self.ctx))
+        self.ctx.options.lang = 'zh-Hans'
+        (self.firmware / 'b.nca').write_bytes(b'other')
+        self.assertNotEqual(zh, fonts.key(self.ctx))
+
+    def test_registered_child_is_used(self):
+        nested = self.firmware / 'registered'
+        nested.mkdir()
+        (nested / 'c.nca').write_bytes(b'nca')
+        self.assertEqual(steps.firmware_dir(self.firmware), nested)
 
 
 class EventsTest(unittest.TestCase):
@@ -314,10 +570,85 @@ class EventsTest(unittest.TestCase):
         catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
         used = set()
         for path in (ROOT / 'installer').glob('*.py'):
-            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", path.read_text()))
-            used |= set(re.findall(r"warning\('([a-z_.]+)'", path.read_text()))
-            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", path.read_text())}
+            text = path.read_text(encoding='utf-8')
+            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", text))
+            used |= set(re.findall(r"warning\('([a-z_.]+)'", text))
+            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", text)}
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'DLSS is Windows-only')
+class DlssTest(unittest.TestCase):
+    """The DLSS step: off without --dlss, needs an RTX GPU, keeps a player's library, verifies the download."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp = base / 'dest', base / 'temp'
+        self.dest.mkdir()
+        temp.mkdir()
+        self.src = base / 'nvngx_dlss.dll'
+        self.src.write_bytes(b'dlss' * 1000)
+        self.saved = steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256
+        steps.DLSS_URL = self.src.as_uri()   # urllib reads file: URLs as it reads https: ones
+        steps.DLSS_SIZE, steps.DLSS_SHA256 = 4000, steps.file_sha256(self.src)
+        rtx = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=rtx, reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(dlss=True))
+
+    def tearDown(self):
+        steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256 = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def warnings(self):
+        return [json.loads(line)['id'] for line in self.ctx.reporter.out.getvalue().splitlines()
+                if json.loads(line)['type'] == 'warning']
+
+    def test_off_without_the_option(self):
+        self.ctx.options.dlss = False
+        self.assertEqual(steps.Dlss().run(self.ctx), {})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertNotEqual(steps.Dlss().key(self.ctx), steps.Dlss().key(SimpleNamespace(options=SimpleNamespace(dlss=True))))
+
+    def test_downloads_and_checks_the_library(self):
+        rec = steps.Dlss().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.DLSS_VERSION})
+        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), self.src.read_bytes())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertTrue(steps.Dlss().current(self.ctx, rec))
+        (self.dest / 'nvngx_dlss.dll').unlink()
+        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+
+    def test_a_wrong_file_is_not_installed_and_tried_again(self):
+        steps.DLSS_SHA256 = '0' * 64
+        rec = steps.Dlss().run(self.ctx)
+        self.assertEqual(rec, {'failed': True})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+
+    def test_a_cut_connection_warns(self):
+        class Cut(io.BytesIO):   # a response whose connection drops mid-file
+            def read(self, n=-1):
+                raise http.client.IncompleteRead(b'dl', 3998)
+
+        with mock.patch.object(steps.urllib.request, 'urlopen', return_value=Cut()):
+            self.assertEqual(steps.Dlss().run(self.ctx), {'failed': True})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+
+    def test_keeps_the_players_library(self):
+        (self.dest / 'nvngx_dlss.dll').write_bytes(b'newer')
+        self.assertEqual(steps.Dlss().run(self.ctx), {'kept': True})
+        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'newer')
+        self.assertEqual(self.warnings(), ['warn.dlss_kept'])
+
+    def test_skipped_without_an_rtx_gpu(self):
+        self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
+        self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
+        self.assertEqual(self.warnings(), [])
 
 
 if __name__ == '__main__':

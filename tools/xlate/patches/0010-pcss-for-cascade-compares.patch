@@ -1,0 +1,135 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1456,7 +1456,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+             else if (isShadow)
+             {
+-                if (hasLodLevel)
++                if (hasLodLevel && isArray && coordsCount == 2 && operandsMask == ImageOperandsMask.Lod)
++                {
++                    result = GeneratePcssSample(context, declaration, image, pCoords, dRef, lod);
++                }
++                else if (hasLodLevel)
+                 {
+                     result = context.ImageSampleDrefExplicitLod(resultType, image, pCoords, dRef, operandsMask, operands);
+                 }
+@@ -1486,6 +1490,92 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             return new OperationResult(swizzledResultType, result);
+         }
+ 
++        // TOTK: percentage-closer soft shadows for the sun. The deferred lighting shaders take the shadow as four
++        // explicit-LOD compares on a 2D array (the cascades) around the receiver; each of those becomes a PCSS lookup
++        // when the support buffer's pcss.x is above 0 (runtime/vk_exec_draw.c support_fill, TOTK_PCSS): a blocker
++        // search reads the raw depths at eight points within pcss.w (UV), the average depth of those nearer the light
++        // than the receiver gives the penumbra width (receiver - blocker) * pcss.x, clamped to pcss.y..pcss.z (UV), and
++        // eight compares on a disc of that radius average to the result. With pcss.x at 0 the original single compare
++        // runs. The cascades are orthographic, so the depth difference is a distance along the light.
++        private static readonly float[] PcssSearch = [-0.7f, -0.7f, 0.7f, -0.7f, -0.7f, 0.7f, 0.7f, 0.7f, 0f, -1f, 0f, 1f, -1f, 0f, 1f, 0f];
++        private static readonly float[] PcssDisk =
++        [
++            -0.9420f, -0.3991f, 0.9456f, -0.7689f, -0.0942f, -0.9294f, 0.3450f, 0.2939f,
++            -0.9159f, 0.4577f, -0.8154f, -0.8791f, -0.3828f, 0.2768f, 0.9748f, 0.7565f,
++        ];
++
++        private static SpvInstruction GeneratePcssSample(CodeGenContext context, SamplerDeclaration declaration, SpvInstruction image,
++                                                         SpvInstruction pCoords, SpvInstruction dRef, SpvInstruction lod)
++        {
++            SpvInstruction f32 = context.TypeFP32(), s32 = context.TypeS32(), b = context.TypeBool();
++            SpvInstruction v2 = context.TypeVector(f32, 2), v3 = context.TypeVector(f32, 3), v4 = context.TypeVector(f32, 4);
++            SpvInstruction iv2 = context.TypeVector(s32, 2), iv3 = context.TypeVector(s32, 3);
++            SpvInstruction zero = context.Constant(f32, 0f), one = context.Constant(f32, 1f);
++
++            SpvInstruction prmPtr = context.AccessChain(context.TypePointer(StorageClass.Uniform, v4), context.ConstantBuffers[SupportBuffer.Binding],
++                                                        context.Constant(s32, (int)SupportBufferField.Pcss));
++            SpvInstruction prm = context.Load(v4, prmPtr);
++            SpvInstruction lightSize = context.CompositeExtract(f32, prm, 0);
++            SpvInstruction minR = context.CompositeExtract(f32, prm, 1);
++            SpvInstruction maxR = context.CompositeExtract(f32, prm, 2);
++            SpvInstruction searchR = context.CompositeExtract(f32, prm, 3);
++
++            SpvInstruction pcssLabel = context.Label(), plainLabel = context.Label(), mergeLabel = context.Label();
++            SpvInstruction enabled = context.FOrdGreaterThan(b, lightSize, zero);   // before the merge: it must precede the branch
++            context.SelectionMerge(mergeLabel, SelectionControlMask.MaskNone);
++            context.BranchConditional(enabled, pcssLabel, plainLabel);
++
++            context.AddLabel(plainLabel);
++            SpvInstruction plain = context.ImageSampleDrefExplicitLod(f32, image, pCoords, dRef, ImageOperandsMask.Lod, lod);
++            context.Branch(mergeLabel);
++
++            context.AddLabel(pcssLabel);
++            SpvInstruction raw = context.Image(declaration.ImageType, image);
++            SpvInstruction size3 = context.ImageQuerySizeLod(iv3, raw, context.Constant(s32, 0));
++            SpvInstruction sizeI = context.VectorShuffle(iv2, size3, size3, 0, 1);
++            SpvInstruction sizeF = context.ConvertSToF(v2, sizeI);
++            SpvInstruction maxI = context.ISub(iv2, sizeI, context.ConstantComposite(iv2, context.Constant(s32, 1), context.Constant(s32, 1)));
++            SpvInstruction zeroI = context.ConstantComposite(iv2, context.Constant(s32, 0), context.Constant(s32, 0));
++            SpvInstruction uv = context.VectorShuffle(v2, pCoords, pCoords, 0, 1);
++            SpvInstruction layerF = context.CompositeExtract(f32, pCoords, 2);
++            SpvInstruction layerI = context.ConvertFToS(s32, layerF);
++            SpvInstruction searchV = context.CompositeConstruct(v2, searchR, searchR);
++
++            SpvInstruction sum = zero, count = zero;
++            for (int i = 0; i < PcssSearch.Length; i += 2)
++            {
++                SpvInstruction off = context.ConstantComposite(v2, context.Constant(f32, PcssSearch[i]), context.Constant(f32, PcssSearch[i + 1]));
++                SpvInstruction p = context.FAdd(v2, uv, context.FMul(v2, off, searchV));
++                SpvInstruction t = context.GlslSClamp(iv2, context.ConvertFToS(iv2, context.FMul(v2, p, sizeF)), zeroI, maxI);
++                SpvInstruction c = context.CompositeConstruct(iv3, context.CompositeExtract(s32, t, 0), context.CompositeExtract(s32, t, 1), layerI);
++                SpvInstruction d = context.CompositeExtract(f32, context.ImageFetch(v4, raw, c, ImageOperandsMask.Lod, context.Constant(s32, 0)), 0);
++                SpvInstruction blocker = context.FOrdLessThan(b, d, dRef);
++                sum = context.FAdd(f32, sum, context.Select(f32, blocker, d, zero));
++                count = context.FAdd(f32, count, context.Select(f32, blocker, one, zero));
++            }
++
++            SpvInstruction avg = context.FDiv(f32, sum, context.GlslFMax(f32, count, one));
++            SpvInstruction penumbra = context.Select(f32, context.FOrdGreaterThan(b, count, zero),
++                                                     context.FMul(f32, context.FSub(f32, dRef, avg), lightSize), zero);
++            SpvInstruction radius = context.GlslFClamp(f32, penumbra, minR, maxR);
++            SpvInstruction radiusV = context.CompositeConstruct(v2, radius, radius);
++
++            SpvInstruction acc = zero;
++            for (int i = 0; i < PcssDisk.Length; i += 2)
++            {
++                SpvInstruction off = context.ConstantComposite(v2, context.Constant(f32, PcssDisk[i]), context.Constant(f32, PcssDisk[i + 1]));
++                SpvInstruction p = context.FAdd(v2, uv, context.FMul(v2, off, radiusV));
++                SpvInstruction c = context.CompositeConstruct(v3, context.CompositeExtract(f32, p, 0), context.CompositeExtract(f32, p, 1), layerF);
++                acc = context.FAdd(f32, acc, context.ImageSampleDrefExplicitLod(f32, image, c, dRef, ImageOperandsMask.Lod, lod));
++            }
++
++            SpvInstruction pcss = context.FMul(f32, acc, context.Constant(f32, 2f / PcssDisk.Length));
++            context.Branch(mergeLabel);
++
++            context.AddLabel(mergeLabel);
++            return context.Phi(f32, pcss, pcssLabel, plain, plainLabel);
++        }
++
+         private static OperationResult GenerateTextureQuerySamples(CodeGenContext context, AstOperation operation)
+         {
+             AstTextureOperation texOp = (AstTextureOperation)operation;
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -25,6 +25,7 @@ namespace Ryujinx.Graphics.Shader
+         TfeOffset,
+         TfeVertexCount,
+         PointSize,
++        Pcss,
+     }
+ 
+     public struct SupportBuffer
+@@ -82,7 +83,8 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.Array | AggregateType.FP32, "render_scale", RenderScaleMaxCount),
+                 new StructureField(AggregateType.Vector4 | AggregateType.S32, "tfe_offset"),
+                 new StructureField(AggregateType.S32, "tfe_vertex_count"),
+-                new StructureField(AggregateType.FP32, "point_size")
++                new StructureField(AggregateType.FP32, "point_size"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss")
+             ]);
+         }
+ 
+@@ -98,5 +100,6 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<int> TfeOffset;
+         public Vector4<int> TfeVertexCount;
+         public Vector4<float> PointSize;
++        public Vector4<float> Pcss;
+     }
+ }

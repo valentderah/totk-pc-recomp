@@ -52,6 +52,7 @@ void rt_fatal(const char *fmt, ...) {
     double proc, used, limit;
     plat_commit_info(&proc, &used, &limit);
     rt_log("fatal: memory commit: this process %.0f MB, the system %.0f of %.0f MB", proc, used, limit);
+    kern_free_cores_note();
     fflush(stdout);
     fflush(stderr);
     _Exit(70);

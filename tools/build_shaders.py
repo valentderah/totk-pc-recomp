@@ -1,6 +1,6 @@
-"""Compile the runtime's own GLSL shaders (runtime/shaders/*.comp) into C headers of SPIR-V words.
+"""Compile the runtime's own GLSL shaders (runtime/shaders/*.comp, *.vert, *.frag) into C headers of SPIR-V words.
 
-Each runtime/shaders/<name>.comp becomes runtime/<name>_spv.h, which declares `static const uint32_t <name>_spv[]`
+Each runtime/shaders/<name>.comp (or .vert, .frag: one name per shader) becomes runtime/<name>_spv.h, which declares `static const uint32_t <name>_spv[]`
 and records the SHA-256 of the source it came from. The headers are committed, so building totk.exe needs no shader
 compiler; tools/build_game.py refuses to build when a header no longer matches its source. Run this after editing a
 shader. Needs glslc and spirv-val from MSYS2 UCRT64 (package mingw-w64-ucrt-x86_64-shaderc, spirv-tools).
@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BIN = Path(r'C:\msys64\ucrt64\bin')   # Windows; elsewhere glslc and spirv-val come from PATH
 WIN = os.name == 'nt'
 TARGET = 'vulkan1.1'
+STAGES = {'.comp': 'compute', '.vert': 'vertex', '.frag': 'fragment'}
 
 
 def source_hash(src):
@@ -43,10 +44,14 @@ def header_path(src):
     return src.parent.parent / f'{src.stem}_spv.h'
 
 
+def sources(runtime):
+    return sorted(p for p in (runtime / 'shaders').iterdir() if p.suffix in STAGES)
+
+
 def stale(runtime):
     """Shader sources under runtime/shaders whose header is missing or records another source hash."""
     out = []
-    for src in sorted((runtime / 'shaders').glob('*.comp')):
+    for src in sources(runtime):
         h = header_path(src)
         if not h.exists() or f'// source sha256 {source_hash(src)}' not in h.read_text(encoding='utf-8'):
             out.append(src)
@@ -56,7 +61,7 @@ def stale(runtime):
 def compile_one(src):
     with tempfile.TemporaryDirectory() as tmp:
         spv = Path(tmp) / 'out.spv'
-        subprocess.run([str(BIN / 'glslc.exe') if WIN else 'glslc', '-O', f'--target-env={TARGET}', '-fshader-stage=compute',
+        subprocess.run([str(BIN / 'glslc.exe') if WIN else 'glslc', '-O', f'--target-env={TARGET}', f'-fshader-stage={STAGES[src.suffix]}',
                         '-o', str(spv), str(src)], check=True)
         subprocess.run([str(BIN / 'spirv-val.exe') if WIN else 'spirv-val', f'--target-env', TARGET, str(spv)], check=True)
         data = spv.read_bytes()
@@ -75,7 +80,7 @@ def main():
         for s in bad:
             print(f'{header_path(s)}: stale, run tools/build_shaders.py')
         return 1 if bad else 0
-    for src in sorted((args.runtime / 'shaders').glob('*.comp')):
+    for src in sources(args.runtime):
         compile_one(src)
     return 0
 

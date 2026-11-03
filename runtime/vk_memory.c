@@ -20,6 +20,7 @@
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "vk.h"
+#include "vk_exec.h"
 #include "platform/platform.h"
 
 // Timestamps for the tracking cost, in ns; qpc_ms converts.
@@ -245,6 +246,11 @@ int vk_pool_init(pool_t *p) {
     // virtual pools that map it. Either gets device-local memory: 1.4.3's CPU never writes its 0x18c pool's storage
     // (unchanged over 3600 frames of the intro), so the guest storage and the GPU copy need no sync.
     if ((p->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS) && !(p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL)) return 1;
+    // A pool of zero bytes (TotK makes some now and then) holds no address the GPU can use: it gets no record. A record
+    // would import 0 bytes (invalid usage; the driver refuses the memory) and put an empty range into the index at the
+    // pool's address, where a lookup of the pool that starts there found the empty one first. vk_pool_fini finds no
+    // record for it and does nothing.
+    if (!p->size) return 1;
     PoolRec *r = calloc(1, sizeof *r);
     if (!r) rt_fatal("vk: out of memory for a pool record");
     r->key = p;
@@ -827,7 +833,7 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
-// TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux.
+// TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux and Wine.
 typedef struct { uint64_t lo, hi; } SRange;
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
@@ -1187,7 +1193,7 @@ static void mirror_mode(int discrete) {
     if (freeze_idle < 0) freeze_idle = 0;
     const char *sh = cfg_get("TOTK_SHADOW");
 #ifdef _WIN32
-    shadow_on = sh && *sh && strcmp(sh, "0");
+    shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : plat_is_wine();
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
@@ -1195,6 +1201,11 @@ static void mirror_mode(int discrete) {
                           sh && *sh ? " (TOTK_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
+    // Import is the integrated-GPU mode. On a discrete card every draw reads the pools over PCIe (the comment above
+    // this section has the measurements), which is the difference between playable and 5 fps when it is not intended.
+    if (!mode && discrete)
+        rt_log("mem: warning: import on a discrete GPU: the GPU reads the game's pools over PCIe on every draw, far "
+               "slower than mirror (the auto default on a discrete GPU); use memory = auto unless testing");
 }
 
 static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {
@@ -1801,6 +1812,8 @@ static void collect_locked(VkCtx *c) {
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
         if (d->seq > done_seq || d->tl > tl) { dead[k++] = *d; continue; }
+        rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
+                         d->tl, tl);
         switch (d->kind) {
         case DEAD_IMAGE: vkDestroyImage(c->device, (VkImage)(uintptr_t)d->handle, NULL); break;
         case DEAD_IMAGE_VMA: vmaDestroyImage(c->vma, (VkImage)(uintptr_t)d->handle, d->alloc); break;
@@ -1932,8 +1945,21 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
-    // The open batch may record into the object: it counts as the newest user.
-    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl_noted};
+    // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
+    // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
+    // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
+    // slot_resolve hands a draw a released entry, and entry_of destroys released entries at that address later in
+    // the same submission. Stamped with the last submitted value, the object went as soon as the GPU reached it,
+    // before the submission that names it ran, and with the recorder thread (vk_rec.c) behind, before the recorder
+    // made the call that names it. LAS Recomp and Savage Wind Recomp stamp every deferral with the submission being
+    // recorded (runtime/nvn/vulkan/textures.c defer: vk_pending_seq). TOTK_DEFER_STAMP=0 brings back the old stamp.
+    static int stamp = -1;
+    if (stamp < 0) stamp = rt_knob("DEFER_STAMP", "1") != 0;
+    uint64_t tl = tl_noted, rf = stamp ? vk_exec_recording_fence() : 0;
+    if (rf > tl) tl = rf;
+    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
+    rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
+                     vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
 }
 

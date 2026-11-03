@@ -17,6 +17,8 @@ extern "C" {
 typedef struct {
     // the game's frames (presents), over the last second
     float fps, frame_ms_avg, frame_ms_max;
+    // fps of the slowest 1% and 0.1% of the frames over the last ten seconds (-1: too few frames yet)
+    float low1_fps, low01_fps;
     float frame_ms[PERF_HISTORY];   // oldest first
     // CPU: the whole machine and this process, percent of all logical processors
     char cpu_name[64];
