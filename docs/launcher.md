@@ -1,7 +1,8 @@
 # Game launcher
 
 `launcher.exe` shows a card for each game this repository builds, *Breath of the Wild* on the left and *Tears of the
-Kingdom* on the right (the order they came out in), and starts the one you choose. A game it finds no build of stays
+Kingdom* on the right (the order they came out in), and starts the one you choose. *Breath of the Wild*'s card says *In development*
+(`launcher/games.cpp` `kGames` preview): its support is early work ([botw.md](botw.md)). A game it finds no build of stays
 grey and cannot be started: its card offers *Install*, which opens the setup window for that game
 ([installer.md](installer.md), "Breath of the Wild"), and *Locate the game...* for one installed elsewhere. When the
 setup window closes, the launcher looks for the games again and the installed one gets *Play*. The launcher is Dear

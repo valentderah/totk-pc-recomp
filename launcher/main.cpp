@@ -52,7 +52,7 @@ static const unsigned char roboto_ttf[] = {
 
 struct Text {
     const char *heading, *subheading, *play, *install, *installing, *not_installed, *not_found, *version,
-        *unknown_version, *locate, *other_folder, *start_failed, *no_setup, *not_a_game, *hint, *none;
+        *unknown_version, *locate, *other_folder, *start_failed, *no_setup, *not_a_game, *hint, *none, *preview;
 };
 static const Text kEnglish = {
     "Choose a game",
@@ -72,6 +72,7 @@ static const Text kEnglish = {
     "Arrows or D-pad: choose      Enter or A: play or install      Esc: quit",
     "No game is installed yet. Choose Install on a game's card and pick its files, or locate a game installed "
     "elsewhere.",
+    "In development",
 };
 static const Text kRussian = {
     "Выберите игру",
@@ -91,6 +92,7 @@ static const Text kRussian = {
     "Стрелки или крестовина — выбор      Enter или A — играть или установить      Esc — выход",
     "Ни одна игра пока не установлена. Нажмите «Установить» на карточке игры и укажите её файлы, либо укажите "
     "игру, установленную в другом месте.",
+    "В разработке",
 };
 static const Text kPortuguese = {
     "Escolha um jogo",
@@ -110,6 +112,7 @@ static const Text kPortuguese = {
     "Setas ou direcional: escolher      Enter ou A: jogar ou instalar      Esc: sair",
     "Nenhum jogo instalado ainda. Escolha Instalar no cartão de um jogo e indique os arquivos dele, ou localize um "
     "jogo instalado em outro lugar.",
+    "Em desenvolvimento",
 };
 static const Text kChinese = {
     "选择游戏",
@@ -128,6 +131,7 @@ static const Text kChinese = {
     "该文件旁边没有游戏数据（romfs-index.bin）。",
     "方向键或十字键：选择      Enter 或 A：开始或安装      Esc：退出",
     "尚未安装任何游戏。在游戏卡片上选择“安装”并指定其文件，或指定安装在其他位置的游戏。",
+    "开发中",
 };
 
 // The window languages, those of the installer window (installer/guilogic.py UI_LANGUAGES), with their own names
@@ -619,6 +623,14 @@ static bool card(int g, ImVec2 pos, float k, float s, SDL_Window *window) {
         float pw = sz.x / 2 + 20 * s, ph = sz.y / 2 + 10 * s;
         dl->AddRectFilled(ImVec2(c.x - pw, c.y - ph), ImVec2(c.x + pw, c.y + ph), IM_COL32(10, 12, 15, 210), ph);
         text_centered(dl, F.body, c, kTextHi, T->not_installed);
+    }
+
+    if (kGames[g].preview) {   // a badge in the art's corner: this game's support is still in development
+        ImVec2 sz = measure(F.small, T->preview);
+        ImVec2 p0(a.x + 14 * s, a.y + 14 * s), p1(p0.x + sz.x + 20 * s, p0.y + sz.y + 10 * s);
+        dl->AddRectFilled(p0, p1, IM_COL32(10, 12, 15, 200), (p1.y - p0.y) / 2);
+        dl->AddRect(p0, p1, with_alpha(look.accent, installed ? 0.9f : 0.4f), (p1.y - p0.y) / 2, 0, 1.5f * s);
+        put(dl, F.small, ImVec2(p0.x + 10 * s, p0.y + 5 * s), installed ? kTextHi : kTextLo, T->preview);
     }
 
     // clicks on the art or the title start the game; hovering selects the card

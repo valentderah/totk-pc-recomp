@@ -16,6 +16,7 @@ struct GameInfo {
     const char *prefix;   // build folder names: prefix + the version's digits (v143, botw190)
     const char *exe;      // the executable (tools/games.py Game.exe; .exe added on Windows)
     const char *folder;   // the install folder the launcher offers, next to itself
+    bool preview;         // support still in development: the card says so
 };
 extern const GameInfo kGames[GAME_COUNT];
 

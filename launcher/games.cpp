@@ -8,8 +8,8 @@
 #include <sstream>
 
 const GameInfo kGames[GAME_COUNT] = {
-    {"botw", "The Legend of Zelda", "Breath of the Wild", "botw", "botw", "BotW"},
-    {"totk", "The Legend of Zelda", "Tears of the Kingdom", "v", "totk", "TotK"},
+    {"botw", "The Legend of Zelda", "Breath of the Wild", "botw", "botw", "BotW", true},
+    {"totk", "The Legend of Zelda", "Tears of the Kingdom", "v", "totk", "TotK", false},
 };
 
 std::string exe_name(int game) {
