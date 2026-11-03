@@ -21,6 +21,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Native code, not emulation
 - Game updates 1.1.0, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
+- Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - HDR10 output with peak, game and HUD brightness settings

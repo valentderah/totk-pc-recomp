@@ -225,6 +225,7 @@ class App:
         self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(8, 0))
+        self.label(f, 'ui.compressed_help', wraplength=620, justify='left').pack(anchor='w', pady=(8, 0))
         self.label(f, 'ui.firmware_help', wraplength=620, justify='left').pack(anchor='w', pady=(8, 0))
         self.update_hint = ttk.Label(f, wraplength=620, justify='left')
         self.update_hint.pack(anchor='w', pady=(8, 0))
@@ -303,9 +304,8 @@ class App:
         self.fit()
 
     def pick_file(self, name, pick_id):
-        types = [(self.cat('ui.type_game'), '*.nsp *.xci'), (self.cat('ui.type_all'), '*.*')]
-        if name == 'update':
-            types = [(self.cat('ui.type_nsp'), '*.nsp'), (self.cat('ui.type_all'), '*.*')]
+        # One filter for every game file: the setup tells an NSZ or XCZ from a plain file by its content (Check.unpack)
+        types = [(self.cat('ui.type_game'), '*.nsp *.xci *.nsz *.xcz')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
         path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
