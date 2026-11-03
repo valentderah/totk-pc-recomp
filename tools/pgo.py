@@ -86,11 +86,12 @@ def merge(args) -> int:
     for line in show.splitlines():
         if line.startswith(('Total functions', 'Total count', 'Maximum function count', 'Maximum internal block count')):
             print(f'pgo: {line}')
-    top = [l.strip() for l in show.splitlines() if ':' in l and l.strip().split(':')[0].isdigit()]
-    if top:
-        print('pgo: hottest functions (name: count):')
-        for line in top[:8]:
-            print(f'  {line}')
+    # the hottest functions: llvm-profdata's "Top n functions" block, kept as it prints them
+    hot = [l.rstrip() for l in show.splitlines() if ', max count = ' in l]
+    if hot:
+        print('pgo: hottest functions (name, block count):')
+        for line in hot[:8]:
+            print(f'  {line.strip()}')
     print(f'pgo: use it with: python tools/build_game.py --version {args.version} --pgo use')
     return 0
 
