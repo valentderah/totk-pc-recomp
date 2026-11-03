@@ -684,6 +684,7 @@ NVN_API(nvnWindowAcquireTexture) {
         perf_end(PERF_PACE, p0);
     }
     vk_reflex_sleep();
+    vk_antilag_sleep();
     vk_reflex_marker(0);   //VK_LATENCY_MARKER_SIMULATION_START_NV
     vk_reflex_marker(6);   //VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is

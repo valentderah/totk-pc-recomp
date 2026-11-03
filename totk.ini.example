@@ -152,6 +152,18 @@
 # sharpness = 80
 # NVIDIA Reflex low latency (VK_NV_low_latency2): off, on, or boost (keeps GPU clocks high during CPU-bound command replay).
 # reflex = off
+# AMD Anti-Lag 2 low latency (VK_AMD_anti_lag): off or on. Guided low-latency automatically enables Anti-Lag 2 when
+# AMD FSR Frame Generation is selected, and NVIDIA Reflex On+Boost when NVIDIA DLSS Frame Generation is selected.
+# antilag2 = off
+# Frame Generation (Alpha): off, dlss_fg (NVIDIA DLSS Frame Gen), fsr3_fg (AMD FSR 3.1 Frame Gen) or fsr4_fg
+# (AMD FSR 4 AI Frame Gen, requires AMD Radeon RX 9000 Series RDNA 4 GPU).
+# fg_mode = off
+# DLSS Frame Generation model preset: preset_a (Transformer Optical Flow), preset_b (Optical Flow Balanced),
+# or preset_c (Low Motion Blur / Fast Pacing).
+# fg_preset = preset_a
+# Frame Generation multiplier: 2x (Standard FG on RTX 40+ / FSR FG), 4x or 6x (Multi-Frame Generation, requires
+# NVIDIA GeForce RTX 50 Series Blackwell GPU; automatically clamped to 2x on older GPUs or FSR FG).
+# fg_mult = 2x
 # Ambient occlusion mode: native (game's own AO + contact shadows), ssao (enhanced), hbao (horizon-based) or off.
 # ao_mode = native
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen

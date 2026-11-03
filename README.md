@@ -19,6 +19,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Game updates 1.1.0, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k, 4k...), supersampling, Unified Guided Upscaler Hub (**NVIDIA DLSS 4 / 4.5** Transformer Presets `K`, `J`, `M`, `L`, **DLSS 3** CNN Presets `E`, `C`, **AMD FSR 4.1.2**, and **AMD FSR 1.0**), Native **NVIDIA Reflex** (`VK_NV_low_latency2`: `Off`, `On`, `On + Boost`), Live **Ambient Occlusion** (`Native AO`, `SSAO`, `HBAO`, `Off`), and Global **`Restart now`** in-game action button
+- Hardware-Aware **Frame Generation (Alpha)**: **NVIDIA DLSS Frame Gen** (`Preset A` Transformer / `Preset B` Optical Flow / `Preset C` Low Motion Blur), **Multi-Frame Generation** (`2x` standard, plus `4x` and `6x` MFG gated to **NVIDIA GeForce RTX 50 Series** GPUs), **AMD FSR 3.1 & FSR 4 AI Frame Gen** (`fsr4_fg` gated to **AMD Radeon RX 9000 Series** GPUs), and **AMD Anti-Lag 2** (`VK_AMD_anti_lag`) with automatic guided low-latency pairing
 - HDR10 output with peak, game and HUD brightness settings, plus OLED color calibration (`Vivid`, `Clarity`, `Custom`)
 - 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance

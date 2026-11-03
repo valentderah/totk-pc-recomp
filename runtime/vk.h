@@ -37,7 +37,12 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_nv_reflex,                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_amd_antilag,                    // VK_AMD_anti_lag (AMD Anti-Lag 2)
+        gpu_is_nvidia,                      // vendorID == 0x10de
+        gpu_is_rtx40_plus,                  // NVIDIA RTX 40 / 50 series (DLSS Frame Generation)
+        gpu_is_rtx50,                       // NVIDIA RTX 50 series Blackwell (Multi-Frame Generation 4x / 6x)
+        gpu_is_rx9000;                      // AMD Radeon RX 9000 series RDNA 4 (FSR 4 AI Frame Generation)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -149,6 +154,13 @@ int vk_fsr_scene(VkCommandBuffer cb, VkImageView src_view, VkImage src_img, uint
 void vk_upscaler_log(const char *fmt, ...);
 void vk_reflex_marker(int marker);
 void vk_reflex_sleep(void);
+void vk_antilag_sleep(void);
+int vk_gpu_is_nvidia(void);
+int vk_gpu_is_rtx40_plus(void);
+int vk_gpu_is_rtx50(void);
+int vk_gpu_is_rx9000(void);
+int vk_has_amd_antilag(void);
+int vk_fg_active_multiplier(void);
 void vk_fsr_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller

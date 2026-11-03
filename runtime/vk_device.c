@@ -192,7 +192,16 @@ static int pick_device(void) {
             break;
         }
     free(qp);
-    rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+    g_vk.gpu_is_nvidia = g_vk.props.vendorID == 0x10de;
+    g_vk.gpu_is_rtx50 = g_vk.gpu_is_nvidia &&
+                        (strstr(g_vk.props.deviceName, "RTX 50") != NULL || g_vk.props.deviceID >= 0x2b00);
+    g_vk.gpu_is_rtx40_plus = g_vk.gpu_is_rtx50 ||
+                             (g_vk.gpu_is_nvidia &&
+                              (strstr(g_vk.props.deviceName, "RTX 40") != NULL || g_vk.props.deviceID >= 0x2600));
+    g_vk.gpu_is_rx9000 = g_vk.props.vendorID == 0x1002 &&
+                         (strstr(g_vk.props.deviceName, "RX 90") != NULL || strstr(g_vk.props.deviceName, "RX90") != NULL);
+    rt_log("vk: using gpu %d: %s (nvidia=%d, rtx40+=%d, rtx50=%d, rx9000=%d)", best, g_vk.props.deviceName,
+           g_vk.gpu_is_nvidia, g_vk.gpu_is_rtx40_plus, g_vk.gpu_is_rtx50, g_vk.gpu_is_rx9000);
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
@@ -281,6 +290,10 @@ static int create_device(void) {
     if (has_ext(ep, ne, "VK_NV_low_latency2")) {
         g_vk.has_nv_reflex = 1;
         ext[n_ext++] = "VK_NV_low_latency2";
+    }
+    if (has_ext(ep, ne, "VK_AMD_anti_lag")) {
+        g_vk.has_amd_antilag = 1;
+        ext[n_ext++] = "VK_AMD_anti_lag";
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
@@ -416,6 +429,12 @@ void vk_shutdown(void) {
 }
 
 VkCtx *vk_ctx(void) { return g_ready ? &g_vk : NULL; }
+
+int vk_gpu_is_nvidia(void) { return g_ready && g_vk.gpu_is_nvidia; }
+int vk_gpu_is_rtx40_plus(void) { return g_ready && g_vk.gpu_is_rtx40_plus; }
+int vk_gpu_is_rtx50(void) { return g_ready && g_vk.gpu_is_rtx50; }
+int vk_gpu_is_rx9000(void) { return g_ready && g_vk.gpu_is_rx9000; }
+int vk_has_amd_antilag(void) { return g_ready && g_vk.has_amd_antilag; }
 
 static const char *fault_address_type(VkDeviceFaultAddressTypeEXT t) {
     switch (t) {

@@ -51,6 +51,12 @@ extern "C" {
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
+int vk_gpu_is_nvidia(void);
+int vk_gpu_is_rtx40_plus(void);
+int vk_gpu_is_rtx50(void);
+int vk_gpu_is_rx9000(void);
+int vk_has_amd_antilag(void);
+int vk_fg_active_multiplier(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 void res_wanted(unsigned out[2]);
 void res_wanted_scene(unsigned scene[2]);
@@ -567,7 +573,7 @@ static bool rows_upscaler(void) {
         static char scale_note[128];
         const char *snote = nullptr;
         if (cur_sc[0] != want_sc[0] || cur_sc[1] != want_sc[1]) {
-            snprintf(scale_note, sizeof scale_note, "active: %u├ù%u -> %u├ù%u after restart", cur_sc[0], cur_sc[1],
+            snprintf(scale_note, sizeof scale_note, "active: %u×%u -> %u×%u after restart", cur_sc[0], cur_sc[1],
                      want_sc[0], want_sc[1]);
             snote = scale_note;
         }
@@ -595,9 +601,65 @@ static bool rows_upscaler(void) {
     if (is_fsr) {
         opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     }
+    // Hardware-aware Frame Generation (DLSS Frame Gen Presets A/B/C + MFG 2x/4x/6x, FSR 3.1 FG, FSR 4 AI FG)
+    static const char *const fg_vals[] = {"off", "dlss_fg", "fsr3_fg", "fsr4_fg"};
+    static const char *const fg_names[] = {"Off", "NVIDIA DLSS Frame Gen", "AMD FSR 3.1 Frame Gen",
+                                           "AMD FSR 4 AI Frame Gen"};
+    static char fg_note[128];
+    const char *fgn = nullptr;
+    const char *fg_cur = cfg_value("TOTK_FG_MODE");
+    if (!strcmp(fg_cur, "fsr4_fg") && !vk_gpu_is_rx9000()) {
+        snprintf(fg_note, sizeof fg_note, "requires AMD RX 9000 Series GPU (using FSR 3.1 FG)");
+        fgn = fg_note;
+    } else if (!strcmp(fg_cur, "dlss_fg") && !vk_gpu_is_nvidia()) {
+        snprintf(fg_note, sizeof fg_note, "requires NVIDIA RTX GPU (using FSR 3.1 FG)");
+        fgn = fg_note;
+    }
+    if (opt_choice_list("TOTK_FG_MODE", UI_MENU_FG_MODE, fg_vals, fg_names, 4, UI_MENU_FG_MODE_DESC, -1, fgn)) {
+        const char *fg_new = cfg_value("TOTK_FG_MODE");
+        if (!strcmp(fg_new, "dlss_fg")) {
+            cfg_set("TOTK_REFLEX", "boost");
+            if (!vk_gpu_is_rtx50()) cfg_set("TOTK_FG_MULT", "2x");
+        } else if (!strcmp(fg_new, "fsr3_fg") || !strcmp(fg_new, "fsr4_fg")) {
+            cfg_set("TOTK_ANTILAG2", "on");
+            if (vk_gpu_is_nvidia() && !strcmp(cfg_value("TOTK_REFLEX"), "off")) cfg_set("TOTK_REFLEX", "on");
+            cfg_set("TOTK_FG_MULT", "2x");
+        }
+        cfg_save();
+    }
+    fg_cur = cfg_value("TOTK_FG_MODE");
+    bool fg_on = strcmp(fg_cur, "off") != 0;
+    bool fg_dlss = !strcmp(fg_cur, "dlss_fg") && vk_gpu_is_nvidia();
+    if (fg_dlss) {
+        static const char *const fgp_vals[] = {"preset_a", "preset_b", "preset_c"};
+        static const char *const fgp_names[] = {"DLSS FG Transformer (Preset A)", "DLSS FG Optical Flow (Preset B)",
+                                                "DLSS FG Low Motion Blur (Preset C)"};
+        opt_choice_list("TOTK_FG_PRESET", UI_MENU_FG_PRESET, fgp_vals, fgp_names, 3, UI_MENU_FG_PRESET_DESC);
+    }
+    if (fg_on) {
+        static const char *const fgm_vals[] = {"2x", "4x", "6x"};
+        static const char *const fgm_names[] = {"2x (Standard FG)", "4x (MFG - RTX 50 Series)",
+                                                "6x (MFG - RTX 50 Series)"};
+        static char mult_note[128];
+        const char *mn = nullptr;
+        const char *mcur = cfg_value("TOTK_FG_MULT");
+        if (strcmp(mcur, "2x") != 0 && (!fg_dlss || !vk_gpu_is_rtx50())) {
+            snprintf(mult_note, sizeof mult_note,
+                     !fg_dlss ? "FSR Frame Gen supports 2x (active: 2x)"
+                              : "MFG 4x / 6x requires RTX 50 Series (active: 2x)");
+            mn = mult_note;
+        }
+        opt_choice_list("TOTK_FG_MULT", UI_MENU_FG_MULT, fgm_vals, fgm_names, 3, UI_MENU_FG_MULT_DESC, -1, mn);
+    }
     static const char *const reflex_vals[] = {"off", "on", "boost"};
     static const char *const reflex_names[] = {"Off", "On", "On + Boost"};
     opt_choice_list("TOTK_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC);
+    static const char *const al_vals[] = {"off", "on"};
+    static const char *const al_names[] = {"Off", "On"};
+    const char *al_note = (!strcmp(cfg_value("TOTK_ANTILAG2"), "on") && !vk_has_amd_antilag())
+                              ? (vk_gpu_is_nvidia() ? "paired with NVIDIA Reflex on RTX GPU" : "driver pacing active")
+                              : nullptr;
+    opt_choice_list("TOTK_ANTILAG2", UI_MENU_ANTILAG2, al_vals, al_names, 2, UI_MENU_ANTILAG2_DESC, -1, al_note);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     return ask_restart;
 }
@@ -1227,9 +1289,10 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
                                         ImGuiWindowFlags_NoSavedSettings);
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_TITLE));
     // the port version and the game update, right-aligned on the title line: what a bug report needs first
-    char game[16], version[96];
+    char game[16], version[128], pver[64];
     snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
-    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, game);
+    snprintf(pver, sizeof pver, "%s-alpha-fg", rt_port_version);
+    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), pver, game);
     ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
     ImGui::TextDisabled("%s", version);
 
@@ -1398,7 +1461,10 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         g_perf_frames++;
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
-            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), g_perf_frames * 1e9 / g_perf_win_ns);
+            int fgm = vk_fg_active_multiplier();
+            double fps = (g_perf_frames * 1e9 / g_perf_win_ns) * (fgm > 1 ? fgm : 1);
+            if (fgm > 1) snprintf(g_perf_text, sizeof g_perf_text, "%.0f fps (FG %dx)", fps, fgm);
+            else snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), fps);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -1472,6 +1538,14 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         snprintf(v[3], sizeof v[3], "%s",
                  menu_text(down ? UI_MENU_OV_SCALE_DOWN : t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
+    int fg_mult = vk_fg_active_multiplier();
+    if (fg_mult > 1) {
+        size_t l3 = strlen(v[3]);
+        const char *fgm = cfg_value("TOTK_FG_MODE");
+        const char *fgt = (!strcmp(fgm, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
+                        : (!strcmp(fgm, "fsr4_fg") && vk_gpu_is_rx9000()) ? "FSR4 FG" : "FSR3 FG";
+        if (l3 + 16 < sizeof v[3]) snprintf(v[3] + l3, sizeof v[3] - l3, " + %s %dx", fgt, fg_mult);
+    }
     double hz = frame_step_limit_hz();
     snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
     if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
@@ -1536,7 +1610,8 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_GAME_GB, perf_gb(s.ram_game_mb));
         ImGui::TableNextColumn();   // the frame row: no label, the rate in its place
         char b[64];
-        snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS), s.fps);
+        int fg_m = vk_fg_active_multiplier();
+        snprintf(b, sizeof b, menu_text(UI_MENU_OV_FPS), s.fps * (fg_m > 1 ? fg_m : 1));
         ImGui::TextColored(fps_c, "%s", b);
         perf_cell(UI_MENU_OV_FRAME_MS, s.frame_ms_avg);
         perf_cell(UI_MENU_OV_MAX_MS, s.frame_ms_max);

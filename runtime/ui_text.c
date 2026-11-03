@@ -144,9 +144,27 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
                                 "and Ultra Performance (33 %); DLSS 3 (Preset E / C) uses CNN. Quality presets guide "
                                 "this choice automatically, or you can override it manually at any time.",
+    [UI_MENU_FG_MODE] = "Frame Generation",
+    [UI_MENU_FG_MODE_DESC] = "Generates interpolated frames between rendered frames to multiply smoothness. "
+                             "NVIDIA DLSS Frame Gen supports Presets A / B / C and automatically enables NVIDIA Reflex "
+                             "(On + Boost). AMD FSR 3.1 Frame Gen works on all GPUs and pairs with AMD Anti-Lag 2. "
+                             "AMD FSR 4 AI Frame Gen uses RDNA 4 neural optical flow (requires AMD Radeon RX 9000 Series GPU) "
+                             "and automatically enables AMD Anti-Lag 2.",
+    [UI_MENU_FG_PRESET] = "DLSS Frame Gen preset",
+    [UI_MENU_FG_PRESET_DESC] = "Selects the NVIDIA DLSS Frame Generation neural profile: Preset A (Transformer optical "
+                               "flow, sharpest HUD & motion stability), Preset B (Balanced optical flow for fast camera "
+                               "pans), or Preset C (Low motion blur / ultra-clean disocclusion).",
+    [UI_MENU_FG_MULT] = "Frame Gen multiplier",
+    [UI_MENU_FG_MULT_DESC] = "Number of presented frames per rendered frame. 2x is supported on all Frame Gen GPUs "
+                             "(RTX 40 / 50 series and FSR Frame Gen). 4x and 6x Multi-Frame Generation (MFG) require "
+                             "an NVIDIA GeForce RTX 50 Series (Blackwell) GPU.",
     [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
     [UI_MENU_REFLEX_DESC] = "Synchronises CPU simulation and GPU submission via VK_NV_low_latency2 to eliminate the "
-                            "render queue and minimize input lag. On+Boost keeps GPU clocks high during CPU-bound scenes.",
+                            "render queue and minimize input lag. Automatically guided to On + Boost when DLSS Frame "
+                            "Generation is enabled.",
+    [UI_MENU_ANTILAG2] = "AMD Anti-Lag 2",
+    [UI_MENU_ANTILAG2_DESC] = "Synchronises CPU frame pacing with GPU execution via VK_AMD_anti_lag to minimize click-to-photon "
+                              "latency. Automatically guided to On when AMD FSR 3.1 or FSR 4 AI Frame Generation is enabled.",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
 

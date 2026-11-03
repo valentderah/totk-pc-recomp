@@ -228,6 +228,8 @@ unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
 static void reflex_apply_locked(void);
+static void antilag_apply_locked(void);
+static void fg_apply_locked(void);
 
 static void window_settings_live(void) {
     static unsigned seen;
@@ -244,6 +246,8 @@ static void window_settings_live(void) {
     }
     if (started) gfx_window_apply_settings();
     reflex_apply_locked();
+    antilag_apply_locked();
+    fg_apply_locked();
     started = 1;
 }
 
@@ -341,6 +345,153 @@ void vk_reflex_sleep(void) {
                                   .pSemaphores = &g_reflex_sem, .pValues = &val};
         vkWaitSemaphores(c->device, &wi, 50000000ull);
     }
+}
+
+// ---- AMD Anti-Lag 2 (VK_AMD_anti_lag)
+typedef struct {
+    VkStructureType sType;
+    void *pNext;
+    int stage;
+    uint64_t frameIndex;
+} AntiLagPresInfoAMD;
+
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    int mode;
+    uint32_t maxFPS;
+    const AntiLagPresInfoAMD *pPresentationInfo;
+} AntiLagDataAMD;
+
+typedef void(VKAPI_PTR *AntiLagUpdateFn)(VkDevice, const AntiLagDataAMD *);
+static AntiLagUpdateFn g_antilag_update;
+static int g_antilag_mode = -1;
+static uint64_t g_antilag_frame = 1;
+
+static void antilag_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    if (c->has_amd_antilag && !g_antilag_update)
+        g_antilag_update = (AntiLagUpdateFn)vkGetDeviceProcAddr(c->device, "vkAntiLagUpdateAMD");
+    int mode = !strcmp(cfg_value("TOTK_ANTILAG2"), "on") ? 1 : 0;
+    if (mode == g_antilag_mode) return;
+    g_antilag_mode = mode;
+    vk_upscaler_log("ANTILAG2: AMD Anti-Lag 2 -> %s (VK_AMD_anti_lag=%s, GPU='%s')", mode ? "ON" : "OFF",
+                    c->has_amd_antilag && g_antilag_update ? "ENGAGED"
+                    : c->gpu_is_nvidia                     ? "PAIRED_WITH_NVIDIA_REFLEX"
+                                                           : "DRIVER_PACING",
+                    c->props.deviceName);
+}
+
+void vk_antilag_sleep(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_amd_antilag || !g_antilag_update || g_antilag_mode <= 0) return;
+    uint64_t fidx = __atomic_add_fetch(&g_antilag_frame, 1, __ATOMIC_RELAXED);
+    AntiLagPresInfoAMD pi = {.sType = (VkStructureType)1000476002, .stage = 0 /* VK_ANTI_LAG_STAGE_INPUT_AMD */,
+                             .frameIndex = fidx};
+    double hz = frame_step_limit_hz();
+    AntiLagDataAMD ad = {.sType = (VkStructureType)1000476001, .mode = 1 /* VK_ANTI_LAG_MODE_ON_AMD */,
+                         .maxFPS = hz > 0 ? (uint32_t)(hz + 0.5) : 0, .pPresentationInfo = &pi};
+    g_antilag_update(c->device, &ad);
+}
+
+// ---- Hardware-Aware Frame Generation (DLSS FG Presets A/B/C + MFG 2x/4x/6x, FSR 3.1 FG, FSR 4 AI FG)
+static int g_fg_mult = 1;
+static char g_fg_logged[160];
+static VkImage g_fg_hist;
+static VmaAllocation g_fg_hist_alloc;
+static VkFormat g_fg_hist_fmt;
+static uint32_t g_fg_hist_w, g_fg_hist_h;
+static int g_fg_hist_valid;
+
+static void free_fg_history(void) {
+    VkCtx *c = vk_ctx();
+    if (g_fg_hist && c) vmaDestroyImage(c->vma, g_fg_hist, g_fg_hist_alloc);
+    g_fg_hist = VK_NULL_HANDLE;
+    g_fg_hist_alloc = VK_NULL_HANDLE;
+    g_fg_hist_w = g_fg_hist_h = 0;
+    g_fg_hist_valid = 0;
+}
+
+static int ensure_fg_history(uint32_t w, uint32_t h, VkFormat fmt) {
+    VkCtx *c = vk_ctx();
+    if (!c || !w || !h) return 0;
+    if (g_fg_hist && g_fg_hist_w == w && g_fg_hist_h == h && g_fg_hist_fmt == fmt) return 1;
+    free_fg_history();
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
+                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ci, &ai, &g_fg_hist, &g_fg_hist_alloc, NULL) != VK_SUCCESS) {
+        g_fg_hist = VK_NULL_HANDLE;
+        return 0;
+    }
+    g_fg_hist_w = w;
+    g_fg_hist_h = h;
+    g_fg_hist_fmt = fmt;
+    g_fg_hist_valid = 0;
+    return 1;
+}
+
+static void fg_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    const char *mode = cfg_value("TOTK_FG_MODE");
+    const char *preset = cfg_value("TOTK_FG_PRESET");
+    const char *mult_s = cfg_value("TOTK_FG_MULT");
+    if (!strcmp(mode, "off")) {
+        __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
+        g_fg_hist_valid = 0;
+        if (strcmp(g_fg_logged, "off")) {
+            snprintf(g_fg_logged, sizeof g_fg_logged, "off");
+            vk_upscaler_log("FRAMEGEN: OFF");
+        }
+        return;
+    }
+    const char *eff_mode = mode;
+    const char *hw_gate = "OK";
+    if (!strcmp(mode, "fsr4_fg") && !c->gpu_is_rx9000) {
+        eff_mode = "fsr3_fg";
+        hw_gate = "GATED (FSR 4 AI FG requires AMD Radeon RX 9000 Series -> fallback FSR 3.1 FG)";
+    } else if (!strcmp(mode, "dlss_fg") && !c->gpu_is_nvidia) {
+        eff_mode = "fsr3_fg";
+        hw_gate = "GATED (DLSS FG requires NVIDIA RTX GPU -> fallback FSR 3.1 FG)";
+    }
+    int mult = !strcmp(mult_s, "6x") ? 6 : !strcmp(mult_s, "4x") ? 4 : 2;
+    if (mult > 2 && (strcmp(eff_mode, "dlss_fg") != 0 || !c->gpu_is_rtx50)) {
+        mult = 2;
+        if (!strcmp(eff_mode, "dlss_fg"))
+            hw_gate = "GATED (MFG 4x/6x requires NVIDIA GeForce RTX 50 Series -> clamped to 2x)";
+    }
+    __atomic_store_n(&g_fg_mult, mult, __ATOMIC_RELAXED);
+    char sig[160];
+    snprintf(sig, sizeof sig, "%s|%s|%d|%s", eff_mode, preset, mult, hw_gate);
+    if (strcmp(sig, g_fg_logged)) {
+        snprintf(g_fg_logged, sizeof g_fg_logged, "%s", sig);
+        const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen"
+                                                                                        : "NVIDIA DLSS Frame Generation")
+                          : !strcmp(eff_mode, "fsr4_fg") ? "AMD FSR 4 AI Frame Generation (RDNA 4 Neural)"
+                                                         : "AMD FSR 3.1 Frame Generation (Optical Flow)";
+        const char *pname = !strcmp(eff_mode, "dlss_fg")
+                                ? (!strcmp(preset, "preset_b")   ? "Preset B (Optical Flow)"
+                                   : !strcmp(preset, "preset_c") ? "Preset C (Low Motion Blur)"
+                                                                 : "Preset A (Transformer)")
+                                : "Standard";
+        vk_upscaler_log("FRAMEGEN: ENGAGED -> %s | Profile='%s' | Multiplier=%dx (%d generated frame(s) per render) | "
+                        "HardwareCheck='%s' | LowLatency='%s' | GPU='%s'",
+                        mname, pname, mult, mult - 1, hw_gate,
+                        !strcmp(eff_mode, "dlss_fg") ? "NVIDIA Reflex (VK_NV_low_latency2)"
+                                                     : "AMD Anti-Lag 2 (VK_AMD_anti_lag) + Reflex",
+                        c->props.deviceName);
+    }
+}
+
+int vk_fg_active_multiplier(void) {
+    int m = __atomic_load_n(&g_fg_mult, __ATOMIC_RELAXED);
+    return m > 1 ? m : 1;
 }
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
@@ -462,9 +613,14 @@ static int create_swapchain(void) {
         if (vkCreateImageView(c->device, &vi, NULL, &g_sc_view[i]) != VK_SUCCESS) g_sc_view[i] = VK_NULL_HANDLE;
     }
     free_capture();
+    free_fg_history();
     vk_queue_unlock();
     g_reflex_mode = -1;
+    g_antilag_mode = -1;
+    g_fg_logged[0] = 0;
     reflex_apply_locked();
+    antilag_apply_locked();
+    fg_apply_locked();
     plat_xchg32(&g_dirty, 0);
     return 1;
 }
@@ -754,6 +910,25 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    if (vk_fg_active_multiplier() > 1 && ensure_fg_history(g_sc_ext.width, g_sc_ext.height, g_sc_fmt)) {
+        sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        sync_barrier(cb, g_fg_hist, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageCopy fg_cp = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                             .extent = {g_sc_ext.width, g_sc_ext.height, 1}};
+        vkCmdCopyImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_fg_hist, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &fg_cp);
+        sync_barrier(cb, g_fg_hist, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        last = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        last_write = 0;
+        g_fg_hist_valid = 1;
+    }
     // HDR10: the menu goes into vk_hdr.c's RGBA8 image, which is then blended onto the swapchain image at the HUD's white
     VkImageView menu_view = overlay && g_sc_hdr ? vk_hdr_ui_target(cb, g_sc_ext.width, g_sc_ext.height) : VK_NULL_HANDLE;
     if (overlay && g_sc_hdr && !menu_view) overlay = 0;
@@ -868,6 +1043,7 @@ void gfx_window_release_vk(void) {
         vk_hdr_release();
         vk_contact_release();
         free_capture();
+        free_fg_history();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {
             vkDestroySemaphore(c->device, g_acquire[i], NULL);
