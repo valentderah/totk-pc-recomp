@@ -685,6 +685,7 @@ static void tab_screen(float scale) {
     static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
                                      UI_MENU_DLSS_CHARS_FULL};
     opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
+    opt_slider("TOTK_DLAA_SHARPNESS", UI_MENU_DLAA_SHARPNESS, 0, 100, UI_MENU_DLAA_SHARPNESS_DESC, 5, "%.0f %%");
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);

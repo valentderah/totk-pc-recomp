@@ -220,6 +220,10 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# Sharpening of the DLSS picture, 0 (off) to 100. DLSS has no sharpening of its own any more, so this runs NVIDIA Image
+# Scaling's NVSharpen, the filter NVIDIA's DLSS guide recommends, on its result. Changes while the game runs take effect
+# at once.
+# dlaa_sharpness = 0
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1

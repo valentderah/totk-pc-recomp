@@ -1,0 +1,31 @@
+// NVIDIA Image Scaling's NVSharpen on the DLAA result (runtime/vk_dlaa.c). The DLSS programming guide, section 3.11,
+// names it in place of DLSS's own sharpening pass, which is gone. nis/NIS_Scaler.h is NVIDIA's header, unmodified (MIT,
+// nis/LICENSE.txt). Block and group sizes are the header's NVIDIA_Generic values for no upscaling.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define NIS_GLSL 1
+#define NIS_SCALER 0
+#define NIS_HDR_MODE 1
+#define NIS_BLOCK_WIDTH 32
+#define NIS_BLOCK_HEIGHT 32
+#define NIS_THREAD_GROUP_SIZE 128
+
+layout(local_size_x = NIS_THREAD_GROUP_SIZE) in;
+
+layout(push_constant) uniform Params {
+    float kDetectRatio, kDetectThres, kMinContrastRatio, kRatioNorm;
+    float kContrastBoost, kEps, kSharpStartY, kSharpScaleY;
+    float kSharpStrengthMin, kSharpStrengthScale, kSharpLimitMin, kSharpLimitScale;
+    float kSrcNormX, kSrcNormY;
+};
+
+layout(set = 0, binding = 0) uniform sampler samplerLinearClamp;
+layout(set = 0, binding = 1) uniform texture2D in_texture;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D out_texture;
+
+#include "nis/NIS_Scaler.h"
+
+void main() {
+    NVSharpen(gl_WorkGroupID.xy, gl_LocalInvocationID.x);
+}
