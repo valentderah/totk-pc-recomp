@@ -750,14 +750,17 @@ static void camera_overlay(void) {
 // The button prompts' folders (input_prompts_folder) and whether each had a manifest next to romfs-index.bin at start;
 // the one the settings asked for at start, the one overlay_init loaded (NULL: the game's own prompts) and why the first
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
-static struct { const char *name; int ready; } prompts_folders[2];
+// romfs-patches-pc keeps that name, but at a game resolution of another shape than 16:9 its files come from pc_dir,
+// romfs-patches-pc-<w>x<h> (overlay_init).
+static struct { const char *name; int ready; } prompts_folders[3];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
+static char pc_dir[64];
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -798,6 +801,9 @@ static void overlay_init(void) {
     // keeps the Switch prompts. So does a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of
     // the prompts' fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made
     // for the game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
+    // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
+    // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
+    // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
     char def[2100], path[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES"), *mods = cfg_get("TOTK_ROMFS_MODS");
     int wide = 0;
@@ -813,34 +819,46 @@ static void overlay_init(void) {
                    "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
         }
     }
-    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each folder
-    for (int i = 0; i < 2; i++) {
-        prompts_folders[i].name = input_prompts_folder(PROMPTS_XBOX, layouts[i]);
+    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
+    for (int i = 0; i < 3; i++) {
+        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
+        const char *dir = name;
+        if (i == 2) {
+            if (wide) snprintf(pc_dir, sizeof pc_dir, "%s-%ux%u", name, out[0], out[1]);
+            else snprintf(pc_dir, sizeof pc_dir, "%s", name);
+            dir = pc_dir;
+        }
+        prompts_folders[i].name = name;
         prompts_folders[i].ready =
-            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[i].name) < (int)sizeof path &&
-            plat_file_exists(path);
+            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, dir) < (int)sizeof path && plat_file_exists(path);
     }
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    prompts_wanted = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+    int pick = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), shaped = wide && pick == PROMPTS_PC;
+    const char *style = pick == PROMPTS_PC ? "keyboard and mouse" : "Xbox";
+    prompts_wanted = input_prompts_folder(pick, layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
-                  : wide                                  ? ROMFS_PROMPTS_SHAPE
-                  : patches                               ? ROMFS_PROMPTS_PATCHES
-                  : !romfs_prompts_ready(prompts_wanted)  ? ROMFS_PROMPTS_MISSING
+                  : wide && !shaped                       ? ROMFS_PROMPTS_SHAPE
+                  : patches && !wide                      ? ROMFS_PROMPTS_PATCHES
+                  : !romfs_prompts_ready(prompts_wanted)  ? (shaped ? ROMFS_PROMPTS_SHAPE : ROMFS_PROMPTS_MISSING)
                                                           : ROMFS_PROMPTS_OK;
     restbl_find();
     size_t first = noverlay;
     if (prompts_wanted && prompts_off == ROMFS_PROMPTS_OK) {
-        snprintf(path, sizeof path, "%s/%s", index_dir, prompts_wanted);   // fits: its manifest path did
+        // fits: its manifest path did
+        snprintf(path, sizeof path, "%s/%s", index_dir, shaped ? pc_dir : prompts_wanted);
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
-            rt_log("RomFS overlay: Xbox button prompts (%s)", path);
+            rt_log("RomFS overlay: %s button prompts (%s)", style, path);
+            if (shaped) patches = NULL;   // in place of romfs-patches-<w>x<h>, whose UI layout it carries
         } else {
             prompts_off = ROMFS_PROMPTS_FAILED;
             rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", path);
         }
     } else if (prompts_wanted) {
-        rt_log("RomFS overlay: prompts = xbox, but %s; Switch prompts stay",
-               prompts_off == ROMFS_PROMPTS_SHAPE     ? "the game resolution takes its own UI layout"
+        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay", pick == PROMPTS_PC ? "pc" : "xbox",
+               prompts_off == ROMFS_PROMPTS_SHAPE     ? (shaped ? "the game resolution has no romfs-patches-pc-<w>x<h> "
+                                                                  "(tools/make_romfs_patches.py --prompts pc --aspect)"
+                                                             : "the game resolution takes its own UI layout")
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
     }
@@ -856,11 +874,13 @@ static void overlay_init(void) {
     mods_overlay_init();
     const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
     if (clash) {
-        rt_log("RomFS overlay: a RomFS mod replaces %s, which the Xbox prompts change too; Switch prompts stay", clash);
+        rt_log("RomFS overlay: a RomFS mod replaces %s, which the %s prompts change too; Switch prompts stay", clash,
+               style);
         overlay_drop(first, prompts_end);
         prompts_loaded = NULL;
         prompts_off = ROMFS_PROMPTS_MODS;
-        if (plain_ok) overlay_load(plain, 0, 0);
+        if (shaped) overlay_load(def, 0, 0);
+        else if (plain_ok) overlay_load(plain, 0, 0);
     }
     restbl_collect();
     overlay_contest();
