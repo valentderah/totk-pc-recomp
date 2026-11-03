@@ -609,6 +609,8 @@ def ci_container(args):
     run([docker, 'build', '--platform', 'linux/amd64', '-f', str(dockerfile), '-t', CONTAINER_IMAGE,
          str(dockerfile.parent)])
     out = args.out.resolve()
+    # Docker creates a missing bind target as root, and the container then cannot write its own output folder.
+    out.parent.mkdir(parents=True, exist_ok=True)
     mounts = [f'{MAIN_ROOT}:{MAIN_ROOT}', f'{out.parent}:{out.parent}']
     cmd = [docker, 'run', '--rm', '--init', '--platform', 'linux/amd64',
            '-u', f'{os.getuid()}:{os.getgid()}', '-e', 'HOME=/tmp', '-e', 'TOTK_CI_CONTAINER=1']
