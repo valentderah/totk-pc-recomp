@@ -171,8 +171,9 @@ def build_deps(out, llvm, sysroot):
     (d / 'lib').mkdir(parents=True, exist_ok=True)
     vk = tar_extract('vulkan-headers-src', WORK / 'vulkan-headers', ['Vulkan-Headers-1.4.363/include',
                                                                      'Vulkan-Headers-1.4.363/LICENSE.md'], strip=1)
+    # The CI job caches runtime/deps, so this runs again on a restored tree: overwrite, do not abort.
     for sub in ('vulkan', 'vk_video'):
-        shutil.copytree(vk / 'include' / sub, d / 'include' / sub)
+        shutil.copytree(vk / 'include' / sub, d / 'include' / sub, dirs_exist_ok=True)
     shutil.copy2(mr.fetch('vma-header'), d / 'include' / 'vma' / 'vk_mem_alloc.h')
     zs = tar_extract('zstd-src', WORK / 'zstd', ['zstd-1.5.7'], strip=1)
     lib = zs / 'lib'
