@@ -144,6 +144,10 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
+// SMAA on the present (vk_smaa.c): with TOTK_ANTIALIASING = smaa, records SMAA of src's crop rectangle {x, y, w, h}
+// into an RGBA16F image of that size in GENERAL (*out, *out_fmt) and returns 1; 0 = nothing recorded. src is in GENERAL.
+int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], VkImage *out, VkFormat *out_fmt);
+void vk_smaa_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.

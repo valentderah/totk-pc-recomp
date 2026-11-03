@@ -613,7 +613,14 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImage dst = g_sc_img[idx];
     sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    const int rect[4] = {cx, cy, cw, ch};
+    int rect[4] = {cx, cy, cw, ch};
+    VkImage smaa;   // SMAA (vk_smaa.c) on the game resolution picture; an HDR10 picture is not tonemapped yet
+    if (general && !g_sc_hdr && vk_smaa_record(cb, src, fmt, rect, &smaa, &fmt)) {
+        src = smaa;
+        w = cw;
+        h = ch;
+        cx = cy = rect[0] = rect[1] = 0;
+    }
     int to[4];   // where the picture goes in the swapchain image: {x, y, w, h}
     gfx_fit_rect(cw, ch, (int)g_sc_ext.width, (int)g_sc_ext.height, to);
     if (to[2] != (int)g_sc_ext.width || to[3] != (int)g_sc_ext.height) {   // black bars beside or above and below it
@@ -763,6 +770,7 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_smaa_release();
         vk_color_release();
         vk_hdr_release();
         vk_contact_release();
