@@ -889,15 +889,33 @@ static void probe_menu_text(void) {
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_PT_BR; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
+    // game language list: pt-BR only where the build ships USpt; the Switch variants are entries of their own
+    {
+        UiGameLang gl[16];
+        int n121 = ui_text_game_langs(121, gl, 16), has[16] = {0};
+        for (int i = 0; i < n121; i++) CHECK(strcmp(gl[i].code, "pt-BR"), "1.2.1 game language list offers pt-BR");
+        int n143 = ui_text_game_langs(143, gl, 16), pt = 0;
+        for (int i = 0; i < n143; i++) {
+            pt |= !strcmp(gl[i].code, "pt-BR");
+            for (int j = 0; j < i; j++) CHECK(strcmp(gl[i].code, gl[j].code), "duplicate game language %s", gl[i].code);
+        }
+        CHECK(pt && n143 == n121 + 1, "1.4.3 game language list lacks pt-BR");
+        static const char *const want[] = {"en-GB", "fr-CA", "es-419"};
+        for (int w = 0; w < 3; w++)
+            for (int i = 0; i < n143; i++) has[w] |= !strcmp(gl[i].code, want[w]);
+        CHECK(has[0] && has[1] && has[2], "game language list lacks en-GB, fr-CA or es-419");
+    }
     // the overlay formats keep their conversions
-    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
+    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("ru", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("ru", UI_MENU_OV_LOW01), "%.0f"),
           "overlay format lost its conversion");
     CHECK(strstr(ui_text_in("pt-BR", UI_MENU_OV_GAME_PCT), "%.0f%%") &&
-          strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f"), "pt-BR overlay format lost its conversion");
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("zh-Hans", UI_MENU_OV_LOW01), "%.0f"), "pt-BR overlay format lost its conversion");
     // a Brazilian game language gets the Brazilian keyboard row, Portugal's Portuguese keeps its own
     CHECK(!strcmp(ui_text_lang("pt-BR"), "pt-BR") && !strcmp(ui_text_lang("pt"), "pt") &&
           strcmp(ui_text_in("pt-BR", UI_SWKBD_PROMPT), ui_text_in("pt", UI_SWKBD_PROMPT)), "pt-BR keyboard row not used");

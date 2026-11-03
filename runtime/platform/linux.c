@@ -1262,6 +1262,8 @@ int plat_os_version(char *out, size_t cap) {
 
 int plat_is_wine(void) { return 0; }
 
+int plat_console_release_if_owned(void) { return 0; }
+
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
     if (fstat(2, &st) || !S_ISREG(st.st_mode)) return 0;
