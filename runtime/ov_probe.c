@@ -405,8 +405,22 @@ static void probe_applet(void) {
                                      0x33 ^ 0x44 ^ 0x55 ^ 0x66, 0x48, 0x0F, 0xE0, 0xF1, 0x10, 0xFF, 0xEE};
     uint8_t dump[AMIIBO_DUMP_SIZE] = {0};
     memcpy(dump, head, sizeof head);
+    // Link (Archer): character 0x0100, variant 0, figure type 0, model number 0x0353, series 9, format 02
+    static const uint8_t id[8] = {0x01, 0x00, 0x00, 0x00, 0x03, 0x53, 0x09, 0x02};
+    memcpy(dump + 0x54, id, sizeof id);
     const char *dump_path = "probe-amiibo.bin";
     int amiibo_ok = plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    // TagInfo carries the 7-byte UID without its check byte; ModelInfo has the series at 3, the model number
+    // little-endian at 4 and the figure type at 6
+    uint8_t ti[0x58], mi[0x40];
+    amiibo_get_tag_info(ti);
+    amiibo_get_model_info(mi);
+    static const uint8_t want_uid[7] = {0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    static const uint8_t want_model[7] = {0x01, 0x00, 0x00, 0x09, 0x53, 0x03, 0x00};
+    CHECK(amiibo_ok && !memcmp(ti, want_uid, 7) && ti[0x0A] == 7, "amiibo TagInfo UID %02x %02x %02x %02x %02x %02x %02x",
+          ti[0], ti[1], ti[2], ti[3], ti[4], ti[5], ti[6]);
+    CHECK(amiibo_ok && !memcmp(mi, want_model, 7), "amiibo ModelInfo %02x %02x %02x %02x %02x %02x %02x", mi[0], mi[1],
+          mi[2], mi[3], mi[4], mi[5], mi[6]);
     dump[0x0C] = 0xE1;
     amiibo_ok = amiibo_ok && plat_file_write(dump_path, dump, sizeof dump) && !amiibo_load_file(dump_path);
     plat_fs_unlink(dump_path);
