@@ -1,0 +1,32 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitShift.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitShift.cs
+@@ -119,6 +119,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             bool signedShift = maxShift == MaxShift.S64;
+             int maxShiftConst = isLongShift ? 64 : 32;
+ 
++            // TOTK: the shift amount as a constant, when it is one (taken before the mask makes it an operation).
++            bool constantShift = srcB.Type == OperandType.Constant;
++            int shiftValue = constantShift ? (mask ? srcB.Value & (maxShiftConst - 1) : srcB.Value) : 0;
++
+             if (mask)
+             {
+                 srcB = context.BitwiseAnd(srcB, Const(maxShiftConst - 1));
+@@ -159,6 +163,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 }
+             }
+ 
++            // TOTK: a shift by 0 shifts the other word by 32, which SPIR-V leaves undefined; AMD's shift instructions take
++            // the amount's low 5 bits and give A | C. Maxwell gives the unshifted word: C for SHF.L, A for SHF.R, 32- and
++            // 64-bit alike. TOTK's Depths terrain vertex shaders shift by registers (SHF.L.R, SHF.R.R).
++            if (!constantShift)
++            {
++                res = context.ConditionalSelect(context.ICompareEqual(srcB, Const(0)), left ? srcC : srcA, res);
++            }
++            else if (shiftValue == 0)
++            {
++                res = left ? srcC : srcA;
++            }
++
+             if (!mask)
+             {
+                 // Clamped shift value.
