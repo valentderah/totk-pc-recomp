@@ -1201,6 +1201,11 @@ static void mirror_mode(int discrete) {
                           sh && *sh ? " (TOTK_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
+    // Import is the integrated-GPU mode. On a discrete card every draw reads the pools over PCIe (the comment above
+    // this section has the measurements), which is the difference between playable and 5 fps when it is not intended.
+    if (!mode && discrete)
+        rt_log("mem: warning: import on a discrete GPU: the GPU reads the game's pools over PCIe on every draw, far "
+               "slower than mirror (the auto default on a discrete GPU); use memory = auto unless testing");
 }
 
 static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {

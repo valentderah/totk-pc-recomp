@@ -926,9 +926,11 @@ SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics dri
 
 
 # The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
-# and 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops)
+# 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2 screens (Surface and Framework laptops and
+# tablets)
 ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
-                '1280x800', '1680x1050', '1920x1200', '2560x1600')
+                '1280x800', '1680x1050', '1920x1200', '2560x1600',
+                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000')
 
 
 class Prepare(Step):

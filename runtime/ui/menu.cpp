@@ -346,6 +346,12 @@ static int fonts_up(float scale) {
         ImFontGlyphRangesBuilder b;
         b.AddText(ui_text_in("en", kCjk[i].name));
         ui_text_visit(kCjk[i].lang, add_row_glyphs, &b);
+        // Text the menu shows that no catalog row holds: a mod's cheat names and its folder name,
+        // both read from disk at runtime. Their glyphs would otherwise fall back to the missing-glyph box.
+        for (int k = 0; k < cheats_count(); k++)
+            if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
+        for (int k = 0; k < mods_count(); k++)
+            if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -485,13 +491,15 @@ static void row_window_size(void) {
 }
 
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
-// 32:9 monitor sizes and the 16:10 screens of the Steam Deck, handhelds and laptops (the camera and the HUD follow
+// 32:9 monitor sizes, the 16:10 screens of the Steam Deck, handhelds and laptops and the 3:2 screens of laptops and
+// tablets (Surface, Framework; the camera and the HUD follow
 // another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
 // the current value when it is another size.
 static void row_output_res(void) {
     static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
                                        "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
-                                       "1280x800", "1680x1050", "1920x1200", "2560x1600"};
+                                       "1280x800", "1680x1050", "1920x1200", "2560x1600",
+                                       "1920x1280", "2160x1440", "2256x1504", "2880x1920", "3000x2000"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
