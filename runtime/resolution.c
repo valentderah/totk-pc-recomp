@@ -53,7 +53,7 @@ static struct {
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
     unsigned shadow;           // fixed sun shadow map size (TOTK_SHADOW_RES), 0: the game's own
-    double dlss_k;             // TOTK_DLSS quality/balanced/performance: the scene's share of the output, else 0
+    double dlss_k;             // TOTK_DLSS quality/balanced/performance/ultra_performance: the scene's share of the output, else 0
     double base_k;             // the scene's share without a DLSS mode (render_scale, or the game's 5/6)
     unsigned hw, hh;           // the largest scene a DLSS mode change can ask for: the heap is sized for it
 } R;
@@ -86,10 +86,10 @@ static void scene_for(double k, unsigned *w, unsigned *h) {
 // (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
-        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}};
+        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
     static int dll = -1;
     if (!cfg_bool("TOTK_DLAA")) return 0;
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
             if (dll < 0 && !(dll = dlss_dll())) {
 #ifdef _WIN32
