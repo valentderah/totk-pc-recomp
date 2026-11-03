@@ -5,7 +5,7 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     python/python.exe       runs every tool (numpy, lz4, cryptography, compression.zstd); its ._pth puts .., ../tools
                             and ../recomp on sys.path, so `python -m installer` imports from the release folder
     recomp/, tools/         the lifter and the scripts; recomp/patches-<v>.txt, tools/data/expected-v<version>.json for
-                            each supported update (SUPPORTED)
+                            each supported update of each game (SUPPORTED, tools/games.py)
     llvm/                   llvm-mingw (bin/clang.exe)
     runtime/                libtotkrt.a and libtotkrt-v2.a (x86-64-v3 / v2), the headers, install-side sources (romfs.c,
                             patches.c, ov_zstd.c) and totk.ico; runtime/deps/ holds
@@ -34,15 +34,20 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))   # tools/games.py
+from games import GAMES, TOTK  # noqa: E402
+
 WIN = os.name == 'nt'
 EXE = '.exe' if WIN else ''
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-SUPPORTED = ('1.2.1', '1.4.3', '1.1.0')   # updates the installer builds; the check identifies the player's by hash
+# The updates the installer builds, per game (tools/games.py keys); the check identifies the player's by hash
+SUPPORTED = {'totk': ('1.2.1', '1.4.3', '1.1.0'), 'botw': ('1.9.0',)}
 
 
-def version_tag(version):
-    """'1.4.3' -> 'v143': the version name of build_game.py, make_romfs_patches.py and the patch tables."""
-    return 'v' + version.replace('.', '')
+def version_tag(version, game=TOTK):
+    """'1.4.3' -> 'v143', Breath of the Wild's '1.9.0' -> 'botw190': the version name of build_game.py,
+    make_romfs_patches.py and the patch tables."""
+    return game.version_name(version)
 
 
 @dataclass(frozen=True)
@@ -79,13 +84,13 @@ class Layout:
             return lib
         return None if self.dev else lib
 
-    def patches(self, version):
+    def patches(self, version, game=TOTK):
         """The code patch table for recomp/gen.py."""
-        return self.recomp / f'patches-{version_tag(version)}.txt'
+        return self.recomp / f'patches-{version_tag(version, game)}.txt'
 
-    def expected(self, version):
+    def expected(self, version, game=TOTK):
         """The expected hashes of the update."""
-        return self.tools / 'data' / f'expected-v{version}.json'
+        return self.tools / 'data' / f'{game.data}{version}.json'
 
     def missing(self, cpu='v3'):
         """Paths the steps need that do not exist. cpu picks the runtime library the host will use."""
@@ -100,7 +105,8 @@ class Layout:
                 self.clang,
                 *((self.deps / 'include', self.deps / 'lib') if self.deps else ()), self.runtime, *([lib] if lib else ()),
                 self.ninja, self.hactool,
-                self.xlate, *self.dlls, *(f(v) for v in SUPPORTED for f in (self.patches, self.expected))]
+                self.xlate, *self.dlls,
+                *(f(v, GAMES[g]) for g, vs in SUPPORTED.items() for v in vs for f in (self.patches, self.expected))]
         if self.shader_list:
             need.append(self.shader_list)
         if self.sysroot:

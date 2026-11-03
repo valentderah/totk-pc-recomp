@@ -9,6 +9,10 @@ installer/text/<en|ru|pt-BR|zh-Hans>.json under "ui.*" and "launcher.*" ids.
     --lang en|ru|pt-BR|zh-Hans window language (default: the Windows display language)
     --rebuild DIR              rebuild the install folder DIR for its mods (totk.exe starts this, build-cache/rebuild.txt):
                                the run starts at once with that folder, and the game starts again when it succeeds
+    --game totk|botw           the game to install (default totk; a rebuild takes the folder's own)
+    --dest DIR                 the install folder to start with
+    --launcher-ini FILE        the game launcher's launcher.ini (docs/launcher.md): a finished install writes its game's
+                               executable there, so the launcher that started this window shows the game
 """
 import argparse
 import json
@@ -26,8 +30,9 @@ except ImportError:
 
 from . import ini
 from . import layout as layouts
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+from .guilogic import (DONE, FAILED, GAMES, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form,
+                       Model, Process, amount, default_game_language, describe_event, parse_line, register_launcher,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -45,10 +50,13 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, ui_lang, layout, run_args=None, rebuild=None):
+    def __init__(self, root, ui_lang, layout, run_args=None, rebuild=None, game='totk', dest=None, launcher_ini=None):
         self.root, self.layout = root, layout
         self.rebuild = rebuild           # the install folder of --rebuild, or None
-        self.cat = Catalog(ui_lang)
+        self.game = game                 # tools/games.py key: totk, botw
+        self.launcher_ini = launcher_ini # --launcher-ini, or None
+        self.registered = False
+        self.cat = Catalog(ui_lang, game)
         self.model = Model()
         self.process = None
         self.closing = False
@@ -99,6 +107,8 @@ class App:
         self.vars['lang'].set(self.lang_label(self.lang_code))
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
         self.show('form')
+        if dest and not rebuild:
+            self.vars['dest'].set(str(dest))
         if rebuild:
             self.bind_text(self.title, 'text', 'ui.rebuild_title')
             self.vars['dest'].set(str(rebuild))
@@ -289,7 +299,8 @@ class App:
 
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
-                    firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
+                    firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
+                    game=self.game)
 
     def refresh_form(self):
         form = self.form()
@@ -512,13 +523,22 @@ class App:
                       foreground=COLOR[state]).pack(anchor='w')
         if result == 'ok':
             self.open_button.state(['!disabled'])
+            if self.launcher_ini and not self.registered:
+                self.registered = True
+                try:
+                    register_launcher(self.launcher_ini, self.game, Path(m.dest) / self.exe_name())
+                except OSError as e:
+                    self.append_log(f'launcher.ini: {e}')
         else:
             self.open_button.state(['disabled' if not Path(m.dest or '.').is_dir() else '!disabled'])
+
+    def exe_name(self):
+        return ('botw' if self.game == 'botw' else 'totk') + ('.exe' if os.name == 'nt' else '')
 
     def start_game(self):
         """Starts the game of the install folder and closes the window."""
         dest = Path(self.vars['dest'].get().strip())
-        exe = dest / ('totk.exe' if os.name == 'nt' else 'totk')
+        exe = dest / self.exe_name()
         flags = subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
         if exe.is_file():
             subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
@@ -657,13 +677,21 @@ def main(argv=None):
     ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
     ap.add_argument('--rebuild', type=Path)
+    ap.add_argument('--game', choices=GAMES)
+    ap.add_argument('--dest', type=Path)
+    ap.add_argument('--launcher-ini', type=Path)
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
     if args.selftest:
         return selftest(layout, args.shots)
+    game = args.game
+    if args.rebuild and not game:   # the folder's own game
+        state = Form(dest=str(args.rebuild)).installed_state() or {}
+        game = state.get('game')
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild)
+    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild, game=game or 'totk', dest=args.dest,
+        launcher_ini=args.launcher_ini)
     root.mainloop()
     return 0
 

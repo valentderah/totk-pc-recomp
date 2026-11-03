@@ -1,7 +1,8 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify]
+                                     [--game totk|botw] [--root DIR] [--temp DIR] [--verify]
 
-A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
+A first install needs every option but --game, which defaults to Tears of the Kingdom (botw: Breath of the Wild,
+tools/games.py). The install folder records its game; a run with another --game on it fails. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
 Traditional Chinese. On a folder with totk-install.json (resume after a cancel or failure, or update with a newer
 release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed only when the
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from . import layout as layouts
 from . import state as statefile
+from .layout import SUPPORTED
 from .events import Reporter
 from .runner import Context, run_steps
 from .steps import all_steps
@@ -58,6 +60,8 @@ def main(argv=None):
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
                                               'the install folder on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
+    ap.add_argument('--game', choices=tuple(SUPPORTED), help='the game to install (default: the recorded one, else '
+                                                           'totk); botw is Breath of the Wild')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
@@ -78,7 +82,13 @@ def main(argv=None):
         rep.error(e.id, {'path': str(e.path)})
         rep.emit('end', result='failed', seconds=0)
         return 1
+    recorded = (state or {}).get('game') or ('totk' if state else None)
+    if recorded and args.game and args.game != recorded:
+        rep.error('state.other_game', {'path': str(dest), 'game': recorded})
+        rep.emit('end', result='failed', seconds=0)
+        return 1
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
+    ctx.state['game'] = recorded or args.game or 'totk'
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
              steps=[s.id for s in steps])

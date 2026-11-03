@@ -14,9 +14,11 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state, steps  # noqa: E402
+from installer import cli, ini, runner, state, steps  # noqa: E402
+from installer import layout as layouts  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
+from games import GAMES  # noqa: E402   (tools/, on the path through installer.layout)
 
 
 class Fake(runner.Step):
@@ -215,7 +217,7 @@ class LiftKeyTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dest = Path(tmp.name)
         layout = SimpleNamespace(recomp=self.dest / 'no-recomp', tools=self.dest / 'no-tools',
-                                 patches=lambda version: self.dest / 'no-patches')
+                                 patches=lambda version, game=None: self.dest / 'no-patches')
         self.ctx = SimpleNamespace(dest=self.dest, layout=layout, keys={'extract': 'x'}, state={'version': '1.4.3'})
 
     def key(self):
@@ -406,6 +408,50 @@ class BaseGameCheckTest(unittest.TestCase):
         records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(3, self.BASE)]
         self.assertIsNone(steps.base_misuse(records))
         self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
+
+
+class BotwTest(unittest.TestCase):
+    """Breath of the Wild (installer --game botw): its version names, files, executable and base game check."""
+    BASE, UPDATE = '01007EF00011E000', '01007EF00011E800'
+
+    def test_versions_name_its_files(self):
+        game = GAMES['botw']
+        self.assertEqual(layouts.version_tag('1.9.0', game), 'botw190')
+        self.assertEqual(layouts.version_tag('1.4.3'), 'v143')
+        layout = layouts.find(ROOT)
+        self.assertEqual(layout.patches('1.9.0', game).name, 'patches-botw190.txt')
+        self.assertEqual(layout.expected('1.9.0', game).name, 'expected-botw-v1.9.0.json')
+        self.assertEqual(layout.expected('1.4.3').name, 'expected-v1.4.3.json')
+        for v in layouts.SUPPORTED['botw']:
+            self.assertTrue(layout.patches(v, game).is_file() and layout.expected(v, game).is_file())
+
+    def test_the_folder_names_its_game(self):
+        ctx = SimpleNamespace(dest=Path('D:/g'), state={'game': 'botw'})
+        self.assertIs(steps.game_of(ctx), GAMES['botw'])
+        self.assertEqual(steps.game_version(ctx), '1.9.0')
+        self.assertEqual(steps.game_exe(ctx).name, 'botw' + layouts.EXE)
+        old = SimpleNamespace(dest=Path('D:/g'), state={})   # an install from before BotW support
+        self.assertEqual((steps.game_of(old).key, steps.game_version(old)), ('totk', '1.2.1'))
+
+    def test_update_package_named_with_its_own_title(self):
+        records = [BaseGameCheckTest.nca(0, self.BASE), BaseGameCheckTest.nca(1, self.UPDATE)]
+        self.assertEqual(steps.base_misuse(records, GAMES['botw']), 'check.base_is_update')
+        self.assertIsNone(steps.base_misuse(records))   # TotK's update id is another
+
+    def test_a_folder_of_another_game_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'TotK'
+            dest.mkdir()
+            state.save(dest, {**state.empty('test'), 'game': 'totk'})
+            out = io.StringIO()
+            old, sys.stdout = sys.stdout, out
+            try:
+                code = cli.main(['--dest', str(dest), '--game', 'botw', '--root', str(ROOT), '--temp', tmp])
+            finally:
+                sys.stdout = old
+            events = [json.loads(line) for line in out.getvalue().splitlines() if line.startswith('{')]
+            self.assertEqual(code, 1)
+            self.assertIn('state.other_game', [e.get('id') for e in events])
 
 
 class FontsTest(unittest.TestCase):

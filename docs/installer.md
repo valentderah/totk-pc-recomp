@@ -7,7 +7,9 @@ holds only the game; the installer and its tools stay outside it.
 ## What the player does
 
 1. Downloads `TotK-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
-   starts `TotK-Setup.exe`.
+   starts `launcher.exe`, the game launcher ([launcher.md](launcher.md)): a card per game, grey until the game is
+   installed. *Install* on a card opens this setup's window for that game (*Breath of the Wild* below); when it has
+   finished, the card offers *Play*. `TotK-Setup.exe` opens the window for *Tears of the Kingdom* directly.
 2. Picks:
    - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP); an NSZ or XCZ (compressed by the nsz
      tool) works as it is, the setup unpacks it itself;
@@ -77,6 +79,25 @@ loads the saves 1.4.3 wrote.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
 
+## Breath of the Wild
+
+`--game botw` (the window's `--game botw`, which the launcher passes) installs *Breath of the Wild* 1.9.0 from its base
+game and its 1.9.0 update (NSP or NSZ, [botw.md](botw.md)). `totk-install.json` records the game (`"game": "botw"`; an
+install without the member is *Tears of the Kingdom*), and a run with the other game on that folder stops with
+`state.other_game`. The steps differ in what they read and make:
+
+- Check: the base is told by its title ID (`tools/games.py` `program_nca`), not by the hashes of its code; the update
+  must be 1.9.0 (`tools/data/expected-botw-v1.9.0.json`), and the merged RomFS's hash checks both files.
+- Lift and compile: `recomp/patches-botw190.txt`, `build_game.py --version botw190`, and the executable is `botw.exe`.
+- Prepare copies the shader translator only: the RomFS patches and the shader list are *Tears of the Kingdom*'s, so the
+  game translates its shaders and builds its pipelines the first time it draws them (a stutter in the first minutes).
+- The window's texts that name the game or its update have a `<id>@botw` variant in each catalog
+  (`installer/guilogic.py` `Catalog`).
+
+Both games' installs write `icon.jpg` (the game's icon, `tools/game_icon.py`) and copy `game.ini` next to the
+executable for the launcher. Run from the launcher, the window gets `--launcher-ini` and writes the finished install's
+executable into the launcher's `launcher.ini`, so a game installed outside the launcher's folder shows up too.
+
 ## Rebuilding for the mods
 
 The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
@@ -97,10 +118,11 @@ needs the release folder the setup ran from: a moved or deleted release folder m
 `installer/` (stdlib only; `installer/layout.py` maps the release folder and, in a repository, the dev toolchain):
 
 ```
-python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--root DIR] [--temp DIR] [--verify]
+python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--game totk|botw] [--root DIR] [--temp DIR] [--verify]
 ```
 
 - On a folder with `totk-install.json` only `--dest` is needed; the game files only when the extraction must run again.
+- `--game` defaults to the folder's recorded game, else `totk`.
 - `--firmware DIR` is the folder holding the firmware NCAs: an unpacked firmware, or the emulators' installed
   `Contents/registered` (the parent `Contents` folder works too). It is read only with Chinese, Korean or Traditional
   Chinese text, and only when `shared-fonts/` is not already in the install folder.
@@ -132,6 +154,7 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
 The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
+launcher.exe          the game launcher (launcher/, built with llvm/ by tools/build_launcher.py), SDL3.dll next to it
 TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
 installer/            the installer: steps, CLI, window, en/ru/zh-Hans text catalog
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)

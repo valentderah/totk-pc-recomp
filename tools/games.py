@@ -17,6 +17,7 @@ class Game:
     update_id: str  # the update's title ID
     prefix: str     # build version names: prefix + the display version's digits
     data: str       # tools/data/<data><display version>.json
+    exe: str        # the executable's name without .exe: totk.exe, botw.exe
 
     def version_name(self, display):
         return self.prefix + display.replace('.', '')
@@ -47,8 +48,8 @@ class Game:
         return record, hdr
 
 
-TOTK = Game('totk', 'Tears of the Kingdom', 0, '0100F2C0115B6000', '0100F2C0115B6800', 'v', 'expected-v')
-BOTW = Game('botw', 'Breath of the Wild', 1, '01007EF00011E000', '01007EF00011E800', 'botw', 'expected-botw-v')
+TOTK = Game('totk', 'Tears of the Kingdom', 0, '0100F2C0115B6000', '0100F2C0115B6800', 'v', 'expected-v', 'totk')
+BOTW = Game('botw', 'Breath of the Wild', 1, '01007EF00011E000', '01007EF00011E800', 'botw', 'expected-botw-v', 'botw')
 GAMES = {g.key: g for g in (TOTK, BOTW)}
 
 # Build version name -> (game, display version). v0 is Tears of the Kingdom's base game.

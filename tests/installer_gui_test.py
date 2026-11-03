@@ -33,7 +33,8 @@ from installer.runner import Context  # noqa: E402
 from installer.steps import Fonts, all_steps  # noqa: E402
 from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS,  # noqa: E402
                                 UI_LANGUAGES, Catalog, Form, Model, Process, amount, default_game_language,
-                                describe_event, parse_line, ui_language_for_langid, windows_ui_language)
+                                describe_event, parse_line, register_launcher, ui_language_for_langid,
+                                windows_ui_language)
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
@@ -322,6 +323,42 @@ class CatalogTest(unittest.TestCase):
 
 
 BREAK_CHILD = 'import time\nprint("ready", flush=True)\ntime.sleep(60)\n'
+
+
+class GameTextTest(unittest.TestCase):
+    """Breath of the Wild's window: its own texts where they name the game, the shared ones elsewhere."""
+
+    def test_botw_texts_come_first(self):
+        for lang in UI_LANGUAGES:
+            with self.subTest(lang=lang):
+                totk, botw = Catalog(lang), Catalog(lang, 'botw')
+                self.assertNotEqual(botw('ui.title'), totk('ui.title'))
+                self.assertIn('1.9.0', botw('ui.update'))
+                self.assertNotIn('1.9.0', totk('ui.update'))
+                self.assertEqual(botw('ui.dest'), totk('ui.dest'))
+                self.assertIn('botw', botw('ui.done_text', dest='D:/BotW'))
+
+    def test_every_botw_text_overrides_an_id(self):
+        en = Catalog('en').english
+        self.assertEqual([k for k in en if '@' in k and k.split('@')[0] not in en], [])
+
+    def test_form_passes_the_game(self):
+        form = Form(base='b', update='u', keys='k', lang='en-US', dest='D:/x', game='botw')
+        cmd = form.command('python')
+        self.assertEqual(cmd[cmd.index('--game') + 1], 'botw')
+        self.assertNotIn('--game', Form(dest='D:/x').command('python'))
+
+    def test_launcher_ini_gets_the_game(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ini = Path(tmp) / 'launcher.ini'
+            ini.write_text('# x\nlast = totk\nbotw = D:/old/botw.exe\ntotk = D:/T/totk.exe\n', encoding='utf-8')
+            register_launcher(ini, 'botw', Path('E:/BotW/botw.exe'))
+            lines = [line.replace(os.sep, '/') for line in ini.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual(lines, ['# x', 'last = totk', 'totk = D:/T/totk.exe', 'botw = E:/BotW/botw.exe'])
+            fresh = Path(tmp) / 'new.ini'
+            register_launcher(fresh, 'totk', Path('F:/TotK/totk.exe'))
+            last = fresh.read_text(encoding='utf-8').splitlines()[-1]
+            self.assertEqual(last.replace(os.sep, '/'), 'totk = F:/TotK/totk.exe')
 
 
 class CancelTest(unittest.TestCase):

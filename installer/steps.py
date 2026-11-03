@@ -7,8 +7,9 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
-shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
+(botw.exe for Breath of the Wild, --game botw) and its DLLs, romfs-index.bin, game.ini and icon.jpg (for the launcher),
+romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the shader state of totk.exe
+--prepare-shaders (Tears of the Kingdom only), totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
 logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
@@ -37,7 +38,9 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import game_icon  # noqa: E402
 import ncz  # noqa: E402
+from games import GAMES, TOTK  # noqa: E402
 import shader_list  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory,  # noqa: E402
                            program_nca)
@@ -182,14 +185,27 @@ def game_file(ctx, name):
     return getattr(ctx, 'unpacked', {}).get(name) or Path(getattr(ctx.options, name))
 
 
+def game_of(ctx):
+    """The game this install folder holds (tools/games.py): installer/cli.py records it, and an install made before
+    Breath of the Wild support records none, which is Tears of the Kingdom."""
+    return GAMES[ctx.state.get('game') or TOTK.key]
+
+
 def game_version(ctx):
-    """The update this install is built from: what the check identified, else the recorded one. An install made before
-    1.4.3 support records no version, and that install is 1.2.1: name it here rather than leaning on SUPPORTED's order."""
-    return ctx.state.get('version', '1.2.1')
+    """The update this install is built from: what the check identified, else the recorded one. A Tears of the Kingdom
+    install made before 1.4.3 support records no version, and that install is 1.2.1: name it here rather than leaning on
+    SUPPORTED's order."""
+    game = game_of(ctx)
+    return ctx.state.get('version', '1.2.1' if game is TOTK else SUPPORTED[game.key][0])
 
 
 def expected_update(ctx):
-    return extract.load_expected()[game_version(ctx)]
+    return extract.load_expected(game_of(ctx))[game_version(ctx)]
+
+
+def game_exe(ctx):
+    """The game's executable in the install folder: totk.exe, botw.exe."""
+    return ctx.dest / (game_of(ctx).exe + EXE)
 
 
 def shader_list_text(layout):
@@ -292,10 +308,7 @@ def shared_fonts_ready(dest):
 
 # ---- 1. check
 
-UPDATE_TITLE_ID = '0100F2C0115B6800'
-
-
-def base_misuse(records):
+def base_misuse(records, game=TOTK):
     """Name why a file chosen as the base game holds an update or a combined package, or return None.
 
     The Meta NCA (content type 1) carries the package's own title id: the update's id (...800) for an update NSP, and
@@ -304,7 +317,7 @@ def base_misuse(records):
     metadata = [r['title_id'] for r, _ in records if r['content_type'] == 1]
     if len(metadata) > 1:
         return 'check.base_combined'
-    if UPDATE_TITLE_ID in metadata:
+    if game.update_id in metadata:
         return 'check.base_is_update'
     return None
 
@@ -445,7 +458,7 @@ class Check(Step):
         for name, is_update in (('base', False), ('update', True)):
             path = game_file(ctx, name)
             with path.open('rb') as f:
-                total += self.open_input(f, path, keys, name, is_update)
+                total += self.open_input(f, path, keys, name, is_update, game_of(ctx))
         del keys
         return total
 
@@ -508,7 +521,7 @@ class Check(Step):
             ctx.unpacked[name] = target
 
     @staticmethod
-    def open_input(f, path, keys, name, is_update):
+    def open_input(f, path, keys, name, is_update, game=TOTK):
         try:
             kind, entries = container_entries(f, path.stat().st_size)
         except ValueError as e:
@@ -531,12 +544,13 @@ class Check(Step):
             raise_if_damaged(e, name, path)
             raise InstallError('check.file_unreadable', input=name, detail=str(e)) from None
         try:
-            record, header = program_nca(records, update=is_update)
+            pick = program_nca if game is TOTK else game.program_nca   # the vendored one knows only TotK
+            record, header = pick(records, update=is_update)
         except ValueError as e:
             if is_update and 'BKTR' in str(e):
                 raise InstallError('check.update_is_base') from None
             if not is_update:
-                reason = base_misuse(records)
+                reason = base_misuse(records, game)
                 if reason:
                     raise InstallError(reason) from None
             raise InstallError('check.update_not_totk' if is_update else 'check.base_not_totk', detail=str(e)) from None
@@ -553,7 +567,8 @@ class Check(Step):
         dest_need = temp_need = 0
         if ctx.will_run('extract'):
             # the update is identified after this estimate: the larger RomFS of the supported ones
-            dest_need += max(extract.load_expected()[v]['romfs']['size'] for v in SUPPORTED) + ncas
+            game = game_of(ctx)
+            dest_need += max(extract.load_expected(game)[v]['romfs']['size'] for v in SUPPORTED[game.key]) + ncas
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction replaces it
                 dest_need -= romfs.stat().st_size
@@ -582,27 +597,30 @@ class Check(Step):
         o, work = ctx.options, ctx.temp / 'check'
         logs = ctx.temp / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
-        versions = extract.load_expected()
-        for name, is_update in (('base', False), ('update', True)):
+        game = game_of(ctx)
+        versions = extract.load_expected(game)
+        # Breath of the Wild has no expected hashes for its base game's code (tools/extract.py builds only from the
+        # update): its base is told by its title ID (inputs), and the merged RomFS's hash checks both files.
+        for name, is_update in (('base', False), ('update', True)) if game is TOTK else (('update', True),):
             out = work / name
             remove(out)
             try:
-                extract.extract_exefs(game_file(ctx, name), Path(o.keys), out, logs, update=is_update)
+                extract.extract_exefs(game_file(ctx, name), Path(o.keys), out, logs, update=is_update, game=game)
             except extract.DamagedFile as e:
                 raise InstallError('check.input_damaged', input=name, path=str(getattr(o, name)),
                                    detail=e.detail) from None
             except ValueError:
                 raise InstallError('check.exefs_failed', input=name, log=str(logs / f'extract_exefs-{name}.log')) \
                     from None
-        problems = extract.exefs_problems(work / 'base' / 'exefs', versions['1.0.0'])
+        problems = extract.exefs_problems(work / 'base' / 'exefs', versions['1.0.0']) if game is TOTK else []
         if problems:
             raise InstallError('check.base_wrong_version', modules=', '.join(problems))
         try:
             found = extract.identify_update(work / 'update' / 'exefs', versions)['display_version']
         except ValueError:
             found = 'unknown'
-        if found not in SUPPORTED:
-            raise InstallError('check.update_wrong_version', found=found, wanted=' / '.join(SUPPORTED))
+        if found not in SUPPORTED[game.key]:
+            raise InstallError('check.update_wrong_version', found=found, wanted=' / '.join(SUPPORTED[game.key]))
         if found != game_version(ctx):   # another update than the recorded one: every step builds again from it
             ctx.reporter.log(f'check: update {found} (recorded {game_version(ctx)})')
             ctx.state['version'] = found
@@ -683,7 +701,7 @@ class Extract(Step):
 
     def key(self, ctx):
         # The output is whatever matches the expected hashes, whichever files and tools produced it.
-        return fingerprint('extract-1', ctx.layout.expected(game_version(ctx)))
+        return fingerprint('extract-1', ctx.layout.expected(game_version(ctx), game_of(ctx)))
 
     def current(self, ctx, record):
         # Another update file than the recorded one (1.2.1 -> 1.4.3) extracts again; the check then identifies it.
@@ -731,7 +749,8 @@ class Extract(Step):
         if not staged.is_dir():
             remove(ctx.temp / 'check' / 'update')
             try:
-                extract.extract_exefs(update, keys, ctx.temp / 'check' / 'update', ctx.temp / 'logs', update=True)
+                extract.extract_exefs(update, keys, ctx.temp / 'check' / 'update', ctx.temp / 'logs', update=True,
+                                      game=game_of(ctx))
             except extract.DamagedFile as e:
                 raise InstallError('check.input_damaged', input='update', path=str(o.update), detail=e.detail) from None
             except ValueError:
@@ -755,13 +774,26 @@ class Extract(Step):
             raise InstallError('extract.romfs_mismatch', version=game_version(ctx), size=report['romfs_size'],
                                sha256=report['romfs_sha256'][:16])
         (dest / 'profile').mkdir(exist_ok=True)
+        self.icon(ctx, update, keys)
         remove(ctx.temp / 'unpacked')   # the NSPs unpacked from an NSZ or XCZ (Check.unpack)
         st = (romfs / 'romfs.bin').stat()
         return {'romfs_size': st.st_size, 'romfs_mtime_ns': st.st_mtime_ns}
 
+    @staticmethod
+    def icon(ctx, update, keys):
+        """icon.jpg in the install folder, the game's own icon that the launcher shows (tools/game_icon.py). The
+        install goes on without it."""
+        icon = ctx.dest / 'icon.jpg'
+        if icon.is_file():
+            return
+        try:
+            game_icon.write(update, keys, icon)
+        except (OSError, ValueError) as e:
+            ctx.reporter.log(f'extract: no icon for the launcher: {e}')
+
     def merge(self, ctx, base, update, keys, romfs, expected):
         dest, logs = ctx.dest, ctx.temp / 'logs'
-        ncas = extract.merge_space(base, update, keys)
+        ncas = extract.merge_space(base, update, keys, game=game_of(ctx))
         watch = Watch(ctx.reporter, 'extract')
 
         def phase(name):
@@ -775,7 +807,8 @@ class Extract(Step):
 
         watch.start()
         try:
-            extract.merge_update_romfs(base, update, keys, ctx.layout.hactool, romfs, logs, phase=phase)
+            extract.merge_update_romfs(base, update, keys, ctx.layout.hactool, romfs, logs, phase=phase,
+                                       game=game_of(ctx))
         except extract.DamagedFile as e:
             name = 'base' if e.path == base else 'update'
             raise InstallError('check.input_damaged', input=name, path=str(getattr(ctx.options, name)),
@@ -793,8 +826,9 @@ EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
 
 
-CHEAT_PLACES = ('cheats', 'atmosphere/contents/0100F2C0115B6000/cheats', 'contents/0100F2C0115B6000/cheats',
-                '0100F2C0115B6000/cheats')
+def cheat_places(game=TOTK):
+    t = game.base_id
+    return ('cheats', f'atmosphere/contents/{t}/cheats', f'contents/{t}/cheats', f'{t}/cheats')
 
 
 def cheat_files(ctx):
@@ -805,12 +839,13 @@ def cheat_files(ctx):
     mods = ctx.dest / 'mods'
     if not mods.is_dir():
         return []
-    return sorted(f for mod in mods.iterdir() if mod.is_dir() for where in CHEAT_PLACES
+    return sorted(f for mod in mods.iterdir() if mod.is_dir() for where in cheat_places(game_of(ctx))
                   for f in ((mod / where).glob('*.txt') if (mod / where).is_dir() else ()))
 
 
-EXEFS_PLACES = ('exefs', 'atmosphere/contents/0100F2C0115B6000/exefs', 'contents/0100F2C0115B6000/exefs',
-                '0100F2C0115B6000/exefs')
+def exefs_places(game=TOTK):
+    t = game.base_id
+    return ('exefs', f'atmosphere/contents/{t}/exefs', f'contents/{t}/exefs', f'{t}/exefs')
 
 
 def exefs_files(ctx):
@@ -821,7 +856,7 @@ def exefs_files(ctx):
         return []
     out = []
     for mod in (m for m in mods.iterdir() if m.is_dir()):
-        folders = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
+        folders = [mod / w for w in exefs_places(game_of(ctx)) if (mod / w).is_dir()]
         patches = mod / 'atmosphere' / 'exefs_patches'
         folders += [d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else []
         out += [f for d in folders for f in d.iterdir() if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt')]
@@ -847,7 +882,8 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         files = cheat_files(ctx) + exefs_files(ctx)
-        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp,
+                           ctx.layout.patches(game_version(ctx), game_of(ctx)),
                            ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
@@ -872,7 +908,7 @@ class Lift(Step):
         # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
         # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
         # without them and the setup warns.
-        plain = layout.patches(game_version(ctx))
+        plain = layout.patches(game_version(ctx), game_of(ctx))
         stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
                   ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
         patches, skipped = plain, {}
@@ -926,7 +962,7 @@ class Compile(Step):
         return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx))
 
     def current(self, ctx, record):
-        exe = ctx.dest / ('totk' + EXE)
+        exe = game_exe(ctx)
         if not exe.is_file() or not (ctx.dest / 'romfs-index.bin').is_file():
             return False
         if not all((ctx.dest / d.name).is_file() for d in ctx.layout.dlls):
@@ -953,10 +989,11 @@ class Compile(Step):
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
             '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), '--ninja', layout.ninja,
-            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
+            '--version', version_tag(game_version(ctx), game_of(ctx)),
+            '--expected', layout.expected(game_version(ctx), game_of(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
-        exe = build / ('totk' + EXE)
+        exe = build / game_exe(ctx).name
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:
@@ -964,6 +1001,7 @@ class Compile(Step):
         except PermissionError:
             raise InstallError('compile.exe_in_use', path=str(dest / exe.name)) from None
         replace_file(build / 'romfs-index.bin', dest / 'romfs-index.bin')
+        replace_file(build / 'game.ini', dest / 'game.ini')   # the game and version, for the launcher
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
         return {'exe_sha256': file_sha256(dest / exe.name), 'cpu': cpu}
@@ -984,11 +1022,17 @@ ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080',
 
 
 class Prepare(Step):
+    """The shader translator next to the game, then for Tears of the Kingdom its RomFS overlays and its shaders. Breath
+    of the Wild gets the translator only: the RomFS patches and the shader list are Tears of the Kingdom's, so its
+    shaders are translated and its pipelines built the first time the game draws them."""
+
     id = 'prepare'
 
     def key(self, ctx):
         layout = ctx.layout
         xlate_id = layout.xlate.with_suffix('.id')
+        if game_of(ctx) is not TOTK:
+            return fingerprint('prepare-xlate-1', layout.xlate, xlate_id)
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
         # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
@@ -998,8 +1042,10 @@ class Prepare(Step):
     def current(self, ctx, record):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
-        return ((dest / 'shader-prepared.bin').is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
-                and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
+        if not (xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256')):
+            return False
+        return game_of(ctx) is not TOTK or ((dest / 'shader-prepared.bin').is_file()
+                                            and (dest / 'romfs-patches' / 'manifest.tsv').is_file())
 
     def run(self, ctx):
         layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
@@ -1022,6 +1068,8 @@ class Prepare(Step):
                 raise InstallError('prepare.xlate_in_use', path=str(xlate.with_suffix('.id'))) from None
         else:
             remove(xlate.with_suffix('.id'))
+        if game_of(ctx) is not TOTK:
+            return {'xlate_sha256': file_sha256(xlate)}
 
         rep.progress('prepare', 'romfs_patches', force=True)
         remove(dest / 'romfs-patches')

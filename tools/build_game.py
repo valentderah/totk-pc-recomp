@@ -1,4 +1,5 @@
-"""Compile the generated C for one game version and link it with the runtime into build/<version>/totk.exe.
+"""Compile the generated C for one game version and link it with the runtime into build/<version>/totk.exe
+(botw.exe for Breath of the Wild, tools/games.py).
 
 Writes build/<version>/build.ninja and runs MSYS2 UCRT64 Ninja on it. Ninja keeps the build incremental: a chunk is
 recompiled only when it, a header it includes or its flags change.
@@ -809,7 +810,8 @@ def main():
         game, display = VERSIONS[args.version]
         expected = ROOT / 'tools' / 'data' / f'{game.data}{display}.json'
     hashes = json.loads(Path(expected).read_text())['exefs_sha256']
-    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
+    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS, EXE
+    EXE = VERSIONS.get(args.version, (TOTK, ''))[0].exe + ('.exe' if WIN else '')   # botw.exe for botw190
     if args.ninja:
         NINJA = args.ninja.resolve()
     elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():

@@ -2,7 +2,8 @@
 
 gui.py draws; everything it decides lives here so tests/installer_gui_test.py runs it headless.
 
-    Catalog      text of an id in the window language (installer/text/<lang>.json), English when that lacks it
+    Catalog      text of an id in the window language (installer/text/<lang>.json), English when that lacks it; for
+                 Breath of the Wild an id's <id>@botw text first, where the text names the game or its update
     Form         what the player entered; command() and problems() build and check the CLI call
     Model        folds the CLI's JSON events (events.py) into step states, progress, space, errors and the result
     Process      runs `python -m installer ...`, cancels it with Ctrl+Break and feeds lines to a queue
@@ -29,7 +30,8 @@ UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
 STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
-PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
+PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.', 'game': 'game.'}
+GAMES = ('totk', 'botw')   # tools/games.py keys, the installer's --game
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
 # Windows LANGIDs that write Simplified Chinese: zh-CN, zh-SG. zh-TW, zh-HK and zh-MO write Traditional Chinese, which
@@ -43,10 +45,12 @@ def load_texts(lang):
 
 
 class Catalog:
-    """Window text: ids from text/<lang>.json, then text/en.json, then the id itself."""
+    """Window text: ids from text/<lang>.json, then text/en.json, then the id itself. For a game other than Tears of the
+    Kingdom, <id>@<game> comes before <id> in each catalog."""
 
-    def __init__(self, lang='en'):
+    def __init__(self, lang='en', game='totk'):
         self.english = load_texts('en')
+        self.game = game if game in GAMES else 'totk'
         self.set_language(lang)
 
     def set_language(self, lang):
@@ -56,11 +60,16 @@ class Catalog:
     def has(self, id):
         return id in self.texts or id in self.english
 
+    def lookup(self, id):
+        own = f'{id}@{self.game}'
+        return self.texts.get(own) or self.english.get(own) or self.texts.get(id) or self.english.get(id)
+
     def __call__(self, id, **params):
-        text = self.texts.get(id) or self.english.get(id)
+        text = self.lookup(id)
         if text is None:
             return id
-        return render({id: text}, id, {k: self.param(k, v) for k, v in params.items()})
+        exe = ('botw' if self.game == 'botw' else 'totk') + ('.exe' if os.name == 'nt' else '')
+        return render({id: text}, id, {'game_exe': exe, **{k: self.param(k, v) for k, v in params.items()}})
 
     def param(self, name, value):
         """A message parameter as the player should read it: language codes, step ids and input names become the
@@ -137,6 +146,7 @@ class Form:
     firmware: str = ''
     lang: str = ''
     dest: str = ''
+    game: str = 'totk'
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -181,6 +191,8 @@ class Form:
                             ('--firmware', self.firmware), ('--lang', self.lang), ('--dest', self.dest)):
             if value.strip():
                 cmd += [flag, value.strip()]
+        if self.game != 'totk':
+            cmd += ['--game', self.game]
         if root:
             cmd += ['--root', str(root)]
         if temp:
@@ -188,6 +200,21 @@ class Form:
         if verify_hashes:
             cmd.append('--verify')
         return cmd
+
+
+def register_launcher(ini_path, game, exe):
+    """Write "<game> = <exe>" into the game launcher's launcher.ini (launcher/games.cpp load_settings), keeping the
+    file's other lines, so the launcher that started the setup finds the game wherever it was installed."""
+    path = Path(ini_path)
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except FileNotFoundError:
+        lines = ["# The game launcher's choices (docs/launcher.md): the last game started and each game's executable."]
+    lines = [line for line in lines if line.split('=', 1)[0].strip() != game]
+    lines.append(f'{game} = {exe}')
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
+    os.replace(tmp, path)
 
 
 # ---- events -> state ---------------------------------------------------------------------------------------------
