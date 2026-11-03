@@ -251,10 +251,10 @@
 # local IPC of a running Discord client. 1 = on; the Menu tab of the settings menu (F1) switches it too, and the
 # change reaches the presence thread at once.
 # discord_rpc = 0
-# The application whose name and artwork the status shows. The default is the app this feature was developed
-# against, registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
+# The application whose name and artwork the status shows. The default is the project's own application,
+# registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
 # discord.com/developers (name and art are yours to choose) and put its id here.
-# discord_app_id = 1566609987453722727
+# discord_app_id = 1567232599846293504
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 

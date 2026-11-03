@@ -2,7 +2,7 @@
 // the local IPC of a running Discord client (platform.h's plat_ipc_*). Nothing leaves the machine but the activity
 // itself, and nothing is sent while TOTK_DISCORD_RPC is off (the default: the status is information about the
 // player's session). TOTK_DISCORD_APP_ID names the application whose name and artwork Discord shows — the default
-// is the app this feature was developed against, registered as "TotK Recomp"; a player who wants their own name or
+// is the project's own application, registered as "TotK Recomp"; a player who wants their own name or
 // art registers an application at discord.com/developers and puts its id in totk.ini — and TOTK_DISCORD_IMAGE the
 // key of its uploaded art asset.
 //

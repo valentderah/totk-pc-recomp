@@ -151,10 +151,9 @@ static const CfgMeta metas[] = {
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
-    // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it. The app
-    // id is the one this was developed against, registered as "TotK Recomp"; the image, the key of its art asset.
+    // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it.
     {"DISCORD_RPC", "0", "0|1", LIVE},
-    {"DISCORD_APP_ID", "1566609987453722727", NULL, LIVE},
+    {"DISCORD_APP_ID", "1567232599846293504", NULL, LIVE},
     {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART},
