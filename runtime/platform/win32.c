@@ -1303,17 +1303,6 @@ int plat_stderr_path(char *out, size_t cap) {
     return WideCharToMultiByte(CP_UTF8, 0, p, -1, out, (int)cap, NULL, NULL) != 0;
 }
 
-// GetConsoleProcessList counts this process alone only when the console was created for it. The window is hidden first
-// and then the console freed: under Windows Terminal as the default terminal, freeing is what closes the terminal
-// window that opened beside the game.
-int plat_console_release_if_owned(void) {
-    DWORD pids[2];
-    if (!GetConsoleWindow() || GetConsoleProcessList(pids, 2) != 1) return 0;
-    ShowWindow(GetConsoleWindow(), SW_HIDE);
-    FreeConsole();
-    return 1;
-}
-
 // ---- desktop
 
 int plat_clipboard_set(const char *utf8) {

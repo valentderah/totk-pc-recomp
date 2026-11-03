@@ -378,11 +378,6 @@ int plat_is_wine(void);                                   // 1 when the Windows 
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
 
-// Detaches the process from its console when no other process shares it (a frontend or a shortcut started us and
-// Windows made the console for us); a terminal the user started us from keeps its output. Returns 1 when detached.
-// Linux: 0.
-int plat_console_release_if_owned(void);
-
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
