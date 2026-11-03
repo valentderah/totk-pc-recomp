@@ -20,6 +20,7 @@ its rebuild mode on the install folder (installer/gui.py --rebuild), one argumen
 when an enabled mod has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -1156,7 +1157,8 @@ class Dlss(Step):
         if os.name != 'nt':
             return {'skipped': 'not_windows'}
         if not nvidia_rtx(getattr(ctx, 'host', None)):
-            ctx.reporter.warning('warn.dlss_no_rtx')
+            # The box is ticked by default, so most players without an RTX GPU never chose it: a log line, no warning
+            ctx.reporter.log('dlss: no NVIDIA RTX GPU among the Vulkan devices, nothing downloaded')
             return {'skipped': 'no_rtx'}
         rep, target = ctx.reporter, ctx.dest / DLSS_DLL
         if target.is_file():
@@ -1180,7 +1182,9 @@ class Dlss(Step):
                 raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
             replace_file(part, target)
             remove(part)
-        except OSError as e:   # urllib's errors, timeouts and a bad file
+        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
+        # which is not an OSError
+        except (OSError, http.client.HTTPException) as e:
             remove(part)
             rep.warning('warn.dlss_download_failed', url=DLSS_URL, detail=str(e)[:300])
             return {'failed': True}

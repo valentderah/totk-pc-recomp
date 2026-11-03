@@ -312,7 +312,7 @@ class App:
 
     def pick_file(self, name, pick_id):
         # One filter for every game file: the setup tells an NSZ or XCZ from a plain file by its content (Check.unpack)
-        types = [(self.cat('ui.type_game'), '*.nsp *.xci *.nsz *.xcz')]
+        types = [(self.cat('ui.type_game'), '*.nsp *.xci *.nsz *.xcz'), (self.cat('ui.type_all'), '*.*')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
         path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
