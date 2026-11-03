@@ -189,6 +189,25 @@ uint64_t res_heap_extra_kib(void) {
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
 
+// TOTK_TEX_HEAP_EXTRA_MB (0 to 4096): more room in "TextureHeap" and its parent "ゲームグラフィックス", the heap the
+// world's textures stream into. HD texture packs made for emulators with 8 GB of DRAM grow it by about 3.3 GiB in their
+// own HeapDef; without the room the game runs out and starts its panic Blood Moon over and over. The pool and the heap
+// cap grow by the same amount (memory.c mem_init).
+static uint64_t tex_heap_extra_kib(void) {
+    const char *v = cfg_get("TOTK_TEX_HEAP_EXTRA_MB");
+    if (!v || !*v) return 0;
+    char *end;
+    long mb = strtol(v, &end, 10);
+    if (end == v || *end || mb < 0 || mb > 4096) {
+        static int logged;
+        if (!logged++) rt_log("resolution: TOTK_TEX_HEAP_EXTRA_MB=%s is not 0..4096; 0", v);
+        return 0;
+    }
+    return (uint64_t)mb << 10;
+}
+
+uint64_t res_tex_heap_extra_bytes(void) { return ((tex_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
+
 // ---- the HeapDef table. BYML version 2..7, little endian ("YB"): a hash node is {u8 0xC1, u24 count} and count
 // entries {u24 key index, u8 type, u32 value}; an int (type 0xD1) is stored in the entry, so a size changes in place.
 typedef struct { uint8_t *p; size_t n; uint32_t keys; } Byml;
@@ -227,9 +246,9 @@ static size_t heap_size_field(const Byml *b, uint32_t heaps, const char *heap) {
 }
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
-    uint64_t extra = res_heap_extra_kib();
+    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
     *out = NULL;
-    if (!extra) return 0;
+    if (!extra && !tex) return 0;
     if (ZSTD_getDictID_fromFrame(in, n)) {
         rt_log("resolution: the HeapDef table needs a zstd dictionary; the game keeps its own resolution");
         return 0;
@@ -263,6 +282,26 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     int32_t dta2 = dta + (int32_t)extra, gfx2 = gfx + (int32_t)extra;
     memcpy(b.p + dta_at, &dta2, 4);
     memcpy(b.p + gfx_at, &gfx2, 4);
+    int32_t th = 0, th2 = 0, gg = 0, gg2 = 0;
+    if (tex) {   // TOTK_TEX_HEAP_EXTRA_MB: the world texture heap and its parent grow by the same amount
+        static const char parent[] = "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0\xe3\x82\xb0\xe3\x83\xa9\xe3\x83\x95"
+                                     "\xe3\x82\xa3\xe3\x83\x83\xe3\x82\xaf\xe3\x82\xb9";   // ゲームグラフィックス
+        size_t th_at = heap_size_field(&b, heaps, "TextureHeap"), gg_at = heap_size_field(&b, heaps, parent);
+        if (th_at && gg_at) {
+            memcpy(&th, b.p + th_at, 4);
+            memcpy(&gg, b.p + gg_at, 4);
+            th2 = th + (int32_t)tex, gg2 = gg + (int32_t)tex;
+            memcpy(b.p + th_at, &th2, 4);
+            memcpy(b.p + gg_at, &gg2, 4);
+        } else {
+            rt_log("resolution: the HeapDef table has no TextureHeap sizes; TOTK_TEX_HEAP_EXTRA_MB left out");
+            tex = 0;
+            if (!extra) {
+                free(b.p);
+                return 0;
+            }
+        }
+    }
     size_t cap = ZSTD_compressBound(b.n);
     void *z = malloc(cap);
     size_t zn = z ? ZSTD_compress(z, cap, b.p, b.n, 9) : 0;
@@ -273,7 +312,12 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     }
     *out = z;
     *out_n = zn;
-    rt_log("resolution: HeapDef DynamicTextureAllocatorMem %d -> %d KiB, Graphics %d -> %d KiB", dta, dta2, gfx, gfx2);
+    if (extra)
+        rt_log("resolution: HeapDef DynamicTextureAllocatorMem %d -> %d KiB, Graphics %d -> %d KiB", dta, dta2, gfx,
+               gfx2);
+    if (tex)
+        rt_log("resolution: HeapDef TextureHeap %d -> %d KiB and its parent %d -> %d KiB (TOTK_TEX_HEAP_EXTRA_MB)", th,
+               th2, gg, gg2);
     return 1;
 }
 

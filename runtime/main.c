@@ -397,7 +397,9 @@ static void check_memory(void) {
     CHECK(q.state == 0 && q.base == g->alias.base && q.size == g->alias.size, "QueryMemory on the free alias region");
     CHECK(mem_map_physical(a, 0x1000) == 0 && LD64(a + 0x10) == 0 && mem_unmap_physical(a, 0x1000) == 0,
           "remapped physical memory is not zeroed");
-    CHECK(mem_map_physical(a, 0x100000000ull) == 0x10801, "MapPhysicalMemory beyond the pool is not LimitReached");
+    // past the pool whatever its size (TOTK_APP_POOL, TOTK_TEX_HEAP_EXTRA_MB): 4 GiB fits a grown one
+    CHECK(mem_map_physical(a, (g->pool + 0x100000) & ~0xfffffull) == 0x10801,
+          "MapPhysicalMemory beyond the pool is not LimitReached");
     mem_query(RT_HOSTFN_BASE + 0x40, &q);
     CHECK(q.state == 0x10 && q.base == RT_HOSTFN_BASE, "QueryMemory on the host-function window");
     mem_query(g->alias.base + g->alias.size + 0x1000, &q);
