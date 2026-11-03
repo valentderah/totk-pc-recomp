@@ -38,7 +38,7 @@ enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
     R_BlitImage, R_ClearAttachments, R_ClearColorImage, R_ClearDepthStencilImage, R_CopyBuffer, R_CopyBufferToImage,
     R_CopyImage, R_CopyImageToBuffer, R_Dispatch, R_DispatchIndirect, R_Draw, R_DrawIndexed, R_DrawIndexedIndirect,
-    R_EndQuery, R_EndRendering, R_FillBuffer, R_PipelineBarrier2, R_PushConstants, R_ResetQueryPool, R_ResolveImage,
+    R_EndQuery, R_EndRendering, R_ExecuteCommands, R_FillBuffer, R_PipelineBarrier2, R_PushConstants, R_ResetQueryPool, R_ResolveImage,
     R_SetBlendConstants, R_SetCullMode, R_SetDepthBias, R_SetDepthBiasEnable, R_SetDepthCompareOp, R_SetDepthTestEnable,
     R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
@@ -491,6 +491,15 @@ void rc_vkCmdClearDepthStencilImage(VkCommandBuffer cb, VkImage i, VkImageLayout
     pub();
 }
 
+typedef struct { uint32_t n; const VkCommandBuffer *c; } A_ExecuteCommands;
+void rc_vkCmdExecuteCommands(VkCommandBuffer cb, uint32_t n, const VkCommandBuffer *c) {
+    if (!OWNED(cb)) { vkCmdExecuteCommands(cb, n, c); return; }
+    A_ExecuteCommands *a = put(R_ExecuteCommands, sizeof *a + sizeof *c * n);
+    uint8_t *at = (uint8_t *)(a + 1);
+    a->n = n, a->c = tail_copy(&at, c, sizeof *c * n);
+    pub();
+}
+
 typedef struct { VkPipelineLayout l; VkShaderStageFlags st; uint32_t o, n; const void *v; } A_PushConstants;
 void rc_vkCmdPushConstants(VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags st, uint32_t o, uint32_t n,
                            const void *v) {
@@ -677,6 +686,7 @@ static void exec_packet(uint32_t op, void *p) {
         break;
     }
     F(PushConstants, a->l, a->st, a->o, a->n, a->v)
+    F(ExecuteCommands, a->n, a->c)
 #undef F
     case R_EndRendering: vkCmdEndRendering(cb); break;
     case R_BlitImage: { A_Img *a = p; vkCmdBlitImage(cb, a->s, a->sl, a->d, a->dl, a->n, a->r, a->f); break; }

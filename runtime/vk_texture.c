@@ -1679,15 +1679,8 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     si.maxLod = d->lod_max > 1000 ? VK_LOD_CLAMP_NONE : d->lod_max;
     if (mf <= NVN_MIN_FILTER_LINEAR) si.maxLod = si.minLod + 0.25f;   // not mipmapped: stay on the base level
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
-    float lim = c->props.limits.maxSamplerLodBias, bias = d->lod_bias;
-    // DLSS upscaling (resolution.c): the scene's material textures, the filtered mipmapped ones that repeat, are
-    // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias. Without DLSS
-    // running (dlaa = 0, or NGX without DLSS) nothing accumulates the extra detail, and the sharper mips only shimmer.
-    if (vk_dlaa_available() && !d->cmp_mode && mf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR &&
-        (si.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeU == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT ||
-         si.addressModeV == VK_SAMPLER_ADDRESS_MODE_REPEAT || si.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT))
-        bias += res_dlss_lod_bias();
-    si.mipLodBias = fmaxf(-lim, fminf(lim, bias));
+    float lim = c->props.limits.maxSamplerLodBias;
+    si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
     // TOTK_ANISO raises the level for filtered, mipmapped colour samplers that repeat on U and V: the surface textures,
     // which tile, so ground and walls seen at a shallow angle stay sharp into the distance. Depth-compare (shadow)
     // samplers, nearest or unmipmapped ones (data maps, LUTs) and clamped ones keep the game's level: clamped samplers
@@ -1755,11 +1748,32 @@ void vk_sampler_register(int id, const samp_par *s) {
     unlock();
 }
 
+// DLSS upscaling (vk_sampler_dlss_bias): the scene's material textures, the filtered mipmapped ones that repeat, are
+// sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias.
+static float dlss_bias;
+
+static int dlss_biased(const samp_par *k) {
+    int rep_s = k->ws == NVN_WRAP_MODE_REPEAT || k->ws == NVN_WRAP_MODE_MIRRORED_REPEAT;
+    int rep_t = k->wt == NVN_WRAP_MODE_REPEAT || k->wt == NVN_WRAP_MODE_MIRRORED_REPEAT;
+    return !k->cmp_mode && k->minf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR && (rep_s || rep_t);
+}
+
+void vk_sampler_dlss_bias(float b) {
+    lock();
+    if (b != dlss_bias) {
+        dlss_bias = b;
+        for (int i = 0; i < nsslots; i++) sslots[i].s = sslots[i].sp = VK_NULL_HANDLE;   // looked up again (the key moves)
+        samp_gen++;
+    }
+    unlock();
+}
+
 // Caller holds the lock.
 static VkSampler sampler_for(VkCtx *c, const samp_par *s) {
     samp_par k;
     memset(&k, 0, sizeof k);
     k = *s;
+    if (dlss_bias != 0 && dlss_biased(&k)) k.lod_bias += dlss_bias;   // part of the key: samplers live until shutdown
     VkSampler v = (VkSampler)nvn_hm_get(&samplers, &k);
     if (!v) {
         v = make_sampler(c, &k);

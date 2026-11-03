@@ -25,6 +25,15 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_SWKBD_TITLE] = title, [UI_SWKBD_PROMPT] = prompt, [UI_SWKBD_DEFAULT_NAME] = name, [UI_SWKBD_OK] = ok, \
     [UI_SWKBD_CANCEL] = cancel, [UI_SWKBD_PAD_HINT] = hint, LANG_NAMES
 
+// The DLSS model file and the executable, as the player sees them on this platform.
+#ifdef _WIN32
+#define DLSS_FILE "nvngx_dlss.dll"
+#define EXE_FILE "totk.exe"
+#else
+#define DLSS_FILE "libnvidia-ngx-dlss.so"
+#define EXE_FILE "totk"
+#endif
+
 static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
@@ -126,15 +135,28 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
                                   "Takes effect at the next start.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to totk.exe): smoother edges "
-                          "and less shimmer. The HUD is not touched. The mode below sets the resolution it works from. Takes effect "
-                          "after a restart.",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
+                          "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
+                          "from. Takes effect after a restart.",
+    [UI_MENU_DLSS_PRESET] = "DLSS model",
+    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
+                                 "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
+                                 "behind moving characters, a little more flicker. K: the sharpest model in every mode. "
+                                 "Applies at once.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
+    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
+    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
+    [UI_MENU_DLSS_CHARS_DESC] = "Reduces the faint trails behind moving characters, animals and what they hold: DLSS takes "
+                                "less of the previous frames there. Stronger removes more of the trails and leaves those "
+                                "edges a little less smooth. Applies at once.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
+    [UI_MENU_DLSS_CHARS_FULL] = "Full",
     [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced and Performance draw it at 67, 58 "
-                          "and 50 % and let DLSS scale it up, for more frames per second; they replace the 3D render "
-                          "scale. Takes effect after a restart.",
+    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
+                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
+                          "they replace the 3D render scale. Takes effect at once.",
     [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
-    [UI_MENU_DLSS_PERFORMANCE] = "Performance",
+    [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
 
@@ -558,15 +580,28 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
                                   "разрешение теней. Действует после перезапуска.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; nvngx_dlss.dll рядом с totk.exe): ровнее края и "
-                          "меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он работает. "
-                          "Действует после перезапуска.",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
+                          "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
+                          "работает. Действует после перезапуска.",
+    [UI_MENU_DLSS_PRESET] = "Модель DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
+                                 "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
+                                 "производительности». J: чуть меньше шлейфов за движущимися персонажами, немного больше "
+                                 "мерцания. K: самая чёткая модель во всех режимах. Действует сразу.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Автоматически", [UI_MENU_DLSS_PRESET_K] = "K (самая чёткая)",
+    [UI_MENU_DLSS_PRESET_J] = "J (меньше шлейфов)",
+    [UI_MENU_DLSS_CHARS] = "Шлейфы персонажей в DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "Убирает слабые шлейфы за движущимися персонажами, животными и тем, что они держат: DLSS "
+                                "берёт там меньше от прошлых кадров. Чем сильнее, тем меньше шлейфов и тем чуть менее "
+                                "гладкие края. Действует сразу.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
+    [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
     [UI_MENU_DLSS] = "Режим DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс» и «Производительность» рисуют её "
-                          "в 67, 58 и 50 % и масштабируют через DLSS ради большего числа кадров; они заменяют масштаб "
-                          "3D-отрисовки. Действует после перезапуска.",
+    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
+                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
+                          "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
     [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
-    [UI_MENU_DLSS_PERFORMANCE] = "Производительность",
+    [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
 
@@ -1309,13 +1344,26 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
                           "onde ele parte. Vale após reiniciar.",
     [UI_MENU_DLSS] = "Modo do DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado e Desempenho a desenham "
-                          "em 67, 58 e 50 % e deixam o DLSS ampliá-la, para mais quadros por segundo; eles substituem "
-                          "a escala 3D. Vale após reiniciar.",
+    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
+                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
+                          "GPU; eles substituem a escala 3D. Vale na hora.",
     [UI_MENU_DLSS_DLAA] = "DLAA (nativo)",
     [UI_MENU_DLSS_QUALITY] = "Qualidade",
     [UI_MENU_DLSS_BALANCED] = "Equilibrado",
-    [UI_MENU_DLSS_PERFORMANCE] = "Desempenho",
+    [UI_MENU_DLSS_PERFORMANCE] = "Desempenho", [UI_MENU_DLSS_ULTRA] = "Ultra Desempenho",
+    [UI_MENU_DLSS_PRESET] = "Modelo do DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "Qual modelo do DLSS roda. Automático segue a recomendação da NVIDIA para cada modo: K "
+                                 "para DLAA, Qualidade e Equilibrado, M para Desempenho, L para Ultra Desempenho. J: um "
+                                 "pouco menos de rastro atrás de personagens em movimento, um pouco mais de cintilação. K: "
+                                 "o modelo mais nítido em todos os modos. Vale na hora.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático", [UI_MENU_DLSS_PRESET_K] = "K (mais nítido)",
+    [UI_MENU_DLSS_PRESET_J] = "J (menos rastro)",
+    [UI_MENU_DLSS_CHARS] = "Rastros de personagens no DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "Reduz os rastros fracos atrás de personagens, animais e do que eles seguram em movimento: "
+                                "ali o DLSS usa menos dos quadros anteriores. Mais forte remove mais rastros e deixa essas "
+                                "bordas um pouco menos suaves. Vale na hora.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Desligado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Médio",
+    [UI_MENU_DLSS_CHARS_FULL] = "Total",
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
@@ -1873,11 +1921,22 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
     [UI_MENU_DLSS] = "DLSS 模式",
-    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡和性能分别以 67%、58% 和 50% 绘制，再由 DLSS 放大，以获得更高帧率；它们会取代 3D 渲染比例。重启后生效。",
+    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
     [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
     [UI_MENU_DLSS_QUALITY] = "质量",
     [UI_MENU_DLSS_BALANCED] = "平衡",
     [UI_MENU_DLSS_PERFORMANCE] = "性能",
+    [UI_MENU_DLSS_ULTRA] = "超级性能",
+    [UI_MENU_DLSS_PRESET] = "DLSS 模型",
+    [UI_MENU_DLSS_PRESET_DESC] = "运行哪个 DLSS 模型。自动按 NVIDIA 对各模式的建议：DLAA、质量和平衡用 K，性能用 M，超级性能用 L。"
+                                 "J：移动角色身后的拖影略少，闪烁略多。K：所有模式都用最清晰的模型。立即生效。",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "自动", [UI_MENU_DLSS_PRESET_K] = "K（最清晰）",
+    [UI_MENU_DLSS_PRESET_J] = "J（拖影更少）",
+    [UI_MENU_DLSS_CHARS] = "DLSS 角色拖影",
+    [UI_MENU_DLSS_CHARS_DESC] = "减少移动中的角色、动物及其手持物品身后的淡淡拖影：DLSS 在这些位置少用之前的帧。越强拖影越少，"
+                                "这些边缘也略欠平滑。立即生效。",
+    [UI_MENU_DLSS_CHARS_OFF] = "关", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
+    [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
     [UI_MENU_TAB_CHEATS] = "金手指",
