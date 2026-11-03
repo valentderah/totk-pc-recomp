@@ -8,7 +8,8 @@
 // 8-bit sRGB window texture it presents. So:
 // 1. vk_hdr_shader_swap: the tonemap's fragment shader becomes shaders/hdr_tonemap.frag, which keeps values above 1
 //    (relative to the HUD's white) and rolls off at the peak. It is recognised by its constants and resources, not by
-//    a hash, so another game version or translator still finds it; its SPIR-V is replaced in memory only.
+//    a hash, so another game version or translator still finds it; its SPIR-V is replaced in memory only. The game's
+//    FSR 1 upscale after it would clamp the picture to 1 again; fsr_unclamp drops that clamp in its SPIR-V.
 // 2. vk_hdr_draw / vk_hdr_present_source: a draw into a presented window texture that samples one float texture of
 //    its size is that copy; the present then reads the float texture instead of the window texture. Any other last
 //    draw into it leaves the window texture, decoded from sRGB: menus and movies stay SDR at the HUD's white.
@@ -90,8 +91,62 @@ static int name_is(const uint32_t *a, uint32_t len, const char *s) {   // OpName
     return (len - 2) * 4 >= n + 1 && !memcmp(a + 1, s, n + 1);
 }
 
+// The game's FSR 1 upscale after the tonemap (some frames take it in place of the plain upscale; what picks it is not
+// known yet, the scene size alone does not) ends with clamp(colour, 0.0, 1.0) per channel, which cuts the HDR
+// highlights back to the HUD's white for as long as the game takes it. Its own 0..1 clamps of the filter weights each feed a float bit trick (OpBitcast), so only
+// the clamps whose result goes to the shader's output change, to clamp(x, 0.0, x): the same instruction length, no new
+// constant, and the r11g11b10f target stores no negative anyway. Recognised by FSR's two reciprocal constants
+// (0x7ef07ebb, 0x7ef19fff) and its one texture fp_t_tcb_8. Returns the clamps changed.
+enum { SPV_OP_EXT_INST_IMPORT = 11, SPV_OP_EXT_INST = 12, SPV_OP_VARIABLE = 59, SPV_OP_STORE = 62,
+       SPV_OP_ACCESS_CHAIN = 65, SPV_SC_OUTPUT = 3, GLSL_FCLAMP = 43 };
+
+static int fsr_unclamp(uint32_t *w, uint64_t n) {
+    uint32_t bound = w[3], glsl = 0, float_type = 0, zero = 0, one = 0;
+    int magic = 0, tex = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return 0;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_EXT_INST_IMPORT && len >= 3 && name_is(a, len, "GLSL.std.450")) glsl = a[0];
+        else if (op == SPV_OP_TYPE_FLOAT && len == 3 && a[1] == 32) float_type = a[0];
+        else if (op == SPV_OP_CONSTANT && len == 4) {
+            magic |= (a[2] == 0x7ef07ebbu) | (a[2] == 0x7ef19fffu) << 1;
+            if (a[0] == float_type && float_type && a[2] == 0) zero = a[1];
+            if (a[0] == float_type && float_type && a[2] == 0x3f800000u) one = a[1];
+        } else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "fp_t_tcb_8")) tex = 1;
+        i += len;
+    }
+    if (magic != 3 || !tex || !glsl || !zero || !one || !bound) return 0;
+    uint8_t *out = calloc(bound, 1);   // id -> 1: a pointer into an Output variable, 2: a value stored through one
+    if (!out) return 0;
+    for (uint64_t i = 5; i < n; i += w[i] >> 16) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_VARIABLE && len >= 4 && a[2] == SPV_SC_OUTPUT && a[1] < bound) out[a[1]] = 1;
+        else if (op == SPV_OP_ACCESS_CHAIN && len >= 4 && a[2] < bound && out[a[2]] == 1 && a[1] < bound) out[a[1]] = 1;
+        else if (op == SPV_OP_STORE && len >= 3 && a[0] < bound && out[a[0]] == 1 && a[1] < bound) out[a[1]] = 2;
+    }
+    int changed = 0;
+    for (uint64_t i = 5; i < n; i += w[i] >> 16) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        uint32_t *a = w + i + 1;   // result type, result, set, instruction, x, min, max
+        if (op == SPV_OP_EXT_INST && len == 8 && a[2] == glsl && a[3] == GLSL_FCLAMP && a[1] < bound && out[a[1]] == 2 &&
+            a[5] == zero && a[6] == one)
+            a[6] = a[4], changed++;
+    }
+    free(out);
+    return changed;
+}
+
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
     if (!vk_hdr_wanted() || !*spirv || *words < 5) return;
+    int unclamped = fsr_unclamp(*spirv, *words);
+    if (unclamped) {
+        static volatile int32_t fsrs;
+        rt_log("hdr: the game's FSR upscale keeps values above 1 (%d output clamps; %d so far)", unclamped,
+               plat_inc32(&fsrs));
+        return;
+    }
     const uint32_t *w = *spirv;
     uint64_t n = *words;
     // the game's constants: the BT.601 red weight, -1/ln 2 (e^-x as exp2), 2/3 (the grade's red weight), the bloom clamp
