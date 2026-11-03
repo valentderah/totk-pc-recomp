@@ -815,6 +815,11 @@ static uint64_t n_parts, n_subs;
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
         split_n = cfg_int("TOTK_SPLIT_DRAWS");
+        // Off for Breath of the Wild (RTX 4080 SUPER, the Great Plateau at 60 fps, every frame of six seconds compared
+        // with its neighbours): with parts, 10 to 15 frames in 360 lost the fog and the shadows (once a whole frame of
+        // garbage), as when a part reads the light palette after the game wrote the next frame's; one part per
+        // submission left 1 to 3, at the same 60 fps. TOTK_SPLIT_DRAWS turns them on again.
+        if (RT_BOTW && !cfg_is_set("TOTK_SPLIT_DRAWS")) split_n = 0;
         if (split_n < 0) split_n = 0;
         int us = cfg_int("TOTK_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
