@@ -622,9 +622,13 @@ void vk_dlaa_pass(VkExec *ex) {
         D.gbuf = 1, D.armed = 0;
         return;
     }
-    // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents
+    // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents.
+    // A smaller pair never takes over an armed one: the camera rune draws a half-size RGBA16F target with a half-size
+    // D32F depth after the lighting (852x480 under a 1704x960 scene), and DLSS ran on that and wrote its picture into
+    // the scene's own light target, which left every object black.
     if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
         c->width == z->width && c->height == z->height && c->width >= 640 &&
+        (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d) {
         D.color = *c, D.depth = *z, D.armed = 1;
         return;
@@ -638,9 +642,11 @@ void vk_dlaa_pass(VkExec *ex) {
         if (D.color.width >= o[0]) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
         return;
     }
-    // the game's scaling pass: one colour target wider than the scene, no depth
+    // the game's scaling pass: one colour target of the output size, no depth
+    unsigned o[2], s[2];
+    res_sizes(o, s);
     if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
-        c->samples <= 1 && !c->is3d) {
+        c->width == o[0] && c->height == o[1] && c->samples <= 1 && !c->is3d) {
         D.done = D.up = 1;
         evaluate(ex, c);
     }
