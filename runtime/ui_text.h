@@ -154,7 +154,8 @@ typedef enum {
     // Language names, each in its own language and the same in every row (game language and menu language lists)
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
-    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR,
+    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_EN_GB,
+    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -245,6 +246,12 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
 int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
+
+// The game languages the F1 menu offers for a game build (rt_game_version): one entry per Mals language file the build
+// ships, each with the Switch code TOTK_LANG takes and the id of its name. 1.4.3 adds Brazilian Portuguese (USpt).
+// Fills out (room for max entries) and returns the count.
+typedef struct { const char *code; UiTextId name; } UiGameLang;
+int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
 // Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans");
 // unset, the system UI language when the catalog has menu text for it (English, Russian, Brazilian Portuguese,
