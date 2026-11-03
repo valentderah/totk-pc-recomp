@@ -22,6 +22,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+#include "vk_dlaa.h"
 #include "platform/platform.h"
 
 #define ALIGN 256u
@@ -34,8 +35,9 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // the same bytes in host memory, for the CPU's reads (vk_usnap_bytes): map is often device memory
-                     // through the BAR, written fast but read back at about a microsecond a cache line
+    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
+                     // map is often device memory through the BAR, written fast but read back at about a microsecond a
+                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
     uint64_t size;
 } Arena;
 
@@ -98,7 +100,6 @@ static Arena *arena_get(uint64_t need) {
         return NULL;
     }
     a->map = info.pMappedData;
-    if (!(a->cpu = malloc(a->size))) rt_fatal("vk_usnap: out of memory");
     rt_log("vk_usnap: new arena of %.1f MiB", a->size / 1048576.0);
     return a;
 }
@@ -283,9 +284,14 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     }
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
+    uint8_t *dst = U.arena->map;
+    if (vk_dlaa_available()) {
+        if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
+        dst = U.arena->cpu;
+    }
     for (int i = 0; i < U.nreg; i++)
-        memcpy(U.arena->cpu + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
-    memcpy(U.arena->map, U.arena->cpu, total);   // one sequential write into the device copy
+        memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+    if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
@@ -331,11 +337,14 @@ void vk_usnap_drop(uint64_t addr, uint64_t n) {
 
 uint64_t vk_usnap_gen(void) { return U.gen; }
 
-const uint8_t *vk_usnap_map(void) { return U.arena ? U.arena->cpu : NULL; }
+// the host copy where there is one (DLSS), else the device copy
+static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+
+const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     VkDescriptorBufferInfo bi;
-    return vk_usnap_find(addr, n, 1, &bi) ? U.arena->cpu + bi.offset : NULL;
+    return vk_usnap_find(addr, n, 1, &bi) ? host_copy() + bi.offset : NULL;
 }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).

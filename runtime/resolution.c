@@ -56,6 +56,7 @@ static struct {
     double dlss_k;             // TOTK_DLSS quality/balanced/performance/ultra_performance: the scene's share of the output, else 0
     double base_k;             // the scene's share without a DLSS mode (render_scale, or the game's 5/6)
     unsigned hw, hh;           // the largest scene a DLSS mode change can ask for: the heap is sized for it
+    int live;                  // 1.4.3 with DLSS able to run: the DLSS mode can change while the game runs
 } R;
 
 // The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
@@ -130,15 +131,20 @@ static void decide(void) {
             rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; game", s);
         }
     }
-    // A DLSS mode other than dlaa sets the scene size instead, and can change while the game runs (res_dlss_mode): the
-    // scene patch is always on, and the heap is sized for the largest scene the modes ask for.
+    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
+    // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
+    // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.scene_set = 1;
+    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
-    scene_for(R.dlss_k ? R.dlss_k : k, &R.sw, &R.sh);
-    scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
+    double sk = R.dlss_k ? R.dlss_k : k;
+    if (R.live || R.dlss_k || R.ow * sk > SCENE_MAX || R.oh * sk > SCENE_MAX) R.scene_set = 1;
+    scene_for(sk, &R.sw, &R.sh);
+    if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
+    else R.hw = R.sw, R.hh = R.sh;
     const char *sr = cfg_value("TOTK_SHADOW_RES");
     if (strcmp(sr, "game")) {
         unsigned n = (unsigned)atoi(sr);
@@ -326,7 +332,7 @@ void res_init(void) {
     rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
-    if (RT_V143) g_fnprof = 1;   // until the game sets its render size: res_fn_hit
+    if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
     // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
     // patches-v143.txt, set aspect), so a 21:9 output shows more of the world at the sides instead of a stretched 16:9 view. The HUD's layouts
     // for that shape come from romfs-patches-<w>x<h> (romfs.c overlay_init, tools/make_romfs_patches.py --aspect).
@@ -415,6 +421,13 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
+    // The hook runs on every guest function entry while it waits: should the game set its render size before
+    // res_init or never, it stops after 1800 presents (half a minute at 60 fps) and modes change at the next start.
+    static unsigned waited;
+    if (g_fnprof && !renderer && ++waited == 1800) {
+        g_fnprof = 0;
+        rt_log("resolution: the game's render size setup was not seen; DLSS modes change at the next start");
+    }
     if (!size_pending || !renderer) return;
     size_pending = 0;
     Cpu keep = *c;   // the guest's registers as at the present call: the setup runs as if it never happened
