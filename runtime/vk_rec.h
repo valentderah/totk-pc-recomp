@@ -80,6 +80,7 @@ void rec_pass_mark(VkCommandBuffer cb, uint32_t id, int end);
     X(EndRendering, (VkCommandBuffer cb), (cb))                                                                          \
     X(FillBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize n, uint32_t v), (cb, b, o, n, v))        \
     X(PipelineBarrier2, (VkCommandBuffer cb, const VkDependencyInfo *di), (cb, di))                                      \
+    X(ExecuteCommands, (VkCommandBuffer cb, uint32_t n, const VkCommandBuffer *c), (cb, n, c))                           \
     X(PushConstants, (VkCommandBuffer cb, VkPipelineLayout l, VkShaderStageFlags st, uint32_t o, uint32_t n,             \
                       const void *v), (cb, l, st, o, n, v))                                                              \
     X(ResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), (cb, p, f, n))                        \
@@ -119,6 +120,7 @@ REC_CMDS(REC_DECL)
 #define vkCmdBindPipeline rc_vkCmdBindPipeline
 #define vkCmdBindVertexBuffers2 rc_vkCmdBindVertexBuffers2
 #define vkCmdBlitImage rc_vkCmdBlitImage
+#define vkCmdExecuteCommands rc_vkCmdExecuteCommands
 #define vkCmdClearAttachments rc_vkCmdClearAttachments
 #define vkCmdClearColorImage rc_vkCmdClearColorImage
 #define vkCmdClearDepthStencilImage rc_vkCmdClearDepthStencilImage
