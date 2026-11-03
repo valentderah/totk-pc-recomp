@@ -46,7 +46,7 @@
 #define SCENE_W 1600
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
-#define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SCENE_MAX 8192       // per side: render_scale 200 at a 3840x2160 output
 #define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
 static struct {
@@ -93,8 +93,9 @@ static int dlss_dll(void) {
 static void scene_for(double k, unsigned *w, unsigned *h) {
     double sw = R.ow * k, sh = R.oh * k;
     double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
-    *w = (unsigned)(sw * fit + 0.5);
-    *h = (unsigned)(sh * fit + 0.5);
+    // even: the game lights the scene at half its size, and an odd side leaves the half-size passes a pixel short
+    *w = (unsigned)(sw * fit + 0.5) & ~1u;
+    *h = (unsigned)(sh * fit + 0.5) & ~1u;
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
@@ -346,6 +347,11 @@ void res_init(void) {
     memcpy(page + 48, &out, 8);
     rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
     rt_patch_switch(scene, scene_on);
+    int fixres = rt_patch_set("fixres");
+    if (!cfg_bool("TOTK_DYNAMIC_RES")) {
+        if (fixres >= 0) rt_patch_switch(fixres, 1), rt_log("resolution: the scene keeps its size (dynamic_res = 0)");
+        else rt_log("resolution: this game version has no fixed scene size patch; dynamic_res = 0 does nothing");
+    }
     R.on = 1;
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
     // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
@@ -472,6 +478,11 @@ int res_dlss_mode(const char *m) {
     size_pending = 1;
     rt_log("resolution: DLSS %s: scene %ux%u", m, w, h);
     return 1;
+}
+
+int res_scene_supersampled(void) {
+    decide();
+    return R.sw > R.ow || R.sh > R.oh;
 }
 
 void res_sizes(unsigned out[2], unsigned scene[2]) {
