@@ -173,6 +173,9 @@ static void vsync_main(void *arg) {
         }
         n++;
         plat_xchg64(&g_ticks, (int64_t)n);
+        // A PGO training build (tools/build_game.py --pgo gen) counts branches in memory: write them now and then, so a
+        // crash costs five minutes of training instead of the session. Nothing at all in a normal build.
+        if (!(n % (uint64_t)(VSYNC_HZ * 300)) && plat_profile_instrumented()) plat_profile_flush();
         uint64_t ev[16];
         volatile int32_t *ctr[4];
         int ne, nc;
@@ -817,6 +820,9 @@ void gfx_window_start(void) {
         wsys_client_size(&cw, &ch);
         rt_log("gfx: window %dx%d at DPI %u, swapchain %ux%u format %d", cw, ch, gfx_window_dpi(), g_sc_ext.width,
                g_sc_ext.height, (int)g_sc_fmt);
+        if (plat_profile_instrumented())
+            rt_log("pgo: instrumented build (training): the counters go to the file LLVM_PROFILE_FILE names every five "
+                   "minutes and when the game exits; close the window, do not kill it");
     }
     plat_rmutex_unlock(&g_start_lock);
     vsync_ensure();

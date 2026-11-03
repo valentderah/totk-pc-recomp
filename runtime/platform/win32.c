@@ -792,6 +792,7 @@ void plat_aligned_free(void *p) { _aligned_free(p); }
 // ---- process
 
 void plat_exit(int code) {
+    plat_profile_flush();   // a training build (PGO): the counters are written from an atexit handler that this path skips
     fflush(stdout);
     fflush(stderr);
     ExitProcess((UINT)code);

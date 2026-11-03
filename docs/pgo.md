@@ -41,15 +41,30 @@ and a shrine covers most of the hot code. Menus, cutscenes and the title screen 
 resolution you care about — the counters are branch and function counts, so a session at 60 fps in a busy town says more
 than twice as long at the title screen.
 
-Close the game normally when a run is done: the counters are written as the process exits, so a crash loses that run (the
-next run starts a new file). Several runs merge into one profile; every run counts the same.
+Close the game normally when a run is done. The counters are written every five minutes and when the window closes
+(`plat_profile_flush`), so a crash costs at most five minutes of training instead of the session; killing the process with
+Task Manager costs whatever came after the last write. Several runs merge into one profile, and every run counts the same.
 
 ## Toolchain: only the training build is special
 
-The instrumented build links clang's profiling runtime (`libclang_rt.profile`). MSYS2's **UCRT64** clang does not ship
-it, so `--pgo gen` stops before compiling and says so — train with `--toolchain <llvm-mingw>` (the toolchain the release
-build uses, which bundles the runtime). `tools/build_game.py` tests the link with a trivial program before it starts, so
-another clang that has the runtime is accepted without being listed here.
+The instrumented build links clang's profiling runtime, `libclang_rt.profile`. MSYS2's **UCRT64** clang ships every other
+runtime but not that one, so `--pgo gen` stops before compiling and says so. Two ways to give it one:
+
+- Copy the file MSYS2's clang64 package does ship into the directory the UCRT64 clang looks in. The training build then
+  uses the same compiler as the build it optimises — the profile matches the code it will be applied to:
+
+  ```powershell
+  $r = "C:\msys64\ucrt64\lib\clang\23\lib\x86_64-w64-windows-gnu"
+  New-Item -ItemType Directory -Force $r | Out-Null
+  Copy-Item "C:\msys64\clang64\lib\clang\23\lib\windows\libclang_rt.profile-x86_64.a" "$r\libclang_rt.profile.a"
+  ```
+
+  (Delete that one file to undo it. Nothing else in the toolchain changes.)
+
+- Or `--toolchain <llvm-mingw>`, the toolchain the release build uses, which brings its own compiler-rt.
+
+`tools/build_game.py` tests the link with a trivial program before it starts compiling, so a toolchain that cannot do it
+is rejected in a second rather than after twenty minutes.
 
 The optimised build needs nothing extra: `-fprofile-instr-use` is a compile-time input, with no runtime library, no
 slowdown and nothing to ship beside `totk.exe`.
