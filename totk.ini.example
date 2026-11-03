@@ -55,7 +55,7 @@
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
 # prewarm_xlate = 8
-# Vulkan graphics pipeline library, 0 or 1. Default: on, except on AMD's driver for RDNA 1 and 2 (RX 5000 and 6000).
+# Vulkan graphics pipeline library, 0 or 1. Default: on.
 # gpl = 1
 
 # Textures and memory.
