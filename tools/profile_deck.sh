@@ -50,27 +50,35 @@ echo
 
 cd "$INSTALL"
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+# Game Mode runs gamescope (socket gamescope-0) and Desktop Mode its own compositor (wayland-0, or wayland-1
+# when something else took 0), so take whichever socket is there instead of assuming Desktop Mode's.
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  for c in gamescope-0 wayland-0 wayland-1; do
+    [ -S "$XDG_RUNTIME_DIR/$c" ] && WAYLAND_DISPLAY=$c && break
+  done
+fi
 export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
 export SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-wayland}
 LOG=$(mktemp /tmp/deck-profile-XXXX.log)
+SCLK_FILE=$(mktemp /tmp/deck-sclk-XXXX.txt)
 
 # The three environment variables above are the whole difference between "no graphics+compute+present queue family"
 # and a measurement; the runtime reads a display even for the probes.
 "$RUN_BIN" --exefs ./exefs --romfs ./romfs --profile ./profile > "$LOG" 2>&1 &
 PID=$!
-trap 'kill $PID 2>/dev/null || true' EXIT
+trap 'kill $PID 2>/dev/null || true; rm -f "$SCLK_FILE"' EXIT
 
 sleep "$WARMUP"
-: > /tmp/deck-sclk.txt
+: > "$SCLK_FILE"
 for _ in $(seq 1 $((SECONDS_TO_RUN / 2))); do
   kill -0 $PID 2>/dev/null || break
-  sclk >> /tmp/deck-sclk.txt
+  sclk >> "$SCLK_FILE"
   sleep 2
 done
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true
 
-echo "gpu clock during the run: $(sort /tmp/deck-sclk.txt | uniq -c | sort -rn | head -3 | awk '{printf "%s x%d, ", $2, $1}')"
+echo "gpu clock during the run: $(sort "$SCLK_FILE" | uniq -c | sort -rn | head -3 | awk '{printf "%s x%d, ", $2, $1}')"
 echo "power at the end:         $(power)"
 echo
 grep -E "device profile|frame rate: limit|present mode|resolution: output|shadow storage|ASTC textures|patches:" "$LOG" | sed 's/^\[host\] //'
