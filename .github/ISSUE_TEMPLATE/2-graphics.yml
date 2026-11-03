@@ -23,24 +23,37 @@ body:
     validations:
       required: true
   - type: input
+    id: last-good
+    attributes:
+      label: Last version that worked
+      description: If an earlier version drew this correctly, which one.
+  - type: textarea
     id: system
     attributes:
-      label: GPU, driver and Windows version
-      description: Copy system info in the menu's Advanced tab puts them on the clipboard.
+      label: System info
+      description: Paste what Copy system info (F1, Advanced tab) puts on the clipboard. It lists the settings you changed too. On a Steam Deck, add LCD or OLED.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods and cheats
+      description: The folders in mods/ with their download links, or "none". Say whether the glitch also shows without them. Turn off ReShade and other overlays that draw into the game before you report.
     validations:
       required: true
   - type: textarea
     id: screenshot
     attributes:
       label: Screenshot or video
-      description: Drag the file into this field. Say where in the game it was taken.
+      description: Drag the file into this field. Say where in the game it was taken. Flicker needs a video.
     validations:
       required: true
   - type: textarea
     id: details
     attributes:
       label: What looks wrong and when
-      description: Does it show all the time, in one place, or after some time in play? Which settings did you change from the defaults?
+      description: Does it show all the time, in one place, or after some time in play? Does it go away after a restart, or when you change a setting?
     validations:
       required: true
   - type: dropdown
@@ -56,4 +69,6 @@ body:
     id: log
     attributes:
       label: Log
-      description: Attach logs\totk.log from the folder of totk.exe.
+      description: Drag logs\totk.log from the folder of totk.exe into this field, from the run that showed the glitch. Copy it before you start the game again.
+    validations:
+      required: true
