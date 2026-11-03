@@ -90,7 +90,8 @@ class Layout:
     def missing(self, cpu='v3'):
         """Paths the steps need that do not exist. cpu picks the runtime library the host will use."""
         lib = self.runtime_lib_for(cpu)
-        need = [self.python, self.tools / 'extract.py', self.tools / 'build_game.py', self.tools / 'prepare_shaders.py',
+        need = [self.python, self.tools / 'extract.py', self.tools / 'ncz.py', self.tools / 'build_game.py',
+                self.tools / 'prepare_shaders.py',
                 self.tools / 'pack_shader_cache.py', self.tools / 'make_romfs_patches.py', self.tools / 'ultrawide_layout.py',
                 self.tools / 'button_icons.py',
                 self.tools / 'vendor' / 'macnativegames' / 'extract_shared_fonts.py',
