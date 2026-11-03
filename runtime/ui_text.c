@@ -79,6 +79,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "When the window's shape differs from the game resolution's (a 16:9 picture on a 21:9 "
                             "screen): keep the picture's shape with black bars, or stretch it over the window.",
     [UI_MENU_ASPECT_FIT] = "Black bars", [UI_MENU_ASPECT_STRETCH] = "Stretch",
+    [UI_MENU_MOVIE_ASPECT] = "Movie shape",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "When the game resolution is not 16:9, keep the cutscene movies' own shape with black "
+                                  "bars, or stretch them over the whole picture. Applies from the next movie.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_FOV] = "Field of view",
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
@@ -532,6 +536,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "Когда форма окна отличается от разрешения игры (картинка 16:9 на экране 21:9): сохранить "
                             "форму картинки с чёрными полосами или растянуть её на всё окно.",
     [UI_MENU_ASPECT_FIT] = "Чёрные полосы", [UI_MENU_ASPECT_STRETCH] = "Растянуть",
+    [UI_MENU_MOVIE_ASPECT] = "Форма видеороликов",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "Когда разрешение игры не 16:9: сохранить форму роликов с чёрными полосами или "
+                                  "растянуть их на всю картинку. Действует со следующего ролика.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_FOV] = "Поле зрения",
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
@@ -1020,6 +1028,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "Quando o formato da janela difere do da resolução do jogo (uma imagem 16:9 numa tela "
                             "21:9): manter o formato da imagem com barras pretas ou esticá-la sobre a janela.",
     [UI_MENU_ASPECT_FIT] = "Barras pretas", [UI_MENU_ASPECT_STRETCH] = "Esticar",
+    [UI_MENU_MOVIE_ASPECT] = "Formato dos vídeos",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "Quando a resolução do jogo não é 16:9: manter o formato dos vídeos das cenas com "
+                                  "barras pretas ou esticá-los sobre a imagem toda. Vale a partir do próximo vídeo.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "Barras pretas", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Esticar",
     [UI_MENU_SHARPNESS] = "Nitidez do FSR",
     [UI_MENU_SHARPNESS_DESC] = "Aumento de nitidez após a ampliação do FSR; 0 desliga.",
 
@@ -1517,6 +1529,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "用黑边保持画面比例，或拉伸铺满窗口。",
     [UI_MENU_ASPECT_FIT] = "黑边",
     [UI_MENU_ASPECT_STRETCH] = "拉伸",
+    [UI_MENU_MOVIE_ASPECT] = "视频画面比例",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "当游戏分辨率不是 16:9 时：用黑边保持过场视频的原有比例，或拉伸铺满整个画面。"
+                                  "从下一段视频起生效。",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "黑边",
+    [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
                           "仅限游戏版本 1.4.3。",

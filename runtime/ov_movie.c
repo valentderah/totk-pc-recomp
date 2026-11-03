@@ -73,6 +73,7 @@ typedef struct {
     unsigned owed;                           // events to signal on the next guest thread (bit per MOVIE_EV_*)
     uint64_t t0;                             // host time of the first frame handed over (pacing)
     int64_t pts0;                            // its presentation time (us)
+    MovieFit *fit;                           // picture shrunk inside the frame; NULL = the shapes agree, copy
     MovieStats st;
     PlatMutex mu;
     PlatCond work, idle;
@@ -207,6 +208,143 @@ static void to_nv12(const vpx_image_t *img, uint8_t *dst, int w, int h) {
     }
 }
 
+// ---- Keeping the movie's shape. The game draws a decoded frame over the whole canvas, so on an output that is not 16:9
+// (output_res in totk.ini) the 1920x1080 movies would be stretched. The frame keeps its size; the picture is shrunk
+// inside it and the rest is black, so that after the game's stretch the picture has the movie's own shape again: a wider
+// output gets a squeezed picture with black at the left and right, a taller one (16:10) black above and below.
+// The shrink is a box filter (each output pixel averages the source pixels it covers, weights in 1/4096), separable, with
+// the per-column and per-row source spans and weights built once per movie (movie_fit_new), so the frame loop only
+// multiplies and adds.
+enum { FIT_ONE = 4096, FIT_Y_BLACK = 16, FIT_UV_BLACK = 128 };   // black of limited-range video: Y 16, U = V 128
+typedef struct { int n, taps; int *start; uint16_t *wt; } FitAxis;   // output i: taps weights from source start[i]
+struct MovieFit {
+    int w, h, x0, y0, pw, ph;                // frame, and the picture's corner and size in it (all even)
+    FitAxis lx, ly, cx, cy;                  // luma, chroma; columns, rows; n = 0 where the axis is kept
+    uint8_t *tmp;                            // horizontally shrunk rows, before the vertical pass
+    uint32_t *acc;                           // one row of the vertical sum
+};
+
+// Box filter from src_n to dst_n (dst_n < src_n): output i covers [i, i + 1) * src_n / dst_n of the source.
+static int axis_build(FitAxis *a, int src_n, int dst_n) {
+    double s = (double)src_n / dst_n;
+    a->n = dst_n;
+    a->taps = (int)s + 2 > src_n ? src_n : (int)s + 2;
+    a->start = malloc((size_t)dst_n * sizeof *a->start);
+    a->wt = malloc((size_t)dst_n * (size_t)a->taps * sizeof *a->wt);
+    if (!a->start || !a->wt) return 0;
+    for (int i = 0; i < dst_n; i++) {
+        double lo = i * s, hi = (i + 1) * s;
+        int st = (int)lo;
+        if (st > src_n - a->taps) st = src_n - a->taps;
+        a->start[i] = st;
+        int sum = 0, big = 0;
+        uint16_t *w = a->wt + (size_t)i * a->taps;
+        for (int t = 0; t < a->taps; t++) {
+            double ov = (st + t + 1 < hi ? st + t + 1 : hi) - (st + t > lo ? st + t : lo);
+            w[t] = ov > 0 ? (uint16_t)(ov / s * FIT_ONE + 0.5) : 0;
+            sum += w[t];
+            if (w[t] > w[big]) big = t;
+        }
+        w[big] = (uint16_t)(w[big] + FIT_ONE - sum);   // the weights add up to exactly 1
+    }
+    return 1;
+}
+static void axis_free(FitAxis *a) {
+    free(a->start);
+    free(a->wt);
+}
+
+void movie_fit_free(MovieFit *f) {
+    if (!f) return;
+    axis_free(&f->lx), axis_free(&f->ly), axis_free(&f->cx), axis_free(&f->cy);
+    free(f->tmp);
+    free(f->acc);
+    free(f);
+}
+
+// The plan for a w x h movie shown on an ow x oh output; NULL when the shapes agree within 1% (the frame is copied).
+MovieFit *movie_fit_new(int w, int h, unsigned ow, unsigned oh) {
+    if (w < 16 || h < 16 || (w | h) & 1 || !ow || !oh) return NULL;
+    double movie = (double)w / h, out = (double)ow / oh, r = out / movie;
+    if (r > 0.99 && r < 1.01) return NULL;
+    MovieFit *f = calloc(1, sizeof *f);
+    if (!f) return NULL;
+    f->w = w, f->h = h, f->pw = w, f->ph = h;
+    if (r > 1) f->pw = (int)(w / r / 2 + 0.5) * 2;   // wider output: squeeze sideways
+    else f->ph = (int)(h * r / 2 + 0.5) * 2;         // taller output: squeeze vertically
+    if (f->pw < 2) f->pw = 2;
+    if (f->ph < 2) f->ph = 2;
+    f->x0 = (w - f->pw) / 2 & ~1;
+    f->y0 = (h - f->ph) / 2 & ~1;
+    int ok = 1;
+    if (f->pw < w) ok = axis_build(&f->lx, w, f->pw) && axis_build(&f->cx, w / 2, f->pw / 2);
+    if (f->ph < h) ok = ok && axis_build(&f->ly, h, f->ph) && axis_build(&f->cy, h / 2, f->ph / 2);
+    f->tmp = malloc((size_t)f->pw * h);
+    f->acc = malloc((size_t)f->pw * sizeof *f->acc);
+    if (!ok || !f->tmp || !f->acc) {
+        movie_fit_free(f);
+        return NULL;
+    }
+    return f;
+}
+
+// One output row of the horizontal pass: dst gets the shrunk src row (dstep 2 writes every other byte, for U and V).
+static void fit_row_h(const FitAxis *a, const uint8_t *src, uint8_t *dst, int dstep) {
+    for (int i = 0; i < a->n; i++) {
+        const uint8_t *p = src + a->start[i];
+        const uint16_t *w = a->wt + (size_t)i * a->taps;
+        uint32_t v = FIT_ONE / 2;
+        for (int t = 0; t < a->taps; t++) v += w[t] * p[t];
+        dst[(size_t)i * dstep] = (uint8_t)(v / FIT_ONE);
+    }
+}
+
+// One plane (sw x sh) shrunk into the pw x ph picture whose corner (ox, oy) is in dst; ax/ay NULL = that axis is kept.
+static void fit_plane(const MovieFit *f, const uint8_t *src, int ss, int sw, int sh, uint8_t *dst, int ds, int dstep,
+                      int ox, int oy, const FitAxis *ax, const FitAxis *ay, int pw, int ph) {
+    uint8_t *base = dst + (size_t)oy * ds + (size_t)ox * dstep;
+    if (!ay) {   // sideways only: straight into the frame
+        for (int y = 0; y < sh; y++) {
+            const uint8_t *row = src + (size_t)y * ss;
+            uint8_t *o = base + (size_t)y * ds;
+            if (ax) fit_row_h(ax, row, o, dstep);
+            else if (dstep == 1) memcpy(o, row, (size_t)sw);
+            else for (int x = 0; x < sw; x++) o[(size_t)x * dstep] = row[x];
+        }
+        return;
+    }
+    const uint8_t *in = src;
+    int is = ss;
+    if (ax) {
+        for (int y = 0; y < sh; y++) fit_row_h(ax, src + (size_t)y * ss, f->tmp + (size_t)y * pw, 1);
+        in = f->tmp, is = pw;
+    }
+    for (int y = 0; y < ph; y++) {
+        memset(f->acc, 0, (size_t)pw * sizeof *f->acc);
+        const uint16_t *w = ay->wt + (size_t)y * ay->taps;
+        for (int t = 0; t < ay->taps; t++) {
+            const uint8_t *row = in + (size_t)(ay->start[y] + t) * is;
+            uint32_t k = w[t];
+            for (int x = 0; x < pw; x++) f->acc[x] += k * row[x];
+        }
+        uint8_t *o = base + (size_t)y * ds;
+        for (int x = 0; x < pw; x++) o[(size_t)x * dstep] = (uint8_t)((f->acc[x] + FIT_ONE / 2) / FIT_ONE);
+    }
+}
+
+// I420 planes -> packed NV12 with the picture shrunk inside black bars: w x h of Y, then w x h/2 of interleaved U, V.
+void movie_fit_apply(const MovieFit *f, const uint8_t *const plane[3], const int stride[3], uint8_t *dst) {
+    int w = f->w, h = f->h, cw = w / 2, ch = h / 2;
+    uint8_t *uv = dst + (size_t)w * h;
+    memset(dst, FIT_Y_BLACK, (size_t)w * h);
+    memset(uv, FIT_UV_BLACK, (size_t)w * ch);
+    fit_plane(f, plane[0], stride[0], w, h, dst, w, 1, f->x0, f->y0, f->lx.n ? &f->lx : NULL, f->ly.n ? &f->ly : NULL,
+              f->pw, f->ph);
+    for (int c = 0; c < 2; c++)
+        fit_plane(f, plane[1 + c], stride[1 + c], cw, ch, uv + c, w, 2, f->x0 / 2, f->y0 / 2,
+                  f->cx.n ? &f->cx : NULL, f->cy.n ? &f->cy : NULL, f->pw / 2, f->ph / 2);
+}
+
 static int free_out(const Movie *m) {
     for (int i = 0; i < OUT_BUFS; i++)
         if (!m->out_held[i]) return i;
@@ -250,7 +388,8 @@ static void worker(void *arg) {
             slot = free_out(m);
             m->out_held[slot] = 1;   // reserved: in no queue, so the game cannot release it
         }
-        uint64_t gen = m->gen, dt = 0;
+        uint64_t gen = m->gen, dt = 0, fit_ns = 0;
+        const MovieFit *fit = m->fit;
         int got = 0, w = m->w, h = m->h;
         uint8_t *dst = slot >= 0 ? m->out[slot] : NULL;
         vpx_codec_err_t e = VPX_CODEC_OK;
@@ -265,7 +404,12 @@ static void worker(void *arg) {
                 const vpx_image_t *img;
                 while ((img = vpx_codec_get_frame(&m->vpx, &it)) != NULL) {
                     if (img->fmt != VPX_IMG_FMT_I420 || (int)img->d_w != w || (int)img->d_h != h) bad = "layout";
-                    else if (!got) to_nv12(img, dst, w, h);
+                    else if (!got) {
+                        uint64_t t1 = kern_now_ns();
+                        if (fit) movie_fit_apply(fit, (const uint8_t *const *)img->planes, img->stride, dst);
+                        else to_nv12(img, dst, w, h);
+                        fit_ns = kern_now_ns() - t1;
+                    }
                     got++;
                 }
             }
@@ -279,6 +423,7 @@ static void worker(void *arg) {
         m->owed |= 1u << MOVIE_EV_INPUT;
         if (p.size > 0) {
             m->st.decode_ns += dt;
+            m->st.fit_ns += fit_ns;
             if (dt > m->st.max_ns) m->st.max_ns = dt;
             if (bad) rt_fatal("movie: VP9 frame layout differs from the configured %dx%d I420", w, h);
             if (e != VPX_CODEC_OK || !got) {
@@ -302,8 +447,10 @@ static void worker(void *arg) {
                 push_decoded(m, slot, 0, p.time, frame_bytes(m));
                 m->st.frames++;
                 if (m->st.frames % 600 == 0)
-                    rt_log("movie: %llu frames, decode %.2f ms per frame (max %.2f)", (unsigned long long)m->st.frames,
-                           m->st.decode_ns / 1e6 / (double)m->st.frames, m->st.max_ns / 1e6);
+                    rt_log("movie: %llu frames, decode %.2f ms per frame (max %.2f), of it %.2f ms %s",
+                           (unsigned long long)m->st.frames, m->st.decode_ns / 1e6 / (double)m->st.frames,
+                           m->st.max_ns / 1e6, m->st.fit_ns / 1e6 / (double)m->st.frames,
+                           m->fit ? "fitting the picture" : "converting");
             }
         }
         if (p.flags & MOVIE_FLAG_EOS && !m->eos_in) {
@@ -355,6 +502,8 @@ static void release_codec(Movie *m) {   // m->mu held, worker quiesced
         free(m->out[i]);
         m->out[i] = NULL;
     }
+    movie_fit_free(m->fit);
+    m->fit = NULL;
     m->configured = m->started = 0;
     reset_queues(m);
 }
@@ -597,6 +746,18 @@ static void ov_start(Cpu *c) {
     plat_mutex_lock(&m->mu);
     int st = ST_NOT_CONFIGURED;
     if (m->configured) {
+        if (!m->started && !m->busy) {   // the worker is idle: it reads m->fit only when it takes an input
+            movie_fit_free(m->fit);
+            m->fit = NULL;
+            unsigned out[2];
+            res_wanted(out);
+            if (strcmp(cfg_value("TOTK_MOVIE_ASPECT"), "stretch")) {
+                m->fit = movie_fit_new(m->w, m->h, out[0], out[1]);
+                if (m->fit)
+                    rt_log("movie: %dx%d picture kept in shape on the %ux%u output (%dx%d inside the frame)", m->w,
+                           m->h, out[0], out[1], m->fit->pw, m->fit->ph);
+            }
+        }
         m->started = 1;
         m->owed |= 1u << MOVIE_EV_INPUT;
         plat_cond_signal(&m->work);

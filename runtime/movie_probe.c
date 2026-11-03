@@ -9,6 +9,7 @@
 // Without the RomFS (no game data) it prints why and exits 0. TOTK_PROBE_MOVIE_SHOT=<file.ppm> saves the middle frame.
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -267,7 +268,57 @@ static int paced(uint64_t obj, const uint8_t *data, const Track *t, int limit, u
     return 0;
 }
 
+// The shape-keeping resampler (ov_movie.c movie_fit_new / movie_fit_apply) on a synthetic 1920x1080 I420 picture, which
+// needs no game data: a matching shape is no plan at all; a wider output gives black (Y 16, U = V 128) left and right
+// and a flat picture stays flat; a taller one gives black above and below; and the cost of a frame is printed.
+static int check_fit(void) {
+    enum { W = 1920, H = 1080 };
+    uint8_t *y = malloc((size_t)W * H), *u = malloc((size_t)W * H / 4), *v = malloc((size_t)W * H / 4);
+    uint8_t *out = malloc((size_t)W * H * 3 / 2);
+    CHECK(y && u && v && out, "fit test buffers");
+    memset(y, 120, (size_t)W * H);
+    memset(u, 90, (size_t)W * H / 4);
+    memset(v, 200, (size_t)W * H / 4);
+    const uint8_t *plane[3] = {y, u, v};
+    const int stride[3] = {W, W / 2, W / 2};
+    CHECK(!movie_fit_new(W, H, 1920, 1080) && !movie_fit_new(W, H, 2560, 1440), "16:9 outputs need no plan");
+    static const unsigned outs[][2] = {{5120, 1440}, {3440, 1440}, {1280, 800}, {1920, 1200}};
+    for (int k = 0; k < 4; k++) {
+        MovieFit *f = movie_fit_new(W, H, outs[k][0], outs[k][1]);
+        CHECK(f, "%ux%u: no plan", outs[k][0], outs[k][1]);
+        memset(out, 0, (size_t)W * H * 3 / 2);
+        movie_fit_apply(f, plane, stride, out);
+        const uint8_t *uv = out + (size_t)W * H;
+        int bars = 0, pic = 0, bad = 0;   // luma pixels that are bar / picture / neither
+        for (int i = 0; i < W * H; i++) {
+            if (out[i] == 16) bars++;
+            else if (out[i] == 120) pic++;
+            else bad++;
+        }
+        int cbars = 0, cpic = 0, cbad = 0;
+        for (int i = 0; i < W * H / 2; i += 2) {
+            if (uv[i] == 128 && uv[i + 1] == 128) cbars++;
+            else if (uv[i] == 90 && uv[i + 1] == 200) cpic++;
+            else cbad++;
+        }
+        double shown = (double)pic / ((double)W * H);   // picture's share of the frame, which must be shape / out shape
+        double want = outs[k][0] * H > (unsigned)W * outs[k][1] ? (double)W * outs[k][1] / ((double)outs[k][0] * H)
+                                                           : (double)outs[k][0] * H / ((double)W * outs[k][1]);
+        CHECK(!bad && !cbad && bars && cbars && cpic && fabs(shown - want) < 0.01,
+              "%ux%u: %d luma pixels neither bar nor picture, %d chroma; picture %.3f of the frame, want %.3f", outs[k][0],
+              outs[k][1], bad, cbad, shown, want);
+        uint64_t t0 = plat_now_ns();
+        for (int i = 0; i < 100; i++) movie_fit_apply(f, plane, stride, out);
+        printf("probe-movie: fit %ux%u: picture %.1f%% of the frame, bars Y 16 / UV 128, %.2f ms per frame\n", outs[k][0],
+               outs[k][1], shown * 100, (plat_now_ns() - t0) / 1e8);
+        movie_fit_free(f);
+    }
+    free(y), free(u), free(v), free(out);
+    return 0;
+}
+
 int probe_movie(void) {
+    if (check_fit()) return 1;
     const char *dir = rt_config()->romfs;
     char image[PLAT_PATH_MAX];
     snprintf(image, sizeof image, "%s/romfs.bin", dir);

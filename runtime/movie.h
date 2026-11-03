@@ -29,10 +29,18 @@ typedef struct {
 enum { MOVIE_EV_INPUT, MOVIE_EV_OUTPUT, MOVIE_EV_FORMAT, MOVIE_EV_ERROR };   // DecoderEvents: EventType * per event
 enum { MOVIE_TYPE_VP9 = 3, MOVIE_MODE_BUFFER = 1, MOVIE_FORMAT_NV12 = 4, MOVIE_FLAG_EOS = 4 };
 
-typedef struct { uint64_t frames, decode_ns, max_ns, errors, dropped, handed; } MovieStats;
+typedef struct { uint64_t frames, decode_ns, max_ns, errors, dropped, handed, fit_ns; } MovieStats;
+// fit_ns: the part of decode_ns spent writing the NV12 frame
 
 void movie_set_guest(const MovieGuest *g);                 // probe: stand-ins instead of the modules
 void movie_set_clock(uint64_t (*clock)(void));             // probe: a fake clock (ns) for the pacing; NULL = real
 void movie_set_pace(int on);                               // probe: 0 hands every decoded frame over at the next tick
 int movie_stats(uint64_t obj, MovieStats *out);            // counters of the decoder at guest object obj; 0 if none
 int movie_quiet(uint64_t obj);                             // 1 when its worker is idle and cannot take more input now
+
+// Keeping a movie's shape on an output of another shape (ov_movie.c): the picture is shrunk inside the frame, with
+// black (Y 16, U = V 128) around it. movie_fit_new returns NULL when the shapes agree within 1%: copy the frame.
+typedef struct MovieFit MovieFit;
+MovieFit *movie_fit_new(int w, int h, unsigned out_w, unsigned out_h);
+void movie_fit_apply(const MovieFit *f, const uint8_t *const plane[3], const int stride[3], uint8_t *dst);
+void movie_fit_free(MovieFit *f);
