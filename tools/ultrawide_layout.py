@@ -32,8 +32,14 @@ MARKER_ROOT = {
     'AttentionBalloon_00': ('C_Capture_00', 'N_InOut_00'),       # N_PosRoot_00 moves; N_InOut_00 animates y and alpha
     'AttentionLockOn_00': ('N_Offset_00',),                       # N_PosRoot_00 moves; N_Offset_00 animates y
     'EnemyInfo_00': ('Pa_EnemyLife_00', 'Pa_EnemyNotice_00'),     # the parts move; N_EnemyLifeArea_* stay screen-sized
-    'BalloonMessage_00': ('Pa_BalloonMessage_00',),
+    'BalloonMessage_00': (),   # the speech balloon part is pooled: its scale goes inside, see BALLOON_PART
 }
+
+# Speech balloons are pooled: the game clones Pa_BalloonMessage_00 into Pa_BalloonMessage_%02d at run time, and the clones
+# don't keep a scale set on the template part pane, so they drew at full canvas width. The scale goes on the part
+# layout's top panes instead (their offset scaled with them, so they sit where a scaled root would put them); its
+# animations only key alpha, visibility and N_Loop_00's y. (pane, x, y) as shipped.
+BALLOON_PART = (('C_CaptureBase_00', 226.0, 20.0), ('N_InOut_00', 30.0, -10.0))
 
 def edits(k, hud_corner):
     """(layout, pane, field, value) for the aspect: k = 16/9 over the aspect (the root's scale), w = how far a 1920-wide
@@ -67,6 +73,8 @@ def edits(k, hud_corner):
         ('PaRecipeCardList_00', 'P_BG_00', 'scale_x', wide),
         ('SaveLoadIcon_00', 'RootPane', 'x', -960 * (1 - k)),
         ('ShopMenu_00', 'N_BG_00', 'scale_x', wide), ('StaffRoll_00', 'N_BG_00', 'scale_x', wide),
+        *[e for pane, x, _ in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_x', k),
+                                                      ('PaBalloonMessage_00', pane, 'x', x * k))],
     ]
     # Menus framed by two side decorations, a header and a background: the frame stays at the screen's edges.
     for layout, deco in (('PauseMenuOverlay_00', 'P_Deco{}_00'), ('SystemLoadList_00', 'P_Deco{}_00'),
@@ -117,7 +125,9 @@ def tall_edits(k):
            *[('CameraPointer_00', p, 'scale_y', tall) for p in ('N_InOutScope_00', 'Pa_CameraFocus_00', 'S_Scissor_00',
                                                                  'W_Shadow_01')],
            ('CameraSystemWindow_00', 'N_InOut_00', 'scale_y', tall), ('MessageLog_01', 'P_Capture_00', 'scale_y', tall),
-           *[(layout, 'N_SystemBG_00', 'scale_y', tall) for layout in ('SystemActionGuide_00',) + SYSTEM_MENUS]]
+           *[(layout, 'N_SystemBG_00', 'scale_y', tall) for layout in ('SystemActionGuide_00',) + SYSTEM_MENUS],
+           *[e for pane, _, y in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_y', k),
+                                                         ('PaBalloonMessage_00', pane, 'y', y * k))]]
     # The HUD at the screen's top and bottom edges instead of the middle 16:9
     out += [(name, 'RootPane', 'y', 540 * (1 - k)) for name in (
         'AppAlbum_00', 'AppPictureBook_00', 'ChallengeLog_00', 'Challenge_00', 'InstantTipsWithPict_00', 'InstantTips_00',
