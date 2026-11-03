@@ -23,6 +23,9 @@
 // before the submission (vk_exec_draw.c upd_note).
 // TOTK_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
 // (the terrain decals draw one pass each into the G-buffer and would use up both caps).
+// TOTK_DUMP_NOCOPY=1: nothing is copied on the GPU (the passes are still logged); TOTK_DUMP_NODESC=1: no bindings are
+// described, so the replay makes no texture-cache queries for the log. Both keep the dump from changing what it watches:
+// Breath of the Wild's open-world flicker stays away with the descriptions and comes back without them.
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -290,6 +293,12 @@ static const char *copy_region(VkExec *ex, VkImage image, VkFormat vf, VkImageAs
                                const char *name) {
     const Fmt *f = fmt_of(vf);
     if (!f) return "format not decoded";
+    static int nocopy = -1;   // TOTK_DUMP_NOCOPY=1 (diagnosis): log the passes but copy nothing on the GPU
+    if (nocopy < 0) {
+        const char *v = cfg_get("TOTK_DUMP_NOCOPY");
+        nocopy = v && *v && strcmp(v, "0");
+    }
+    if (nocopy) return "TOTK_DUMP_NOCOPY";
     if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1 != dump_frame && (uint64_t)w * h * d > 65536)
         return "logged frame, large image";
     if (aspect & VK_IMAGE_ASPECT_DEPTH_BIT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -555,6 +564,12 @@ static uint64_t handle_of(const VkExec *ex, int st, int slot, int img) {
 
 // The textures, images and samplers of info's bindings; 3D textures are queued for a copy.
 static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) {
+    static int nodesc = -1;   // TOTK_DUMP_NODESC=1 (diagnosis): no bindings described (no texture-cache queries)
+    if (nodesc < 0) {
+        const char *v = cfg_get("TOTK_DUMP_NODESC");
+        nodesc = v && *v && strcmp(v, "0");
+    }
+    if (nodesc) return;
     static const char *stn[6] = {"vs", "fs", "?", "?", "?", "cs"};
     for (uint32_t i = 0; i < info->n_bindings; i++) {
         const VkPipeBinding *bd = &info->bindings[i];

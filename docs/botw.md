@@ -134,9 +134,19 @@ captured one by one (`TOTK_SHOTS=4200-4560:1`) from the same save and input; the
 | no draw skipped for a pipeline being built (perf trace) | 2 |
 | `TOTK_DUMP_LOG` over the frames (a copy after every pass) | 0 in 240 |
 
-So none of the CPU-side timing changes removes it, and the dump, whose per-pass copies slow the GPU and add work
-between passes, does. Next: what the dump changes on the GPU side (a hazard between passes or draws that its copies
-hide), then Savage Wind's late fence wait.
+| the dump log without its GPU copies (`TOTK_DUMP_NOCOPY=1`) | 0 |
+| the dump log without copies or binding descriptions (`TOTK_DUMP_NODESC=1`) | 3 |
+| region freezing off (`TOTK_FREEZE_IDLE=0`), three stretches | 0, 2, 1 |
+| a page query per texture at binding instead of the submission's snapshot | 2, 0 |
+
+So the dump hides it through its binding descriptions, which query the texture cache (`vk_texture_by_id`,
+`vk_texture_debug`: a write-watch query over each bound texture) while the replay records, not through its GPU work.
+The passes of a flickering frame (`TOTK_DUMP_LOG` with both switches, compared with `difflib` against its neighbours)
+match theirs: the 128x128 pass that is missing every 17th frame and the ping-pong of the exposure chain (8x8, 3x3,
+1x1) and of the 1920x1080 history target are the game's own rhythm. What differs is the data a pass reads, most likely
+a texture the CPU writes now and then, or a target the game makes again at the same memory, as Savage Wind found for
+this game ("render targets re-created every frame"). Next: log, per bound texture of the lighting and fog passes,
+whether it was uploaded or resolved to another image in flickering frames.
 
 Frame rates above 60 (the physics microsteps, keyframed bodies, the shield-surf takeoff), the resolution, field of
 view, draw distance and shadow settings, and the input and HUD work follow once the game looks and sounds right.
