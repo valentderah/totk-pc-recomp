@@ -353,6 +353,10 @@
 # cheat_0123abcd = 1
 
 [diagnostics]
+# Keep the console window of a game started from a frontend (Playnite, RetroBat, ES-DE) or a shortcut. Default 0: the
+# console that Windows opened for the game alone is closed once the log is open. A game started from a terminal keeps
+# printing there either way; the log is logs\totk.log.
+# show_console = 0
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
 # Performance log sets perf (frame timings). Default: none.
 # trace = perf
