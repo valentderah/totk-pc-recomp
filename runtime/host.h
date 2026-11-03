@@ -282,6 +282,7 @@ int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x
                                                            // before fs_init)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
+void res_dynres_live(void);                                // TOTK_DYNAMIC_RES to the game (set fixres); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
