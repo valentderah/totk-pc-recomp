@@ -714,12 +714,12 @@ static void restbl_overlay(void) {
                "added files estimated), %.0f ms", tables, merged, raised, estimated, (now_s() - t0) * 1000);
 }
 
-// The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
-// base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS original; the grown table is
-// written to <profile>/resolution/ and served in the base's place.
+// The HeapDef table a bigger game resolution or TOTK_TEX_HEAP_EXTRA_MB needs (resolution.c): its texture heaps and
+// their parents grow. The base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS
+// original; the grown table is written to <profile>/resolution/ and served in the base's place.
 #define HEAPDEF "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
 static void heapdef_overlay(void) {
-    if (!res_heap_extra_kib()) return;
+    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes()) return;
     static const char keeps[] = "the game keeps its own resolution";
     Overlay *base;
     size_t n;
