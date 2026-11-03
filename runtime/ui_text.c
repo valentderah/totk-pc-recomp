@@ -109,6 +109,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                               "bright room.",
     [UI_MENU_HDR_UI] = "HUD and menu brightness",
     [UI_MENU_HDR_UI_DESC] = "Nits of the HUD's and this menu's white.",
+    [UI_MENU_HDR_HUE] = "Highlight hue correction",
+    [UI_MENU_HDR_HUE_DESC] = "Bright colours such as fire and sparks turn towards white as in the game's own SDR picture, "
+                             "matching the light they cast; 0 keeps them fully saturated.",
     [UI_MENU_SHADOW_SCALE] = "Shadow resolution",
     [UI_MENU_SHADOW_SCALE_DESC] = "Draws the sun's shadow maps this many times larger on each side than the game's 960x960: "
                                   "sharper shadow edges and leaf shadows. Takes effect at the next start.",
@@ -538,6 +541,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                               "поднимите.",
     [UI_MENU_HDR_UI] = "Яркость интерфейса и меню",
     [UI_MENU_HDR_UI_DESC] = "Ниты белого цвета интерфейса игры и этого меню.",
+    [UI_MENU_HDR_HUE] = "Коррекция оттенка бликов",
+    [UI_MENU_HDR_HUE_DESC] = "Яркие цвета (огонь, искры) уходят к белому, как в SDR-картинке игры, и совпадают со светом, "
+                             "который они дают; 0 оставляет их полностью насыщенными.",
     [UI_MENU_SHADOW_SCALE] = "Разрешение теней",
     [UI_MENU_SHADOW_SCALE_DESC] = "Карты теней от солнца рисуются во столько раз больше по каждой стороне, чем 960x960 "
                                   "самой игры: края теней и тени листвы чётче. Действует после перезапуска.",
@@ -1280,6 +1286,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (o FSR só amplia)",
+    [UI_MENU_HDR_HUE] = "Correção de matiz dos realces",
+    [UI_MENU_HDR_HUE_DESC] = "Cores fortes como fogo e faíscas vão para o branco como na imagem SDR do próprio jogo e "
+                             "combinam com a luz que emitem; 0 as mantém totalmente saturadas.",
     [UI_MENU_SHADOW_SCALE] = "Resolução das sombras",
     [UI_MENU_SHADOW_SCALE_DESC] = "Desenha os mapas de sombra do sol essa quantidade de vezes maiores em cada lado "
                                   "que os 960x960 do jogo: bordas de sombra e sombras de folhas mais nítidas. Vale no "
@@ -1850,6 +1859,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
     [UI_MENU_OV_SCALE_DOWN] = "双线性（FSR 只能放大）",
+    [UI_MENU_HDR_HUE] = "高光色调校正",
+    [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像游戏自身的 SDR 画面一样趋向白色，与它们发出的光一致；0 保持完全饱和。",
     [UI_MENU_SHADOW_SCALE] = "阴影分辨率",
     [UI_MENU_SHADOW_SCALE_DESC] = "将太阳阴影贴图的每条边绘制为游戏 960x960 的若干倍：阴影边缘和树叶阴影更清晰。下次启动时生效。",
     [UI_MENU_SHADOW_RANGE] = "阴影级联范围",
