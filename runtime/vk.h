@@ -57,9 +57,10 @@ typedef struct {
     int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (TOTK_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
+    int amd_prop;                      // AMD's own driver (VK_DRIVER_ID_AMD_PROPRIETARY), any branch
 } VkCaps;
 extern VkCaps vk_caps;
-void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
+void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, amd_prop
 void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (TOTK_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
@@ -368,6 +369,7 @@ typedef struct {
     uint8_t alpha_one;             // X format: sample alpha as 1 through the view swizzle
     uint8_t chan[4];               // TexVkFormat.chan: component order of a stand-in format, applied by the view swizzle
     uint8_t mirrored, gpu_owned;
+    uint8_t cube_ok;               // created CUBE_COMPATIBLE: cube views are valid even when view_type is 2D_ARRAY
     uint8_t bound;                 // aliases physical-pool memory (physical and virtual pools)
     uint8_t block_views;           // BC image that renders through uncompressed views of its blocks (BLOCK_TEXEL_VIEW_
                                    // COMPATIBLE + EXTENDED_USAGE: only those views may use COLOR_ATTACHMENT)

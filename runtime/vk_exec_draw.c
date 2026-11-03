@@ -504,7 +504,8 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     case VK_IMAGE_VIEW_TYPE_3D: ok = img->type == VK_IMAGE_TYPE_3D; break;
     case VK_IMAGE_VIEW_TYPE_CUBE:
     case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:
-        ok = img->type == VK_IMAGE_TYPE_2D && (img->view_type == VK_IMAGE_VIEW_TYPE_CUBE || img->view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY);
+        ok = img->type == VK_IMAGE_TYPE_2D && (img->view_type == VK_IMAGE_VIEW_TYPE_CUBE ||
+                                               img->view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY || img->cube_ok);
         break;
     default: ok = img->type == VK_IMAGE_TYPE_2D; break;
     }
