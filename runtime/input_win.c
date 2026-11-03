@@ -203,6 +203,25 @@ int ikb_escape(void) { return key_down(VK_ESCAPE); }
 
 int ikb_captured(void) { return cur_captured != 0; }
 
+int ikb_pointer(float *nx, float *ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    POINT p;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r) || r.right < 1 || r.bottom < 1 || !GetCursorPos(&p) ||
+        !ScreenToClient(h, &p))
+        return 0;
+    *nx = (float)p.x / (float)r.right, *ny = (float)p.y / (float)r.bottom;
+    return p.x >= 0 && p.y >= 0 && p.x < r.right && p.y < r.bottom;
+}
+
+void ikb_pointer_set(float nx, float ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r)) return;
+    POINT p = {(LONG)(nx * r.right), (LONG)(ny * r.bottom)};
+    if (ClientToScreen(h, &p)) SetCursorPos(p.x, p.y);
+}
+
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);
     *dy = InterlockedExchange(&mouse_dy, 0);
