@@ -145,8 +145,14 @@ The passes of a flickering frame (`TOTK_DUMP_LOG` with both switches, compared w
 match theirs: the 128x128 pass that is missing every 17th frame and the ping-pong of the exposure chain (8x8, 3x3,
 1x1) and of the 1920x1080 history target are the game's own rhythm. What differs is the data a pass reads, most likely
 a texture the CPU writes now and then, or a target the game makes again at the same memory, as Savage Wind found for
-this game ("render targets re-created every frame"). Next: log, per bound texture of the lighting and fog passes,
-whether it was uploaded or resolved to another image in flickering frames.
+this game ("render targets re-created every frame").
+
+Logged next (a texture log over the stretch): no texture the CPU writes was uploaded again in those frames, and the
+slots whose resolution changed were transient targets sharing storage. One slot (an old 3x2 descriptor at the sun
+shadow cascades' storage, which a 200x112 target shares now and then) changed in the one flickering frame of that
+run, but two fixes aimed at it changed nothing (3, 2, 4 and 0, 3, 2 flickering frames): bindings resolved to the
+slot's registration at record time (Savage Wind resolves textures when the commands are recorded), and a slot that
+follows the live entries at its storage following the one the GPU wrote last. Both were taken out again.
 
 Frame rates above 60 (the physics microsteps, keyframed bodies, the shield-surf takeoff), the resolution, field of
 view, draw distance and shadow settings, and the input and HUD work follow once the game looks and sounds right.
