@@ -1051,7 +1051,8 @@ class Prepare(Step):
     def current(self, ctx, record):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
-        return ((dest / 'items.tsv').is_file() and (dest / 'shader-prepared.bin').is_file()
+        return ((game_version(ctx) != 143 or (dest / 'items.tsv').is_file())
+                and (dest / 'shader-prepared.bin').is_file()
                 and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
                 and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
 
@@ -1084,12 +1085,13 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        catalog = ctx.temp / 'item-catalog'
-        code, log = run_tool(ctx, 'prepare', layout.tools / 'item_catalog.py',
-                             ['--romfs', dest / 'romfs', '--out', catalog])
-        if code or not (catalog / 'items.tsv').is_file():
-            raise InstallError('prepare.items_failed', code=code, log=str(log))
-        replace_file(catalog / 'items.tsv', dest / 'items.tsv')
+        if game_version(ctx) == 143:
+            catalog = ctx.temp / 'item-catalog'
+            code, log = run_tool(ctx, 'prepare', layout.tools / 'item_catalog.py',
+                                 ['--romfs', dest / 'romfs', '--out', catalog])
+            if code or not (catalog / 'items.tsv').is_file():
+                raise InstallError('prepare.items_failed', code=code, log=str(log))
+            replace_file(catalog / 'items.tsv', dest / 'items.tsv')
         # The same overlay with the UI laid out for each game resolution of another shape the settings menu offers
         # (runtime/romfs.c overlay_init picks the one that matches; the camera's side is the patch set aspect,
         # recomp/patches-v<ver>.txt).
