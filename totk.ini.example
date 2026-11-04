@@ -32,9 +32,9 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: on. Adds up to a
-# frame of latency; 0 replays them on the game thread.
-# replay_async = 1
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
+# game waits for the GPU; adds up to a frame of latency.
+# replay_async = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
@@ -196,14 +196,30 @@
 # patch 0010), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with nvngx_dlss.dll (from NVIDIA's DLSS SDK) next to
-# totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
+# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
+# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
+# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
+# Read at start.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
-# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). They apply
-# only with dlaa = 1 and nvngx_dlss.dll next to totk.exe, on Windows; otherwise the scene follows render_scale. Read at
-# start.
+# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
+# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
+# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
+# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
 # dlss = dlaa
+# The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
+# ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
+# characters, a little more flicker). Any other model by its letter, a to m: on slower RTX cards the older model e is
+# cheaper. Changes while the game runs take effect at once (DLSS starts a new history).
+# dlss_preset = default
+# Per-object motion vectors for DLSS: characters, animals and moving objects get their own motion instead of the
+# camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
+# on a laptop CPU); 0 leaves camera-only motion. Read at start.
+# dlaa_objmv = 1
+# Characters' trails: where a character, animal or held item moves without motion vectors of its own (all of them with
+# dlaa_objmv = 0), DLSS can drag a faint copy of it. The G-buffer marks those objects; on them and where they were the
+# frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
+# more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
+# dlss_char_mask = 65
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
@@ -216,6 +232,9 @@
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
+# Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
+# picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
+# hdr_hue = 80
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
@@ -227,6 +246,18 @@
 # it is none of them.
 # menu_lang = en
 
+[discord]
+# Rich Presence: "Playing TotK Recomp" with the play time in your Discord status while the game runs, through the
+# local IPC of a running Discord client. 1 = on; the Menu tab of the settings menu (F1) switches it too, and the
+# change reaches the presence thread at once.
+# discord_rpc = 0
+# The application whose name and artwork the status shows. The default is the project's own application,
+# registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
+# discord.com/developers (name and art are yours to choose) and put its id here.
+# discord_app_id = 1567232599846293504
+# The key of the application's uploaded art asset shown as the status's large image.
+# discord_image = totk_512x512
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default
@@ -234,6 +265,9 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
+# game is told the same channel count and mixes for it. Takes effect at the next start.
+# audio_channels = stereo
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
@@ -249,9 +283,11 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
-# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
-# (docs/controls.md, "Xbox button prompts").
+# (docs/controls.md, "Xbox button prompts"). pc: the key or mouse button the keyboard defaults press each button with
+# (E, Shift, Space, left click, Q, R, right click, F, Tab, M, 1 to 4, W A S D, Ctrl, C) and the mouse for the right
+# stick, whatever pad_layout (docs/controls.md, "PC button prompts").
 # prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
@@ -264,6 +300,14 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
+# Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
+# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
+# mouse_mode = direct
+# The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
+# menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
+# right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.
+# menu_cursor = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
@@ -278,9 +322,10 @@
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
 # direction: bind_<A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK> or bind_<LSTICK RSTICK>_<LEFT UP RIGHT
-# DOWN> = comma separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
-# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions take keys
-# only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
+# DOWN>, or bind_SHAKE (G: shakes the right stick, which detaches a fused part from what Ultrahand holds) = comma
+# separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
+# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions and
+# SHAKE take keys only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
 #   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert

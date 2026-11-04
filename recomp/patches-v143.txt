@@ -103,6 +103,16 @@ set fov      TOTK_FOV_PATCH      0
 site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
 site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
+# The camera input update, after its stick dead zone, unit-radius clamp and StickExponent. The host callback
+# performs the displaced store and adds raw mouse counts to s9/s10 (runtime/mouse_direct.c camera_input).
+# Its address is page +0xfd0; the page is main+0x3adf000 on this verified build.
+set mouse_direct TOTK_MOUSE_DIRECT_PATCH 1
+site mouse_direct main 874cb4 bd042289 94c9acc7
+site mouse_direct main 874d7c 6d40a3e9 94c9ac91
+site mouse_direct main 18e444 f9400408 94e546db
+site mouse_direct main 18f108 bd4047ec 94e543a6
+site mouse_direct main 1d59460 b9004be8 94761acc
+
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of
 # its wrapper ZSTD_decompress_usingDDict (main+0x3a1e0, which tail-branches to it) goes to a host function on the patch

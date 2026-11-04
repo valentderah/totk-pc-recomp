@@ -405,8 +405,22 @@ static void probe_applet(void) {
                                      0x33 ^ 0x44 ^ 0x55 ^ 0x66, 0x48, 0x0F, 0xE0, 0xF1, 0x10, 0xFF, 0xEE};
     uint8_t dump[AMIIBO_DUMP_SIZE] = {0};
     memcpy(dump, head, sizeof head);
+    // Link (Archer): character 0x0100, variant 0, figure type 0, model number 0x0353, series 9, format 02
+    static const uint8_t id[8] = {0x01, 0x00, 0x00, 0x00, 0x03, 0x53, 0x09, 0x02};
+    memcpy(dump + 0x54, id, sizeof id);
     const char *dump_path = "probe-amiibo.bin";
     int amiibo_ok = plat_file_write(dump_path, dump, sizeof dump) && amiibo_load_file(dump_path);
+    // TagInfo carries the 7-byte UID without its check byte; ModelInfo has the series at 3, the model number
+    // little-endian at 4 and the figure type at 6
+    uint8_t ti[0x58], mi[0x40];
+    amiibo_get_tag_info(ti);
+    amiibo_get_model_info(mi);
+    static const uint8_t want_uid[7] = {0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    static const uint8_t want_model[7] = {0x01, 0x00, 0x00, 0x09, 0x53, 0x03, 0x00};
+    CHECK(amiibo_ok && !memcmp(ti, want_uid, 7) && ti[0x0A] == 7, "amiibo TagInfo UID %02x %02x %02x %02x %02x %02x %02x",
+          ti[0], ti[1], ti[2], ti[3], ti[4], ti[5], ti[6]);
+    CHECK(amiibo_ok && !memcmp(mi, want_model, 7), "amiibo ModelInfo %02x %02x %02x %02x %02x %02x %02x", mi[0], mi[1],
+          mi[2], mi[3], mi[4], mi[5], mi[6]);
     dump[0x0C] = 0xE1;
     amiibo_ok = amiibo_ok && plat_file_write(dump_path, dump, sizeof dump) && !amiibo_load_file(dump_path);
     plat_fs_unlink(dump_path);
@@ -875,15 +889,33 @@ static void probe_menu_text(void) {
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_PT_BR; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
+    // game language list: pt-BR only where the build ships USpt; the Switch variants are entries of their own
+    {
+        UiGameLang gl[16];
+        int n121 = ui_text_game_langs(121, gl, 16), has[16] = {0};
+        for (int i = 0; i < n121; i++) CHECK(strcmp(gl[i].code, "pt-BR"), "1.2.1 game language list offers pt-BR");
+        int n143 = ui_text_game_langs(143, gl, 16), pt = 0;
+        for (int i = 0; i < n143; i++) {
+            pt |= !strcmp(gl[i].code, "pt-BR");
+            for (int j = 0; j < i; j++) CHECK(strcmp(gl[i].code, gl[j].code), "duplicate game language %s", gl[i].code);
+        }
+        CHECK(pt && n143 == n121 + 1, "1.4.3 game language list lacks pt-BR");
+        static const char *const want[] = {"en-GB", "fr-CA", "es-419"};
+        for (int w = 0; w < 3; w++)
+            for (int i = 0; i < n143; i++) has[w] |= !strcmp(gl[i].code, want[w]);
+        CHECK(has[0] && has[1] && has[2], "game language list lacks en-GB, fr-CA or es-419");
+    }
     // the overlay formats keep their conversions
-    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
+    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("ru", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("ru", UI_MENU_OV_LOW01), "%.0f"),
           "overlay format lost its conversion");
     CHECK(strstr(ui_text_in("pt-BR", UI_MENU_OV_GAME_PCT), "%.0f%%") &&
-          strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f"), "pt-BR overlay format lost its conversion");
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("pt-BR", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("zh-Hans", UI_MENU_OV_LOW01), "%.0f"), "pt-BR overlay format lost its conversion");
     // a Brazilian game language gets the Brazilian keyboard row, Portugal's Portuguese keeps its own
     CHECK(!strcmp(ui_text_lang("pt-BR"), "pt-BR") && !strcmp(ui_text_lang("pt"), "pt") &&
           strcmp(ui_text_in("pt-BR", UI_SWKBD_PROMPT), ui_text_in("pt", UI_SWKBD_PROMPT)), "pt-BR keyboard row not used");

@@ -791,7 +791,33 @@ void plat_aligned_free(void *p) { _aligned_free(p); }
 
 // ---- process
 
+#ifdef TOTK_PGO_GEN
+// compiler-rt's profile runtime (an instrumented build, tools/build_game.py --pgo gen). It writes its counters from an
+// atexit handler, which ExitProcess skips; __llvm_profile_dump writes them once and makes later writes no-ops.
+int __llvm_profile_dump(void);
+int __llvm_profile_write_file(void);
+void __llvm_profile_reset_counters(void);
+
+// A long played session must not lose its counts to a crash or a reboot: every minute the counters are added to the
+// .profraw (the file merges, -fprofile-generate's %m) and zeroed. Counts taken between the write and the reset are lost.
+static DWORD WINAPI pgo_flush_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        Sleep(60 * 1000);
+        if (__llvm_profile_write_file() == 0) __llvm_profile_reset_counters();
+    }
+}
+
+__attribute__((constructor)) static void pgo_flush_start(void) {
+    HANDLE h = CreateThread(NULL, 0, pgo_flush_thread, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+}
+#endif
+
 void plat_exit(int code) {
+#ifdef TOTK_PGO_GEN
+    __llvm_profile_dump();
+#endif
     fflush(stdout);
     fflush(stderr);
     ExitProcess((UINT)code);
@@ -1623,6 +1649,56 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     if (!ReadFile(c->out, buf, (DWORD)cap, &got, NULL)) return -1;
     return (long)got;
 }
+
+// ---- local IPC (platform.h): Discord's Rich Presence named pipe
+struct PlatIpc { HANDLE h; };
+
+PlatIpc *plat_ipc_connect(const char *name) {
+    wchar_t wname[128], path[152];
+    if (!widen(name, wname, 128)) return NULL;
+    swprintf(path, 152, L"\\\\.\\pipe\\%ls", wname);
+    HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;   // no listener, or the pipe is busy: the caller retries later
+    PlatIpc *p = malloc(sizeof *p);
+    if (!p) {
+        CloseHandle(h);
+        return NULL;
+    }
+    p->h = h;
+    return p;
+}
+
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms) {
+    uint64_t deadline = plat_now_ms() + ms;
+    for (;;) {
+        DWORD have = 0;
+        if (!PeekNamedPipe(p->h, NULL, 0, NULL, &have, NULL)) return -1;   // the writer closed the pipe
+        if (have) {
+            DWORD got = 0;
+            if (!ReadFile(p->h, buf, have < n ? have : (DWORD)n, &got, NULL) || !got) return -1;
+            return (int)got;
+        }
+        if (plat_now_ms() >= deadline) return 0;
+        plat_sleep_ms(5);
+    }
+}
+
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        DWORD put = 0;
+        if (!WriteFile(p->h, at, n > (1u << 30) ? 1u << 30 : (DWORD)n, &put, NULL) || !put) return 0;
+        at += put, n -= put;
+    }
+    return 1;
+}
+
+void plat_ipc_close(PlatIpc *p) {
+    if (!p) return;
+    CloseHandle(p->h);
+    free(p);
+}
+
 
 // ---- restart
 // TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only

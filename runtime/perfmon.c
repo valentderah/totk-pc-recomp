@@ -32,6 +32,14 @@ static float g_ring[PERF_HISTORY];
 static uint64_t g_ring_at[PERF_HISTORY];   // when each frame ended
 static int g_ring_n, g_ring_pos;
 
+// The lows: a histogram of the frame times (perf.c's 0.25 ms bins) over the last LOW_SLICES seconds, kept as one slice
+// per second so the oldest second drops out whole. Per frame: one increment. The percentiles are read twice a second.
+#define LOW_BINS 1024
+#define LOW_SLICES 10
+static uint16_t g_low_hist[LOW_SLICES][LOW_BINS];
+static int g_low_cur;
+static uint64_t g_low_t0;
+
 // The per-frame counters, summed since t0 (the overlay's lines are averages over half a second).
 static struct {
     uint64_t t0, frames, gpu0;
@@ -47,6 +55,14 @@ void perfmon_frame(uint64_t now, uint64_t interval_ns, const uint64_t *wait_ns, 
         g_ring_at[g_ring_pos] = now;
         g_ring_pos = (g_ring_pos + 1) % PERF_HISTORY;
         if (g_ring_n < PERF_HISTORY) g_ring_n++;
+        if (now - g_low_t0 >= 1000000000ull) {   // the next second: its slice starts empty
+            g_low_cur = (g_low_cur + 1) % LOW_SLICES;
+            memset(g_low_hist[g_low_cur], 0, sizeof g_low_hist[0]);
+            g_low_t0 = now;
+        }
+        uint64_t bin = interval_ns / 250000ull;
+        uint16_t *h = &g_low_hist[g_low_cur][bin < LOW_BINS ? bin : LOW_BINS - 1];
+        if (*h < 65535) (*h)++;
     }
     g_win.frames++;
     g_win.replay += replay_ns / 1e6;
@@ -76,9 +92,27 @@ static void frames_summary(PerfStats *s, uint64_t now) {   // (lock held)
     }
 }
 
+// The fps of the slowest 1% and 0.1% of the frames in the window (the bin's upper edge, as perf.c's summary does); -1
+// when the window holds too few frames. (lock held)
+static void lows_summary(PerfStats *s) {
+    uint32_t total = 0;
+    for (int k = 0; k < LOW_SLICES; k++)
+        for (int b = 0; b < LOW_BINS; b++) total += g_low_hist[k][b];
+    s->low1_fps = s->low01_fps = -1;
+    if (total < 100) return;
+    uint32_t cut1 = (total + 99) / 100, cut01 = (total + 999) / 1000, acc = 0;
+    for (int b = LOW_BINS - 1; b >= 0 && s->low1_fps < 0; b--) {
+        for (int k = 0; k < LOW_SLICES; k++) acc += g_low_hist[k][b];
+        float fps = 1000.0f / ((b + 1) * 0.25f);
+        if (s->low01_fps < 0 && acc >= cut01) s->low01_fps = fps;
+        if (acc >= cut1) s->low1_fps = fps;
+    }
+}
+
 // Every half second: the window's sums as per-frame averages into g_stats, and a new window. (lock held)
 static void counters_summary(uint64_t now) {
     if (now - g_win.t0 < 500000000ull) return;
+    lows_summary(&g_stats);
     uint64_t gpu = perf_gpu_busy_total();
     if (g_win.t0 && g_win.frames) {
         double n = (double)g_win.frames;
@@ -342,6 +376,8 @@ void perfmon_mode(int mode) {
     }
     if (!mode) {   // the next start begins a new graph and a new counter window
         g_ring_n = g_ring_pos = 0;
+        memset(g_low_hist, 0, sizeof g_low_hist);
+        g_low_t0 = 0;
         memset(&g_win, 0, sizeof g_win);
     }
     plat_mutex_unlock(&g_lock);
