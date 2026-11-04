@@ -350,12 +350,15 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // part was recorded, sub_lock held; may move slots[].
 // First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
-    vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
-    if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
+    // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
+    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    vk_mem_shadow_sync(fence);
+    if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
     rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     int pair = ts_open(cb);
+    vk_mem_shadow_prologue(cb, fence);   // before the mirror copies, which read the shadow these bring up to date
     vk_mem_mirror_prologue(cb);
     ts_close(cb, pair, fence);
     if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
