@@ -139,6 +139,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         font_update(w, HIWORD(wp));
         RECT *r = (RECT *)lp;
         SetWindowPos(hwnd, HWND_TOPMOST, r->left, r->top, r->right-r->left, r->bottom-r->top, SWP_NOACTIVATE);
+        if (w->drag) {
+            // Continue caption or border dragging from the geometry and cursor after the DPI transition.
+            GetWindowRect(hwnd, &w->drag_rect);
+            GetCursorPos(&w->drag_start);
+        }
         InvalidateRect(hwnd, NULL, FALSE); return 0;
     }
     case WM_SIZE: InvalidateRect(hwnd, NULL, FALSE); return 0;

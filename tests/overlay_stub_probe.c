@@ -1,4 +1,8 @@
-// Non-Windows regression: even when enabled, both panels safely fall back without creating windows or raising sampling.
+// Non-Windows regression: both enabled panels safely fall back without windows or full sampling.
+// Portable C with configuration/text/lock test doubles; no SDL library, graphics or game dependency.
+// From the repository root, create build/test or replace the output directory below.
+// clang -O2 -Wall -Wextra -Werror -I runtime tests/overlay_stub_probe.c runtime/uiwindow_sdl.c runtime/perf_panel.c runtime/input_panel.c -o build/test/overlay_stub_probe
+// Run: build/test/overlay_stub_probe
 #include <stdio.h>
 #include "cfg.h"
 #include "input_panel.h"

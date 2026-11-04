@@ -563,6 +563,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
+    menu_perf_update(c->phys);   // Also process a closed panel when this present cannot draw an overlay.
     flip_locked();
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;

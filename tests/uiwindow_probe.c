@@ -1,5 +1,8 @@
-// Standalone Win32 lifecycle and focus probe without the game, Vulkan, SDL or user settings.
-// clang -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 -I runtime tests/uiwindow_probe.c runtime/uiwindow_win.c -luser32 -lgdi32 -o uiwindow_probe.exe
+// Windows interactive-desktop regression: Win32/GDI only, no game, SDL or Vulkan.
+// Uses SendInput, moves the pointer and activates a surrogate window; do not run on a headless desktop.
+// From the repository root, create build/test or replace the output directory below.
+// clang -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 -I runtime tests/uiwindow_probe.c runtime/uiwindow_win.c -luser32 -lgdi32 -o build/test/uiwindow_probe.exe
+// Run: build/test/uiwindow_probe.exe (PowerShell: & ./build/test/uiwindow_probe.exe)
 #include <windows.h>
 #include <stdio.h>
 #include "uiwindow.h"
@@ -33,6 +36,27 @@ static void gesture(HWND hwnd, int hit, int dx, int dy, HWND foreground) {
     if(hit==HTCAPTION) CHECK(after.left!=r.left || after.top!=r.top,"native caption drag moves");
     else CHECK(after.right-after.left!=r.right-r.left || after.bottom-after.top!=r.bottom-r.top,"native border drag resizes");
 }
+static void drag_dpi(HWND hwnd, int hit) {
+    POINT cursor; GetCursorPos(&cursor);
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, hit, 0);
+    RECT r; GetWindowRect(hwnd, &r);
+    RECT suggested = {r.left + 23, r.top + 19, r.left + 723, r.top + 519};
+    SendMessageW(hwnd, WM_DPICHANGED, MAKELONG(144,144), (LPARAM)&suggested);
+    RECT applied; GetWindowRect(hwnd, &applied);
+    SendMessageW(hwnd, WM_MOUSEMOVE, 0, 0);
+    RECT stable; GetWindowRect(hwnd, &stable);
+    CHECK(EqualRect(&applied,&stable), "DPI preserves active drag geometry at the same cursor");
+    SetCursorPos(cursor.x+7,cursor.y+9);
+    SendMessageW(hwnd, WM_MOUSEMOVE, 0, 0);
+    RECT moved; GetWindowRect(hwnd, &moved);
+    RECT expected=applied;
+    if(hit==HTCAPTION) OffsetRect(&expected,7,9);
+    else if(hit==HTBOTTOMRIGHT) { expected.right+=7; expected.bottom+=9; }
+    else { expected.left+=7; expected.top+=9; }
+    CHECK(EqualRect(&expected,&moved), "DPI drag continues from the rebased cursor and border");
+    SendMessageW(hwnd, WM_LBUTTONUP, 0, 0);
+    SetCursorPos(cursor.x,cursor.y);
+}
 int main(void) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     HWND prior = GetForegroundWindow(); POINT cursor; GetCursorPos(&cursor);
@@ -41,6 +65,10 @@ int main(void) {
     HWND focus=CreateWindowW(wc.lpszClassName,L"Panel probe game surrogate",WS_OVERLAPPEDWINDOW,30,30,500,350,NULL,NULL,wc.hInstance,NULL);
     ShowWindow(focus,SW_SHOW); SetForegroundWindow(focus); pump(150);
     CHECK(GetForegroundWindow()==focus,"surrogate foreground established");
+    if(GetForegroundWindow()!=focus) {
+        fputs("Interactive desktop did not grant foreground access; stopping before SendInput.\n",stderr);
+        DestroyWindow(focus); SetCursorPos(cursor.x,cursor.y); return 1;
+    }
     CHECK(!uiwindow_open("invalid",0,100,30,draw,NULL),"invalid open returns NULL");
     ProbeDrawState a={0},b={0};
     // Warm up the process window class and system GDI/font caches before counting resources.
@@ -68,6 +96,9 @@ int main(void) {
     RECT dpi_rect; GetWindowRect(h1,&dpi_rect);
     SendMessageW(h1,WM_DPICHANGED,MAKELONG(144,144),(LPARAM)&dpi_rect); pump(80);
     CHECK(uiwindow_is_open(one) && a.calls>2,"synthetic DPI redraw survives");
+    drag_dpi(h1,HTCAPTION);
+    drag_dpi(h1,HTBOTTOMRIGHT);
+    drag_dpi(h1,HTTOPLEFT);
     PostMessageW(h1,WM_CLOSE,0,0); pump(80);
     CHECK(!uiwindow_is_open(one) && uiwindow_take_close_requested(one),"user close notification");
     CHECK(!uiwindow_take_close_requested(one),"close notification consumed once");

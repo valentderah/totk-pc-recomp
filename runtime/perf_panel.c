@@ -98,13 +98,17 @@ static const char *title;
 void perf_panel_tick(void) {
     plat_mutex_lock(&lock);
     if (stopping) { plat_mutex_unlock(&lock); return; }
-    if (window && uiwindow_take_close_requested(window)) {
+    int requested = window && uiwindow_take_close_requested(window);
+    int closed = window && !uiwindow_is_open(window);
+    // WM_CLOSE publishes its notification before the closed state; collect a close between these reads.
+    if (closed && !requested) requested = uiwindow_take_close_requested(window);
+    if (requested) {
         suppressed = 1;
         cfg_set("TOTK_PERF_WINDOW", "0"); cfg_save();
     }
     int enabled = cfg_bool("TOTK_PERF_WINDOW");
     if (!enabled) suppressed = 0;
-    if (window && (!enabled || !uiwindow_is_open(window))) {
+    if (window && (!enabled || closed)) {
         if (enabled) suppressed = 1;   // An unexpected thread exit also requires an explicit off/on to retry.
         uiwindow_close(window); window = NULL;
         __atomic_store_n(&active, 0, __ATOMIC_RELEASE);

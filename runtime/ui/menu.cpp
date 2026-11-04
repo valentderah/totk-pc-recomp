@@ -1245,23 +1245,23 @@ extern "C" void menu_perf_cycle(void) {
 
 // The device the game renders on, for perfmon's GPU counters (by LUID), NVML (by name) and ADL (by PCI bus, else
 // name); once, before full mode.
-static void perf_gpu_once(const MenuTarget *t) {
+static void perf_gpu_once(VkPhysicalDevice phys) {
     static bool done;
     if (done) return;
     done = true;
     uint32_t ne = 0;
-    vkEnumerateDeviceExtensionProperties(t->phys, NULL, &ne, NULL);
+    vkEnumerateDeviceExtensionProperties(phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = (VkExtensionProperties *)calloc(ne ? ne : 1, sizeof *ep);
     bool has_bus = false;
-    if (ep && vkEnumerateDeviceExtensionProperties(t->phys, NULL, &ne, ep) >= 0)
+    if (ep && vkEnumerateDeviceExtensionProperties(phys, NULL, &ne, ep) >= 0)
         for (uint32_t i = 0; i < ne && !has_bus; i++) has_bus = !strcmp(ep[i].extensionName, VK_EXT_PCI_BUS_INFO_EXTENSION_NAME);
     free(ep);
     VkPhysicalDevicePCIBusInfoPropertiesEXT bus = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT};
     VkPhysicalDeviceIDProperties id = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES, has_bus ? &bus : nullptr};
     VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &id};
-    vkGetPhysicalDeviceProperties2(t->phys, &p2);
+    vkGetPhysicalDeviceProperties2(phys, &p2);
     VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(t->phys, &mp);
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
     uint64_t vram = 0;
     for (uint32_t h = 0; h < mp.memoryHeapCount; h++)
         if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram += mp.memoryHeaps[h].size;
@@ -1269,7 +1269,9 @@ static void perf_gpu_once(const MenuTarget *t) {
                     (float)(vram >> 20));
 }
 
-static void perf_tick(uint64_t now, const MenuTarget *t) {
+extern "C" void menu_perf_update(VkPhysicalDevice phys) {
+    if (g_perf_save.exchange(0)) cfg_save();
+    perf_panel_tick();
     if (cfg_version() != g_perf_ver) {
         g_perf_ver = cfg_version();
         int m = perf_display_mode(cfg_value("TOTK_PERF_OVERLAY"));
@@ -1280,10 +1282,13 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
     }
     int sampling = perf_sampling_mode(g_perf_mode, perf_panel_active());
     if (sampling != g_perf_sampling) {
-        if (sampling == 2) perf_gpu_once(t);
+        if (sampling == 2) perf_gpu_once(phys);
         perfmon_mode(sampling);
         g_perf_sampling = sampling;
     }
+}
+
+static void perf_tick(uint64_t now) {
     if (g_perf_mode != 1) return;
     uint64_t d = now - g_perf_last_ns;
     if (!g_perf_last_ns || d > 2000000000ull) {   // first frame, or a stall the window should not average in
@@ -1498,10 +1503,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
-    if (g_perf_save.exchange(0)) cfg_save();
-    perf_panel_tick();
+    menu_perf_update(t->phys);
     input_panel_tick();
-    perf_tick(plat_now_ns(), t);
+    perf_tick(plat_now_ns());
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
