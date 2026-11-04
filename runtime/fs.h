@@ -40,6 +40,8 @@ enum { FS_DIR_DIRECTORIES = 1, FS_DIR_FILES = 2, FS_DIR_NO_FILE_SIZE = (int)0x80
 // Handles 0x1_0000_0000 + j; host storage uses 0x2_0000_0000 + j (files) and 0x3_0000_0000 + j (directories).
 #define ROMFS_HANDLE_BASE 0x100000000ull
 #define ROMFS_MOUNTS 8                                     // RomFS mount names at once (nn::fs::MountRom)
+void *romfs_load(const char *rel, size_t *n, const char *why);   // a RomFS file as the game reads it; malloc'd
+void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx);   // image paths under prefix
 int romfs_owns(const char *path);                          // path is on the mounted RomFS ("<mount>:...")
 int romfs_handle(uint64_t h);                              // h is a RomFS file handle
 // nn::fs::MountRom: name joins the RomFS mount names (ROMFS_MOUNTS of them); the same name again returns 0.
