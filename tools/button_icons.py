@@ -187,11 +187,11 @@ def xbox_icons(g):
 # bound to it, in the same filled-shape style. Each glyph keeps the advance of the game's own (a wider glyph runs into
 # the text of a right-aligned guide).
 # The keyboard defaults of runtime/input_map.c (input_map_reset; the totk.ini bind_ lines apply on top, pc_binds). The
-# right stick is the camera, which the mouse drives.
+# right stick is the camera, which the mouse drives; SHAKE is the key that shakes it (the mouse never does).
 PC_BINDS = {
     'A': 'e', 'B': 'lshift', 'X': 'space', 'Y': 'mouse_l', 'L': 'q', 'R': 'r', 'ZL': 'mouse_r', 'ZR': 'f',
     'PLUS': 'tab', 'MINUS': 'm', 'LEFT': '1', 'UP': '2', 'RIGHT': '3', 'DOWN': '4', 'LCLICK': 'lctrl', 'RCLICK': 'c',
-    'LSTICK_UP': 'w', 'LSTICK_LEFT': 'a', 'LSTICK_DOWN': 's', 'LSTICK_RIGHT': 'd',
+    'LSTICK_UP': 'w', 'LSTICK_LEFT': 'a', 'LSTICK_DOWN': 's', 'LSTICK_RIGHT': 'd', 'SHAKE': 'g',
 }
 # What a key shows: its letter, a symbol or a short name (key names as in totk.ini; the rest show their name).
 PC_LABELS = {
@@ -206,11 +206,11 @@ PC_LABELS = {
 # of it per key.
 PC_LETTER_LABELS = {'lshift': '↑', 'rshift': '↑', 'space': '▬', 'mouse_l': 'L', 'mouse_r': 'R',
                     'mouse_m': 'M', 'lctrl': 'C', 'rctrl': 'C', 'tab': 'T'}
-# The button guide's images in the pc style: every symbol mask of the action prompt (LSt_00 the stick tilted, LSt_01
-# the stick pressed).
+# The button guide's images in the pc style: every symbol mask of the action prompt. In the 1.4.3 Common archive
+# LSt_00 shows the left stick tilted up (as U+E052) and LSt_01 the left stick (as U+E05E).
 PC_HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00': 0xE042, 'Nt_KeyTexY_00': 0xE043,
-                   'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE05E,
-                   'Nt_KeyTexLSt_01': 0xE056}
+                   'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE052,
+                   'Nt_KeyTexLSt_01': 0xE05E}
 PC_MOUSE = ('mouse_l', 'mouse_r', 'mouse_m')
 
 
@@ -345,7 +345,9 @@ def pc_icons(g, adv, binds=PC_BINDS):
         0xE05F: mouse_move(adv[0xE05F]), 0xE053: mouse_move(adv[0xE053], 'up'),
         0xE051: mouse_move(adv[0xE051], 'down'), 0xE05B: mouse_move(adv[0xE05B], 'left'),
         0xE059: mouse_move(adv[0xE059], 'right'), 0xE05D: mouse_move(adv[0xE05D], 'up', 'down'),
-        0xE055: mouse_move(adv[0xE055], 'left', 'right'), 0xE068: mouse_move(adv[0xE068], 'left', 'right'),
+        0xE055: mouse_move(adv[0xE055], 'left', 'right'),
+        # the right stick shaken: the shake key
+        0xE068: one(b['SHAKE'], adv[0xE068]),
     }
 
 

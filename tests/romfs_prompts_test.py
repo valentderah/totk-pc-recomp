@@ -299,7 +299,7 @@ LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600),
 # The other characters the PC prompts' keys show (button_icons.PC_LABELS of the defaults): a block with a counter, each
 # its own size.
 LETTERS_2.update({ord(ch): (560, lambda pen, i=i: [rect(pen, 60, 0, 300 + 10 * i, 700), rect(pen, 120, 100, 240, 600, True)])
-                  for i, ch in enumerate('ACDEFMQSW1234⇧')})
+                  for i, ch in enumerate('ACDEFMQSW1234⇧G')})
 PC_PANES = {'A': 'E', 'B': '↑', 'X': '▬', 'Y': 'L'}   # the diamond's letters with the default keys
 
 
