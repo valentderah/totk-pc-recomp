@@ -14,7 +14,8 @@ enum {
     ACTION_COUNT = 24
 };
 
-// Keys and mouse buttons. F1, F10, F11 and Esc belong to the menu and the window, F8 to the flight recorder: no ids.
+// Keys and mouse buttons. F1, F10, F11 belong to the menu and the window, F8 to the flight recorder: no ids. Esc has
+// one for the PC scheme, where it is the game's menu key; the host menu keeps an eye on it (input_kbm_scheme).
 enum {
     KEY_NONE = 0,
     KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I, KEY_J, KEY_K, KEY_L, KEY_M,   // letters and digits are
@@ -30,6 +31,8 @@ enum {
     // the punctuation keys of a US keyboard, by position; the character on the key follows the keyboard layout
     KEY_MINUS, KEY_EQUALS, KEY_LBRACKET, KEY_RBRACKET, KEY_SEMICOLON, KEY_APOSTROPHE, KEY_COMMA, KEY_PERIOD, KEY_SLASH,
     KEY_BACKSLASH, KEY_GRAVE,
+    KEY_WHEEL_UP, KEY_WHEEL_DOWN,   // one notch each, not held: a poll turns a notch into a short press
+    KEY_ESC,   // the game's menu key while the PC scheme runs (kbm_scheme.c); the host menu otherwise
     KEY_COUNT
 };
 
@@ -87,16 +90,20 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
 // Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
-// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts).
-enum { PROMPTS_NINTENDO, PROMPTS_XBOX };
-// The prompts for a TOTK_PROMPTS value ("nintendo" or "xbox", any case). Unset or empty: Xbox while the pad layout
-// setting is "xbox_prompts", else Nintendo.
+// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). Keyboard: the PC
+// scheme's keys as keycaps and the mouse's buttons (docs/kbm-port.md).
+enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_KEYBOARD };
+// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox" or "keyboard", any case). Unset or empty: Xbox while the pad
+// layout setting is "xbox_prompts", else Nintendo.
 int input_prompts_pick(const char *prompts, const char *pad_layout);
 // The folder next to romfs-index.bin that holds those prompts for a TOTK_PAD_LAYOUT value, NULL for the game's own. The
 // Nintendo layout plays an Xbox pad by position, so its folder names the face buttons the other way round
 // (romfs-patches-xbox: the right button does A and is labelled B); xbox and auto put every Switch button on the button
 // labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label.
+// The keyboard set is a keyboard's, not a pad's: one folder, whatever the pad layout is.
 const char *input_prompts_folder(int prompts, const char *pad_layout);
+// The style's name in the log and the menu: "nintendo", "xbox" or "keyboard".
+const char *input_prompts_style(int prompts);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
 

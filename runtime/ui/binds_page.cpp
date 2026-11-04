@@ -78,11 +78,18 @@ static const char *key_label(int k, char *buf, size_t n) {
         utf8(c, buf, n);
         return buf;
     }
+    // Esc and the wheel are past KEY_PAGEDOWN, so they are not in the catalog block above; their own rows keep them
+    // from showing as the raw ini name (MOUSE_WHEEL_DOWN).
+    if (k == KEY_ESC) return menu_text(UI_KEY_ESC);
+    if (k == KEY_WHEEL_UP) return menu_text(UI_KEY_WHEEL_UP);
+    if (k == KEY_WHEEL_DOWN) return menu_text(UI_KEY_WHEEL_DOWN);
     snprintf(buf, n, "%s", input_key_name(k));
     for (char *p = buf; *p; p++)
         if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
     return buf;
 }
+
+const char *binds_key_label(int key, char *buf, size_t n) { return key_label(key, buf, n); }
 
 // A gamepad button: the label the open pad has on a face button, else its place on the pad.
 static const char *pad_label(int p) {

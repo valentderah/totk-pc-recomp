@@ -57,7 +57,9 @@ static const char *const key_names[KEY_COUNT] = {   // each group starts at its 
     [KEY_NUM0] = "num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9",
     [KEY_NUM_ADD] = "num_add", "num_sub", "num_mul", "num_div", "num_decimal",
     [KEY_MINUS] = "minus", "equals", "lbracket", "rbracket", "semicolon", "apostrophe", "comma", "period", "slash",
-    "backslash", "grave"};
+    "backslash", "grave",
+    [KEY_WHEEL_UP] = "mouse_wheel_up", "mouse_wheel_down",
+    [KEY_ESC] = "esc"};
 
 const char *input_action_name(int action) { return action >= 0 && action < ACTION_COUNT ? action_names[action] : NULL; }
 const char *input_key_name(int key) { return key > KEY_NONE && key < KEY_COUNT ? key_names[key] : NULL; }
@@ -289,15 +291,23 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
 }
 
 int input_prompts_pick(const char *prompts, const char *pad_layout) {
-    if (prompts && *prompts) return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
+    if (prompts && *prompts)
+        return !strcasecmp(prompts, "xbox")       ? PROMPTS_XBOX
+               : !strcasecmp(prompts, "keyboard") ? PROMPTS_KEYBOARD
+                                                  : PROMPTS_NINTENDO;
     return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
 }
 
 const char *input_prompts_folder(int prompts, const char *pad_layout) {
+    if (prompts == PROMPTS_KEYBOARD) return "romfs-patches-keyboard";   // no pad: one folder for every layout
     if (prompts != PROMPTS_XBOX) return NULL;
     // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
     // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.
     return input_pad_layout_pick(pad_layout, 0) == PAD_LAYOUT_NINTENDO ? "romfs-patches-xbox" : "romfs-patches-xbox-label";
+}
+
+const char *input_prompts_style(int prompts) {
+    return prompts == PROMPTS_XBOX ? "xbox" : prompts == PROMPTS_KEYBOARD ? "keyboard" : "nintendo";
 }
 
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout) {
@@ -360,8 +370,8 @@ double input_stick_percent(int32_t x, int32_t y) {
 // down (the caller keeps it). Every poll of the latch reports neither to the game, so releasing one button first does not
 // leak the other; Minus alone before Plus reaches the game unchanged. With the menu open the game sees a neutral pad.
 // Returns 1 in the poll where both go down: the caller toggles the menu once.
-static int chord(int *held, uint64_t *buttons, uint64_t combo) {
-    uint64_t raw = *buttons & combo;
+static int chord(int *held, uint64_t *buttons, uint64_t combo, uint64_t from) {
+    uint64_t raw = *buttons & combo & from;
     int edge = 0;
     if (*held) {
         *held = raw != 0;
@@ -369,12 +379,12 @@ static int chord(int *held, uint64_t *buttons, uint64_t combo) {
         *held = 1;
         edge = 1;
     }
-    if (*held) *buttons &= ~combo;
+    if (*held) *buttons &= ~(combo & from);
     return edge;
 }
 
-int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]) {
-    int edge = chord(held, buttons, 1ull << B_MINUS | 1ull << B_PLUS);
+int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4], uint64_t from) {
+    int edge = chord(held, buttons, 1ull << B_MINUS | 1ull << B_PLUS, from);
     if (menu_open) {
         *buttons = 0;
         sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0;
@@ -384,6 +394,6 @@ int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[
 
 // Both stick clicks held together step the performance overlay as F10 does (a gamepad has no F10: the Steam Deck in
 // Game Mode). The same latch as the menu's above; the game sees neither click while it holds.
-int input_overlay_gate(int *held, uint64_t *buttons) {
-    return chord(held, buttons, 1ull << B_STICK_L | 1ull << B_STICK_R);
+int input_overlay_gate(int *held, uint64_t *buttons, uint64_t from) {
+    return chord(held, buttons, 1ull << B_STICK_L | 1ull << B_STICK_R, from);
 }

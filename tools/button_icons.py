@@ -1,8 +1,9 @@
 # Adapted from MacNativeGames games/totk/scripts/make_button_icons.py @ 933b6a0 (MIT, Copyright (c) 2026
 # MacNativeGames contributors).
-"""Xbox button icons for the game's prompts, drawn on the player's machine for tools/make_romfs_patches.py --prompts.
-The outlines are our own shapes with letters cut out of them in the game's own text fonts: nothing of the game is in
-the repository.
+"""Button icons for the game's prompts, drawn on the player's machine for tools/make_romfs_patches.py --prompts: the
+Xbox set here, and the keyboard set from Kenney's "Input Prompts" (CC0, tools/data/kenney-input-prompts). The Xbox
+outlines are our own shapes with letters cut out of them in the game's own text fonts: nothing of the game is in the
+repository.
 
 Every prompt except the button guide in play is text in the button font, scft/External.bfotf of each
 Font/Font*.Nin_NX_NVN.bfarc.zs: private-use code points from U+E040 (A, B, X, Y, then L, R, ZL, ZR, the d-pad, Plus and
@@ -17,11 +18,17 @@ The button guide in play (bottom right) draws L and ZL from images of the common
 (timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00): bntx_redraw paints the same icons into them, the size
 unchanged. The sticks keep the Switch icons, and so do prompts drawn as fixed images (some tutorial animations).
 
+The keyboard set (keyboard_icons) is Kenney's: each SVG's outlines go into the glyph as they are, fitted into the em at
+the advance the game's own glyph had, so a sentence keeps its spacing. Its keys are the on-foot keys of the PC scheme
+(docs/kbm-port.md): a font has one glyph per button, not one per context.
+
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
 import io
+import re
 import struct
 import zlib
+from pathlib import Path
 
 from fontTools.pens.basePen import BasePen
 from fontTools.pens.boundsPen import BoundsPen
@@ -29,6 +36,7 @@ from fontTools.pens.recordingPen import RecordingPen
 from fontTools.pens.reverseContourPen import ReverseContourPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.transformPen import TransformPen
+from fontTools.svgLib.path import parse_path
 from fontTools.ttLib import TTFont
 
 FONT = 'scft/External.bfotf'
@@ -37,6 +45,14 @@ TEXT_ARCHIVE = 'Font/Font.Nin_NX_NVN.bfarc.zs'
 TEXT_FONTS = ('scft/ninP_RodinNTLG-B_DH_003_subset.bfotf', 'scft/nintendo_NTLG-DB_DH_002.bfotf')
 # The button guide's images and the glyph each one shows.
 HUD_TEXTURES = {'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046}
+# The action prompt's four face-button images (blyt/DoCommand_00.bflyt), as the keycaps of A, B, X and Y: E, shift,
+# space and the left mouse button. The round pad icons become the keys the PC scheme puts on those buttons.
+FACE_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041,
+                 'Nt_KeyTexX_00': 0xE042, 'Nt_KeyTexY_00': 0xE043}
+# The one-letter panes around the action prompt, and the one-character key legend that replaces each letter for the
+# keyboard set: E, S (shift), _ (the space bar) and L (the left mouse button). The panes are one UTF-16 letter wide and
+# use the layout's Normal font, which has no keycap glyphs; the highlighted button above them is a textured keycap.
+FACE_LETTERS = {'A': 'E', 'B': 'S', 'X': '_', 'Y': 'L'}
 
 
 def xor(data, key):
@@ -178,6 +194,65 @@ def xbox_icons(g):
         0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
         0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
     }
+
+
+# ---- the keyboard set: Kenney's "Input Prompts" (CC0) as the button font's glyphs, one keycap per button, at the game's
+# own advances so a sentence keeps its spacing. tools/data/kenney-input-prompts holds the icons and their licence.
+KEYCAPS = Path(__file__).with_name('data') / 'kenney-input-prompts'
+KEYCAP_MARGIN = 30          # units of the em left at each side of a cap too wide for its advance
+KEYCAP_ICONS = {
+    0xE040: 'keyboard_e',                 # A: interact, confirm
+    0xE041: 'keyboard_shift',             # B: sprint, and cancel in a menu
+    0xE042: 'keyboard_space',             # X: jump
+    0xE043: 'mouse_left',                 # Y: attack
+    0xE044: 'keyboard_tab',               # L: the ability wheel
+    0xE045: 'keyboard_g',                 # R: throw
+    0xE046: 'mouse_right',                # ZL: shield and lock-on
+    0xE047: 'keyboard_f',                 # ZR: the bow
+    0xE049: 'keyboard_arrows_all',        # the d-pad as a whole
+    0xE04B: 'keyboard_escape',            # Plus: the pause menu (Esc, as upstream's scheme has it)
+    0xE04C: 'keyboard_m',                 # Minus: the map
+    0xE060: 'keyboard_arrow_up', 0xE061: 'keyboard_arrow_down',
+    0xE062: 'keyboard_arrow_left', 0xE063: 'keyboard_arrow_right',
+    0xE064: 'keyboard_arrows_vertical', 0xE065: 'keyboard_arrows_horizontal',
+}
+# The game's advances (the original glyphs' hmtx): a keycap sits where the button icon sat.
+KEYCAP_ADVANCE = {0xE040: 640, 0xE041: 640, 0xE042: 640, 0xE043: 640, 0xE044: 720, 0xE045: 720, 0xE046: 720,
+                  0xE047: 720, 0xE049: 720, 0xE04B: 600, 0xE04C: 600,
+                  **{cp: 720 for cp in range(0xE060, 0xE066)}}
+
+
+def keycap_outline(name):
+    """The icon's contours in font coordinates (y up) as a RecordingPen: every path of its SVG, flipped."""
+    text = (KEYCAPS / f'{name}.svg').read_text(encoding='utf-8')
+    rec = RecordingPen()
+    for d in re.findall(r'<path[^>]*\sd="([^"]+)"', text):
+        parse_path(d, TransformPen(rec, (1, 0, 0, -1, 0, 0)))
+    return rec
+
+
+def keyboard_icons():
+    """Code point -> (advance, draw) for the keyboard set: Kenney's "Input Prompts" (CC0, www.kenney.nl), one keycap per
+    button, at the game's own advances so the sentences around them keep their spacing. A E, B shift, X space, Y and ZL
+    the mouse's left and right buttons, L Tab, R G, ZR F, Plus I, Minus M, the d-pad the arrow keys: the keys
+    docs/kbm-port.md's table puts on those buttons on foot, which is the reading a font can show (one glyph per button,
+    not one per context). The icons live in tools/data/kenney-input-prompts with their licence; each SVG's own winding
+    already cuts its legend out of the key, so its contours go into the glyph as they are."""
+    icons = {}
+    for cp, name in KEYCAP_ICONS.items():
+        advance = KEYCAP_ADVANCE[cp]
+        rec = keycap_outline(name)
+        box = BoundsPen(None)
+        rec.replay(box)
+        x0, y0, x1, y1 = box.bounds
+        scale = min((Y1 - Y0) / (y1 - y0), (advance - 2 * KEYCAP_MARGIN) / (x1 - x0))
+        ox = advance / 2 - (x0 + x1) / 2 * scale
+        oy = CY - (y0 + y1) / 2 * scale
+
+        def draw(pen, rec=rec, s=scale, dx=ox, dy=oy):
+            rec.replay(TransformPen(pen, (s, 0, 0, s, dx, dy)))
+        icons[cp] = (advance, draw)
+    return icons
 
 
 def redraw_font(otf, icons, swaps=()):

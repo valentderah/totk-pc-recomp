@@ -6,6 +6,10 @@
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+// menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
+// menu has the pointer, so the mouse camera's capture is released
+void menu_cursor_poll(uint64_t *buttons);
+int menu_cursor_pointer(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
@@ -15,9 +19,14 @@ void input_block(int on);
 void input_menu(int open);
 // The gamepad alone, for the menu: Switch button bits and the left stick (up +y). 0 without a connected gamepad.
 // Minus+Plus combo and the neutral pad while the menu is open (input_map.c, window-system free): *held is the caller's memory
-// of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).
-int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
-int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
+// of the combo, sticks are lx, ly, rx, ry. from is the word the chord is read from: every bit for the flat table, the
+// gamepad's own bits under the PC scheme, whose keys (M is the map, Esc the pause menu) are not 0.3.1's. Returns 1 in the
+// poll where the combo goes down (toggle the menu once).
+int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4], uint64_t from);
+int input_overlay_gate(int *held, uint64_t *buttons, uint64_t from);   // L3+R3: 1 in the poll both go down
+// 1 while the PC scheme (TOTK_KBM_SCHEME) routes the keyboard and the mouse: Esc is the game's key then, and the host
+// menu keeps F1 (ui/menu_win.cpp, ui/menu_sdl.cpp). Any thread.
+int input_kbm_scheme(void);
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);

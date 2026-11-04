@@ -47,7 +47,7 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
     else if (cfg_from_env(key))
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s %s", menu_text(UI_MENU_SET_BY_ENV), key);
-    else if (m && !m->live)
+    else if (m && !m->live && strcmp(key, "TOTK_PROMPTS"))   // the prompts row's note says whether they are in effect
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
 }
 
@@ -108,6 +108,7 @@ struct RowView {
     bool is_default;     // the value is the setting's default: the "default" mark, the value not highlighted
     bool arrows;         // a stepper: < value >, the arrows click too
     const char *note;    // under the value instead of the "default" mark; NULL for none
+    bool note_dim = false;   // the note is a state ("in effect"), not a pending change: drawn dim
 };
 
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right),
@@ -208,15 +209,16 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     if (v.note || v.is_default) {   // under the value, right-aligned with it
         const char *t = v.note ? v.note : menu_text(UI_MENU_DEFAULT_MARK);
         float tw = font->CalcTextSizeA(small, FLT_MAX, 0, t).x;
-        dl->AddText(font, small, ImVec2(right - tw, ny), v.note ? IM_COL32(220, 170, 100, 255) : kDim, t);
+        dl->AddText(font, small, ImVec2(right - tw, ny),
+                    v.note && !v.note_dim ? IM_COL32(220, 170, 100, 255) : kDim, t);
     }
     // the label and its note, clipped before the value
     ImVec4 clip(p.x, p.y, value_left - fs * 0.6f, p.y + h);
     dl->AddText(font, fs, ImVec2(p.x + pad, ty), off ? kGrey : IM_COL32(240, 236, 224, 255), label, NULL, 0, &clip);
     const char *note = disabled        ? disabled
                      : off             ? menu_text(UI_MENU_SET_BY_ENV)
-                     : m && !m->live ? menu_text(UI_MENU_AFTER_RESTART)
-                                     : NULL;
+                     : m && !m->live && strcmp(key, "TOTK_PROMPTS") ? menu_text(UI_MENU_AFTER_RESTART)
+                                                                   : NULL;
     if (note) dl->AddText(font, small, ImVec2(p.x + pad, ny), off ? IM_COL32(200, 150, 90, 255) : kDim, note);
     ImGui::PopID();
     return off ? 0 : step;
@@ -308,7 +310,7 @@ void opt_text(UiTextId text, bool warn) {
 }
 
 bool opt_choice_list(const char *key, UiTextId label, const char *const *values, const char *const *names, int n,
-                     UiTextId desc, int cur, const char *note) {
+                     UiTextId desc, int cur, const char *note, bool note_dim) {
     const CfgMeta *m = cfg_meta(key);
     const char *now = cfg_value(key);
     if (cur < 0)
@@ -317,7 +319,7 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
     int def = -1;
     for (int i = 0; m && i < n; i++)
         if (!strcmp(values[i], m->def)) def = i;
-    RowView v = {cur >= 0 ? names[cur] : now, cur == def, true, note};
+    RowView v = {cur >= 0 ? names[cur] : now, cur == def, true, note, note_dim};
     int step = row(key, label, desc, v);
     if (!step || n <= 0) return false;
     int nv;
@@ -329,7 +331,8 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
     return true;
 }
 
-bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, UiTextId desc, const char *note) {
+bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, UiTextId desc, const char *note,
+                bool note_dim) {
     enum { MAX = 32 };
     const CfgMeta *m = cfg_meta(key);
     const char *values[MAX], *shown[MAX];
@@ -345,7 +348,7 @@ bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, U
     }
     if (n > k) n = k;
     for (int i = 0; i < n; i++) shown[i] = menu_text(names[i]);
-    return opt_choice_list(key, label, values, shown, n, desc, -1, note);
+    return opt_choice_list(key, label, values, shown, n, desc, -1, note, note_dim);
 }
 
 bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step, const char *fmt,

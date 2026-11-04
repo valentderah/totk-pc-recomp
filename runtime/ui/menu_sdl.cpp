@@ -44,8 +44,9 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
+        // Esc opens the menu unless the PC scheme runs: there Esc is the game's pause key, so F1 is the host's
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
-                               (e->key.scancode == SDL_SCANCODE_ESCAPE && !menu_is_open()))) {
+                               (e->key.scancode == SDL_SCANCODE_ESCAPE && !menu_is_open() && !input_kbm_scheme()))) {
             menu_toggle();
             return;
         }

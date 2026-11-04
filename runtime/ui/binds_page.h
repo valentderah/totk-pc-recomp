@@ -8,3 +8,5 @@ void binds_rows(float scale);
 void binds_after_page(void);
 // A cell waits for a press (or its press is still reaching the menu): B, Esc, L / R and the tab keys stay on the page.
 bool binds_modal(void);
+// A key as the player sees it (catalog name, numpad format, the character on a punctuation key), for the scheme tab.
+const char *binds_key_label(int key, char *buf, size_t n);

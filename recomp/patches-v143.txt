@@ -103,6 +103,21 @@ set fov      TOTK_FOV_PATCH      0
 site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
 site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
+# Direct mouse look (set mousedirect, runtime/input.c TOTK_MOUSE_DIRECT). The PlayerCamera's stick step
+# (main+0x874c1c, found from the 1.0.0 function at 0xd052ac; the sub-object moved +0x428 -> +0x490) has already
+# applied the dead zone, the curve and the scripted/off checks when it stores the processed right stick: s9 to
+# camera+0x8b0 (+0x420 from the sub-object) and s10 to +0x8b4. The replacement adds the mouse counts since the last
+# step to s9/s10 before that store, so the mouse skips the dead zone and the curve; the game's own inversion, idle
+# flags and camera turn follow unchanged. The patch page holds the counts as 32-bit running totals and the last
+# applied totals: +0x100/+0x104 total x/y, +0x108/+0x10c applied x/y, +0x110 the stick units per count (runtime
+# input.c computes it from the frame ratio and the settings), +0x114 the pitch gain (70/51: the game turns pitch by
+# 51 y |y| and yaw by 70 x, so sqrt(g |v|) gives the mouse the same pitch per count as yaw). A mask from the sub-object's scripted-source bit
+# (+0x148 bit 1) and the stick-off flag (w21 bit 0) zeroes the mouse in cutscenes and where the game ignores the
+# stick. x8, x9, x10, x11, s0, s1 and s2 are dead at the site (the next instructions load x8/x9 and set s1/s0 again);
+# no word sets the flags.
+set mousedirect TOTK_MOUSE_DIRECT 0
+site mousedirect main 874cb4 bd042289 @page:x8 3945228b 5301056b 530002aa 2a0a016b 5280002a 4b0b014b 1e220162 bd411101 1e220821 b9410109 b941090a b9010909 4b0a0129 1e220120 1e210800 1e202929 b9410509 b9410d0a b9010d09 4b0a0129 1e220120 1e210800 bd411503 1e20c002 1e230842 1e21c042 1e260009 531f7d2a 5301014a 1e26004b 4a0a016b 1e270162 1e22394a bd042289   # str s9, [x20, #0x420]
+
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of
 # its wrapper ZSTD_decompress_usingDDict (main+0x3a1e0, which tail-branches to it) goes to a host function on the patch

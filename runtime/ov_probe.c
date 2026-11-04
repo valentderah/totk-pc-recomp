@@ -808,36 +808,45 @@ static void probe_menu_gate(void) {
     int held = 0;
     int32_t st[4] = {100, -200, 300, -400};
     uint64_t b = minus | a;   // Minus alone, a frame before Plus: reaches the guest unchanged
-    int t1 = input_menu_gate(&held, 0, &b, st);
+    int t1 = input_menu_gate(&held, 0, &b, st, ~0ull);
     CHECK(!t1 && b == (minus | a) && st[0] == 100 && st[3] == -400 && !held, "Minus alone changed: toggle %d buttons %#llx", t1,
           (unsigned long long)b);
     b = minus | plus | a;     // both down: the guest sees neither, the menu toggles once
-    int t2 = input_menu_gate(&held, 0, &b, st);
+    int t2 = input_menu_gate(&held, 0, &b, st, ~0ull);
     CHECK(t2 == 1 && b == a && held, "Minus+Plus: toggle %d buttons %#llx", t2, (unsigned long long)b);
     b = minus | plus;         // still held with the menu open: no second toggle, a neutral pad
-    int t3 = input_menu_gate(&held, 1, &b, st);
+    int t3 = input_menu_gate(&held, 1, &b, st, ~0ull);
     CHECK(!t3 && b == 0 && st[0] == 0 && st[1] == 0 && st[2] == 0 && st[3] == 0, "menu open: toggle %d buttons %#llx", t3,
           (unsigned long long)b);
     b = a | plus; st[0] = 5;  // the menu is open and the pad is neutral whatever is pressed
-    input_menu_gate(&held, 1, &b, st);
+    input_menu_gate(&held, 1, &b, st, ~0ull);
     CHECK(b == 0 && st[0] == 0, "an open menu left buttons %#llx", (unsigned long long)b);
     b = 0;                    // released, then pressed again toggles again
-    input_menu_gate(&held, 0, &b, st);
+    input_menu_gate(&held, 0, &b, st, ~0ull);
     b = minus | plus;
-    CHECK(input_menu_gate(&held, 0, &b, st) == 1, "the second hold did not toggle");
+    CHECK(input_menu_gate(&held, 0, &b, st, ~0ull) == 1, "the second hold did not toggle");
     // Plus released first while Minus is still down: Minus must not leak; a new Minus press after both are up passes
     held = 0;
     b = minus | plus;
-    input_menu_gate(&held, 0, &b, st);
+    input_menu_gate(&held, 0, &b, st, ~0ull);
     b = minus;
-    int t4 = input_menu_gate(&held, 0, &b, st);
+    int t4 = input_menu_gate(&held, 0, &b, st, ~0ull);
     CHECK(!t4 && b == 0 && held, "Minus left down after Plus leaked: buttons %#llx", (unsigned long long)b);
     b = 0;
-    input_menu_gate(&held, 0, &b, st);
+    input_menu_gate(&held, 0, &b, st, ~0ull);
     b = minus | a;
-    int t5 = input_menu_gate(&held, 0, &b, st);
+    int t5 = input_menu_gate(&held, 0, &b, st, ~0ull);
     CHECK(!t5 && b == (minus | a) && !held, "Minus after the release did not pass: buttons %#llx", (unsigned long long)b);
-    printf("menu gate: Minus alone passes, Minus+Plus is consumed and toggles once per hold, an open menu gives a neutral pad\n");
+        // The chord is read from the word the caller names: under the PC scheme that is the gamepad's bits, so the
+    // keyboard's own Plus and Minus (Esc, M there) never toggle the menu.
+    held = 0;
+    b = minus | plus;
+    int t6 = input_menu_gate(&held, 0, &b, st, minus | a);
+    CHECK(!t6 && b == (minus | plus) && !held, "a keyboard Plus+Minus toggled the menu: toggle %d buttons %#llx", t6,
+          (unsigned long long)b);
+    int t7 = input_menu_gate(&held, 0, &b, st, ~0ull);
+    CHECK(t7 == 1 && b == 0, "the pad's Plus+Minus did not toggle: %d buttons %#llx", t7, (unsigned long long)b);
+printf("menu gate: Minus alone passes, Minus+Plus is consumed and toggles once per hold, an open menu gives a neutral pad\n");
 }
 
 // ---- shared fonts: the extracted files when present (the missing case is a fatal child)
