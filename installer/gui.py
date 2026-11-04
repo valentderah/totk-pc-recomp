@@ -66,7 +66,16 @@ class App:
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
+        self.recent_paths = recent.load()
 
+        for name in ('base', 'update', 'keys', 'firmware', 'dest'):
+            if name in self.recent_paths:
+                self.vars[name].set(self.recent_paths[name])
+
+        saved_lang = self.recent_paths.get('lang')
+        if saved_lang in ini.LANGUAGES:
+            self.lang_code = saved_lang
+            
         root.title(self.cat('ui.title'))
         icon = layout.runtime / 'totk.ico'
         png = layout.runtime / 'totk.png'   # Tk loads no .ico off Windows; the Linux release converts it
@@ -103,6 +112,7 @@ class App:
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
         self.vars['lang'].set(self.lang_label(self.lang_code))
+        self.lang_touched = 'lang' in self.recent_paths
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
         self.show('form')
         if rebuild:
@@ -226,7 +236,7 @@ class App:
         self.lang_box = ttk.Combobox(grid, textvariable=self.vars['lang'], state='readonly', width=30)
         self.lang_box.grid(row=i, column=1, sticky='w', pady=4)
         self.lang_touched = False
-        self.lang_box.bind('<<ComboboxSelected>>', lambda _e: setattr(self, 'lang_touched', True))
+        self.lang_box.bind('<<ComboboxSelected>>', self.pick_game_language)
         self.fill_languages()
         self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
@@ -311,7 +321,9 @@ class App:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))
             if recorded in ini.LANGUAGES and not self.lang_touched:
+                self.lang_code = recorded
                 self.vars['lang'].set(self.lang_label(recorded))
+                recent.save('lang', recorded)
         else:
             self.update_hint.configure(text='')
         self.fit()
@@ -343,7 +355,10 @@ class App:
         path = os.path.normpath(path)
         self.vars[name].set(path)
         recent.save(name, path)
-
+        
+    def pick_game_language(self, _event=None):
+        self.lang_touched = True
+        recent.save('lang', self.selected_lang())
 
     def pick_file(self, name, pick_id):
         # One filter for every game file: the setup tells an NSZ or XCZ from a plain file by its content (Check.unpack)
@@ -374,7 +389,7 @@ class App:
             **self.picker_start('dest'),
         )
         if path:
-            self.vars['dest'].set(os.path.normpath(path))
+            self.remember_path('dest', path)
 
     # ---- run ------------------------------------------------------------------------------------------------------
 
@@ -383,6 +398,7 @@ class App:
         problems = form.problems()
         if problems:
             self.form_error.configure(text=' '.join(self.cat(p) for p in problems))
+            recent.save('lang', form.lang)
             self.fit()
             return
         self.form_error.configure(text='')
