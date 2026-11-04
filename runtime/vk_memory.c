@@ -34,6 +34,9 @@ enum { MS_NONE, MS_ON, MS_REFUSED };
 
 typedef struct { struct PoolRec *phys; uint64_t off; } VPage;   // virtual page -> physical pool and offset
 
+#define FLUSH_RANGES 32                // flush ranges a mirrored pool keeps between two syncs (flush_add)
+typedef struct { uint64_t lo, hi; } FlushRange;
+
 typedef struct PoolRec {
     const pool_t *key;
     int kind;
@@ -59,7 +62,9 @@ typedef struct PoolRec {
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // (or in a copy queued before its next use)
-    uint64_t fl_lo, fl_hi;             // flush_lock: nvnMemoryPoolFlushMappedRange bytes not copied yet (fl_hi 0: none)
+    FlushRange fl[FLUSH_RANGES + 1];   // flush_lock: nvnMemoryPoolFlushMappedRange pages not copied yet (flush_add)
+    int fl_n;                          // flush_lock: ranges in fl; read without the lock to skip an empty list
+    uint64_t fl_calls, fl_sum;         // flush_lock: the calls and bytes behind fl, for mirror_sync's statistics
     // Shadow storage (POOL_IMPORT in shadow mode, "shadow storage" below): buf is a host-visible copy of the guest pages.
     VmaAllocation salloc;
     uint8_t *smap;                     // its mapping; offsets as in buf (from import_lo)
@@ -504,7 +509,10 @@ static int dead_pending(void);
 
 static void vram_log(uint64_t frame);
 
+static volatile uint64_t mirror_frame;   // the frame vk_mem_census last saw, for mirror_sync's log lines
+
 void vk_mem_census(uint64_t frame) {
+    mirror_frame = frame;
     static uint64_t window_start;
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
@@ -1132,7 +1140,10 @@ static void dirty_frame(uint64_t frame) {
 // - CPU -> mirror: the first access of a submission to a mirror syncs it (mirror_sync): the 2 MiB write-watch
 //   snapshots of its regions for this epoch (snap_regions, shared with the texture checks: the OS bits keep one
 //   consumer, the shared page generations) and every page stamped after the mirror's mgen goes into a copy; so do the
-//   nvnMemoryPoolFlushMappedRange ranges. The first use copies the whole range. The copies run in a prologue command
+//   nvnMemoryPoolFlushMappedRange ranges, each on its own: one span from the lowest to the highest flush of a 252 MiB
+//   pool copied up to the whole pool for a few MiB flushed, 30-50 ms of GPU time over PCIe 3.0 x8 in crowded towns
+//   (TOTK_FLUSH_SPAN=1 restores it). Writes between the ranges need no copy: the write watch sees them. The first use
+//   copies the whole range. The copies run in a prologue command
 //   buffer that vk_sync.c submits right before the part that accessed the mirror first, between full barriers.
 //   vk_mem_mirror_begin snaps the regions of the pools the previous submission accessed in a few merged queries.
 // - GPU -> guest: what the replay writes into a mirror (storage buffers its shaders write, buffer copies, fills,
@@ -1160,10 +1171,12 @@ static int npend, cpend, nwbl, cwbl;
 static VkBufferCopy *mregions;         // replay: vkCmdCopyBuffer regions
 static int cregions;
 static PlatMutex flush_lock = PLAT_MUTEX_INIT;
+static int flush_cap = FLUSH_RANGES;   // ranges a pool keeps; 1 with TOTK_FLUSH_SPAN=1
 
 typedef struct {
     uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
     uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes;
+    uint64_t page_bytes, flush_n, flush_bytes, flush_calls, flush_sum;   // what mirror_sync queues, by source
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
@@ -1188,6 +1201,10 @@ static void mirror_mode(int discrete) {
     if (mirror_gap < 0) mirror_gap = 0;
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
+    if (rt_knob("FLUSH_SPAN", "0")) {
+        flush_cap = 1;
+        rt_log("mem: a pool's flushes copy one span from the lowest to the highest (TOTK_FLUSH_SPAN=1)");
+    }
     const char *fi = cfg_get("TOTK_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
@@ -1390,19 +1407,30 @@ static void mirror_sync(PoolRec *r) {
         if (!ch) continue;
         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since)
-                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
+                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT), mrep.page_bytes += 1ull << GEN_PAGE_SHIFT;
     }
     r->mgen = gen_now;
     if (excl) plat_mutex_unlock(&gen_lock);
     else plat_mutex_unlock_shared(&gen_lock);
-    if (__atomic_load_n(&r->fl_hi, __ATOMIC_ACQUIRE)) {
+    if (__atomic_load_n(&r->fl_n, __ATOMIC_ACQUIRE)) {
+        FlushRange fl[FLUSH_RANGES + 1];
         plat_mutex_lock(&flush_lock);
-        uint64_t a = r->fl_lo, b = r->fl_hi;
-        r->fl_hi = 0;
+        int n = r->fl_n;
+        memcpy(fl, r->fl, (size_t)n * sizeof *fl);
+        uint64_t calls = r->fl_calls, sum = r->fl_sum;
+        r->fl_n = 0, r->fl_calls = r->fl_sum = 0;
         plat_mutex_unlock(&flush_lock);
-        a = a > lo ? a & ~0xfffull : lo;
-        b = b < hi ? (b + 0xfff) & ~0xfffull : hi;
-        if (a < b) range_add(&pend, &npend, &cpend, r, a - lo, b - a);
+        mrep.flush_calls += calls, mrep.flush_sum += sum;
+        for (int i = 0; i < n; i++) {
+            uint64_t a = fl[i].lo > lo ? fl[i].lo : lo, b = fl[i].hi < hi ? fl[i].hi : hi;
+            if (a >= b) continue;
+            range_add(&pend, &npend, &cpend, r, a - lo, b - a);
+            mrep.flush_n++, mrep.flush_bytes += b - a;
+            if ((rt_trace & RT_TRACE_PERF) && b - a >= 16u << 20)
+                rt_log("mem: mirror frame %llu: flush range %.1f MiB at +%.1f MiB of a %.1f MiB pool (%d ranges from %llu "
+                       "flushes of %.3f MiB)", (unsigned long long)mirror_frame, (b - a) / 1048576.0, (a - lo) / 1048576.0,
+                       (hi - lo) / 1048576.0, n, (unsigned long long)calls, sum / 1048576.0);
+        }
     }
     mrep.syncs++;
     mrep.sync_t += qpc() - t0;
@@ -1437,6 +1465,60 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
 }
 
+// Adds [a, b) to l, n sorted ranges that do not touch; returns the new count. Above cap ranges (l holds cap + 1) the two
+// nearest merge, so a full list copies the fewest bytes that were not flushed; cap 1 keeps one span over all flushes.
+static int flush_add(FlushRange *l, int n, uint64_t a, uint64_t b, int cap) {
+    int i = 0;
+    while (i < n && l[i].hi < a) i++;
+    int j = i;
+    for (; j < n && l[j].lo <= b; j++) {
+        if (l[j].lo < a) a = l[j].lo;
+        if (l[j].hi > b) b = l[j].hi;
+    }
+    memmove(l + i + 1, l + j, (size_t)(n - j) * sizeof *l);
+    l[i] = (FlushRange){a, b};
+    n += 1 - (j - i);
+    if (n > cap) {
+        int k = 0;
+        for (int x = 1; x + 1 < n; x++)
+            if (l[x + 1].lo - l[x].hi < l[k + 1].lo - l[k].hi) k = x;
+        l[k].hi = l[k + 1].hi;
+        memmove(l + k + 1, l + k + 2, (size_t)(n - k - 2) * sizeof *l);
+        n--;
+    }
+    return n;
+}
+
+int vk_mem_flush_add_probe(void) {
+    FlushRange l[5];
+    int n = 0;
+    n = flush_add(l, n, 0x8000, 0x9000, 4);
+    n = flush_add(l, n, 0x1000, 0x2000, 4);
+    n = flush_add(l, n, 0x4000, 0x5000, 4);
+    if (n != 3 || l[0].lo != 0x1000 || l[1].lo != 0x4000 || l[2].hi != 0x9000) return 1;   // kept apart, sorted
+    n = flush_add(l, n, 0x2000, 0x3000, 4);
+    if (n != 3 || l[0].hi != 0x3000) return 2;                                             // touching ranges join
+    n = flush_add(l, n, 0x800, 0x8800, 4);
+    if (n != 1 || l[0].lo != 0x800 || l[0].hi != 0x9000) return 3;                         // one covers several
+    n = 0;
+    n = flush_add(l, n, 0x10000, 0x11000, 2);
+    n = flush_add(l, n, 0x40000, 0x41000, 2);
+    n = flush_add(l, n, 0x12000, 0x13000, 2);                                              // over the cap: nearest merge
+    if (n != 2 || l[0].lo != 0x10000 || l[0].hi != 0x13000 || l[1].lo != 0x40000) return 4;
+    n = 0;
+    n = flush_add(l, n, 0x10000, 0x11000, 1);
+    n = flush_add(l, n, 0x40000, 0x41000, 1);
+    if (n != 1 || l[0].lo != 0x10000 || l[0].hi != 0x41000) return 5;                      // TOTK_FLUSH_SPAN=1
+    return 0;
+}
+
+uint64_t vk_mem_mirror_uploaded(void) {
+    plat_mutex_lock(&mirror_stat_lock);
+    uint64_t n = macc.upload_bytes;
+    plat_mutex_unlock(&mirror_stat_lock);
+    return n;
+}
+
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
     if (!vk_mirror_on || !size || !p->mem) return;
     plat_inc64(&m_flush_calls);
@@ -1445,13 +1527,10 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)p->mem, 0);
     PoolRec *r = e && e->key == p ? e->buf : NULL;
     if (r && r->mstate == MS_ON) {
-        uint64_t a = (uintptr_t)p->mem + off, b = a + size;
+        uint64_t a = ((uintptr_t)p->mem + off) & ~0xfffull, b = ((uintptr_t)p->mem + off + size + 0xfff) & ~0xfffull;
         plat_mutex_lock(&flush_lock);
-        if (!r->fl_hi) r->fl_lo = a, r->fl_hi = b;
-        else {
-            if (a < r->fl_lo) r->fl_lo = a;
-            if (b > r->fl_hi) r->fl_hi = b;
-        }
+        __atomic_store_n(&r->fl_n, flush_add(r->fl, r->fl_n, a, b, flush_cap), __ATOMIC_RELEASE);
+        r->fl_calls++, r->fl_sum += size;
         plat_mutex_unlock(&flush_lock);
     }
     plat_mutex_unlock_shared(&pool_lock);
@@ -1677,6 +1756,9 @@ static void mirror_log(uint64_t frame) {
            a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,
            a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
            qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
+    rt_log("mem: mirror frame %llu: upload sources per frame, overlaps counted twice: written pages %.3f MiB; flush ranges "
+           "%.2f, %.3f MiB, from %.1f flushes of %.3f MiB", (unsigned long long)frame, a.page_bytes / f / M, a.flush_n / f,
+           a.flush_bytes / f / M, a.flush_calls / f, a.flush_sum / f / M);
 }
 
 // With TOTK_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.
