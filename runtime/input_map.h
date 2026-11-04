@@ -7,11 +7,13 @@
 #include <stdint.h>
 
 // Actions are the bit numbers of libnx HidNpadButton (input.h); 16..23 are the stick directions, which keys drive as
-// stick deflection.
+// stick deflection. B_SHAKE is a key of its own, never a button bit: a press shakes the right stick left and right for
+// the game (input.c shake_stick), which detaches a fused part held with Ultrahand. A pad shakes its own stick.
 enum {
     B_A = 0, B_B, B_X, B_Y, B_STICK_L, B_STICK_R, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN,
     B_SL_LEFT = 16, B_SL_UP, B_SL_RIGHT, B_SL_DOWN, B_SR_LEFT, B_SR_UP, B_SR_RIGHT, B_SR_DOWN,
-    ACTION_COUNT = 24
+    B_SHAKE = 24,
+    ACTION_COUNT = 25
 };
 
 // Keys and mouse buttons. F1, F10, F11 and Esc belong to the menu and the window, F8 to the flight recorder: no ids.
@@ -67,14 +69,14 @@ extern InputMap input_map;
 void input_map_reset(void);
 // The script and totk.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
 // ZR PLUS MINUS LEFT UP RIGHT DOWN, then LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN and the same for RSTICK (the
-// stick directions the keys drive). Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
+// stick directions the keys drive), then SHAKE. Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
 const char *input_action_name(int action);
 const char *input_key_name(int key);
 const char *input_pad_name(int pad);
 // Replaces every binding of the action `button` (an action name) with `list`: comma separated "pad:<name>" and
 // "key:<name>" entries, "key:default" / "pad:default" for that part's defaults, or "none" for no input. A part the list
 // names neither way is left unbound. Pad names are physical buttons, so pad entries go into the gamepad table of every
-// layout; pad:default keeps each layout's own button. Stick directions take keys only. Invalid entries are logged and
+// layout; pad:default keeps each layout's own button. Stick directions and SHAKE take keys only. Invalid entries are logged and
 // skipped; when none is valid the action keeps its bindings. 1 when applied.
 int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
@@ -87,21 +89,26 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
 // Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
-// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts).
-enum { PROMPTS_NINTENDO, PROMPTS_XBOX };
-// The prompts for a TOTK_PROMPTS value ("nintendo" or "xbox", any case). Unset or empty: Xbox while the pad layout
-// setting is "xbox_prompts", else Nintendo.
+// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). PC: the key or
+// mouse button the keyboard defaults press each button with, the mouse for the right stick.
+enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_PC };
+// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox" or "pc", any case). Unset or empty: Xbox while the pad
+// layout setting is "xbox_prompts", else Nintendo.
 int input_prompts_pick(const char *prompts, const char *pad_layout);
 // The folder next to romfs-index.bin that holds those prompts for a TOTK_PAD_LAYOUT value, NULL for the game's own. The
 // Nintendo layout plays an Xbox pad by position, so its folder names the face buttons the other way round
 // (romfs-patches-xbox: the right button does A and is labelled B); xbox and auto put every Switch button on the button
-// labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label.
+// labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label. The PC
+// prompts follow no pad: romfs-patches-pc whatever the layout (romfs.c overlay_init serves romfs-patches-pc-<w>x<h>
+// under that name at a game resolution of another shape).
 const char *input_prompts_folder(int prompts, const char *pad_layout);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
 
 // down[key] != 0 for the keys held. Returns the Switch button bits (0..15) the table presses.
 uint64_t input_map_buttons(const uint8_t down[KEY_COUNT]);
+// 1 when a key of action is held.
+int input_map_held(const uint8_t down[KEY_COUNT], int action);
 // out = x, y of the stick (0 left, 1 right) from its four direction actions; up is +y; a diagonal is scaled to the
 // unit circle.
 void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);

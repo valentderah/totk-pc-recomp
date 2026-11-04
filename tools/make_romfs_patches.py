@@ -38,6 +38,11 @@ from the game's own files on the player's machine, nothing added (tools/button_i
   every pad not labelled the Nintendo way), so the face buttons keep their letters; the action prompt's diamond keeps
   the Switch positions (A on the right).
 --xbox-prompts is the older name of --prompts xbox.
+--prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
+--aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
+(button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
+guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes around the action prompt name the keys
+with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
@@ -58,9 +63,11 @@ ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/ro
 ap.add_argument('--out', type=Path,
                 help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
 ap.add_argument('--aspect', help='<w>x<h> of a game resolution of another shape than 16:9: also lay the UI out for it')
-ap.add_argument('--prompts', choices=('xbox', 'xbox-label'),
+ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
                 help='Xbox button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
-                     'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters)')
+                     'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters), '
+                     'pc for the keyboard and mouse')
+ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_ lines the key icons follow')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
@@ -231,9 +238,11 @@ LAYOUT_MSG = 'LayoutMsg/DoCommand_00.msbt'
 RESTBL = max((p for p in files if p.startswith('System/Resource/ResourceSizeTable.') and p.endswith('.rsizetable.zs')),
              key=lambda p: int((re.search(r'\.(\d+)\.', p) or [0, 0])[1]), default=None)
 by_position = args.prompts == 'xbox'   # the face buttons' prompts swapped to the labels (pad_layout = nintendo)
+pc = args.prompts == 'pc'
+letter_panes = by_position or pc      # the one-letter panes around the action prompt change
 if args.prompts:
     assert FONTS, 'no Font/Font*.Nin_NX_NVN.bfarc.zs in the RomFS'
-    assert MALS or not by_position, 'no Mals/<language>.Product.<version>.sarc.zs in the RomFS'
+    assert MALS or not letter_panes, 'no Mals/<language>.Product.<version>.sarc.zs in the RomFS'
     assert RESTBL, 'no System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs in the RomFS'
     spec = importlib.util.spec_from_file_location('button_icons', Path(__file__).with_name('button_icons.py'))
     icons = importlib.util.module_from_spec(spec)
@@ -252,7 +261,7 @@ with (args.romfs / 'romfs.bin').open('rb') as image:
     for name, (lo, hi) in sarc_members(pack).items():
         d = zstd.ZstdDict(pack[lo:hi])
         dictionaries[d.dict_id] = d
-    prompt_files = (FONTS + (MALS if by_position else []) + [RESTBL]) if args.prompts else []
+    prompt_files = (FONTS + (MALS if letter_panes else []) + [RESTBL]) if args.prompts else []
     originals = {path: read(path) for path in [ARCHIVE] + prompt_files}
 raw = originals[ARCHIVE]
 info = zstd.get_frame_info(raw)
@@ -297,19 +306,27 @@ if args.prompts:
     text = sarc_members(archives[icons.TEXT_ARCHIVE])
     missing = [name for name in icons.TEXT_FONTS if name not in text]
     assert not missing, f'no {", ".join(missing)} in {icons.TEXT_ARCHIVE}'
-    drawn = icons.xbox_icons(icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])]
-                                               for name in icons.TEXT_FONTS))
+    glyphs = icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])] for name in icons.TEXT_FONTS)
+    if pc:
+        binds = icons.pc_binds(args.binds.read_text(encoding='utf-8', errors='replace') if args.binds else None)
+        advances = icons.font_advances(archives[icons.TEXT_ARCHIVE][slice(*text[icons.FONT])])
+        drawn = icons.pc_icons(glyphs, advances, binds)
+        pane_letters = {letter: icons.pc_letter(binds[letter]) for letter in 'ABXY'}
+    else:
+        drawn = icons.xbox_icons(glyphs)
+        pane_letters = KEY_LETTERS
     bntx = members['timg/__Combined.bntx'][0]
     letters = {}
     if by_position:
         bntx_swap(blarc, bntx, KEY_TEXTURES)
+    if letter_panes:
         for member, (lo, hi) in members.items():
             if member.endswith('.bflyt'):
-                changed = bflyt_letters(blarc, lo, hi, KEY_LETTERS)
+                changed = bflyt_letters(blarc, lo, hi, pane_letters)
                 if changed:
                     letters[member] = changed
         assert 'blyt/DoCommand_00.bflyt' in letters, 'no letter panes in blyt/DoCommand_00.bflyt'
-    hud = icons.bntx_redraw(blarc, bntx, icons.HUD_TEXTURES, drawn)
+    hud = icons.bntx_redraw(blarc, bntx, icons.PC_HUD_TEXTURES if pc else icons.HUD_TEXTURES, drawn)
     outputs[ARCHIVE] = bytes(blarc)
     fonts = {}   # each distinct font is drawn once (1.4.3's four archives hold the same one)
     for path, bfarc in archives.items():
@@ -319,11 +336,11 @@ if args.prompts:
             fonts[otf] = icons.redraw_font(otf, drawn, KEY_GLYPHS if by_position else ())
         outputs[path] = sarc_replace(bfarc, {icons.FONT: icons.bfotf_encode(fonts[otf], key, bfarc[lo:hi])})
     messages = {}
-    for path in MALS if by_position else []:
+    for path in MALS if letter_panes else []:
         mals = bytearray(unpack(path))
         lo, hi = sarc_members(mals)[LAYOUT_MSG]
         msbt = bytearray(mals[lo:hi])
-        changed = msbt_letters(msbt, KEY_LETTERS)
+        changed = msbt_letters(msbt, pane_letters)
         assert len(changed) == sum(len(v) for v in letters.values()), (path, changed)
         mals[lo:hi] = msbt
         outputs[path] = bytes(mals)

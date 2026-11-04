@@ -694,6 +694,55 @@ static void parse_all(uint64_t h) {
     n_ops = OP_COUNT_ - OP_SIGNAL_EVENT;
 }
 
+// A recording naming tex3 as its render target; *pin: the texture pin in its SET_RT payload.
+static uint64_t record_target(uint8_t *ctl, const tex_t **pin) {
+    const NVNtexture *colors[1] = {&tex3};
+    begin(&cmd2, ctl, 0x3a000);
+    CALL(nvnCommandBufferSetRenderTargets, U(&cmd2), 1, U(colors), 0, 0, 0);
+    uint64_t h = CALL(nvnCommandBufferEndRecording, U(&cmd2));
+    *pin = NULL;
+    for (const op_hdr *o = nvn_op_first(h); o->op != OP_END; o = nvn_op_next(o))
+        if (o->op == OP_SET_RT) *pin = ((const p_set_rt *)nvn_op_payload(o))->color[0];
+    return h;
+}
+
+// Texture pins are freed NVN_PIN_AGE submits after the last recording copy naming them is released, unless the replay
+// keeps them as its current render targets; a texture named again gets a new pin.
+static void probe_pins(void) {
+    uint8_t *ctl = mem_kernel_alloc(0x1000, 16);
+    set_tex(NVN_FORMAT_RGBA8, 16, 16, 1, 0x20000);
+    CHECK((uint8_t)CALL(nvnTextureInitialize, U(&tex3), U(&texb)) == 1, "pin probe texture");
+    uint64_t serial = ((const tex_t *)(const void *)&tex3)->serial;
+    uint64_t live0, freed0, live, freed;
+    nvn_pins_stats(&live0, &freed0);
+    const tex_t *pin;
+    uint64_t h = record_target(ctl, &pin);
+    nvn_pins_stats(&live, &freed);
+    CHECK(pin && pin->serial == serial && live == live0 + 1, "a recording naming a new texture makes one pin");
+    uint64_t s = nvn_submit_count();
+    nvn_pins_sweep(s + 10 * NVN_PIN_AGE, NULL, 0);
+    nvn_pins_stats(&live, &freed);
+    CHECK(live == live0 + 1 && freed == freed0 && nvn_handle_live(h), "a pin a live recording names stays");
+    CALL(nvnCommandBufferAddControlMemory, U(&cmd2), U(ctl), 0x1000);   // retires h: the pin has no copy left
+    CHECK(!nvn_handle_live(h), "the pin's recording is retired");
+    nvn_pins_sweep(s + NVN_PIN_AGE - 1, NULL, 0);
+    nvn_pins_stats(&live, &freed);
+    CHECK(live == live0 + 1 && freed == freed0, "a pin stays NVN_PIN_AGE submits after its last copy went");
+    nvn_pins_sweep(s + NVN_PIN_AGE, &pin, 1);
+    nvn_pins_stats(&live, &freed);
+    CHECK(live == live0 + 1 && freed == freed0, "the replay's current render target is kept");
+    nvn_pins_sweep(s + 2 * NVN_PIN_AGE, NULL, 0);
+    nvn_pins_stats(&live, &freed);
+    CHECK(live == live0 && freed == freed0 + 1, "an unnamed, unkept pin is freed (live %llu of %llu, freed %llu of %llu)",
+          (unsigned long long)live, (unsigned long long)live0, (unsigned long long)freed, (unsigned long long)freed0 + 1);
+    h = record_target(ctl, &pin);
+    nvn_pins_stats(&live, &freed);
+    CHECK(pin && pin->serial == serial && live == live0 + 1, "naming the texture again makes a new pin");
+    CALL(nvnCommandBufferAddControlMemory, U(&cmd2), U(ctl), 0x1000);
+    CALL(nvnCommandBufferFinalize, U(&cmd2));
+    CALL(nvnTextureFinalize, U(&tex3));
+}
+
 static void probe_commands(void) {
     ctlmem1 = mem_kernel_alloc(0x1000, 16);
     ctlmem2 = mem_kernel_alloc(0x1000, 16);
@@ -722,6 +771,7 @@ static void probe_commands(void) {
     CALL(nvnCommandBufferAddControlMemory, U(&cmd2), U(ctlmem2), 0x1000);
     CHECK(!nvn_handle_live(h2) && nvn_handle_live(h), "reusing control memory retires only the handles recorded in it");
     CALL(nvnCommandBufferFinalize, U(&cmd2));
+    probe_pins();
     n_objects += 5;
 }
 

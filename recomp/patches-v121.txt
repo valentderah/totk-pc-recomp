@@ -55,6 +55,16 @@ site cloth main 8222f0 9401d7cf @page:x8 bd400104 1e240842 1e240863 9401d7cf   #
 # 100; compare +0x28 * +0x38 (30 / time scale) instead, the same value at 30 Hz and independent of the frame rate.
 site bounce main bda798 bd402900 bd402900 bd403901 1e210800   # ldr s0, [x8, #0x28]; ldr s1, [x8, #0x38]; fmul s0, s0, s1
 
+# Cursor and aim steps (upstream game_patches.c patch_cursor_speed, 363a6eb). These updates read the game's 30 Hz frame
+# ratio for their smoothing but leave it out of the step itself, so the map cursor and the vertical Ultrahand aim moved
+# 2x as fast at 60 fps and 4x at 120 as at the shipping 30 fps (issue #44). Each site multiplies the step by that ratio,
+# so the speed is the shipping one at any frame rate. x9 and s16 are free: the next read of x9 follows a write, the
+# function does not touch s16, and x20 keeps the update's frame object for the whole function.
+set cursor   TOTK_HIGHFPS_FIX    1
+site cursor main ec3d9c bd400361 f94002e9 bd400930 1e300800 bd400361   # map pan speed s0 *= [[x23] + 8], then ldr s1, [x27]
+site cursor main 1d48d64 1e2a198c 1e2a198c bd400a90 1e30098c   # fdiv s12, s12, s10, then s12 *= [x20 + 8]: vertical Ultrahand aim
+site cursor main 1d484e4 1e200923 1e200923 bd400a90 1e300863   # fmul s3, s9, s0, then s3 *= [x20 + 8]: vertical gyro aim (Recall)
+
 # Output size (upstream games/totk/runtime/game_patches.c patch_output_res; runtime/resolution.c switches the set on).
 # The swapchain size nnMain writes before NvInitializeGraphics comes from page +48 ({w, h} as one 64-bit value), and
 # the output size the renderer lays out its canvas, crop and UI in (main+0xcc3f00, read from the graphics parameters
