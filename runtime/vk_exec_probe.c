@@ -912,6 +912,25 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     CHECK(xf_submit(b, stream, p), "fence_wait of the third mirror submission timed out");
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4000 + i] == 0x11, "CPU byte %#x beside a fill is %02x", i, m[0x4000 + i]);
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4800 + i] == 0x77, "fill byte %#x is %02x", i, m[0x4800 + i]);
+    // 4: two small flushes at the ends of the pool copy their own pages, not what lies between them.
+    int fl_bad = vk_mem_flush_add_probe();
+    CHECK(!fl_bad, "flush range list check %d failed", fl_bad);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    const p_copy_b2b c4 = {a, a + 0x3000, 4096};
+    p = put(p, OP_COPY_B2B, &c4, sizeof c4);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the mirror submission before the flushes timed out");
+    uint64_t up0 = vk_mem_mirror_uploaded();
+    nvn_pool_flushed(&pool, 0x6000, 0x1000);
+    nvn_pool_flushed(&pool, 0xF0000, 0x1000);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    p = put(p, OP_COPY_B2B, &c4, sizeof c4);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the mirror submission after the flushes timed out");
+    // A submission's copies reach the counter with the next one, and c4's own write-back adds its destination page.
+    CHECK(xf_submit(b, stream, p), "fence_wait of the mirror submission that counts the flushes timed out");
+    uint64_t up = vk_mem_mirror_uploaded() - up0;
+    if (!rt_knob("FLUSH_SPAN", "0"))
+        CHECK(up >= 0x2000 && up < 0x10000, "two flushed pages copied %#llx bytes, 0xeb000 would be the span",
+              (unsigned long long)up);
     b->pool_fini(&pool);
     *bytes = 4096 + 0x1000 + 4096 + 0x1000;
     return 0;
