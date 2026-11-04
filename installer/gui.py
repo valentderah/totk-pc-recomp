@@ -26,6 +26,7 @@ except ImportError:
 
 from . import ini
 from . import layout as layouts
+from . import recent
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
                        Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
 
@@ -56,6 +57,11 @@ class App:
         self.log_entries = []            # events and raw lines of the run, rendered by render_log
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'keys', 'firmware', 'dest')}
+        
+        # Restore the last selections that still exist.
+        for name, path in recent.load().items():
+            self.vars[name].set(path)
+
         self.vars['lang'] = tk.StringVar()
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
@@ -310,22 +316,63 @@ class App:
             self.update_hint.configure(text='')
         self.fit()
 
+    def picker_start(self, name, file=False):
+        """Open the picker at the currently selected path when possible."""
+        value = self.vars[name].get()
+        if not value:
+            return {}
+
+        current = Path(value)
+
+        if file and current.is_file():
+            return {
+                'initialdir': str(current.parent),
+                'initialfile': current.name,
+            }
+
+        if current.is_dir():
+            return {'initialdir': str(current)}
+
+        if current.parent.is_dir():
+            return {'initialdir': str(current.parent)}
+
+        return {}
+
+    def remember_path(self, name, path):
+        """Update the form and persist the selected path immediately."""
+        path = os.path.normpath(path)
+        self.vars[name].set(path)
+        recent.save(name, path)
+
+
     def pick_file(self, name, pick_id):
         # One filter for every game file: the setup tells an NSZ or XCZ from a plain file by its content (Check.unpack)
         types = [(self.cat('ui.type_game'), '*.nsp *.xci *.nsz *.xcz'), (self.cat('ui.type_all'), '*.*')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
-        path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
+        path = filedialog.askopenfilename(
+            title=self.cat(pick_id),
+            filetypes=types,
+            **self.picker_start(name, file=True),
+        )
         if path:
-            self.vars[name].set(os.path.normpath(path))
+            self.remember_path(name, path)
 
     def pick_firmware(self):
-        path = filedialog.askdirectory(title=self.cat('ui.pick_firmware'), mustexist=True)
+        path = filedialog.askdirectory(
+            title=self.cat('ui.pick_firmware'),
+            mustexist=True,
+            **self.picker_start('firmware'),
+        )
         if path:
-            self.vars['firmware'].set(os.path.normpath(path))
+            self.remember_path('firmware', path)
 
     def pick_dest(self):
-        path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False)
+        path = filedialog.askdirectory(
+            title=self.cat('ui.pick_dest'),
+            mustexist=False,
+            **self.picker_start('dest'),
+        )
         if path:
             self.vars['dest'].set(os.path.normpath(path))
 

@@ -27,6 +27,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
+from installer import recent
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -242,6 +243,65 @@ class FormTest(unittest.TestCase):
     def _mkdir(path):
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+
+class RecentPathsTest(unittest.TestCase):
+    def test_only_existing_paths_of_the_right_kind_are_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / 'base.nsp'
+            update = root / 'update.nsp'
+            keys = root / 'prod.keys'
+            firmware = root / 'firmware'
+            dest = root / 'out'
+            settings = root / 'installer-paths.json'
+
+            base.touch()
+            update.touch()
+            keys.touch()
+            firmware.mkdir()
+            dest.mkdir()
+
+            for name, path in (
+                ('base', base),
+                ('update', update),
+                ('keys', keys),
+                ('firmware', firmware),
+                ('dest', dest),
+            ):
+                recent.save(name, str(path), settings)
+
+            # All paths exist and have the expected type.
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'update': str(update),
+                'keys': str(keys),
+                'firmware': str(firmware),
+                'dest': str(dest),
+            })
+
+            # Missing files and directories must not be restored.
+            update.unlink()
+            dest.rmdir()
+
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'keys': str(keys),
+                'firmware': str(firmware),
+            })
+
+            # A file cannot be restored as a directory selection.
+            recent.save('firmware', str(base), settings)
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'keys': str(keys),
+            })
+
+    def test_corrupted_settings_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'installer-paths.json'
+            settings.write_text('{invalid json', encoding='utf-8')
+            self.assertEqual(recent.load(settings), {})
 
 
 class CatalogTest(unittest.TestCase):
