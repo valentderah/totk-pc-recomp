@@ -51,6 +51,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_game  # noqa: E402
 import build_xlate  # noqa: E402
 import check_content  # noqa: E402
 import shader_list  # noqa: E402
@@ -422,7 +423,7 @@ def runtime_lib(out, llvm, pgo):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in ('romfs.c', 'patches.c', 'ov_zstd.c'):   # build_game.py INSTALL_SIDE
+    for name in sorted(build_game.INSTALL_SIDE):   # compiled at install, so left out of libtotkrt.a
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 
