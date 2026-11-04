@@ -8,7 +8,7 @@
 //   totk_xlate <jobs.json> <outdir> batch mode: a JSON array of jobs, prints a summary, exit 1 if any failed.
 //   job: { "key", "stage": "vs|ps|cs", "code": path (graphics = 0x50-byte SPH + instructions, compute = instructions), "c1": hex,
 //          "tex": {slot: type}, "img": {slot: {type, fmt}}, "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint},
-//          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool,
+//          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool, "zero_locals": bool,
 //          "sbuf_align": int, "subgroup": int }
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
 using Ryujinx.Common.Memory;
@@ -121,6 +121,8 @@ static class SwshXlate
         // the user banks c3-c16 (patch 0015, runtime/vk_mvprev.c); res.json's "mvprev" names the output location (-1:
         // none) and "mvprev_banks" the banks the position depends on (bit n: cn).
         public bool QueryMotionPrevious() => _job["mvprev"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
+        // "zero_locals": true: function-local variables start at 0 (patch 0016, runtime/vk_caps.c decides per driver).
+        public bool QueryZeroLocals() => _job["zero_locals"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
         public int MotionPreviousLocation = -1, MotionPreviousBanks;
         public void ReportMotionPrevious(int location, int banks) => (MotionPreviousLocation, MotionPreviousBanks) = (location, banks);
     }
