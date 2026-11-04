@@ -67,9 +67,10 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written three times: `romfs-patches`, and `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`). The two Xbox folders are optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The three prompt folders are
+   optional: when one cannot be made, the setup warns and finishes.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
@@ -147,15 +148,17 @@ llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM excep
 runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated code and modules.c/romfs.c/patches.c
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
-data/                 shader_list.tsv (MacNativeGames, MIT)
+data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
+                      update's code and the runtime libraries compile with (building.md, "Profile-guided build")
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
 - Every bundled third-party piece gets a row in `THIRD_PARTY_NOTICES.md`.
-- The release contains nothing game-derived; `make_release.py` runs `tools/check_content.py` over the folder before it
-  finishes.
+- The release contains no code, data, text or assets of the game; `make_release.py` runs `tools/check_content.py` over
+  the folder before it finishes. The execution profiles name lifted functions by address (`f_<address>`) and hold
+  branch counts and control-flow hashes of the generated C.
 
 ## Switch system fonts
 

@@ -32,9 +32,9 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: on. Adds up to a
-# frame of latency; 0 replays them on the game thread.
-# replay_async = 1
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
+# game waits for the GPU; adds up to a frame of latency.
+# replay_async = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
@@ -283,9 +283,11 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
-# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
-# (docs/controls.md, "Xbox button prompts").
+# (docs/controls.md, "Xbox button prompts"). pc: the key or mouse button the keyboard defaults press each button with
+# (E, Shift, Space, left click, Q, R, right click, F, Tab, M, 1 to 4, W A S D, Ctrl, C) and the mouse for the right
+# stick, whatever pad_layout (docs/controls.md, "PC button prompts").
 # prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
@@ -298,6 +300,14 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
+# Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
+# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
+# mouse_mode = direct
+# The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
+# menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
+# right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.
+# menu_cursor = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
@@ -312,9 +322,10 @@
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
 # direction: bind_<A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK> or bind_<LSTICK RSTICK>_<LEFT UP RIGHT
-# DOWN> = comma separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
-# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions take keys
-# only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
+# DOWN>, or bind_SHAKE (G: shakes the right stick, which detaches a fused part from what Ultrahand holds) = comma
+# separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
+# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions and
+# SHAKE take keys only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
 #   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert

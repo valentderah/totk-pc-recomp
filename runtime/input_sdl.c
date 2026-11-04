@@ -217,6 +217,9 @@ int ikb_foreground(void) { return focused != 0; }
 int ikb_down(int key) { return key > 0 && key < KEY_COUNT && key_held[key]; }
 int ikb_escape(void) { return esc_held != 0; }
 int ikb_captured(void) { return captured != 0; }
+int ikb_pointer(float *nx, float *ny) { (void)nx, (void)ny; return 0; }   // (menu_cursor.c: Windows only for now)
+void ikb_pointer_set(float nx, float ny) { (void)nx, (void)ny; }
+uint32_t ikb_mouse_travel(void) { return 0; }   // (the last-device switch: keys and buttons only for now)
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
