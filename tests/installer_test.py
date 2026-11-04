@@ -866,6 +866,24 @@ class ShapesTest(unittest.TestCase):
                                                              'pad_layout = nintendo\nprompts = xbox',
                                                              'pad_layout = xbox_prompts', 'prompts = nintendo')],
                          [None, 'pc', 'xbox-label', 'xbox', 'xbox', None])
+        self.assertEqual([screens.prompts_style(t) for t in ('prompts = playstation', 'prompts = PS',
+                                                             'pad_layout = nintendo\nprompts = playstation',
+                                                             'pad_layout = xbox\nprompts = playstation')],
+                         ['playstation-xbox', 'playstation-xbox', 'playstation', 'playstation-xbox'])
+
+    def test_playstation_shapes_replace_every_older_shaped_folder(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = auto\nprompts = playstation\n')
+        for old in ('romfs-patches-playstation-1280x800', 'romfs-patches-playstation-xbox-3440x1440-hud21x9',
+                    'romfs-patches-xbox-label-2560x1080', 'romfs-patches-playstation-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-playstation-xbox' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox',
+                          'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(self.calls[-1][self.calls[-1].index('--prompts') + 1], 'playstation-xbox')
 
     def test_wanted_from_displays_and_ini(self):
         (self.dest / 'totk.ini').write_text('[display]\noutput_res = 3000x2000\n[input]\nprompts = pc\n')

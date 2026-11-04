@@ -1303,14 +1303,15 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
-        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
-        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # The same with Xbox and PlayStation button icons in the prompts, for prompts = xbox and playstation
+        # (make_romfs_patches.py --prompts): romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label
+        # for xbox and auto, and romfs-patches-playstation / -playstation-xbox likewise (runtime/input_map.c
+        # input_prompts_folder). All are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
         # files are missing, so the setup warns once and goes on. The keyboard and mouse prompts are the PcPrompts
         # step's: they follow totk.ini's bindings.
         failed = None
-        for style in ('xbox', 'xbox-label'):
+        for style in screens.PAD_PROMPTS:
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
@@ -1407,7 +1408,8 @@ class PcPrompts(Step):
 
 # ---- 6b. screen shapes
 
-SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-xbox|-xbox-label|-pc)?-\d+x\d+(?:-hud(?:16|21)x9)?$')
+SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-(?:%s))?-\d+x\d+(?:-hud(?:16|21)x9)?$'
+                           % '|'.join(map(re.escape, screens.PROMPTS_STYLES)))
 
 
 def hud_width(dest):
@@ -1428,7 +1430,8 @@ def shape_hud(size, hud):
 
 
 class Shapes(Step):
-    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox or PC prompts
+    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox, PlayStation or
+    PC prompts
     in totk.ini, romfs-patches-<style>-<w>x<h> (that layout with those prompts), for the shapes this player needs:
     those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
     game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15

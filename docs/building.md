@@ -122,13 +122,15 @@ of them.
    reason, and `--full-build` compiles everything.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
-   For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
-   they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
-   `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
+   For Xbox and PlayStation button prompts, run `make_romfs_patches.py` twice more for each, with `--prompts xbox`,
+   `--prompts xbox-label`, `--prompts playstation` and `--prompts playstation-xbox`: they write
+   `build\<ver>omfs-patches-xbox`, `-xbox-label`, `-playstation` and `-playstation-xbox`
+   ([controls.md](controls.md), "Xbox and PlayStation button prompts"), which `build_game.py` copies next to `totk.exe`
+   like `romfs-patches`. `--prompts pc` writes `romfs-patches-pc`, the keyboard and mouse prompts
+   ([controls.md](controls.md), "PC button prompts").
    `--aspect <w>x<h>` writes the UI laid out for a game resolution of another shape; with `--hud 16:9` or `--hud 21:9`
    (a screen wider than that) the HUD stays within the middle 16:9 or 21:9 instead of the screen's corners. The default
-   `--out` then is `build\<ver>\romfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
+   `--out` then is `build\<ver>omfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
    (`21:9`) in `totk.ini` ([totk.ini.example](../totk.ini.example)).
    Setup's Shapes step builds only the currently selected cap for the canonical shapes needed by connected displays
    and `output_res`, together with the selected prompts. `full` generates no capped folders. After changing the HUD

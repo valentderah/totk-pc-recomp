@@ -90,12 +90,14 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written three times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written five times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`). The prompt folders are optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), `romfs-patches-playstation` and `romfs-patches-playstation-xbox` (PlayStation prompts for
+   `prompts = playstation`, the same split). The prompt folders are optional: when one cannot be made, the setup warns
+   and finishes.
    **PC prompts** (step `pc_prompts`): `romfs-patches-pc`, the keyboard and mouse prompts for `prompts = pc`, drawn
    from the `bind_` lines of `totk.ini` (`--binds`). Its key holds those lines, so a setup run after a change of the
-   bindings draws only these again. Optional like the Xbox prompts. All four 16:9 folders are always written, so a
+   bindings draws only these again. Optional like the Xbox prompts. All six 16:9 folders are always written, so a
    switch of the prompts style at 16:9 needs no setup run.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
