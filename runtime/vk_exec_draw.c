@@ -2017,7 +2017,8 @@ static void bind_vertex_buffers(VkExec *ex) {
 //   that was not counts as one-shot and waits.
 // any (1): also draws in a pass with at least one target rendered in the previous frame (a per-frame depth
 //   buffer or g-buffer with a colour target the frame before did not use: half-resolution effect buffers in fights).
-//   Passes with none (volumes, LUTs, shadow layers seen for the first time) still wait.
+//   Passes with none (volumes, LUTs, shadow layers seen for the first time) still wait, and so do passes whose only
+//   recent target is the depth buffer while a colour target is rendered for the first time (item icon captures).
 // fullscreen (2, default): as any, and full-screen draws into such passes are skipped instead of waiting from their
 //   budget. A full-screen pass whose stage libraries are cold in the driver cache took 86 ms on average (up to 194 ms)
 //   in a fight on an RX 9070: three frames in a row each spent the 50 ms budget, and some of the draws were skipped

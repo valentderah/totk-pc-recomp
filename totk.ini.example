@@ -378,8 +378,9 @@
 # last one it finished. Unset: on AMD GPUs (VK_AMD_buffer_marker). 1: also on NVIDIA GPUs
 # (VK_NV_device_diagnostic_checkpoints), which NVIDIA says costs a little. 0: off.
 # pass_crumbs = 1
-# Largest render target (bytes, 0 to 1073741824) that goes back to its game memory when the game waits for a GPU fence.
-# A game that reads a larger target without invalidating it sees stale bytes at the default. With trace = gfx the log
-# names each dirty target over the limit that stays on the GPU ("fence write-back skipped-for-size") and each one over
-# 65536 bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
+# Render targets up to this size (bytes, 0 to 1073741824) go back to their game memory whenever the game waits for a
+# GPU fence. A larger target goes back too unless the GPU drew it in each of the last 16 frames. A game that reads a
+# larger target drawn every frame without invalidating it sees stale bytes at the default. With trace = gfx the log
+# names each dirty target that stays on the GPU ("fence write-back skipped-drawn-every-frame") and each one over 65536
+# bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
 # wb_fence_limit = 65536
