@@ -177,6 +177,11 @@ __attribute__((constructor)) static void tick_scale_init(void) { tick_scale = pl
 
 uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
 
+// The store-exclusive generation of cpu.h's exclusive monitor: a load stamps it, a store fails when it moved between
+// the two, so a store that puts the value back (ABA) is still seen. Bumped once per successful store-exclusive, on the
+// thread that made it; zero-initialised like any static, so the first load sees 0. Not per address (see cpu.h).
+uint64_t rt_excl_gen;
+
 // ---- crash reporter
 typedef struct { uintptr_t host; uint64_t guest; } FnRev;
 static FnRev *fn_rev;
