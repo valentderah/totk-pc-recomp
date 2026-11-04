@@ -92,14 +92,15 @@ static void draw(void *user, void *dc, int w, int h) {
     if (!s.connected) { label(&c,0,200,620,50,menu_text(UI_INPUT_NO_PAD),1); goto done; }
     char buf[512];
     snprintf(buf,sizeof buf,menu_text(UI_INPUT_MAPPING),s.layout == PAD_LAYOUT_XBOX ? "Xbox" : "Nintendo");
-    label(&c,20,0,580,25,buf,0);
+    label(&c,80,0,460,25,buf,0);
     button(&c,&s,B_L,"L",100,38,90,28,0); button(&c,&s,B_R,"R",430,38,90,28,0);
     for (int i=0;i<2;i++) {
         int x = i ? 555 : 25;
         shape(&c,x,40,25,100,idle,outline,0);
         int fill = (int)lround(96*s.trigger[i]/32767.);
         if (fill) shape(&c,x+2,138-fill,21,fill,active,active,0);
-        label(&c,x-12,15,50,23,i ? "ZR" : "ZL",1);
+        // The chip is a mapped action; the meter and number remain physical analog input.
+        button(&c,&s,i ? B_ZR : B_ZL,i ? "ZR" : "ZL",x-12,15,50,23,0);
         snprintf(buf,sizeof buf,"%d",s.trigger[i]); label(&c,x-22,145,70,20,buf,1);
     }
     button(&c,&s,B_MINUS,"-",245,50,45,25,0); button(&c,&s,B_PLUS,"+",330,50,45,25,0);

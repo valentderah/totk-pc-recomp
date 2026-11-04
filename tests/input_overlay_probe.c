@@ -139,6 +139,33 @@ int main(void) {
     CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,32767));
     sample(&s); CHECK(s.trigger[0] > 0 && s.trigger[0] < 16384 && s.trigger[1] == 32767);
     CHECK(!(s.buttons & (1ull << B_ZL)) && (s.buttons & (1ull << B_ZR)));
+    // Face buttons can drive ZL/ZR while the physical triggers drive other actions.
+    cfg_set("TOTK_BIND_ZL","pad:west"); cfg_set("TOTK_BIND_ZR","pad:north");
+    cfg_set("TOTK_BIND_A","pad:zl"); cfg_set("TOTK_BIND_B","pad:zr");
+    CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_LEFT_TRIGGER,-32768));
+    CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,-32768));
+    const SDL_GamepadButton sources[] = {SDL_GAMEPAD_BUTTON_WEST,SDL_GAMEPAD_BUTTON_NORTH};
+    for (int i=0;i<2;i++) {
+        CHECK(SDL_SetJoystickVirtualButton(joy,sources[i],true)); sample(&s);
+        CHECK(s.buttons & (1ull << (i ? B_ZR : B_ZL)));
+        CHECK(!(s.buttons & (1ull << B_A | 1ull << B_B)));
+        CHECK(s.trigger[0] == 0 && s.trigger[1] == 0);
+        CHECK(SDL_SetJoystickVirtualButton(joy,sources[i],false));
+    }
+    const int levels[] = {-16384,16384};
+    for (unsigned i=0;i<sizeof levels/sizeof *levels;i++) {
+        CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_LEFT_TRIGGER,(Sint16)levels[i]));
+        CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,(Sint16)levels[i]));
+        sample(&s);
+        CHECK(!(s.buttons & (1ull << B_ZL | 1ull << B_ZR)));
+        CHECK((s.trigger[0] > TRIGGER_ON) == (i != 0));
+        CHECK((s.trigger[1] > TRIGGER_ON) == (i != 0));
+        CHECK(!!(s.buttons & (1ull << B_A)) == (s.trigger[0] > TRIGGER_ON));
+        CHECK(!!(s.buttons & (1ull << B_B)) == (s.trigger[1] > TRIGGER_ON));
+    }
+    cfg_set("TOTK_BIND_ZL","pad:default"); cfg_set("TOTK_BIND_ZR","pad:default");
+    cfg_set("TOTK_BIND_A","pad:default"); cfg_set("TOTK_BIND_B","pad:default");
+    puts("PASS: remapped trigger actions, physical axes and trigger-to-other-action thresholds are independent");
     // The overlay neither applies menu blocking nor consumes chords; simultaneous presses remain visible.
     input_menu(1); input_block(1);
     CHECK(SDL_SetJoystickVirtualButton(joy,SDL_GAMEPAD_BUTTON_BACK,true));

@@ -7,7 +7,8 @@
  * Native panels appear briefly and the test checks the current foreground window;
  * avoid concurrent desktop interaction. No user ini is read or saved. Run without
  * TOTK_* environment overrides. An optional first argument writes a synthetic BMP
- * at that explicit path; omit it for no output file. PASS is exit 0, CHECK fails 1.
+ * at that explicit path; argv[2] optionally writes the initial 460x380 layout.
+ * Omit both for no output file. PASS is exit 0, CHECK fails 1.
  *
  * Build/run from the repository root in PowerShell with clang on PATH. Keep
  * outputs under ignored build/test, or select an explicit temporary directory.
@@ -16,7 +17,7 @@
  * New-Item -ItemType Directory -Force $out | Out-Null
  * clang -std=gnu11 -O1 -g -D_WIN32_WINNT=0x0A00 -I runtime tests/input_panel_probe.c runtime/ui_text.c runtime/cfg.c runtime/uiwindow_win.c runtime/platform/win32.c runtime/platform/common.c -luser32 -lgdi32 -lpsapi -lbcrypt -lole32 -lshell32 -luuid -lwinmm -o "$out/input_panel_probe.exe"
  * & "$out/input_panel_probe.exe"
- * # Optional synthetic image: & "$out/input_panel_probe.exe" "$out/input-panel.bmp"
+ * # Optional synthetic images: & "$out/input_panel_probe.exe" "$out/input-panel.bmp" "$out/input-panel-small.bmp"
  */
 #include "../runtime/uiwindow.h"
 static UiWindow *panel_test_open(const char *title,int w,int h,int hz,UiWindowDrawFn draw,void *user);
@@ -104,11 +105,47 @@ int main(int argc,char **argv) {
     fixture.layout = PAD_LAYOUT_NINTENDO; draw(NULL,dc,620,500);
     CHECK(GetPixel(dc,px(&c,535),py(&c,125)) == active); // Nintendo A is east.
     CHECK(GetPixel(dc,px(&c,494),py(&c,166)) == idle);
+    // Mapped trigger action chips and physical analog meters must be independent.
+    InputOverlayState saved = fixture;
+    const int levels[] = {0,8192,24576,32767};
+    const int sizes[][2] = {{620,500},{460,380}};
+    for (unsigned size=0;size<sizeof sizes/sizeof *sizes;size++) {
+        int width = sizes[size][0], height = sizes[size][1];
+        Canvas p = {dc,fmin(width/620.,height/500.)*.95,0,0};
+        p.ox = (width-620*p.scale)/2; p.oy = (height-500*p.scale)/2;
+        for (int i=0;i<2;i++) for (int mapped=1;mapped>=0;mapped--) {
+            for (unsigned level=0;level<sizeof levels/sizeof *levels;level++) {
+                fixture.buttons = mapped ? 1ull << (i ? B_ZR : B_ZL) : 0;
+                fixture.trigger[0] = fixture.trigger[1] = 0;
+                fixture.trigger[i] = levels[level];
+                draw(NULL,dc,width,height);
+                int x = i ? 555 : 25;
+                CHECK(GetPixel(dc,px(&p,x-5),py(&p,22)) == (mapped ? active : idle));
+                CHECK(GetPixel(dc,px(&p,x+12),py(&p,130)) == (levels[level] ? active : idle));
+                CHECK(GetPixel(dc,px(&p,x+12),py(&p,50)) == (levels[level] == 32767 ? active : idle));
+                CHECK(GetPixel(dc,px(&p,(i ? 25 : 555)-5),py(&p,22)) == idle);
+            }
+        }
+    }
+    fixture = saved; draw(NULL,dc,620,500);
+    puts("PASS: mapped ZL/ZR action chips and physical analog trigger meters are independent");
     DWORD before = GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
     for (int i=0;i<300;i++) { fixture.raw[0] = i; draw(NULL,dc,620,500); }
     DWORD after = GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
     CHECK(after <= before + 1);
-    if (argc > 1) bitmap_save(argv[1],dc,bmp,620,500);
+    if (argc > 1) {
+        // Show a mapped left action with its physical axis released, and the inverse on the right.
+        fixture.buttons |= 1ull << B_ZL; fixture.buttons &= ~(1ull << B_ZR);
+        fixture.trigger[0] = 0; draw(NULL,dc,620,500);
+        bitmap_save(argv[1],dc,bmp,620,500);
+        if (argc > 2) {
+            HBITMAP small = CreateCompatibleBitmap(dc,460,380); CHECK(small);
+            SelectObject(dc,small); draw(NULL,dc,460,380);
+            bitmap_save(argv[2],dc,small,460,380);
+            SelectObject(dc,bmp); DeleteObject(small);
+        }
+        fixture = saved; draw(NULL,dc,620,500);
+    }
     fixture.connected = 0; draw(NULL,dc,620,500); CHECK(!previous.connected);
     SelectObject(dc,original); DeleteObject(bmp); DeleteDC(dc);
     valid = 0;
