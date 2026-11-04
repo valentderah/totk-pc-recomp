@@ -290,6 +290,8 @@ static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
     int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
+    uint64_t end_fence;          // a chunked replay: the submission and op the scan ended the scene at (ended_at)
+    uint32_t end_pos;
     struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
         uint32_t w, h, ow, oh;   // render size, output size
         VkImage out, mv;
@@ -824,10 +826,9 @@ static struct Snap *snap_for(VkCommandBuffer cb, uint32_t w, uint32_t h, VkForma
 }
 
 // At arming: the light target as it is before the transparents, outside any pass.
-static void mask_snapshot(VkExec *ex) {
+static void mask_snapshot(VkExec *ex, const VkExecTarget *t) {
     R.cur = NULL;
     if (mask_init() <= 0) return;
-    const VkExecTarget *t = &D.color;
     struct Snap *s = snap_for(ex->cb, t->width, t->height, t->format);
     if (!s) return;
     vk_exec_barrier(ex);
@@ -876,14 +877,33 @@ static float halton(uint32_t i, uint32_t b) {
     return r;
 }
 
+// The scene is drawn at the op ex records. A chunked replay's scan ends it ahead of the chunks that still record the
+// scene's draws, so a chunk compares its op with the scan's (the chunks after it are taken once the scan is past their
+// ops); a later submission of the frame is past it.
+static int ended_at(const VkExec *ex) {
+    if (!__atomic_load_n(&D.ended, __ATOMIC_ACQUIRE)) return 0;
+    return !ex->chunked || ex->fence != D.end_fence || ex->pos >= D.end_pos;
+}
+
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
-    if (!D.jit_ok || D.ended || !ex->depth.image || ex->depth.image != D.jdepth) return;
+    if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
-    D.ux = D.jx, D.uy = D.jy, D.jit_used = 1;
+    D.ux = D.jx, D.uy = D.jy;
+    __atomic_store_n(&D.jit_used, 1, __ATOMIC_RELAXED);
+}
+
+// The scene camera: c4 of the last scene draw before the scene ends. A chunked replay's scan notes it in replay order
+// (vk_dlaa_scan_draw): chunks recording side by side would leave the block of whichever drew last.
+static void note_camera(const VkExec *ex) {
+    const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
+    const VkExecTarget *z = &ex->depth;
+    if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
+        (!D.jdepth || z->image == D.jdepth))
+        D.cam_addr = b->addr;
 }
 
 void vk_dlaa_draw(VkExec *ex) {
-    if (!dl_active() || D.ended) return;
+    if (!dl_active() || ended_at(ex)) return;
     static int survey = -1;   // TOTK_DLAA_SURVEY=1 (test): what is drawn into the armed light target
     if (survey < 0) survey = rt_knob("DLAA_SURVEY", "0");
     static uint64_t dfn[16];   // scene draws writing depth, by depth test (reversed depth: GREATER/GEQUAL)
@@ -914,11 +934,11 @@ void vk_dlaa_draw(VkExec *ex) {
             }
         }
     }
-    const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
-    const VkExecTarget *z = &ex->depth;
-    if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
-        D.cam_addr = b->addr;
+    if (!ex->chunked) note_camera(ex);
+}
+
+void vk_dlaa_scan_draw(const VkExec *ex) {
+    if (dl_active() && !D.ended) note_camera(ex);
 }
 
 // The jitter moves on right after DLAA ran, not at the present: the replay can record the next frame's scene before
@@ -1109,9 +1129,9 @@ static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
-void vk_dlaa_pass(VkExec *ex) {
+int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
-    if (!dl_active() || D.done) return;
+    if (!dl_active() || D.done) return 0;
     // The G-buffer: several colour targets with a D32F depth of at least DLAA_SCENE_MIN_W wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
@@ -1122,7 +1142,7 @@ void vk_dlaa_pass(VkExec *ex) {
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
             c->samples <= 1 && !c->is3d && (!D.ids_ok || c->width >= D.ids.width))
             D.ids = *c, D.ids_ok = 1;
-        return;
+        return 0;
     }
     // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents.
     // A smaller pair never takes over an armed one: the camera rune draws a half-size RGBA16F target with a half-size
@@ -1134,26 +1154,56 @@ void vk_dlaa_pass(VkExec *ex) {
         c->samples <= 1 && !c->is3d) {
         int first = !D.armed;
         D.color = *c, D.depth = *z, D.armed = 1;
-        if (first) mask_snapshot(ex);   // the lit scene, before the transparents (reactive mask)
-        return;
+        if (!first) return 0;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS_MASK, .scene = *c};   // the lit scene, before the transparents (reactive mask)
+        return 1;
     }
-    if (!D.armed) return;
+    if (!D.armed) return 0;
     if (!D.ended) {
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width) return;
-        D.ended = 1;
+        if (!ex->pass_w || ex->pass_w * 4 > D.color.width) return 0;
+        D.end_fence = ex->fence, D.end_pos = ex->pos;
+        __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
         unsigned o[2], s[2];
         res_sizes(o, s);
-        if (D.color.width >= o[0]) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
-        return;
+        if (D.color.width < o[0]) return 0;   // wait for the scaling pass
+        D.done = 1;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place
+        return 1;
     }
     // the game's scaling pass: one colour target of the output size, no depth
     unsigned o[2], s[2];
     res_sizes(o, s);
     if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
         c->width == o[0] && c->height == o[1] && c->samples <= 1 && !c->is3d) {
-        D.done = D.up = 1;
-        evaluate(ex, c);
+        D.done = 1;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS, .scene = *c};
+        return 1;
     }
+    return 0;
+}
+
+// The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
+// now, as the scan's pointers may be stale by then.
+static void target_now(VkExecTarget *t) {
+    const VkTexImage *i = t->tex ? vk_texture_get(t->tex) : NULL;
+    if (i) t->img = i, t->image = i->image;
+}
+
+void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
+    VkExecTarget t = j->scene;
+    if (ex->chunked) {
+        target_now(&t), target_now(&D.color), target_now(&D.depth);
+        if (D.ids_ok) target_now(&D.ids);
+    }
+    if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
+    if (!t.tex) return evaluate(ex, NULL);
+    D.up = 1;
+    evaluate(ex, &t);
+}
+
+void vk_dlaa_pass(VkExec *ex) {
+    VkExecJob j;
+    if (!ex->chunked && vk_dlaa_plan(ex, &j)) vk_dlaa_exec(ex, &j);
 }
 
 // TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
@@ -1225,24 +1275,34 @@ void vk_dlaa_frame(void) {
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull};
 
+// Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
+// added under the lock.
 static uint64_t spirv_hash(const GfxShader *s) {
     static struct { const GfxShader *s; uint64_t h; } tab[8192];
+    static PlatMutex lk = PLAT_MUTEX_INIT;
     uintptr_t k = ((uintptr_t)s >> 4) * 0x9E3779B97F4A7C15ull;
     for (uint32_t i = 0, j = (uint32_t)(k >> 51); i < 8192; i++, j = (j + 1) & 8191) {
-        if (tab[j].s == s) return tab[j].h;
-        if (!tab[j].s) {
+        const GfxShader *e = __atomic_load_n(&tab[j].s, __ATOMIC_ACQUIRE);
+        if (e == s) return tab[j].h;
+        if (e) continue;
+        plat_mutex_lock(&lk);
+        e = tab[j].s;
+        if (!e) {
             uint64_t words = 0, h = 0xcbf29ce484222325ull;
             const uint8_t *b = (const uint8_t *)gfx_shader_spirv(s, &words);
             for (uint64_t n = 0; b && n < words * 4; n++) h = (h ^ b[n]) * 0x100000001b3ull;
-            tab[j].s = s, tab[j].h = h;
+            tab[j].h = h;
+            __atomic_store_n(&tab[j].s, s, __ATOMIC_RELEASE);
+            plat_mutex_unlock(&lk);
             return h;
         }
+        plat_mutex_unlock(&lk);
+        if (e == s) return tab[j].h;
     }
     return 0;   // table full: no skip
 }
 
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
-    if (ex->chunked) return 0;   // a chunked replay runs only with fxaa = 1 and without DLSS (vk_exec.c chunked_on)
     static uint64_t frame_read = ~0ull;
     static int fxaa = 1;
     // fxaa = 0 reports once whether it found the game's FXAA draw: the first skip, or a minute of frames (3600) with

@@ -921,7 +921,11 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
 // stages, vk_pipeline_async_on): a shader not translated yet is queued and NULL returned with *pending = 1. await: a
 // shader queued earlier is waited for (gfx_shader_await) instead.
-static int sf_mvprev;   // shader_for asks for the vertex shader's last-frame variant (per-object motion)
+static _Thread_local int sf_mvprev;   // shader_for asks for the vertex shader's last-frame variant (per-object motion)
+// Chunks of one submission note their scene draws for DLSS's motion one at a time: the list, its memos and the
+// last-frame block tables (vk_mvprev.c, vk_mvsurvey.c) are shared; vk_mvobj_execute reads the list once the chunks
+// before DLSS's evaluation are recorded (vk_exec.c run_job).
+static PlatMutex mo_lock = PLAT_MUTEX_INIT;
 
 static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pending, int await) {
     VkExecDraw *D = ex->draw;
@@ -1106,8 +1110,9 @@ static void limits_init(void) {
 
 // Per-object motion (section at the end): while it records a draw again, these replace the uniform bindings of the
 // vertex stage's slots 18-20 (last frame's camera, bones and place) and the fragment stage's slot 3 (its parameters).
-static int mo_ovr_on;
-static VkDescriptorBufferInfo mo_ovr[2][32];   // [vertex, fragment][slot]; buffer 0: not replaced
+// Per thread: the other chunks' draws go on meanwhile and keep their own bindings.
+static _Thread_local int mo_ovr_on;
+static _Thread_local VkDescriptorBufferInfo mo_ovr[2][32];   // [vertex, fragment][slot]; buffer 0: not replaced
 
 static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
     if (mo_ovr_on && (st == NVN_STAGE_VS || st == NVN_STAGE_FS) && slot >= 0 && slot < 32 && mo_ovr[st][slot].buffer)
@@ -2521,8 +2526,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (ex->mark && ex->fr.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
     vk_dlaa_draw(ex);
+    int mo = ex->chunked && vk_dlaa_available();
+    if (mo) plat_mutex_lock(&mo_lock);
     vk_mvsurvey_draw(ex);
     vk_mvprev_draw(ex);
+    if (mo) plat_mutex_unlock(&mo_lock);
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
@@ -2843,10 +2851,11 @@ static void mvobj_draw(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSiz
     if (MO.failed || !vk_mvprev_on() || !D->B.st_valid) return;
     static int timed = -1;
     if (timed < 0) timed = rt_knob("MVOBJ_TIMES", "0");   // TOTK_MVOBJ_TIMES=1: the summary's times (the clock reads cost)
-    if (!timed) return mvobj_draw_(ex, d, ib, ib_off, 0);
-    uint64_t t0 = kern_now_ns();
+    if (ex->chunked) plat_mutex_lock(&mo_lock);
+    uint64_t t0 = timed ? kern_now_ns() : 0;
     mvobj_draw_(ex, d, ib, ib_off, t0);
-    MO.ns_check += kern_now_ns() - t0;
+    if (timed) MO.ns_check += kern_now_ns() - t0;
+    if (ex->chunked) plat_mutex_unlock(&mo_lock);
 }
 
 // TOTK_MVOBJ_BANKS=1 (test): for scene draws, the words of each other uniform bank (c3, c6, c8-c16) that changed

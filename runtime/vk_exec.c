@@ -314,7 +314,7 @@ static int bc_target(const tex_t *t, const view_t *v, int has_v, const VkTexImag
     return 1;
 }
 
-enum { HOLD_TEX, HOLD_WRITES, HOLD_N };
+enum { HOLD_TEX, HOLD_DLSS, HOLD_WRITES, HOLD_N };
 static void scan_hold(int why);
 
 // scan: the state scan's resolution, which creates nothing and leaves out a texture without an image yet.
@@ -932,21 +932,29 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
     return 1;
 }
 
-// A contact shadow march the scan planned for this point (vk_contact_plan): recorded before the op that triggers it, the
-// draw's pass begun after it as in prepare_draw. The marches share vk_contact.c's pipeline and its first use, so
-// they go in the scan's order; chunks are taken in order, so the chunk of an earlier record is being recorded or done.
+// A record the scan planned for this point (vk_contact_plan, vk_dlaa_plan): recorded before the op that triggers it, the
+// draw's pass begun after it as in prepare_draw. The records share their module's pipelines and state, so they go in
+// the scan's order; chunks are taken in order, so the chunk of an earlier record is being recorded or done. DLSS's
+// evaluation reads what the scene's draws noted on the chunks before it (the camera block, the jitter used, the
+// per-object motion list), so it waits until they are recorded; the chunks after it wait for it (a hold, scan_job).
 static uint32_t job_turn;
+static void chunks_wait(int k);
 
 static void run_job(VkExec *ex) {
     uint32_t turn = ex->job_i;
     VkExecJob j = ex->jobs[ex->job_i++];
+    if (j.kind == VK_JOB_DLSS) chunks_wait(j.chunk);
     while (__atomic_load_n(&job_turn, __ATOMIC_ACQUIRE) != turn) plat_yield();
     vk_exec_pass_end(ex);
-    // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
-    const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
-    if (si && di) {
-        j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
-        vk_contact_exec(ex, &j);
+    if (j.kind != VK_JOB_CONTACT) {
+        vk_dlaa_exec(ex, &j);
+    } else {
+        // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
+        const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
+        if (si && di) {
+            j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
+            vk_contact_exec(ex, &j);
+        }
     }
     __atomic_store_n(&job_turn, turn + 1, __ATOMIC_RELEASE);
     ex->dirty = VK_EXEC_DIRTY_ALL;
@@ -1009,10 +1017,11 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
 // that finishes early takes another: in the town at 4K on an RTX 5070 the replay goes from 8.2 to 4.5 ms
 // and the frame rate from 71 to 79; more threads add little, since the frame then waits for the GPU. A sequential scan on
 // the submitting thread applies only what is queue state: the fixed-function and bind ops, render targets, render
-// enable and conditions, samples-passed counting and the contact shadows' marches (vk_contact_plan); it looks up no
+// enable and conditions, samples-passed counting, the contact shadows' marches (vk_contact_plan) and DLSS's decisions
+// (vk_dlaa_plan); it looks up no
 // shader, pipeline or descriptor and makes no Vulkan call. Where a chunk starts it keeps a copy of that state
 // (VK_EXEC_STATE_BEGIN..END) and how far the scan's lists got: the submission's inline uniform updates (ubo_ptr),
-// RENDER_COND results, planned contact shadow marches and the ops that drop uniform copies (vk_usnap_drop_at,
+// RENDER_COND results, planned records (contact shadows, DLSS) and the ops that drop uniform copies (vk_usnap_drop_at,
 // scan_writes), which a chunk takes
 // from the lists instead of from earlier chunks. A chunk starts with every image in GENERAL and ends with a full
 // barrier, as a part of vk_sync_split does, so its recording depends only on the copy and the lists.
@@ -1395,10 +1404,20 @@ static void chunk_start(const VkExec *s, int hi, const op_hdr *h) {
     chunks_submit(0);
 }
 
-static void scan_job(const VkExecJob *j, const op_hdr *h) {
+// The chunks before chunk k are recorded.
+static void chunks_wait(int k) {
+    plat_mutex_lock(&RP.m);
+    for (int i = 0; i < k; i++)
+        while (!__atomic_load_n(&SC.ch[i].done, __ATOMIC_ACQUIRE)) plat_cond_wait(&RP.done, &RP.m);
+    plat_mutex_unlock(&RP.m);
+}
+
+static void scan_job(VkExecJob *j, const op_hdr *h) {
     static int full;
+    j->chunk = SC.nch - 1;
     if (SC.njobs < MAX_JOBS) SC.jobs[SC.njobs] = *j, SC.jobs[SC.njobs++].op = h;
-    else if (!full++) rt_log("vk_exec: more than %d contact shadow marches in a submission: the others are left out", MAX_JOBS);
+    else if (!full++) rt_log("vk_exec: more than %d planned records in a submission: the others are left out", MAX_JOBS);
+    if (j->kind == VK_JOB_DLSS) scan_hold(HOLD_DLSS);   // the chunks after it read DLSS's output (vk_dlaa_swap_img)
 }
 
 // What vk_contact_pass_begin (pass) and vk_contact_flush do in the sequential replay, in replay order. A pass of the
@@ -1408,7 +1427,15 @@ static void scan_contact(const VkExec *s, int pass, const op_hdr *h) {
     if (vk_contact_plan(s, pass, &j)) scan_job(&j, h);
 }
 
-// A draw as prepare_draw sees it: its pass begins, and with it a contact shadow march may be due.
+// What vk_exec_pass_begin asks of contact shadows and DLSS. DLSS's plan, too, gives the same answer for a pass asked
+// again: it moves on only at the passes that arm, end or scale the scene.
+static void scan_pass(const VkExec *s, const op_hdr *h) {
+    scan_contact(s, 1, h);
+    VkExecJob j;
+    if (vk_dlaa_plan(s, &j)) scan_job(&j, h);
+}
+
+// A draw as prepare_draw sees it: its pass begins, and with it a contact shadow march or a DLSS record may be due.
 static void scan_draw(VkExec *s, uint32_t op, const void *a, const op_hdr *h) {
     if (s->render_disabled) return;
     if (op == OP_DRAW && ((const p_draw *)a)->count <= 0) return;
@@ -1420,7 +1447,8 @@ static void scan_draw(VkExec *s, uint32_t op, const void *a, const op_hdr *h) {
         return;
     if (s->pass_noatt) s->rt_resolved = 0;   // sized by this draw's viewport
     resolve_rt_as(s, 1);
-    scan_contact(s, 1, h);
+    scan_pass(s, h);
+    vk_dlaa_scan_draw(s);
 }
 
 static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
@@ -1456,7 +1484,7 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
             break;
         case OP_CLEAR_COLOR: case OP_CLEAR_DS:
             SC.open |= !s->render_disabled;
-            if (!s->render_disabled) resolve_rt_as(s, 1), scan_contact(s, 1, h);
+            if (!s->render_disabled) resolve_rt_as(s, 1), scan_pass(s, h);
             break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND:
             SC.in_chunk++, SC.open = 1;
@@ -1577,14 +1605,8 @@ static int chunked_on(void) {
         if (SC.workers)
             rt_log("vk: replay in up to %d chunks per submission of at least %d draws each, %d recording thread%s%s",
                    SC.chunks, SC.min_draws, SC.workers, SC.workers > 1 ? "s" : "", SC.check ? ", state checked" : "");
-        if (SC.workers && vk_dlaa_wanted())
-            rt_log("vk: DLSS (dlaa = 1) keeps the replay on one thread, so replay_workers has no effect");
-        else if (SC.workers && !cfg_bool("TOTK_FXAA"))
-            rt_log("vk: fxaa = 0 keeps the replay on one thread, so replay_workers has no effect while it is set");
     }
-    // DLSS (the dlaa setting) and the fxaa switch act on what the frame drew so far, draw by draw and in replay order,
-    // which only the sequential replay gives them.
-    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !vk_dlaa_wanted() && cfg_bool("TOTK_FXAA");
+    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed;
 }
 
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
@@ -1646,8 +1668,9 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
                    (unsigned long long)SC.chunked, (unsigned long long)SC.subs, (double)SC.nchunks / SC.chunked,
                    SC.prep_ns / k, SC.scan_ns / k, SC.start0_ns / k, SC.first_ns / k, SC.last_ns / k, SC.rec_ns / k,
                    SC.rec_max_ns / 1e6, SC.mirror_ns / k, SC.usnap_ns / k, SC.ready_ns / k);
-            rt_log("perf: chunked replay: chunks held per submission: %.2f for a new texture, %.2f for unknown storage "
-                   "writes", SC.held[HOLD_TEX] / (double)SC.chunked, SC.held[HOLD_WRITES] / (double)SC.chunked);
+            rt_log("perf: chunked replay: chunks held per submission: %.2f for a new texture, %.2f for DLSS, %.2f for "
+                   "unknown storage writes", SC.held[HOLD_TEX] / (double)SC.chunked, SC.held[HOLD_DLSS] / (double)SC.chunked,
+                   SC.held[HOLD_WRITES] / (double)SC.chunked);
             memset(SC.held, 0, sizeof SC.held);
             char b[768];
             int o = 0;
