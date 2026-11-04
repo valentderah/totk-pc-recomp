@@ -194,7 +194,20 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     ground, and the sage spirit next to Link was not drawn. `vk_exec_draw.c` (feedback loops) now detects such a draw:
     with `VK_EXT_attachment_feedback_loop_layout` and `dynamicRenderingLocalRead` the target moves to the feedback
     layout and a by-region barrier precedes the draw; without them the pass restarts behind a full barrier
-    (`TOTK_FEEDBACK`). **Fixed.**
+    (`TOTK_FEEDBACK`). On the RTX 3070 Laptop (driver 616.56), the Nachoyah Shrine floor still flickered as black
+    rectangles with either mode: its soft material blend samples R32F linear depth while writing that same image.
+    Barriers between draws cannot order a draw's samples against its own fragments' writes. `feedback_snapshot`
+    now copies writable, sampled single-level/single-layer R32F targets before the draw and redirects its fragment
+    reads to the copy, retaining the material blend. `TOTK_FEEDBACK_R32_COPY=0` restores the flicker in the same save
+    and camera; the default copy path removes it. Read-only R32F targets keep the existing path. **Fixed in the
+    tested shrine scene; other scenes still need coverage.** Revalidated on 0.3.4 (c38e0ca): the official executable
+    still shows the squares in the same save, while the ported snapshot path removes them. The all-material copy
+    path caused a performance regression at the entrance: one sampled frame copied R32F 869 times, 866 for the
+    opaque material. The default now snapshots only fragment-terminating (cutout) shaders, classified by SPIR-V
+    rather than a game-specific hash. Opaque materials keep the existing feedback barriers. In matched diagnostic
+    runs, median GPU time was 13.79 ms with snapshots off, 47.51 ms with all-material snapshots, and 13.73 ms with
+    cutout snapshots. The cutout path retains the black-block fix in the saved entrance views. Mode 2 preserves the
+    all-material copy path for comparison; mode 0 disables snapshots. Other GPUs/scenes still need coverage.
 11. **Border colours.** `vk_texture.c` `make_sampler`: custom colour only with `customBorderColorWithoutFormat`, else transparent
     black; integer formats use the float path. Confirm the RX 9070 reports the feature (grass map needs 0.5).
     **OK if supported.**
