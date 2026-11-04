@@ -39,6 +39,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "mods.h"
 #include "platform/platform.h"
 
 #define BASE_W 1920
@@ -46,6 +47,7 @@
 #define SCENE_W 1600
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
+#define TEX_HEAP_KIB 506880u // TextureHeap, shipped (1.2.1 and 1.4.3): what a mod's own HeapDef is measured against
 #define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
 #define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
@@ -193,7 +195,9 @@ uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1
 // world's textures stream into. HD texture packs made for emulators with 8 GB of DRAM grow it by about 3.3 GiB in their
 // own HeapDef; without the room the game runs out and starts its panic Blood Moon over and over. The pool and the heap
 // cap grow by the same amount (memory.c mem_init).
-static uint64_t tex_heap_extra_kib(void) {
+static uint64_t mod_tex_heap_kib(void);
+
+static uint64_t cfg_tex_heap_kib(void) {
     const char *v = cfg_get("TOTK_TEX_HEAP_EXTRA_MB");
     if (!v || !*v) return 0;
     char *end;
@@ -204,6 +208,12 @@ static uint64_t tex_heap_extra_kib(void) {
         return 0;
     }
     return (uint64_t)mb << 10;
+}
+
+// The larger of TOTK_TEX_HEAP_EXTRA_MB and what an enabled mod's own HeapDef adds to the texture heap (mod_tex_heap_kib).
+static uint64_t tex_heap_extra_kib(void) {
+    uint64_t c = cfg_tex_heap_kib(), m = mod_tex_heap_kib();
+    return c > m ? c : m;
 }
 
 uint64_t res_tex_heap_extra_bytes(void) { return ((tex_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
@@ -245,28 +255,82 @@ static size_t heap_size_field(const Byml *b, uint32_t heaps, const char *heap) {
     return at && u32_at(b, at, &node) ? field(b, node, "Size", 0xd1) : 0;
 }
 
-int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
-    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
-    *out = NULL;
-    if (!extra && !tex) return 0;
+// A HeapDef in b's place (zstd frame in[0..n) with its content size, no dictionary): b.p malloc'd and *heaps its
+// "Heaps" node; 0 when it is not one (b.p freed). why: what the log line says the caller keeps then.
+static int heapdef_open(const void *in, size_t n, Byml *b, uint32_t *heaps, const char *why) {
+    b->p = NULL;
     if (ZSTD_getDictID_fromFrame(in, n)) {
-        rt_log("resolution: the HeapDef table needs a zstd dictionary; the game keeps its own resolution");
+        rt_log("resolution: the HeapDef table needs a zstd dictionary; %s", why);
         return 0;
     }
     unsigned long long raw = ZSTD_getFrameContentSize(in, n);
     if (raw == ZSTD_CONTENTSIZE_UNKNOWN || raw == ZSTD_CONTENTSIZE_ERROR || raw > (64u << 20)) {
-        rt_log("resolution: the HeapDef table is not a zstd frame with a size; the game keeps its own resolution");
+        rt_log("resolution: the HeapDef table is not a zstd frame with a size; %s", why);
         return 0;
     }
-    Byml b = {malloc((size_t)raw), (size_t)raw, 0};
-    if (!b.p) return 0;
-    size_t got = ZSTD_decompress(b.p, b.n, in, n);
-    uint32_t root, heaps = 0;
+    *b = (Byml){malloc((size_t)raw), (size_t)raw, 0};
+    if (!b->p) return 0;
+    size_t got = ZSTD_decompress(b->p, b->n, in, n);
+    uint32_t root;
     uint16_t ver = 0;
-    if (!ZSTD_isError(got) && got == b.n && b.n >= 16) memcpy(&ver, b.p + 2, 2);
-    size_t heaps_at = 0, dta_at = 0, gfx_at = 0;
-    if (ver >= 2 && ver <= 7 && !memcmp(b.p, "YB", 2) && u32_at(&b, 4, &b.keys) && u32_at(&b, 12, &root) &&
-        (heaps_at = field(&b, root, "Heaps", 0xc1)) && u32_at(&b, heaps_at, &heaps)) {
+    if (!ZSTD_isError(got) && got == b->n && b->n >= 16) memcpy(&ver, b->p + 2, 2);
+    size_t heaps_at = 0;
+    if (ver >= 2 && ver <= 7 && !memcmp(b->p, "YB", 2) && u32_at(b, 4, &b->keys) && u32_at(b, 12, &root) &&
+        (heaps_at = field(b, root, "Heaps", 0xc1)) && u32_at(b, heaps_at, heaps))
+        return 1;
+    free(b->p);
+    b->p = NULL;
+    return 0;
+}
+
+// HD texture packs made for the emulators ship their own HeapDef with "TextureHeap" and its parent grown (HDPacks.com's
+// 4K pack for TotK: by 3,419,000 KiB, 3.3 GiB, for the emulators' 8 GB memory option). Served as it is, the game asks
+// for that room and the application pool has none: it crashed at start (issue #673). So before mem_init sizes the pool,
+// every switched-on mod's HeapDef is read (mods.c mods_peek_romfs: mods_scan needs paths main sets later) and the
+// largest TextureHeap growth over the shipped size counts as TOTK_TEX_HEAP_EXTRA_MB (the larger of the two, at most
+// 4 GiB). romfs.c heapdef_overlay then serves the game's own table grown by that amount in the mod's place, so the
+// other heaps keep the sizes of the game version that runs.
+#define HEAPDEF_REL "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
+static struct { int done; uint64_t kib; } MT;
+
+static void mod_heapdef(const char *name, const char *romfs, void *ctx) {
+    (void)ctx;
+    char path[2300];
+    if (snprintf(path, sizeof path, "%s/%s", romfs, HEAPDEF_REL) >= (int)sizeof path) return;
+    uint64_t n = 0;
+    uint8_t *in = plat_file_read(path, &n);
+    if (!in) return;
+    Byml b;
+    uint32_t heaps;
+    size_t th_at = 0;
+    int32_t th = 0;
+    if (heapdef_open(in, (size_t)n, &b, &heaps, "its texture heap is left out") &&
+        (th_at = heap_size_field(&b, heaps, "TextureHeap")))
+        memcpy(&th, b.p + th_at, 4);
+    free(b.p);
+    free(in);
+    int64_t grow = (int64_t)th - (int64_t)TEX_HEAP_KIB;
+    if (grow > (int64_t)(4096u << 10)) grow = 4096u << 10;
+    if (grow > 0 && (uint64_t)grow > MT.kib) MT.kib = (uint64_t)grow;
+    rt_log("resolution: mod %s ships a HeapDef with TextureHeap %d KiB (the game's %u KiB)%s", name, th, TEX_HEAP_KIB,
+           grow > 0 ? ": the port grows the texture heap and the pool by the difference" : "");
+}
+
+static uint64_t mod_tex_heap_kib(void) {
+    if (!MT.done) MT.done = 1, mods_peek_romfs(mod_heapdef, NULL);
+    return MT.kib;
+}
+
+int res_tex_heap_from_mod(void) { return mod_tex_heap_kib() > 0; }
+
+int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
+    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
+    *out = NULL;
+    if (!extra && !tex) return 0;
+    Byml b;
+    uint32_t heaps = 0;
+    size_t dta_at = 0, gfx_at = 0;
+    if (heapdef_open(in, n, &b, &heaps, "the game keeps its own resolution")) {
         dta_at = heap_size_field(&b, heaps, "DynamicTextureAllocatorMem");
         gfx_at = heap_size_field(&b, heaps, "Graphics");
     }
@@ -316,8 +380,8 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
         rt_log("resolution: HeapDef DynamicTextureAllocatorMem %d -> %d KiB, Graphics %d -> %d KiB", dta, dta2, gfx,
                gfx2);
     if (tex)
-        rt_log("resolution: HeapDef TextureHeap %d -> %d KiB and its parent %d -> %d KiB (TOTK_TEX_HEAP_EXTRA_MB)", th,
-               th2, gg, gg2);
+        rt_log("resolution: HeapDef TextureHeap %d -> %d KiB and its parent %d -> %d KiB (TOTK_TEX_HEAP_EXTRA_MB or a "
+               "mod's HeapDef)", th, th2, gg, gg2);
     return 1;
 }
 
