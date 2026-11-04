@@ -523,6 +523,24 @@ static void pick(int32_t *x, int32_t *y, int32_t kx, int32_t ky) {
     if (b > a) { *x = kx; *y = ky; }
 }
 
+// The shake key (B_SHAKE): the game detaches a part fused to what Ultrahand holds when the right stick swings left and
+// right a few times. A press swings it for SHAKE_NS, holding keeps it swinging; each side lasts SHAKE_SIDE_NS, two
+// frames at the game's 30 fps, so every side is read even at 20 fps. Returns the stick x, 0 while not shaking.
+// Under lock.
+#define SHAKE_NS 800000000ull
+#define SHAKE_SIDE_NS 66666667ull
+static int32_t shake_stick(int held) {
+    static int was;
+    static uint64_t from, until;
+    uint64_t now = plat_now_ns();
+    if (held && !was && now >= until) from = now;
+    if (held && !was) until = now + SHAKE_NS;
+    if (held && until < now) until = now;
+    was = held;
+    if (now >= until && !held) return 0;
+    return (now - from) / SHAKE_SIDE_NS % 2 ? STICK_MAX : -STICK_MAX;
+}
+
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
@@ -601,6 +619,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
             mouse_camera(k, selector);
             pick(&sr[0], &sr[1], k[0], k[1]);
+            int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
+            if (shake) sr[0] = shake, sr[1] = 0;
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();
             if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;

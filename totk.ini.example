@@ -320,9 +320,10 @@
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
 # direction: bind_<A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK> or bind_<LSTICK RSTICK>_<LEFT UP RIGHT
-# DOWN> = comma separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
-# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions take keys
-# only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
+# DOWN>, or bind_SHAKE (G: shakes the right stick, which detaches a fused part from what Ultrahand holds) = comma
+# separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
+# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions and
+# SHAKE take keys only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
 #   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert

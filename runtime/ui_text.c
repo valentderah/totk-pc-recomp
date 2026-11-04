@@ -310,6 +310,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_MOVE] = "Moves Link like the left stick. The controller's left stick always works too.",
     [UI_BIND_DESC_CAMERA] = "Turns the camera like the right stick. The mouse and the controller's right stick always "
                             "work too.",
+    [UI_BIND_SHAKE] = "Shake the camera stick",
+    [UI_BIND_DESC_SHAKE] = "Swings the right stick left and right for the game: detaches a fused part from what "
+                           "Ultrahand holds. Holding the key keeps shaking.",
     [UI_KEY_SPACE] = "Space", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Left Shift", [UI_KEY_LCTRL] = "Left Ctrl",
     [UI_KEY_UP] = "Up arrow", [UI_KEY_DOWN] = "Down arrow", [UI_KEY_LEFT] = "Left arrow",
     [UI_KEY_RIGHT] = "Right arrow",
@@ -772,6 +775,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_MOVE] = "Двигает Линка, как левый стик. Левый стик контроллера тоже всегда работает.",
     [UI_BIND_DESC_CAMERA] = "Поворачивает камеру, как правый стик. Мышь и правый стик контроллера тоже всегда "
                             "работают.",
+    [UI_BIND_SHAKE] = "Встряхнуть стик камеры",
+    [UI_BIND_DESC_SHAKE] = "Качает правый стик влево-вправо: отцепляет приклеенную деталь от того, что держит "
+                           "Ультрарука. Пока клавиша зажата, тряска продолжается.",
     [UI_KEY_SPACE] = "Пробел", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Левый Shift", [UI_KEY_LCTRL] = "Левый Ctrl",
     [UI_KEY_UP] = "Стрелка вверх", [UI_KEY_DOWN] = "Стрелка вниз", [UI_KEY_LEFT] = "Стрелка влево",
     [UI_KEY_RIGHT] = "Стрелка вправо",
@@ -1124,6 +1130,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                           "funciona.",
     [UI_BIND_DESC_CAMERA] = "Gira a câmera como o analógico direito. O mouse e o analógico direito do controle também "
                             "sempre funcionam.",
+    [UI_BIND_SHAKE] = "Sacudir o analógico da câmera",
+    [UI_BIND_DESC_SHAKE] = "Balança o analógico direito para os lados: solta uma peça fundida do que a Ultramão segura. "
+                           "Segurar a tecla continua sacudindo.",
     [UI_KEY_SPACE] = "Espaço", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Shift esquerdo",
     [UI_KEY_LCTRL] = "Ctrl esquerdo",
     [UI_KEY_UP] = "Seta para cima", [UI_KEY_DOWN] = "Seta para baixo", [UI_KEY_LEFT] = "Seta para a esquerda",
@@ -1679,6 +1688,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_DPAD] = "快捷选择。",
     [UI_BIND_DESC_MOVE] = "像左摇杆一样移动林克。手柄的左摇杆始终可用。",
     [UI_BIND_DESC_CAMERA] = "像右摇杆一样转动视角。鼠标和手柄的右摇杆始终可用。",
+    [UI_BIND_SHAKE] = "晃动视角摇杆",
+    [UI_BIND_DESC_SHAKE] = "让右摇杆左右晃动：把究极手抓着的物体上粘着的零件拆下。按住该键会一直晃动。",
     [UI_KEY_SPACE] = "空格",
     [UI_KEY_TAB] = "Tab",
     [UI_KEY_LSHIFT] = "左 Shift",

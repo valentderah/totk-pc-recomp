@@ -234,6 +234,10 @@ int probe_cfg(void) {
     CHECK(input_map_buttons(dn) == (1ull << B_ZR | 1ull << B_PLUS | 1ull << B_MINUS | 1ull << B_STICK_L | 1ull << B_RIGHT),
           "keys: X ZR, Tab Plus, M Minus, Left Ctrl stick click, 3 D-pad right");
     memset(dn, 0, sizeof dn);
+    dn[KEY_G] = 1;
+    CHECK(input_map_buttons(dn) == 0 && input_map_held(dn, B_SHAKE) && !input_map_held(dn, B_A),
+          "keys: G shakes and presses no button");
+    memset(dn, 0, sizeof dn);
     dn[KEY_W] = 1;
     input_map_stick(dn, 0, st);
     CHECK(st[0] == 0 && st[1] == 32767, "keys: W is left stick up");

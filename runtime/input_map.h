@@ -7,11 +7,13 @@
 #include <stdint.h>
 
 // Actions are the bit numbers of libnx HidNpadButton (input.h); 16..23 are the stick directions, which keys drive as
-// stick deflection.
+// stick deflection. B_SHAKE is a key of its own, never a button bit: a press shakes the right stick left and right for
+// the game (input.c shake_stick), which detaches a fused part held with Ultrahand. A pad shakes its own stick.
 enum {
     B_A = 0, B_B, B_X, B_Y, B_STICK_L, B_STICK_R, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN,
     B_SL_LEFT = 16, B_SL_UP, B_SL_RIGHT, B_SL_DOWN, B_SR_LEFT, B_SR_UP, B_SR_RIGHT, B_SR_DOWN,
-    ACTION_COUNT = 24
+    B_SHAKE = 24,
+    ACTION_COUNT = 25
 };
 
 // Keys and mouse buttons. F1, F10, F11 and Esc belong to the menu and the window, F8 to the flight recorder: no ids.
@@ -67,14 +69,14 @@ extern InputMap input_map;
 void input_map_reset(void);
 // The script and totk.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
 // ZR PLUS MINUS LEFT UP RIGHT DOWN, then LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN and the same for RSTICK (the
-// stick directions the keys drive). Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
+// stick directions the keys drive), then SHAKE. Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
 const char *input_action_name(int action);
 const char *input_key_name(int key);
 const char *input_pad_name(int pad);
 // Replaces every binding of the action `button` (an action name) with `list`: comma separated "pad:<name>" and
 // "key:<name>" entries, "key:default" / "pad:default" for that part's defaults, or "none" for no input. A part the list
 // names neither way is left unbound. Pad names are physical buttons, so pad entries go into the gamepad table of every
-// layout; pad:default keeps each layout's own button. Stick directions take keys only. Invalid entries are logged and
+// layout; pad:default keeps each layout's own button. Stick directions and SHAKE take keys only. Invalid entries are logged and
 // skipped; when none is valid the action keeps its bindings. 1 when applied.
 int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
@@ -104,6 +106,8 @@ uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
 
 // down[key] != 0 for the keys held. Returns the Switch button bits (0..15) the table presses.
 uint64_t input_map_buttons(const uint8_t down[KEY_COUNT]);
+// 1 when a key of action is held.
+int input_map_held(const uint8_t down[KEY_COUNT], int action);
 // out = x, y of the stick (0 left, 1 right) from its four direction actions; up is +y; a diagonal is scaled to the
 // unit circle.
 void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);
