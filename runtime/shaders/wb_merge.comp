@@ -1,0 +1,27 @@
+#version 450
+// Write-back merge of a VRAM mirror (vk_memory.c, wb_merge_record): copies a 32-bit word of what the GPU left in the
+// mirror into the pool's imported buffer (guest memory) only where it differs from the snapshot taken before the
+// submission's GPU work, so words the GPU did not change keep what the CPU wrote meanwhile.
+// One invocation per word of the listed ranges; ranges are sorted by their first invocation (x: word offset in the
+// mirror and imported bindings, y: word offset in the snapshot binding, z: words, w: first invocation).
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer Post { uint post[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Pre { uint pre[]; };
+layout(std430, set = 0, binding = 2) buffer Dst { uint dst[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Ranges { uvec4 rng[]; };
+layout(push_constant) uniform Push { uint nranges, total; } pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.total) return;
+    uint lo = 0, hi = pc.nranges;
+    while (hi - lo > 1) {
+        uint m = (lo + hi) >> 1;
+        if (rng[m].w <= i) lo = m;
+        else hi = m;
+    }
+    uvec4 r = rng[lo];
+    uint k = i - r.w;
+    uint v = post[r.x + k];
+    if (v != pre[r.y + k]) dst[r.x + k] = v;
+}

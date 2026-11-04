@@ -810,7 +810,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+        if (written) vk_mem_gpu_wrote_shader(&sp, n), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;

@@ -251,6 +251,9 @@ void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
+// A shader's storage-buffer write: goes back through the write-back merge (vk_memory.c), which keeps the words the GPU
+// did not change.
+void vk_mem_gpu_wrote_shader(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
 // it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
