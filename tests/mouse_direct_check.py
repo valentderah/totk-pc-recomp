@@ -18,6 +18,7 @@ static float ratio=0.5f;
 static uint64_t now=1000000000;
 static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook;
 const char *cfg_get(const char *key) { (void)key; return mode ? "direct" : "stick"; }
+const char *cfg_value(const char *key) { return cfg_get(key); }
 double cfg_double(const char *key) { (void)key; return 1; }
 int rt_patch_set(const char *s) { (void)s; return 0; }
 int rt_patch_enabled(int s) { (void)s; return patched; }

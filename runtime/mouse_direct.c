@@ -23,8 +23,8 @@
 #endif
 
 static int direct_mode(void) {
-    const char *mode = cfg_get("TOTK_MOUSE_MODE");
-    return mode && !strcmp(mode, "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
+    // cfg_value: unset is the settings table's default (direct), as the menu shows it
+    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
 }
 
 static uint64_t last_update;
