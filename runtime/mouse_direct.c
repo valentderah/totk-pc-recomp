@@ -194,7 +194,7 @@ static void camera_input(Cpu *c) {
             static int logged;
             if (!logged) {
                 logged = 1;
-                rt_log("mouse: direct camera input after the stick dead zone, clamp and exponent (experimental)");
+                rt_log("mouse: direct camera input after the stick dead zone, clamp and exponent");
             }
         }
     }
@@ -304,7 +304,7 @@ static void hand_input(Cpu *c) {
             static int logged;
             if (!logged && (m.motion[0] || m.motion[1])) {
                 logged = 1;
-                rt_log("mouse: held-object input after the manipulation controller's power curves (experimental)");
+                rt_log("mouse: held-object input after the manipulation controller's power curves");
             }
         }
     }

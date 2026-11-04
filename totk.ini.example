@@ -298,10 +298,10 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
-# Mouse camera mode: stick (default) or direct (experimental, game 1.4.3 only). Direct free-camera input uses
-# raw displacement with equal horizontal/vertical sensitivity and bypasses stick response curves. Other game versions
-# keep stick emulation. The Controls tab changes this while the game runs.
-# mouse_mode = stick
+# Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
+# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
+# mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
 # right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.

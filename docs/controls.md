@@ -94,7 +94,7 @@ bind_Y = pad:north, key:mouse_l
 
 ## Mouse camera
 
-`mouse_mode = direct` enables experimental mouse hooks on game 1.4.3. The free-orbit camera receives raw-count
+`mouse_mode = direct` (the default) turns the camera by the raw mouse motion on game 1.4.3, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
 angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1, with
 no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with the output.
 Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and velocity
@@ -102,7 +102,7 @@ filters cannot process it a second time. Other camera modes receive input after 
 clamp and stick response exponent; Ultrahand has a separate hook after its manipulation input's power curves.
 The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw counts; its scale
 differs from the stick-emulation mode. Start at 1.
-The Controls tab can switch between *Stick emulation* (the default, `mouse_mode = stick`) and *Direct (experimental)*.
+The Controls tab switches between *Direct* and *Stick emulation* (`mouse_mode = stick`).
 The orbit camera keeps its desired pitch at the final angular output, including stationary frames, so a later game
 filter cannot recenter it. The persistent filter state accounts for the camera's current vertical offset instead of
 accumulating corrections. A gamepad vertical input or the game's lock-on/override releases that mouse target.
@@ -117,8 +117,7 @@ or the gamepad's right stick. A mouse gesture for it would also fire while a hel
 A step of the gamepad alone, with no mouse motion and no pitch the mouse holds, reaches the camera exactly as without
 the hooks.
 The mapping below is still used when the camera-input hook is unavailable or the game disables camera input.
-This hook needs in-game checks of aiming, Ultrahand and menu transitions before it can be considered complete mouse
-support. Games 1.1.0 and 1.2.1 have no hook and keep stick emulation.
+Games 1.1.0 and 1.2.1 have no hooks and keep stick emulation whatever `mouse_mode` says.
 
 In stick-emulation mode, mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
 
@@ -132,7 +131,7 @@ The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sti
 
 On game 1.4.3, while one of the game's menus has its focus box (the frame the d-pad moves: the title, the save list, the inventory and its System tab, Options, shops, dialogue choices), the cursor is released from the mouse camera and shown in the middle of the window. The item under the pointer takes the focus as if the d-pad had moved there, with the game's highlight, sound and description; a left click is A on it, a right click is B. The keys and the pad keep working, and the focus moves only when the pointer moves. This happens only while the keyboard and mouse are the device used last: after a gamepad button press or a stick pushed past half way the menus are as on the console, with no pointer, until the mouse moves or a key is pressed (`input_kbm_last` in `runtime/input.c`). The ability wheel, the d-pad strips, Autobuild, the Purah Pad's camera and the map stay gameplay: the mouse keeps the camera there. When the menu closes the cursor is captured again.
 
-`runtime/menu_cursor.c` reads eui's screens at each pad read and moves the focus with the writes `eui::BoxCursorMgr::moveBoxCursor` makes, so no game code is called. `menu_cursor = 0` (`TOTK_MENU_CURSOR=0`, live) turns it off; `TOTK_MENU_CURSOR_LOG=1` logs every screen it reads (by default the first six), with the layout size, the node count and the hit panes it uses.
+`runtime/menu_cursor.c` reads eui's screens at each pad read and moves the focus with the writes `eui::BoxCursorMgr::moveBoxCursor` makes, so no game code is called. `menu_cursor = 0` (`TOTK_MENU_CURSOR=0`, live; the *Mouse in the game's menus* row of the Controls tab) turns it off; `TOTK_MENU_CURSOR_LOG=1` logs every screen it reads (by default the first six), with the layout size, the node count and the hit panes it uses.
 
 ## Nintendo Switch 2 controllers
 

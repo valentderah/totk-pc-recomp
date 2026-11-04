@@ -147,7 +147,7 @@ static const CfgMeta metas[] = {
     {"PROMPTS", "nintendo", "nintendo|xbox|keyboard", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
-    {"MOUSE_MODE", "stick", "stick|direct", LIVE},
+    {"MOUSE_MODE", "direct", "stick|direct", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
