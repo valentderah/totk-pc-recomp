@@ -24,7 +24,7 @@ enum {
 
 // One render target of OP_SET_RT, resolved to its vk_texture.c image for the current command buffer.
 typedef struct {
-    const tex_t *tex;                    // payload copy (lives for the run); NULL: no target in this slot
+    const tex_t *tex;                    // texture pin of ex->rt (nvn_pins_sweep keeps it); NULL: no target in this slot
     VkImage image;                       // VK_NULL_HANDLE: no target or not renderable (logged once)
     VkFormat format;                     // view format: the view's when it reinterprets a same-size format
     VkImageViewType view_type;           // 2D, or 2D_ARRAY for more than one layer
