@@ -24,6 +24,7 @@
 #include "host.h"
 #include "platform/platform.h"
 #include "romfs_path.h"
+#include "stats.h"
 
 #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ull
 #define FILE_BASE 0x200000000ull
@@ -541,6 +542,7 @@ static uint32_t save_commit_locked(void) {
     if (tx_dead) return FS_R_INVALID_ARGUMENT;
     rt_log("fs commit save: %d files, %d changed (%.1f MiB written), %d unchanged linked, in %.0f ms%s", nfiles,
            nfiles - linked, bytes / 1048576.0, linked, (plat_now_ns() - t0) / 1e6, waits ? "; waits in save-tx" : "");
+    stats_save_changed();   // the Achievements tab reads the new save (stats.c)
     return 0;
 }
 

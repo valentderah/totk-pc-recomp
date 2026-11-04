@@ -1163,6 +1163,23 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     return overlays[k].name;
 }
 
+// RomFS file rel as the game reads it (an overlay that replaces it, else the image), for host code that reads game
+// data of its own (stats.c): malloc'd, NULL when missing, unreadable or 16 MiB or more (logged with `why`).
+void *romfs_load(const char *rel, size_t *n, const char *why) {
+    Overlay *base;
+    return file_count ? read_served(rel, &base, n, why) : NULL;
+}
+
+// Calls cb for every RomFS image path that starts with prefix, in index order (sorted). Files a mod adds are not listed.
+void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx) {
+    size_t n = strlen(prefix);
+    for (uint64_t i = lower(prefix); i < file_count; i++) {
+        const char *name = entry_name(entry(i));
+        if (strncmp(name, prefix, n)) break;
+        cb(name, ctx);
+    }
+}
+
 int romfs_owns(const char *path) {
     size_t n = strlen(mount_name);
     return n && path && !strncmp(path, mount_name, n) && path[n] == ':';
