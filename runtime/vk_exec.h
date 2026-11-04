@@ -48,11 +48,16 @@ typedef struct {
                                                                // transitions
 } VkExecFrame;
 
-// A contact shadow march (vk_contact.c) the scan of a chunked replay planned before an op: vk_contact_plan decides it in
-// replay order, vk_contact_exec records it on the chunk that holds the op.
+// A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
+// decides it in replay order, vk_contact_exec records it), or DLSS's copy of the lit scene or its evaluation
+// (vk_dlaa.c: vk_dlaa_plan, vk_dlaa_exec). The chunk that holds the op records it.
+enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS };
 typedef struct VkExecJob {
     const void *op;                      // vk_exec.c: the op it precedes in a scanned submission
-    VkExecTarget scene, depth;           // the scene colour and the linear depth
+    int kind;                            // VK_JOB_*
+    int chunk;                           // vk_exec.c: the chunk that holds the op
+    VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
+                                         // (mask) or the scaling pass's target (evaluation; no tex: in place)
     float pc[16];                        // the march's push constants
 } VkExecJob;
 
@@ -155,7 +160,7 @@ typedef struct VkExec {
     int chunked;                         // records a chunk: what depends on earlier chunks comes from the scan
     const VkExecUpd *upd;                // the submission's inline uniform updates
     const uint8_t *cond;                 // its RENDER_COND results (1 renders)
-    const VkExecJob *jobs;               // its contact shadow marches
+    const VkExecJob *jobs;               // its planned records (contact shadows, DLSS)
     uint32_t njobs;
     uint32_t upd_n, cond_i, job_i;       // updates, results and records before the op being recorded
     uint32_t drop_n;                     // ops before it that may write uniform ranges (vk_usnap_drop_at)
