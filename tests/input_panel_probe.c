@@ -1,17 +1,50 @@
-// Game-data-free GDI/window regression: real catalog and uiwindow; only the gamepad snapshot and save operation use test doubles.
+/* Game-data-free GDI/window regression. Uses the real catalog, configuration
+ * reads, platform locks and native windows; gamepad snapshots and saving are test
+ * doubles. Include input_panel.c to inspect drawing/lifecycle state and inject
+ * a deterministic close race through its existing window-call boundary.
+ * Platform: Windows x86-64, recent runtime-supported Clang, Win32/GDI libraries,
+ * and an interactive desktop. No SDL library, game data or generated C is needed.
+ * Native panels appear briefly and the test checks the current foreground window;
+ * avoid concurrent desktop interaction. No user ini is read or saved. Run without
+ * TOTK_* environment overrides. An optional first argument writes a synthetic BMP
+ * at that explicit path; omit it for no output file. PASS is exit 0, CHECK fails 1.
+ *
+ * Build/run from the repository root in PowerShell with clang on PATH. Keep
+ * outputs under ignored build/test, or select an explicit temporary directory.
+ *
+ * $out = "build/test/input"
+ * New-Item -ItemType Directory -Force $out | Out-Null
+ * clang -std=gnu11 -O1 -g -D_WIN32_WINNT=0x0A00 -I runtime tests/input_panel_probe.c runtime/ui_text.c runtime/cfg.c runtime/uiwindow_win.c runtime/platform/win32.c runtime/platform/common.c -luser32 -lgdi32 -lpsapi -lbcrypt -lole32 -lshell32 -luuid -lwinmm -o "$out/input_panel_probe.exe"
+ * & "$out/input_panel_probe.exe"
+ * # Optional synthetic image: & "$out/input_panel_probe.exe" "$out/input-panel.bmp"
+ */
 #include "../runtime/uiwindow.h"
 static UiWindow *panel_test_open(const char *title,int w,int h,int hz,UiWindowDrawFn draw,void *user);
+static int panel_test_is_open(const UiWindow *w);
+#define uiwindow_is_open panel_test_is_open
 #define uiwindow_open panel_test_open
 #define cfg_save panel_test_save
 #include "../runtime/input_panel.c"
 #undef cfg_save
 #undef uiwindow_open
+#undef uiwindow_is_open
 #include <stdarg.h>
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#c); exit(1); } } while (0)
 static InputOverlayState fixture;
 static PlatMutex fixture_lock = PLAT_MUTEX_INIT;
-static int saves, fail_open, open_calls;
+static int saves, fail_open, open_calls, close_on_is_open;
+static int panel_test_is_open(const UiWindow *w) {
+    if (close_on_is_open) {
+        close_on_is_open = 0;
+        // The tick already consumed its first notification check. Close now,
+        // before it observes the stopped window, without a timing-dependent sleep.
+        HWND hwnd = FindWindowW(L"TotkAuxiliaryPanel",NULL);
+        CHECK(hwnd);
+        SendMessageW(hwnd,WM_CLOSE,0,0);
+    }
+    return uiwindow_is_open(w);
+}
 static UiWindow *panel_test_open(const char *title,int w,int h,int hz,UiWindowDrawFn fn,void *user) {
     open_calls++;
     return fail_open ? NULL : uiwindow_open(title,w,h,hz,fn,user);
@@ -104,6 +137,11 @@ int main(int argc,char **argv) {
     SendMessageW(hwnd,WM_CLOSE,0,0); input_panel_tick(); CHECK(!window && saves == 1);
     CHECK(!cfg_bool("TOTK_INPUT_WINDOW"));
     cfg_set("TOTK_INPUT_WINDOW","1"); input_panel_tick(); CHECK(window);
+    int before_race = saves;
+    close_on_is_open = 1; input_panel_tick();
+    CHECK(!window && saves == before_race + 1 && !cfg_bool("TOTK_INPUT_WINDOW"));
+    input_panel_tick(); CHECK(!window && saves == before_race + 1);
+    cfg_set("TOTK_INPUT_WINDOW","1"); input_panel_tick(); CHECK(window);
     cfg_set("TOTK_INPUT_WINDOW","0"); input_panel_tick(); CHECK(!window);
     cfg_set("TOTK_INPUT_WINDOW","1"); input_panel_tick(); CHECK(window);
     hwnd = find_window();
@@ -113,10 +151,12 @@ int main(int argc,char **argv) {
     cfg_set("TOTK_INPUT_WINDOW","0"); input_panel_tick();
     cfg_set("TOTK_INPUT_WINDOW","1"); input_panel_tick(); CHECK(window);
     CHECK(_putenv("TOTK_INPUT_WINDOW=1") == 0);
-    hwnd = find_window(); SendMessageW(hwnd,WM_CLOSE,0,0); input_panel_tick();
-    CHECK(!window && cfg_bool("TOTK_INPUT_WINDOW"));
+    before_race = saves;
+    close_on_is_open = 1; input_panel_tick();
+    CHECK(!window && saves == before_race + 1 && cfg_bool("TOTK_INPUT_WINDOW"));
     int closed_calls = open_calls;
     input_panel_tick(); input_panel_tick(); CHECK(!window && open_calls == closed_calls);
+    puts("PASS: close notification races save once and preserve environment suppression");
     CHECK(_putenv("TOTK_INPUT_WINDOW=") == 0); input_panel_tick();
     cfg_set("TOTK_INPUT_WINDOW","1"); input_panel_tick(); CHECK(window);
     PlatThread *t = plat_thread_new(competing_tick,NULL,"panel-exit-test"); CHECK(t);

@@ -1,4 +1,23 @@
-// Game-data-free regression test; include input.c to verify that script and recording state remain untouched.
+/* Game-data-free regression test. Include input.c to inspect script/recording
+ * state without adding production test APIs. Unexpected merged-input calls abort.
+ * Platform: Windows x86-64. Requires a runtime-supported recent Clang (the CPU
+ * headers use SIMD builtins), SDL3 headers/import library/DLL, Vulkan/VMA headers,
+ * and the Windows platform libraries. No game data or generated game C is needed.
+ * Run without TOTK_* environment overrides. SDL physical-device backends are
+ * disabled in this process; only virtual controllers are used. No ini is read or
+ * saved. PASS is exit 0; a failed CHECK or unexpected path exits nonzero.
+ *
+ * Build/run from the repository root in PowerShell with clang on PATH. Set $deps
+ * to the dependency prefix containing include/SDL3, include/vulkan, include/vma
+ * and lib/libSDL3.dll.a. Put SDL3.dll and compiler runtime DLLs on PATH to run.
+ * The default output is ignored build/test; an explicit temporary directory is OK.
+ *
+ * $deps = "runtime/deps"
+ * $out = "build/test/input"
+ * New-Item -ItemType Directory -Force $out | Out-Null
+ * clang -std=gnu11 -O1 -g -ffunction-sections -fdata-sections -D_WIN32_WINNT=0x0A00 -I runtime -I "$deps/include" -I "$deps/include/vma" tests/input_overlay_probe.c runtime/input_map.c runtime/cfg.c runtime/platform/win32.c runtime/platform/common.c '-Wl,--gc-sections' -L "$deps/lib" -lSDL3 -lpsapi -lbcrypt -lole32 -lshell32 -luuid -lwinmm -o "$out/input_overlay_probe.exe"
+ * & "$out/input_overlay_probe.exe"
+ */
 #include <assert.h>
 #include <stdarg.h>
 #include "../runtime/input.c"

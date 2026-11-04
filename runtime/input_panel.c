@@ -136,14 +136,20 @@ void input_panel_close(void) {
 void input_panel_tick(void) {
     plat_mutex_lock(&owner_lock);
     if (stopping) { plat_mutex_unlock(&owner_lock); return; }
-    if (window && uiwindow_take_close_requested(window)) {
+    int close_requested = window && uiwindow_take_close_requested(window);
+    int open = window && uiwindow_is_open(window);
+    // WM_CLOSE publishes its notification before clearing open. If it raced the
+    // first take, collect it after observing the stopped window and before free.
+    if (window && !open && !close_requested)
+        close_requested = uiwindow_take_close_requested(window);
+    if (close_requested) {
         suppressed = 1;
         cfg_set("TOTK_INPUT_WINDOW","0"); cfg_save();
         close_window();
     }
     int enabled = cfg_bool("TOTK_INPUT_WINDOW");
     if (!enabled) { suppressed = 0; close_window(); plat_mutex_unlock(&owner_lock); return; }
-    if (window && !uiwindow_is_open(window)) {
+    if (window && !open) {
         suppressed = 1;
         rt_log("input panel: window stopped; toggle input_window off/on to retry");
         close_window();
