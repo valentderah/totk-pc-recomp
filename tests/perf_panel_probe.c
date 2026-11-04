@@ -4,6 +4,87 @@
 // clang -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 -I runtime tests/perf_panel_probe.c runtime/uiwindow_win.c runtime/ui_text.c -luser32 -lgdi32 -o build/test/perf_panel_probe.exe
 // Run: build/test/perf_panel_probe.exe [build/test/perf-panel.bmp]
 // The test includes perf_panel.c to interpose the close/alive race; do not compile that source twice.
+// Optional headless snapshot regression: runtime-supported Clang, no desktop, GPU, SDL or game data.
+// This mode includes the real perfmon.c; clock/lock scheduling, the GPU counter and unused sampler services are test doubles.
+// clang -O2 -Wall -Wextra -Werror -DPERFMON_SNAPSHOT_TEST -I runtime tests/perf_panel_probe.c -o build/test/perfmon_snapshot_probe.exe
+// Run: build/test/perfmon_snapshot_probe.exe (create build/test first, or choose another output directory).
+#ifdef PERFMON_SNAPSHOT_TEST
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static int failures, held, scheduled, unlocked_clock_reads;
+static unsigned clock_reads;
+static uint64_t clock_ns, gpu_ns;
+static void competing_owner(int operation);
+#define CHECK(x, name) do { if(!(x)) { printf("FAIL %s\n",name); failures++; } else printf("PASS %s\n",name); } while(0)
+#include "../runtime/perfmon.c"
+
+void plat_mutex_lock(PlatMutex *m) {
+    CHECK(m==&g_lock && !held,"snapshot lock acquisition is serialized");
+    if(scheduled) { int operation=scheduled; scheduled=0; competing_owner(operation); }
+    held=1;
+}
+void plat_mutex_unlock(PlatMutex *m) { CHECK(m==&g_lock && held,"snapshot lock release"); held=0; }
+uint64_t plat_now_ns(void) { clock_reads++; if(!held) unlocked_clock_reads++; return clock_ns; }
+uint64_t perf_gpu_busy_total(void) { CHECK(held,"GPU counter read under the statistics lock"); return gpu_ns; }
+void perf_set_overlay(int mode) { (void)mode; abort(); }
+void *plat_lib_open(const char *name) { (void)name; abort(); }
+void *plat_lib_sym(void *lib, const char *name) { (void)lib; (void)name; abort(); }
+PlatThread *plat_thread_new(PlatThreadFn fn,void *arg,const char *name) { (void)fn;(void)arg;(void)name; abort(); }
+void plat_thread_detach(PlatThread *thread) { (void)thread; abort(); }
+void plat_cond_signal(PlatCond *cond) { (void)cond; abort(); }
+int plat_cond_wait_ns(PlatCond *cond,PlatMutex *m,uint64_t ns) { (void)cond;(void)m;(void)ns; abort(); }
+PlatLoad *plat_load_open(const uint8_t *luid,int bus) { (void)luid;(void)bus; abort(); }
+void plat_load_close(PlatLoad *load) { (void)load; abort(); }
+void plat_cpu_load(PlatLoad *load,float *total,float *process,float *temp) { (void)load;(void)total;(void)process;(void)temp; abort(); }
+void plat_gpu_load(PlatLoad *load,float *usage,float *vram) { (void)load;(void)usage;(void)vram; abort(); }
+void plat_mem_info(float *used,float *total,float *process) { (void)used;(void)total;(void)process; abort(); }
+void sysinfo_cpu_name(char *out,size_t cap) { (void)out;(void)cap; abort(); }
+
+static const uint64_t epoch=10000000000ull;
+static void frame(uint64_t now,int newer) {
+    uint64_t waits[PERF_N]={0};
+    waits[PERF_PIPE]=(newer?6:2)*1000000ull;
+    waits[PERF_XLATE]=(newer?7:3)*1000000ull;
+    waits[PERF_TEX]=(newer?8:4)*1000000ull;
+    perfmon_frame(now,20000000ull,waits,(newer?9:5)*1000000ull,newer?8:2);
+}
+static void competing_owner(int operation) {
+    // Run another real owner after the caller reached lock(), but before it acquires the lock.
+    if(operation==2) {
+        clock_ns=epoch+600000000ull;
+        PerfStats other; perfmon_snapshot(&other);
+        CHECK(other.replay_ms==5 && g_win.t0==clock_ns,"competing snapshot advances the summary window");
+        clock_ns=epoch+620000000ull; gpu_ns=15000000ull; frame(clock_ns,1);
+    } else {
+        clock_ns=epoch+200000000ull; frame(clock_ns,0);
+    }
+}
+static void reset(void) {
+    memset(&g_stats,0,sizeof g_stats); memset(g_ring,0,sizeof g_ring); memset(g_ring_at,0,sizeof g_ring_at);
+    memset(g_low_hist,0,sizeof g_low_hist); g_ring_n=g_ring_pos=g_low_cur=0; g_low_t0=epoch;
+    memset(&g_win,0,sizeof g_win); g_win.t0=epoch;
+    held=scheduled=unlocked_clock_reads=0; clock_reads=0; clock_ns=epoch+100000000ull; gpu_ns=6000000ull;
+    frame(epoch,0);
+}
+int main(void) {
+    PerfStats stats;
+    reset(); scheduled=1; perfmon_snapshot(&stats);
+    CHECK(!unlocked_clock_reads && clock_reads==1,"snapshot reads time only after acquiring its lock");
+    CHECK(stats.fps==50 && stats.frame_ms_avg==20 && stats.frame_ms_max==20,"a frame published while waiting is retained in FPS");
+    CHECK(g_win.frames==2 && g_win.t0==epoch,"a partial counter window is not cleared");
+    reset(); scheduled=2; perfmon_snapshot(&stats);
+    CHECK(!unlocked_clock_reads && clock_reads==2,"both snapshots obtain time while holding the lock");
+    CHECK(stats.fps==50 && stats.frame_ms_avg==20,"the later snapshot does not hide a newly published frame");
+    CHECK(g_win.t0==epoch+600000000ull && g_win.frames==1,"elapsed time does not wrap or reset the competing window");
+    CHECK(stats.replay_ms==5 && stats.pipe_wait_ms==2 && stats.xlate_ms==3 && stats.tex_ms==4 && stats.tex_uploads==2,"previous averages survive until the next real deadline");
+    clock_ns=epoch+1120000000ull; perfmon_snapshot(&stats);
+    CHECK(stats.replay_ms==9 && stats.pipe_wait_ms==6 && stats.xlate_ms==7 && stats.tex_ms==8 && stats.tex_uploads==6 && stats.gpu_ms==9,"pending counters settle normally at the half-second deadline");
+    CHECK(g_win.t0==clock_ns && !g_win.frames,"the completed window resets at the current locked time");
+    printf("perfmon snapshot probe: %d failures\n",failures); return failures?1:0;
+}
+#else
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -122,3 +203,4 @@ int main(int argc, char **argv) {
     perf_panel_tick(); CHECK(!panel() && !perf_panel_active(),"concurrent exit joins and permanently stops reopening");
     printf("perf panel probe: %d failures\n",failures); return failures?1:0;
 }
+#endif
