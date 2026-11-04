@@ -13,6 +13,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "items.h"
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
 #include "platform/platform.h"
@@ -478,13 +479,13 @@ NVN_API(nvnSyncWait) {
     uint64_t timeout = arg_x(c, 1);
     if (!s->fenced) { ret_x(c, NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED); return; }
     const GfxBackend *b = gfx_backend();
-    if (b->fence_done() >= s->fence) { b->cpu_synced(s->fence); ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
+    if (b->fence_done() >= s->fence) { b->cpu_synced(s->fence); items_sync_tick(c, (uintptr_t)s); ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
     int ok;
     {
         NVN_BLOCKING();
         ok = b->fence_wait(s->fence, timeout);
     }
-    if (ok) b->cpu_synced(s->fence);
+    if (ok) { b->cpu_synced(s->fence); items_sync_tick(c, (uintptr_t)s); }
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)

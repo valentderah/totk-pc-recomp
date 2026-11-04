@@ -1042,6 +1042,7 @@ class Prepare(Step):
         layout = ctx.layout
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
+                                            'item_catalog.py',
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
         # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
         return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
@@ -1050,7 +1051,8 @@ class Prepare(Step):
     def current(self, ctx, record):
         dest = ctx.dest
         xlate = dest / ctx.layout.xlate.name
-        return ((dest / 'shader-prepared.bin').is_file() and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
+        return ((dest / 'items.tsv').is_file() and (dest / 'shader-prepared.bin').is_file()
+                and (dest / 'romfs-patches' / 'manifest.tsv').is_file()
                 and xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256'))
 
     def run(self, ctx):
@@ -1082,6 +1084,12 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        catalog = ctx.temp / 'item-catalog'
+        code, log = run_tool(ctx, 'prepare', layout.tools / 'item_catalog.py',
+                             ['--romfs', dest / 'romfs', '--out', catalog])
+        if code or not (catalog / 'items.tsv').is_file():
+            raise InstallError('prepare.items_failed', code=code, log=str(log))
+        replace_file(catalog / 'items.tsv', dest / 'items.tsv')
         # The same overlay with the UI laid out for each game resolution of another shape the settings menu offers
         # (runtime/romfs.c overlay_init picks the one that matches; the camera's side is the patch set aspect,
         # recomp/patches-v<ver>.txt).
@@ -1239,7 +1247,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
+        for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts', 'item-catalog'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
         write_rebuild_command(ctx)
