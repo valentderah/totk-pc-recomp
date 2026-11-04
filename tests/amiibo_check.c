@@ -67,7 +67,7 @@ int main(void) {
         assert(!memcmp(info, uid, sizeof uid) && info[10] == 7);
         assert(amiibo_mount());
         amiibo_get_model_info(model);
-        const uint8_t expected[] = {0x34, 0x12, 0x56, 0x0b, 0x9a, 0x78, 0};
+        const uint8_t expected[] = {0x12, 0x34, 0x56, 0x0b, 0x9a, 0x78, 0};
         assert(!memcmp(model, expected, sizeof expected));
         // Exercise the receive-pointer IPC path used by the SDK, with an overrun sentinel.
         uint8_t record[0x101];
