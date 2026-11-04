@@ -668,6 +668,8 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
+    static const UiTextId aa[] = {UI_MENU_ANTIALIASING_OFF, UI_MENU_ANTIALIASING_SMAA};
+    opt_choice("TOTK_ANTIALIASING", UI_MENU_ANTIALIASING, aa, 2, UI_MENU_ANTIALIASING_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};

@@ -158,6 +158,9 @@
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at
 # once.
 # aspect = fit
+# Anti-aliasing of the finished picture at the game resolution, before scaling to the window: off or smaa (SMAA 1x;
+# the HUD is smoothed too). Changes while the game runs take effect at once.
+# antialiasing = off
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100

@@ -79,6 +79,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "When the window's shape differs from the game resolution's (a 16:9 picture on a 21:9 "
                             "screen): keep the picture's shape with black bars, or stretch it over the window.",
     [UI_MENU_ASPECT_FIT] = "Black bars", [UI_MENU_ASPECT_STRETCH] = "Stretch",
+    [UI_MENU_ANTIALIASING] = "Anti-aliasing",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA smooths jagged edges of the finished picture at the game resolution, before "
+                                  "scaling to the window. The HUD is smoothed too. Applies at once.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Off",
     [UI_MENU_FOV] = "Field of view",
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
@@ -542,6 +546,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "Когда форма окна отличается от разрешения игры (картинка 16:9 на экране 21:9): сохранить "
                             "форму картинки с чёрными полосами или растянуть её на всё окно.",
     [UI_MENU_ASPECT_FIT] = "Чёрные полосы", [UI_MENU_ASPECT_STRETCH] = "Растянуть",
+    [UI_MENU_ANTIALIASING] = "Сглаживание",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA сглаживает лесенки на готовой картинке в разрешении игры, до масштабирования "
+                                  "под окно. Интерфейс тоже сглаживается. Применяется сразу.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Выключено",
     [UI_MENU_FOV] = "Поле зрения",
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
@@ -1040,6 +1048,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_ASPECT_DESC] = "Quando o formato da janela difere do da resolução do jogo (uma imagem 16:9 numa tela "
                             "21:9): manter o formato da imagem com barras pretas ou esticá-la sobre a janela.",
     [UI_MENU_ASPECT_FIT] = "Barras pretas", [UI_MENU_ASPECT_STRETCH] = "Esticar",
+    [UI_MENU_ANTIALIASING] = "Antisserrilhado",
+    [UI_MENU_ANTIALIASING_DESC] = "O SMAA suaviza as bordas serrilhadas da imagem pronta na resolução do jogo, antes de "
+                                  "escalar para a janela. O HUD também é suavizado. Vale na hora.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Desligado",
     [UI_MENU_SHARPNESS] = "Nitidez do FSR",
     [UI_MENU_SHARPNESS_DESC] = "Aumento de nitidez após a ampliação do FSR; 0 desliga.",
 
@@ -1549,6 +1561,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "用黑边保持画面比例，或拉伸铺满窗口。",
     [UI_MENU_ASPECT_FIT] = "黑边",
     [UI_MENU_ASPECT_STRETCH] = "拉伸",
+    [UI_MENU_ANTIALIASING] = "抗锯齿",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA 在游戏分辨率下平滑成品画面的锯齿边缘，然后再缩放到窗口。HUD 也会被平滑。立即生效。",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "关闭",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
                           "仅限游戏版本 1.4.3。",
