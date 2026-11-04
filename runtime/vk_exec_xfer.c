@@ -73,6 +73,7 @@ static void guest_written_cb(void *arg) {
 // The GPU wrote [addr, addr+size) of CPU-visible memory: tell the texture cache once the fence is reached.
 static void note_gpu_write(VkExec *ex, uint64_t addr, uint64_t size) {
     vk_usnap_drop(addr, size);
+    vk_exec_ub_foreign(ex, addr, size);
     if (nvn_gpu_only(addr)) return;
     Range *r = malloc(sizeof *r);
     if (!r) rt_fatal("vk: out of memory");
