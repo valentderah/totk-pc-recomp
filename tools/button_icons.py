@@ -1,6 +1,6 @@
 # Adapted from MacNativeGames games/totk/scripts/make_button_icons.py @ 933b6a0 (MIT, Copyright (c) 2026
 # MacNativeGames contributors).
-"""Xbox and keyboard-and-mouse button icons for the game's prompts, drawn on the player's machine for
+"""Xbox, PlayStation and keyboard-and-mouse button icons for the game's prompts, drawn on the player's machine for
 tools/make_romfs_patches.py --prompts.
 The outlines are our own shapes with letters cut out of them in the game's own text fonts: nothing of the game is in
 the repository.
@@ -10,15 +10,17 @@ Font/Font*.Nin_NX_NVN.bfarc.zs: private-use code points from U+E040 (A, B, X, Y,
 Minus, the sticks). A .bfotf is an OpenType (CFF) font after an 8-byte header; from offset 4 on, every byte is XORed
 with a 4-byte key, which the size in the header's second word gives away (bfotf_decode). redraw_font draws the shoulder
 buttons, the triggers, Plus, Minus and the d-pad as an Xbox controller names them (LB RB, LT RT, Menu and View, a
-cross), or every button as the key or mouse button the keyboard presses it with (pc_icons), can swap the glyphs of
-the face buttons (A with B, X with Y), and has fontTools write the font again. The archive then grows by a kilobyte or
-two, more than the game's resource size table allows it: grow_restbl raises those entries (without it the game stops at
-start, MacNativeGames found).
+cross), the face buttons as the PlayStation shapes (○ × △ □) with L1 R1 L2 R2, Options and Share, or every button as
+the key or mouse button the keyboard presses it with (pc_icons), can swap the glyphs of the face buttons (A with B, X
+with Y), and has fontTools write the font again. The archive then grows by a kilobyte or two, more than the game's
+resource size table allows it: grow_restbl raises those entries (without it the game stops at start, MacNativeGames
+found).
 
 The button guide in play (bottom right) draws its buttons, L and ZL among them, from images of the common layout
 archive instead (timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00): bntx_redraw paints the same icons into them,
-the size unchanged. The Xbox prompts redraw L and ZL, the keyboard and mouse ones every image (PC_HUD_TEXTURES: A, B, X,
-Y, L, ZL and the stick's two). Prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
+the size unchanged. The Xbox prompts redraw L and ZL, the PlayStation prompts the face buttons and L and ZL, the
+keyboard and mouse ones every image (PC_HUD_TEXTURES: A, B, X, Y, L, ZL and the stick's two). Prompts drawn as fixed
+images (some tutorial animations) keep the Switch icons.
 
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
@@ -132,55 +134,134 @@ def polygon(pen, points):
     pen.closePath()
 
 
+def bumper(g, label, advance=820):
+    """A shoulder button: a rounded key with its label cut out."""
+    def draw(pen):
+        rounded(pen, 40, Y0 + 70, advance - 40, Y1 - 70, 70, 150); g.hole(pen, label, advance / 2, CY, 230, advance - 200)
+    return advance, draw
+
+
+def trigger(g, label, advance=760):
+    """A trigger: a taller key with its label cut out."""
+    def draw(pen):
+        rounded(pen, 60, Y0, advance - 60, Y1, 60, 230); g.hole(pen, label, advance / 2, CY - 20, 230, advance - 220)
+    return advance, draw
+
+
+def menu_key(advance=640):   # three bars, as on the Menu button
+    def draw(pen):
+        circle(pen, advance / 2, CY, R); reverse = ReverseContourPen(pen)
+        for dy in (-115, 0, 115):
+            rounded(reverse, advance / 2 - 150, CY + dy - 38, advance / 2 + 150, CY + dy + 38, 38)
+    return advance, draw
+
+
+def view_key(advance=640):   # two overlapping windows, as on the View button
+    def draw(pen):
+        circle(pen, advance / 2, CY, R); reverse = ReverseContourPen(pen); s = 150
+        rounded(reverse, advance / 2 - s - 15, CY + 15, advance / 2 - 15, CY + s + 15, 16)
+        rounded(reverse, advance / 2 + 15, CY - s - 15, advance / 2 + s + 15, CY - 15, 16)
+    return advance, draw
+
+
+def dpad_key(*lit, advance=640):   # a cross with an arrow cut into each direction the prompt means
+    def draw(pen):
+        cx, length, arm = advance / 2, R, R * 0.40
+        polygon(pen, [(cx + length, CY - arm), (cx + length, CY + arm), (cx + arm, CY + arm), (cx + arm, CY + length),
+                      (cx - arm, CY + length), (cx - arm, CY + arm), (cx - length, CY + arm), (cx - length, CY - arm),
+                      (cx - arm, CY - arm), (cx - arm, CY - length), (cx + arm, CY - length), (cx + arm, CY - arm)])
+        m, t, h = (length + arm) / 2, arm * 0.72, arm * 0.80   # arm centre, half base and height of the arrow
+        heads = {'up': [(cx - t, CY + m - h / 2), (cx, CY + m + h / 2), (cx + t, CY + m - h / 2)],
+                 'down': [(cx + t, CY - m + h / 2), (cx, CY - m - h / 2), (cx - t, CY - m + h / 2)],
+                 'left': [(cx - m + h / 2, CY - t), (cx - m - h / 2, CY), (cx - m + h / 2, CY + t)],
+                 'right': [(cx + m - h / 2, CY + t), (cx + m + h / 2, CY), (cx + m - h / 2, CY - t)]}
+        for d in lit:
+            polygon(pen, heads[d])   # already clockwise: a hole
+    return advance, draw
+
+
 def xbox_icons(g):
     """Code point -> (advance, draw(pen)) for the buttons an Xbox controller names differently from a Switch: L R = LB
     RB, ZL ZR = LT RT, Plus and Minus = Menu and View, the d-pad as a cross. g: Glyphs for the letters. The face
     buttons keep the game's own glyphs (redraw_font swaps them for the Nintendo layout)."""
-    def bumper(label, advance=820):
-        def draw(pen):
-            rounded(pen, 40, Y0 + 70, advance - 40, Y1 - 70, 70, 150); g.hole(pen, label, advance / 2, CY, 230, advance - 200)
-        return advance, draw
-
-    def trigger(label, advance=760):
-        def draw(pen):
-            rounded(pen, 60, Y0, advance - 60, Y1, 60, 230); g.hole(pen, label, advance / 2, CY - 20, 230, advance - 220)
-        return advance, draw
-
-    def menu(advance=640):   # three bars, as on the Menu button
-        def draw(pen):
-            circle(pen, advance / 2, CY, R); reverse = ReverseContourPen(pen)
-            for dy in (-115, 0, 115):
-                rounded(reverse, advance / 2 - 150, CY + dy - 38, advance / 2 + 150, CY + dy + 38, 38)
-        return advance, draw
-
-    def view(advance=640):   # two overlapping windows, as on the View button
-        def draw(pen):
-            circle(pen, advance / 2, CY, R); reverse = ReverseContourPen(pen); s = 150
-            rounded(reverse, advance / 2 - s - 15, CY + 15, advance / 2 - 15, CY + s + 15, 16)
-            rounded(reverse, advance / 2 + 15, CY - s - 15, advance / 2 + s + 15, CY - 15, 16)
-        return advance, draw
-
-    def dpad(*lit, advance=640):   # a cross with an arrow cut into each direction the prompt means
-        def draw(pen):
-            cx, length, arm = advance / 2, R, R * 0.40
-            polygon(pen, [(cx + length, CY - arm), (cx + length, CY + arm), (cx + arm, CY + arm), (cx + arm, CY + length),
-                          (cx - arm, CY + length), (cx - arm, CY + arm), (cx - length, CY + arm), (cx - length, CY - arm),
-                          (cx - arm, CY - arm), (cx - arm, CY - length), (cx + arm, CY - length), (cx + arm, CY - arm)])
-            m, t, h = (length + arm) / 2, arm * 0.72, arm * 0.80   # arm centre, half base and height of the arrow
-            heads = {'up': [(cx - t, CY + m - h / 2), (cx, CY + m + h / 2), (cx + t, CY + m - h / 2)],
-                     'down': [(cx + t, CY - m + h / 2), (cx, CY - m - h / 2), (cx - t, CY - m + h / 2)],
-                     'left': [(cx - m + h / 2, CY - t), (cx - m - h / 2, CY), (cx - m + h / 2, CY + t)],
-                     'right': [(cx + m - h / 2, CY + t), (cx + m + h / 2, CY), (cx + m - h / 2, CY - t)]}
-            for d in lit:
-                polygon(pen, heads[d])   # already clockwise: a hole
-        return advance, draw
-
     return {
-        0xE044: bumper('LB'), 0xE045: bumper('RB'), 0xE046: trigger('LT'), 0xE047: trigger('RT'),
-        0xE04B: menu(), 0xE04C: view(),
-        0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
-        0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
+        0xE044: bumper(g, 'LB'), 0xE045: bumper(g, 'RB'), 0xE046: trigger(g, 'LT'), 0xE047: trigger(g, 'RT'),
+        0xE04B: menu_key(), 0xE04C: view_key(),
+        0xE049: dpad_key('up', 'down', 'left', 'right'), 0xE060: dpad_key('up'), 0xE061: dpad_key('down'),
+        0xE062: dpad_key('left'), 0xE063: dpad_key('right'), 0xE064: dpad_key('up', 'down'),
+        0xE065: dpad_key('left', 'right'),
     }
+
+
+# ---- PlayStation prompts (--prompts playstation, playstation-xbox): the shapes on a PlayStation pad, in the same
+# filled-shape style. The game's text fonts have ○ U+25CB, × U+00D7, △ U+25B3 and □ U+25A1, so the diamond's letters
+# become those characters (make_romfs_patches.py pane_letters). The face buttons are the shapes; the shoulders and
+# triggers carry L1/R1/L2/R2; Plus and Minus show Options (three bars) and Share (a box with an arrow).
+PS_FACE = {
+    'nintendo': {'A': '○', 'B': '×', 'X': '△', 'Y': '□'},   # A east, B south, X north, Y west
+    'xbox': {'A': '×', 'B': '○', 'X': '□', 'Y': '△'},       # A south, B east, X west, Y north
+}
+PS_HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00': 0xE042,
+                   'Nt_KeyTexY_00': 0xE043, 'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046}
+
+
+def ps_shape(shape, advance):
+    """The filled outline of a PlayStation face button (○ × △ □) in the font's 1000-unit em, centred on the glyph's
+    advance. The ring, square and triangle are outlines about a tenth of their size wide, as on the controller; the
+    cross is a thick X."""
+    cx, cy = advance / 2, CY
+    if shape == '○':
+        def draw(pen):
+            circle(pen, cx, cy, R)
+            circle(ReverseContourPen(pen), cx, cy, R * 0.81)
+    elif shape == '×':
+        def draw(pen):
+            l, w = 270.0, 55.0
+            polygon(pen, [(cx - l, cy - l + w), (cx - l + w, cy - l), (cx, cy - w), (cx + l - w, cy - l),
+                          (cx + l, cy - l + w), (cx + w, cy), (cx + l, cy + l - w), (cx + l - w, cy + l),
+                          (cx, cy + w), (cx - l + w, cy + l), (cx - l, cy + l - w), (cx - w, cy)])
+    elif shape == '△':
+        def draw(pen):
+            polygon(pen, [(cx - 280, cy - 270), (cx + 280, cy - 270), (cx, cy + 270)])
+            polygon(ReverseContourPen(pen), [(cx - 215, cy - 205), (cx + 215, cy - 205), (cx, cy + 205)])
+    elif shape == '□':
+        def draw(pen):
+            polygon(pen, [(cx - 270, cy - 270), (cx + 270, cy - 270), (cx + 270, cy + 270), (cx - 270, cy + 270)])
+            polygon(ReverseContourPen(pen), [(cx - 216, cy - 216), (cx + 216, cy - 216), (cx + 216, cy + 216),
+                                             (cx - 216, cy + 216)])
+    else:
+        raise ValueError(f'no PlayStation shape {shape!r}')
+    return draw
+
+
+def share_key(advance=640):   # a box with an arrow, as on the Share button
+    def draw(pen):
+        cx = advance / 2
+        circle(pen, cx, CY, R)
+        reverse = ReverseContourPen(pen)
+        rounded(reverse, cx - 150, CY - 150, cx + 60, CY + 40, 20)
+        polygon(reverse, [(cx - 15, CY + 10), (cx + 15, CY + 10), (cx + 15, CY + 140), (cx - 15, CY + 140)])
+        polygon(reverse, [(cx, CY + 205), (cx + 70, CY + 120), (cx - 70, CY + 120)])
+    return advance, draw
+
+
+def playstation_icons(g, adv, layout='nintendo'):
+    """Code point -> (advance, draw(pen)) for the PlayStation prompts: the face buttons as ○ × △ □ on the button the
+    pad layout presses, L1 R1 L2 R2, Plus and Minus as Options and Share, and the d-pad cross. g: Glyphs for the
+    labels; adv: the game's advance of each glyph (font_advances), which each drawing keeps."""
+    face = PS_FACE[layout]
+    icons = {cp: (adv[cp], ps_shape(face[b], adv[cp]))
+             for b, cp in (('A', 0xE040), ('B', 0xE041), ('X', 0xE042), ('Y', 0xE043))}
+    icons.update({
+        0xE044: bumper(g, 'L1', adv[0xE044]), 0xE045: bumper(g, 'R1', adv[0xE045]),
+        0xE046: trigger(g, 'L2', adv[0xE046]), 0xE047: trigger(g, 'R2', adv[0xE047]),
+        0xE04B: menu_key(adv[0xE04B]), 0xE04C: share_key(adv[0xE04C]),
+        0xE049: dpad_key('up', 'down', 'left', 'right', advance=adv[0xE049]),
+    })
+    for cp, lit in ((0xE060, ('up',)), (0xE061, ('down',)), (0xE062, ('left',)), (0xE063, ('right',)),
+                    (0xE064, ('up', 'down')), (0xE065, ('left', 'right'))):
+        icons[cp] = dpad_key(*lit, advance=adv[cp])
+    return icons
 
 
 # ---- keyboard and mouse prompts (--prompts pc): every button the keyboard drives, drawn as the key or mouse button

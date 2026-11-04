@@ -1092,14 +1092,15 @@ class Prepare(Step):
                                   dest / f'romfs-patches-{size}', '--aspect', size])
             if code:
                 raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
-        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
-        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # The same with Xbox and PlayStation button icons in the prompts, for prompts = xbox and playstation
+        # (make_romfs_patches.py --prompts): romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label
+        # for xbox and auto, and romfs-patches-playstation / -playstation-xbox likewise (runtime/input_map.c
+        # input_prompts_folder). All are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
         # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
         # prompts for prompts = pc (16:9 only: another shape takes make_romfs_patches.py --prompts pc --aspect).
         failed = None
-        for style in ('xbox', 'xbox-label', 'pc'):
+        for style in ('xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',

@@ -320,14 +320,27 @@ int probe_cfg(void) {
               EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
               EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
           "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    CHECK(input_prompts_pick("PlayStation", "nintendo") == PROMPTS_PLAYSTATION &&
+              input_prompts_pick("playstation", "xbox") == PROMPTS_PLAYSTATION &&
+              input_prompts_pick("ps", "auto") == PROMPTS_PLAYSTATION,
+          "prompts: PlayStation, any case");
+    CHECK(EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "nintendo"), "romfs-patches-playstation") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "xbox_prompts"), "romfs-patches-playstation") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "xbox"), "romfs-patches-playstation-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "auto"), "romfs-patches-playstation-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, NULL), "romfs-patches-playstation-xbox"),
+          "prompts: the PlayStation shapes by position for the Nintendo layout, by label for xbox and auto");
     // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
-    // where the layout puts A on the east button, which an Xbox pad labels B.
+    // where the layout puts A on the east button, which an Xbox pad labels B. The PlayStation folder shows A as the
+    // circle there, so its name follows the same split.
     input_map_reset();
     static const char *const layouts[] = {"nintendo", "xbox", "auto", "xbox_prompts"};
     for (int i = 0; i < 4; i++) {
         int a_east = input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_EAST] = 1}, input_pad_layout_pick(layouts[i], 0)) == 1ull << B_A;
         CHECK(a_east == EQ(input_prompts_folder(PROMPTS_XBOX, layouts[i]), "romfs-patches-xbox"),
               "prompts: the folder names A as B exactly when the layout puts A on the button labelled B");
+        CHECK(a_east == EQ(input_prompts_folder(PROMPTS_PLAYSTATION, layouts[i]), "romfs-patches-playstation"),
+              "prompts: the PlayStation folder puts A on the circle exactly when the layout puts A on the east button");
     }
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;

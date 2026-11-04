@@ -37,7 +37,9 @@ spec.loader.exec_module(icons)
 POSITION = {'nintendo': {'A': 'east', 'B': 'south', 'X': 'north', 'Y': 'west'},
             'xbox': {'A': 'south', 'B': 'east', 'X': 'west', 'Y': 'north'}}
 XBOX_LABEL = {'south': 'A', 'east': 'B', 'west': 'X', 'north': 'Y'}
-STYLE_LAYOUT = {'xbox': 'nintendo', 'xbox-label': 'xbox'}
+PS_SHAPE = {'nintendo': {'A': '○', 'B': '×', 'X': '△', 'Y': '□'},   # A east, B south, X north, Y west
+            'xbox': {'A': '×', 'B': '○', 'X': '□', 'Y': '△'}}       # A south, B east, X west, Y north
+STYLE_LAYOUT = {'xbox': 'nintendo', 'xbox-label': 'xbox', 'playstation': 'nintendo', 'playstation-xbox': 'xbox'}
 FACE = {'A': 0xE040, 'B': 0xE041, 'X': 0xE042, 'Y': 0xE043}
 # The glyphs drawn as Xbox icons, with their advance: LB RB LT RT, Menu and View, the d-pad.
 DRAWN = {0xE044: 820, 0xE045: 820, 0xE046: 760, 0xE047: 760, 0xE04B: 640, 0xE04C: 640, 0xE049: 640,
@@ -300,6 +302,9 @@ LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600),
 # its own size.
 LETTERS_2.update({ord(ch): (560, lambda pen, i=i: [rect(pen, 60, 0, 300 + 10 * i, 700), rect(pen, 120, 100, 240, 600, True)])
                   for i, ch in enumerate('ACDEFMQSW1234⇧G')})
+# The PlayStation shapes the diamond needs in the text font (make_romfs_patches.py --prompts playstation checks them).
+LETTERS_2.update({cp: (560, lambda pen, i=i: rect(pen, 60, 0, 300 + 10 * i, 700))
+                  for i, cp in enumerate((0x25CB, 0x00D7, 0x25B3, 0x25A1))})
 PC_PANES = {'A': 'E', 'B': '↑', 'X': '▬', 'Y': 'L'}   # the diamond's letters with the default keys
 
 
@@ -394,7 +399,7 @@ class PromptsTest(unittest.TestCase):
         cls.romfs = {v: Romfs(cls.base / v / 'romfs', v) for v in VERSIONS}
         cls.outs = {}
         for v, romfs in cls.romfs.items():
-            for style in ('plain', 'xbox', 'xbox-label', 'pc'):
+            for style in ('plain', 'xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc'):
                 out = cls.base / v / style
                 proc = romfs.run(out, *(() if style == 'plain' else ('--prompts', style)))
                 assert proc.returncode == 0, proc.stderr
@@ -490,8 +495,97 @@ class PromptsTest(unittest.TestCase):
                     if member not in ('timg/__Combined.bntx', 'blyt/DoCommand_00.bflyt') and not member.startswith('anim/'):
                         self.assertEqual(after[member], before[member], member)
 
+    def test_face_buttons_are_playstation_shapes(self):
+        for romfs, style, out, _ in self.each(('playstation', 'playstation-xbox')):
+            with self.subTest(version=romfs.version, style=style):
+                layout = STYLE_LAYOUT[style]
+                shape = PS_SHAPE[layout]
+                advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                ps = icons.playstation_icons(icons.text_glyphs(romfs.text_fonts), advances, layout)
+                before, after = sarc_files(romfs.contents[romfs.common]), sarc_files(romfs.read(out, romfs.common))
+                old, new = bntx_images(before['timg/__Combined.bntx']), bntx_images(after['timg/__Combined.bntx'])
+                panes = pane_texts(after['blyt/DoCommand_00.bflyt'])
+                messages = {path: message_texts(sarc_files(romfs.read(out, path))['LayoutMsg/DoCommand_00.msbt'])
+                            for path in romfs.mals}
+                original = font(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                for path in (DEFAULT_FONT, REGIONAL_FONT):
+                    drawn = font(sarc_files(romfs.read(out, path))['scft/External.bfotf'])
+                    for b, cp in FACE.items():
+                        outline, advance = glyph(drawn, cp)
+                        self.assertNotEqual(outline, glyph(original, cp)[0], f'{path}: glyph of {b}')
+                        self.assertEqual(advance, advances[cp], f'{path}: advance of {b}')
+                size = VERSIONS[romfs.version]['size']
+                for b in FACE:
+                    fmt, width, image = new[f'Nt_KeyTex{b}_00']
+                    self.assertEqual((fmt, width, len(image)), (R8_UNORM, size, len(old[f'Nt_KeyTex{b}_00'][2])),
+                                     f'action prompt image of {b}')
+                    pixels = bytes(image[icons.gob_offset(x, y, (size + 63) // 64, 16)]
+                                   for y in range(size) for x in range(size))
+                    self.assertEqual(pixels, icons.rasterize(ps[FACE[b]][1], size), f'action prompt image of {b}')
+                    self.assertEqual(panes[f'T_{b}_00'], shape[b], f'diamond letter of {b}')
+                    for path, texts in messages.items():
+                        self.assertEqual(texts[f'T_{b}_00'], shape[b], f'{path}: diamond message of {b}')
+                # Text that only looks like a letter pane, and every other message, stays.
+                self.assertEqual((panes['T_Name_00'], pane_texts(after['blyt/Title_00.bflyt'])), ('A', {'N_Title_00': 'Z'}))
+                for path, texts in messages.items():
+                    self.assertEqual((texts['T_Name_00'], texts['Greeting']), ('A', 'Hello'))
+                    self.assertEqual(sarc_files(romfs.read(out, path))['LayoutMsg/Other_00.msbt'], msbt({'T_A_00': 'A'}))
+
+    def test_other_buttons_are_drawn_as_playstation_icons(self):
+        for romfs, style, out, _ in self.each(('playstation', 'playstation-xbox')):
+            with self.subTest(version=romfs.version, style=style):
+                layout = STYLE_LAYOUT[style]
+                advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                ps = icons.playstation_icons(icons.text_glyphs(romfs.text_fonts), advances, layout)
+                original = font(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                default = sarc_files(romfs.read(out, DEFAULT_FONT))
+                drawn = font(default['scft/External.bfotf'])
+                for cp in range(0xE040, 0xE069):
+                    outline, advance = glyph(drawn, cp)
+                    if cp in ps:
+                        rec = RecordingPen()
+                        ps[cp][1](rec)
+                        self.assertNotEqual(outline, glyph(original, cp)[0], f'U+{cp:04X} drawn')
+                        self.assertEqual(advance, advances[cp], f'U+{cp:04X} advance')
+                        self.assertEqual(sum(op == 'moveTo' for op, _ in outline),
+                                         sum(op == 'moveTo' for op, _ in rec.value), f'U+{cp:04X} contours')
+                    elif cp not in FACE.values():
+                        self.assertEqual((outline, advance), glyph(original, cp), f'U+{cp:04X} kept')
+                # A circle, square and triangle are outlines with a counter; the cross is a filled X.
+                moves = sorted(sum(op == 'moveTo' for op, _ in glyph(drawn, cp)[0]) for cp in FACE.values())
+                self.assertEqual(moves, [1, 2, 2, 2])
+                # The text fonts and the archives' other members stay byte for byte; both archives hold the same font.
+                before = sarc_files(romfs.contents[DEFAULT_FONT])
+                self.assertEqual({k: v for k, v in default.items() if k != 'scft/External.bfotf'},
+                                 {k: v for k, v in before.items() if k != 'scft/External.bfotf'})
+                regional = sarc_files(romfs.read(out, REGIONAL_FONT))
+                self.assertEqual(regional['fnt/rest.bin'], sarc_files(romfs.contents[REGIONAL_FONT])['fnt/rest.bin'])
+                self.assertEqual(unbfotf(regional['scft/External.bfotf']), unbfotf(default['scft/External.bfotf']))
+                self.assertEqual(struct.unpack_from('<I', regional['scft/External.bfotf'])[0] ^ MAGIC, 0x77777777)
+
+    def test_playstation_button_guide_images_show_the_same_icons(self):
+        for romfs, style, out, _ in self.each(('playstation', 'playstation-xbox')):
+            with self.subTest(version=romfs.version, style=style):
+                size = VERSIONS[romfs.version]['size']
+                layout = STYLE_LAYOUT[style]
+                advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                ps = icons.playstation_icons(icons.text_glyphs(romfs.text_fonts), advances, layout)
+                before = sarc_files(romfs.contents[romfs.common])
+                after = sarc_files(romfs.read(out, romfs.common))
+                self.assertEqual(len(after['timg/__Combined.bntx']), len(before['timg/__Combined.bntx']))
+                old, new = bntx_images(before['timg/__Combined.bntx']), bntx_images(after['timg/__Combined.bntx'])
+                for name, cp in icons.PS_HUD_TEXTURES.items():
+                    fmt, width, image = new[name]
+                    pixels = bytes(image[icons.gob_offset(x, y, (size + 63) // 64, 16)] for y in range(size) for x in range(size))
+                    self.assertEqual(pixels, icons.rasterize(ps[cp][1], size), name)
+                    self.assertEqual({pixels[0], pixels[-1], max(pixels)}, {0, 255}, name)   # a margin around a white key
+                self.assertEqual(new['Nt_KeyTexLSt_00'], old['Nt_KeyTexLSt_00'])
+                for member in before:   # the 60 fps patch and the prompts touch only these
+                    if member not in ('timg/__Combined.bntx', 'blyt/DoCommand_00.bflyt') and not member.startswith('anim/'):
+                        self.assertEqual(after[member], before[member], member)
+
     def test_resource_size_table_grows_with_the_fonts(self):
-        for romfs, style, out, summary in self.each(('xbox', 'xbox-label', 'pc')):
+        for romfs, style, out, summary in self.each(('xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc')):
             with self.subTest(version=romfs.version, style=style):
                 table = restbl_sizes(romfs.read(out, romfs.restbl))
                 original = restbl_sizes(romfs.contents[romfs.restbl])
@@ -507,12 +601,12 @@ class PromptsTest(unittest.TestCase):
                 self.assertEqual(set(table), set(original))
 
     def test_manifest_lists_what_changed_with_both_hashes(self):
-        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label', 'pc')):
+        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc')):
             with self.subTest(version=romfs.version, style=style):
                 expect = {romfs.common}
                 if style != 'plain':
                     expect |= {DEFAULT_FONT, REGIONAL_FONT, romfs.restbl}
-                    expect |= set(romfs.mals) if style in ('xbox', 'pc') else set()
+                    expect |= set(romfs.mals) if style in ('xbox', 'playstation', 'playstation-xbox', 'pc') else set()
                 lines = manifest(out)
                 self.assertEqual(set(lines), expect)
                 for path, (size, sha, original) in lines.items():

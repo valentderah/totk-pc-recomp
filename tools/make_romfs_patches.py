@@ -37,6 +37,11 @@ from the game's own files on the player's machine, nothing added (tools/button_i
 - xbox-label, for pad_layout = xbox and auto. Those layouts put Switch A on the button labelled A (auto picks xbox for
   every pad not labelled the Nintendo way), so the face buttons keep their letters; the action prompt's diamond keeps
   the Switch positions (A on the right).
+--prompts playstation | playstation-xbox: the same overlay with PlayStation button icons in the game's prompts, for
+prompts = playstation (romfs-patches-playstation for pad_layout = nintendo, romfs-patches-playstation-xbox for xbox and
+auto). The face buttons become ○ × △ □ (circle, cross, triangle and square), the shoulders and triggers L1 R1 L2 R2,
+Plus and Minus Options and Share, and the d-pad keeps its cross. The game's text fonts carry the four shapes, so the
+diamond's letters become those characters. Drawn from the game's own files like the Xbox prompts (tools/button_icons.py).
 --xbox-prompts is the older name of --prompts xbox.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
@@ -63,9 +68,10 @@ ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/ro
 ap.add_argument('--out', type=Path,
                 help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
 ap.add_argument('--aspect', help='<w>x<h> of a game resolution of another shape than 16:9: also lay the UI out for it')
-ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
-                help='Xbox button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
-                     'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters), '
+ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc'),
+                help='Xbox or PlayStation button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
+                     'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters), playstation for the '
+                     'PlayStation shapes on the Nintendo layout and playstation-xbox for xbox and auto, '
                      'pc for the keyboard and mouse')
 ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_ lines the key icons follow')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
@@ -151,7 +157,8 @@ def bntx_swap(data, base, pairs):
 
 def bflyt_letters(data, base, end, swap):
     """Swap the text of the one-letter text panes T_<letter>_<n> (A, B, X or Y) in the BFLYT at data[base:end] by
-    swap (letter -> letter); the names of the panes changed. Same length (one UTF-16 letter and its terminator)."""
+    swap (text -> text, one UTF-16 code unit: a letter or a PlayStation shape); the names of the panes changed. Same
+    length (one character and its terminator)."""
     assert data[base:base + 4] == b'FLYT'
     pos, changed = base + struct.unpack_from('<H', data, base + 6)[0], []
     while pos + 8 <= end:
@@ -172,8 +179,9 @@ def bflyt_letters(data, base, end, swap):
 
 def msbt_letters(data, swap):
     """Swap the one-letter messages labelled T_<letter>_<n> (A, B, X or Y) in the UTF-16 MSBT data (a bytearray) by
-    swap; the labels changed. The game sets a layout's text panes from the messages of the same name in
-    Mals/<language>/LayoutMsg/<layout>.msbt, over the text stored in the layout."""
+    swap (text -> text, one UTF-16 code unit: a letter or a PlayStation shape); the labels changed. The game sets a
+    layout's text panes from the messages of the same name in Mals/<language>/LayoutMsg/<layout>.msbt, over the text
+    stored in the layout."""
     assert data[:8] == b'MsgStdBn' and data[0x0c] == 1, 'not a UTF-16 MSBT'
     sections, pos = {}, 0x20
     for _ in range(struct.unpack_from('<H', data, 0x0e)[0]):
@@ -239,7 +247,9 @@ RESTBL = max((p for p in files if p.startswith('System/Resource/ResourceSizeTabl
              key=lambda p: int((re.search(r'\.(\d+)\.', p) or [0, 0])[1]), default=None)
 by_position = args.prompts == 'xbox'   # the face buttons' prompts swapped to the labels (pad_layout = nintendo)
 pc = args.prompts == 'pc'
-letter_panes = by_position or pc      # the one-letter panes around the action prompt change
+ps = args.prompts in ('playstation', 'playstation-xbox')
+ps_layout = 'nintendo' if args.prompts == 'playstation' else 'xbox'
+letter_panes = by_position or pc or ps      # the one-letter panes around the action prompt change
 if args.prompts:
     assert FONTS, 'no Font/Font*.Nin_NX_NVN.bfarc.zs in the RomFS'
     assert MALS or not letter_panes, 'no Mals/<language>.Product.<version>.sarc.zs in the RomFS'
@@ -307,11 +317,16 @@ if args.prompts:
     missing = [name for name in icons.TEXT_FONTS if name not in text]
     assert not missing, f'no {", ".join(missing)} in {icons.TEXT_ARCHIVE}'
     glyphs = icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])] for name in icons.TEXT_FONTS)
+    advances = icons.font_advances(archives[icons.TEXT_ARCHIVE][slice(*text[icons.FONT])])
     if pc:
         binds = icons.pc_binds(args.binds.read_text(encoding='utf-8', errors='replace') if args.binds else None)
-        advances = icons.font_advances(archives[icons.TEXT_ARCHIVE][slice(*text[icons.FONT])])
         drawn = icons.pc_icons(glyphs, advances, binds)
         pane_letters = {letter: icons.pc_letter(binds[letter]) for letter in 'ABXY'}
+    elif ps:
+        drawn = icons.playstation_icons(glyphs, advances, ps_layout)
+        for shape in set(icons.PS_FACE[ps_layout].values()):
+            glyphs.outline(shape)   # the diamond's text needs the shape in the game's text fonts
+        pane_letters = icons.PS_FACE[ps_layout]
     else:
         drawn = icons.xbox_icons(glyphs)
         pane_letters = KEY_LETTERS
@@ -326,7 +341,8 @@ if args.prompts:
                 if changed:
                     letters[member] = changed
         assert 'blyt/DoCommand_00.bflyt' in letters, 'no letter panes in blyt/DoCommand_00.bflyt'
-    hud = icons.bntx_redraw(blarc, bntx, icons.PC_HUD_TEXTURES if pc else icons.HUD_TEXTURES, drawn)
+    hud = icons.bntx_redraw(blarc, bntx, icons.PC_HUD_TEXTURES if pc else icons.PS_HUD_TEXTURES if ps else icons.HUD_TEXTURES,
+                            drawn)
     outputs[ARCHIVE] = bytes(blarc)
     fonts = {}   # each distinct font is drawn once (1.4.3's four archives hold the same one)
     for path, bfarc in archives.items():
