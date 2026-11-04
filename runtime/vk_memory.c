@@ -1165,7 +1165,7 @@ static PlatMutex flush_lock = PLAT_MUTEX_INIT;
 typedef struct {
     uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
     uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes;
-    uint64_t snap_bytes, merge_bytes, merge_dispatches;   // write-back merge
+    uint64_t snap_bytes, merge_bytes, merge_dispatches, snap_allocs;   // write-back merge
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
@@ -1453,12 +1453,22 @@ int vk_mem_mirror_probe(uint64_t addr) {
 #define MERGE_WORDS (65535u * 64u) // the words one merge dispatch covers at most
 #define MERGE_MAX (4ull << 20)     // larger written ranges stay plain copies
 typedef struct { PoolRec *r; uint64_t off, size, soff; int chunk; } SnapRange;
-typedef struct { VkBuffer buf; VmaAllocation alloc; uint64_t size, used; } SnapChunk;
-typedef struct { int n; SnapChunk c[]; } SnapFree;   // a submission's chunks and range lists, freed at its fence
+typedef struct { VkBuffer buf; VmaAllocation alloc; uint64_t size, used; int host; } SnapChunk;
+typedef struct { int n; SnapChunk c[]; } SnapFree;   // a submission's chunks and range lists, pooled at its fence
 static SnapRange *snl;              // replay: this submission's merged ranges; [0, snl_copied) have their snapshot copy
 static int nsnl, csnl, snl_copied;
 static SnapChunk *chunks;           // replay: this submission's snapshot chunks and merge range lists
 static int nchunks, cchunks;
+// Chunks a finished submission used (snap_free) wait here for chunk_new, so a frame with merges creates no buffer once
+// the pool holds the frames in flight: a VMA allocation that needs a new memory block costs 8-11 ms on the replay
+// thread. Chunk sizes are powers of two so that one fits the next request; what the pool cannot hold is destroyed.
+#define SNAP_LIST_MIN (64u << 10)
+#define SNAP_POOL_N 32
+#define SNAP_POOL_BYTES (16ull << 20)
+static PlatMutex snap_pool_lock = PLAT_MUTEX_INIT;
+static SnapChunk snap_pool[SNAP_POOL_N];
+static int nsnap_pool;
+static uint64_t snap_pool_bytes;
 static int merge_on = -1;
 static struct {
     int tried, ok;
@@ -1511,19 +1521,36 @@ static int merging(void) {
     return WM.ok;
 }
 
-// A chunk of at least size bytes in chunks[]; -1 when the allocation fails.
+// A chunk of at least size bytes in chunks[]: the smallest fitting one of the pool, else a new buffer; -1 when the
+// allocation fails.
 static int chunk_new(uint64_t size, int host) {
-    VkCtx *c = vk_ctx();
+    uint64_t want = host ? SNAP_LIST_MIN : SNAP_CHUNK;
+    while (want < size) want <<= 1;
     if (nchunks == cchunks) grow((void **)&chunks, &cchunks, sizeof *chunks);
     SnapChunk *ch = &chunks[nchunks];
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = host ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-                                  .flags = host ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                                      VMA_ALLOCATION_CREATE_MAPPED_BIT : 0};
-    if (vmaCreateBuffer(c->vma, &bi, &ai, &ch->buf, &ch->alloc, NULL) != VK_SUCCESS) return -1;
-    ch->size = size, ch->used = 0;
+    int best = -1;
+    plat_mutex_lock(&snap_pool_lock);
+    for (int i = 0; i < nsnap_pool; i++)
+        if (snap_pool[i].host == host && snap_pool[i].size >= want && (best < 0 || snap_pool[i].size < snap_pool[best].size))
+            best = i;
+    if (best >= 0) {
+        *ch = snap_pool[best];
+        snap_pool[best] = snap_pool[--nsnap_pool];
+        snap_pool_bytes -= ch->size;
+    }
+    plat_mutex_unlock(&snap_pool_lock);
+    if (best < 0) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = want,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo ai = {.usage = host ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                                      .flags = host ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                                          VMA_ALLOCATION_CREATE_MAPPED_BIT : 0};
+        if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &ch->buf, &ch->alloc, NULL) != VK_SUCCESS) return -1;
+        ch->size = want, ch->host = host;
+        mrep.snap_allocs++;
+    }
+    ch->used = 0;
     return nchunks++;
 }
 
@@ -1624,7 +1651,17 @@ static int wb_merge_record(VkCommandBuffer cb) {
 
 static void snap_free(void *arg) {   // completion thread: the submission is done with its chunks
     SnapFree *f = arg;
-    for (int i = 0; i < f->n; i++) vmaDestroyBuffer(vk_ctx()->vma, f->c[i].buf, f->c[i].alloc);
+    plat_mutex_lock(&snap_pool_lock);
+    for (int i = 0; i < f->n; i++) {
+        SnapChunk *ch = &f->c[i];
+        if (nsnap_pool == SNAP_POOL_N || snap_pool_bytes + ch->size > SNAP_POOL_BYTES) continue;
+        snap_pool[nsnap_pool++] = *ch;
+        snap_pool_bytes += ch->size;
+        ch->buf = VK_NULL_HANDLE;
+    }
+    plat_mutex_unlock(&snap_pool_lock);
+    for (int i = 0; i < f->n; i++)
+        if (f->c[i].buf) vmaDestroyBuffer(vk_ctx()->vma, f->c[i].buf, f->c[i].alloc);
     free(f);
 }
 
@@ -1836,7 +1873,7 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
                  VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     }
-    if (nchunks) {   // the last part's prologue still records snapshot copies into them; freed at the fence
+    if (nchunks) {   // the last part's prologue still records snapshot copies into them; back to the pool at the fence
         SnapFree *f = malloc(sizeof *f + sizeof(SnapChunk) * (size_t)nchunks);
         if (!f) rt_fatal("vk: out of memory");
         f->n = nchunks;
@@ -1898,13 +1935,13 @@ static void mirror_log(uint64_t frame) {
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
            "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, merge %.3f MiB in %.1f dispatches "
-           "(snapshots %.3f MiB), flush calls %.1f (%.3f MiB), queries "
+           "(snapshots %.3f MiB, new buffers %.2f), flush calls %.1f (%.3f MiB), queries "
            "%.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu %.3f ms (pre-snap %.3f, syncs %.3f)%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
            a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, a.merge_bytes / f / M,
-           a.merge_dispatches / f, a.snap_bytes / f / M, fc / f, fb / f / M,
+           a.merge_dispatches / f, a.snap_bytes / f / M, a.snap_allocs / f, fc / f, fb / f / M,
            a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
            qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
 }
@@ -2269,6 +2306,10 @@ void vk_mem_shutdown(void) {
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);
     pool_index.n = 0;
     nm = npend = nwbl = nsnl = snl_copied = 0;   // mirrors went with their pools
+    plat_mutex_lock(&snap_pool_lock);
+    for (int i = 0; i < nsnap_pool; i++) vmaDestroyBuffer(c->vma, snap_pool[i].buf, snap_pool[i].alloc);
+    nsnap_pool = 0, snap_pool_bytes = 0;
+    plat_mutex_unlock(&snap_pool_lock);
     plat_mutex_lock(&shadow_lock);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
