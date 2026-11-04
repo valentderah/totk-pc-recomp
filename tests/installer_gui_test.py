@@ -27,6 +27,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
+from installer import recent
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -244,6 +245,88 @@ class FormTest(unittest.TestCase):
         return path
 
 
+class RecentPathsTest(unittest.TestCase):
+    def test_only_existing_paths_of_the_right_kind_are_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / 'base.nsp'
+            update = root / 'update.nsp'
+            keys = root / 'prod.keys'
+            firmware = root / 'firmware'
+            dest = root / 'out'
+            settings = root / 'installer-paths.json'
+
+            base.touch()
+            update.touch()
+            keys.touch()
+            firmware.mkdir()
+            dest.mkdir()
+
+            # Save the language before the paths to verify that path saves preserve it.
+            recent.save('lang', 'en-US', settings)
+
+            for name, path in (
+                ('base', base),
+                ('update', update),
+                ('keys', keys),
+                ('firmware', firmware),
+                ('dest', dest),
+            ):
+                recent.save(name, str(path), settings)
+
+            # All paths and the language are restored.
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'update': str(update),
+                'keys': str(keys),
+                'firmware': str(firmware),
+                'dest': str(dest),
+                'lang': 'en-US',
+            })
+
+            # Missing files and directories must not be restored.
+            update.unlink()
+            dest.rmdir()
+
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'keys': str(keys),
+                'firmware': str(firmware),
+                'lang': 'en-US',
+            })
+
+            # A file cannot be restored as a directory selection.
+            recent.save('firmware', str(base), settings)
+            self.assertEqual(recent.load(settings), {
+                'base': str(base),
+                'keys': str(keys),
+                'lang': 'en-US',
+            })
+
+    def test_invalid_language_is_not_saved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'installer-paths.json'
+
+            recent.save('lang', 'en-US', settings)
+
+            self.assertEqual(recent.load(settings), {
+                'lang': 'en-US',
+            })
+
+            # An invalid language must not overwrite the last valid language.
+            recent.save('lang', 'invalid-language', settings)
+
+            self.assertEqual(recent.load(settings), {
+                'lang': 'en-US',
+            })
+
+    def test_corrupted_settings_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'installer-paths.json'
+            settings.write_text('{invalid json', encoding='utf-8')
+            self.assertEqual(recent.load(settings), {})
+
+
 class CatalogTest(unittest.TestCase):
     def test_every_language_covers_english_with_the_same_placeholders(self):
         en = Catalog('en').english
@@ -305,7 +388,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(amount(cat, 1, 9, 'widgets'), '1 / 9 widgets')
         line = describe_event(cat, {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1.5})
         self.assertIn('1.5 s', line)
-        self.assertEqual(describe_event(cat, {'type': 'start'}), '')
+        self.assertEqual(describe_event(Catalog('en'), {'type': 'start'}), '')
 
     def test_windows_language_is_a_known_value(self):
         self.assertIn(windows_ui_language(), UI_LANGUAGES)
@@ -353,7 +436,7 @@ class SmokeTest(unittest.TestCase):
 
 
 def make_fixture():
-    """build/inst-gui/e2e-install: links to install-test (see the module docstring), with the step keys of the state
+    """build/inst-gui/e2e-install: links to install-test (see the module docstring), with the step keys of this checkout
     set to the ones this checkout computes, so the install counts as current for it."""
     if not (FIXTURE / statefile.NAME).is_file():
         shutil.rmtree(FIXTURE, ignore_errors=True)
