@@ -69,13 +69,14 @@ int main(void) {
     // One count is not discarded by a dead zone.
     ratio=0.5f; raw_x=1; raw_y=0; c.v[9]=c.v[10]=0; hook(&c); assert(scalar(c.v[9])>0);
     uint64_t stack[4]={0,0x123456789abcdef0ull,0x456789abcdef0123ull,0}; c.sp=(uintptr_t)stack;
-    uint32_t inactive=0x28; memcpy(target+0x418,&inactive,4);
-    activity_hook(&c);
-    uint32_t active; memcpy(&active,target+0x418,4); assert(active==0x11);
+    // The flags are in w8 at the site: the game's next instruction stores w8 to +0x418, so memory is not touched.
+    uint32_t inactive=0x28, mem=0x77; memcpy(target+0x418,&mem,4);
+    c.x[8]=inactive; activity_hook(&c);
+    assert((uint32_t)c.x[8]==0x11);
+    uint32_t after; memcpy(&after,target+0x418,4); assert(after==mem);
     assert(c.v[9]==stack[1] && c.v[8]==stack[2]);
     // A controller-only update keeps the game's activity bits.
-    memcpy(target+0x418,&inactive,4); activity_hook(&c);
-    memcpy(&active,target+0x418,4); assert(active==inactive);
+    c.x[8]=inactive; activity_hook(&c); assert((uint32_t)c.x[8]==inactive);
     // Disabled game camera input leaves raw counts for the menu's legacy mouse-to-stick path.
     c.x[21]=1; raw_x=42; int before=takes; hook(&c);
     assert(takes==before && raw_x==42 && !input_direct_mouse_active()); c.x[21]=0;
@@ -140,6 +141,19 @@ int main(void) {
         memset(target+0x148,0,8);
         memset(camera+0x88,0,4); memset(camera+0x10c,0,4); memset(camera+0x11c,0,4);
     }
+    // A gamepad-only step (no mouse motion, no pitch hold) leaves the camera input and the angles as the game made them.
+    memset(orbit_seen,0,sizeof orbit_seen);
+    c.x[20]=(uintptr_t)target; c.x[21]=0; raw_x=raw_y=0; c.v[9]=c.v[10]=0;
+    { float px=0.25f, py=-0.5f; memcpy(&c.v[9],&px,4); memcpy(&c.v[10],&py,4); }
+    hook(&c);
+    guest_float_store((uintptr_t)target+0x420,0.25f); guest_float_store((uintptr_t)target+0x424,0.75f);
+    guest_float_store((uintptr_t)frame+0x44,11); guest_float_store((uintptr_t)frame+0x48,22);
+    guest_float_store((uintptr_t)camera+0x15c,3);
+    c.x[0]=(uintptr_t)camera; begin_hook(&c);
+    assert(guest_float((uintptr_t)target+0x420)==0.25f && guest_float((uintptr_t)target+0x424)==0.75f);
+    c.x[20]=(uintptr_t)camera; c.sp=(uintptr_t)frame; angles_hook(&c);
+    assert(guest_float((uintptr_t)frame+0x44)==11 && guest_float((uintptr_t)frame+0x48)==22);
+    assert(guest_float((uintptr_t)camera+0x15c)==3);
     guest_float_store((uintptr_t)camera+0x108,30); guest_float_store((uintptr_t)camera+0x120,40);
     for(int count=0;count<100;count++) {
         c.x[20]=(uintptr_t)target; c.x[21]=0; c.v[9]=c.v[10]=0; raw_x=1; raw_y=0; hook(&c);
@@ -186,23 +200,9 @@ int main(void) {
     input_direct_mouse_row(-1,1,180000000,&row,selector); assert(selector[0]==-32767);
     selecting=1; c.x[20]=(uintptr_t)target; raw_x=42; raw_y=0; before=takes; hook(&c);
     assert(takes==before && raw_x==42); selecting=0; raw_x=0;
-    // Deliberate large reversals with an active held object start a bounded shake; monotonic motion does not.
-    now+=800000000ull;
-    for(int i=0;i<4;i++) {
-        hand_hook(&c); mouse_shake_feed(i&1?-40:40,0,now); now+=50000000ull;
-    }
-    int32_t pulse[2]; assert(input_direct_mouse_shake(1,pulse) && abs(pulse[0])==32767 && pulse[1]==0);
-    int first=pulse[0]; now+=40000000ull; hand_hook(&c);
-    assert(input_direct_mouse_shake(1,pulse) && pulse[0]==-first);
-    captured=0; assert(!input_direct_mouse_shake(1,pulse)); captured=1;
-    now+=800000000ull;
-    for(int i=0;i<4;i++) { hand_hook(&c); mouse_shake_feed(40,0,now); now+=50000000ull; }
-    assert(!input_direct_mouse_shake(1,pulse));
-    for(int i=0;i<10;i++) { hand_hook(&c); mouse_shake_feed(i&1?-5:5,0,now); now+=10000000ull; }
-    assert(!input_direct_mouse_shake(1,pulse));
     puts("direct mouse: register contract, routing, linearity, frame ratio and capture checks passed");
     puts("direct mouse: final orbit angles, single-count motion, equal axes and held-object routing passed");
-    puts("direct mouse: persistent pitch target, radial cursor hold, deliberate shake and noise rejection passed");
+    puts("direct mouse: persistent pitch target, radial cursor hold and gamepad-only steps untouched passed");
     puts("direct mouse: final-pitch recenter rejection, explicit handoff and bounded quick-list steps passed");
 }
 '''
@@ -223,7 +223,6 @@ void menu_toggle(void) { abort(); }
 void menu_perf_cycle(void) { abort(); }
 const char *input_action_name(int action) { (void)action;abort(); }
 void input_map_configure(void) { abort(); }
-int input_direct_mouse_shake(int allow,int32_t out[2]) { (void)allow;(void)out;abort(); }
 int input_direct_mouse_active(void) { return 1; }
 int input_direct_mouse_enabled(void) { return 1; }
 static int row_calls, radial_calls, live_mouse;
@@ -302,7 +301,7 @@ def main():
             source.write_text(INPUT_HARNESS)
             script = folder / 'input.txt'
             script.write_text('10 MOUSE 123 -45\n20 MOUSE 1000 0\n@100 MOUSE -100 50\n')
-            subprocess.run([args.cc, '-O2', '-flto', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', *(['-Wl,--exclude-all-symbols'] if os.name == 'nt' else []),
+            subprocess.run([args.cc, '-O2', '-flto', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', *(['-fuse-ld=lld', '-Wl,--exclude-all-symbols'] if os.name == 'nt' else []),
                             '-I', str(ROOT/'runtime'), '-I', str(args.deps), '-I', str(args.deps/'vma'),
                             str(source), *link, '-o', str(exe)], check=True)
             subprocess.run([str(exe), str(script)], check=True)

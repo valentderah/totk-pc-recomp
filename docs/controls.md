@@ -108,8 +108,10 @@ with at least 32 ms of neutral between them. At sensitivity 1, 32 horizontal cou
 cannot queue continued scrolling after the mouse stops. Vertical movement is ignored in these lists. Switching or
 releasing a selector resets its cursor/step state without sending the last movement to the camera. Selector input is
 not consumed by the direct camera or Ultrahand hooks.
-With a held object, three substantial reversals on one mouse axis, with at most 400 ms between strokes, begin a
-short stick-shake gesture for the game's own detach detector. Those gesture pulses are excluded from camera and object movement input.
+The mouse never stands in for a stick shake: to detach a fused part, shake the arrow keys (the keyboard's right stick)
+or the gamepad's right stick. A mouse gesture for it would also fire while a held object is turned back and forth.
+A step of the gamepad alone, with no mouse motion and no pitch the mouse holds, reaches the camera exactly as without
+the hooks.
 The mapping below is still used when the camera-input hook is unavailable or the game disables camera input.
 This hook needs in-game checks of aiming, Ultrahand and menu transitions before it can be considered complete mouse
 support. Games 1.1.0 and 1.2.1 have no hook and keep stick emulation.
@@ -124,7 +126,7 @@ The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sti
 
 ## Mouse in the game's menus
 
-On game 1.4.3, while one of the game's menus has its focus box (the frame the d-pad moves: the title, the save list, the inventory and its System tab, Options, shops, dialogue choices), the cursor is released from the mouse camera and shown in the middle of the window. The item under the pointer takes the focus as if the d-pad had moved there, with the game's highlight, sound and description; a left click is A on it, a right click is B. The keys and the pad keep working, and the focus moves only when the pointer moves. The ability wheel, the d-pad strips, Autobuild, the Purah Pad's camera and the map stay gameplay: the mouse keeps the camera there. When the menu closes the cursor is captured again.
+On game 1.4.3, while one of the game's menus has its focus box (the frame the d-pad moves: the title, the save list, the inventory and its System tab, Options, shops, dialogue choices), the cursor is released from the mouse camera and shown in the middle of the window. The item under the pointer takes the focus as if the d-pad had moved there, with the game's highlight, sound and description; a left click is A on it, a right click is B. The keys and the pad keep working, and the focus moves only when the pointer moves. This happens only while the keyboard and mouse are the device used last: after a gamepad button press or a stick pushed past half way the menus are as on the console, with no pointer, until the mouse moves or a key is pressed (`input_kbm_last` in `runtime/input.c`). The ability wheel, the d-pad strips, Autobuild, the Purah Pad's camera and the map stay gameplay: the mouse keeps the camera there. When the menu closes the cursor is captured again.
 
 `runtime/menu_cursor.c` reads eui's screens at each pad read and moves the focus with the writes `eui::BoxCursorMgr::moveBoxCursor` makes, so no game code is called. `menu_cursor = 0` (`TOTK_MENU_CURSOR=0`, live) turns it off; `TOTK_MENU_CURSOR_LOG=1` logs every screen it reads (by default the first six), with the layout size, the node count and the hit panes it uses.
 

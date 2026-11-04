@@ -18,6 +18,7 @@
 // The other fields are 1.0.0's; menu_cursor logs what it reads the first time a menu opens (TOTK_MENU_CURSOR_LOG=1:
 // every screen change), so a field that moved shows as a menu with no nodes or boxes off the layout.
 //
+// Only while keyboard and mouse are the device used last (input_kbm_last): a gamepad player sees the menus unchanged.
 // TOTK_MENU_CURSOR (live, default 1): 0 leaves the menus to the keys and the pad.
 #include <math.h>
 #include <stdint.h>
@@ -292,7 +293,9 @@ void menu_cursor_poll(uint64_t *buttons) {
     Focus f = focus_now();
     char nm[48] = "";
     if (f.screen) layout_name(f.screen, nm, sizeof nm);
-    int menu = f.screen && !gameplay_screen(nm) && ikb_foreground();
+    // With the gamepad as the last device the menus stay as they are on the console: no pointer, the capture kept.
+    // Moving the mouse (or a key) makes keyboard and mouse the last device and the pointer comes.
+    int menu = f.screen && !gameplay_screen(nm) && ikb_foreground() && input_kbm_last();
     set_pointer(menu);
     int l = ikb_down(KEY_MOUSE_L), r = ikb_down(KEY_MOUSE_R);
     int click_l = l && !held_l, click_r = r && !held_r;

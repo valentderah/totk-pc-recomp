@@ -27,6 +27,12 @@ enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 100
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
 static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 open, 2 waiting for release
+// The device the player used last (input_kbm_last): 1 keyboard and mouse, 0 the gamepad. A pad counts once a button is
+// down or a stick is past half way (a drifting stick never switches), the mouse once it moved MOUSE_USED raw counts
+// within one poll (a slow deliberate move does; a desk bump does not), the keyboard with any key or mouse button.
+enum { PAD_USED = 16384, MOUSE_USED = 6 };
+static volatile int32_t g_kbm_last = 1;
+int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
 static int pad_rumble;               // the open gamepad has rumble motors
@@ -563,6 +569,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     if (state > 0) {
         binds_refresh();
         if (state == 1) pad_read(&b, sl, sr);
+        int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
+                       abs(sr[1]) > PAD_USED, kbm_used = 0;
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
@@ -572,6 +580,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             int cap = ikb_captured();
             for (int k = 1; k < KEY_COUNT; k++) {
                 down[k] = ikb_down(k);
+                kbm_used |= down[k];
                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
                 if (cap && !was_captured) mouse_ignore[k] = down[k];
                 if (!down[k]) mouse_ignore[k] = 0;
@@ -592,14 +601,16 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
             mouse_camera(k, selector);
             pick(&sr[0], &sr[1], k[0], k[1]);
+            static uint32_t travel_seen;
+            uint32_t travel = ikb_mouse_travel();
+            if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;
+            travel_seen = travel;
         }
+        // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
+        if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
+        else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
     script_apply(&b, sl, sr);
-    int32_t shake[2];
-    int wheel = (b & ((1ull << B_L) | (1ull << B_UP) | (1ull << B_LEFT) | (1ull << B_RIGHT))) != 0;
-    if (input_direct_mouse_shake(!wheel && !sr[0] && !sr[1] && !g_menu && !g_block, shake)) {
-        sr[0] = shake[0]; sr[1] = shake[1];
-    }
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;

@@ -6,6 +6,9 @@
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+// 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
+// (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
+int input_kbm_last(void);
 // Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
 // accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
 // separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.
@@ -17,8 +20,6 @@ void input_direct_mouse_radial(int32_t dx, int32_t dy, float sensitivity, float 
 typedef struct { float distance; uint64_t pulse_until, neutral_until; int direction; } InputMouseRow;
 void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMouseRow *row, int32_t out[2]);
 int input_direct_mouse_selector_active(void);
-// A deliberate mouse shake while manipulating an object feeds a short gesture to the game's native shake detector.
-int input_direct_mouse_shake(int allow, int32_t out[2]);
 // Consume direct mouse counts, including one-shot MOUSE events from an input script. enabled=0 discards scripted
 // counts while leaving the real mouse for menu input. Live counts require cursor capture and foreground focus.
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);

@@ -29,8 +29,6 @@ static int direct_mode(void) {
 
 static uint64_t last_update;
 static uint64_t hand_update;
-static uint64_t shake_started, shake_until;
-static int shake_injected;
 static int accepts_mouse;
 
 static int hand_active(uint64_t now) {
@@ -80,18 +78,6 @@ void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMo
     row->distance = fmodf(row->distance, step_counts);
     row->pulse_until = now + 32000000ull;
     out[0] = row->direction * 32767;
-}
-
-int input_direct_mouse_shake(int allow, int32_t out[2]) {
-    uint64_t now = plat_now_ns(), until = __atomic_load_n(&shake_until, __ATOMIC_ACQUIRE);
-    uint64_t start = __atomic_load_n(&shake_started, __ATOMIC_RELAXED);
-    int ready = allow && direct_mode() && hand_active(now) && ikb_captured() && ikb_foreground() && input_cursor_allowed();
-    if (!ready) __atomic_store_n(&shake_until, 0, __ATOMIC_RELEASE);
-    int active = ready && now >= start && now < until;
-    out[0] = active ? ((now - start) / 40000000ull & 1 ? -32767 : 32767) : 0;
-    out[1] = 0;
-    __atomic_store_n(&shake_injected, active, __ATOMIC_RELAXED);
-    return active;
 }
 
 #ifdef RT_PATCH_PAGE
@@ -163,34 +149,6 @@ static void orbit_pitch_release(OrbitTrack *track) {
     track->hold_pitch = track->target_saved = 0;
 }
 
-static void mouse_shake_feed(int32_t dx, int32_t dy, uint64_t now) {
-    static struct { int sign, confirmed, reversals; double distance; uint64_t last; } stroke[2];
-    static uint64_t cooldown;
-    if (!hand_active(now)) { memset(stroke, 0, sizeof stroke); return; }
-    if (now < cooldown) return;
-    int32_t delta[2] = {dx, dy};
-    for (int i = 0; i < 2; i++) {
-        if (!delta[i]) continue;
-        if (stroke[i].last && now - stroke[i].last > 400000000ull) memset(&stroke[i], 0, sizeof stroke[i]);
-        int sign = delta[i] > 0 ? 1 : -1;
-        if (sign != stroke[i].sign) stroke[i].sign = sign, stroke[i].distance = 0;
-        stroke[i].distance += fabs((double)delta[i]);
-        if (stroke[i].distance < 24) continue;
-        if (stroke[i].confirmed && sign != stroke[i].confirmed) stroke[i].reversals++;
-        stroke[i].confirmed = sign;
-        stroke[i].last = now;
-        stroke[i].distance = 0;
-        if (stroke[i].reversals >= 3) {
-            __atomic_store_n(&shake_started, now, __ATOMIC_RELAXED);
-            __atomic_store_n(&shake_until, now + 320000000ull, __ATOMIC_RELEASE);
-            cooldown = now + 700000000ull;
-            memset(stroke, 0, sizeof stroke);
-            rt_log("mouse: detach shake gesture sent to the game's stick-shake detector");
-            return;
-        }
-    }
-}
-
 // A host call at an instruction site, not an AAPCS64 function replacement. Preserve every guest register except
 // s9/s10, which carry the processed camera input, and perform the displaced store of s9 at [x20 + 0x420].
 static void camera_input(Cpu *c) {
@@ -199,9 +157,6 @@ static void camera_input(Cpu *c) {
     int accept = !(flags & 1) && !input_direct_mouse_selector_active();
     __atomic_store_n(&accepts_mouse, accept, __ATOMIC_RELAXED);
     __atomic_store_n(&last_update, plat_now_ns(), __ATOMIC_RELEASE);
-    if (direct_mode() && __atomic_load_n(&shake_injected, __ATOMIC_RELAXED)) {
-        c->v[9] = c->v[10] = 0;   // discrete shake pulses are for the game's gesture detector, not the camera
-    }
     MouseSample next = {.object = c->x[20], .when = plat_now_ns(), .camera_enabled = accept};
     memcpy(&next.pad[0], &c->v[9], sizeof(float));
     memcpy(&next.pad[1], &c->v[10], sizeof(float));
@@ -221,7 +176,6 @@ static void camera_input(Cpu *c) {
             if (hz > 0) ratio = (float)(30 / hz);
         }
         if (isfinite(ratio) && ratio > 0 && sensitivity > 0 && (dx || dy)) {
-            mouse_shake_feed(dx, dy, plat_now_ns());
             if (accept) mouse_input_object = c->x[20];
             float x, y;
             memcpy(&x, &c->v[9], sizeof x);
@@ -263,10 +217,9 @@ static void orbit_begin(Cpu *c) {
         MouseSample m = sample_read();
         uint64_t input = guest_pointer(object + 0x20);
         if (m.object == input && m.camera_enabled) {
-            guest_float_store(input + 0x420, m.pad[0]);
-            guest_float_store(input + 0x424, m.pad[1]);
-            orbit.object = object;
-            orbit.mouse = m;
+            // The hooks take a step when the mouse moved in it, or while the mouse holds the pitch. A step of the
+            // gamepad alone (no mouse motion, no hold: a player who never moved the mouse) keeps the game's input.
+            int moved = m.motion[0] != 0 || m.motion[1] != 0, take;
             uint64_t held = guest_pointer(input + 0x148);
             uint8_t override;
             memcpy(&override, (void *)(uintptr_t)(input + 0x15c), 1);
@@ -274,9 +227,15 @@ static void orbit_begin(Cpu *c) {
             OrbitTrack *track = orbit_track(object);
             if (track->input != input) track->hold_pitch = track->target_saved = 0;
             if (m.pad[1] != 0 || (held & 0x20) || (override & 0x40)) orbit_pitch_release(track);
-            track->input = input;
+            take = moved || track->hold_pitch;
+            if (take) track->input = input;
             if (track->hold_pitch) orbit_pitch_target(object, track->pitch);
             plat_mutex_unlock(&sample_lock);
+            if (moved) {   // the mouse's part of this step's stick goes to the final angles instead
+                guest_float_store(input + 0x420, m.pad[0]);
+                guest_float_store(input + 0x424, m.pad[1]);
+            }
+            if (take) orbit.object = object, orbit.mouse = m;
         }
     } else {
         plat_mutex_lock(&sample_lock);
@@ -335,7 +294,6 @@ static void hand_input(Cpu *c) {
         if (m.generation != generation || object != c->x[19]) {
             float x = guest_float(c->sp + 0x60), y;
             memcpy(&y, &c->v[15], sizeof y);
-            if (__atomic_load_n(&shake_injected, __ATOMIC_RELAXED)) x = y = 0;
             x += m.motion[0];
             y += m.motion[1];
             guest_float_store(c->sp + 0x60, x);
@@ -355,15 +313,14 @@ static void hand_input(Cpu *c) {
 }
 
 // The game also uses a 10% activity threshold after processing the stick. A one-count mouse movement must count
-// as active, even when its displacement is smaller than that threshold. Do this after the game computed the bits,
-// then execute the displaced ldp d9, d8, [sp, #8]. No flag is changed for controller-only input.
+// as active, even when its displacement is smaller than that threshold. The site is the displaced ldp d9, d8, [sp, #8]
+// just before the update's last `str w8, [x20, #0x418]`: w8 holds the flags then (bit 0 raw input, bit 4 any input,
+// bits 3 and 5 processed input below the threshold), so they are changed in w8; a write to +0x418 would be overwritten
+// by that store. No flag is changed for controller-only input.
 static void camera_activity(Cpu *c) {
     if (mouse_input_object && mouse_input_object == c->x[20]) {
-        uint32_t flags;
-        void *at = (void *)(uintptr_t)(mouse_input_object + 0x418);
-        memcpy(&flags, at, sizeof flags);
-        flags = (flags | 0x11u) & ~0x28u;
-        memcpy(at, &flags, sizeof flags);
+        uint32_t flags = (uint32_t)c->x[8];
+        c->x[8] = (flags | 0x11u) & ~0x28u;
         mouse_input_object = 0;
     }
     uint64_t d9, d8;
