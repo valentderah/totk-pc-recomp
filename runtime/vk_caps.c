@@ -43,6 +43,8 @@ void vk_caps_driver(VkPhysicalDevice p) {
     // AMD split RDNA 1 and 2 off into a driver branch of their own; its driverInfo reads
     // "26.10.1 (AMD proprietary shader compiler)" where the RDNA 3 and 4 driver names LLPC.
     vk_caps.amd_sc = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY && strstr(drv.driverInfo, "shader compiler");
+    vk_caps.mesa = drv.driverID == VK_DRIVER_ID_MESA_RADV || drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
+                   drv.driverID == VK_DRIVER_ID_MESA_NVK;
 }
 
 // TOTK_GPL=0 turns graphics pipeline libraries off; they are on wherever the driver has fast linking. AMD's RDNA 1/2
@@ -114,7 +116,10 @@ void vk_caps_init(VkCtx *c) {
     // BotW and TotK on AMD). The translator biases gather coordinates by the host's sub-texel precision; NVIDIA rounds
     // as Maxwell does. TOTK_GATHER_BIAS=<bits> forces it (0: off).
     uint32_t gather = env_u32("TOTK_GATHER_BIAS", c->props.vendorID == 0x10de ? 0 : l->subTexelPrecisionBits);
-    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather);
+    // A register read before any write is an undefined load in SPIR-V, and Mesa folds undefined values freely, so on
+    // Mesa function-local variables start at 0 (docs/maxwell.md 3.12). TOTK_ZERO_LOCALS=1 forces it, 0 turns it off.
+    uint32_t zero_locals = env_u32("TOTK_ZERO_LOCALS", (uint32_t)vk_caps.mesa);
+    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather, zero_locals != 0);
     if (gather) rt_log("vk caps: gather coordinates biased for %u sub-texel bits (TOTK_GATHER_BIAS)", gather);
 
     char dv[32];
