@@ -35,6 +35,8 @@ typedef struct {                                           // the translator's a
     uint8_t attr_type[32], frag_out_type[8];               // GFX_TYPE_*
     uint16_t local[3]; uint32_t shared_bytes;
     uint8_t depth_minus_w;
+    uint8_t mvprev;                                        // VS: also write last frame's position (patch 0015,
+                                                           // vk_mvprev.c); packed as bit 7 of the depth_minus_w byte
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
@@ -73,6 +75,9 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out);              // malloc'd; recorde
 const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
 void gfx_shader_release_private(const GfxShader *s);
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
+// A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
+// never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
+const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
 // vk_hdr.c: with TOTK_HDR=1, replaces a fragment shader's SPIR-V (malloc'd, *words long) by the HDR tonemap when it is
 // the game's tonemap; gfx_shader.c calls it for every fragment shader entering the cache.
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
@@ -97,7 +102,8 @@ int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
 uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
 uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
-uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);   // Output Locations (VS varyings, FS colour targets)
+uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);
+uint32_t gfx_shader_mvprev_banks(const GfxShader *s);   // a last-frame variant: the banks (bit n: cn) its position reads   // Output Locations (VS varyings, FS colour targets)
 void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]);     // CS: the LocalSize execution mode; 1, 1, 1 otherwise
 
 // ---- back end (gfx_null.c, vk_*.c). Called by the NVN front end (nvn_api_*.c, nvn_ext.c) on guest threads.

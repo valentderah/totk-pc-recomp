@@ -6,14 +6,26 @@
 // The camera block is TotK's scene uniform block (bound as c4 in the scene's vertex shaders): vec4 rows 3-6 are the
 // view-projection, rows of a row-major 4x4 with OpenGL clip depth (-w..w). The replay's viewports have negative
 // heights, so window y grows downwards from ndc y = +1, and depth is z_ndc * 0.5 + 0.5.
+// With pc.bias > 0 the pass also writes DLSS's bias mask (vk_dlaa.c, "characters"): G-buffer target 0 carries an object
+// class in green, above 64/255 for characters, creatures and what they hold (Link 253, others 125, held items 160;
+// terrain 0, foliage 32). A pixel gets pc.bias when a character covers it now, or covered the place its surface came
+// from last frame (the previous class mask, read through the motion vector, 3x3): there the history holds a moving
+// character that the camera-only vector does not follow, which is the trail. chars_out keeps this frame's mask for the
+// next; chars_prev is last frame's (pc.prev_ok 0: none).
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D depth_tex;
 layout(binding = 1, rg16f) uniform writeonly image2D mv_out;
 layout(binding = 2, std140) uniform Cur { vec4 r[16]; } cur;
 layout(binding = 3, std140) uniform Prev { vec4 r[16]; } prev;
+layout(binding = 4) uniform sampler2D ids_tex;
+layout(binding = 5, r8) uniform writeonly image2D mask_out;
+layout(binding = 6, r8) uniform readonly image2D chars_prev;
+layout(binding = 7, r8) uniform writeonly image2D chars_out;
 layout(push_constant) uniform P {
     vec2 size;     // render size in pixels
     vec2 jitter;   // this frame's jitter, pixels, as the scene was drawn (window x right, y down)
+    float bias;    // the mask value for character pixels; 0: no mask (bindings 4-7 unused)
+    float prev_ok; // 1: chars_prev holds last frame's class mask at this size
 } pc;
 
 mat4 vp(vec4 a, vec4 b, vec4 c, vec4 d) { return transpose(mat4(a, b, c, d)); }
@@ -37,4 +49,15 @@ void main() {
         }
     }
     imageStore(mv_out, p, vec4(mv, 0.0, 0.0));
+    if (pc.bias <= 0.0) return;
+    float ch = texelFetch(ids_tex, p, 0).g > 64.0 / 255.0 ? 1.0 : 0.0;
+    imageStore(chars_out, p, vec4(ch));
+    float was = 0.0;
+    if (pc.prev_ok > 0.5) {
+        ivec2 q = ivec2(floor(win + mv)), hi = ivec2(pc.size) - 1;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+                was = max(was, imageLoad(chars_prev, clamp(q + ivec2(dx, dy), ivec2(0), hi)).r);
+    }
+    imageStore(mask_out, p, vec4(max(ch, was) * pc.bias));
 }

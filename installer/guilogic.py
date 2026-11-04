@@ -27,7 +27,7 @@ TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
-STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
+STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -137,6 +137,7 @@ class Form:
     firmware: str = ''
     lang: str = ''
     dest: str = ''
+    dlss: bool = False
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -187,6 +188,8 @@ class Form:
             cmd += ['--temp', str(temp)]
         if verify_hashes:
             cmd.append('--verify')
+        if self.dlss:
+            cmd.append('--dlss')
         return cmd
 
 

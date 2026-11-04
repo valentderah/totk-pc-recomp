@@ -1,4 +1,4 @@
-"""The seven setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, cleanup.
+"""The eight setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, dlss, cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -7,18 +7,20 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
-Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
-logs/. The cleanup keeps gen/, build/ and logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites
-only the chunks whose C changed, and Ninja in build/ recompiles only those. A change of the mods' code cheats then
-costs the lift (about a minute) and the chunks it touches, not a full compile.
+Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
+or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
+logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
+in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
+it touches, not a full compile.
 
 Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
 its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
 when an enabled mod has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -28,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from . import ini
@@ -36,6 +39,7 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import ncz  # noqa: E402
 import shader_list  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory,  # noqa: E402
                            program_nca)
@@ -174,6 +178,12 @@ def raise_if_damaged(error, name, path):
         raise InstallError('check.input_damaged', input=name, path=str(path), detail=str(error)) from None
 
 
+def game_file(ctx, name):
+    """The file the extraction reads for the base or the update: the NSP that Check.unpack made from an NSZ or XCZ,
+    else the chosen file itself."""
+    return getattr(ctx, 'unpacked', {}).get(name) or Path(getattr(ctx.options, name))
+
+
 def game_version(ctx):
     """The update this install is built from: what the check identified, else the recorded one. An install made before
     1.4.3 support records no version, and that install is 1.2.1: name it here rather than leaning on SUPPORTED's order."""
@@ -182,6 +192,25 @@ def game_version(ctx):
 
 def expected_update(ctx):
     return extract.load_expected()[game_version(ctx)]
+
+
+# Releases before 0.3.1 recorded the 0x20000 update as 1.1.1 (pull request #220); it is 1.1.0 (#371), with the same
+# files, hashes and patch sites under new names.
+RENAMED_VERSIONS = {'1.1.1': '1.1.0'}
+
+
+def migrate_state(ctx):
+    """Read a recorded update by its current name. The extraction it recorded stays: its record gets the key of the
+    renamed expected file, and Extract.current and the full check of output another release kept
+    (runner.Context.verify_kept) still test the files against the expected hashes."""
+    old = ctx.state.get('version')
+    if old not in RENAMED_VERSIONS:
+        return
+    ctx.state['version'] = RENAMED_VERSIONS[old]
+    record = ctx.state['steps'].get('extract')
+    if record:
+        record['key'] = Extract().key(ctx)
+    ctx.reporter.log(f'state: the update recorded as {old} is {ctx.state["version"]}')
 
 
 def shader_list_text(layout):
@@ -432,13 +461,72 @@ class Check(Step):
             raise InstallError('check.keys_unreadable') from None
         if 'header_key' not in keys:
             raise InstallError('check.keys_no_header_key')
+        self.unpack(ctx)
         total = 0
         for name, is_update in (('base', False), ('update', True)):
-            path = Path(getattr(o, name))
+            path = game_file(ctx, name)
             with path.open('rb') as f:
                 total += self.open_input(f, path, keys, name, is_update)
         del keys
         return total
+
+    def unpack(self, ctx):
+        """Unpack an NSZ or XCZ (a game file compressed by the nsz tool) into <temp>/unpacked/<base|update>.nsp with
+        tools/ncz.py, which checks every NCA against its hash; the extraction then reads that NSP. An earlier run's NSP
+        of the same file is reused. The extract step removes the folder once it is done."""
+        o, rep, folder = ctx.options, ctx.reporter, ctx.temp / 'unpacked'
+        ctx.unpacked = {}
+        jobs = []
+        for name in ('base', 'update'):
+            path = Path(getattr(o, name))
+            try:
+                found = ncz.compressed(path)
+                if found is None:
+                    continue
+                if name == 'update' and found[0] != 'nsz':
+                    raise InstallError('check.update_not_nsp')
+                size = ncz.unpacked_size(path)
+            except ValueError as e:
+                raise_if_damaged(e, name, path)
+                raise InstallError('check.not_game_file', input=name) from None
+            st = path.stat()
+            jobs.append((name, path, size, f'{path.resolve()}\n{st.st_size}\n{st.st_mtime_ns}\n{size}\n'))
+        if not jobs:
+            remove(folder)
+            return
+        done = []
+        for name, path, size, tag in jobs:
+            target, stamp = folder / f'{name}.nsp', folder / f'{name}.source'
+            try:
+                if target.stat().st_size == size and stamp.read_text(encoding='utf-8') == tag:
+                    done.append(name)
+                    ctx.unpacked[name] = target
+            except OSError:
+                pass
+        need = sum(size for name, _, size, _ in jobs if name not in done)
+        free, _ = free_bytes(folder)
+        rep.log(f'unpack: {", ".join(name for name, *_ in jobs)}: {need / GiB:.1f} GiB to write, '
+                f'{free / GiB:.1f} free')
+        if need > free:
+            raise InstallError('check.disk_space', path=str(folder), need_gb=round(need / 1e9, 1),
+                               free_gb=round(free / 1e9, 1))
+        for name, path, size, tag in jobs:
+            if name in done:
+                continue
+            target, stamp = folder / f'{name}.nsp', folder / f'{name}.source'
+            remove(stamp)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                ncz.unpack(path, target, lambda d, t, n=name: rep.progress('check', 'unpack_' + n, d, t, 'bytes'))
+                stamp.write_text(tag, encoding='utf-8')
+            except ncz.DamagedFile as e:
+                raise InstallError('check.input_damaged', input=name, path=str(e.path), detail=e.detail) from None
+            except ValueError as e:
+                raise_if_damaged(e, name, path)
+                raise InstallError('check.unpack_failed', input=name, detail=str(e)) from None
+            except OSError as e:
+                raise InstallError('check.unpack_failed', input=name, detail=str(e)) from None
+            ctx.unpacked[name] = target
 
     @staticmethod
     def open_input(f, path, keys, name, is_update):
@@ -520,9 +608,10 @@ class Check(Step):
             out = work / name
             remove(out)
             try:
-                extract.extract_exefs(Path(getattr(o, name)), Path(o.keys), out, logs, update=is_update)
+                extract.extract_exefs(game_file(ctx, name), Path(o.keys), out, logs, update=is_update)
             except extract.DamagedFile as e:
-                raise InstallError('check.input_damaged', input=name, path=str(e.path), detail=e.detail) from None
+                raise InstallError('check.input_damaged', input=name, path=str(getattr(o, name)),
+                                   detail=e.detail) from None
             except ValueError:
                 raise InstallError('check.exefs_failed', input=name, log=str(logs / f'extract_exefs-{name}.log')) \
                     from None
@@ -641,9 +730,9 @@ class Extract(Step):
     def run(self, ctx):
         o, dest, rep = ctx.options, ctx.dest, ctx.reporter
         expected = expected_update(ctx)
-        base, update, keys = Path(o.base), Path(o.update), Path(o.keys)
+        keys = Path(o.keys)
         inputs = {}
-        for name, path in (('base', base), ('update', update)):
+        for name, path in (('base', Path(o.base)), ('update', Path(o.update))):
             known = ctx.state['inputs'].get(name, {})
             st = path.stat()
             if known.get('size') == st.st_size and known.get('mtime_ns') == st.st_mtime_ns and known.get('sha256'):
@@ -653,6 +742,7 @@ class Extract(Step):
             inputs[name] = {'name': path.name, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'sha256': digest}
         ctx.state['inputs'] = inputs
         ctx.save()
+        base, update = game_file(ctx, 'base'), game_file(ctx, 'update')
 
         dest.mkdir(parents=True, exist_ok=True)
         for stale in dest.glob('update-merge-*'):   # a killed merge leaves its NCA copies (and key copies) behind
@@ -664,7 +754,7 @@ class Extract(Step):
             try:
                 extract.extract_exefs(update, keys, ctx.temp / 'check' / 'update', ctx.temp / 'logs', update=True)
             except extract.DamagedFile as e:
-                raise InstallError('check.input_damaged', input='update', path=str(e.path), detail=e.detail) from None
+                raise InstallError('check.input_damaged', input='update', path=str(o.update), detail=e.detail) from None
             except ValueError:
                 raise InstallError('check.exefs_failed', input='update',
                                    log=str(ctx.temp / 'logs' / 'extract_exefs-update.log')) from None
@@ -686,6 +776,7 @@ class Extract(Step):
             raise InstallError('extract.romfs_mismatch', version=game_version(ctx), size=report['romfs_size'],
                                sha256=report['romfs_sha256'][:16])
         (dest / 'profile').mkdir(exist_ok=True)
+        remove(ctx.temp / 'unpacked')   # the NSPs unpacked from an NSZ or XCZ (Check.unpack)
         st = (romfs / 'romfs.bin').stat()
         return {'romfs_size': st.st_size, 'romfs_mtime_ns': st.st_mtime_ns}
 
@@ -707,7 +798,8 @@ class Extract(Step):
         try:
             extract.merge_update_romfs(base, update, keys, ctx.layout.hactool, romfs, logs, phase=phase)
         except extract.DamagedFile as e:
-            raise InstallError('check.input_damaged', input='base' if e.path == base else 'update', path=str(e.path),
+            name = 'base' if e.path == base else 'update'
+            raise InstallError('check.input_damaged', input=name, path=str(getattr(ctx.options, name)),
                                detail=e.detail) from None
         except ValueError as e:
             raise InstallError('extract.romfs_merge_failed', detail=str(e), log=str(logs / 'merge_romfs-'
@@ -907,9 +999,11 @@ SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics dri
 
 
 # The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
-# and 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops)
+# 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2 screens (Surface and Framework laptops and
+# tablets)
 ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
-                '1280x800', '1680x1050', '1920x1200', '2560x1600')
+                '1280x800', '1680x1050', '1920x1200', '2560x1600',
+                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000')
 
 
 class Prepare(Step):
@@ -1022,7 +1116,82 @@ class Prepare(Step):
         return {'xlate_sha256': file_sha256(xlate)}
 
 
-# ---- 7. clean up
+# ---- 7. NVIDIA DLSS
+
+# NVIDIA's DLSS library, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship it:
+# with --dlss it downloads NVIDIA's own copy from the DLSS SDK repository (NVIDIA RTX SDK license) at a pinned tag and
+# checks its hash. The game runs without it; dlaa and the DLSS modes then do nothing.
+DLSS_DLL = 'nvngx_dlss.dll'
+DLSS_VERSION = '310.9.1'
+DLSS_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSS_DLL}'
+DLSS_SIZE = 58956912
+DLSS_SHA256 = '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'
+DLSS_LICENSE = 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
+
+
+def nvidia_rtx(host):
+    """An NVIDIA RTX GPU among the host check's Vulkan devices: the GPUs DLSS runs on."""
+    return any('NVIDIA' in d['name'].upper() and 'RTX' in d['name'].upper() for d in (host or {}).get('devices', []))
+
+
+class Dlss(Step):
+    """With --dlss on Windows and an NVIDIA RTX GPU: nvngx_dlss.dll next to totk.exe. A DLSS library the player put
+    there (another version) is kept. A failed download warns and is tried again on the next run; the game runs
+    without it."""
+
+    id = 'dlss'
+
+    def key(self, ctx):
+        if not getattr(ctx.options, 'dlss', False):
+            return fingerprint('dlss-1', 'off')
+        return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+
+    def current(self, ctx, record):
+        if record.get('failed'):
+            return False
+        return not record.get('installed') or (ctx.dest / DLSS_DLL).is_file()
+
+    def run(self, ctx):
+        if not getattr(ctx.options, 'dlss', False):
+            return {}
+        if os.name != 'nt':
+            return {'skipped': 'not_windows'}
+        if not nvidia_rtx(getattr(ctx, 'host', None)):
+            # The box is ticked by default, so most players without an RTX GPU never chose it: a log line, no warning
+            ctx.reporter.log('dlss: no NVIDIA RTX GPU among the Vulkan devices, nothing downloaded')
+            return {'skipped': 'no_rtx'}
+        rep, target = ctx.reporter, ctx.dest / DLSS_DLL
+        if target.is_file():
+            if file_sha256(target) == DLSS_SHA256:
+                return {'installed': DLSS_VERSION}
+            rep.warning('warn.dlss_kept', path=str(target))
+            return {'kept': True}
+        part = ctx.temp / (DLSS_DLL + '.part')
+        rep.progress('dlss', 'download', 0, DLSS_SIZE, 'bytes', force=True)
+        rep.log(f'dlss: {DLSS_URL} (license {DLSS_LICENSE})')
+        try:
+            part.parent.mkdir(parents=True, exist_ok=True)
+            h, done = hashlib.sha256(), 0
+            with urllib.request.urlopen(DLSS_URL, timeout=60) as r, open(part, 'wb') as f:
+                while block := r.read(1 << 20):
+                    f.write(block)
+                    h.update(block)
+                    done += len(block)
+                    rep.progress('dlss', 'download', min(done, DLSS_SIZE), DLSS_SIZE, 'bytes')
+            if done != DLSS_SIZE or h.hexdigest() != DLSS_SHA256:
+                raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
+            replace_file(part, target)
+            remove(part)
+        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
+        # which is not an OSError
+        except (OSError, http.client.HTTPException) as e:
+            remove(part)
+            rep.warning('warn.dlss_download_failed', url=DLSS_URL, detail=str(e)[:300])
+            return {'failed': True}
+        return {'installed': DLSS_VERSION}
+
+
+# ---- 8. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -1040,7 +1209,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)
-        for name in ('check', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
+        for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
         romfs_problem(dest / 'romfs', expected_update(ctx))
         write_rebuild_command(ctx)
@@ -1090,4 +1259,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]

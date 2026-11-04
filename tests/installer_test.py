@@ -3,6 +3,7 @@ with a newer release, totk.ini and the event stream. No game files, no tools; st
 
 Run: python tests/installer_test.py
 """
+import http.client
 import io
 import json
 import re
@@ -11,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -207,6 +209,41 @@ class ReleaseFilesTest(unittest.TestCase):
             used |= set(re.findall(r"'(\w+\.py)'", names))
         self.assertIn('cheats.py', used)
         self.assertEqual(used - set(make_release.TOOLS_FILES), set())
+
+
+class RenamedVersionTest(unittest.TestCase):
+    """An install the setup before 0.3.1 recorded as 1.1.1 is the 1.1.0 update (#332)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(__file__).resolve().parents[1]
+        layout = Layout(root=root, dev=True, release='9.9', python=Path('python'), tools=root / 'tools',
+                        recomp=root / 'recomp', llvm=Path('llvm'), deps=Path('deps'), runtime=Path('rt'),
+                        runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        state = {'format': 1, 'release': '0.2.8', 'version': '1.1.1', 'inputs': {},
+                 'steps': {'extract': {'key': 'recorded by 0.2.8', 'release': '0.2.8'}}}
+        out = io.StringIO()
+        self.ctx = runner.Context(layout, Path(tmp.name), Path(tmp.name), Reporter(out=out), SimpleNamespace(),
+                                  state=state)
+
+    def test_old_name_is_read_as_1_1_0(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(steps.game_version(self.ctx), '1.1.0')
+        self.assertEqual(steps.version_tag(steps.game_version(self.ctx)), 'v110')
+        self.assertEqual(steps.expected_update(self.ctx)['display_version'], '1.1.0')
+        self.assertTrue(self.ctx.layout.patches(steps.game_version(self.ctx)).is_file())
+
+    def test_extraction_is_kept_under_the_new_name(self):
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], steps.Extract().key(self.ctx))
+        self.assertEqual(self.ctx.state['steps']['extract']['release'], '0.2.8')   # full check of kept output runs
+
+    def test_other_versions_are_untouched(self):
+        self.ctx.state['version'] = '1.4.3'
+        steps.migrate_state(self.ctx)
+        self.assertEqual(self.ctx.state['version'], '1.4.3')
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], 'recorded by 0.2.8')
 
 
 class LiftKeyTest(unittest.TestCase):
@@ -446,7 +483,7 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'cleanup'])
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()
@@ -538,6 +575,80 @@ class EventsTest(unittest.TestCase):
             used |= set(re.findall(r"warning\('([a-z_.]+)'", text))
             used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", text)}
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'DLSS is Windows-only')
+class DlssTest(unittest.TestCase):
+    """The DLSS step: off without --dlss, needs an RTX GPU, keeps a player's library, verifies the download."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp = base / 'dest', base / 'temp'
+        self.dest.mkdir()
+        temp.mkdir()
+        self.src = base / 'nvngx_dlss.dll'
+        self.src.write_bytes(b'dlss' * 1000)
+        self.saved = steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256
+        steps.DLSS_URL = self.src.as_uri()   # urllib reads file: URLs as it reads https: ones
+        steps.DLSS_SIZE, steps.DLSS_SHA256 = 4000, steps.file_sha256(self.src)
+        rtx = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=rtx, reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(dlss=True))
+
+    def tearDown(self):
+        steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256 = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def warnings(self):
+        return [json.loads(line)['id'] for line in self.ctx.reporter.out.getvalue().splitlines()
+                if json.loads(line)['type'] == 'warning']
+
+    def test_off_without_the_option(self):
+        self.ctx.options.dlss = False
+        self.assertEqual(steps.Dlss().run(self.ctx), {})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertNotEqual(steps.Dlss().key(self.ctx), steps.Dlss().key(SimpleNamespace(options=SimpleNamespace(dlss=True))))
+
+    def test_downloads_and_checks_the_library(self):
+        rec = steps.Dlss().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.DLSS_VERSION})
+        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), self.src.read_bytes())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertTrue(steps.Dlss().current(self.ctx, rec))
+        (self.dest / 'nvngx_dlss.dll').unlink()
+        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+
+    def test_a_wrong_file_is_not_installed_and_tried_again(self):
+        steps.DLSS_SHA256 = '0' * 64
+        rec = steps.Dlss().run(self.ctx)
+        self.assertEqual(rec, {'failed': True})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+
+    def test_a_cut_connection_warns(self):
+        class Cut(io.BytesIO):   # a response whose connection drops mid-file
+            def read(self, n=-1):
+                raise http.client.IncompleteRead(b'dl', 3998)
+
+        with mock.patch.object(steps.urllib.request, 'urlopen', return_value=Cut()):
+            self.assertEqual(steps.Dlss().run(self.ctx), {'failed': True})
+        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+
+    def test_keeps_the_players_library(self):
+        (self.dest / 'nvngx_dlss.dll').write_bytes(b'newer')
+        self.assertEqual(steps.Dlss().run(self.ctx), {'kept': True})
+        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'newer')
+        self.assertEqual(self.warnings(), ['warn.dlss_kept'])
+
+    def test_skipped_without_an_rtx_gpu(self):
+        self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
+        self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
+        self.assertEqual(self.warnings(), [])
 
 
 if __name__ == '__main__':

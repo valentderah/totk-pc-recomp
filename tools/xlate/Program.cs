@@ -117,6 +117,12 @@ static class SwshXlate
         public int QueryHostStorageBufferOffsetAlignment() => _job["sbuf_align"] is JsonNode n ? (int)n : 16;
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
+        // "mvprev": true: the vertex shader also writes last frame's position, computed from slots bank + 15 in place of
+        // the user banks c3-c16 (patch 0015, runtime/vk_mvprev.c); res.json's "mvprev" names the output location (-1:
+        // none) and "mvprev_banks" the banks the position depends on (bit n: cn).
+        public bool QueryMotionPrevious() => _job["mvprev"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
+        public int MotionPreviousLocation = -1, MotionPreviousBanks;
+        public void ReportMotionPrevious(int location, int banks) => (MotionPreviousLocation, MotionPreviousBanks) = (location, banks);
     }
 
 
@@ -140,6 +146,7 @@ static class SwshXlate
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                     ["tex_queried"] = new JsonArray(acc.TexQueried.Select(x => (JsonNode)x).ToArray()), ["img_queried"] = new JsonArray(acc.ImgQueried.Select(x => (JsonNode)x).ToArray()),
                 };
+                if (acc.QueryMotionPrevious()) (res["mvprev"], res["mvprev_banks"]) = (acc.MotionPreviousLocation, acc.MotionPreviousBanks);
                 foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })

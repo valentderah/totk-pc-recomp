@@ -32,8 +32,9 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game (1 = on). Adds up to a frame of latency.
-# replay_async = 0
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: on. Adds up to a
+# frame of latency; 0 replays them on the game thread.
+# replay_async = 1
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
@@ -55,13 +56,16 @@
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
 # prewarm_xlate = 8
-# Vulkan graphics pipeline library, 0 or 1. Default: on, except on AMD's driver for RDNA 1 and 2 (RX 5000 and 6000).
+# Vulkan graphics pipeline library, 0 or 1. Default: on.
 # gpl = 1
 
 # Textures and memory.
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU
 # has it, gpu otherwise).
 # astc = auto
+# With astc = gpu: re-encode the decoded ASTC textures to BC3, a quarter of the video memory, textures slightly blockier,
+# 0 or 1. Default: on when the GPU has less than 5 GB of video memory, off otherwise.
+# astc_bc = 1
 # Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
 # every copy; slow). On a discrete GPU import can be far slower than mirror, not slightly slower: the GPU reads the
@@ -136,8 +140,9 @@
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
 # game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
-# prepares the UI layout for ten sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440 (32:9),
-# 1280x800, 1680x1050, 1920x1200 and 2560x1600 (16:10). Any other size
+# prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
+# (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
+# (3:2). Any other size
 # gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
 # tools/make_romfs_patches.py --aspect WxH. Read at start.
 # output_res = 1920x1080
@@ -191,14 +196,30 @@
 # patch 0010), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with nvngx_dlss.dll (from NVIDIA's DLSS SDK) next to
-# totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
+# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
+# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
+# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
+# Read at start.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
-# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). They apply
-# only with dlaa = 1 and nvngx_dlss.dll next to totk.exe, on Windows; otherwise the scene follows render_scale. Read at
-# start.
+# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
+# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
+# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
+# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
 # dlss = dlaa
+# The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
+# ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
+# characters, a little more flicker). Any other model by its letter, a to m: on slower RTX cards the older model e is
+# cheaper. Changes while the game runs take effect at once (DLSS starts a new history).
+# dlss_preset = default
+# Per-object motion vectors for DLSS: characters, animals and moving objects get their own motion instead of the
+# camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
+# on a laptop CPU); 0 leaves camera-only motion. Read at start.
+# dlaa_objmv = 1
+# Characters' trails: where a character, animal or held item moves without motion vectors of its own (all of them with
+# dlaa_objmv = 0), DLSS can drag a faint copy of it. The G-buffer marks those objects; on them and where they were the
+# frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
+# more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
+# dlss_char_mask = 65
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
@@ -211,6 +232,9 @@
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
+# Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
+# picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
+# hdr_hue = 80
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
@@ -221,6 +245,18 @@
 # Language of the settings menu and the overlay: en, ru, pt-BR or zh-Hans. Default: the Windows display language, English if
 # it is none of them.
 # menu_lang = en
+
+[discord]
+# Rich Presence: "Playing TotK Recomp" with the play time in your Discord status while the game runs, through the
+# local IPC of a running Discord client. 1 = on; the Menu tab of the settings menu (F1) switches it too, and the
+# change reaches the presence thread at once.
+# discord_rpc = 0
+# The application whose name and artwork the status shows. The default is the project's own application,
+# registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
+# discord.com/developers (name and art are yours to choose) and put its id here.
+# discord_app_id = 1567232599846293504
+# The key of the application's uploaded art asset shown as the status's large image.
+# discord_image = totk_512x512
 
 [amiibo]
 # Folder used by the in-game amiibo picker; also selectable on the Amiibo settings tab.
@@ -233,6 +269,9 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
+# game is told the same channel count and mixes for it. Takes effect at the next start.
+# audio_channels = stereo
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).

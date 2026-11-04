@@ -17,14 +17,19 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Native code, not emulation
 - Game updates 1.1.0, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
+- Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
+- NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
+  (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
 - HDR10 output with peak, game and HUD brightness settings
-- 16:10 (Steam Deck, handhelds), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
+- 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
+- Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
 - Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
+- Stereo or 5.1 surround sound output
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
 - Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
@@ -44,7 +49,9 @@ Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines 
 
 1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
 2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
-3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
+3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once. With
+   an NVIDIA RTX GPU it also downloads NVIDIA DLSS, unless you untick *Download NVIDIA DLSS*; turn DLSS on in the
+   menu (F1).
 4. Play `totk.exe` from the install folder.
 
 ### Linux

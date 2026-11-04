@@ -48,13 +48,15 @@ typedef enum {
     UI_MENU_COLOR_SATURATION, UI_MENU_COLOR_SATURATION_DESC, UI_MENU_COLOR_GAMMA, UI_MENU_COLOR_GAMMA_DESC,
     UI_MENU_HDR_GROUP,        // group heading over the HDR rows
     UI_MENU_HDR, UI_MENU_HDR_DESC, UI_MENU_HDR_PEAK, UI_MENU_HDR_PEAK_DESC, UI_MENU_HDR_GAME, UI_MENU_HDR_GAME_DESC,
-    UI_MENU_HDR_UI, UI_MENU_HDR_UI_DESC,
+    UI_MENU_HDR_UI, UI_MENU_HDR_UI_DESC, UI_MENU_HDR_HUE, UI_MENU_HDR_HUE_DESC,
     UI_MENU_SHADOW_SCALE, UI_MENU_SHADOW_SCALE_DESC,
     UI_MENU_SHADOW_RANGE, UI_MENU_SHADOW_RANGE_DESC,
     UI_MENU_CONTACT_SHADOWS, UI_MENU_CONTACT_SHADOWS_DESC,
     UI_MENU_PCSS, UI_MENU_PCSS_DESC,
     UI_MENU_DLAA, UI_MENU_DLAA_DESC, UI_MENU_DLSS, UI_MENU_DLSS_DESC, UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY,
-    UI_MENU_DLSS_BALANCED, UI_MENU_DLSS_PERFORMANCE, UI_MENU_FXAA, UI_MENU_FXAA_DESC,
+    UI_MENU_DLSS_BALANCED, UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA, UI_MENU_DLSS_PRESET, UI_MENU_DLSS_PRESET_DESC,
+    UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J, UI_MENU_DLSS_CHARS, UI_MENU_DLSS_CHARS_DESC,
+    UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM, UI_MENU_DLSS_CHARS_FULL, UI_MENU_FXAA, UI_MENU_FXAA_DESC,
 
     // Game
     UI_MENU_FPS_LIMIT, UI_MENU_FPS_LIMIT_DESC, UI_MENU_FPS_30, UI_MENU_FPS_40, UI_MENU_FPS_45, UI_MENU_FPS_60, UI_MENU_FPS_90,
@@ -88,6 +90,7 @@ typedef enum {
 
     // Sound
     UI_MENU_VOLUME, UI_MENU_VOLUME_DESC,
+    UI_MENU_AUDIO_CHANNELS, UI_MENU_AUDIO_CHANNELS_DESC, UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51,
 
     // Controls
     UI_MENU_MOTION, UI_MENU_MOTION_DESC,
@@ -150,11 +153,13 @@ typedef enum {
 
     // Menu tab
     UI_MENU_MENU_LANG, UI_MENU_MENU_LANG_DESC, UI_MENU_MENU_LANG_AUTO,
+    UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC,
 
     // Language names, each in its own language and the same in every row (game language and menu language lists)
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
-    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR,
+    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_EN_GB,
+    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -203,6 +208,8 @@ typedef enum {
 
     // Performance overlay
     UI_MENU_OV_FPS, UI_MENU_OV_FRAME_MS, UI_MENU_OV_GAME_PCT, UI_MENU_OV_MAX_MS,
+    UI_MENU_OV_FPS_LABEL, UI_MENU_OV_FRAME_LABEL, UI_MENU_OV_FMT_FPS,   // the frame rows: their labels, the rate
+    UI_MENU_OV_LOW1, UI_MENU_OV_LOW01,   // printf: the fps of the slowest 1% / 0.1% of the frames, no unit (the overlay column stays narrow)
     UI_MENU_OV_GPU, UI_MENU_OV_CPU, UI_MENU_OV_RAM, UI_MENU_OV_VRAM, UI_MENU_OV_TEMP, UI_MENU_OV_POWER,
     UI_MENU_OV_CLOCK, UI_MENU_OV_NONE,
     UI_MENU_OV_REPLAY, UI_MENU_OV_GPU_TIME, UI_MENU_OV_PIPE_WAIT, UI_MENU_OV_SHADER_WAIT, UI_MENU_OV_TEX_UPLOADS,
@@ -245,6 +252,12 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
 int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
+
+// The game languages the F1 menu offers for a game build (rt_game_version): one entry per Mals language file the build
+// ships, each with the Switch code TOTK_LANG takes and the id of its name. 1.4.3 adds Brazilian Portuguese (USpt).
+// Fills out (room for max entries) and returns the count.
+typedef struct { const char *code; UiTextId name; } UiGameLang;
+int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
 // Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans");
 // unset, the system UI language when the catalog has menu text for it (English, Russian, Brazilian Portuguese,

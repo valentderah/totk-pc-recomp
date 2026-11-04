@@ -218,19 +218,25 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
 
-// A crash in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
-// overflow) goes to fn, which reports it and must end the process. Faults in other modules (drivers) are left to the
-// OS. The write-fault hook above runs first. On Windows abort() (a failed assert, std::terminate) and an invalid
-// parameter to a C runtime function go there too, with the host frames in this executable: the C runtime ends the
-// process for both with 0xc0000409 and no exception.
+// A crash goes to fn, which reports it and must end the process. The write-fault hook above runs first.
+// - A fault in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
+//   overflow) is reported as it happens.
+// - A fault in another module (a GPU driver, a system library) is reported only when nothing handles it: on Windows
+//   from the unhandled-exception filter, with the return addresses in this executable on the faulting thread's stack,
+//   so the report shows which host call ran into the driver; on Linux from the signal handler, without frames. Drivers
+//   that raise and catch their own exceptions never reach fn.
+// - On Windows abort() (a failed assert, std::terminate) and an invalid parameter to a C runtime function go there
+//   too, with the host frames in this executable: the C runtime ends the process for both with 0xc0000409 and no
+//   exception.
 typedef struct {
     const char *what;          // "access violation", "illegal instruction", ...
     uint32_t code;             // the Windows exception code or the signal number
-    uintptr_t rip, offset;     // the faulting instruction, and its offset in the executable
+    uintptr_t rip, offset;     // the faulting instruction, and its offset in its module
     int access;                // the data access that faulted: 0 read, 1 write, 8 execute; -1 when not an access
     uint64_t addr;             // its address when access >= 0
-    int nframes;               // abort and invalid parameter: return addresses in this executable, innermost first
-    uintptr_t frames[16];      // (rip is frames[0]); 0 for a fault, whose rip is exact
+    int nframes;               // return addresses in this executable, innermost first: for abort and invalid parameter
+    uintptr_t frames[16];      // (rip is frames[0]) and for a fault in another module; 0 for a fault in this one
+    const char *module;        // the module holding rip: NULL for this executable, "" for none (a jump to address 0)
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
@@ -412,6 +418,17 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err);
 void plat_child_stop(PlatChild *c);                       // kills the child and frees c
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
+
+// ---- local IPC: a stream connection to another program of this machine, one listen location per name (Discord's
+// Rich Presence, discord_rpc.c). On Windows the named pipe \\.\pipe\<name>; on Linux the Unix domain socket
+// <dir>/<name> with <dir> the first of $DISCORD_IPC_PATH, $XDG_RUNTIME_DIR, $TMPDIR and /tmp that has one.
+typedef struct PlatIpc PlatIpc;
+PlatIpc *plat_ipc_connect(const char *name);   // NULL when nothing listens under that name
+// Up to n bytes, waiting at most ms for the first of them: bytes read, 0 none in time, -1 the connection broke.
+// The rest of what the peer wrote may still be in its buffer: a caller that needs a whole frame loops.
+int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms);
+int plat_ipc_write(PlatIpc *p, const void *buf, size_t n);   // 1 when all n bytes were written, 0 the connection broke
+void plat_ipc_close(PlatIpc *p);
 
 // ---- restart: this program again, in a new process that starts once this one is gone
 // Starts this executable again with the same command line, environment and working folder, and no handle of this

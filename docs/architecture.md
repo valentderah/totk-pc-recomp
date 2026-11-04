@@ -84,7 +84,7 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - NVN front end from MacNativeGames (`nvn_api_*.c`, `nvn_obj.h`, texture layout and deswizzle). The game records command buffers through it; nothing reaches the GPU until the game submits.
 - Vulkan 1.3 back end in place of MacNativeGames' Metal one. At `QueueSubmitCommands` the recorded NVN commands are replayed into Vulkan command buffers (`vk_exec*.c`).
 - Memory pools. Apple's unified memory let MacNativeGames use the game's pools zero-copy. The back end imports the pools as host memory (`VK_EXT_external_memory_host`). On a discrete GPU, pools bound as buffers are mirrored in device-local memory and the pages the CPU wrote (write watch, above) are uploaded before a replay; idle pool regions are made read-only so the write-watch queries skip them (`vk_memory.c`). GPU-rendered textures are written back when the CPU reads them: on a pool invalidate, on a CPU copy, and for small targets once the CPU waits for a fence (`vk_texture.c`).
-- Replay thread. `TOTK_REPLAY_ASYNC=1` moves the replay off the submitting thread onto a queue at most one frame behind the game; reads of GPU results wait for the newest writer instead of draining the queue (`vk_backend.c`). It is off by default because no timing has shown a gain yet.
+- Replay thread. `TOTK_REPLAY_ASYNC=1` moves the replay off the submitting thread onto a queue at most one frame behind the game; reads of GPU results wait for the newest writer instead of draining the queue (`vk_backend.c`). It is on by default: where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in the Depths, issue #88), elsewhere it is neutral; it adds up to a frame of latency, and `replay_async = 0` turns it off.
 - Recorder thread. The Vulkan calls the replay makes into its command buffer are made by a thread of their own (`vk_rec.c`, after Savage Wind Recomp and LAS Recomp): each `vkCmd*` copies its arguments into a packet of a ring and the recorder makes the calls in order; calls into other command buffers are made at once; the recorder also ends the command buffer, and the submit waits until it has. In the town on an RX 9070 the replay takes 17% less time on the submitting thread. It is off by default on AMD GPUs, where the driver loses the device or hangs the GPU at startup with it (`TOTK_VK_RECORDER=1` forces it on, `=0` makes every call on the submitting thread).
 - Uniform snapshot. The game rewrites per-object uniform blocks on other threads soon after it submits the frame
   that reads them, while the replay still records it. At the start of a submission's replay every uniform range it
@@ -99,8 +99,9 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   RCAS) on the present. An `output_res` that is not 16:9 (more than 1% off, `res_is_16x9`) also switches on the
   `aspect` patch set, which hands the output's ratio to the camera, and `romfs.c` `overlay_init` loads the
   `romfs-patches-<w>x<h>` overlay for it when it exists (`tools/make_romfs_patches.py --aspect`, laid out by
-  `tools/ultrawide_layout.py`; the installer builds ten sizes: 21:9 2560x1080, 3440x1440, 3840x1600, 5120x2160, 32:9
-  3840x1080, 5120x1440 and 16:10 1280x800, 1680x1050, 1920x1200, 2560x1600). A wider layout moves the HUD to the
+  `tools/ultrawide_layout.py`; the installer builds fifteen sizes: 21:9 2560x1080, 3440x1440, 3840x1600, 5120x2160,
+  32:9 3840x1080, 5120x1440, 16:10 1280x800, 1680x1050, 1920x1200, 2560x1600 and 3:2 1920x1280, 2160x1440, 2256x1504,
+  2880x1920, 3000x2000). A wider layout moves the HUD to the
   screen's corners, a narrower one to its top and bottom edges. Other sizes get the camera of their shape and the 16:9
   HUD stretched over it. The `aspect` setting (`fit`, the default; `stretch`) decides what the present does
   when the window's shape differs from the output's: `fit` letterboxes, where a 16:9 game in a wider window used to be
@@ -117,8 +118,13 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - DLAA (`vk_dlaa.c`, `dlaa`, off by default). NVIDIA DLSS at the scene's own size, through the driver's NGX core loaded
   at run time (no SDK code compiled in). It runs on the R11G11B10F light target right before the bloom chain's first
   pass, so post effects and the HUD read the anti-aliased picture. The scene's draws get a sub-pixel Halton viewport
-  jitter; motion vectors are camera-only, reprojected from the scene depth through this and last frame's
-  view-projection of the scene camera block (constant bank c4). `fxaa` switches the game's own FXAA pass.
+  jitter; camera motion vectors are reprojected from the scene depth through this and last frame's view-projection of
+  the scene camera block (constant bank c4), in double precision on the CPU. Per-object motion (`dlaa_objmv`,
+  `vk_mvprev.c`, the per-object section of `vk_exec_draw.c`, translator patch 0015): solid scene draws whose position
+  reads an object's own uniform blocks (bones c5, place c7, c6) are drawn a second time with a vertex shader variant
+  that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
+  the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
+  vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
