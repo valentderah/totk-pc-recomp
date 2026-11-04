@@ -45,6 +45,7 @@ extern "C" {
 #include "mods.h"
 #include "perfmon.h"
 #include "perf_panel.h"
+#include "input_panel.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
@@ -662,6 +663,7 @@ static void tab_screen(float scale) {
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_toggle("TOTK_PERF_WINDOW", UI_MENU_PERF_WINDOW, UI_MENU_PERF_WINDOW_DESC);
+    opt_toggle("TOTK_INPUT_WINDOW", UI_MENU_INPUT_WINDOW, UI_MENU_INPUT_WINDOW_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
@@ -1498,6 +1500,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
     perf_panel_tick();
+    input_panel_tick();
     perf_tick(plat_now_ns(), t);
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);

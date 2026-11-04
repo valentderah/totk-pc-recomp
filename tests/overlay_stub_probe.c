@@ -1,6 +1,7 @@
-// Non-Windows regression: even when enabled, the performance panel safely falls back without creating windows or raising sampling.
+// Non-Windows regression: even when enabled, both panels safely fall back without creating windows or raising sampling.
 #include <stdio.h>
 #include "cfg.h"
+#include "input_panel.h"
 #include "perf_panel.h"
 #include "platform/platform.h"
 #include "ui/perf_mode.h"
@@ -16,10 +17,10 @@ void plat_mutex_lock(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 int main(void) {
     int failures=0;
-    for(int i=0;i<20;i++) { perf_panel_tick(); }
+    for(int i=0;i<20;i++) { perf_panel_tick(); input_panel_tick(); }
     if(perf_panel_active() || writes || logs!=2) failures++;
     for(int mode=0;mode<3;mode++) if(perf_sampling_mode(mode,perf_panel_active())!=mode) failures++;
-    perf_panel_close(); perf_panel_tick();
+    perf_panel_close(); input_panel_close(); perf_panel_tick(); input_panel_tick();
     if(perf_panel_active() || writes || logs!=2) failures++;
     uiwindow_close(NULL); uiwindow_set_title(NULL,"safe"); uiwindow_repaint(NULL);
     if(uiwindow_is_open(NULL) || uiwindow_take_close_requested(NULL)) failures++;

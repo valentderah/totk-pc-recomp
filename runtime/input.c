@@ -628,6 +628,47 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     return ok;
 }
 
+int input_overlay_state(InputOverlayState *s) {
+    if (!s) return 0;
+    memset(s, 0, sizeof *s);
+    s->layout = -1;
+    plat_mutex_lock(&lock);
+    if (!state) start();
+    if (state > 0) binds_refresh();
+    uint8_t pd[PAD_COUNT] = {0};
+    if (state == 1 && pad_physical(pd)) {
+        s->connected = 1;
+        s->layout = pad_layout_get();
+        s->buttons = input_map_pad_buttons(pd, s->layout);
+        for (int i = 0; i < 4; i++) s->labels[i] = pad_labels[i];
+        static const SDL_GamepadAxis axes[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY,
+                                               SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY};
+        for (int i = 0; i < 4; i++) {
+            int32_t v = SDL_GetGamepadAxis(pad, axes[i]);
+            s->raw[i] = i & 1 ? -v : v;  // Invert in int32_t to preserve the +32768 endpoint.
+        }
+        for (int i = 0; i < 2; i++) {
+            float dead = stick_dead_get(i);
+            s->deadzone[i] = (int32_t)lroundf(dead * 100);
+            input_pad_stick(s->raw[2 * i], s->raw[2 * i + 1], dead, &s->out[2 * i]);
+            int v = SDL_GetGamepadAxis(pad, i ? SDL_GAMEPAD_AXIS_RIGHT_TRIGGER : SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+            s->trigger[i] = v < 0 ? 0 : v;
+        }
+        s->motion_available = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
+        s->motion_enabled = cfg_bool("TOTK_MOTION");
+        // Read enabled physical sensors only; do not start a thread or report the fusion's at-rest fallback as a measurement.
+        if (s->motion_available && s->motion_enabled && sensor_ok && sensor_pad == SDL_GetGamepadID(pad)) {
+            float g[3];
+            if (SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3)) {
+                s->gyro[0] = g[0]; s->gyro[1] = -g[2]; s->gyro[2] = g[1];
+                s->motion_known = 1;
+            }
+        }
+    }
+    plat_mutex_unlock(&lock);
+    return s->connected;
+}
+
 uint16_t rumble_motor(float a, float curve, float strength) {
     if (!(a > 0) || !(strength > 0)) return 0;
     float v = powf(a > 1 ? 1 : a, curve) * strength * 65535.0f + 0.5f;

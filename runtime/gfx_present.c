@@ -19,6 +19,7 @@
 
 #include "cfg.h"
 #include "perf_panel.h"
+#include "input_panel.h"
 #include "flight.h"
 #include "fs.h"
 #include "gfx.h"
@@ -73,6 +74,7 @@ void gfx_window_closed(void) {
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
     // Draw callbacks do not acquire present or queue locks; join here without g_pl held.
     perf_panel_close();
+    input_panel_close();
     fs_save_flush();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
@@ -824,4 +826,5 @@ void gfx_window_start(void) {
     plat_rmutex_unlock(&g_start_lock);
     vsync_ensure();
     perf_panel_tick();
+    input_panel_tick();
 }
