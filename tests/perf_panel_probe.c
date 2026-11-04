@@ -1,12 +1,17 @@
-// Use the real panel, GDI, catalog and window; settings, metrics and platform locks are test doubles, with no game or user ini reads.
+// Windows interactive-desktop regression: real GDI/catalog/window, configuration and metrics test doubles.
+// Opens non-activating windows; no game, SDL, Vulkan or user ini reads/writes. Optional argv[1] writes a BMP.
+// From the repository root, create build/test or replace the output directory below.
+// clang -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 -I runtime tests/perf_panel_probe.c runtime/uiwindow_win.c runtime/ui_text.c -luser32 -lgdi32 -o build/test/perf_panel_probe.exe
+// Run: build/test/perf_panel_probe.exe [build/test/perf-panel.bmp]
+// The test includes perf_panel.c to interpose the close/alive race; do not compile that source twice.
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "cfg.h"
-#include "host.h"
 #include "perf_panel.h"
+#include "uiwindow.h"
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "ui/perf_mode.h"
@@ -19,6 +24,7 @@ static unsigned version;
 static const char *language = "en";
 static int failures;
 #define CHECK(x, name) do { if(!(x)) { printf("FAIL %s\n",name); failures++; } else printf("PASS %s\n",name); } while(0)
+void rt_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 void rt_log(const char *format, ...) { va_list ap; va_start(ap,format); vprintf(format,ap); putchar('\n'); va_end(ap); }
 void plat_mutex_lock(PlatMutex *m) { AcquireSRWLockExclusive((SRWLOCK *)m); }
 void plat_mutex_unlock(PlatMutex *m) { ReleaseSRWLockExclusive((SRWLOCK *)m); }
@@ -41,6 +47,19 @@ static void pump(int ms) {
 }
 static HWND panel(void) { return FindWindowW(L"TotkAuxiliaryPanel",NULL); }
 static volatile LONG run, raced;
+static int close_during_alive_check;
+static int test_is_open(const UiWindow *w);
+// Interpose only in the panel under test, without changing the production window implementation.
+#define uiwindow_is_open test_is_open
+#include "../runtime/perf_panel.c"
+#undef uiwindow_is_open
+static int test_is_open(const UiWindow *w) {
+    if (close_during_alive_check) {
+        close_during_alive_check = 0;
+        SendMessageW(panel(), WM_CLOSE, 0, 0);
+    }
+    return uiwindow_is_open(w);
+}
 static DWORD WINAPI ticker(void *arg) { (void)arg; while(InterlockedCompareExchange(&run,0,0)) { perf_panel_tick(); Sleep(1); } return 0; }
 static DWORD WINAPI language_reader(void *arg) {
     (void)arg;
@@ -76,21 +95,30 @@ int main(int argc, char **argv) {
     __atomic_store_n(&language,"zh-Hans",__ATOMIC_RELEASE); __atomic_add_fetch(&version,1,__ATOMIC_RELEASE);
     perf_panel_tick(); pump(60); CHECK(FindWindowW(L"TotkAuxiliaryPanel",L"性能独立窗口")!=NULL,"live Chinese title");
     if(argc>1) snapshot(panel(),argv[1]);
-    PostMessageW(panel(),WM_CLOSE,0,0); pump(50); perf_panel_tick();
+    close_during_alive_check=1; perf_panel_tick();
     CHECK(!panel() && !perf_panel_active() && !setting && writes==1 && saves==1,"close updates settings once and releases sample demand");
     for(int mode=0;mode<3;mode++) CHECK(perf_sampling_mode(mode,perf_panel_active())==mode,"close restores overlay sampling");
     setting=1; perf_panel_tick(); pump(40); CHECK(panel()!=NULL,"off-on reopens");
-    environment=1; PostMessageW(panel(),WM_CLOSE,0,0); pump(50); perf_panel_tick();
+    environment=1; close_during_alive_check=1; perf_panel_tick();
     for(int i=0;i<50;i++) perf_panel_tick();
-    CHECK(!panel() && !perf_panel_active() && cfg_bool("TOTK_PERF_WINDOW"),"environment override does not reopen after close");
-    environment=0; perf_panel_tick(); setting=1; perf_panel_tick(); pump(40); CHECK(panel()!=NULL,"effective off rearms the panel");
+    CHECK(!panel() && !perf_panel_active() && cfg_bool("TOTK_PERF_WINDOW") && writes==2 && saves==2,"environment override close saves once without reopening");
+    environment=0; setting=0; perf_panel_tick(); setting=1; perf_panel_tick(); pump(40); CHECK(panel()!=NULL,"effective off rearms the panel");
     // Concurrent language fallback exercises the former shared base[] buffer race.
     __atomic_store_n(&language,"ru-RU",__ATOMIC_RELEASE); __atomic_add_fetch(&version,1,__ATOMIC_RELEASE);
-    HANDLE readers[8]; for(int i=0;i<8;i++) readers[i]=CreateThread(NULL,0,language_reader,NULL,0,NULL);
-    WaitForMultipleObjects(8,readers,TRUE,INFINITE); for(int i=0;i<8;i++) CloseHandle(readers[i]);
+    HANDLE readers[8];
+    for(int i=0;i<8;i++) {
+        readers[i]=CreateThread(NULL,0,language_reader,NULL,0,NULL);
+        CHECK(readers[i]!=NULL,"language reader creation");
+    }
+    for(int i=0;i<8;i++) if(readers[i]) {
+        CHECK(WaitForSingleObject(readers[i],30000)==WAIT_OBJECT_0,"language reader join");
+        CloseHandle(readers[i]);
+    }
     CHECK(!raced,"concurrent catalog fallback resolution");
-    InterlockedExchange(&run,1); HANDLE thread=CreateThread(NULL,0,ticker,NULL,0,NULL); pump(40);
-    perf_panel_close(); InterlockedExchange(&run,0); WaitForSingleObject(thread,INFINITE); CloseHandle(thread);
+    InterlockedExchange(&run,1); HANDLE thread=CreateThread(NULL,0,ticker,NULL,0,NULL);
+    CHECK(thread!=NULL,"concurrent ticker creation"); pump(40);
+    perf_panel_close(); InterlockedExchange(&run,0);
+    if(thread) { CHECK(WaitForSingleObject(thread,30000)==WAIT_OBJECT_0,"concurrent ticker join"); CloseHandle(thread); }
     perf_panel_tick(); CHECK(!panel() && !perf_panel_active(),"concurrent exit joins and permanently stops reopening");
     printf("perf panel probe: %d failures\n",failures); return failures?1:0;
 }
