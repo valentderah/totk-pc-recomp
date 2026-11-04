@@ -2243,6 +2243,7 @@ static struct {
     uint64_t why[5];             // nodata by cause: camera, bones, place, bones copy, place copy
     uint64_t no_out, storage, no_fs;   // variant without the extra output, with storage resources; no fs
     uint64_t other_cam;          // listed draws left out: their camera block is not the scene camera
+    uint64_t other_size;         // listed draws left out: drawn into a pass of another size than the scene's
     uint64_t lk[14][5];          // last-frame lookups per binding index: none, self, side, nearer, refused (another object)
     uint64_t e_draws, e_pipe, e_dyn, e_push, e_pushw, e_sets, e_vb, e_setw, e_setreuse;   // emitted commands (summary)
 } MO;
@@ -2942,10 +2943,14 @@ int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth
     if (!fo) fm_last[0] = 0;
     // only draws with the scene camera block (vk_dlaa.c mv_pass's): last frame's camera they get is that block's, and
     // a draw of another view would move by the difference between the two views
+    // and only draws whose viewport is the scene's size: the game also draws characters with the scene camera into
+    // smaller depth passes (the companions, at half size, while they follow Link), and drawn again into the motion
+    // image with that pass's viewport they landed at half their position and size, a ghost copy beside them
     int kept = 0;
     for (int i = 0; i < MQ.n; i++)
-        if (MQ.d[i].cam == cam) MQ.d[kept++] = MQ.d[i];
-        else MO.other_cam++;
+        if (MQ.d[i].cam != cam) MO.other_cam++;
+        else if (fabsf(MQ.d[i].v.width - (float)w) > 2.0f || fabsf(fabsf(MQ.d[i].v.height) - (float)h) > 2.0f) MO.other_size++;
+        else MQ.d[kept++] = MQ.d[i];
     MQ.n = kept;
     if (!MQ.n) {
         mo_drop();

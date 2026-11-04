@@ -702,6 +702,15 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
 
 // Last frame's camera block for the per-object motion pass, recorded before this frame's mv_pass: that pass writes
 // this frame's into slot cam_slot and leaves the other slot, last frame's, as it is. 0: none (no history).
+// TOTK_DLAA_MVDEBUG=2 (test, vk_color.c): the motion image DLSS last read, render pixels, last minus this window
+// position. Read on the present thread without a lock: a DLSS size change while it draws can show one wrong frame.
+int vk_dlaa_motion(VkImage *img, VkImageView *view, uint32_t *w, uint32_t *h) {
+    struct Size *e = D.last;
+    if (!e || !e->mv || !e->mv_view) return 0;
+    *img = e->mv, *view = e->mv_view, *w = e->w, *h = e->h;
+    return 1;
+}
+
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]) {
     if (!dl_active() || !D.cam_prev_ok || !D.camb) return 0;
     *out = (VkDescriptorBufferInfo){D.camb, (VkDeviceSize)(D.cam_slot ^ 1) * CAM_SLOT, CAM_BLOCK};
@@ -1083,7 +1092,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     // TOTK_DLAA_MVDEBUG=1 (test): the motion vectors in place of the picture, x in red and y in green, render pixels
     // as scene light (the post passes still run over them)
     static int mvdebug = -1;
-    if (mvdebug < 0) mvdebug = rt_knob("DLAA_MVDEBUG", "0");
+    if (mvdebug < 0) {   // 2 is the colour view on the present (vk_color.c), which leaves this picture as it is
+        const char *v = cfg_get("TOTK_DLAA_MVDEBUG");
+        mvdebug = v && !strcmp(v, "1");
+    }
     static int maskdebug = -1;
     if (maskdebug < 0) maskdebug = rt_knob("DLAA_MASKDEBUG", "0");
     if (mvdebug || (maskdebug && mk)) b.srcOffsets[1] = (VkOffset3D){(int32_t)w, (int32_t)h, 1};
@@ -1221,7 +1233,11 @@ void vk_dlaa_frame(void) {
 // The stock translator's hash, the one with tools/xlate patch 0010 (PCSS, PR #89) applied, and the one with patches
 // 0010 and 0011 (the shadow filter spread) applied. A scaling draw this list misses still scales DLSS's picture, not
 // the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
-static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull};
+// The fourth: with patches 0010 to 0015 (v0.3.7). Without it the scaling draw was not skipped and, at a 960x536 scene
+// (1.4.3, dlss = performance), sampled an image other than the one DLSS read, so vk_dlaa_swap_img did not apply and
+// the jittered scene reached the screen.
+static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
+                                   0xaad42238801d31d8ull};
 
 static uint64_t spirv_hash(const GfxShader *s) {
     static struct { const GfxShader *s; uint64_t h; } tab[8192];

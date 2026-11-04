@@ -7,6 +7,9 @@
 // One compute pass (shaders/color_grade.comp) reads the crop rectangle of the game's image and writes an RGBA16F image
 // of its size, which present_image then hands to FSR or the blit in place of the game's image. The HUD is part of that
 // picture and is adjusted with it; the in-game menu is drawn later, straight into the swapchain image, and is not.
+// TOTK_DLAA_MVDEBUG=2 (test) replaces the picture, HUD included, with DLSS's motion vectors in the usual optical-flow
+// colours (shaders as tools/make_dlaa_mvview.py): grey where nothing moves, a hue per direction, stronger for faster. It
+// runs after the game's post passes, so nothing glows or tonemaps over it, and needs DLSS running (dlaa = 1).
 // The source view of slot s is destroyed when slot s records again (present_image has waited for that slot's fence);
 // the output image is shared by all slots, and each frame's first barrier orders it after the previous frame's reads.
 #include "vk.h"
@@ -15,6 +18,8 @@
 
 #include "cfg.h"
 #include "color_grade_spv.h"
+#include "dlaa_mvview_spv.h"
+#include "vk_dlaa.h"
 #include "host.h"
 
 #define SLOTS 8
@@ -24,7 +29,7 @@ static struct {
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
-    VkPipeline pipe;
+    VkPipeline pipe, mvpipe;    // the colour adjustment, the motion view (VK_NULL_HANDLE: not made)
     VkSampler sampler;
     VkImage img;                   // the adjusted picture, RGBA16F at the crop size
     VmaAllocation alloc;
@@ -33,6 +38,7 @@ static struct {
     VkImageView src_view[SLOTS];   // the source view each slot's last frame read
     unsigned seen;                 // cfg_version the values below were read at
     float adj[4];                  // brightness (added), contrast, saturation, gamma
+    int mvview;                    // TOTK_DLAA_MVDEBUG = 2
 } C = {.seen = ~0u};
 
 static int init(VkCtx *c) {
@@ -70,6 +76,14 @@ static int init(VkCtx *c) {
                                       .layout = C.layout};
     VkResult r = vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &C.pipe);
     vkDestroyShaderModule(c->device, m, NULL);
+    // the motion view: the same bindings and push size
+    mi.codeSize = sizeof dlaa_mvview_spv, mi.pCode = dlaa_mvview_spv;
+    if (r == VK_SUCCESS && vkCreateShaderModule(c->device, &mi, NULL, &m) == VK_SUCCESS) {
+        ci.stage.module = m;
+        if (vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &C.mvpipe) != VK_SUCCESS)
+            C.mvpipe = VK_NULL_HANDLE, rt_log("vk: the motion view (dlaa_mvdebug = 2) could not be created");
+        vkDestroyShaderModule(c->device, m, NULL);
+    }
     if (r != VK_SUCCESS) {
         rt_log("vk: colour adjustment off: its pipeline could not be created");
         return 0;
@@ -120,6 +134,8 @@ static int adjusting(void) {
         C.adj[1] = (float)cfg_double("TOTK_COLOR_CONTRAST") / 100.0f;
         C.adj[2] = (float)cfg_double("TOTK_COLOR_SATURATION") / 100.0f;
         C.adj[3] = (float)cfg_double("TOTK_COLOR_GAMMA");
+        const char *mv = cfg_get("TOTK_DLAA_MVDEBUG");
+        C.mvview = mv && !strcmp(mv, "2");
     }
     return C.adj[0] != 0.0f || C.adj[1] != 1.0f || C.adj[2] != 1.0f || C.adj[3] != 1.0f;
 }
@@ -137,10 +153,38 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkPipel
 }
 
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
-    if (!adjusting()) return VK_NULL_HANDLE;
+    int adj = adjusting();
+    VkImage mvimg = VK_NULL_HANDLE;
+    VkImageView mvview = VK_NULL_HANDLE;
+    uint32_t mw = 0, mh = 0;
+    int motion = C.mvview && vk_dlaa_motion(&mvimg, &mvview, &mw, &mh);
+    if (!adj && !motion) return VK_NULL_HANDLE;
     VkCtx *c = vk_ctx();
     if (!C.tried) init(c);
     if (!C.ok || !ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) return VK_NULL_HANDLE;
+    if (motion && C.mvpipe) {   // TOTK_DLAA_MVDEBUG=2: the motion image in place of the picture
+        const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        barrier(cb, mvimg, VK_IMAGE_LAYOUT_GENERAL, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        barrier(cb, C.img, VK_IMAGE_LAYOUT_UNDEFINED, ALL, 0, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        VkDescriptorImageInfo ii = {C.sampler, mvview, VK_IMAGE_LAYOUT_GENERAL},
+                              oi = {VK_NULL_HANDLE, C.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w[2] = {
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii},
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.mvpipe);
+        rec_push(C.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.layout, 0, 2, w);
+        // gain: full colour at 4 render pixels a frame (sqrt(4 * 0.25) = 1); grey 0.67 like common flow viewers
+        float pc[8] = {(float)crop[2], (float)crop[3], (float)mw, (float)mh, 0.25f, 0.67f, 0, 0};
+        vkCmdPushConstants(cb, C.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+        vkCmdDispatch(cb, ((uint32_t)crop[2] + 7) / 8, ((uint32_t)crop[3] + 7) / 8, 1);
+        barrier(cb, mvimg, VK_IMAGE_LAYOUT_GENERAL, CS, 0, ALL, 0);
+        barrier(cb, C.img, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, ALL,
+                VK_ACCESS_2_MEMORY_READ_BIT);
+        return C.img;
+    }
+    if (!adj) return VK_NULL_HANDLE;
     slot %= SLOTS;
     if (C.src_view[slot]) vkDestroyImageView(c->device, C.src_view[slot], NULL);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
@@ -180,9 +224,10 @@ void vk_color_release(void) {
         if (C.src_view[i]) vkDestroyImageView(c->device, C.src_view[i], NULL), C.src_view[i] = VK_NULL_HANDLE;
     free_image(c);
     if (C.pipe) vkDestroyPipeline(c->device, C.pipe, NULL);
+    if (C.mvpipe) vkDestroyPipeline(c->device, C.mvpipe, NULL);
     if (C.sampler) vkDestroySampler(c->device, C.sampler, NULL);
     if (C.layout) vkDestroyPipelineLayout(c->device, C.layout, NULL);
     if (C.dsl) vkDestroyDescriptorSetLayout(c->device, C.dsl, NULL);
-    C.pipe = VK_NULL_HANDLE, C.sampler = VK_NULL_HANDLE, C.layout = VK_NULL_HANDLE, C.dsl = VK_NULL_HANDLE;
+    C.pipe = C.mvpipe = VK_NULL_HANDLE, C.sampler = VK_NULL_HANDLE, C.layout = VK_NULL_HANDLE, C.dsl = VK_NULL_HANDLE;
     C.tried = C.ok = 0;
 }
