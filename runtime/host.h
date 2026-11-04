@@ -316,6 +316,9 @@ int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
 void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
+void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
+void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
+int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 while not counted
 int probe_discord(void);                                   // discord_rpc.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
