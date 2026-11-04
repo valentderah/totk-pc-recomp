@@ -1212,11 +1212,16 @@ static void locale_tag(const char *const *names, int n, char *tag, size_t cap) {
     tag[k] = 0;
 }
 
-const char *plat_ui_language(void) {
-    static char tag[32];
+static char ui_language_tag[32];
+static PlatOnce ui_language_once = PLAT_ONCE_INIT;
+static void ui_language_init(void *arg) {
+    (void)arg;
     static const char *const names[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
-    if (!tag[0]) locale_tag(names, 3, tag, sizeof tag);
-    return tag;
+    locale_tag(names, 3, ui_language_tag, sizeof ui_language_tag);
+}
+const char *plat_ui_language(void) {
+    plat_once(&ui_language_once, ui_language_init, NULL);
+    return ui_language_tag;
 }
 
 const char *plat_user_locale(void) {

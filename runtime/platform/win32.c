@@ -1223,17 +1223,18 @@ size_t plat_getenv(const char *name, char *out, size_t cap) {
 
 uint32_t plat_thread_id(void) { return GetCurrentThreadId(); }
 
+static char ui_language_tag[LOCALE_NAME_MAX_LENGTH];
+static PlatOnce ui_language_once = PLAT_ONCE_INIT;
+static void ui_language_init(void *arg) {
+    (void)arg;
+    wchar_t w[LOCALE_NAME_MAX_LENGTH];
+    int n = LCIDToLocaleName(GetUserDefaultUILanguage(), w, LOCALE_NAME_MAX_LENGTH, 0);
+    if (n <= 0 || !WideCharToMultiByte(CP_UTF8, 0, w, -1, ui_language_tag, sizeof ui_language_tag, NULL, NULL))
+        ui_language_tag[0] = 0;
+}
 const char *plat_ui_language(void) {
-    static char tag[LOCALE_NAME_MAX_LENGTH];
-    static int done;
-    if (!done) {
-        wchar_t w[LOCALE_NAME_MAX_LENGTH];
-        LCID lcid = GetUserDefaultUILanguage();
-        int n = LCIDToLocaleName(lcid, w, LOCALE_NAME_MAX_LENGTH, 0);
-        if (n <= 0 || !WideCharToMultiByte(CP_UTF8, 0, w, -1, tag, sizeof tag, NULL, NULL)) tag[0] = 0;
-        done = 1;
-    }
-    return tag;
+    plat_once(&ui_language_once, ui_language_init, NULL);
+    return ui_language_tag;
 }
 
 const char *plat_user_locale(void) {

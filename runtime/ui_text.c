@@ -2,11 +2,11 @@
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
 // The software keyboard has every language; the menu has English, Russian, Brazilian Portuguese and Simplified
 // Chinese.
-#include <stdatomic.h>
 #include <string.h>
 
 #include "cfg.h"
-#include "ov.h"
+// The catalog needs only the language accessor, not the graphics and guest SIMD dependencies of ov.h.
+const char *ov_language(void);
 #include "platform/platform.h"
 #include "ui_text.h"
 
@@ -36,6 +36,8 @@ typedef struct { const char *lang; const char *const *text; } Row;
 #endif
 
 static const char *const text_en[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Performance window",
+    [UI_MENU_PERF_WINDOW_DESC] = "Show full performance statistics in a separate window. Full sampling enables the existing GPU timestamp queries.",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",
@@ -487,6 +489,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Окно производительности",
+    [UI_MENU_PERF_WINDOW_DESC] = "Показывать полную статистику в отдельном окне. Полный сбор включает существующие запросы времени GPU.",
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
@@ -943,6 +947,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Janela de desempenho",
+    [UI_MENU_PERF_WINDOW_DESC] = "Mostrar as estatísticas completas em uma janela separada. A coleta completa ativa as consultas de tempo da GPU existentes.",
     SWKBD("Inserir texto", "Insira um nome", "Cavalo", "OK", "Cancelar", "Controle: A = OK, B = Cancelar"),
 
     [UI_MENU_TITLE] = "Configurações",
@@ -1428,6 +1434,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
 // when the menu language is zh-Hans (ui_text.h menu_text). The rows are fixed width, so the strings stay close to the
 // English length; an id without a Chinese entry falls back to English.
 static const char *const text_zh_hans[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "性能独立窗口",
+    [UI_MENU_PERF_WINDOW_DESC] = "在独立窗口显示完整性能统计。完整采样会启用现有的 GPU 时间戳查询。",
     SWKBD("文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消"),
 
     [UI_MENU_TITLE] = "设置",
@@ -2074,7 +2082,7 @@ static const char *resolve_menu_lang(void) {
     const char *sys = plat_ui_language();
     const char *lang = v && *v ? ui_text_lang(v) : sys && *sys ? ui_text_lang(sys) : "en";
     if (ui_text_defined(lang, UI_MENU_TITLE)) return lang;
-    static char base[16];   // menu_text calls this on one thread at a time, on a cfg_version change
+    char base[16];   // Independent windows may resolve the language concurrently.
     size_t n = strcspn(lang, "-");
     if (n < sizeof base && lang[n]) {
         memcpy(base, lang, n), base[n] = 0;
@@ -2084,12 +2092,13 @@ static const char *resolve_menu_lang(void) {
 }
 
 const char *menu_text(UiTextId id) {
-    static _Atomic(const char *) lang = "en";
-    static _Atomic unsigned seen = ~0u;
+    // Each drawing thread caches its own version and language, avoiding mixed publication through two independent atomics.
+    static _Thread_local const char *lang = "en";
+    static _Thread_local unsigned seen = ~0u;
     unsigned v = cfg_version();
-    if (v != atomic_load_explicit(&seen, memory_order_relaxed)) {
-        atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
-        atomic_store_explicit(&seen, v, memory_order_relaxed);
+    if (v != seen) {
+        lang = resolve_menu_lang();
+        seen = v;
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return ui_text_in(lang, id);
 }
