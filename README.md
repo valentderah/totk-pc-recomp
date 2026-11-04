@@ -30,7 +30,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
-- Xbox or keyboard button prompts: Xbox (LB, RB, LT, RT, Menu, View, A/B/X/Y by layout) or keyboard and mouse (keycaps and mouse icons)
+- Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
 - Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
   mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches

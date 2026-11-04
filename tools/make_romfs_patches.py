@@ -17,15 +17,14 @@ cover the screen and the HUD moves to the screen's corners (wider) or its top an
 loads that overlay from romfs-patches-<w>x<h> when the game resolution is that size (runtime/romfs.c overlay_init);
 the camera's side of it is the patch set aspect (recomp/patches-v121.txt, patches-v143.txt).
 
---prompts xbox | xbox-label | keyboard: button icons in the game's prompts, for prompts = xbox or prompts = keyboard
-(runtime/romfs.c overlay_init loads romfs-patches-xbox, romfs-patches-xbox-label or romfs-patches-keyboard in place of
-romfs-patches). Drawn from the game's own files on the player's machine, nothing added (tools/button_icons.py, which
-needs fontTools):
-- xbox & xbox-label: L, R, ZL, ZR, Plus, Minus and the d-pad become LB, RB, LT, RT, Menu, View and a cross in the
-  button font (scft/External.bfotf, the same font in each Font/Font*.Nin_NX_NVN.bfarc.zs), and L and ZL in the button
-  guide's images (Nt_KeyTexL_00 and Nt_KeyTexZL_00 of timg/__Combined.bntx in the Common archive). The fonts grow, so
-  the overlay also carries the resource size table (System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs) with
-  their entries raised by as much.
+--prompts xbox | xbox-label: the same overlay with Xbox button icons in the game's prompts, for prompts = xbox
+(runtime/romfs.c overlay_init loads romfs-patches-xbox or romfs-patches-xbox-label in place of romfs-patches). Drawn
+from the game's own files on the player's machine, nothing added (tools/button_icons.py, which needs fontTools):
+- both: L, R, ZL, ZR, Plus, Minus and the d-pad become LB, RB, LT, RT, Menu, View and a cross in the button font
+  (scft/External.bfotf, the same font in each Font/Font*.Nin_NX_NVN.bfarc.zs), and L and ZL in the button guide's images
+  (Nt_KeyTexL_00 and Nt_KeyTexZL_00 of timg/__Combined.bntx in the Common archive). The fonts grow, so the overlay also
+  carries the resource size table (System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs) with their entries
+  raised by as much.
 - xbox, for pad_layout = nintendo. That layout plays an Xbox pad by position: the button that does Switch A is
   labelled B, so the face buttons' prompts are swapped to name the labels, A with B and X with Y:
   - the action prompt (blyt/DoCommand_00.bflyt) draws the letter images Nt_KeyTexA/B/X/Y_00 of timg/__Combined.bntx in
@@ -38,9 +37,6 @@ needs fontTools):
 - xbox-label, for pad_layout = xbox and auto. Those layouts put Switch A on the button labelled A (auto picks xbox for
   every pad not labelled the Nintendo way), so the face buttons keep their letters; the action prompt's diamond keeps
   the Switch positions (A on the right).
-- keyboard: keycaps for the player's keys and mouse icons for clicks and camera look, drawn into scft/External.bfotf
-  and the button guide's images (Nt_KeyTexA/B/X/Y_00, Nt_KeyTexL_00, Nt_KeyTexZL_00 and Nt_KeyTexLSt_00/01). Reads the
-  bind_ lines of totk.ini (--ini); without an ini, defaults to the default bindings.
 --xbox-prompts is the older name of --prompts xbox.
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
@@ -62,12 +58,9 @@ ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/ro
 ap.add_argument('--out', type=Path,
                 help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
 ap.add_argument('--aspect', help='<w>x<h> of a game resolution of another shape than 16:9: also lay the UI out for it')
-ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'keyboard'),
-                help='Button icons in the prompts: xbox for pad_layout = nintendo, '
-                     'xbox-label for pad_layout = xbox or auto, '
-                     'keyboard for prompts = keyboard')
-ap.add_argument('--ini', type=Path,
-                help='totk.ini whose bind_ lines --prompts keyboard reads (default: default bindings)')
+ap.add_argument('--prompts', choices=('xbox', 'xbox-label'),
+                help='Xbox button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
+                     'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters)')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
@@ -304,24 +297,19 @@ if args.prompts:
     text = sarc_members(archives[icons.TEXT_ARCHIVE])
     missing = [name for name in icons.TEXT_FONTS if name not in text]
     assert not missing, f'no {", ".join(missing)} in {icons.TEXT_ARCHIVE}'
-    glyphs = icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])]
-                               for name in icons.TEXT_FONTS)
+    drawn = icons.xbox_icons(icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])]
+                                               for name in icons.TEXT_FONTS))
     bntx = members['timg/__Combined.bntx'][0]
     letters = {}
-    if args.prompts == 'keyboard':
-        drawn = icons.keyboard_icons(glyphs, icons.read_ini_keys(args.ini))
-        hud = icons.bntx_redraw(blarc, bntx, icons.HUD_KEYBOARD_TEXTURES, drawn, optional=icons.HUD_KEYBOARD_OPTIONAL)
-    else:
-        drawn = icons.xbox_icons(glyphs)
-        if by_position:
-            bntx_swap(blarc, bntx, KEY_TEXTURES)
-            for member, (lo, hi) in members.items():
-                if member.endswith('.bflyt'):
-                    changed = bflyt_letters(blarc, lo, hi, KEY_LETTERS)
-                    if changed:
-                        letters[member] = changed
-            assert 'blyt/DoCommand_00.bflyt' in letters, 'no letter panes in blyt/DoCommand_00.bflyt'
-        hud = icons.bntx_redraw(blarc, bntx, icons.HUD_TEXTURES, drawn)
+    if by_position:
+        bntx_swap(blarc, bntx, KEY_TEXTURES)
+        for member, (lo, hi) in members.items():
+            if member.endswith('.bflyt'):
+                changed = bflyt_letters(blarc, lo, hi, KEY_LETTERS)
+                if changed:
+                    letters[member] = changed
+        assert 'blyt/DoCommand_00.bflyt' in letters, 'no letter panes in blyt/DoCommand_00.bflyt'
+    hud = icons.bntx_redraw(blarc, bntx, icons.HUD_TEXTURES, drawn)
     outputs[ARCHIVE] = bytes(blarc)
     fonts = {}   # each distinct font is drawn once (1.4.3's four archives hold the same one)
     for path, bfarc in archives.items():

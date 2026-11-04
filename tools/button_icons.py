@@ -1,28 +1,25 @@
 # Adapted from MacNativeGames games/totk/scripts/make_button_icons.py @ 933b6a0 (MIT, Copyright (c) 2026
 # MacNativeGames contributors).
-"""Xbox and keyboard button icons for the game's prompts, drawn on the player's machine for
-tools/make_romfs_patches.py --prompts. The outlines are our own shapes with letters cut out of them in the game's own
-text fonts: nothing of the game is in the repository.
+"""Xbox button icons for the game's prompts, drawn on the player's machine for tools/make_romfs_patches.py --prompts.
+The outlines are our own shapes with letters cut out of them in the game's own text fonts: nothing of the game is in
+the repository.
 
 Every prompt except the button guide in play is text in the button font, scft/External.bfotf of each
 Font/Font*.Nin_NX_NVN.bfarc.zs: private-use code points from U+E040 (A, B, X, Y, then L, R, ZL, ZR, the d-pad, Plus and
 Minus, the sticks). A .bfotf is an OpenType (CFF) font after an 8-byte header; from offset 4 on, every byte is XORed
 with a 4-byte key, which the size in the header's second word gives away (bfotf_decode). redraw_font draws the shoulder
 buttons, the triggers, Plus, Minus and the d-pad as an Xbox controller names them (LB RB, LT RT, Menu and View, a
-cross), can swap the glyphs of the face buttons (A with B, X with Y), or draws keycaps and mouse icons for keyboard
-and mouse prompts, and has fontTools write the font again. The archive then grows by a kilobyte or two, more than the
-game's resource size table allows it: grow_restbl raises those entries (without it the game stops at start,
-MacNativeGames found).
+cross), can swap the glyphs of the face buttons (A with B, X with Y), and has fontTools write the font again. The
+archive then grows by a kilobyte or two, more than the game's resource size table allows it: grow_restbl raises those
+entries (without it the game stops at start, MacNativeGames found).
 
 The button guide in play (bottom right) draws L and ZL from images of the common layout archive instead
-(timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00; keyboard prompts also redraw Nt_KeyTexA/B/X/Y_00 and
-Nt_KeyTexLSt_00/01): bntx_redraw paints the same icons into them, the size unchanged. The sticks keep the Switch
-icons, and so do prompts drawn as fixed images (some tutorial animations).
+(timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00): bntx_redraw paints the same icons into them, the size
+unchanged. The sticks keep the Switch icons, and so do prompts drawn as fixed images (some tutorial animations).
 
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
 import io
-from pathlib import Path
 import struct
 import zlib
 
@@ -40,112 +37,6 @@ TEXT_ARCHIVE = 'Font/Font.Nin_NX_NVN.bfarc.zs'
 TEXT_FONTS = ('scft/ninP_RodinNTLG-B_DH_003_subset.bfotf', 'scft/nintendo_NTLG-DB_DH_002.bfotf')
 # The button guide's images and the glyph each one shows.
 HUD_TEXTURES = {'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046}
-HUD_KEYBOARD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00': 0xE042, 'Nt_KeyTexY_00': 0xE043,
-                        'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE05E, 'Nt_KeyTexLSt_01': 0xE05E}
-HUD_KEYBOARD_OPTIONAL = frozenset({'Nt_KeyTexLSt_01'})
-
-DEFAULT_KEYS = {
-    'a': 'e', 'b': 'lshift', 'x': 'space', 'y': 'mouse_l', 'l': 'q', 'r': 'r', 'zl': 'mouse_r', 'zr': 'f',
-    'plus': 'tab', 'minus': 'm', 'lclick': 'lctrl', 'rclick': 'c', 'left': '1', 'up': '2', 'right': '3', 'down': '4',
-    'lstick_up': 'w', 'lstick_left': 'a', 'lstick_down': 's', 'lstick_right': 'd'
-}
-
-KNOWN_KEYS = frozenset({
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-    'space', 'tab', 'lshift', 'lctrl', 'up', 'down', 'left', 'right',
-    'mouse_l', 'mouse_r', 'mouse_m', 'mouse_x1', 'mouse_x2',
-    'enter', 'backspace', 'rshift', 'rctrl', 'lalt', 'capslock', 'insert', 'delete', 'home', 'end',
-    'pageup', 'pagedown',
-    'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f9', 'f12',
-    'num0', 'num1', 'num2', 'num3', 'num4', 'num5', 'num6', 'num7', 'num8', 'num9',
-    'num_add', 'num_sub', 'num_mul', 'num_div', 'num_decimal',
-    'minus', 'equals', 'lbracket', 'rbracket', 'semicolon', 'apostrophe', 'comma', 'period', 'slash',
-    'backslash', 'grave',
-})
-
-KNOWN_PADS = frozenset({
-    'south', 'east', 'west', 'north', 'lstick', 'rstick', 'l', 'r', 'start', 'back',
-    'dpad_left', 'dpad_up', 'dpad_right', 'dpad_down', 'zl', 'zr',
-    'lpaddle1', 'rpaddle1', 'lpaddle2', 'rpaddle2',
-})
-
-KEY_LABELS = {
-    **{c: c.upper() for c in 'abcdefghijklmnopqrstuvwxyz'},
-    **{str(i): str(i) for i in range(10)},
-    'space': 'Space', 'tab': 'Tab', 'lshift': 'Shift', 'rshift': 'Shift',
-    'lctrl': 'Ctrl', 'rctrl': 'Ctrl', 'lalt': 'Alt', 'capslock': 'Caps',
-    'enter': 'Enter', 'backspace': 'Bksp', 'insert': 'Ins', 'delete': 'Del',
-    'home': 'Home', 'end': 'End', 'pageup': 'PgUp', 'pagedown': 'PgDn',
-    **{f'f{i}': f'F{i}' for i in (2, 3, 4, 5, 6, 7, 9, 12)},
-    **{f'num{i}': f'N{i}' for i in range(10)},
-    'num_add': 'N+', 'num_sub': 'N-', 'num_mul': 'N*', 'num_div': 'N/', 'num_decimal': 'N.',
-    'minus': '-', 'equals': '=', 'lbracket': '[', 'rbracket': ']',
-    'semicolon': ';', 'apostrophe': "'", 'comma': ',', 'period': '.',
-    'slash': '/', 'backslash': '\\', 'grave': '`',
-}
-
-
-def read_ini_keys(path=None):
-    """Action -> primary key name from totk.ini at path (Path or str), or DEFAULT_KEYS when None or missing."""
-    keys = dict(DEFAULT_KEYS)
-    if path is None:
-        return keys
-    p = Path(path)
-    if not p.is_file():
-        return keys
-    text = p.read_text(encoding='utf-8-sig')
-    ini_binds = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(('#', ';', '[')):
-            continue
-        if '=' not in line:
-            continue
-        k, v = line.split('=', 1)
-        k = k.strip().lower()
-        if k.startswith('totk_'):
-            k = k[5:]
-        v = v.strip()
-        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-            v = v[1:-1]
-        if not v:   # empty value leaves earlier/default value
-            continue
-        if k.startswith('bind_'):
-            ini_binds[k[5:]] = v
-
-    stick_actions = frozenset({'lstick_up', 'lstick_left', 'lstick_down', 'lstick_right'})
-    for action, default_val in DEFAULT_KEYS.items():
-        if action not in ini_binds:
-            continue
-        val_str = ini_binds[action]
-        tokens = [t.strip() for t in val_str.split(',') if t.strip()]
-        valid_entries = []
-        for tok in tokens:
-            low = tok.lower()
-            if low == 'none':
-                valid_entries.append(('none', None))
-            elif low.startswith('key:'):
-                kname = low[4:].strip()
-                if kname == 'default':
-                    valid_entries.append(('key_default', None))
-                elif kname in KNOWN_KEYS:
-                    valid_entries.append(('key', kname))
-            elif low.startswith('pad:') and action not in stick_actions:
-                pname = low[4:].strip()
-                if pname == 'default' or pname in KNOWN_PADS:
-                    valid_entries.append(('pad', pname))
-        if not valid_entries:
-            continue
-        key_list = []
-        for kind, kval in valid_entries:
-            if kind == 'key_default':
-                key_list.append(default_val)
-            elif kind == 'key':
-                key_list.append(kval)
-        keys[action] = key_list[0] if key_list else 'none'
-    return keys
 
 
 def xor(data, key):
@@ -289,170 +180,6 @@ def xbox_icons(g):
     }
 
 
-def mouse_icon(button=None, look=False, advance=700):
-    """Draw a mouse icon with advance 700. button: 'mouse_l', 'mouse_r', 'mouse_m', 'mouse_x1', 'mouse_x2', or None.
-    look: True to draw left and right outward arrows flanking the mouse body."""
-    def draw(pen):
-        scale = (Y1 - Y0) / 640.0
-        sx = lambda x: 350.0 + (x - 350.0) * scale
-        sy = lambda y: Y0 + y * scale
-        sr = lambda r: r * scale
-
-        # 1. Outer mouse shell (CCW filled)
-        rounded(pen, sx(150), sy(0), sx(550), sy(640), sr(180))
-
-        # 2. Inner mouse cavity (CW hole via ReverseContourPen)
-        rounded(ReverseContourPen(pen), sx(190), sy(45), sx(510), sy(595), sr(140))
-
-        # 3. Horizontal button seam bar (CCW filled)
-        rounded(pen, sx(199), sy(335), sx(501), sy(357), sr(8))
-
-        # 4. Scroll wheel pill (larger when mouse_m)
-        is_m = button == 'mouse_m'
-        wx0, wx1 = (328, 372) if is_m else (337, 363)
-        wy0, wy1 = (414, 532) if is_m else (428, 518)
-        rounded(pen, sx(wx0), sy(wy0), sx(wx1), sy(wy1), sr(12))
-
-        # 5. Upper/lower vertical divider segments split around seam & wheel so contours do not overlap
-        rounded(pen, sx(339), sy(357), sx(361), sy(wy0), sr(5))
-        rounded(pen, sx(339), sy(wy1), sx(361), sy(592), sr(5))
-
-        # 6. Active button fill
-        if button == 'mouse_l':
-            rounded(pen, sx(190), sy(376), sx(328), sy(574), sr(48))
-        elif button == 'mouse_r':
-            rounded(pen, sx(372), sy(376), sx(510), sy(574), sr(48))
-
-        # 7. Left-side thumb buttons (mouse_x1 / mouse_x2)
-        if button in ('mouse_x1', 'mouse_x2'):
-            rounded(pen, sx(91), sy(250), sx(138), sy(342), sr(16))
-            rounded(pen, sx(91), sy(370), sx(138), sy(462), sr(16))
-            if button == 'mouse_x1':
-                rounded(ReverseContourPen(pen), sx(102), sy(382), sx(127), sy(450), sr(8))
-            else:
-                rounded(ReverseContourPen(pen), sx(102), sy(262), sx(127), sy(330), sr(8))
-
-        # 8. Outward arrows flanking mouse body for camera look
-        if look:
-            left = [(35, 310), (85, 354), (85, 328), (126, 328), (126, 292), (85, 292), (85, 266)]
-            right = [(665, 310), (615, 354), (615, 328), (574, 328), (574, 292), (615, 292), (615, 266)]
-            polygon(pen, [(sx(x), sy(y)) for x, y in left[::-1]])
-            polygon(pen, [(sx(x), sy(y)) for x, y in right])
-
-    return advance, draw
-
-
-def arrow_polygon(direction, cx=320, cy=CY):
-    """Clockwise (hole) single-headed arrow centered at (cx, cy)."""
-    pts = [
-        (148, 14), (148, -14), (71, -90), (43, -62), (82, -23),
-        (-145, -23), (-145, 23), (82, 23), (43, 62), (71, 90)
-    ]
-    if direction == 'right':
-        rot = pts
-    elif direction == 'up':
-        rot = [(-y, x) for x, y in pts]
-    elif direction == 'left':
-        rot = [(-x, -y) for x, y in pts]
-    elif direction == 'down':
-        rot = [(y, -x) for x, y in pts]
-    else:
-        raise ValueError(f'unknown arrow direction: {direction}')
-    return [(cx + x, cy + y) for x, y in rot]
-
-
-def double_arrow(vertical=False, cx=320, cy=CY, length=155, head=75, barb=80, stem=24):
-    """Clockwise (hole) double-headed arrow centered at (cx, cy)."""
-    pts = [
-        (length, 0), (head, -barb), (head, -stem), (-head, -stem), (-head, -barb),
-        (-length, 0), (-head, barb), (-head, stem), (head, stem), (head, barb)
-    ]
-    if vertical:
-        pts = [(-y, x) for x, y in pts]
-    return [(cx + x, cy + y) for x, y in pts]
-
-
-def keyboard_icons(g, keys=None):
-    """Code point -> (advance, draw(pen)) for keyboard and mouse button prompts.
-    g: Glyphs for the letters. keys: action -> primary key name (read_ini_keys())."""
-    keys = read_ini_keys() if keys is None else keys
-
-    def square_keycap(draw_inner, advance=640):
-        def draw(pen):
-            rounded(pen, 40, Y0, advance - 40, Y1, 90)
-            draw_inner(pen)
-        return advance, draw
-
-    def wide_keycap(draw_inner, advance=880):
-        def draw(pen):
-            rounded(pen, 40, Y0, advance - 40, Y1, 90)
-            draw_inner(pen)
-        return advance, draw
-
-    def key_glyph(label):
-        if len(label) >= 3 or label.startswith('N'):
-            return wide_keycap(lambda pen: g.hole(pen, label, 440, CY, 250, 660))
-        return square_keycap(lambda pen: g.hole(pen, label, 320, CY, 290, 410))
-
-    def arrow_glyph(direction):
-        return square_keycap(lambda pen: polygon(pen, arrow_polygon(direction, 320, CY)))
-
-    def unbound_glyph():
-        return square_keycap(lambda pen: rounded(ReverseContourPen(pen), 160, CY - 28, 480, CY + 28, 20))
-
-    def action_glyph(k):
-        if k == 'none':
-            return unbound_glyph()
-        if k in ('mouse_l', 'mouse_r', 'mouse_m', 'mouse_x1', 'mouse_x2'):
-            return mouse_icon(button=k)
-        if k in ('up', 'down', 'left', 'right'):
-            return arrow_glyph(k)
-        return key_glyph(KEY_LABELS.get(k, k.upper()))
-
-    # Movement labels (WASD or Move)
-    u = KEY_LABELS.get(keys.get('lstick_up', 'w'), 'W')
-    l = KEY_LABELS.get(keys.get('lstick_left', 'a'), 'A')
-    d = KEY_LABELS.get(keys.get('lstick_down', 's'), 'S')
-    r = KEY_LABELS.get(keys.get('lstick_right', 'd'), 'D')
-    move_label = u + l + d + r if len(u) == 1 and len(l) == 1 and len(d) == 1 and len(r) == 1 else 'Move'
-    move_glyph = wide_keycap(lambda pen: g.hole(pen, move_label, 440, CY, 250, 660))
-
-    mouse_look = mouse_icon(look=True)
-
-    v_arrow = square_keycap(lambda pen: polygon(pen, double_arrow(vertical=True, cx=320, cy=CY, length=155, head=75, barb=80, stem=24)))
-    h_arrow = square_keycap(lambda pen: polygon(pen, double_arrow(vertical=False, cx=320, cy=CY, length=155, head=75, barb=80, stem=24)))
-    all_dpad = square_keycap(lambda pen: [
-        polygon(pen, double_arrow(vertical=False, cx=200, cy=CY, length=100, head=50, barb=52, stem=16)),
-        polygon(pen, double_arrow(vertical=True, cx=440, cy=CY, length=100, head=50, barb=52, stem=16))
-    ])
-
-    out = {
-        0xE040: action_glyph(keys.get('a', 'e')),
-        0xE041: action_glyph(keys.get('b', 'lshift')),
-        0xE042: action_glyph(keys.get('x', 'space')),
-        0xE043: action_glyph(keys.get('y', 'mouse_l')),
-        0xE044: action_glyph(keys.get('l', 'q')),
-        0xE045: action_glyph(keys.get('r', 'r')),
-        0xE046: action_glyph(keys.get('zl', 'mouse_r')),
-        0xE047: action_glyph(keys.get('zr', 'f')),
-        0xE04B: action_glyph(keys.get('plus', 'tab')),
-        0xE04C: action_glyph(keys.get('minus', 'm')),
-        0xE05E: action_glyph(keys.get('lclick', 'lctrl')),
-        0xE05F: action_glyph(keys.get('rclick', 'c')),
-        0xE060: action_glyph(keys.get('up', '2')),
-        0xE061: action_glyph(keys.get('down', '4')),
-        0xE062: action_glyph(keys.get('left', '1')),
-        0xE063: action_glyph(keys.get('right', '3')),
-        0xE064: v_arrow,
-        0xE065: h_arrow,
-        0xE049: all_dpad,
-        0xE068: mouse_look,
-    }
-    for cp in range(0xE050, 0xE05E):
-        out[cp] = move_glyph if cp % 2 == 0 else mouse_look
-    return out
-
-
 def redraw_font(otf, icons, swaps=()):
     """The OpenType font otf with the glyphs of each (code point, code point) pair of swaps trading places (outlines and
     horizontal metrics), then every code point of icons (code point -> (advance, draw)) drawn anew, written again by
@@ -542,7 +269,7 @@ def rasterize(draw, size):
     return bytes(min(255, c * 255 // (SUPERSAMPLE * SUPERSAMPLE)) for c in cover)
 
 
-def bntx_redraw(data, base, textures, icons, optional=()):
+def bntx_redraw(data, base, textures, icons):
     """Paint the icon of each texture of textures (name without the ^ suffix -> code point; icons: code point ->
     (advance, draw)) over its image in the BNTX at data[base:] (a bytearray), in place. Returns the names painted."""
     assert data[base:base + 4] == b'BNTX' and data[base + 0x20:base + 0x24] == b'NX  '
@@ -567,7 +294,7 @@ def bntx_redraw(data, base, textures, icons, optional=()):
                 assert at < size, f'{name}: pixel ({x}, {y}) past the image'
                 data[start + at] = mask[y * w + x]
         done.append(name)
-    missing = sorted(set(textures) - set(done) - set(optional))
+    missing = sorted(set(textures) - set(done))
     assert not missing, f'not in the texture list: {", ".join(missing)}'
     return done
 
