@@ -918,6 +918,11 @@ def main():
     runtime_lib = args.runtime_lib.resolve() if args.runtime_lib else None
     if runtime_lib and not runtime_lib.is_file():
         sys.exit(f'{runtime_lib} not found: build it with --make-runtime-lib')
+    # The library leaves INSTALL_SIDE out, so a release that ships without one of them links with undefined symbols.
+    missing = sorted(n for n in INSTALL_SIDE - skip if not (RUNTIME / n).is_file())
+    if runtime_lib and missing:
+        sys.exit(f'build_game: {", ".join(missing)} missing from {flag_path(RUNTIME)}: the release must ship every '
+                 f'INSTALL_SIDE source beside {runtime_lib.name}')
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
                                  args.make_runtime_lib)
     write_if_changed(out / 'build.ninja', text)
