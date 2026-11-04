@@ -35,7 +35,7 @@ def interp(venv):
 
 
 # name: (venv, needs, args, why the need is there)
-#   needs: None | 'exefs' | 'exe' | 'embed' | 'gui'
+#   needs: None | needs joined by '+' (exefs | exe | romfs | embed | gui)
 TESTS = {
     # ---- no game files, no build ----
     'flags_check':              ('.venv', None, [], ''),
@@ -49,8 +49,8 @@ TESTS = {
     # ---- read the game or a build ----
     'jumptables_check':         ('.venv', 'exefs', ['--exefs', '<exefs>'],
                                  'replays the modules through Unicorn; needs an unpacked exefs'),
-    'mods_romfs_check':         ('.venv', 'exe', ['--exe', '<exe>', '--version', 'v143'],
-                                 'runs the built totk.exe against a mod layout'),
+    'mods_romfs_check':         ('.venv', 'exe+romfs', ['--exe', '<exe>', '--version', 'v143', '--romfs', '<romfs>'],
+                                 'runs the built totk.exe against a mod layout, on the extracted romfs'),
     'installer_e2e':            ('.venv-py314', 'embed', [],
                                  'the release launcher runs installer on the embeddable Python'),
     'installer_gui_test':       ('.venv-py314', 'gui', [],
@@ -82,8 +82,28 @@ def find_exefs():
 
 
 def find_exe():
-    for c in (ROOT / 'build' / 'v143' / 'totk.exe',):
-        if c.exists():
+    """A built totk.exe: the plain v143 tree, else the newest variant (v143-heropath, ...)."""
+    if (ROOT / 'build' / 'v143' / 'totk.exe').exists():
+        return ROOT / 'build' / 'v143' / 'totk.exe'
+    builds = sorted(ROOT.glob('build/v143-*/totk.exe'),
+                    key=lambda p: p.stat().st_mtime, reverse=True)
+    return builds[0] if builds else None
+
+
+def find_romfs():
+    """The extracted romfs of v143: its index.json names the real file paths."""
+    cands = [ROOT / 'build' / 'extracted' / 'v143' / 'romfs', load_work_dir() / 'romfs']
+    gui = ROOT / 'build' / 'build_gui.json'         # the GUI builder remembers where it built from
+    if gui.exists():
+        try:
+            import json
+            r = json.loads(gui.read_text(encoding='utf-8')).get('romfs')
+            if r:
+                cands.append(Path(r))
+        except Exception:
+            pass
+    for c in cands:
+        if (c / 'index.json').exists():
             return c
     return None
 
@@ -96,21 +116,32 @@ def find_embed():
 
 
 def resolve(needs):
-    """(what the args take, or None when the need cannot be met here)."""
+    """({placeholder: what the arg takes}, or the reasons the needs cannot be met here)."""
     if needs is None:
-        return None, None
-    if needs == 'exefs':
-        p = find_exefs()
-        return (None, 'no unpacked exefs (run tools/extract.py)') if p is None else (str(p), None)
-    if needs == 'exe':
-        p = find_exe()
-        return (None, 'no built build/v143/totk.exe') if p is None else (str(p), None)
-    if needs == 'embed':
-        p = find_embed()
-        return (None, 'no build/py314-embed (tools/make_release.py makes it)') if p is None else (str(p), None)
-    if needs == 'gui':
-        return None, 'drives a window; run it by hand on a desktop session'
-    return None, f'unknown need {needs!r}'
+        return {}, None
+    vals, missing = {}, []
+    for need in needs.split('+'):
+        if need == 'exefs':
+            p = find_exefs()
+            if p is None: missing.append('no unpacked exefs (run tools/extract.py)')
+            else: vals['<exefs>'] = str(p)
+        elif need == 'exe':
+            p = find_exe()
+            if p is None: missing.append('no built build/v143/totk.exe')
+            else: vals['<exe>'] = str(p)
+        elif need == 'romfs':
+            p = find_romfs()
+            if p is None: missing.append('no extracted romfs index (run tools/extract.py)')
+            else: vals['<romfs>'] = str(p)
+        elif need == 'embed':
+            p = find_embed()
+            if p is None: missing.append('no build/py314-embed (tools/make_release.py makes it)')
+            else: vals['<embed>'] = str(p)
+        elif need == 'gui':
+            missing.append('drives a window; run it by hand on a desktop session')
+        else:
+            return {}, f'unknown need {need!r}'
+    return vals, ('; '.join(missing) if missing else None)
 
 
 def run_one(name, all_ok, timeout, verbose):
@@ -123,8 +154,11 @@ def run_one(name, all_ok, timeout, verbose):
     if reason:
         return 'SKIP', 0.0, reason, ''
     argv = [str(interp(venv)), str(ROOT / 'tests' / f'{name}.py')]
-    if value:
-        argv += [a.replace('<exefs>', value).replace('<exe>', value) for a in args]
+    for a in args:                              # fill each placeholder with its need's value
+        s = a
+        for k, v in value.items():
+            s = s.replace(k, v)
+        argv.append(s)
     env = dict(os.environ)
     if MSYS_BIN.is_dir():                       # flags_check and excl_mt compile C
         env['PATH'] = str(MSYS_BIN) + os.pathsep + env.get('PATH', '')
