@@ -109,6 +109,36 @@ def set_cpu(cpu):
     GEN_FLAGS[GEN_FLAGS.index('-march=x86-64-v3')] = march
     RT_FLAGS[RT_FLAGS.index('-march=x86-64-v3')] = march
     RT_FLAGS.append(f'-DRT_CPU_LEVEL={3 if cpu == "v3" else 2}')
+
+
+# Profile-guided optimisation (--pgo). Both modes compile the generated code at -O2, the level the profile's inlining and
+# hot/cold layout work at. A static function's profile name carries its source path by default; the base name alone
+# keeps the names equal between the training build and a build from another tree (a worktree, an install).
+PGO_NAMES = ['-mllvm', '-static-func-full-module-prefix=false']
+PGO_INPUT = None   # the .profdata of --pgo FILE: every compile depends on it, so a new profile rebuilds them
+
+
+def set_pgo(pgo, out):
+    """--pgo gen: instrument the generated code and the runtime; totk.exe adds its counts to
+    out/pgo/default_<id>.profraw every minute and at exit (runtime/platform win32.c), across runs. --pgo FILE: compile
+    with that merged profile (tools/pgo.py merge). Functions the profile never saw run are optimised for size."""
+    global PGO_INPUT
+    GEN_FLAGS[GEN_FLAGS.index('-O1')] = '-O2'
+    if pgo == 'gen':
+        # absolute: the instrumented exe resolves the directory against its own working directory
+        flags = [f'-fprofile-generate={cmd_arg((out / "pgo").resolve().as_posix())}']
+        RT_FLAGS.append('-DTOTK_PGO_GEN')
+        LINK_FLAGS.append('-fprofile-generate')   # links clang_rt.profile
+    else:
+        PGO_INPUT = Path(pgo).resolve()
+        if not PGO_INPUT.is_file():
+            sys.exit(f'--pgo {pgo}: no such profile')
+        # unprofiled: chunks the training never entered; out-of-date and backend-plugin: functions whose code changed
+        # since the training, which then compile without a profile
+        flags = [f'-fprofile-use={cmd_path(PGO_INPUT)}', '-Wno-profile-instr-unprofiled',
+                 '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
+    GEN_FLAGS.extend(flags + PGO_NAMES)
+    RT_FLAGS.extend(flags + PGO_NAMES)
 if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
@@ -384,12 +414,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
     ]
     objs = {}
+    pgo_dep = f' | {ninja_path(PGO_INPUT)}' if PGO_INPUT else ''
     for mod, files in mods.items():
         objs[mod] = []
         for f in files:
             o = out / 'obj' / mod / (f.stem + '.o')
             if not prebuilt:
-                lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}')
+                lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{pgo_dep}')
                 lines.append('  pool = gen')
             objs[mod].append(o)
     rt = []
@@ -406,7 +437,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
@@ -769,6 +800,10 @@ def main():
                     help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no totk.exe)')
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
+    ap.add_argument('--pgo', metavar='gen|FILE',
+                    help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
+                         '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
+                         '.profdata (tools/pgo.py merge)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -776,6 +811,11 @@ def main():
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
     out = (args.out or ROOT / 'build' / args.version).resolve()
+    if args.pgo:
+        if args.pgo == 'gen' and WIN and not args.toolchain:
+            sys.exit('--pgo gen: MSYS2 UCRT64 clang ships no profile runtime (clang_rt.profile); pass --toolchain with '
+                     'an llvm-mingw directory')
+        set_pgo(args.pgo, out)
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
