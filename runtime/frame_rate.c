@@ -83,6 +83,7 @@ static void frame_limit_live(void);
 
 void frame_step_init(void) {
     int fps60 = rt_patch_set("fps60"), realtime = rt_patch_set("realtime"), cloth = rt_patch_set("cloth");
+    int heropath = rt_patch_set("heropath");
     if (realtime < 0) {
         rt_log("frame rate: no patch table, shipping 30 fps whole-vsync steps");
         return;
@@ -90,6 +91,10 @@ void frame_step_init(void) {
     if (!rt_patch_enabled(realtime) && rt_patch_enabled(cloth)) {
         rt_patch_disable(cloth);
         rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
+    }
+    if (!rt_patch_enabled(realtime) && rt_patch_enabled(heropath)) {
+        rt_patch_disable(heropath);
+        rt_log("frame rate: Hero's Path clock off, it needs the real-time step (TOTK_REALTIME=0)");
     }
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
