@@ -262,6 +262,9 @@ class RecentPathsTest(unittest.TestCase):
             firmware.mkdir()
             dest.mkdir()
 
+            # Save the language before the paths to verify that path saves preserve it.
+            recent.save('lang', 'en-US', settings)
+
             for name, path in (
                 ('base', base),
                 ('update', update),
@@ -271,13 +274,14 @@ class RecentPathsTest(unittest.TestCase):
             ):
                 recent.save(name, str(path), settings)
 
-            # All paths exist and have the expected type.
+            # All paths and the language are restored.
             self.assertEqual(recent.load(settings), {
                 'base': str(base),
                 'update': str(update),
                 'keys': str(keys),
                 'firmware': str(firmware),
                 'dest': str(dest),
+                'lang': 'en-US',
             })
 
             # Missing files and directories must not be restored.
@@ -288,6 +292,7 @@ class RecentPathsTest(unittest.TestCase):
                 'base': str(base),
                 'keys': str(keys),
                 'firmware': str(firmware),
+                'lang': 'en-US',
             })
 
             # A file cannot be restored as a directory selection.
@@ -295,6 +300,24 @@ class RecentPathsTest(unittest.TestCase):
             self.assertEqual(recent.load(settings), {
                 'base': str(base),
                 'keys': str(keys),
+                'lang': 'en-US',
+            })
+
+    def test_invalid_language_is_not_saved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'installer-paths.json'
+
+            recent.save('lang', 'en-US', settings)
+
+            self.assertEqual(recent.load(settings), {
+                'lang': 'en-US',
+            })
+
+            # An invalid language must not overwrite the last valid language.
+            recent.save('lang', 'invalid-language', settings)
+
+            self.assertEqual(recent.load(settings), {
+                'lang': 'en-US',
             })
 
     def test_corrupted_settings_are_ignored(self):
@@ -365,7 +388,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(amount(cat, 1, 9, 'widgets'), '1 / 9 widgets')
         line = describe_event(cat, {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1.5})
         self.assertIn('1.5 s', line)
-        self.assertEqual(describe_event(cat, {'type': 'start'}), '')
+        self.assertEqual(describe_event(Catalog('en'), {'type': 'start'}), '')
 
     def test_windows_language_is_a_known_value(self):
         self.assertIn(windows_ui_language(), UI_LANGUAGES)
@@ -413,7 +436,7 @@ class SmokeTest(unittest.TestCase):
 
 
 def make_fixture():
-    """build/inst-gui/e2e-install: links to install-test (see the module docstring), with the step keys of the state
+    """build/inst-gui/e2e-install: links to install-test (see the module docstring), with the step keys of this checkout
     set to the ones this checkout computes, so the install counts as current for it."""
     if not (FIXTURE / statefile.NAME).is_file():
         shutil.rmtree(FIXTURE, ignore_errors=True)
