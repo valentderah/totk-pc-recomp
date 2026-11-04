@@ -32,6 +32,7 @@ static int g_font_bad;
 #pragma clang diagnostic pop
 #include "ui/amiibo_page.h"
 #include "ui/binds_page.h"
+#include "ui/kbm_page.h"
 #include "ui/option_rows.h"
 
 extern "C" {
@@ -352,6 +353,9 @@ static int fonts_up(float scale) {
             if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
         for (int k = 0; k < mods_count(); k++)
             if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
+        // The Keyboard & mouse tab names the scheme's actions and contexts from its own tables, not from catalog
+        // rows, so those strings have to be asked for separately or their glyphs show as boxes.
+        if (!strcmp(kCjk[i].lang, "zh-Hans")) kbm_labels_visit(add_row_glyphs, &b);
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -380,7 +384,10 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum {
+    TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_KBM, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS,
+    TAB_COUNT
+};
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -745,6 +752,13 @@ static int key_action(const InputMap *m, int key) {
 // unset key falls back to the default in the settings table, the same as a fresh installation. totk.ini takes any name
 // input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
 // action it presses.
+static void row_motion_key(void) {
+    static const char *const keys[] = {"none", "k", "h", "j", "n", "p", "u", "y"};
+    const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "K", "H", "J", "N", "P", "U", "Y"};
+    opt_choice_list("TOTK_MOUSE_MOTION_KEY", UI_MENU_MOUSE_MOTION_KEY, keys, names, sizeof keys / sizeof *keys,
+                    UI_MENU_MOUSE_MOTION_KEY_DESC, -1, nullptr);
+}
+
 static void row_walk_key(void) {
     static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
     const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
@@ -764,15 +778,15 @@ static void row_walk_key(void) {
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
 // layout, as a layout that puts A on the right button needs the face buttons named the other way round), but the game
-// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: "files
-// missing" when the setup did not write the one asked for, why it was left out at start (damaged, a game resolution
-// that is not 16:9, a RomFS mod with the same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then
-// *restart is set: a restart would bring the prompts asked for. NULL when they match.
+// reads its fonts and UI archive once at start (romfs.c overlay_init). The folder in use matches the settings: "in
+// effect". While it differs: "files missing" when the setup did not write the one asked for, why it was left out at
+// start (damaged, a game resolution that is not 16:9, a RomFS mod with the same files, TOTK_ROMFS_PATCHES), else
+// "changes after restart", and only then *restart is set: a restart would bring the prompts asked for.
 static const char *prompts_note(bool *restart) {
     *restart = false;
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
     const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
-    if (want == used || (want && used && !strcmp(want, used))) return nullptr;
+    if (want == used || (want && used && !strcmp(want, used))) return menu_text(UI_MENU_PROMPTS_CURRENT);
     if (want && !romfs_prompts_ready(want)) return menu_text(UI_MENU_PROMPTS_MISSING);
     switch (romfs_prompts_off(want)) {
     case ROMFS_PROMPTS_FAILED: return menu_text(UI_MENU_PROMPTS_FAILED);
@@ -827,11 +841,23 @@ static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
     opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 3, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
-    static const UiTextId prompts[] = {UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX};
+    static const UiTextId prompts[] = {UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_KEYBOARD};
     bool restart;
     const char *note = prompts_note(&restart);
-    opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 2, UI_MENU_PROMPTS_DESC, note);
+    opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 3, UI_MENU_PROMPTS_DESC, note,
+               !restart && !strcmp(note, menu_text(UI_MENU_PROMPTS_CURRENT)));
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
+    opt_toggle("TOTK_KBM_SCHEME", UI_MENU_KBM_SCHEME, UI_MENU_KBM_SCHEME_DESC);
+    opt_toggle("TOTK_SCREEN_WATCH", UI_MENU_SCREEN_WATCH, UI_MENU_SCREEN_WATCH_DESC);
+    opt_toggle("TOTK_SCREEN_WATCH_LOG", UI_MENU_SCREEN_WATCH_LOG, UI_MENU_SCREEN_WATCH_LOG_DESC);
+    opt_toggle("TOTK_MENU_CURSOR", UI_MENU_MENU_CURSOR, UI_MENU_MENU_CURSOR_DESC);
+    opt_toggle("TOTK_MENU_CURSOR_LOG", UI_MENU_MENU_CURSOR_LOG, UI_MENU_MENU_CURSOR_LOG_DESC);
+    static const char *const mat_values[] = {"c", "z", "b", "n"};
+    static const char *const mat_names[] = {"C", "Z", "B", "N"};
+    opt_choice_list("TOTK_KBM_MATERIALS_KEY", UI_MENU_KBM_MATERIALS_KEY, mat_values, mat_names, 4,
+                    UI_MENU_KBM_MATERIALS_KEY_DESC);
+    opt_slider("TOTK_KBM_PULSE_MS", UI_MENU_KBM_PULSE, 0, 200, UI_MENU_KBM_PULSE_DESC, 10, "%.0f ms");
+    opt_slider("TOTK_WHEEL_STEP_MS", UI_MENU_WHEEL_STEP, 0, 200, UI_MENU_WHEEL_STEP_DESC, 10, "%.0f ms");
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
@@ -853,11 +879,32 @@ static void tab_controls(float scale) {
     opt_slider("TOTK_RSTICK_DEADZONE", UI_MENU_RSTICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%",
                pad ? stick_note[1] : nullptr, "TOTK_STICK_DEADZONE");
     opt_slider("TOTK_STICK_SENS", UI_MENU_STICK_SENS, 0.1f, 3, UI_MENU_STICK_SENS_DESC, 0.05f, "%.2f");
+    opt_slider("TOTK_MOUSE_AIM_SCALE", UI_MENU_MOUSE_AIM_SCALE, 0.1f, 3, UI_MENU_MOUSE_AIM_SCALE_DESC, 0.05f, "%.2f");
+    opt_toggle("TOTK_MOUSE_DIRECT", UI_MENU_MOUSE_DIRECT, UI_MENU_MOUSE_DIRECT_DESC);
+    opt_slider("TOTK_MOUSE_DIRECT_SENS", UI_MENU_MOUSE_DIRECT_SENS, 0.05f, 10, UI_MENU_MOUSE_DIRECT_SENS_DESC, 0.05f,
+               "%.2f");
+    opt_slider("TOTK_MOUSE_DIRECT_PITCH", UI_MENU_MOUSE_DIRECT_PITCH, 0.2f, 4, UI_MENU_MOUSE_DIRECT_PITCH_DESC, 0.05f,
+               "%.2f");
+    row_motion_key();
+    opt_slider("TOTK_MOUSE_MOTION_SPEED", UI_MENU_MOUSE_MOTION_SPEED, 0.05f, 4, UI_MENU_MOUSE_MOTION_SPEED_DESC, 0.05f,
+               "%.2f");
+    opt_slider("TOTK_KEY_MIN_HOLD_MS", UI_MENU_KEY_MIN_HOLD, 0, 1000, UI_MENU_KEY_MIN_HOLD_DESC, 10, "%.0f ms");
+    opt_toggle("TOTK_SPRINT_TOGGLE", UI_MENU_SPRINT_TOGGLE, UI_MENU_SPRINT_TOGGLE_DESC);
+    opt_toggle("TOTK_LOCK_TOGGLE", UI_MENU_LOCK_TOGGLE, UI_MENU_LOCK_TOGGLE_DESC);
+    opt_toggle("TOTK_KEYSNAP", UI_MENU_KEYSNAP, UI_MENU_KEYSNAP_DESC);
+    opt_slider("TOTK_MOUSE_FLOOD", UI_MENU_MOUSE_FLOOD, 0, 100, UI_MENU_MOUSE_FLOOD_DESC, 1, "%.0f");
     binds_rows(scale);
     opt_end();
     binds_after_page();
     if (ask) ImGui::OpenPopup("##restart_confirm");   // at the level BeginPopupModal looks it up
     restart_confirm();
+}
+
+static void tab_kbm(float scale) {
+    opt_begin("##kbm", scale);
+    kbm_rows(scale);
+    opt_end();
+    kbm_after_page();
 }
 
 static void tab_menu(float scale) {
@@ -1029,8 +1076,9 @@ static void tab_advanced(float scale) {
 }
 
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
-                                              UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_KBM,    UI_MENU_TAB_AMIIBO,
+                                              UI_MENU_TAB_MENU,     UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,
+                                              UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -1150,7 +1198,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
     ImGui::TextDisabled("%s", version);
 
-    int step = g_modal || binds_modal()                                                                  ? 0
+    int step = g_modal || binds_modal() || kbm_modal()                                                    ? 0
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
                                                                                                          : 0;
@@ -1180,6 +1228,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             case TAB_MODS: tab_mods(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
+            case TAB_KBM: tab_kbm(scale); break;
             case TAB_AMIIBO: tab_amiibo(scale); break;
             case TAB_MENU: tab_menu(scale); break;
             case TAB_CHEATS:
@@ -1210,8 +1259,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
-    bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
+    bool was_modal = g_modal || binds_modal() || kbm_modal();
+    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS && g_tab != TAB_KBM) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

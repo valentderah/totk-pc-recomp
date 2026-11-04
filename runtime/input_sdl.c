@@ -21,6 +21,7 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+static volatile int32_t wheel_notches;        // wheel notches since the last ikb_wheel_take
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t captured;             // relative mouse mode is on
 enum { CUR_REL = 1, CUR_ESC = 2 };            // as input_win.c: released by Esc or a click elsewhere; by Esc
@@ -79,6 +80,7 @@ static SDL_Scancode key_sc(int key) {
     case KEY_SLASH: return SDL_SCANCODE_SLASH;
     case KEY_BACKSLASH: return SDL_SCANCODE_BACKSLASH;
     case KEY_GRAVE: return SDL_SCANCODE_GRAVE;
+    case KEY_ESC: return SDL_SCANCODE_ESCAPE;
     }
     return SDL_SCANCODE_UNKNOWN;
 }
@@ -172,8 +174,10 @@ void input_sdl_event(const SDL_Event *e) {
         int down = e->type == SDL_EVENT_KEY_DOWN;
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) {
             plat_xchg32(&esc_held, down);
-            // Esc is unbound in the game layout: it releases the cursor and opens the menu (ui/menu_sdl.cpp)
-            if (down && !e->key.repeat && !(cur_rel & CUR_REL)) plat_xchg32(&cur_rel, CUR_REL | CUR_ESC);
+            // Esc is unbound in the game layout: it releases the cursor and opens the menu (ui/menu_sdl.cpp), unless
+            // the PC scheme runs, where Esc is the game's own key (input_kbm_scheme)
+            if (down && !e->key.repeat && !(cur_rel & CUR_REL) && !input_kbm_scheme())
+                plat_xchg32(&cur_rel, CUR_REL | CUR_ESC);
         }
         if (e->key.scancode == SDL_SCANCODE_F8) plat_xchg32(&f8_held, down);
         int k = key_of_sc(e->key.scancode);
@@ -198,6 +202,9 @@ void input_sdl_event(const SDL_Event *e) {
             if (dy) plat_add32(&mouse_dy, dy);
         }
         break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (focused) plat_add32(&wheel_notches, (int32_t)e->wheel.y);
+        break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
         plat_xchg32(&focused, 1);
         break;
@@ -217,8 +224,12 @@ int ikb_foreground(void) { return focused != 0; }
 int ikb_down(int key) { return key > 0 && key < KEY_COUNT && key_held[key]; }
 int ikb_escape(void) { return esc_held != 0; }
 int ikb_captured(void) { return captured != 0; }
+int ikb_pointer(float *nx, float *ny) { (void)nx, (void)ny; return 0; }   // (menu_cursor.c: Windows only for now)
+void ikb_pointer_set(float nx, float ny) { (void)nx, (void)ny; }
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
 }
+
+int ikb_wheel_take(void) { return plat_xchg32(&wheel_notches, 0); }

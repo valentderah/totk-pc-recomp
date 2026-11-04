@@ -47,7 +47,8 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
     case WM_SYSKEYDOWN:
         // bit 30: auto-repeat
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
-        if (!(l & (1 << 30)) && (w == VK_F1 || (w == VK_ESCAPE && !menu_is_open()))) {
+        // Esc opens the menu unless the PC scheme runs: there Esc is the game's pause key, so F1 is the host's
+        if (!(l & (1 << 30)) && (w == VK_F1 || (w == VK_ESCAPE && !menu_is_open() && !input_kbm_scheme()))) {
             menu_toggle();
             *res = 0;
             return 1;

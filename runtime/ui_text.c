@@ -40,7 +40,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 
     [UI_MENU_TITLE] = "Settings",
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_MODS] = "Mods", [UI_MENU_TAB_SOUND] = "Sound",
-    [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
+    [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_KBM] = "Keyboard & mouse", [UI_MENU_TAB_AMIIBO] = "Amiibo",
+    [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
@@ -238,16 +239,19 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A bottom)",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "in use: %s",
     [UI_MENU_PROMPTS] = "Button prompts",
-    [UI_MENU_PROMPTS_DESC] = "Which controller's buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, "
-                             "RB, LT, RT, Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button "
-                             "the layout above presses (with Nintendo (A right) the right button is labelled B, so the "
-                             "prompts for A show B). The game reads its prompts at start, so they change after a "
+    [UI_MENU_PROMPTS_DESC] = "Which buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, RB, LT, RT, "
+                             "Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button the layout above "
+                             "presses (with Nintendo (A right) the right button is labelled B, so the prompts for A "
+                             "show B). Keyboard: the PC scheme's keys as keycaps, mouse buttons included; the button "
+                             "layout above does not apply. The game reads its prompts at start, so they change after a "
                              "restart. They are part of the game's files, so a button you remap in Controls keeps its "
                              "old prompt on screen.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Keyboard",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
-    [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
+    [UI_MENU_PROMPTS_CURRENT] = "in effect",
+    [UI_MENU_PROMPTS_RESTART] = "changes after restart",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "off at a game resolution not 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
@@ -263,6 +267,79 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
+    [UI_MENU_MOUSE_AIM_SCALE] = "Aim mouse scale",
+    [UI_MENU_MOUSE_AIM_SCALE_DESC] = "Mouse sensitivity while ZR draws the bow; 1 leaves it unchanged.",
+    [UI_MENU_MOUSE_DIRECT] = "Direct mouse look (experimental)",
+    [UI_MENU_MOUSE_DIRECT_DESC] = "Adds the mouse to the camera's processed stick, so it skips the game's dead zone "
+                                  "and curve; the mouse no longer drives the right stick.",
+    [UI_MENU_MOUSE_DIRECT_SENS] = "Direct mouse look speed",
+    [UI_MENU_MOUSE_DIRECT_SENS_DESC] = "Stick units per mouse count at 30 fps; 1 matches the right-stick mouse at 60 fps.",
+    [UI_MENU_MOUSE_DIRECT_PITCH] = "Direct look pitch shape",
+    [UI_MENU_MOUSE_DIRECT_PITCH_DESC] = "Square-root pitch shaping. 1.37 matches the game's quadratic pitch to yaw; "
+                                        "higher makes small vertical moves stronger.",
+    [UI_MENU_MOUSE_MOTION_KEY] = "Mouse motion key",
+    [UI_MENU_MOUSE_MOTION_KEY_DESC] = "Hold this key to feed mouse motion to the game's six-axis for the gyro shrines; "
+                                     "the camera is paused while held. none disables.",
+    [UI_MENU_MOUSE_MOTION_SPEED] = "Mouse motion speed",
+    [UI_MENU_MOUSE_MOTION_SPEED_DESC] = "How far the mouse tilts the virtual controller.",
+    [UI_MENU_KBM_SCHEME] = "PC keyboard and mouse scheme",
+    [UI_MENU_KBM_SCHEME_DESC] = "Routes the keyboard and mouse through the context table. Off uses the flat bindings "
+                                "below. The Controls page does not edit the scheme; kbm_binds in totk.ini overrides its "
+                                "keys. With keyboard button prompts the keycaps show the scheme's keys whether this is "
+                                "on or off. The Keyboard & mouse tab sets each action's key; while the throw key is "
+                                "held the wheel switches materials.",
+    [UI_MENU_KBM_MATERIALS_KEY] = "Material key",
+    [UI_MENU_KBM_MATERIALS_KEY_DESC] = "The scheme's key for the material action (C at first). Z, B or N is easier to "
+                                       "reach with the throw key held; it changes the scheme at once.",
+    [UI_MENU_KBM_PULSE] = "Tap pulse",
+    [UI_MENU_KBM_PULSE_DESC] = "How long a press-triggered action keeps its pad bits (the scheme's P, O, M and tap "
+                               "rows). 0 keeps them for the frame of the press only.",
+    [UI_MENU_WHEEL_STEP] = "Wheel step",
+    [UI_MENU_WHEEL_STEP_DESC] = "The press and the rest of each wheel notch, in milliseconds. 0 holds a notch for "
+                                "one poll only.",
+    [UI_MENU_SCREEN_WATCH] = "Screen context watch",
+    [UI_MENU_SCREEN_WATCH_DESC] = "Reads the game's current menu screen (1.4.3) for the scheme's context; off keeps "
+                                  "the scheme on the world rows.",
+    [UI_MENU_SCREEN_WATCH_LOG] = "Screen context log",
+    [UI_MENU_SCREEN_WATCH_LOG_DESC] = "Logs each screen and the scheme's context when they change.",
+    [UI_MENU_MENU_CURSOR] = "Mouse in game menus",
+    [UI_MENU_MENU_CURSOR_DESC] = "1.4.3, off by default. Takes the pointer only in the screens listed in "
+                                 "menu_cursor_screens (title, pouch, save and load lists): the focus box walks to what "
+                                 "is under it with the d-pad, left click is A, right click is B. The in-world strips "
+                                 "are left alone -- releasing the capture there kills the wheel.",
+    [UI_MENU_MENU_CURSOR_LOG] = "Game menu mouse log",
+    [UI_MENU_MENU_CURSOR_LOG_DESC] = "Logs each menu screen's nodes, the pointer's hit test and every direction the "
+                                     "focus box is walked with.",
+    [UI_MENU_MOUSE_FLOOD] = "Mouse count injection",
+    [UI_MENU_MOUSE_FLOOD_DESC] = "Extra mouse counts per presented frame, for stress-testing a high-report-rate "
+                                 "mouse and the input path. 0 is off.",
+    [UI_MENU_KBM_HELP] = "Every action's key, in one context or in all of them. Select a row and press the new key; "
+                         "Delete clears the override. A context override wins over a global one. While the throw key "
+                         "is held the wheel steps the materials.",
+    [UI_MENU_KBM_CONTEXT] = "Context",
+    [UI_MENU_KBM_CONTEXT_DESC] = "The table the rows below edit. All contexts changes the action wherever no context "
+                                 "override names it.",
+    [UI_MENU_KBM_GLOBAL] = "All contexts",
+    [UI_MENU_KBM_ACTIONS] = "Actions",
+    [UI_MENU_KBM_DEFAULT] = "default",
+    [UI_MENU_KBM_OVERRIDE_GLOBAL] = "global override",
+    [UI_MENU_KBM_OVERRIDE_CONTEXT] = "context override",
+    [UI_MENU_KBM_PRESS] = "Press the new key for %s",
+    [UI_MENU_KBM_CANCEL_HINT] = "Esc cancels; Delete clears the override (%d s)",
+    [UI_MENU_KBM_CLEAR_HINT] = "Delete clears the override, Esc cancels",
+    [UI_MENU_KBM_ACTION_DESC] = "Click or press A to capture a key; Delete clears the override for this row.",
+    [UI_MENU_KBM_NO_ROWS] = "This context has no rows of its own; its actions come from its parent context.",
+    [UI_MENU_KEY_MIN_HOLD] = "Movement key hold",
+    [UI_MENU_KEY_MIN_HOLD_DESC] = "Keep a released movement key held this long (ms), so a quick tap does not break "
+                                  "walking at high frame rates. 0 turns it off.",
+    [UI_MENU_SPRINT_TOGGLE] = "Sprint toggle",
+    [UI_MENU_SPRINT_TOGGLE_DESC] = "Tap the run key to keep running; it stops when movement stops for 300 ms or the "
+                                   "key is tapped again.",
+    [UI_MENU_LOCK_TOGGLE] = "Lock-on toggle",
+    [UI_MENU_LOCK_TOGGLE_DESC] = "Tap the shield/lock key to keep it held until the key is tapped again.",
+    [UI_MENU_KEYSNAP] = "Keyboard snapshot",
+    [UI_MENU_KEYSNAP_DESC] = "Read the keyboard from the window's messages instead of polling every key. Off uses "
+                             "the old polling.",
     [UI_MENU_WALK_KEY] = "Walk key",
     [UI_MENU_WALK_KEY_DESC] = "Hold it to tilt the keyboard's sticks part of the way, so the keyboard walks instead of "
                               "runs. The walk scale sets how far. A controller and the mouse are not affected.",
@@ -311,6 +388,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_KEY_RCTRL] = "Right Ctrl", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Caps Lock", [UI_KEY_INSERT] = "Insert",
     [UI_KEY_DELETE] = "Delete", [UI_KEY_HOME] = "Home", [UI_KEY_END] = "End", [UI_KEY_PAGEUP] = "Page Up",
     [UI_KEY_PAGEDOWN] = "Page Down", [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_KEY_ESC] = "Esc", [UI_KEY_WHEEL_UP] = "Wheel Up", [UI_KEY_WHEEL_DOWN] = "Wheel Down",
     [UI_PAD_SOUTH] = "Bottom button", [UI_PAD_EAST] = "Right button", [UI_PAD_WEST] = "Left button",
     [UI_PAD_NORTH] = "Top button", [UI_PAD_LSTICK] = "Left stick", [UI_PAD_RSTICK] = "Right stick",
     [UI_PAD_L] = "Left bumper", [UI_PAD_R] = "Right bumper", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
@@ -491,7 +569,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 
     [UI_MENU_TITLE] = "Настройки",
     [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_MODS] = "Моды", [UI_MENU_TAB_SOUND] = "Звук",
-    [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
+    [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_KBM] = "Клавиатура и мышь", [UI_MENU_TAB_AMIIBO] = "Amiibo",
+    [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
     [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
     [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
     [UI_MENU_DEFAULT_MARK] = "по умолчанию",
@@ -692,13 +771,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Кнопки какого контроллера показывают подсказки игры. Nintendo: как в самой игре. Xbox: "
                              "LB, RB, LT, RT, Menu, View и крестовина, а A, B, X и Y подписаны так же, как кнопка, "
                              "которую нажимает раскладка выше (в Nintendo (A справа) правая кнопка подписана B, и "
-                             "подсказки A показывают B). Игра читает подсказки при запуске, так что они меняются после "
-                             "перезапуска. Подсказки записаны в файлах игры, поэтому у кнопки, переназначенной на "
-                             "вкладке управления, на экране остаётся прежняя подсказка.",
+                             "подсказки A показывают B). Клавиатура: клавиши PC-схемы в виде кейкапов, включая кнопки "
+                             "мыши; раскладка кнопок выше на них не влияет. Игра читает подсказки при запуске, так что "
+                             "они меняются после перезапуска. Подсказки записаны в файлах игры, поэтому у кнопки, "
+                             "переназначенной на вкладке управления, на экране остаётся прежняя подсказка.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Клавиатура",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
-    [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
+    [UI_MENU_PROMPTS_CURRENT] = "действует",
+    [UI_MENU_PROMPTS_RESTART] = "изменения после перезапуска",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при разрешении игры не 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
@@ -714,6 +796,81 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
+    [UI_MENU_MOUSE_AIM_SCALE] = "Множитель при прицеливании",
+    [UI_MENU_MOUSE_AIM_SCALE_DESC] = "Чувствительность мыши, пока ZR натягивает лук; 1 — без изменений.",
+    [UI_MENU_MOUSE_DIRECT] = "Прямой обзор мышью (эксперимент)",
+    [UI_MENU_MOUSE_DIRECT_DESC] = "Добавляет мышь к уже обработанному стику камеры, минуя мёртвую зону и кривую "
+                                  "игры; мышь больше не управляет правым стиком.",
+    [UI_MENU_MOUSE_DIRECT_SENS] = "Скорость прямого обзора",
+    [UI_MENU_MOUSE_DIRECT_SENS_DESC] = "Единицы стика на отсчёт мыши при 30 fps; 1 совпадает с мышью через правый "
+                                       "стик при 60 fps.",
+    [UI_MENU_MOUSE_DIRECT_PITCH] = "Форма вертикали прямого обзора",
+    [UI_MENU_MOUSE_DIRECT_PITCH_DESC] = "Квадратичный корень для вертикали. 1,37 согласует квадратичный наклон игры с "
+                                        "поворотом; больше усиливает малые движения.",
+    [UI_MENU_MOUSE_MOTION_KEY] = "Клавиша движения мышью",
+    [UI_MENU_MOUSE_MOTION_KEY_DESC] = "Удерживайте, чтобы мышь управляла шестиосевым датчиком в святилищах с наклоном; "
+                                      "камера на паузе. none отключает.",
+    [UI_MENU_MOUSE_MOTION_SPEED] = "Скорость движения мышью",
+    [UI_MENU_MOUSE_MOTION_SPEED_DESC] = "Насколько далеко мышь наклоняет виртуальный контроллер.",
+    [UI_MENU_KBM_SCHEME] = "Схема клавиатуры и мыши",
+    [UI_MENU_KBM_SCHEME_DESC] = "Маршрутизирует клавиатуру и мышь по таблице контекстов. Выкл. — плоские привязки "
+                                "ниже. Вкладка «Управление» не меняет схему; kbm_binds в totk.ini переопределяет её "
+                                "клавиши. При подсказках-клавиатуре кейкапы показывают клавиши схемы независимо от "
+                                "того, включена она или нет. Вкладка «Клавиатура и мышь» задаёт клавишу каждого "
+                                "действия; пока удерживается клавиша броска, колесо переключает материалы.",
+    [UI_MENU_KBM_MATERIALS_KEY] = "Клавиша материалов",
+    [UI_MENU_KBM_MATERIALS_KEY_DESC] = "Клавиша действия «материалы» в схеме (сначала C). Z, B или N удобнее "
+                                       "нажимать, удерживая клавишу броска; схема меняется сразу.",
+    [UI_MENU_KBM_PULSE] = "Импульс нажатия",
+    [UI_MENU_KBM_PULSE_DESC] = "Сколько держатся биты действия, запущенного нажатием (строки P, O, M и tap схемы). "
+                               "0 — только кадр нажатия.",
+    [UI_MENU_WHEEL_STEP] = "Шаг колеса",
+    [UI_MENU_WHEEL_STEP_DESC] = "Нажатие и пауза каждого щелчка колеса, в миллисекундах. 0 — щелчок держится один "
+                                "опрос.",
+    [UI_MENU_SCREEN_WATCH] = "Определение экрана",
+    [UI_MENU_SCREEN_WATCH_DESC] = "Читает текущий экран меню игры (1.4.3) для контекста схемы; выкл. оставляет схему "
+                                  "на строках мира.",
+    [UI_MENU_SCREEN_WATCH_LOG] = "Журнал экранов",
+    [UI_MENU_SCREEN_WATCH_LOG_DESC] = "Пишет строку при смене экрана или контекста схемы.",
+    [UI_MENU_MENU_CURSOR] = "Мышь в меню игры",
+    [UI_MENU_MENU_CURSOR_DESC] = "1.4.3, по умолчанию выкл. Берёт указатель только на экранах из menu_cursor_screens "
+                                  "(титул, сумка, списки сохранений): рамка фокуса идёт к пункту под указателем "
+                                  "крестовиной, левый клик — A, правый — B. Полосы в мире не трогаются — снятие "
+                                  "захвата там убивает колесо.",
+    [UI_MENU_MENU_CURSOR_LOG] = "Журнал мыши в меню",
+    [UI_MENU_MENU_CURSOR_LOG_DESC] = "Пишет узлы экрана, результат попадания указателя и каждое направление, "
+                                     "которым ведут рамку фокуса.",
+    [UI_MENU_MOUSE_FLOOD] = "Инъекция отсчётов мыши",
+    [UI_MENU_MOUSE_FLOOD_DESC] = "Лишние отсчёты мыши за кадр для проверки мыши с высокой частотой опроса и пути "
+                                 "ввода. 0 — выкл.",
+    [UI_MENU_KBM_HELP] = "Клавиша каждого действия схемы, в одном контексте или во всех. Выберите строку и нажмите "
+                         "новую клавишу; Delete снимает переопределение. Контекстное важнее глобального. Пока "
+                         "удерживается клавиша броска, колесо переключает материалы.",
+    [UI_MENU_KBM_CONTEXT] = "Контекст",
+    [UI_MENU_KBM_CONTEXT_DESC] = "Таблица, которую редактируют строки ниже. «Все контексты» меняет действие везде, "
+                                 "где его не переопределяет контекст.",
+    [UI_MENU_KBM_GLOBAL] = "Все контексты",
+    [UI_MENU_KBM_ACTIONS] = "Действия",
+    [UI_MENU_KBM_DEFAULT] = "по умолчанию",
+    [UI_MENU_KBM_OVERRIDE_GLOBAL] = "глобальное переопределение",
+    [UI_MENU_KBM_OVERRIDE_CONTEXT] = "переопределение контекста",
+    [UI_MENU_KBM_PRESS] = "Нажмите новую клавишу для %s",
+    [UI_MENU_KBM_CANCEL_HINT] = "Esc — отмена; Delete снимает переопределение (%d с)",
+    [UI_MENU_KBM_CLEAR_HINT] = "Delete снимает переопределение, Esc — отмена",
+    [UI_MENU_KBM_ACTION_DESC] = "Щёлкните или нажмите A, чтобы захватить клавишу; Delete снимает переопределение этой "
+                                "строки.",
+    [UI_MENU_KBM_NO_ROWS] = "В этом контексте нет собственных строк; его действия берутся из родительского контекста.",
+    [UI_MENU_KEY_MIN_HOLD] = "Удержание клавиш движения",
+    [UI_MENU_KEY_MIN_HOLD_DESC] = "Сколько миллисекунд отпущенная клавиша движения ещё считается нажатой, чтобы "
+                                  "быстрое нажатие не рвало ходьбу при высокой частоте кадров. 0 — выкл.",
+    [UI_MENU_SPRINT_TOGGLE] = "Переключение бега",
+    [UI_MENU_SPRINT_TOGGLE_DESC] = "Нажмите клавишу бега, чтобы бежать постоянно; бег заканчивается через 300 мс "
+                                   "после остановки или при повторном нажатии.",
+    [UI_MENU_LOCK_TOGGLE] = "Переключение захвата",
+    [UI_MENU_LOCK_TOGGLE_DESC] = "Нажмите клавишу щита/захвата, чтобы удерживать её до повторного нажатия.",
+    [UI_MENU_KEYSNAP] = "Снимок клавиатуры",
+    [UI_MENU_KEYSNAP_DESC] = "Читать клавиатуру из сообщений окна вместо опроса каждой клавиши. Выкл. — старый "
+                             "опрос.",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
     [UI_MENU_WALK_KEY_DESC] = "Удерживайте: стики клавиатуры отклоняются частично, и персонаж идёт, а не бежит. "
                               "Насколько — задаёт сила шага. Контроллер и мышь не затрагиваются.",
@@ -765,6 +922,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_KEY_RCTRL] = "Правый Ctrl", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Caps Lock", [UI_KEY_INSERT] = "Insert",
     [UI_KEY_DELETE] = "Delete", [UI_KEY_HOME] = "Home", [UI_KEY_END] = "End", [UI_KEY_PAGEUP] = "Page Up",
     [UI_KEY_PAGEDOWN] = "Page Down", [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_KEY_ESC] = "Esc", [UI_KEY_WHEEL_UP] = "Колесо вверх", [UI_KEY_WHEEL_DOWN] = "Колесо вниз",
     [UI_PAD_SOUTH] = "Нижняя кнопка", [UI_PAD_EAST] = "Правая кнопка", [UI_PAD_WEST] = "Левая кнопка",
     [UI_PAD_NORTH] = "Верхняя кнопка", [UI_PAD_LSTICK] = "Левый стик", [UI_PAD_RSTICK] = "Правый стик",
     [UI_PAD_L] = "Левый бампер", [UI_PAD_R] = "Правый бампер", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
@@ -947,7 +1105,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
 
     [UI_MENU_TITLE] = "Configurações",
     [UI_MENU_TAB_SCREEN] = "Tela", [UI_MENU_TAB_GAME] = "Jogo", [UI_MENU_TAB_SOUND] = "Som",
-    [UI_MENU_TAB_CONTROLS] = "Controles", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Avançado",
+    [UI_MENU_TAB_CONTROLS] = "Controles", [UI_MENU_TAB_KBM] = "Teclado e mouse", [UI_MENU_TAB_AMIIBO] = "Amiibo",
+    [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Avançado",
     [UI_MENU_TAB_MODS] = "Mods",
     [UI_MENU_MODS_BUILTIN] = "Embutidos no port", [UI_MENU_MODS_INSTALLED] = "Mods instalados",
     [UI_MENU_MODS_NONE] = "Nenhum mod ainda. Descompacte um mod na pasta mods, uma pasta por mod com a pasta romfs dentro, "
@@ -1058,11 +1217,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT] = "Layout dos botões",
     [UI_MENU_PAD_LAYOUT_DESC] = "Qual botão é o A. Nintendo: o da direita, como no Switch. Xbox: o de baixo, como "
                                 "indicado no controle de Xbox (cruz no controle de PlayStation). Automático escolhe "
-                                "Nintendo para controles com os rótulos da Nintendo e Xbox para os demais. Ícones de "
-                                "Xbox: o A é o da direita, como no Nintendo, e o jogo mostra os rótulos do Xbox (B no "
-                                "lugar de A, A no lugar de B, Y no lugar de X, X no lugar de Y); os ícones mudam após "
-                                "reiniciar. As letras fazem parte dos arquivos do jogo, então um botão remapeado em "
-                                "Controles continua com a letra antiga na tela.",
+                                "Nintendo para controles com os rótulos da Nintendo e Xbox para os demais. Qual "
+                                "controle os ícones do jogo mostram é definido em Ícones de botões.",
     [UI_MENU_PAD_LAYOUT_AUTO] = "Automático", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A à direita)",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A embaixo)",
     [UI_MENU_PAD_LAYOUT_IN_USE] = "em uso: %s",
@@ -1075,6 +1231,82 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "analógico agora: %.0f %%",
     [UI_MENU_MOUSE_SENS] = "Sensibilidade da câmera no mouse",
     [UI_MENU_MOUSE_SENS_DESC] = "Quão rápido o mouse gira a câmera.",
+    [UI_MENU_MOUSE_AIM_SCALE] = "Escala da mira no mouse",
+    [UI_MENU_MOUSE_AIM_SCALE_DESC] = "Sensibilidade do mouse enquanto ZR puxa o arco; 1 não muda nada.",
+    [UI_MENU_MOUSE_DIRECT] = "Olhar direto do mouse (experimental)",
+    [UI_MENU_MOUSE_DIRECT_DESC] = "Soma o mouse ao analógico já processado da câmera, ignorando a zona morta e a "
+                                  "curva do jogo; o mouse deixa de empurrar o analógico direito.",
+    [UI_MENU_MOUSE_DIRECT_SENS] = "Velocidade do olhar direto",
+    [UI_MENU_MOUSE_DIRECT_SENS_DESC] = "Unidades de analógico por contagem do mouse a 30 fps; 1 iguala o mouse pelo "
+                                       "analógico direito a 60 fps.",
+    [UI_MENU_MOUSE_DIRECT_PITCH] = "Curva vertical do olhar direto",
+    [UI_MENU_MOUSE_DIRECT_PITCH_DESC] = "Curva de raiz quadrada para a vertical. 1,37 iguala a inclinação quadrática do "
+                                        "jogo ao giro; mais aumenta movimentos pequenos.",
+
+    [UI_MENU_MOUSE_MOTION_KEY] = "Tecla de movimento do mouse",
+    [UI_MENU_MOUSE_MOTION_KEY_DESC] = "Segure para o mouse alimentar o sensor de seis eixos nos santuários de inclinação; "
+                                      "a câmera pausa. none desativa.",
+    [UI_MENU_MOUSE_MOTION_SPEED] = "Velocidade do movimento do mouse",
+    [UI_MENU_MOUSE_MOTION_SPEED_DESC] = "Quanto o mouse inclina o controle virtual.",
+    [UI_MENU_KBM_SCHEME] = "Esquema de teclado e mouse",
+    [UI_MENU_KBM_SCHEME_DESC] = "Encaminha teclado e mouse pela tabela de contextos. Desligado usa as ligações "
+                                "planas abaixo. A aba Controles não edita o esquema; kbm_binds no totk.ini substitui "
+                                "suas teclas. Com os ícones de teclado, os keycaps mostram as teclas do esquema esteja "
+                                "ele ligado ou desligado. A aba Teclado e mouse define a tecla de cada ação; com a "
+                                "tecla de arremesso pressionada, a roda troca os materiais.",
+    [UI_MENU_KBM_MATERIALS_KEY] = "Tecla de materiais",
+    [UI_MENU_KBM_MATERIALS_KEY_DESC] = "A tecla do esquema para a ação de materiais (C no início). Z, B ou N é mais "
+                                       "fácil de alcançar com a tecla de arremesso pressionada; o esquema muda na "
+                                       "hora.",
+    [UI_MENU_KBM_PULSE] = "Pulso do toque",
+    [UI_MENU_KBM_PULSE_DESC] = "Quanto tempo uma ação disparada por um toque mantém os bits do controle (as linhas P, "
+                               "O, M e tap do esquema). 0 mantém só o quadro do toque.",
+    [UI_MENU_WHEEL_STEP] = "Passo da roda",
+    [UI_MENU_WHEEL_STEP_DESC] = "O toque e a pausa de cada entalhe da roda, em milissegundos. 0 mantém o entalhe por "
+                                "uma única consulta.",
+    [UI_MENU_SCREEN_WATCH] = "Leitura do ecrã",
+    [UI_MENU_SCREEN_WATCH_DESC] = "Lê o ecrã de menu atual do jogo (1.4.3) para o contexto do esquema; desligado "
+                                  "mantém o esquema nas linhas do mundo.",
+    [UI_MENU_SCREEN_WATCH_LOG] = "Registo de ecrãs",
+    [UI_MENU_SCREEN_WATCH_LOG_DESC] = "Escreve uma linha quando o ecrã ou o contexto do esquema muda.",
+    [UI_MENU_MENU_CURSOR] = "Mouse nos menus do jogo",
+    [UI_MENU_MENU_CURSOR_DESC] = "1.4.3, desligado por omissão. Assume o ponteiro só nos ecrãs listados em "
+                                 "menu_cursor_screens (título, bolsa, listas de saves): a caixa de foco anda até o "
+                                 "item com o d-pad, clique esquerdo é A, direito é B. As barras dentro do mundo ficam "
+                                 "intactas — soltar a captura ali mata a roda.",
+    [UI_MENU_MENU_CURSOR_LOG] = "Registo do mouse nos menus",
+    [UI_MENU_MENU_CURSOR_LOG_DESC] = "Escreve os nós de cada ecrã, o teste de acerto do ponteiro e cada direção com "
+                                     "que a caixa de foco é conduzida.",
+    [UI_MENU_MOUSE_FLOOD] = "Injeção de contagem do mouse",
+    [UI_MENU_MOUSE_FLOOD_DESC] = "Contagens extras de mouse por quadro, para testar um mouse de alta taxa de "
+                                 "relatório e o caminho de entrada. 0 desliga.",
+    [UI_MENU_KBM_HELP] = "A tecla de cada ação do esquema, num contexto ou em todos. Selecione uma linha e pressione a "
+                         "nova tecla; Delete limpa a substituição. A do contexto vence a global. Com a tecla de "
+                         "arremesso pressionada, a roda troca os materiais.",
+    [UI_MENU_KBM_CONTEXT] = "Contexto",
+    [UI_MENU_KBM_CONTEXT_DESC] = "A tabela que as linhas abaixo editam. Todos os contextos muda a ação onde nenhum "
+                                 "contexto a substitui.",
+    [UI_MENU_KBM_GLOBAL] = "Todos os contextos",
+    [UI_MENU_KBM_ACTIONS] = "Ações",
+    [UI_MENU_KBM_DEFAULT] = "padrão",
+    [UI_MENU_KBM_OVERRIDE_GLOBAL] = "substituição global",
+    [UI_MENU_KBM_OVERRIDE_CONTEXT] = "substituição do contexto",
+    [UI_MENU_KBM_PRESS] = "Pressione a nova tecla para %s",
+    [UI_MENU_KBM_CANCEL_HINT] = "Esc cancela; Delete limpa a substituição (%d s)",
+    [UI_MENU_KBM_CLEAR_HINT] = "Delete limpa a substituição, Esc cancela",
+    [UI_MENU_KBM_ACTION_DESC] = "Clique ou pressione A para capturar uma tecla; Delete limpa a substituição desta linha.",
+    [UI_MENU_KBM_NO_ROWS] = "Este contexto não tem linhas próprias; suas ações vêm do contexto pai.",
+    [UI_MENU_KEY_MIN_HOLD] = "Retenção das teclas de movimento",
+    [UI_MENU_KEY_MIN_HOLD_DESC] = "Mantém uma tecla de movimento solta pressionada por este tempo (ms), para que um "
+                                  "toque rápido não quebre a caminhada em alta taxa de quadros. 0 desliga.",
+    [UI_MENU_SPRINT_TOGGLE] = "Alternar corrida",
+    [UI_MENU_SPRINT_TOGGLE_DESC] = "Toque na tecla de correr para continuar correndo; para após 300 ms sem movimento "
+                                   "ou ao tocar de novo.",
+    [UI_MENU_LOCK_TOGGLE] = "Alternar mira fixa",
+    [UI_MENU_LOCK_TOGGLE_DESC] = "Toque na tecla de escudo/mira para mantê-la pressionada até tocar de novo.",
+    [UI_MENU_KEYSNAP] = "Instantâneo do teclado",
+    [UI_MENU_KEYSNAP_DESC] = "Lê o teclado pelas mensagens da janela em vez de consultar cada tecla. Desligado usa "
+                             "a consulta antiga.",
 
     [UI_BINDS_HELP] = "Selecione uma célula e aperte A ou Enter, depois a tecla, o botão do mouse ou o botão do "
                       "controle. Delete ou X limpa a célula. Uma tecla já em uso vem para cá; um botão do controle "
@@ -1118,6 +1350,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_KEY_RCTRL] = "Ctrl direito", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Caps Lock", [UI_KEY_INSERT] = "Insert",
     [UI_KEY_DELETE] = "Delete", [UI_KEY_HOME] = "Home", [UI_KEY_END] = "End", [UI_KEY_PAGEUP] = "Page Up",
     [UI_KEY_PAGEDOWN] = "Page Down", [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_KEY_ESC] = "Esc", [UI_KEY_WHEEL_UP] = "Roda para cima", [UI_KEY_WHEEL_DOWN] = "Roda para baixo",
     [UI_PAD_SOUTH] = "Botão de baixo", [UI_PAD_EAST] = "Botão da direita", [UI_PAD_WEST] = "Botão da esquerda",
     [UI_PAD_NORTH] = "Botão de cima", [UI_PAD_LSTICK] = "Analógico esquerdo", [UI_PAD_RSTICK] = "Analógico direito",
     [UI_PAD_L] = "Bumper esquerdo", [UI_PAD_R] = "Bumper direito", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
@@ -1314,17 +1547,20 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_UI] = "Brilho do HUD e do menu",
     [UI_MENU_HDR_UI_DESC] = "Nits do branco do HUD e deste menu.",
     [UI_MENU_PROMPTS] = "Ícones de botões",
-    [UI_MENU_PROMPTS_DESC] = "Os botões de qual controle os ícones do jogo mostram. Nintendo: os do próprio jogo. "
+    [UI_MENU_PROMPTS_DESC] = "Quais botões os ícones do jogo mostram. Nintendo: os do próprio jogo. "
                              "Xbox: LB, RB, LT, RT, Menu, Exibir e uma cruz direcional, e A, B, X e Y com a letra do "
                              "botão que o layout acima aperta (com Nintendo (A à direita) o botão da direita tem a "
-                             "letra B, então os ícones de A mostram B). O jogo lê os ícones ao iniciar, então eles "
-                             "mudam depois de reiniciar. Eles fazem parte dos arquivos do jogo, então um botão "
-                             "remapeado em Controles continua com o ícone antigo na tela.",
+                             "letra B, então os ícones de A mostram B). Teclado: as teclas do esquema de PC como "
+                             "keycaps, incluindo os botões do mouse; o layout de botões acima não se aplica. O jogo lê "
+                             "os ícones ao iniciar, então eles mudam depois de reiniciar. Eles fazem parte dos arquivos "
+                             "do jogo, então um botão remapeado em Controles continua com o ícone antigo na tela.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "Teclado",
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
-    [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
+    [UI_MENU_PROMPTS_CURRENT] = "em vigor",
+    [UI_MENU_PROMPTS_RESTART] = "muda após reiniciar",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados numa resolução de jogo que não é 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
@@ -1435,6 +1671,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_GAME] = "游戏",
     [UI_MENU_TAB_SOUND] = "声音",
     [UI_MENU_TAB_CONTROLS] = "操作",
+    [UI_MENU_TAB_KBM] = "键鼠",
     [UI_MENU_TAB_AMIIBO] = "amiibo",
     [UI_MENU_TAB_MENU] = "菜单",
     [UI_MENU_TAB_ADVANCED] = "高级",
@@ -1583,10 +1820,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_DESC] = "哪个按键是 A。Nintendo：右侧按键，与 Switch 相同。Xbox：下方按键，"
                                 "与 Xbox 手柄上的标注一致（PlayStation 手柄上为叉键）。自动："
                                 "带 Nintendo 标注的手柄使用 Nintendo 布局，其他手柄使用 Xbox 布局。"
-                                "Xbox 按键提示：A 仍是右侧键，但游戏显示 Xbox 标注（A 显示为 B、"
-                                "B 显示为 A、X 显示为 Y、Y 显示为 X），重启后生效。"
-                                "这些字母来自游戏文件，因此在“操作”中重映射过的按键，"
-                                "屏幕上仍显示原来的字母。",
+                                "只影响手柄；游戏画面里的按键图标由下面的“按键提示”决定。",
     [UI_MENU_PAD_LAYOUT_AUTO] = "自动",
     [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo（A 在右）",
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox（A 在下）",
@@ -1598,6 +1832,69 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "当前摇杆：%.0f %%",
     [UI_MENU_MOUSE_SENS] = "鼠标视角灵敏度",
     [UI_MENU_MOUSE_SENS_DESC] = "鼠标转动视角的速度。",
+    [UI_MENU_MOUSE_AIM_SCALE] = "瞄准时鼠标倍率",
+    [UI_MENU_MOUSE_AIM_SCALE_DESC] = "按住 ZR 拉弓时的鼠标灵敏度倍率；1 表示不变。",
+    [UI_MENU_MOUSE_DIRECT] = "鼠标直接视角（实验）",
+    [UI_MENU_MOUSE_DIRECT_DESC] = "把鼠标加到相机已处理的右摇杆上，跳过游戏的死区和曲线；鼠标不再推动右摇杆。",
+    [UI_MENU_MOUSE_DIRECT_SENS] = "直接视角速度",
+    [UI_MENU_MOUSE_DIRECT_SENS_DESC] = "30 fps 下每个鼠标计数对应的摇杆量；1 约等于 60 fps 时右摇杆鼠标的速度。",
+    [UI_MENU_MOUSE_DIRECT_PITCH] = "直接视角俯仰整形",
+    [UI_MENU_MOUSE_DIRECT_PITCH_DESC] = "垂直方向用平方根整形。1.37 让游戏的二次俯仰与水平转动一致；"
+                                        "调高会让小幅垂直移动更灵敏。",
+
+    [UI_MENU_MOUSE_MOTION_KEY] = "鼠标体感按键",
+    [UI_MENU_MOUSE_MOTION_KEY_DESC] = "按住时把鼠标交给游戏的六轴传感器，用于体感神庙/倾斜机关；此时视角直插暂停。"
+                                      "none 关闭。",
+    [UI_MENU_MOUSE_MOTION_SPEED] = "鼠标体感速度",
+    [UI_MENU_MOUSE_MOTION_SPEED_DESC] = "鼠标倾斜虚拟手柄的幅度。",
+    [UI_MENU_KBM_SCHEME] = "键鼠上下文方案",
+    [UI_MENU_KBM_SCHEME_DESC] = "按上下文表路由键盘和鼠标。关闭时使用下方的扁平键位。"
+                                "“操作”页不修改方案键位；totk.ini 的 kbm_binds 可覆盖方案按键。"
+                                "按键提示为“键盘”时，键帽始终显示方案键位；关闭本项只改变实际按键，不改变键帽。"
+                                "“键鼠”标签页可逐项改键；按住投掷键时滚轮换材料。",
+    [UI_MENU_KBM_MATERIALS_KEY] = "换材料键",
+    [UI_MENU_KBM_MATERIALS_KEY_DESC] = "方案里“材料”动作的键（默认 C）。按住投掷键时，Z、B 或 N 更好按；"
+                                       "改动对方案立即生效。",
+    [UI_MENU_KBM_PULSE] = "点按脉冲",
+    [UI_MENU_KBM_PULSE_DESC] = "按键触发的动作保持手柄位的时长（方案里的 P、O、M 和 tap 行）。"
+                               "0 = 只在按下那一帧输出。",
+    [UI_MENU_WHEEL_STEP] = "滚轮节拍",
+    [UI_MENU_WHEEL_STEP_DESC] = "滚轮每格的按下与停顿毫秒数。0 = 每格只保持一次轮询（最小）。",
+    [UI_MENU_SCREEN_WATCH] = "屏幕上下文探测",
+    [UI_MENU_SCREEN_WATCH_DESC] = "读取游戏当前菜单界面（1.4.3），让键鼠方案切到对应上下文；关闭后只用世界行。",
+    [UI_MENU_SCREEN_WATCH_LOG] = "屏幕上下文日志",
+    [UI_MENU_SCREEN_WATCH_LOG_DESC] = "界面或方案上下文变化时写一行日志。",
+    [UI_MENU_MENU_CURSOR] = "游戏菜单鼠标",
+    [UI_MENU_MENU_CURSOR_DESC] = "1.4.3，默认关。只在 menu_cursor_screens 列出的界面（默认标题、背包、存档列表、"
+                                 "读档确认）接管鼠标：焦点框用十字键的方式走到指针下方，左键等于 A，右键等于 B。"
+                                 "世界内的快捷条一律不碰——释放捕获会让滚轮失效。",
+    [UI_MENU_MENU_CURSOR_LOG] = "游戏菜单鼠标日志",
+    [UI_MENU_MENU_CURSOR_LOG_DESC] = "记录每个菜单界面的节点数、指针命中结果，以及焦点框每次被哪个方向键移动。",
+    [UI_MENU_MOUSE_FLOOD] = "鼠标计数注入",
+    [UI_MENU_MOUSE_FLOOD_DESC] = "每帧额外注入的鼠标计数，用于高回报率鼠标与输入路径压测。0 = 关。",
+    [UI_MENU_KBM_HELP] = "方案里每个动作的按键，可按上下文或全局设置。选中一行后按新键；Delete 清除覆盖。"
+                         "上下文覆盖优先于全局。按住投掷键时滚轮换材料。",
+    [UI_MENU_KBM_CONTEXT] = "上下文",
+    [UI_MENU_KBM_CONTEXT_DESC] = "下面编辑哪张表。全局会修改所有未被上下文覆盖的动作。",
+    [UI_MENU_KBM_GLOBAL] = "全局",
+    [UI_MENU_KBM_ACTIONS] = "动作",
+    [UI_MENU_KBM_DEFAULT] = "默认",
+    [UI_MENU_KBM_OVERRIDE_GLOBAL] = "全局覆盖",
+    [UI_MENU_KBM_OVERRIDE_CONTEXT] = "上下文覆盖",
+    [UI_MENU_KBM_PRESS] = "请为 %s 按下一个新键",
+    [UI_MENU_KBM_CANCEL_HINT] = "Esc 取消；Delete 清除覆盖（%d 秒）",
+    [UI_MENU_KBM_CLEAR_HINT] = "Delete 清除覆盖，Esc 取消",
+    [UI_MENU_KBM_ACTION_DESC] = "点击或按 A 捕获按键；Delete 清除这一行的覆盖。",
+    [UI_MENU_KBM_NO_ROWS] = "这个上下文没有直接定义的行；它的动作来自父上下文。",
+    [UI_MENU_KEY_MIN_HOLD] = "移动键保持",
+    [UI_MENU_KEY_MIN_HOLD_DESC] = "移动键松开后仍保持按下的毫秒数，避免高帧率下快速点按导致走路断续。"
+                                  "0 表示关闭。",
+    [UI_MENU_SPRINT_TOGGLE] = "冲刺切换",
+    [UI_MENU_SPRINT_TOGGLE_DESC] = "轻点奔跑键持续冲刺；停止移动 300 毫秒或再次轻点时结束。",
+    [UI_MENU_LOCK_TOGGLE] = "锁定切换",
+    [UI_MENU_LOCK_TOGGLE_DESC] = "轻点盾/锁定键保持按下，再次轻点取消。",
+    [UI_MENU_KEYSNAP] = "键盘快照",
+    [UI_MENU_KEYSNAP_DESC] = "从窗口消息读取键盘状态，而不是每次轮询所有按键。关闭时使用旧的轮询方式。",
 
     [UI_BINDS_HELP] = "选中一个格子后按 A 或 Enter，再按键、鼠标键或手柄按键。"
                       "Delete 或 X 清除格子。已占用的按键会移到这里；"
@@ -1681,6 +1978,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_KEY_PAGEUP] = "Page Up",
     [UI_KEY_PAGEDOWN] = "Page Down",
     [UI_KEY_NUM_FMT] = "小键盘 %s",
+    [UI_KEY_ESC] = "Esc",
+    [UI_KEY_WHEEL_UP] = "滚轮上",
+    [UI_KEY_WHEEL_DOWN] = "滚轮下",
     [UI_PAD_SOUTH] = "下方按键",
     [UI_PAD_EAST] = "右侧按键",
     [UI_PAD_WEST] = "左侧按键",
@@ -1913,14 +2213,17 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_UI] = "HUD 和菜单亮度",
     [UI_MENU_HDR_UI_DESC] = "HUD 和本菜单白色的尼特值。",
     [UI_MENU_PROMPTS] = "按键提示",
-    [UI_MENU_PROMPTS_DESC] = "游戏的按键提示显示哪种手柄的按键。Nintendo：游戏原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
+    [UI_MENU_PROMPTS_DESC] = "游戏画面显示哪种按键图标。Nintendo：游戏原有的手柄提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
-                             "B）。游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
+                             "B）。键盘：PC 方案的按键，以键帽显示，包括鼠标按键；上方的按键布局不影响键盘键帽。"
+                             "游戏在启动时读取按键提示，因此更改后需要重启。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_KEYBOARD] = "键盘",
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
-    [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",
+    [UI_MENU_PROMPTS_CURRENT] = "已生效",
+    [UI_MENU_PROMPTS_RESTART] = "更改后需重启",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "游戏分辨率不是 16:9 时关闭",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",
@@ -2083,7 +2386,7 @@ static const char *resolve_menu_lang(void) {
     return "en";
 }
 
-const char *menu_text(UiTextId id) {
+const char *menu_language(void) {
     static _Atomic(const char *) lang = "en";
     static _Atomic unsigned seen = ~0u;
     unsigned v = cfg_version();
@@ -2091,5 +2394,9 @@ const char *menu_text(UiTextId id) {
         atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
         atomic_store_explicit(&seen, v, memory_order_relaxed);
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return atomic_load_explicit(&lang, memory_order_relaxed);
+}
+
+const char *menu_text(UiTextId id) {
+    return ui_text_in(menu_language(), id);
 }

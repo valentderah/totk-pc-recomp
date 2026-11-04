@@ -38,13 +38,13 @@ void opt_text(UiTextId text, bool warn = false);
 bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted = false);
 // One name per value of the key's cfg_meta values list, in its order. When the key has no fixed default (an empty
 // def), names[0] is the automatic choice (the key unset) and names[1..] follow the values. note: a short line under
-// the value in place of the "default" mark (NULL: none).
+// the value in place of the "default" mark (NULL: none); note_dim draws it dim (a state, not a pending change).
 bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, UiTextId desc,
-                const char *note = nullptr);
+                const char *note = nullptr, bool note_dim = false);
 // A choice over a list the caller builds (devices, window sizes): values[i] is written, names[i] shown; "" means the key
 // unset. cur: the index in effect, -1 to find cfg_value(key) in values (no match: the value shown as it is).
 bool opt_choice_list(const char *key, UiTextId label, const char *const *values, const char *const *names, int n,
-                     UiTextId desc, int cur = -1, const char *note = nullptr);
+                     UiTextId desc, int cur = -1, const char *note = nullptr, bool note_dim = false);
 // A row that runs an action: true on A or a click. id: unique on the page and not a setting ("##copy_info"); value:
 // shown on the right ("" none).
 bool opt_button(const char *id, UiTextId label, UiTextId desc, const char *value = "");

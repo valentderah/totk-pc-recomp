@@ -283,9 +283,9 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
-# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
-# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
-# (docs/controls.md, "Xbox button prompts").
+# The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y), or keyboard (the
+# PC scheme's keys as keycaps, with kbm_scheme = 1). Read at start (docs/controls.md, "Button prompts").
 # prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
@@ -300,6 +300,75 @@
 # rstick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# Mouse sensitivity while ZR (the bow) is held: 1 = unchanged, 0.1 to 3. 0.7-0.8 calms a drawn bow.
+# mouse_aim_scale = 1
+# Direct mouse look (experimental): the mouse motion is added to the camera's processed right stick after the game's
+# dead zone and curve, so slow motion is not lost and fast flicks do not saturate; the mouse no longer drives the right
+# stick itself. 1 = on. Note: the 1.4.3 patch site must match the game version (recomp/patches-v143.txt).
+# mouse_direct = 0
+# Direct mouse look speed, 0.05 to 10 (1 = the same speed as the right-stick mouse at 60 fps).
+# mouse_direct_sens = 1
+# Direct mouse look pitch shaping: the vertical motion is sign(v) * sqrt(gain * |v|), which turns the game's
+# quadratic pitch (51 y |y|) into the same response as yaw (70 x). 1.3725 = 70/51; 0.2 to 4.
+# mouse_direct_pitch = 1.3725
+# Hold-to-tilt for the gyro shrines: while this key is held the mouse feeds the virtual controller's six-axis and the
+# direct mouse look is paused; none disables. A gamepad with motion sensors keeps its own six-axis.
+# mouse_motion_key = k
+# How far the mouse tilts the virtual controller, 0.05 to 4.
+# mouse_motion_speed = 1
+# Keep a released movement key held this many milliseconds (0 to 1000; 0 off), so a quick tap does not break walking
+# at high frame rates.
+# key_min_hold_ms = 150
+# How long a press-triggered PC-scheme action keeps its pad bits, in milliseconds (0 to 200; 0 keeps them for the frame
+# of the press only).
+# kbm_pulse_ms = 70
+# The press and the rest of each wheel notch, in milliseconds (0 to 200; 0 keeps a notch for one poll).
+# wheel_step_ms = 70
+# The PC scheme's key for the material action: c, z, b or n (default c). The throw key is held at the same time, so Z,
+# B or N is easier to reach than C.
+# kbm_materials_key = c
+# Tap the run key to keep running (it ends 300 ms after movement stops or on the next tap), and tap the shield/lock key
+# to keep it held until the next tap. The gamepad's own buttons are never latched.
+# sprint_toggle = 0
+# lock_toggle = 0
+# Read the keyboard from the window's messages instead of polling every key every poll (0 uses the old polling).
+# keysnap = 1
+# Log the mouse camera's raw counts and stick every N ms; add N extra mouse counts per presented frame to stress a
+# high-report-rate mouse and the input path. Both are off when unset (camlog in ms, mouse_flood in counts).
+# camlog = 250
+# mouse_flood = 0
+# Override the PC scheme's keys by action, in every context: action=key,key|action=key (the keys are the names in the
+# bind_ lines, e.g. attack, bow_toggle, jump, interact). context.action=key overrides one context only and wins over a
+# global entry; the Keyboard & mouse tab (F1) writes both. Empty keeps the upstream table; kbm_materials_key applies
+# unless this line gives materials its own key.
+# kbm_binds = attack=Mouse Left|world.jump=Space|bow_toggle=F
+# Read the game's own eui screen (1.4.3) for the PC scheme's context: the title, inventory/pause, save list, options,
+# shops, dialogue choices, map, strips and the rest; the bow (ZR) is AIM when no screen has focus. 1 on, 0 keeps the
+# scheme on the world rows.
+# screen_watch = 1
+# Logs each screen and the scheme's context when they change (1 on).
+# screen_watch_log = 1
+# The mouse pointer in the game's own menus (1.4.3), off by default: it releases the OS cursor and moves the focus box
+# the way the game moves it -- pressing the d-pad direction that closes the gap to the hovered item, one press per step
+# -- because eui recomputes its cursor every frame and ignores direct writes. Left click is A on the hovered item,
+# right click is B. It only takes the cursor in the screens named in menu_cursor_screens: the game's in-world strips
+# keep the pointer captured, because releasing it there would also drop the wheel.
+# menu_cursor = 0
+# Comma-separated layout names the pointer is taken for. menu_cursor_log prints each screen's name, so a menu missing
+# here is one name away.
+# menu_cursor_screens = Title_00,Pouch_00,SystemLoadList_00,SystemSaveLoad_00
+# Logs each menu screen's nodes, the pointer's hit test and every d-pad press the pointer drives (layout coordinates,
+# first box, hit node/none, focus there/elsewhere).
+# menu_cursor_log = 0
+# The PC scheme (Weeping of the Empire's context table) in place of the flat table above: 0 off, 1 on. The Keyboard &
+# mouse tab (F1) edits every action's key, globally or per context, and the wheel switches materials while the throw
+# key is held. Off, the Controls tab and the bind_ lines are the layout (docs/controls.md). On, the keyboard and the
+# mouse follow the PC scheme's table of (context, action) rows; the Controls tab and bind_ do nothing then, and the
+# gamepad, its layout, the mouse camera and every other input setting are unchanged. Live: the next poll switches and
+# the log says which path ran ("input: PC scheme on: 255 rows, 0 unknown keys, Esc is the game's menu key"). Esc is the
+# game's pause menu in the world and its back row on the game's own screens (runtime/screen_watch.c); the settings menu
+# is F1's and Esc no longer releases the mouse cursor while this is on.
+# kbm_scheme = 0
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
 # none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
@@ -320,6 +389,7 @@
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert
 #   delete home end pageup pagedown up down left right num_add num_sub num_mul num_div num_decimal minus equals
 #   lbracket rbracket semicolon apostrophe comma period slash backslash grave mouse_l mouse_r mouse_m mouse_x1 mouse_x2
+#   mouse_wheel_up mouse_wheel_down (a notch becomes one short press, like a tap)
 # Defaults (pad_layout = nintendo): A = pad:east, key:E. B = pad:south, key:lshift. X = pad:north, key:space.
 # Y = pad:west, key:mouse_l. A pad that reports A/B and X/Y swapped (some GuliKit models): set pad_layout = xbox, or
 # swap them back here (keyboard keys stay):
@@ -327,6 +397,9 @@
 # bind_B = pad:east, key:lshift
 # bind_X = pad:west, key:space
 # bind_Y = pad:north, key:mouse_l
+# A wheel notch binds like a key; for example, D-pad up/down on the wheel:
+# bind_UP = key:2, key:mouse_wheel_up, pad:dpad_up
+# bind_DOWN = key:4, key:mouse_wheel_down, pad:dpad_down
 
 [mods]
 # Folder with the player's mods, one subfolder per mod (<name>/romfs, <name>/exefs, <name>/cheats). Default: mods next

@@ -72,6 +72,7 @@ static int key_vk(int key) {
     case KEY_SLASH: return VK_OEM_2;
     case KEY_BACKSLASH: return VK_OEM_5;
     case KEY_GRAVE: return VK_OEM_3;
+    case KEY_ESC: return VK_ESCAPE;
     }
     return 0;
 }
@@ -83,6 +84,11 @@ uint32_t input_key_char(int key) {
 
 // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
+static volatile LONG wheel_notches;        // wheel notches since the last poll
+// TOTK_KEYSNAP: the window thread's keyboard snapshot. GetKeyboardState here sees the messages the window pumps;
+// the game thread only reads the bytes, instead of calling GetAsyncKeyState for every bound key every poll.
+static volatile uint8_t key_snap[256];
+static volatile LONG snap_valid;
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
@@ -126,12 +132,65 @@ void input_cursor_suspend(int on) {
     cursor_update(gfx_window_handle());
 }
 
+// Windows can drop the cursor clip (another program, a display change, a remote session). While the mouse camera holds
+// the pointer, put the clip back and keep the pointer near the client centre: the camera reads relative motion, so a
+// pointer that drifts off the window only hurts the settings menu and multi-monitor safety.
+// The mouse camera reads raw deltas (WM_INPUT's lLastX/Y, accumulated below), never the cursor's position, so the
+// captured cursor has nothing to be parked for: re-centering it only showed as the pointer jumping to the middle of
+// the screen whenever a click briefly released the capture and the next frame took it back. The clip stays: it is what
+// keeps a captured session inside the window if another program's clip is lost.
+static DWORD WINAPI cursor_keeper(void *arg) {
+    (void)arg;
+    for (;;) {
+        Sleep(4);
+        if (!InterlockedCompareExchange(&cur_captured, 1, 1)) continue;
+        HWND h = gfx_window_handle();
+        if (!h || GetForegroundWindow() != h || IsIconic(h)) continue;
+        RECT r;
+        POINT tl = {0, 0};
+        if (!GetClientRect(h, &r) || !ClientToScreen(h, &tl)) continue;
+        RECT clip = {tl.x, tl.y, tl.x + r.right, tl.y + r.bottom}, cur;
+        if (!GetClipCursor(&cur) || cur.left != clip.left || cur.top != clip.top || cur.right != clip.right ||
+            cur.bottom != clip.bottom)
+            ClipCursor(&clip);
+    }
+    return 0;
+}
+
+static int keysnap_on(void) {
+    static int on = 1;
+    static unsigned seen = ~0u;
+    unsigned v = cfg_version();
+    if (v != seen) { seen = v; on = cfg_bool("TOTK_KEYSNAP"); }
+    return on;
+}
+static void snap_refresh(void) {
+    BYTE ks[256];
+    if (GetKeyboardState(ks)) {
+        memcpy((void *)key_snap, ks, sizeof ks);
+        InterlockedExchange(&snap_valid, 1);
+    }
+}
+static void snap_refresh_input(void) {
+    static ULONGLONG last;
+    ULONGLONG now = GetTickCount64();
+    if (now == last) return;   // at most one user32 call per ms from raw input
+    last = now;
+    if (keysnap_on()) snap_refresh();
+}
+static void snap_clear(void) {
+    memset((void *)key_snap, 0, sizeof key_snap);
+    InterlockedExchange(&snap_valid, 0);
+}
+
 // Window procedure hook (gfx_window_win.c calls it first). Returns 1 with *res set when the message is fully handled.
 int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     switch (m) {
     case WM_CREATE: {
         RAWINPUTDEVICE rid = {.usUsagePage = 1, .usUsage = 2, .dwFlags = 0, .hwndTarget = h};   // generic mouse
         if (!RegisterRawInputDevices(&rid, 1, sizeof rid)) rt_log("input: raw mouse registration failed (%lu)", GetLastError());
+        snap_refresh();
+        CreateThread(NULL, 0, cursor_keeper, NULL, 0, NULL);
         break;
     }
     case WM_INPUT: {
@@ -142,29 +201,54 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
             InterlockedAdd(&mouse_dx, ri.data.mouse.lLastX);
             InterlockedAdd(&mouse_dy, ri.data.mouse.lLastY);
         }
+        snap_refresh_input();
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
+    case WM_MOUSEWHEEL:
+        if (cur_active) {
+            int notches = GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA;
+            if (notches) InterlockedAdd(&wheel_notches, notches);
+        }
+        break;   // not consumed: the settings menu's ImGui still gets it
     case WM_SETCURSOR:
         if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
         break;
     case WM_SYSCOMMAND:   // Alt pressed alone would enter the window menu loop, which stalls the game: Alt is a game key
         if ((w & 0xFFF0) == SC_KEYMENU && l == 0) { *res = 0; return 1; }
         break;
-    case WM_KEYDOWN:   // Esc is unbound in the game layout: it releases the cursor and opens the menu (menu_window_msg)
-        if (w == VK_ESCAPE && !(cur_rel & CUR_REL)) { cur_rel_update(rel_esc); cursor_update(h); }
+    case WM_KEYDOWN:   // Esc is unbound in the game layout: it releases the cursor and opens the menu (menu_window_msg),
+                       // unless the PC scheme runs, where Esc is the game's own key (input_kbm_scheme)
+        snap_refresh();
+        if (w == VK_ESCAPE && !(cur_rel & CUR_REL) && !input_kbm_scheme()) { cur_rel_update(rel_esc); cursor_update(h); }
         break;
-    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:   // client area only; poll_merged drops the click
+    case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+        snap_refresh();
+        break;
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN:   // client area only; poll_merged drops the click
+        snap_refresh();
         if (cur_rel & CUR_REL) { cur_rel_update(rel_clear); cursor_update(h); }
+        break;
+    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: case WM_XBUTTONUP:
+        snap_refresh();
         break;
     case WM_MOUSEACTIVATE:   // sent before WM_ACTIVATEAPP: a title bar or border click must not capture
         if (LOWORD(l) != HTCLIENT) cur_rel_update(rel_title);
         break;
     case WM_ACTIVATEAPP:
-        if (!w) cur_rel_update(rel_clear);   // Alt+Tab back in captures again
+        if (!w) { cur_rel_update(rel_clear); snap_clear(); }   // Alt+Tab back in captures again
+        else snap_refresh();
         InterlockedExchange(&cur_active, w != 0);
         cursor_update(h);
         break;
-    case WM_SETFOCUS: case WM_KILLFOCUS: case WM_SIZE: case WM_MOVE:
+    case WM_SETFOCUS:
+        snap_refresh();
+        cursor_update(h);
+        break;
+    case WM_KILLFOCUS:
+        snap_clear();
+        cursor_update(h);
+        break;
+    case WM_SIZE: case WM_MOVE:
         cursor_update(h);
         break;
     case WM_ENTERSIZEMOVE:
@@ -181,7 +265,12 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     return 0;
 }
 
-static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+static int key_down(int vk) {
+    if (keysnap_on() && snap_valid && vk > 0 && vk < 256) return (key_snap[vk] & 0x80) != 0;
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+int ikb_wheel_take(void) { return (int)InterlockedExchange(&wheel_notches, 0); }
 
 int input_flight_key(void) {
     HWND w = gfx_window_handle();
@@ -202,6 +291,25 @@ int ikb_down(int key) {
 int ikb_escape(void) { return key_down(VK_ESCAPE); }
 
 int ikb_captured(void) { return cur_captured != 0; }
+
+int ikb_pointer(float *nx, float *ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    POINT p;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r) || r.right < 1 || r.bottom < 1 || !GetCursorPos(&p) ||
+        !ScreenToClient(h, &p))
+        return 0;
+    *nx = (float)p.x / (float)r.right, *ny = (float)p.y / (float)r.bottom;
+    return p.x >= 0 && p.y >= 0 && p.x < r.right && p.y < r.bottom;
+}
+
+void ikb_pointer_set(float nx, float ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r)) return;
+    POINT p = {(LONG)(nx * r.right), (LONG)(ny * r.bottom)};
+    if (ClientToScreen(h, &p)) SetCursorPos(p.x, p.y);
+}
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);

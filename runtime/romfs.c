@@ -750,14 +750,16 @@ static void camera_overlay(void) {
 // The button prompts' folders (input_prompts_folder) and whether each had a manifest next to romfs-index.bin at start;
 // the one the settings asked for at start, the one overlay_init loaded (NULL: the game's own prompts) and why the first
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
-static struct { const char *name; int ready; } prompts_folders[2];
+// Three: the two Xbox ones (the pad layout picks between them) and the keyboard set.
+enum { PROMPTS_FOLDERS = 3 };
+static struct { const char *name; int ready; } prompts_folders[PROMPTS_FOLDERS];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < PROMPTS_FOLDERS; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -813,15 +815,21 @@ static void overlay_init(void) {
                    "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
         }
     }
-    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each folder
-    for (int i = 0; i < 2; i++) {
-        prompts_folders[i].name = input_prompts_folder(PROMPTS_XBOX, layouts[i]);
-        prompts_folders[i].ready =
-            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[i].name) < (int)sizeof path &&
+    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder
+    int folder = 0;
+    for (int i = 0; i < 2; i++, folder++) {
+        prompts_folders[folder].name = input_prompts_folder(PROMPTS_XBOX, layouts[i]);
+        prompts_folders[folder].ready =
+            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[folder].name) < (int)sizeof path &&
             plat_file_exists(path);
     }
+    prompts_folders[folder].name = input_prompts_folder(PROMPTS_KEYBOARD, NULL);
+    prompts_folders[folder].ready =
+        snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[folder].name) < (int)sizeof path &&
+        plat_file_exists(path);
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    prompts_wanted = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+    int style = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout);
+    prompts_wanted = input_prompts_folder(style, layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
                   : wide                                  ? ROMFS_PROMPTS_SHAPE
                   : patches                               ? ROMFS_PROMPTS_PATCHES
@@ -833,13 +841,13 @@ static void overlay_init(void) {
         snprintf(path, sizeof path, "%s/%s", index_dir, prompts_wanted);   // fits: its manifest path did
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
-            rt_log("RomFS overlay: Xbox button prompts (%s)", path);
+            rt_log("RomFS overlay: %s button prompts (%s)", input_prompts_style(style), path);
         } else {
             prompts_off = ROMFS_PROMPTS_FAILED;
             rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", path);
         }
     } else if (prompts_wanted) {
-        rt_log("RomFS overlay: prompts = xbox, but %s; Switch prompts stay",
+        rt_log("RomFS overlay: prompts = %s, but %s; the game's own prompts stay", input_prompts_style(style),
                prompts_off == ROMFS_PROMPTS_SHAPE     ? "the game resolution takes its own UI layout"
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
@@ -856,7 +864,8 @@ static void overlay_init(void) {
     mods_overlay_init();
     const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
     if (clash) {
-        rt_log("RomFS overlay: a RomFS mod replaces %s, which the Xbox prompts change too; Switch prompts stay", clash);
+        rt_log("RomFS overlay: a RomFS mod replaces %s, which the %s prompts change too; the game's own prompts stay",
+               clash, input_prompts_style(style));
         overlay_drop(first, prompts_end);
         prompts_loaded = NULL;
         prompts_off = ROMFS_PROMPTS_MODS;
