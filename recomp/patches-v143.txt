@@ -991,3 +991,16 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+
+# Hero's Path replay speed: the map's footprint player (main+0x2159640, called once per frame from UIMapScreen's
+# update) advances its float index +0xc40 by a step from the 3 x 4 table at main+0x2d1711c (row = the replay speed at
+# +0xc44 if under 4, else 0; column = the zoom level at +0x2b4 if under 4, else 0; the load at main+0x2159e2c, applied
+# as index + step at main+0x2159ef4 forward and index - step at main+0x2159e34 backward) once per frame, without the
+# frame step the rest of the map's motion takes (the stick scroll's target step and the view ease read the time
+# scale): the replay ran 2x / 4.8x / 8x fast at 60 / 144 / 240 fps against the Switch's 30. The site scales the step
+# by the page's 30 Hz ratio, floored at 1.0 - a slower frame keeps the Switch's step, a larger one could step the
+# crossed-points walk past a point (s1 holds nothing past the site, the scvtf a few instructions on writes it on both
+# paths; s2 is dead until main+0x215a054; x10 is the table entry's address, free once the load has read it). Needs
+# the real-time step like cloth: frame_rate.c switches the set off without it.
+set heropath TOTK_HEROPATH_REALTIME 1
+site heropath main 2159e2c bd400140 bd400140 @page:x10 bd400141 1e2e1002 1e227821 1e210800   # ldr s0, [x10]: s1 = ratio (page +0), k = fminnm(ratio, 1.0), step *= k
