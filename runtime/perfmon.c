@@ -384,8 +384,9 @@ void perfmon_mode(int mode) {
 }
 
 void perfmon_snapshot(PerfStats *out) {
-    uint64_t now = plat_now_ns();
     plat_mutex_lock(&g_lock);
+    // Match the clock to protected state that another frame or snapshot may have advanced while we waited.
+    uint64_t now = plat_now_ns();
     frames_summary(&g_stats, now);
     counters_summary(now);
     *out = g_stats;
