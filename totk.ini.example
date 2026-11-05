@@ -144,7 +144,10 @@
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
 # (3:2). Any other size
 # gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start.
+# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
+# shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
+# a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
+# the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
