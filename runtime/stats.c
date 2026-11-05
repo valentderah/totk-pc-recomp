@@ -322,12 +322,16 @@ static int load_save(const char *path) {
 }
 
 // ---- statistics
-static const struct { const char *prefix; uint32_t target; } kFamilies[STATS_FAMILIES] = {
-    {"Enemy_Bokoblin_", 100}, {"Enemy_Moriblin_", 50}, {"Enemy_Lizalfos_", 50}, {"Enemy_Horablin_", 30},
-    {"Enemy_Lynel_", 10},     {"Enemy_Giant_", 10},    {"Enemy_Golem_", 10},    {"Enemy_CaveMaster_", 5},
-    {"Enemy_Drake_", 3},      {"Enemy_Mogurudo_", 3},  {"Enemy_LikeLike_", 25}, {"Enemy_Wizzrobe_", 10},
-    {"Enemy_Zonau_", 100},    {"Enemy_Keese", 50},     {"Enemy_Chuchu", 50},    {"Enemy_Octarock", 25},
-    {"Enemy_Zombie_", 25},    {"Enemy_Assassin_", 20}};
+// Defeat goals by how often the family turns up: the common ones (Bokoblins, constructs, Keese) take several tiers up
+// to hundreds, the rare ones (Lynels, Hinoxes, Taluses, Gleeoks, Frox, Wizzrobes) one goal. A tier's id keeps its
+// goal ("family_Bokoblin_100"), so goals added later leave unlocked ones in place.
+static const struct { const char *prefix; uint32_t tiers[3]; } kFamilies[STATS_FAMILIES] = {
+    {"Enemy_Bokoblin_", {100, 500, 1000}}, {"Enemy_Moriblin_", {50, 250, 500}}, {"Enemy_Lizalfos_", {50, 250, 500}},
+    {"Enemy_Horablin_", {30, 150}},        {"Enemy_Lynel_", {10}},              {"Enemy_Giant_", {10}},
+    {"Enemy_Golem_", {10}},                {"Enemy_CaveMaster_", {5, 50}},      {"Enemy_Drake_", {3}},
+    {"Enemy_Mogurudo_", {3}},              {"Enemy_LikeLike_", {25, 100}},      {"Enemy_Wizzrobe_", {10}},
+    {"Enemy_Zonau_", {100, 500, 1000}},    {"Enemy_Keese", {50, 250}},          {"Enemy_Chuchu", {50, 250}},
+    {"Enemy_Octarock", {25, 100}},         {"Enemy_Zombie_", {25, 100}},        {"Enemy_Assassin_", {20, 100}}};
 
 static PlatMutex lock = PLAT_MUTEX_INIT;   // view, unlocked
 static StatsView view;
@@ -548,10 +552,12 @@ static void achs_define(void) {
     ach_add("kinds_25", STATS_KINDS, -1, 25);
     ach_add("kinds_50", STATS_KINDS, -1, 50);
     ach_add("kinds_75", STATS_KINDS, -1, 75);
-    static char ids[STATS_FAMILIES][40];
+    static char ids[STATS_FAMILIES][3][40];
     for (int f = 0; f < STATS_FAMILIES; f++) {
-        snprintf(ids[f], sizeof ids[f], "family_%s%u", kFamilies[f].prefix + 6, kFamilies[f].target);
-        ach_add(ids[f], STATS_FAMILY, f, kFamilies[f].target);
+        for (int t = 0; t < 3 && kFamilies[f].tiers[t]; t++) {
+            snprintf(ids[f][t], sizeof ids[f][t], "family_%s%u", kFamilies[f].prefix + 6, kFamilies[f].tiers[t]);
+            ach_add(ids[f][t], STATS_FAMILY, f, kFamilies[f].tiers[t]);
+        }
     }
     ach_add("weapons_25", STATS_WEAPONS, -1, 25);
     ach_add("weapons_75", STATS_WEAPONS, -1, 75);
