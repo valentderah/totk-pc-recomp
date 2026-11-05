@@ -459,19 +459,34 @@ static int live_find(void) {
     if (live_slot && manager_ok(rq(live_slot), &ints)) {
         live_mgr = rq(live_slot);
     } else {
+        // A scan of main's data (some 5 MiB) at most every SCAN_MS: only values inside the guest heap or alias region
+        // are probed, so the scan is a pass over memory rather than a system call per word.
+        static uint64_t next_scan;
+        static int scans;
+        uint64_t now = plat_now_ms();
+        if (now < next_scan) return 0;
+        next_scan = now + 10000;
         live_slot = 0;
         const RtLoaded *m = ldr_count() ? ldr_module(0) : NULL;
-        if (!m || m->data_off >= m->size) return 0;
-        uint64_t from = m->base + m->data_off, to = m->base + m->size;
+        const RtGuestLayout *g = mem_layout();
+        if (!m || !g || m->data_off >= m->size) return 0;
+        uint64_t from = m->base + m->data_off, to = m->base + m->size, probed = 0;
         for (uint64_t a = from & ~7ull; a + 8 <= to && !live_slot; a += 8) {
             if (((a - from) & 0xfff) == 0 && !readable(a, 0x1000 < to - a ? 0x1000 : to - a)) {
                 a += 0xff8;
                 continue;
             }
             uint64_t p = rq(a);
-            if (p && readable(p, 0x300) && manager_ok(p, &ints)) live_slot = a, live_mgr = p;
+            if ((p & 7) || !((p - g->heap.base < g->heap.size) || (p - g->alias.base < g->alias.size))) continue;
+            probed++;
+            if (readable(p, 0x300) && manager_ok(p, &ints)) live_slot = a, live_mgr = p;
         }
-        if (!live_slot) return 0;
+        if (!live_slot) {
+            if (++scans <= 3)
+                rt_log("stats: no GameData manager in main's data yet (%llu heap pointers probed); the save is read",
+                       (unsigned long long)probed);
+            return 0;
+        }
         rt_log("stats: the game's GameData manager at %#llx (pointer at main+%#llx): statistics read live",
                (unsigned long long)live_mgr, (unsigned long long)(live_slot - ldr_module(0)->base));
     }
