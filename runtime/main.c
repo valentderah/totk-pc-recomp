@@ -2,7 +2,8 @@
 //
 //   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
-//     --probe-mods      the mods folder scan, order and switches (mods.c); needs no game files
+//     --probe-mods      the mods folder scan, order and switches (mods.c), the size table entries of the members of
+//                       mods' packs (restbl_probe.c); needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
 //     --probe-discord  the Rich Presence IPC exchange; skips without a Discord client; no game files

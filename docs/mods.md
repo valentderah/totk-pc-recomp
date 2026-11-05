@@ -48,7 +48,10 @@ Two mods that edit the same game file do not combine: the higher one wins the wh
 (`.tkcl` files) go the same way.
 
 The port merges the resource size table on its own: at every start with mods on, it combines the tables the mods ship
-and raises the entries for files a mod made larger or added. A separate RESTBL mod is not needed.
+and raises the entries for files a mod made larger or added, the files inside a mod's packs (`Pack\**\*.pack.zs`)
+included. A separate RESTBL mod is not needed. The table tells the game how much memory each file needs: a file that
+outgrew its entry crashes the game when it loads, which can be long after the start, when the game first needs it. The
+log line `RomFS: resource size table: ...` says how many entries were raised and names the first files inside packs.
 
 ## Code patches (ExeFS)
 
