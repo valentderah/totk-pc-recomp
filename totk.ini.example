@@ -301,7 +301,7 @@
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a

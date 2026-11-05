@@ -1,6 +1,8 @@
-// Direct mouse input for TotK 1.4.3. The camera controller's input update (main+0x874c1c) turns HID stick floats
-// into a radial dead zone, clamps the radius to one and applies StickExponent. The mouse enters after all three,
-// at main+0x874cb4, before the game's X/Y inversion and input-activity flags. It never becomes a HID stick value.
+// Direct mouse input for TotK 1.4.3 and 1.2.1. The camera controller's input update (1.4.3 main+0x874c1c, 1.2.1
+// main+0xd18088) turns HID stick floats into a radial dead zone, clamps the radius to one and applies StickExponent.
+// The mouse enters after all three, at the store of x (1.4.3 main+0x874cb4), before the game's X/Y inversion and
+// input-activity flags. It never becomes a HID stick value. Where each version keeps the values the hooks read is in
+// its MouseLayout (layout_143, layout_121), chosen by the running game version.
 // Free orbit removes that sample again before the camera's additional vertical square/velocity filters and adds
 // raw-count angular deltas at its spherical-angle output instead. The aiming, scope, ability, horse and Purah Pad
 // cameras do the same at the angle each integrates from (camera_load). Ultrahand has a separate post-curve hook.
@@ -119,6 +121,23 @@ void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMo
 #define HOST_MOUSE_HAND (RT_PATCH_PAGE + 0xf90)
 static _Thread_local uint64_t mouse_input_object;
 
+// Where a game version keeps what the hooks read and write (recomp/patches-v143.txt, patches-v121.txt). The camera
+// input update keeps its flags in w21, its input object in x20 and y in s10 in both; the free orbit's object is x0 at
+// its begin and x20 at its angles; Ultrahand's object is x19 and its y s15.
+struct LoadSite;
+typedef struct {
+    uint8_t input_x;                // camera_input: the s register with x, which the displaced store puts at +0x420
+    uint8_t activity_sp;            // camera_activity: the displaced ldp d9, d8, [sp, #activity_sp]
+    uint8_t orbit_pitch, orbit_yaw; // orbit_angles: the final pitch and yaw on the stack, sp + these
+    uint8_t orbit_reg;              // and the displaced ldr s<orbit_reg>, [sp, #orbit_pitch]
+    uint8_t hand_x_sp, hand_x_reg;  // hand_input: x at sp + hand_x_sp, or in s<hand_x_reg> when that is 0
+    uint8_t hand_store_reg, hand_store_sp;   // the displaced str w<hand_store_reg>, [sp, #hand_store_sp]
+    uint64_t player_root_slot, main_size;    // player_state: 0 when not known for this version
+    const struct LoadSite *loads;   // camera_load's sites
+    size_t load_count;
+} MouseLayout;
+static const MouseLayout *mouse_layout(void);
+
 typedef struct {
     uint64_t object, generation, when;
     float pad[2], motion[2], angle[2];   // post-inversion controller input, mouse input, mouse yaw/pitch in degrees
@@ -134,7 +153,7 @@ static uint64_t sample_taken;
 // The last sample with mouse motion a watched camera mode loaded as stick (ROLE_WATCH): its generation and mode
 static uint64_t sample_watched;
 static int sample_watched_mode = -1;
-static const char *mode_name(int mode);   // load_sites' camera modes, below
+static const char *mode_name(int mode);   // the load sites' camera modes, below
 static void sample_mark_taken(uint64_t generation) {
     plat_mutex_lock(&sample_lock);
     sample_taken = generation;
@@ -185,8 +204,8 @@ static float wrap_degrees(float a) { return remainderf(a, 360.0f); }
 // (id +0x10, unit +8; the unit's id +0x48 and proc +0x40, the proc's state +0x24 not 7..11 while it is deleted), the
 // actor's component array +0x228 (1.0.0 +0x220), its AS component +0x158, whose 5 slots (+0x1f0) hold the verb at +0x28
 // (+0x4c when +0x28 is Invalid). Every pointer is checked before it is followed; any miss reads as "nothing".
-#define PLAYER_ROOT_SLOT 0x3969918ull
-#define MAIN_IMAGE_SIZE 0x3adf000ull
+// 1.2.1's slot, component offset and verb numbers are not known (MouseLayout.player_root_slot 0): there the player
+// always reads as not found, so the ability camera's stick fallback keeps on-foot gains and mouse_aim_scale stays off.
 enum { VERB_USE_BOW = 59, VERB_USE_SPECIAL_POWER = 61, VERB_DRAWN_BOW = 205, VERB_INVALID = 284 };
 enum { PLAYER_FOUND = 1, PLAYER_ABILITY = 2, PLAYER_BOW = 4 };
 
@@ -197,11 +216,12 @@ static int32_t guest_s32(uint64_t at) { int32_t v; memcpy(&v, (void *)(uintptr_t
 static int game_object(uint64_t p, uint64_t n) {   // readable, its vtable in main's image
     if (!readable(p, n)) return 0;
     uint64_t vt = guest_pointer(p);
-    return vt >= MOD_MAIN_BASE && vt < MOD_MAIN_BASE + MAIN_IMAGE_SIZE;
+    return vt >= MOD_MAIN_BASE && vt < MOD_MAIN_BASE + mouse_layout()->main_size;
 }
 
 static uint32_t player_state(void) {
-    uint64_t slot = MOD_MAIN_BASE + PLAYER_ROOT_SLOT;
+    if (!mouse_layout()->player_root_slot) return 0;
+    uint64_t slot = MOD_MAIN_BASE + mouse_layout()->player_root_slot;
     if (!readable(slot, 8)) return 0;
     uint64_t var = guest_pointer(slot);
     if (!readable(var, 8)) return 0;
@@ -337,15 +357,17 @@ static int mouse_shake_step(MouseShake *s, float deg, uint64_t now) {
 }
 
 // A host call at an instruction site, not an AAPCS64 function replacement. Preserve every guest register except
-// s9/s10, which carry the processed camera input, and perform the displaced store of s9 at [x20 + 0x420].
+// x and s10, which carry the processed camera input (x is s9 in 1.4.3, s11 in 1.2.1: MouseLayout.input_x), and
+// perform the displaced store of x at [x20 + 0x420].
 static void camera_input(Cpu *c) {
+    const unsigned rx = mouse_layout()->input_x;
     mouse_input_object = 0;
     uint32_t flags = (uint32_t)c->x[21];
     int accept = !(flags & 1) && !input_direct_mouse_selector_active();
     __atomic_store_n(&accepts_mouse, accept, __ATOMIC_RELAXED);
     __atomic_store_n(&last_update, plat_now_ns(), __ATOMIC_RELEASE);
     MouseSample next = {.object = c->x[20], .when = plat_now_ns(), .camera_enabled = accept};
-    memcpy(&next.pad[0], &c->v[9], sizeof(float));
+    memcpy(&next.pad[0], &c->v[rx], sizeof(float));
     memcpy(&next.pad[1], &c->v[10], sizeof(float));
     if (flags & 2) next.pad[0] = -next.pad[0];
     if (flags & 4) next.pad[1] = -next.pad[1];
@@ -387,7 +409,7 @@ static void camera_input(Cpu *c) {
         if (isfinite(ratio) && ratio > 0 && sensitivity > 0 && (dx || dy)) {
             if (accept) mouse_input_object = c->x[20];
             float x, y;
-            memcpy(&x, &c->v[9], sizeof x);
+            memcpy(&x, &c->v[rx], sizeof x);
             memcpy(&y, &c->v[10], sizeof y);
             float hand = HAND_PER_COUNT * sensitivity / ratio;
             next.motion[0] = fminf(HAND_MAX, fmaxf(-HAND_MAX, dx * hand * (flags & 2 ? -1 : 1)));
@@ -400,7 +422,7 @@ static void camera_input(Cpu *c) {
             uint32_t xb, yb;
             memcpy(&xb, &x, sizeof xb);
             memcpy(&yb, &y, sizeof yb);
-            c->v[9] = xb;
+            c->v[rx] = xb;
             c->v[10] = yb;
             static int logged;
             if (!logged) {
@@ -426,7 +448,7 @@ static void camera_input(Cpu *c) {
                last.player & PLAYER_FOUND ? "found" : "not found", last.player & PLAYER_ABILITY ? ", using an ability" : "",
                last.player & PLAYER_BOW ? ", bow in hand" : "", state);
     }
-    uint32_t original = (uint32_t)c->v[9];
+    uint32_t original = (uint32_t)c->v[rx];
     memcpy((void *)(uintptr_t)(c->x[20] + 0x420), &original, sizeof original);
 }
 
@@ -478,7 +500,10 @@ static void orbit_begin(Cpu *c) {
     c->x[8] = guest_pointer(object + 8);   // displaced ldr x8, [x0, #8]
 }
 
+// The final pitch and yaw are on the stack (1.4.3 sp + 0x44 / 0x48, 1.2.1 sp + 0x3c / 0x40)
 static void orbit_angles(Cpu *c) {
+    const MouseLayout *ml = mouse_layout();
+    const uint64_t pitch_at = c->sp + ml->orbit_pitch, yaw_at = c->sp + ml->orbit_yaw;
     uint64_t object = c->x[20];
     if (orbit.object == object) {
         float yaw_delta = orbit.mouse.angle[0], pitch_delta = orbit.mouse.angle[1];
@@ -489,7 +514,7 @@ static void orbit_angles(Cpu *c) {
         plat_mutex_lock(&sample_lock);
         OrbitTrack *track = orbit_track(object);
         if (track->hold_pitch || yaw_delta || pitch_delta) {
-            float pitch = guest_float(c->sp + 0x44), yaw = guest_float(c->sp + 0x48);
+            float pitch = guest_float(pitch_at), yaw = guest_float(yaw_at);
             float low = guest_float(object + 0xf8), high = guest_float(object + 0xfc);
             if (!isfinite(low) || !isfinite(high) || low >= high) low = -89.9f, high = 89.9f;
             low = fmaxf(-89.9f, low); high = fminf(89.9f, high);
@@ -497,8 +522,8 @@ static void orbit_angles(Cpu *c) {
             // Integrate from our last requested angle, then correct the final output even on stationary frames.
             float base = track->hold_pitch ? track->pitch : pitch;
             float new_pitch = fminf(high, fmaxf(low, base + pitch_delta));
-            guest_float_store(c->sp + 0x44, new_pitch);
-            guest_float_store(c->sp + 0x48, wrap_degrees(yaw + yaw_delta));
+            guest_float_store(pitch_at, new_pitch);
+            guest_float_store(yaw_at, wrap_degrees(yaw + yaw_delta));
             guest_float_store(object + 0x108, wrap_degrees(new_pitch - orbit_pitch_offset(object)));
             guest_float_store(object + 0x120, wrap_degrees(guest_float(object + 0x120) + yaw_delta));
             if (!track->target_saved) track->original_target = guest_float(object + 0x15c), track->target_saved = 1;
@@ -515,24 +540,29 @@ static void orbit_angles(Cpu *c) {
         orbit.object = 0;
     }
     uint32_t bits;
-    memcpy(&bits, (const void *)(uintptr_t)(c->sp + 0x44), sizeof bits);
-    c->v[12] = bits;   // displaced ldr s12, [sp, #0x44]
+    memcpy(&bits, (const void *)(uintptr_t)pitch_at, sizeof bits);
+    c->v[ml->orbit_reg] = bits;   // displaced ldr s12, [sp, #0x44] (1.2.1 ldr s13, [sp, #0x3c])
 }
 
 // Ultrahand reads the player's manipulation input rather than the camera's processed stick. Insert the mouse
-// after that controller's per-axis power curves (main+0x1d59460), preserving the keyboard/controller contribution.
+// after that controller's per-axis power curves (1.4.3 main+0x1d59460, 1.2.1 main+0x176949c), preserving the
+// keyboard/controller contribution. x is at [sp + 0x60] in 1.4.3 and in s9 in 1.2.1, y in s15 in both.
 static void hand_input(Cpu *c) {
+    const MouseLayout *ml = mouse_layout();
     __atomic_store_n(&hand_update, plat_now_ns(), __ATOMIC_RELEASE);
     static _Thread_local uint64_t object, generation;
     if (direct_mode()) {
         MouseSample m = sample_read();
         if (m.generation != generation || object != c->x[19]) {
-            float x = guest_float(c->sp + 0x60), y;
+            float x, y;
+            if (ml->hand_x_sp) x = guest_float(c->sp + ml->hand_x_sp);
+            else memcpy(&x, &c->v[ml->hand_x_reg], sizeof x);
             memcpy(&y, &c->v[15], sizeof y);
             x += m.motion[0];
             y += m.motion[1];
-            guest_float_store(c->sp + 0x60, x);
             uint32_t bits;
+            if (ml->hand_x_sp) guest_float_store(c->sp + ml->hand_x_sp, x);
+            else memcpy(&bits, &x, sizeof bits), c->v[ml->hand_x_reg] = bits;
             memcpy(&bits, &y, sizeof bits);
             c->v[15] = bits;
             object = c->x[19]; generation = m.generation;
@@ -543,15 +573,16 @@ static void hand_input(Cpu *c) {
             }
         }
     }
-    uint32_t original = (uint32_t)c->x[8];
-    memcpy((void *)(uintptr_t)(c->sp + 0x48), &original, sizeof original);
+    uint32_t original = (uint32_t)c->x[ml->hand_store_reg];   // displaced str w8, [sp, #0x48] (1.2.1 w9, #0x18)
+    memcpy((void *)(uintptr_t)(c->sp + ml->hand_store_sp), &original, sizeof original);
 }
 
 // ---- The other player cameras that turn by the stick: degrees at the angle they integrate from.
 // Each of these camera modes (vtable slot 36 of its ExecutePlayerCamera* class, the per-step update) turns by the
 // processed stick at input +0x420 (x) / +0x424 (y) times its own speeds and the frame time, and adds that to a base
 // angle in degrees. Two loads per axis are replaced by a host call (the `mouse_direct` load sites of
-// recomp/patches-v143.txt, all at page +0xf80; the return address tells them apart):
+// recomp/patches-v143.txt and patches-v121.txt, all at page +0xf80; the return address tells them apart; the main
+// addresses below are 1.4.3's, load_sites_121 has 1.2.1's):
 //   stick: the load the turn is computed from gets the gamepad's part only (the sample's pad, post-inversion as the
 //          game stored it), so the mode's speeds, time step and slow motion never touch the mouse;
 //   base:  the load of the angle the turn is added to gets the mouse's degrees added, DEG_PER_COUNT a count as the
@@ -606,12 +637,15 @@ static void hand_input(Cpu *c) {
 // angle[] (-x and -y in counts, times DEG_PER_COUNT) is added as it is.
 #define HOST_MOUSE_LOAD (RT_PATCH_PAGE + 0xf80)
 // ROLE_BASE_KEEP: a base load another base load follows. ROLE_SHARE: a turn the game computed from a stick load with
-// KEEP_STICK, cut to the gamepad's share of it.
-enum { ROLE_STICK, ROLE_BASE, ROLE_SCALE, ROLE_WATCH, ROLE_BASE_KEEP, ROLE_SHARE };
+// KEEP_STICK, cut to the gamepad's share of it. ROLE_BASE_STORE: a store (str s<t>, [x<n>, #imm]) of base + turn that a
+// shared helper computed, where the base load itself is in the helper: the stored value and s<t> get the degrees.
+enum { ROLE_STICK, ROLE_BASE, ROLE_SCALE, ROLE_WATCH, ROLE_BASE_KEEP, ROLE_SHARE, ROLE_BASE_STORE };
 // Stick flags. EPSILON: the load is also the game's test for input, so with the gamepad's axis at rest and the mouse
 // moving it gives +-1e-12 in the mouse's direction (input, no turn) instead of 0. KEEP_STICK: the value stays the
 // game's, mouse and all (other parameters follow it); the turn it makes is cut to the pad's share at ROLE_SHARE.
-enum { LIMIT_160 = 1, SKIP_OFFSET = 2, ONLY_OFFSET = 4, EPSILON = 8, KEEP_STICK = 16 };
+// REPEAT: another read of the axis for the same turn before its stick load (1.2.1 reads the stick once for its length
+// and again for its angle): the same value, and it leaves the degrees to that stick load.
+enum { LIMIT_160 = 1, SKIP_OFFSET = 2, ONLY_OFFSET = 4, EPSILON = 8, KEEP_STICK = 16, REPEAT = 32 };
 enum {
     MODE_AIM, MODE_SCOPE, MODE_ABILITY, MODE_HORSE, MODE_ABILITY_OFFSET, MODE_FINDER,
     MODE_CLIMB, MODE_WAKEBOARD, MODE_WATERFALL, MODE_TAIL, MODE_LOCKON, MODE_LOCKON_AIM, MODE_HORSE_LOCKON, MODE_TALK,
@@ -624,12 +658,12 @@ static const char *const mode_names[MODE_COUNT] = {
     "LockOn / Target", "bow lock-on (LockOnAimingAt)", "HorseLockOnEmpty", "dialogue (EventMultiTalk)",
     "dialogue (EventTalkManual)", "shield surfing"};
 static const char *mode_name(int mode) { return mode >= 0 && mode < MODE_COUNT ? mode_names[mode] : "?"; }
-typedef struct {
-    uint32_t offset, insn;   // main offset, the original load (ldr / ldur s<t>, [x<n>, #imm])
+typedef struct LoadSite {
+    uint32_t offset, insn;   // main offset, the original load (ldr / ldur s<t> or w<t>, [x<n>, #imm]) or store
     uint8_t mode, axis, role, input_reg, flags;
 } LoadSite;
 #define PAIR(m, a) ((m) * 2 + (a))
-static const LoadSite load_sites[] = {
+static const LoadSite load_sites_143[] = {
     {0x23beb94, 0xbd4426c1, MODE_AIM, 1, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x424]
     {0x23bebc8, 0xbd415e61, MODE_AIM, 1, ROLE_BASE, 0, 0},               // ldr s1, [x19, #0x15c]
     {0x23bee2c, 0xbd4422c1, MODE_AIM, 0, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x420]
@@ -699,20 +733,115 @@ static const LoadSite load_sites[] = {
     {0x23c9140, 0xbd442309, MODE_TALK_MANUAL, 0, ROLE_STICK, 24, 0},     // ldr s9, [x24, #0x420]
     {0x23c9170, 0xbd407e61, MODE_TALK_MANUAL, 0, ROLE_BASE, 0, 0},       // ldr s1, [x19, #0x7c] (yaw)
 };
-#define LOAD_SITES (sizeof load_sites / sizeof load_sites[0])
+// The same camera modes in 1.2.1 (recomp/patches-v121.txt), each site matched to its 1.4.3 one by enclosing function.
+// The base (the angle a turn is added to) differs where 1.2.1 adds the turn in a shared helper (*p = wrap(*p + s0)):
+// Aiming's pitch target takes the degrees at the store of the helper's result, Horse's yaw at the turn the helper is
+// given. Wakeboard, ShieldSurfing and Tail read each stick axis twice (REPEAT on the first read).
+static const LoadSite load_sites_121[] = {
+    {0x1d34338, 0xbd4426c1, MODE_AIM, 1, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x424]
+    {0x1d34374, 0xbd015660, MODE_AIM, 1, ROLE_BASE_STORE, 0, 0},         // str s0, [x19, #0x154] (+0x15c + turn)
+    {0x1d34584, 0xbd4422c1, MODE_AIM, 0, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x420]
+    {0x1d345d0, 0xbc5b83a1, MODE_AIM, 0, ROLE_BASE, 0, 0},               // ldur s1, [x29, #-0x48]
+    {0x1d35fd4, 0xbd4422e0, MODE_SCOPE, 0, ROLE_STICK, 23, 0},           // ldr s0, [x23, #0x420]
+    {0x1d35fe0, 0xbd4426e9, MODE_SCOPE, 1, ROLE_STICK, 23, LIMIT_160},   // ldr s9, [x23, #0x424]
+    {0x1d36280, 0xbd416260, MODE_SCOPE, 1, ROLE_BASE, 0, 0},             // ldr s0, [x19, #0x160]
+    {0x1d36224, 0xbd405be1, MODE_SCOPE, 0, ROLE_BASE, 0, 0},             // ldr s1, [sp, #0x58]
+    {0x1d48478, 0xbd4422cf, MODE_ABILITY, 0, ROLE_STICK, 22, SKIP_OFFSET},               // ldr s15, [x22, #0x420]
+    {0x1d48480, 0xbd4426cc, MODE_ABILITY, 1, ROLE_STICK, 22, SKIP_OFFSET | LIMIT_160},   // ldr s12, [x22, #0x424]
+    {0x1d48bb4, 0xbd416262, MODE_ABILITY, 1, ROLE_BASE, 0, 0},           // ldr s2, [x19, #0x160]
+    {0x1d48b38, 0xbc5a83a1, MODE_ABILITY, 0, ROLE_BASE, 0, 0},           // ldur s1, [x29, #-0x58]
+    // Horse's x19 is the yaw's address (+0x68) here, after a pre-indexed store: a key for the pair, as an object is
+    {0x1d4070c, 0xbd442288, MODE_HORSE, 0, ROLE_STICK, 20, 0},           // ldr s8, [x20, #0x420]
+    {0x1d40740, 0xbd401be0, MODE_HORSE, 0, ROLE_BASE, 0, 0},             // ldr s0, [sp, #0x18] (the yaw turn)
+    {0x1d408f8, 0xbd4426a8, MODE_HORSE, 1, ROLE_STICK, 21, 0},           // ldr s8, [x21, #0x424]
+    {0x1d409ac, 0xbd406661, MODE_HORSE, 1, ROLE_BASE, 0, 0},             // ldr s1, [x19, #0x64]
+    {0x1d48ccc, 0xbd4422c9, MODE_ABILITY_OFFSET, 0, ROLE_STICK, 22, ONLY_OFFSET},   // ldr s9, [x22, #0x420]
+    {0x1d48cf0, 0xbd41da61, MODE_ABILITY_OFFSET, 0, ROLE_BASE, 0, 0},               // ldr s1, [x19, #0x1d8]
+    {0x1d48cfc, 0xbd4426c9, MODE_ABILITY_OFFSET, 1, ROLE_STICK, 22, ONLY_OFFSET},   // ldr s9, [x22, #0x424]
+    {0x1d48d18, 0xbd41de61, MODE_ABILITY_OFFSET, 1, ROLE_BASE, 0, 0},               // ldr s1, [x19, #0x1dc]
+    {0x1d485f8, 0xbd400400, MODE_ABILITY_OFFSET, 1, ROLE_SCALE, 0, 0},              // ldr s0, [x0, #0x4] (P.y)
+    {0x1d37b44, 0xbd4426ad, MODE_FINDER, 1, ROLE_STICK, 21, 0},          // ldr s13, [x21, #0x424]
+    {0x1d37b68, 0xbd405261, MODE_FINDER, 1, ROLE_BASE, 0, 0},            // ldr s1, [x19, #0x50]
+    {0x1d37bcc, 0xbd4422ad, MODE_FINDER, 0, ROLE_STICK, 21, 0},          // ldr s13, [x21, #0x420]
+    {0x1d37bf4, 0xbd405be1, MODE_FINDER, 0, ROLE_BASE, 0, 0},            // ldr s1, [sp, #0x58]
+    {0x1d38e08, 0xbd442301, MODE_CLIMB, 0, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x420]
+    {0x1d38e10, 0xbd409261, MODE_CLIMB, 0, ROLE_BASE, 0, 0},             // ldr s1, [x19, #0x90] (yaw)
+    {0x1d38dac, 0xbd442701, MODE_CLIMB, 1, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x424]
+    {0x1d38db8, 0xbd4002c1, MODE_CLIMB, 1, ROLE_BASE, 0, 0},             // ldr s1, [x22] (pitch +0x88, as 1.4.3)
+    {0x1d50738, 0xbd4422c0, MODE_WAKEBOARD, 0, ROLE_STICK, 22, EPSILON | REPEAT},       // ldr s0, [x22, #0x420]
+    {0x1d50740, 0xbd4426c1, MODE_WAKEBOARD, 1, ROLE_STICK, 22, KEEP_STICK | REPEAT},    // ldr s1, [x22, #0x424]
+    {0x1d50768, 0xbd4426c0, MODE_WAKEBOARD, 1, ROLE_STICK, 22, KEEP_STICK}, // ldr s0, [x22, #0x424]
+    {0x1d5076c, 0xbd4422c1, MODE_WAKEBOARD, 0, ROLE_STICK, 22, EPSILON},    // ldr s1, [x22, #0x420]
+    {0x1d50e5c, 0xbd40da60, MODE_WAKEBOARD, 1, ROLE_BASE, 0, 0},         // ldr s0, [x19, #0xd8] (pitch)
+    {0x1d508bc, 0xbd401fa0, MODE_WAKEBOARD, 1, ROLE_SHARE, 0, 0},        // ldr s0, [x29, #0x1c] (pitch turn)
+    {0x1d50f20, 0xbd403bec, MODE_WAKEBOARD, 0, ROLE_BASE, 0, 0},         // ldr s12, [sp, #0x38] (yaw)
+    {0x1d46108, 0xbd4422e0, MODE_SHIELD, 0, ROLE_STICK, 23, EPSILON | REPEAT},          // ldr s0, [x23, #0x420]
+    {0x1d46110, 0xbd4426e1, MODE_SHIELD, 1, ROLE_STICK, 23, KEEP_STICK | REPEAT},       // ldr s1, [x23, #0x424]
+    {0x1d46138, 0xbd4426e0, MODE_SHIELD, 1, ROLE_STICK, 23, KEEP_STICK}, // ldr s0, [x23, #0x424]
+    {0x1d4613c, 0xbd4422e1, MODE_SHIELD, 0, ROLE_STICK, 23, EPSILON},    // ldr s1, [x23, #0x420]
+    {0x1d46788, 0xbd40de60, MODE_SHIELD, 1, ROLE_BASE, 0, 0},            // ldr s0, [x19, #0xdc] (pitch)
+    {0x1d46910, 0xbd401fa0, MODE_SHIELD, 1, ROLE_SHARE, 0, 0},           // ldr s0, [x29, #0x1c] (pitch turn)
+    {0x1d467b4, 0xbd403bec, MODE_SHIELD, 0, ROLE_BASE, 0, 0},            // ldr s12, [sp, #0x38] (yaw)
+    {0x1d51e10, 0xbd4422cd, MODE_WATERFALL, 0, ROLE_STICK, 22, 0},       // ldr s13, [x22, #0x420]
+    {0x1d51fb8, 0xb9403be8, MODE_WATERFALL, 0, ROLE_BASE, 0, 0},         // ldr w8, [sp, #0x38] (yaw, as bits)
+    {0x1d51f48, 0xbd4426c9, MODE_WATERFALL, 1, ROLE_WATCH, 22, 0},       // ldr s9, [x22, #0x424] (height, stick)
+    {0x1d4a11c, 0xbd442280, MODE_TAIL, 0, ROLE_STICK, 20, REPEAT},       // ldr s0, [x20, #0x420]
+    {0x1d4a124, 0xbd442681, MODE_TAIL, 1, ROLE_STICK, 20, REPEAT},       // ldr s1, [x20, #0x424]
+    {0x1d4a14c, 0xbd442680, MODE_TAIL, 1, ROLE_STICK, 20, 0},            // ldr s0, [x20, #0x424]
+    {0x1d4a150, 0xbd442281, MODE_TAIL, 0, ROLE_STICK, 20, 0},            // ldr s1, [x20, #0x420]
+    {0x1d4a4a0, 0xbd40c260, MODE_TAIL, 0, ROLE_BASE, 0, 0},              // ldr s0, [x19, #0xc0] (yaw)
+    {0x1d4a514, 0xbd40b661, MODE_TAIL, 1, ROLE_BASE, 0, 0},              // ldr s1, [x19, #0xb4] (pitch)
+    {0x1d4c930, 0xbd442320, MODE_LOCKON, 0, ROLE_WATCH, 25, 0},          // ldr s0, [x25, #0x420] (the input test)
+    {0x1d4c958, 0xbd442321, MODE_LOCKON, 0, ROLE_STICK, 25, 0},          // ldr s1, [x25, #0x420]
+    {0x1d4c97c, 0xbd402be0, MODE_LOCKON, 0, ROLE_BASE_KEEP, 0, 0},       // ldr s0, [sp, #0x28] (the yaw turn)
+    {0x1d4c98c, 0xbd402be9, MODE_LOCKON, 0, ROLE_BASE, 0, 0},            // ldr s9, [sp, #0x28]
+    {0x1d4cd5c, 0xbd442721, MODE_LOCKON, 1, ROLE_STICK, 25, 0},          // ldr s1, [x25, #0x424]
+    {0x1d4cd80, 0xbd402be0, MODE_LOCKON, 1, ROLE_BASE_KEEP, 0, 0},       // ldr s0, [sp, #0x28] (the pitch turn)
+    {0x1d4cd90, 0xbd402beb, MODE_LOCKON, 1, ROLE_BASE, 0, 0},            // ldr s11, [sp, #0x28]
+    {0x1d443e8, 0xbd4426a9, MODE_LOCKON_AIM, 1, ROLE_STICK, 21, 0},      // ldr s9, [x21, #0x424]
+    {0x1d44430, 0xbd419a61, MODE_LOCKON_AIM, 1, ROLE_BASE, 0, 0},        // ldr s1, [x19, #0x198] (pitch offset)
+    {0x1d44444, 0xbd4422a9, MODE_LOCKON_AIM, 0, ROLE_STICK, 21, 0},      // ldr s9, [x21, #0x420]
+    {0x1d44490, 0xbd419e61, MODE_LOCKON_AIM, 0, ROLE_BASE, 0, 0},        // ldr s1, [x19, #0x19c] (yaw offset)
+    {0x1d418dc, 0xbd44234b, MODE_HORSE_LOCKON, 0, ROLE_WATCH, 26, 0},    // ldr s11, [x26, #0x420]
+    // EventMultiTalk and EventTalkManual: pre-indexed angle loads, made plain loads by the patched mov before each
+    {0x1d3a3f8, 0xbd44270b, MODE_TALK, 1, ROLE_STICK, 24, 0},            // ldr s11, [x24, #0x424]
+    {0x1d3a420, 0xbd4002e1, MODE_TALK, 1, ROLE_BASE, 0, 0},              // ldr s1, [x23] (pitch +0x5c)
+    {0x1d3a484, 0xbd44230b, MODE_TALK, 0, ROLE_STICK, 24, EPSILON},      // ldr s11, [x24, #0x420] (also the test)
+    {0x1d3a4e4, 0xbd4002c1, MODE_TALK, 0, ROLE_BASE, 0, 0},              // ldr s1, [x22] (yaw +0x64)
+    {0x1d3e2b0, 0xbd442729, MODE_TALK_MANUAL, 1, ROLE_STICK, 25, 0},     // ldr s9, [x25, #0x424]
+    {0x1d3e2d8, 0xbd400301, MODE_TALK_MANUAL, 1, ROLE_BASE, 0, 0},       // ldr s1, [x24] (pitch +0x74)
+    {0x1d3e33c, 0xbd442329, MODE_TALK_MANUAL, 0, ROLE_STICK, 25, 0},     // ldr s9, [x25, #0x420]
+    {0x1d3e364, 0xbd4002c1, MODE_TALK_MANUAL, 0, ROLE_BASE, 0, 0},       // ldr s1, [x22] (yaw +0x7c)
+};
 
-// The original single-register 32-bit loads: LDR S (unsigned offset), LDUR S and LDUR W (a float's bits in a general
-// register). Never a load with write-back: the hook is a call, and the lifted caller keeps X19-X29 in locals that a
-// call does not reload (recomp/regs.py), so a base register written here would be lost. Their address:
+static const MouseLayout layout_143 = {
+    .input_x = 9, .activity_sp = 8, .orbit_pitch = 0x44, .orbit_yaw = 0x48, .orbit_reg = 12,
+    .hand_x_sp = 0x60, .hand_store_reg = 8, .hand_store_sp = 0x48,
+    .player_root_slot = 0x3969918, .main_size = 0x3adf000,
+    .loads = load_sites_143, .load_count = sizeof load_sites_143 / sizeof load_sites_143[0]};
+static const MouseLayout layout_121 = {
+    .input_x = 11, .activity_sp = 0x10, .orbit_pitch = 0x3c, .orbit_yaw = 0x40, .orbit_reg = 13,
+    .hand_x_reg = 9, .hand_store_reg = 9, .hand_store_sp = 0x18,
+    .player_root_slot = 0, .main_size = 0x472b000,
+    .loads = load_sites_121, .load_count = sizeof load_sites_121 / sizeof load_sites_121[0]};
+// Only 1.4.3 and 1.2.1 have the mouse_direct set (1.1.0's table has none, so direct_mode() is off and no hook runs)
+static const MouseLayout *mouse_layout(void) { return RT_V143 ? &layout_143 : &layout_121; }
+
+// The original single-register 32-bit loads: LDR S / W (unsigned offset), LDUR S and LDUR W (a float's bits in a
+// general register), and for ROLE_BASE_STORE the store STR S (unsigned offset). Never a load with write-back: the hook
+// is a call, and the lifted caller keeps X19-X29 in locals that a call does not reload (recomp/regs.py), so a base
+// register written here would be lost. Their address:
 static uint64_t load_address(const Cpu *c, uint32_t insn) {
     unsigned n = (insn >> 5) & 31;
     uint64_t base = n == 31 ? c->sp : c->x[n];
-    if ((insn & 0xffc00000u) == 0xbd400000u) return base + (((insn >> 10) & 0xfff) << 2);
+    if ((insn & 0xfb800000u) == 0xb9000000u) return base + (((insn >> 10) & 0xfff) << 2);   // LDR / STR, S or W
     int32_t imm9 = (int32_t)((insn >> 12) & 0x1ff);
     if (imm9 & 0x100) imm9 -= 0x200;
     return base + (int64_t)imm9;
 }
-static int load_to_general(uint32_t insn) { return (insn & 0xffe00c00u) == 0xb8400000u; }
+static int load_to_general(uint32_t insn) {
+    return (insn & 0xffe00c00u) == 0xb8400000u || (insn & 0xffc00000u) == 0xb9400000u;   // LDUR W, LDR W
+}
 
 // Degrees a stick load left for its base load, on this thread: per mode and axis, for one camera object
 static _Thread_local struct { uint64_t object, generation; float degrees; } load_pending[MODE_COUNT * 2];
@@ -778,7 +907,7 @@ static float recall_offset(float o, float range, float t, float degrees) {
 static float load_stick(const LoadSite *s, Cpu *c, float f) {
     uint64_t object = c->x[19], input = c->x[s->input_reg];
     int pair = PAIR(s->mode, s->axis);
-    load_pending[pair].object = 0;
+    if (!(s->flags & REPEAT)) load_pending[pair].object = 0;
     MouseSample m = sample_read();
     if (m.object != input || !m.camera_enabled || plat_now_ns() - m.when >= 150000000ull) return f;
     // A step without the mouse in it keeps the game's value as it is: the gamepad's stick and anything else the game
@@ -810,6 +939,7 @@ static float load_stick(const LoadSite *s, Cpu *c, float f) {
     } else if ((s->flags & EPSILON) && out == 0 && mouse != 0) {
         out = copysignf(1e-12f, mouse);
     }
+    if (s->flags & REPEAT) return out;
     if (!degrees || !load_take_once(object, s->axis, m.generation)) degrees = 0;
     // The offset turns the camera by -offset * P: an aim that turns as the sample's angle is -degrees of o's growth
     if (s->flags & ONLY_OFFSET && degrees)
@@ -861,17 +991,30 @@ static float load_share_cut(const LoadSite *s, Cpu *c, float f) {
     return t != 0 && isfinite(f) ? f * (p * fabsf(p)) / (t * fabsf(t)) : f;
 }
 
-// A host call in place of one float load (load_sites): performs the load, then gives the register the value above
+// A host call in place of one float load (MouseLayout.loads): performs the load, then gives the register the value
 static void camera_load(Cpu *c) {
     uint64_t offset = c->x[30] - 4 - MOD_MAIN_BASE;
+    const MouseLayout *ml = mouse_layout();
     const LoadSite *s = NULL;
-    for (size_t i = 0; i < LOAD_SITES; i++)
-        if (load_sites[i].offset == offset) { s = &load_sites[i]; break; }
+    for (size_t i = 0; i < ml->load_count; i++)
+        if (ml->loads[i].offset == offset) { s = &ml->loads[i]; break; }
     if (!s) {
         rt_log("mouse: load hook called from main+%#llx, no such site", (unsigned long long)offset);
         abort();
     }
     uint64_t at = load_address(c, s->insn);
+    if (s->role == ROLE_BASE_STORE) {   // performs the store, of the value plus the degrees when there are any
+        uint32_t bits = (uint32_t)c->v[s->insn & 31];
+        float f, g;
+        memcpy(&f, &bits, sizeof f);
+        if (direct_mode() && (g = load_base(s, c, f)) != f) {
+            f = wrap_degrees(g);
+            memcpy(&bits, &f, sizeof bits);
+            c->v[s->insn & 31] = bits;   // the code after the store goes on with the value in the register
+        }
+        memcpy((void *)(uintptr_t)at, &bits, sizeof bits);
+        return;
+    }
     float f = guest_float(at);
     if (s->role == ROLE_SCALE) {   // the ability camera's offset scale: P.y is this load, P.x the float before it
         plat_mutex_lock(&sample_lock);
@@ -899,9 +1042,9 @@ static void camera_load(Cpu *c) {
 
 // The game also uses a 10% activity threshold after processing the stick. A one-count mouse movement must count
 // as active, even when its displacement is smaller than that threshold. The site is the displaced ldp d9, d8, [sp, #8]
-// just before the update's last `str w8, [x20, #0x418]`: w8 holds the flags then (bit 0 raw input, bit 4 any input,
-// bits 3 and 5 processed input below the threshold), so they are changed in w8; a write to +0x418 would be overwritten
-// by that store. No flag is changed for controller-only input.
+// (1.2.1 [sp, #0x10]) just before the update's last `str w8, [x20, #0x418]`: w8 holds the flags then (bit 0 raw
+// input, bit 4 any input, bits 3 and 5 processed input below the threshold), so they are changed in w8; a write to
+// +0x418 would be overwritten by that store. No flag is changed for controller-only input.
 static void camera_activity(Cpu *c) {
     if (mouse_input_object && mouse_input_object == c->x[20]) {
         uint32_t flags = (uint32_t)c->x[8];
@@ -909,8 +1052,8 @@ static void camera_activity(Cpu *c) {
         mouse_input_object = 0;
     }
     uint64_t d9, d8;
-    memcpy(&d9, (const void *)(uintptr_t)(c->sp + 8), sizeof d9);
-    memcpy(&d8, (const void *)(uintptr_t)(c->sp + 16), sizeof d8);
+    memcpy(&d9, (const void *)(uintptr_t)(c->sp + mouse_layout()->activity_sp), sizeof d9);
+    memcpy(&d8, (const void *)(uintptr_t)(c->sp + mouse_layout()->activity_sp + 8), sizeof d8);
     c->v[9] = d9;
     c->v[8] = d8;
 }
