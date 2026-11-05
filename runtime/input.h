@@ -23,6 +23,8 @@ int input_direct_mouse_selector_active(void);
 // Consume direct mouse counts, including one-shot MOUSE events from an input script. enabled=0 discards scripted
 // counts while leaving the real mouse for menu input. Live counts require cursor capture and foreground focus.
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);
+// The buttons (B_* bits) of the last poll, keys and gamepad merged; any thread (mouse_direct.c: ZR for the bow's scale)
+uint64_t input_buttons_last(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);

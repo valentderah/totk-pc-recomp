@@ -110,17 +110,30 @@ bind_Y = pad:north, key:mouse_l
 ## Mouse camera
 
 `mouse_mode = direct` (the default) turns the camera by the raw mouse motion on game 1.4.3, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
-angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1, with
-no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with the output.
-Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and velocity
-filters cannot process it a second time. Other camera modes receive input after the radial dead zone, unit-circle
-clamp and stick response exponent; Ultrahand has a separate hook after its manipulation input's power curves.
-The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw counts; its scale
-differs from the stick-emulation mode. Start at 1.
+angular increments at its final spherical-angle output: 70/1500 = 0.0467 degrees per count on both axes at
+sensitivity 1 (the on-foot camera's full-stick 70 degrees a second for 1500 counts a second; about 24.5 cm a turn at
+800 DPI), with no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with
+the output. Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and
+velocity filters cannot process it a second time. Other camera modes receive input after the radial dead zone,
+unit-circle clamp and stick response exponent, at the same degrees per count: x is 0.02 stick units a count over the
+frame ratio (the stick turns yaw 70 x / 30 degrees a step), and y is the signed square root that the camera's
+signed-square pitch (51 y |y| / 30 degrees a step) makes linear again, so pitch turns as far as yaw for the same
+motion. `stick_sens` (which scales the game's stick turn rates) is divided out. While the player uses an ability
+(their action verb UseSpecialPower), the ability camera turns the stored stick linearly at its own scales, yaw x 0.8
+and pitch 1.5 x 51 y; the mouse's part is scaled by 1 / 0.8 and 70 / (1.5 x 51) instead, so abilities turn as on foot.
+The player's verbs are read every 50 ms from the player actor (the player root's GOT slot main+0x3969918, the
+component array +0x228, its AS component +0x158 and the verbs of its five slots). Ultrahand has a separate hook after
+its manipulation input's power curves; it gets the camera's stick value per count, at most three full tilts a step.
+`mouse_aim_scale` (0.1 to 3, default 1) multiplies the mouse's motion while the bow is drawn (the verb UseBow or
+DrawnBow with ZR held). The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw
+counts; its scale differs from the stick-emulation mode. Start at 1.
 The Controls tab switches between *Direct* and *Stick emulation* (`mouse_mode = stick`).
 The orbit camera keeps its desired pitch at the final angular output, including stationary frames, so a later game
 filter cannot recenter it. The persistent filter state accounts for the camera's current vertical offset instead of
-accumulating corrections. A gamepad vertical input or the game's lock-on/override releases that mouse target.
+accumulating corrections. A gamepad vertical input releases that mouse target to the game's own. The game's
+lock-on, recenter and override (aiming) drive the camera themselves: the mouse stops holding without restoring its
+earlier target, and when they end (or after the camera went 100 ms without a step) it holds the pitch the camera has
+then, so the camera does not spring back to a pitch from before the aim or to the game's default after a shot.
 While L is held, mouse counts move the ability wheel's virtual cursor, which stays where it was when the mouse stops.
 The horizontal quick lists (D-pad up/left/right: materials, shields and weapons) use separate 32 ms right-stick steps,
 with at least 32 ms of neutral between them. At sensitivity 1, 32 horizontal counts request a step; a large flick

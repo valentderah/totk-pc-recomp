@@ -15,12 +15,34 @@
 #include "cfg.h"
 #include "host.h"
 #include "input.h"
+#include "input_map.h"
 #include "input_wsys.h"
+#include "layout.h"
 #include "platform/platform.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
 #endif
+
+// One turn rate for every camera, as a PC game has: degrees per raw count at sensitivity 1. The on-foot camera turns
+// 70 degrees a second at a full stick, so this is a full stick's turn for 1500 counts a second. The stick rates and the
+// ability camera's scales below are those Weeping of the Empire's engine/runtime/pc_mouse.cpp works with.
+#define DEG_PER_COUNT (70.0f / 1500.0f)
+// The stick turns yaw 70 x / 30 degrees per step at the 30 Hz frame ratio, and pitch 51 y |y| / 30 (a signed square):
+// a processed stick value of STICK_PER_COUNT a count turns yaw DEG_PER_COUNT, and the mouse's part of y is the square
+// root of PITCH_GAIN |v| so pitch turns as many degrees a count as yaw, at any speed.
+#define STICK_PER_COUNT (DEG_PER_COUNT * 30.0f / 70.0f)
+#define PITCH_GAIN (70.0f / 51.0f)
+// The ability camera (ExecutePlayerCameraSpecialPower) turns the stored stick its own way: yaw x * 0.8 of on foot's
+// rate and pitch y * 1.5 * 51, linear (no signed square). The mouse's part is scaled back to on foot's degrees a count:
+// x / 0.8, and pitch linear at 70 / (1.5 * 51).
+#define ABILITY_GAIN_X (1.0f / 0.8f)
+#define ABILITY_GAIN_Y (70.0f / (1.5f * 51.0f))
+// Ultrahand's held object moves by its post-curve input times its speed at a full tilt, as the camera turns by the
+// stick: the mouse's part is the camera's stick value a count, so the object follows the hand as the camera would,
+// at most HAND_MAX full tilts a step
+#define HAND_PER_COUNT STICK_PER_COUNT
+#define HAND_MAX 3.0f
 
 static int direct_mode(void) {
     // cfg_value: unset is the settings table's default (direct), as the menu shows it
@@ -97,9 +119,9 @@ static MouseSample sample;
 static PlatMutex sample_lock = PLAT_MUTEX_INIT;
 static _Thread_local struct { uint64_t object; MouseSample mouse; } orbit;
 typedef struct {
-    uint64_t object, generation, input;
+    uint64_t object, generation, input, seen;
     float pitch, original_target;
-    int hold_pitch, target_saved;
+    int hold_pitch, target_saved, resume;
 } OrbitTrack;
 static OrbitTrack orbit_seen[16];
 
@@ -134,6 +156,75 @@ static MouseSample sample_read(void) {
 }
 static float wrap_degrees(float a) { return remainderf(a, 360.0f); }
 
+// ---- the player's state: using an ability, the bow in hand. The player's action verbs, read as Weeping of the
+// Empire's engine/runtime/totk_player_state.cpp reads them, with its 1.4.3 placement (games/totk/patches/
+// pins_v143.json, fields_v143.json): the player root's GOT slot main+0x3969918 (1.0.0 +0x4562308), its link +0x20
+// (id +0x10, unit +8; the unit's id +0x48 and proc +0x40, the proc's state +0x24 not 7..11 while it is deleted), the
+// actor's component array +0x228 (1.0.0 +0x220), its AS component +0x158, whose 5 slots (+0x1f0) hold the verb at +0x28
+// (+0x4c when +0x28 is Invalid). Every pointer is checked before it is followed; any miss reads as "nothing".
+#define PLAYER_ROOT_SLOT 0x3969918ull
+#define MAIN_IMAGE_SIZE 0x3adf000ull
+enum { VERB_USE_BOW = 59, VERB_USE_SPECIAL_POWER = 61, VERB_DRAWN_BOW = 205, VERB_INVALID = 284 };
+enum { PLAYER_FOUND = 1, PLAYER_ABILITY = 2, PLAYER_BOW = 4 };
+
+static int readable(uint64_t p, uint64_t n) {
+    return p >= 0x10000 && p < (1ull << 47) && !(p & 7) && plat_mem_readable(p, n);
+}
+static int32_t guest_s32(uint64_t at) { int32_t v; memcpy(&v, (void *)(uintptr_t)at, sizeof v); return v; }
+static int game_object(uint64_t p, uint64_t n) {   // readable, its vtable in main's image
+    if (!readable(p, n)) return 0;
+    uint64_t vt = guest_pointer(p);
+    return vt >= MOD_MAIN_BASE && vt < MOD_MAIN_BASE + MAIN_IMAGE_SIZE;
+}
+
+static uint32_t player_state(void) {
+    uint64_t slot = MOD_MAIN_BASE + PLAYER_ROOT_SLOT;
+    if (!readable(slot, 8)) return 0;
+    uint64_t var = guest_pointer(slot);
+    if (!readable(var, 8)) return 0;
+    uint64_t root = guest_pointer(var);
+    if (!readable(root, 0x38)) return 0;
+    uint64_t link = root + 0x20, unit = guest_pointer(link + 8);
+    int32_t id = guest_s32(link + 0x10);
+    if (id == -1 || !readable(unit, 0x50) || guest_s32(unit + 0x48) != id) return 0;
+    uint64_t proc = guest_pointer(unit + 0x40);
+    if (!game_object(proc, 0x230) || (uint32_t)(guest_s32(proc + 0x24) - 7) < 5) return 0;
+    uint64_t comps = guest_pointer(proc + 0x228);
+    if (!readable(comps, 0x160)) return 0;
+    uint64_t as = guest_pointer(comps + 0x158);
+    if (!game_object(as, 0x1f0 + 5 * 8)) return 0;
+    uint32_t f = PLAYER_FOUND;
+    for (int i = 0; i < 5; i++) {
+        uint64_t s = guest_pointer(as + 0x1f0 + 8ull * i);
+        if (!readable(s, 0x50)) continue;
+        int32_t v = guest_s32(s + 0x28);
+        if (v == VERB_INVALID) v = guest_s32(s + 0x4c);
+        if (v == VERB_USE_SPECIAL_POWER) f |= PLAYER_ABILITY;
+        if (v == VERB_USE_BOW || v == VERB_DRAWN_BOW) f |= PLAYER_BOW;
+    }
+    return f;
+}
+
+// The player's state for this camera step, read again every 50 ms (each read costs memory queries), and its changes in
+// the log (the first reads, then each change, 40 lines)
+static uint32_t player_state_logged(void) {
+    static uint32_t last = ~0u, f;
+    static uint64_t at;
+    static int lines;
+    uint64_t now = plat_now_ns();
+    if (at && now - at < 50000000ull) return f;
+    at = now;
+    f = player_state();
+    if (f != last && lines < 40) {
+        lines++;
+        rt_log("mouse: player %s%s%s", f & PLAYER_FOUND ? "found" : "not found",
+               f & PLAYER_ABILITY ? ", using an ability (ability camera gains)" : "",
+               f & PLAYER_BOW ? ", bow in hand" : "");
+    }
+    last = f;
+    return f;
+}
+
 // main+0x191d78 builds the pitch target from +0x15c and +0x11c; the orbit update filters +0x108 toward it and adds
 // (1 - +0x88) * +0x10c at output. Updating only +0x108 makes the camera spring back to the unchanged target.
 static float orbit_pitch_offset(uint64_t object) {
@@ -146,7 +237,33 @@ static void orbit_pitch_target(uint64_t object, float pitch) {
 
 static void orbit_pitch_release(OrbitTrack *track) {
     if (track->target_saved) guest_float_store(track->object + 0x15c, track->original_target);
-    track->hold_pitch = track->target_saved = 0;
+    track->hold_pitch = track->target_saved = track->resume = 0;
+}
+
+// The pitch the camera has now (the filtered pitch plus its vertical offset), as orbit_angles leaves it
+static float orbit_pitch_now(uint64_t object) {
+    return wrap_degrees(guest_float(object + 0x108) + orbit_pitch_offset(object));
+}
+
+// The camera stays where it is now: the mouse holds the pitch the camera has (orbit_begin writes its target), so
+// neither the game's default target nor the mouse's target from before an aim or a lock-on pulls it back.
+static void orbit_pitch_settle(OrbitTrack *track) {
+    track->pitch = orbit_pitch_now(track->object);
+    track->hold_pitch = 1, track->resume = 0;
+}
+
+// The mouse's part of the processed stick for dx / dy counts at k stick units a count. On foot x is linear and y the
+// signed square root that makes the camera's signed-square pitch linear again; the ability camera's linear scales are
+// undone instead.
+static void mouse_stick_add(int32_t dx, int32_t dy, float k, int ability, float *x, float *y) {
+    float v = -dy * k;
+    if (ability) {
+        *x += dx * k * ABILITY_GAIN_X;
+        *y += v * ABILITY_GAIN_Y;
+    } else {
+        *x += dx * k;
+        *y += copysignf(sqrtf(PITCH_GAIN * fabsf(v)), v);
+    }
 }
 
 // A host call at an instruction site, not an AAPCS64 function replacement. Preserve every guest register except
@@ -167,6 +284,11 @@ static void camera_input(Cpu *c) {
         input_direct_mouse_sample(!input_direct_mouse_selector_active() && (accept || hand_active(plat_now_ns())), &dx, &dy);
         float sensitivity = (float)cfg_double("TOTK_MOUSE_SENS");
         sensitivity = fminf(10, fmaxf(0, sensitivity));
+        uint32_t player = (dx || dy) ? player_state_logged() : 0;
+        int ability = (player & PLAYER_ABILITY) != 0;
+        // The bow drawn (in hand with ZR held): mouse_aim_scale times the mouse's motion on every path
+        if ((player & PLAYER_BOW) && (input_buttons_last() & (1ull << B_ZR)))
+            sensitivity *= (float)fminf(3, fmaxf(0.1, cfg_double("TOTK_MOUSE_AIM_SCALE")));
         // The game multiplies camera input by its 30 Hz frame ratio later. Divide by that exact ratio, rather
         // than wall-clock time: an equal distance of mouse motion then gives equal input at every frame rate.
         float ratio = 1;
@@ -180,12 +302,14 @@ static void camera_input(Cpu *c) {
             float x, y;
             memcpy(&x, &c->v[9], sizeof x);
             memcpy(&y, &c->v[10], sizeof y);
-            float scale = 0.01f * sensitivity / ratio;
-            next.motion[0] = dx * scale * (flags & 2 ? -1 : 1);
-            next.motion[1] = -dy * scale * (flags & 4 ? -1 : 1);
-            next.angle[0] = -dx * 0.08f * sensitivity * (flags & 2 ? -1 : 1);
-            next.angle[1] = dy * 0.08f * sensitivity * (flags & 4 ? -1 : 1);
-            if (accept) { x += dx * scale; y -= dy * scale; }
+            float hand = HAND_PER_COUNT * sensitivity / ratio;
+            next.motion[0] = fminf(HAND_MAX, fmaxf(-HAND_MAX, dx * hand * (flags & 2 ? -1 : 1)));
+            next.motion[1] = fminf(HAND_MAX, fmaxf(-HAND_MAX, -dy * hand * (flags & 4 ? -1 : 1)));
+            next.angle[0] = -dx * DEG_PER_COUNT * sensitivity * (flags & 2 ? -1 : 1);
+            next.angle[1] = dy * DEG_PER_COUNT * sensitivity * (flags & 4 ? -1 : 1);
+            // stick_sens multiplies the game's stick turn rates (camera_speed.c): the mouse divides it out
+            if (accept) mouse_stick_add(dx, dy, STICK_PER_COUNT * sensitivity / (ratio * cam_speed_applied()), ability,
+                                        &x, &y);
             uint32_t xb, yb;
             memcpy(&xb, &x, sizeof xb);
             memcpy(&yb, &y, sizeof yb);
@@ -225,8 +349,17 @@ static void orbit_begin(Cpu *c) {
             memcpy(&override, (void *)(uintptr_t)(input + 0x15c), 1);
             plat_mutex_lock(&sample_lock);
             OrbitTrack *track = orbit_track(object);
-            if (track->input != input) track->hold_pitch = track->target_saved = 0;
-            if (m.pad[1] != 0 || (held & 0x20) || (override & 0x40)) orbit_pitch_release(track);
+            if (track->input != input) track->hold_pitch = track->target_saved = track->resume = 0;
+            uint64_t now = plat_now_ns();
+            // A gamepad's vertical input gives the pitch back to the game's own target. The game's lock-on or override
+            // (aiming) drives the camera itself: the mouse lets go without restoring the target it had before, and
+            // once that ends (or after this camera went 100 ms without a step) settles on the pitch the camera has
+            if (m.pad[1] != 0) orbit_pitch_release(track);
+            else if ((held & 0x20) || (override & 0x40)) {
+                if (track->hold_pitch) track->hold_pitch = 0, track->resume = 1;
+            } else if (track->resume || (track->hold_pitch && now - track->seen > 100000000ull))
+                orbit_pitch_settle(track);
+            track->seen = now;
             take = moved || track->hold_pitch;
             if (take) track->input = input;
             if (track->hold_pitch) orbit_pitch_target(object, track->pitch);
@@ -273,7 +406,8 @@ static void orbit_angles(Cpu *c) {
             static int logged;
             if (!logged) {
                 logged = 1;
-                rt_log("mouse: free-camera angles directly, 0.08 degrees per count at sensitivity 1, equal X/Y");
+                rt_log("mouse: free-camera angles directly, %.4f degrees per count at sensitivity 1, equal X/Y",
+                       DEG_PER_COUNT);
             }
         }
         plat_mutex_unlock(&sample_lock);

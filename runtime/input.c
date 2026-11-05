@@ -579,6 +579,8 @@ int input_pad_stick_percent(double pct[2]) {
     return ok;
 }
 
+static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_buttons_last)
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -644,8 +646,11 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     if (overlay) menu_perf_cycle();
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
+    __atomic_store_n(&g_buttons_last, b, __ATOMIC_RELAXED);
     *buttons = b; *lx = sl[0]; *ly = sl[1]; *rx = sr[0]; *ry = sr[1];
 }
+
+uint64_t input_buttons_last(void) { return __atomic_load_n(&g_buttons_last, __ATOMIC_RELAXED); }
 
 // Text entry (swkbd_*.c): while it is open the game reads no input, as behind the keyboard applet; after it closes
 // the game reads none until every button and stick direction is released, so the press that closed it stays there.
