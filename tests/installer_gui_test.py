@@ -1,4 +1,5 @@
-"""The installer window: event model, form, catalogs, cancel, a self-closing Tk run and one end-to-end run.
+"""The installer window: event model, form, catalogs, cancel, DPI awareness, a self-closing Tk run and one end-to-end
+run.
 
     .venv-py314\\Scripts\\python tests\\installer_gui_test.py
 
@@ -27,6 +28,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
+from installer import dpi  # noqa: E402
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -339,6 +341,44 @@ class CancelTest(unittest.TestCase):
             self.assertNotEqual(code, 0)
         finally:
             p.kill()
+
+
+class DpiTest(unittest.TestCase):
+    def test_px_follows_the_display_scale(self):
+        scale = dpi.scale()
+        self.assertGreaterEqual(scale, 1.0)
+        self.assertEqual(dpi.px(0), 0)
+        self.assertEqual(dpi.px(14), round(14 * scale))
+
+    def test_px_at_the_scales_of_other_displays(self):
+        """A 96 DPI runner cannot show the scaling: give px() the scales Windows reports at 125, 150 and 200%."""
+        saved = dpi._scale
+        try:
+            for scale, pad, wrap in ((1.0, 14, 620), (1.25, 18, 775), (1.5, 21, 930), (2.0, 28, 1240)):
+                dpi._scale = scale
+                self.assertEqual((dpi.px(14), dpi.px(620)), (pad, wrap), scale)
+        finally:
+            dpi._scale = saved
+
+    @unittest.skipUnless(os.name == 'nt', 'the awareness and the DPI Tk reads are Windows settings')
+    def test_the_window_draws_at_the_display_scale(self):
+        """A fresh process imports the window (which makes itself DPI aware) and starts Tk: the fonts must be sized for
+        the display, not for 96 DPI, which is what Windows then stretched (the blurry window)."""
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            self.skipTest('no tkinter')
+        code = ('import tkinter\n'
+                'from installer import dpi, gui\n'
+                'root = tkinter.Tk()\n'
+                'print(dpi.awareness(), dpi.scale(), root.tk.call("tk", "scaling"), gui.PAD, gui.WRAP)\n'
+                'root.destroy()\n')
+        r = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        awareness, scale, scaling, pad, wrap = r.stdout.split()
+        self.assertGreaterEqual(int(awareness), 1)   # 1 system aware, 2 per-monitor aware
+        self.assertAlmostEqual(float(scaling), float(scale) * 96 / 72, places=6)
+        self.assertEqual((int(pad), int(wrap)), (round(14 * float(scale)), round(620 * float(scale))))
 
 
 class SmokeTest(unittest.TestCase):
