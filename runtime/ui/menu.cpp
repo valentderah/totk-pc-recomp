@@ -811,7 +811,7 @@ static void tab_achievements(float scale) {
     } else {
         char when[32], note[96];
         ach_date(s.when, when, sizeof when);
-        snprintf(note, sizeof note, menu_text(UI_ACH_FROM_SAVE), when);
+        snprintf(note, sizeof note, menu_text(s.live ? UI_ACH_LIVE : UI_ACH_FROM_SAVE), when);
         opt_text_str(note);
         ach_count_row("##st_kills", UI_ACH_KILLS, s.kills, 0, UI_ACH_STATS_DESC);
         ach_count_row("##st_kinds", UI_ACH_KINDS, s.kinds, s.kinds_max, UI_ACH_STATS_DESC);

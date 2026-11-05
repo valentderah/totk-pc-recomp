@@ -20,6 +20,7 @@ typedef struct {
 
 typedef struct {
     int valid;           // 1 once a save was read
+    int live;            // 1: read from the game's memory, else from the save (when: its write time)
     uint64_t when;       // the save's write time, Unix seconds
     uint32_t kills, kinds, kinds_max;
     struct { uint32_t count; char name[64]; } family[STATS_FAMILIES];   // name: the game's, in its language
