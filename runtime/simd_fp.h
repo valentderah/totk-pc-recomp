@@ -277,6 +277,49 @@ SI VTU FN(vcmp)(Cpu *c, int op, VT a, VT b) {
 
 // ---- rounding to integral (FRINT*): rm 0 N, 1 P, 2 M, 3 Z, 4 A; 5 X / 6 I = FPCR mode
 // (rint = ties-to-even: the host stays in round-to-nearest outside the slow paths; no roundeven in MinGW's CRT)
+#if defined(__x86_64__) && !defined(__SSE4_1__)
+// Without SSE4.1 (the K10 build, -march=amdfam10) x86 has no roundss/roundps, and clang turns each of the builtins
+// below into a libm call per lane: FCVTZS alone (toint, rm 3) became a truncf call. Here the rounding is done with
+// SSE2 arithmetic on the magnitude a = |x|. For a < 2^MB, (a + 2^MB) - 2^MB is an integer next to a (the nearest one,
+// ties to even, in the round-to-nearest mode the host keeps here; a neighbour in any mode), both steps exact but the
+// first rounding. One compare corrects it to floor(a) or ceil(a); floor(x) of a negative x is -ceil(a) and the other
+// way round. a - floor(a) is exact (Sterbenz, or a itself when floor(a) is 0), so the ties-away test is exact. The
+// sign of x goes back on at the end, which gives the -0 results of the instructions (FRINTM -0.0, FRINTP -0.5). From
+// 2^MB up every value is integral; those, infinities and NaNs (the compare is false) are returned as they are, and
+// FN(frint)/FN(toint) treat the NaN. MXCSR.DAZ only reaches inputs that FPCR.FZ has already flushed.
+SI T FN(rnd)(T x, int rm) {
+    U sx = FN(fb)(x) & SGN;
+    T a = FN(fv)(FN(fb)(x) & ~SGN), big = (T)((U)1 << MB);
+    if (!(a < big)) return x;
+    T n = (a + big) - big;
+    T fl = n > a ? n - K(1) : n, ce = n < a ? n + K(1) : n, r;
+    switch (rm) {
+    case 0: r = n; break;
+    case 1: r = sx ? fl : ce; break;
+    case 2: r = sx ? ce : fl; break;
+    case 3: r = fl; break;
+    default: r = a - fl >= K(0.5) ? fl + K(1) : fl; break;
+    }
+    return FN(fv)(FN(fb)(r) | sx);
+}
+// The same on every lane: the compares give all-ones lanes, and & with the bits of 1.0 gives 1.0 or 0.0.
+SI VT FN(vrnd)(VT x, int rm) {
+    VTU sx = (VTU)x & SGN;
+    VT a = (VT)((VTU)x & ~SGN), big = VK((U)1 << MB);
+    VTU one = (VTU)VK(1), keep = (VTU)(a < big);
+    VT n = (a + big) - big;
+    VT fl = n - (VT)((VTU)(n > a) & one), ce = n + (VT)((VTU)(n < a) & one), r;
+    VTU neg = (VTU)((VTS)sx != 0);
+    switch (rm) {
+    case 0: r = n; break;
+    case 1: r = (VT)(((VTU)fl & neg) | ((VTU)ce & ~neg)); break;
+    case 2: r = (VT)(((VTU)ce & neg) | ((VTU)fl & ~neg)); break;
+    case 3: r = fl; break;
+    default: r = fl + (VT)((VTU)(a - fl >= VK(0.5)) & one); break;
+    }
+    return (VT)((((VTU)r | sx) & keep) | ((VTU)x & ~keep));
+}
+#else
 SI T FN(rnd)(T x, int rm) {
     switch (rm) {
     case 0: return __builtin_elementwise_rint(x);
@@ -286,6 +329,16 @@ SI T FN(rnd)(T x, int rm) {
     default: return __builtin_elementwise_round(x);
     }
 }
+SI VT FN(vrnd)(VT x, int rm) {
+    switch (rm) {
+    case 0: return __builtin_elementwise_rint(x);
+    case 1: return __builtin_elementwise_ceil(x);
+    case 2: return __builtin_elementwise_floor(x);
+    case 3: return __builtin_elementwise_trunc(x);
+    default: return __builtin_elementwise_round(x);
+    }
+}
+#endif
 SI T FN(frint)(Cpu *c, T x, int rm) {
     x = FN(fz)(c, x);
     if (rm >= 5) rm = (int)((c->fpcr >> 22) & 3);
@@ -296,14 +349,7 @@ SI T FN(frint)(Cpu *c, T x, int rm) {
 SI VT FN(vfrint)(Cpu *c, VT x, int rm) {
     x = FN(vfz)(c, x);
     if (rm >= 5) rm = (int)((c->fpcr >> 22) & 3);
-    VT r;
-    switch (rm) {
-    case 0: r = __builtin_elementwise_rint(x); break;
-    case 1: r = __builtin_elementwise_ceil(x); break;
-    case 2: r = __builtin_elementwise_floor(x); break;
-    case 3: r = __builtin_elementwise_trunc(x); break;
-    default: r = __builtin_elementwise_round(x); break;
-    }
+    VT r = FN(vrnd)(x, rm);
     if (__builtin_expect(__builtin_reduce_or(r != r) != 0, 0))
         for (int i = 0; i < NL; i++)
             if (r[i] != r[i]) r[i] = FN(nan1)(c, x[i]);
