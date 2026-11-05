@@ -27,6 +27,7 @@ void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
+int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

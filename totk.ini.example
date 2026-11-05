@@ -306,7 +306,8 @@
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
-# right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.
+# right click is B. On the map the mouse moves the map's cursor. 0 leaves the menus and the map to the keys and the
+# pad. Changes while the game runs.
 # menu_cursor = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1

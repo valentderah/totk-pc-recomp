@@ -618,7 +618,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             int selector = b & (1ull << B_L) ? 1 : b & (1ull << B_UP) ? 2 :
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
             mouse_camera(k, selector);
-            pick(&sr[0], &sr[1], k[0], k[1]);
+            // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there
+            if (menu_cursor_map()) pick(&sl[0], &sl[1], k[0], k[1]);
+            else pick(&sr[0], &sr[1], k[0], k[1]);
             int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
             static uint32_t travel_seen;
