@@ -10,6 +10,7 @@ set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
+set cascade  TOTK_PATCH_CASCADE  0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -1076,3 +1077,11 @@ spin sdk 3d3250 3d3270   # 9 instructions; loads
 # goes in just before the rounding, as the community's shadow resolution mods do (1.1.0: mov w11, #1024 over the
 # computation). Found by a write watch on the size field (the writer was this function, and no other).
 site shadow main cec22c 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
+
+# Sun shadow cascade distances (patches-v143.txt explains the set and the page). 1.2.1's parameter object (registered
+# in main+0x114c2f8 onward) holds them at +0x18a8, +0x18c8, +0x18e8 and +0x1908, 0x20 apart, and the three copies into a
+# cascade set's split array index them in a loop: every frame in the per-view update (main+0xa2d1d4), at the set's
+# creation (main+0xe25058), and the single-cascade path (main+0x97dd50).
+site cascade main a2d1d4 bd58a980 bd58a980 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x12, #0x18a8]: per frame, cascade x11
+site cascade main e25058 bd58a9c0 bd58a9c0 3c9f0fe1 @page:x14 bd4041c1 1e210800 3cc107e1   # ldr s0, [x14, #0x18a8]: creation, cascade x8
+site cascade main 97dd50 bd58ab80 bd58ab80 3c9f0fe1 @page:x8 bd404101 1e210800 3cc107e1   # ldr s0, [x28, #0x18a8]: single cascade

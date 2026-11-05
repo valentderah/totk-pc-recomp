@@ -44,6 +44,12 @@
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
+# Video memory of the game's render target heap as it is used (sparse binding, where the GPU has it): the heap is
+# made large enough for the game resolution up to the display's and render_scale up to 200 to change while the game
+# runs, and only what the targets of the current sizes cover takes video memory (1.2.1 at 2560x1440: about 190 MiB of
+# a 889 MiB heap). 0 takes the heap's whole size in video memory at start, and those changes stay within the sizes
+# at start. Read at start.
+# pool_sparse = 1
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.
@@ -147,13 +153,17 @@
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
 # (3:2). Any other size
 # gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
+# tools/make_romfs_patches.py --aspect WxH. On 1.2.1 and 1.4.3 the menu changes it while the game runs, to a size of
+# the same shape up to the display's with pool_sparse (else up to the size at start); another shape or a larger size
+# takes effect at the next start. Default: 1920x1080, or on a primary display of one of those
 # shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
 # a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
 # the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
-# a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
+# a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). On 1.2.1 and
+# 1.4.3 the menu changes it while the game runs, up to 200 with pool_sparse (less on displays so large that the heap
+# would grow by more than 2 GiB) and up to 100 without; a larger value takes effect at the next start.
 # render_scale = game
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
@@ -186,24 +196,28 @@
 # color_gamma = 1
 # Sun shadow map size: game (the game's own, which changes with the view and drops to about 400 near the ground, so
 # leaf shadows look blocky and jump) or a fixed 256, 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with
-# it. 256 is coarser than the game's own and is for integrated GPUs short of memory bandwidth. Read at start.
+# it. 256 is coarser than the game's own and is for integrated GPUs short of memory bandwidth. The menu changes it while
+# the game runs: the texture heap is made at start for up to 2048 (75 MiB of video memory above the game's own), and a
+# larger size from this file needs a restart.
 # shadow_res = game
 
 # Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game
 # resolution; 2 to 4 draws them that many times larger on each side, for sharper shadows. 1 = the game's. The game's
 # shadow edge filter is narrowed by the same factor (translator patch 0011), so close shadow edges don't look doubled.
-# Read at start.
+# The menu changes it while the game runs: the maps are made anew at the next frame with their content.
 # shadow_scale = 1
 # Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
-# the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
+# the steps where shadows turn softer further away, and spreads the shadow map over more ground. 1.2.1 and 1.4.3; the
+# menu changes it while the game runs.
 # shadow_range = 100
 # Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
-# shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
+# shadows at feet, under stones and in grass that the shadow maps miss. The menu changes the strength while the game
+# runs; turning them on from 0 takes effect at the next start, since the game's scene colour is made at start.
 # contact_shadows = 0
 # Soft sun shadows (PCSS), percent of the default penumbra width (0 to 200; 0 = the game's own four-tap filter): sharp
 # where an object meets the ground and softer the further its shadow falls. Done in the translated shaders (translator
-# patch 0010), so the shader cache is rebuilt once after an update. Read at start.
+# patch 0010), so the shader cache is rebuilt once after an update. The menu changes it while the game runs.
 # pcss = 0
 
 # NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the

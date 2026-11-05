@@ -24,6 +24,7 @@
 
 static struct {
     int tried, ok, strength, debug, logged;
+    int no_storage;                    // the last G-buffer's scene colour was made without STORAGE use (vk_texture.c)
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
@@ -35,18 +36,29 @@ static struct {
     uint64_t c4;
 } C;
 
+// Read again whenever a setting changed (cfg_version): the menu changes the strength while the game runs. The scene
+// colour gets STORAGE use only when it is made while the strength is above 0 (vk_texture.c create_tex), and the game
+// makes its G-buffer once, so turning the shadows on from 0 reaches the picture after a restart
+// (vk_contact_needs_restart); any other change applies at the next frame.
 int vk_contact_strength(void) {
-    if (!C.tried) {
+    static unsigned seen;
+    static int started;
+    unsigned v = cfg_version();
+    if (!started || v != seen) {
         int s = cfg_int("TOTK_CONTACT_SHADOWS");
-        C.strength = s < 0 ? 0 : s > 100 ? 100 : s;
+        s = s < 0 ? 0 : s > 100 ? 100 : s;
+        if (started && s != C.strength) rt_log("vk: contact shadows at %d%% (changed in the menu)", s);
+        C.strength = s;
+        seen = v, started = 1;
     }
     return C.strength;
 }
 
+int vk_contact_needs_restart(void) { return C.strength && C.no_storage; }
+
+// The pipeline, made the first time a pass begins with the strength above 0.
 static int init(VkCtx *c) {
     C.tried = 1;
-    vk_contact_strength();
-    if (!C.strength) return 0;
     const char *e = cfg_get("TOTK_CONTACT_DEBUG");   // 1: the frame shows the contact shadow factor in grey
     C.debug = e && *e && strcmp(e, "0");
     C.push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
@@ -99,7 +111,9 @@ static int is_gbuffer(const VkExec *ex, const VkTexImage **scene, const VkTexIma
         if (t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && !*scene) *scene = t->img;
         if (t->format == VK_FORMAT_R32_SFLOAT && !*depth) *depth = t->img;
     }
-    return *scene && *depth && ((*scene)->usage & VK_IMAGE_USAGE_STORAGE_BIT);
+    if (!*scene || !*depth) return 0;
+    C.no_storage = !((*scene)->usage & VK_IMAGE_USAGE_STORAGE_BIT);
+    return !C.no_storage;
 }
 
 static void mem_barrier(VkCommandBuffer cb) {
@@ -158,6 +172,10 @@ static int is_composite(const VkExec *ex) {
 }
 
 void vk_contact_pass_begin(VkExec *ex) {
+    if (!vk_contact_strength()) {   // off, or turned off in the menu: nothing waits for the composite
+        C.pending = 0;
+        return;
+    }
     if (!C.tried && !init(vk_ctx())) return;
     if (!C.ok) return;
     const VkTexImage *scene, *depth;

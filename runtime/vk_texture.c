@@ -43,8 +43,13 @@ typedef struct Tex {
     TexVkFormat f;
     VmaAllocation alloc;          // own memory; NULL when bound into pool memory
     VmaAllocation bound_to;       // the pool memory it is bound into
+    VmaAllocation tail;           // a sparse image's part past its storage (vk_mem_phys_bind_image); freed with it
+    uint64_t bound_off, bound_size;   // where in it (vk_mem_phys_note)
+    VmaAllocation cover_to;       // a sparse pool whose memory under this entry is kept although its image is its own
+    uint64_t cover_off, cover_size;   // (vk_mem_phys_cover)
     uint32_t wgen;                // page generation of the last upload check
     uint32_t checked;             // submit_epoch of the last check from a draw binding
+    uint32_t used_epoch;          // submit_epoch of the last use: a lookup as a target or copy, a binding, a GPU write
     int uploaded, released;
     uint32_t n_up;                // uploads of this entry (vk_texture_debug)
     int last_ch;                  // last vk_mem_changed result of make_fresh: 1 written, 0 clean, -1 not tracked
@@ -146,6 +151,7 @@ static void lock(void) {
 static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
+static uint32_t umin(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t mip(uint32_t v, unsigned lv) { return umax(v >> lv, 1); }
 
 static void make_key(const tex_t *t, TexKey *k) {
@@ -235,18 +241,26 @@ static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no bl
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
 }
 
-static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) {
+// sparse: img was made with vk_mem_sparse_image_flags for a sparse pool (vk_memory.c vk_mem_phys_bind_image).
+static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size, int sparse) {
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(c->device, img, &req);
     if ((e->f.depth || e->f.stencil) && req.size > guest_size) return 0;
     VkMemSpan sp;
     if (!req.size) return 0;   // an image the device could not lay out (image_size)
     if (!vk_mem_resolve(e->pub.addr, req.size, &sp) || !sp.alloc || sp.alloc_offset % req.alignment) return 0;
-    VmaAllocationInfo info;
-    vmaGetAllocationInfo(c->vma, sp.alloc, &info);
-    if (!(req.memoryTypeBits >> info.memoryType & 1)) return 0;
-    if (vmaBindImageMemory2(c->vma, sp.alloc, sp.alloc_offset, img, NULL) != VK_SUCCESS) return 0;
+    VkDeviceSize in_pool = req.size;
+    int sb = vk_mem_phys_bind_image(sp.alloc, sp.alloc_offset, img, &req, sparse, guest_size, &e->tail, &in_pool);
+    if (!sb) return 0;
+    if (sb < 0) {   // one allocation for the whole pool (vk_memory.c alloc_physical)
+        VmaAllocationInfo info;
+        vmaGetAllocationInfo(c->vma, sp.alloc, &info);
+        if (!(req.memoryTypeBits >> info.memoryType & 1)) return 0;
+        if (vmaBindImageMemory2(c->vma, sp.alloc, sp.alloc_offset, img, NULL) != VK_SUCCESS) return 0;
+    }
     e->bound_to = sp.alloc;
+    e->bound_off = sp.alloc_offset, e->bound_size = sb > 0 ? in_pool : req.size;
+    vk_mem_phys_note(sp.alloc, sp.alloc_offset, e->bound_size, 1);
     return 1;
 }
 
@@ -312,15 +326,29 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
 // copies scale their regions (vk_exec_xfer.c sub_resolve), and shaders sample them with normalised coordinates, so the
 // game sees nothing of it. A map whose storage the CPU writes (mirrored) or that aliases pool memory keeps its size,
 // as its texels must match the guest layout.
+// The menu changes the scale while the game runs: shadow_rescale applies it at a submission's start, so the images,
+// the compare samplers (sampler_for) and the lighting's filter spread (vk_texture_shadow_scale) agree within one.
+static volatile int shadow_applied = -1;   // the scale in effect; -1 until the first image asks
+static unsigned shadow_cfg_seen;           // cfg_version when TOTK_SHADOW_SCALE was last read
+
+static int shadow_scale_cfg(void) {
+    int s = cfg_int("TOTK_SHADOW_SCALE");
+    return s < 1 ? 1 : s > 4 ? 4 : s;
+}
+
 static int shadow_scale(void) {
-    static int scale = -1;
-    if (scale < 0) {
-        int s = cfg_int("TOTK_SHADOW_SCALE");
-        s = s < 1 ? 1 : s > 4 ? 4 : s;
+    if (shadow_applied < 0) {
+        shadow_cfg_seen = cfg_version();
+        int s = shadow_scale_cfg();
         rt_log("vk: shadow map scale %d", s);
-        scale = s;
+        __atomic_store_n(&shadow_applied, s, __ATOMIC_RELEASE);
     }
-    return scale;
+    return shadow_applied;
+}
+
+int vk_texture_shadow_scale(void) {
+    int s = __atomic_load_n(&shadow_applied, __ATOMIC_ACQUIRE);
+    return s < 1 ? 1 : s;
 }
 
 static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t samples, int mirrored) {
@@ -435,12 +463,26 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     e->pub.addr = k->addr;
     VkImage img = VK_NULL_HANDLE;
     if (scale == 1 && nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
-        if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS && !bind_pool_memory(c, e, img, L.size)) {
+        // A sparse pool takes sparse aliased images (vk_memory.c alloc_physical_sparse), where the device can make
+        // this one so; else it gets its own memory below, as an image that cannot alias does.
+        VkMemSpan ps;
+        VkImageCreateInfo pci = ci;
+        int in_sparse = vk_mem_resolve(k->addr, 1, &ps) && vk_mem_phys_sparse(ps.alloc), sparse = 0;
+        if (in_sparse) {
+            VkImageFormatProperties fp;
+            pci.flags |= vk_mem_sparse_image_flags();
+            sparse = vkGetPhysicalDeviceImageFormatProperties(c->phys, pci.format, pci.imageType, pci.tiling, pci.usage,
+                                                              pci.flags, &fp) == VK_SUCCESS;
+        }
+        if (vkCreateImage(c->device, sparse ? &pci : &ci, NULL, &img) == VK_SUCCESS &&
+            !bind_pool_memory(c, e, img, L.size, sparse)) {
             vkDestroyImage(c->device, img, NULL);
             img = VK_NULL_HANDLE;
             log_limited(&n_unbound, "texture %#llx (%ux%u fmt %#x) cannot alias its pool memory; own memory instead",
                         (unsigned long long)k->addr, w, h, d->format);
         }
+        if (!img && in_sparse && vk_mem_phys_cover(ps.alloc, ps.alloc_offset, L.size, 1))
+            e->cover_to = ps.alloc, e->cover_off = ps.alloc_offset, e->cover_size = L.size;
     }
     if (!img) {
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -448,6 +490,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         if (r != VK_SUCCESS) {
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
                         d->format, w, h, depth, d->target, levels, layers);
+            if (e->cover_to) vk_mem_phys_cover(e->cover_to, e->cover_off, e->cover_size, -1);
             free(e);
             return NULL;
         }
@@ -553,8 +596,10 @@ static void destroy_tex(Tex *e) {
             if (p->next_at == e) { p->next_at = e->next_at; break; }
     }
     if (e->released) nreleased--, rel_unlink(e);
+    if (e->bound_to) vk_mem_phys_note(e->bound_to, e->bound_off, e->bound_size, 0);
+    if (e->cover_to) vk_mem_phys_cover(e->cover_to, e->cover_off, e->cover_size, -1);
     vk_exec_image_gone(e->pub.image);
-    vk_defer_image(e->pub.image, e->alloc);
+    vk_defer_image(e->pub.image, e->alloc ? e->alloc : e->tail);   // vmaDestroyImage frees the tail after the image
     free(e->snap);
     free(e);
 }
@@ -1003,7 +1048,7 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     if (!t || !t->mem) return NULL;
     lock();
     Tex *e = entry_of(t);
-    if (e) make_fresh(e);
+    if (e) make_fresh(e), e->used_epoch = submit_epoch;
     unlock();
     return e ? &e->pub : NULL;
 }
@@ -1041,6 +1086,7 @@ void vk_texture_gpu_written(const tex_t *t) {
     if (e) {
         make_fresh(e);   // a partial render keeps what the storage held before
         e->pub.gpu_owned = 1;
+        e->used_epoch = submit_epoch;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
         if (e->pub.mirrored) {
@@ -1207,6 +1253,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     // replay race the GPU read on hardware too). After one check an entry is either uploaded or never uploads (not
     // mirrored, GPU-owned or no CPU layout), so a slot that checked its entry in this submit has nothing left to do.
     if (e && s->cepoch != submit_epoch) {
+        e->used_epoch = submit_epoch;
         if (!e->uploaded || e->checked != submit_epoch) {
             make_fresh_snap(e);
             e->checked = submit_epoch;
@@ -1233,9 +1280,183 @@ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
 
 uint32_t vk_texture_epoch(void) { return __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED); }
 
+// src's content into dst, a new image of the same texture at another TOTK_SHADOW_SCALE: dst's first transition, then a
+// nearest-filter blit of each level's layers (depth texels are not filtered), which keeps a static shadow map the game
+// rendered once until it renders it again. Without blit support for the format dst starts cleared, as a new image does.
+static void shadow_blit(VkCommandBuffer cb, const Tex *src, Tex *dst) {
+    static int warned;
+    VkFormatFeatureFlags ff = features_of(dst->f.vk);
+    if (!(ff & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(ff & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+        if (!warned++) rt_log("vk: shadow maps of the new scale start empty: VkFormat %d has no blit", (int)dst->f.vk);
+        init_image(dst, cb);
+        return;
+    }
+    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .image = dst->pub.image,
+                                .subresourceRange = {dst->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+    vkCmdPipelineBarrier2(cb, &di);
+    uint32_t levels = umin(src->pub.levels, dst->pub.levels), layers = umin(src->pub.layers, dst->pub.layers);
+    for (uint32_t lv = 0; lv < levels; lv++) {
+        VkImageBlit b = {.srcSubresource = {src->pub.aspect, lv, 0, layers},
+                         .srcOffsets = {{0, 0, 0}, {(int32_t)mip(src->pub.width, lv), (int32_t)mip(src->pub.height, lv), 1}},
+                         .dstSubresource = {dst->pub.aspect, lv, 0, layers},
+                         .dstOffsets = {{0, 0, 0}, {(int32_t)mip(dst->pub.width, lv), (int32_t)mip(dst->pub.height, lv), 1}}};
+        vkCmdBlitImage(cb, src->pub.image, VK_IMAGE_LAYOUT_GENERAL, dst->pub.image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+                       VK_FILTER_NEAREST);
+    }
+    barrier(cb, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+}
+
+#define TRIM_IDLE 30   // submits without use after which an entry counts as idle (shadow_rescale, trim_released)
+
+// Lock held, at a submission's start (vk_texture_new_submit): a changed TOTK_SHADOW_SCALE takes effect. The compare
+// samplers are looked up again (their key holds the filter), and every entry whose scale shadow_scale_of now gives
+// otherwise is replaced by an image of the new size with its content, released or not: TotK finalizes its shadow
+// textures between frames and takes the entries back, and a static shadow map it rendered once keeps its shadows. An
+// entry the GPU never wrote simply goes, and the next use makes it anew. Earlier submissions keep the old images
+// (destroy_tex defers them).
+static void shadow_rescale(void) {
+    unsigned v = cfg_version();
+    if (shadow_applied < 0 || v == shadow_cfg_seen) return;
+    shadow_cfg_seen = v;
+    int s = shadow_scale_cfg(), was = shadow_applied;
+    if (s == was) return;
+    __atomic_store_n(&shadow_applied, s, __ATOMIC_RELEASE);
+    for (int i = 0; i < nsslots; i++) sslots[i].s = sslots[i].sp = VK_NULL_HANDLE;
+    samp_gen++;
+    Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
+    if (!list) rt_fatal("vk: out of memory for the shadow map list");
+    int n = 0, moved = 0, dropped = 0;
+    for (uint32_t i = 0; i < by_key.cap; i++) {
+        Tex *e = by_key.vals[i];
+        if (e && shadow_scale_of(&e->t.d, &e->f, e->pub.samples, e->pub.mirrored) != (e->pub.scale ? e->pub.scale : 1))
+            list[n++] = e;
+    }
+    uint32_t recent = submit_epoch - TRIM_IDLE;
+    for (int i = 0; i < n; i++) {
+        Tex *e = list[i], *nw = NULL;
+        int released = e->released;
+        // a map not used for a while (a size TOTK_SHADOW_RES had before) goes; one in use keeps its content
+        int idle = (int32_t)(e->used_epoch - recent) < 0;
+        if (e->pub.gpu_owned && !idle && (nw = create_tex(&e->t, &e->key, 1))) {
+            shadow_blit(vk_upload_begin(), e, nw);
+            vk_upload_end();
+            nw->pub.gpu_owned = 1;
+            nw->uploaded = e->uploaded;
+            nw->wr_fence = e->wr_fence;
+        }
+        if (i < 6)
+            rt_log("vk: shadow map %#llx %ux%u x%u (game %ux%u)%s: %s", (unsigned long long)e->key.addr, e->pub.width,
+                   e->pub.height, e->pub.layers, e->t.d.width, e->t.d.height, released ? " released" : "",
+                   nw ? "made anew with its content" : idle ? "dropped, idle" : "dropped, never drawn");
+        uint64_t addr = e->key.addr;
+        TexKey key = e->key;
+        destroy_tex(e);
+        if (!nw) {
+            dropped++;
+            continue;
+        }
+        nw->next_at = nvn_hm_get(&by_addr, &addr);
+        nvn_hm_put(&by_addr, &addr, nw);
+        nvn_hm_put(&by_key, &key, nw);
+        if (released) nw->released = 1, nreleased++, rel_append(nw);
+        tex_gen_bump(addr);
+        moved++;
+    }
+    free(list);
+    rt_log("vk: shadow map scale %d -> %d (changed in the menu): %d maps made anew with their content, %d dropped", was, s,
+           moved, dropped);
+}
+
+// After the game set other render sizes (resolution.c res_present) the targets of the old sizes stay in the cache:
+// released ones for a reuse that never comes (RELEASED_MAX), and live ones, since the game makes the new targets in the
+// same memory without finalizing the old descriptors. Both keep their image bound over the pool's memory. TRIM_DELAY
+// frames later, when the new targets are in use, the entries bound into physical pools go, released or not (TotK
+// finalizes and takes back some textures every frame, keeping their content), that were not used for TRIM_IDLE
+// submits and either
+//  - an entry used since then covers part of their memory: the game has written that memory through another
+//    descriptor, so their content is gone anyway; or
+//  - the GPU drew them, they have the shape of the game resolution and were in use after the previous size change: the
+//    targets of the old sizes (their chain of halves and the dynamic-resolution steps) whose memory nothing took yet.
+// Other idle entries keep their content: a texture of another shape, or one idle since before the previous change,
+// may be one the game drew once and samples now and then. Then the sparse pools release the chunks nothing covers any
+// more (vk_mem_sparse_trim).
+#define TRIM_DELAY 60
+static volatile uint64_t trim_at;   // the frame to trim at; 0 none
+static volatile uint32_t change_epoch;   // submit_epoch at the latest size change
+static uint32_t prev_change_epoch;       // lock: the one before it (0 at start)
+
+void vk_texture_trim_soon(void) {
+    if (!__atomic_load_n(&trim_at, __ATOMIC_RELAXED)) {   // a trim still pending keeps the regime it began with
+        prev_change_epoch = __atomic_load_n(&change_epoch, __ATOMIC_RELAXED);
+        __atomic_store_n(&change_epoch, submit_epoch, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&trim_at, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + TRIM_DELAY, __ATOMIC_RELAXED);
+}
+
+// The game resolution's shape within rounding (a target of w x h scaled from it).
+static int output_shaped(uint32_t w, uint32_t h) {
+    unsigned o[2], sc[2];
+    res_sizes(o, sc);
+    int64_t d = (int64_t)w * o[1] - (int64_t)h * o[0];
+    return o[0] && o[1] && w >= 16 && h >= 16 && (d < 0 ? -d : d) <= (int64_t)(o[0] + o[1]);
+}
+
+static void trim_released(void) {   // lock held
+    uint64_t at = __atomic_load_n(&trim_at, __ATOMIC_RELAXED);
+    if (!at || __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < at) return;
+    __atomic_store_n(&trim_at, 0, __ATOMIC_RELAXED);
+    Tex **all = malloc(sizeof *all * (size_t)(by_key.n + 1)), **drop = malloc(sizeof *drop * (size_t)(by_key.n + 1));
+    if (!all || !drop) rt_fatal("vk: out of memory for the trim list");
+    int n = 0, nd = 0, nrel = 0;
+    for (uint32_t i = 0; i < by_key.cap; i++) {
+        Tex *e = by_key.vals[i];
+        if (e && e->bound_to) all[n++] = e;
+    }
+    uint32_t recent = submit_epoch - TRIM_IDLE, since = prev_change_epoch;
+    int nold = 0;
+    for (int i = 0; i < n; i++) {
+        Tex *e = all[i];
+        int gone = 0;
+        if ((int32_t)(e->used_epoch - recent) < 0 && (int32_t)(e->used_epoch - since) >= 0 && e->pub.gpu_owned &&
+            output_shaped(e->t.d.width, e->t.d.height))
+            gone = 1, nold++;
+        for (int j = 0; j < n && !gone && (int32_t)(e->used_epoch - recent) < 0; j++) {
+            const Tex *o = all[j];
+            gone = o != e && o->bound_to == e->bound_to && (int32_t)(o->used_epoch - recent) >= 0 &&
+                   o->bound_off < e->bound_off + e->bound_size && e->bound_off < o->bound_off + o->bound_size;
+        }
+        if (gone) drop[nd++] = e, nrel += e->released;
+    }
+    int shown = 0;   // the idle entries that stay, largest first among the first few found (TOTK_TRACE=gfx)
+    for (int i = 0; i < n && (rt_trace & RT_TRACE_GFX) && shown < 24; i++) {
+        Tex *e = all[i];
+        int dropped = 0;
+        for (int j = 0; j < nd && !dropped; j++) dropped = drop[j] == e;
+        if (dropped || (int32_t)(e->used_epoch - recent) >= 0) continue;
+        rt_log("vk: trim keeps idle %#llx %ux%u x%u fmt %#x, %.1f MiB, idle %u submits", (unsigned long long)e->key.addr,
+               e->pub.width, e->pub.height, e->pub.layers, e->t.d.format, e->bound_size / 1048576.0,
+               submit_epoch - e->used_epoch);
+        shown++;
+    }
+    for (int i = 0; i < nd; i++) destroy_tex(drop[i]);
+    free(all);
+    free(drop);
+    rt_log("vk: render size changed: %d targets in pool memory dropped (%d of the old sizes, %d whose memory newer ones "
+           "use; %d of them released)", nd, nold, nd - nold, nrel);
+    vk_mem_sparse_trim();
+}
+
 void vk_texture_new_submit(void) {
     lock();
     if (!++submit_epoch) submit_epoch = 1;
+    shadow_rescale();
+    trim_released();
     sweep_pressure();
     static uint64_t log_at;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
@@ -1804,7 +2025,7 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
         // A depth-compare sampler set to nearest returns 0 or 1 per tap, and the game's shaders smooth shadow edges by
         // a few taps spaced for its own shadow map texels. With TOTK_SHADOW_SCALE those taps cover a fraction of the
         // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead.
-        if (shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+        if (d->cmp_mode == 2) si.magFilter = si.minFilter = VK_FILTER_LINEAR;   // sampler_for: maps made larger
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     VkSamplerReductionModeCreateInfo rm = {.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};
@@ -1875,6 +2096,7 @@ static VkSampler sampler_for(VkCtx *c, const samp_par *s) {
     memset(&k, 0, sizeof k);
     k = *s;
     if (dlss_bias != 0 && dlss_biased(&k)) k.lod_bias += dlss_bias;   // part of the key: samplers live until shutdown
+    if (k.cmp_mode && shadow_scale() > 1) k.cmp_mode = 2;   // linear compare filtering for larger shadow maps (make_sampler)
     VkSampler v = (VkSampler)nvn_hm_get(&samplers, &k);
     if (!v) {
         v = make_sampler(c, &k);

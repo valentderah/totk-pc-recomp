@@ -128,17 +128,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                              "matching the light they cast; 0 keeps them fully saturated.",
     [UI_MENU_SHADOW_SCALE] = "Shadow resolution",
     [UI_MENU_SHADOW_SCALE_DESC] = "Draws the sun's shadow maps this many times larger on each side than the game's 960x960: "
-                                  "sharper shadow edges and leaf shadows. Takes effect at the next start.",
+                                  "sharper shadow edges and leaf shadows.",
     [UI_MENU_PCSS] = "Soft shadows",
     [UI_MENU_PCSS_DESC] = "Sun shadows sharp where an object meets the ground and softer the further the shadow falls "
-                          "(PCSS). 0 keeps the game's filter. Takes effect at the next start.",
+                          "(PCSS). 0 keeps the game's filter.",
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
-                                     "Traced on the screen after lighting. Takes effect at the next start.",
+                                     "Traced on the screen after lighting. Turning them on from 0 takes effect at the "
+                                     "next start.",
     [UI_MENU_SHADOW_RANGE] = "Shadow cascade range",
     [UI_MENU_SHADOW_RANGE_DESC] = "Moves the steps where shadows turn softer (the game's 20, 40, 80 and 160 m) further "
-                                  "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
-                                  "Takes effect at the next start.",
+                                  "away. Spreads the shadow map over more ground: raise Shadow resolution with it.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
@@ -599,17 +599,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                              "который они дают; 0 оставляет их полностью насыщенными.",
     [UI_MENU_SHADOW_SCALE] = "Разрешение теней",
     [UI_MENU_SHADOW_SCALE_DESC] = "Карты теней от солнца рисуются во столько раз больше по каждой стороне, чем 960x960 "
-                                  "самой игры: края теней и тени листвы чётче. Действует после перезапуска.",
+                                  "самой игры: края теней и тени листвы чётче.",
     [UI_MENU_PCSS] = "Мягкие тени",
     [UI_MENU_PCSS_DESC] = "Тени от солнца резкие там, где предмет касается земли, и мягче, чем дальше падает тень "
-                          "(PCSS). 0 оставляет фильтр игры. Действует после перезапуска.",
+                          "(PCSS). 0 оставляет фильтр игры.",
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
-                                     "складках. Считаются по экрану после освещения. Действует после перезапуска.",
+                                     "складках. Считаются по экрану после освещения. Включение с 0 действует после "
+                                     "перезапуска.",
     [UI_MENU_SHADOW_RANGE] = "Дальность каскадов теней",
     [UI_MENU_SHADOW_RANGE_DESC] = "Отодвигает границы, за которыми тени становятся мягче (в игре 20, 40, 80 и 160 м). "
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
-                                  "разрешение теней. Действует после перезапуска.",
+                                  "разрешение теней.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
@@ -1404,19 +1405,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                              "combinam com a luz que emitem; 0 as mantém totalmente saturadas.",
     [UI_MENU_SHADOW_SCALE] = "Resolução das sombras",
     [UI_MENU_SHADOW_SCALE_DESC] = "Desenha os mapas de sombra do sol essa quantidade de vezes maiores em cada lado "
-                                  "que os 960x960 do jogo: bordas de sombra e sombras de folhas mais nítidas. Vale no "
-                                  "próximo início.",
+                                  "que os 960x960 do jogo: bordas de sombra e sombras de folhas mais nítidas.",
     [UI_MENU_SHADOW_RANGE] = "Alcance das cascatas de sombra",
     [UI_MENU_SHADOW_RANGE_DESC] = "Afasta os degraus em que as sombras ficam mais suaves (20, 40, 80 e 160 m no "
                                   "jogo). Espalha o mapa de sombras por mais terreno: aumente a Resolução das sombras "
-                                  "junto. Vale no próximo início.",
+                                  "junto.",
     [UI_MENU_CONTACT_SHADOWS] = "Sombras de contato",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequenas sombras do sol que os mapas de sombra não pegam: nos pés, sob pedras, "
-                                     "na grama e em dobras. Traçadas na tela depois da iluminação. Vale no próximo "
-                                     "início.",
+                                     "na grama e em dobras. Traçadas na tela depois da iluminação. Ligar a partir de 0 "
+                                     "vale no próximo início.",
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
-                          "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
+                          "cai (PCSS). 0 mantém o filtro do jogo.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
@@ -2010,13 +2010,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_HUE] = "高光色调校正",
     [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像游戏自身的 SDR 画面一样趋向白色，与它们发出的光一致；0 保持完全饱和。",
     [UI_MENU_SHADOW_SCALE] = "阴影分辨率",
-    [UI_MENU_SHADOW_SCALE_DESC] = "将太阳阴影贴图的每条边绘制为游戏 960x960 的若干倍：阴影边缘和树叶阴影更清晰。下次启动时生效。",
+    [UI_MENU_SHADOW_SCALE_DESC] = "将太阳阴影贴图的每条边绘制为游戏 960x960 的若干倍：阴影边缘和树叶阴影更清晰。",
     [UI_MENU_SHADOW_RANGE] = "阴影级联范围",
-    [UI_MENU_SHADOW_RANGE_DESC] = "把阴影变柔和的分界（游戏中为 20、40、80 和 160 米）推得更远。阴影贴图会覆盖更大的地面，请同时提高阴影分辨率。下次启动时生效。",
+    [UI_MENU_SHADOW_RANGE_DESC] = "把阴影变柔和的分界（游戏中为 20、40、80 和 160 米）推得更远。阴影贴图会覆盖更大的地面，请同时提高阴影分辨率。",
     [UI_MENU_CONTACT_SHADOWS] = "接触阴影",
-    [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
+    [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。从 0 开启时下次启动生效。",
     [UI_MENU_PCSS] = "柔和阴影",
-    [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
+    [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",

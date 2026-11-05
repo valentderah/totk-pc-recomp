@@ -133,10 +133,21 @@ NVN_API(nvnTextureBuilderGetStorageSize) {
     ret_x(c, L.size);
 }
 // size_t nvnTextureBuilderGetStorageAlignment(const NVNtextureBuilder *b)
+// A large compressible texture (the game's render targets) gets 64 KiB where physical pools are sparse (vk_memory.c
+// alloc_physical_sparse): the game places its textures at the alignment it asks here, and an image can share a sparse
+// pool's memory only from a 64 KiB boundary (the sparse block size). With the block-linear 512 they sat at the 0x200
+// steps of its heap's headers, and most render targets took memory of their own. Small ones keep 512: asked of every
+// compressible texture, 64 KiB filled one of the game's smaller heaps at render_scale 200 (a HUD element drew black),
+// and a small target's own memory costs little. RT_ALIGN_MIN keeps the padding under 3 % of a texture.
+#define RT_ALIGN_MIN (2u << 20)
 NVN_API(nvnTextureBuilderGetStorageAlignment) {
     nvn_texlayout L;
     nvn_tex_layout(&TB(c)->d, &L);
-    ret_x(c, L.align);
+    uint64_t a = L.align;
+    if ((TB(c)->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) && !nvn_tex_is_linear(&TB(c)->d) && L.size >= RT_ALIGN_MIN &&
+        a < 0x10000 && vk_sparse_probe())
+        a = 0x10000;
+    ret_x(c, a);
 }
 
 // ---------- Textures

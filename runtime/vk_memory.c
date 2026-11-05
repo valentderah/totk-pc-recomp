@@ -71,6 +71,22 @@ typedef struct PoolRec {
     uint8_t *smap;                     // its mapping; offsets as in buf (from import_lo)
     uint32_t sgen;                     // gen_lock: every page write stamped up to this generation is in the shadow
     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
+    // POOL_PHYS occupancy (use_lock; vk_mem_phys_note, phys_use_log): per 64 KiB page the images bound into it now
+    // (uref) and whether one ever was (uever); the bytes of the pages in use now and at most, of the pages ever used,
+    // the highest end ever bound, the images bound now, and the MapVirtual requests that named the pool.
+    uint16_t *uref;
+    uint8_t *uever;
+    uint64_t ulive, upeak, uever_bytes, uhigh, umap_calls, umap_bytes;
+    uint32_t uimages;
+    // POOL_PHYS made sparse (alloc_physical_sparse): its chunks' allocations (sparse_lock), how many, the buffer's
+    // sparse size and alignment, the chunks' memory type, and the bytes allocated so far.
+    uint8_t sparse;
+    VmaAllocation *sp_chunk;
+    uint32_t *sp_ref;                  // images bound over each chunk now (sparse_lock)
+    uint8_t *sp_pending;               // a release of the chunk waits for the GPU (vk_mem_sparse_trim)
+    uint32_t sp_n, sp_type;
+    VkDeviceSize sp_size, sp_align;
+    uint64_t sp_bytes;
 } PoolRec;
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
@@ -91,6 +107,8 @@ static uint64_t pool_gen = 1;
 static uint64_t mirror_gen;
 static pidx pool_index;                // POOL_IMPORT, POOL_PHYS and POOL_VIRT records by GPU address
 static PoolRec **phys_list;            // physical pools by key, for MapVirtual requests
+static PlatMutex use_lock = PLAT_MUTEX_INIT;   // the POOL_PHYS occupancy fields
+static uint64_t unmap_calls, unmap_bytes;      // pool_lock exclusive: MapVirtual requests that unmapped pages
 static int nphys, cap_phys;
 static int32_t n_imports, n_import_failures;
 static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
@@ -235,13 +253,290 @@ static PoolRec *phys_find(const pool_t *key) {
     return NULL;
 }
 
+// ---- sparse physical pools
+// A physical pool holds the game's render targets (1.2.1: DynamicTextureAllocatorMem, 446 MiB at 2560x1440). Made by
+// alloc_physical it takes its whole size in video memory, while the images in it covered 105-136 MiB of that in play
+// (phys_use_log) and the game maps the whole pool into its virtual pool at once (one MapVirtual). Here the pool is a
+// sparse buffer instead, and its video memory comes in SPARSE_CHUNK pieces the first time an image is bound over them
+// (vk_mem_phys_bind_image): each such image is a sparse aliased image bound piece by piece to the same memory at the
+// same offsets, so images and the buffer view of the pool alias as they do in one allocation. The pieces stay until
+// the pool goes. A buffer range no image covered has no memory: the GPU reads zeros there and writes go nowhere
+// (sparseResidencyBuffer). Chunk 0 is taken at once: its allocation stands for the pool (r->alloc), as the one
+// allocation does for alloc_physical's pools (vk_mem_resolve's spans, VkMemSpan.alloc, bound_to).
+#define SPARSE_CHUNK (2ull << 20)
+#define SPARSE_MIN (16ull << 20)   // smaller physical pools take one allocation (alloc_physical)
+static PlatMutex sparse_lock = PLAT_MUTEX_INIT;   // the chunk tables and the bind fence
+static VkFence sparse_fence;
+static uint64_t sparse_binds, sparse_wait_ns, sparse_wait_max_ns;   // sparse_lock: vkQueueBindSparse calls and waits
+
+// One vkQueueBindSparse and its completion: the bound memory is in place for every submission recorded after this
+// returns, so no semaphore joins the bind to the frame's work. Holds sparse_lock.
+static int sparse_submit(VkCtx *c, const VkBindSparseInfo *bi) {
+    if (!sparse_fence) {
+        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(c->device, &fi, NULL, &sparse_fence) != VK_SUCCESS) return 0;
+    }
+    uint64_t t0 = plat_now_ns();
+    if (c->sparse_shared) vk_queue_lock();
+    VkResult r = vkQueueBindSparse(c->sparse_queue, 1, bi, sparse_fence);
+    if (c->sparse_shared) vk_queue_unlock();
+    if (r == VK_SUCCESS) r = vkWaitForFences(c->device, 1, &sparse_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(c->device, 1, &sparse_fence);
+    uint64_t dt = plat_now_ns() - t0;
+    sparse_binds++, sparse_wait_ns += dt;
+    if (dt > sparse_wait_max_ns) sparse_wait_max_ns = dt;
+    if (r != VK_SUCCESS) rt_log("vk: vkQueueBindSparse failed (%d)", (int)r);
+    return r == VK_SUCCESS;
+}
+
+// Chunk i's memory, allocated now when it has none (sparse_lock held). *bb gets the buffer bind of a new chunk (the
+// caller submits it with the image's binds); 0 when the allocation fails.
+static int sparse_chunk(VkCtx *c, PoolRec *r, uint32_t i, VkSparseMemoryBind *bb, int *nbb) {
+    if (r->sp_chunk[i]) return 1;
+    VkDeviceSize at = (VkDeviceSize)i * SPARSE_CHUNK, n = r->sp_size - at < SPARSE_CHUNK ? r->sp_size - at : SPARSE_CHUNK;
+    VkMemoryRequirements req = {.size = n, .alignment = r->sp_align, .memoryTypeBits = 1u << r->sp_type};
+    VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                   .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    VkResult res = vmaAllocateMemory(c->vma, &req, &aci, &r->sp_chunk[i], NULL);
+    if (res != VK_SUCCESS) {
+        rt_log("vk: sparse pool chunk %u (%llu KiB): device-local allocation failed (%d)", i,
+               (unsigned long long)n >> 10, (int)res);
+        r->sp_chunk[i] = NULL;
+        return 0;
+    }
+    VmaAllocationInfo info;
+    vmaGetAllocationInfo(c->vma, r->sp_chunk[i], &info);
+    bb[(*nbb)++] = (VkSparseMemoryBind){.resourceOffset = at, .size = n, .memory = info.deviceMemory,
+                                        .memoryOffset = info.offset};
+    r->sp_bytes += n;
+    return 1;
+}
+
+// Zeros into new chunks (Switch pool memory starts zeroed, as alloc_physical clears its whole pool), recorded after
+// their bind completed.
+static void sparse_zero(VkBuffer buf, const VkSparseMemoryBind *bb, int nbb) {
+    if (!nbb || !vk_fix_zero()) return;
+    VkCommandBuffer cb = vk_upload_begin();
+    for (int i = 0; i < nbb; i++) vkCmdFillBuffer(cb, buf, bb[i].resourceOffset, bb[i].size, 0);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+    vk_upload_end();
+}
+
+// The image create flags that let an image be bound into a sparse pool (create_tex adds them for images in one).
+VkImageCreateFlags vk_mem_sparse_image_flags(void) {
+    return VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
+}
+
+static int alloc_physical_sparse(VkCtx *c, PoolRec *r) {
+    if (!c->has_sparse_pool || r->size < SPARSE_MIN) return 0;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT |
+                                      VK_BUFFER_CREATE_SPARSE_ALIASED_BIT,
+                             .size = r->size, .usage = pool_usage(c), .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    if (vkCreateBuffer(c->device, &bi, NULL, &r->buf) != VK_SUCCESS) {
+        rt_log("vk: sparse pool: vkCreateBuffer failed; the pool takes one allocation");
+        r->buf = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkMemoryRequirements rb;
+    vkGetBufferMemoryRequirements(c->device, r->buf, &rb);
+    // a probe image as create_tex makes them for the pool: the memory types both may use
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = vk_mem_sparse_image_flags(),
+                            .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {256, 256, 1},
+                            .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+    VkDeviceImageMemoryRequirements di = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &ii};
+    VkMemoryRequirements2 ri = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    vkGetDeviceImageMemoryRequirements(c->device, &di, &ri);
+    uint32_t bits = rb.memoryTypeBits & ri.memoryRequirements.memoryTypeBits, type = UINT32_MAX;
+    VmaAllocationCreateInfo aci = {.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    if (!bits || vmaFindMemoryTypeIndex(c->vma, bits, &aci, &type) != VK_SUCCESS ||
+        SPARSE_CHUNK % rb.alignment || SPARSE_CHUNK % ri.memoryRequirements.alignment) {
+        rt_log("vk: sparse pool: no memory type or alignment fits (buffer %#llx, image %#llx); the pool takes one "
+               "allocation", (unsigned long long)rb.alignment, (unsigned long long)ri.memoryRequirements.alignment);
+        vkDestroyBuffer(c->device, r->buf, NULL);
+        r->buf = VK_NULL_HANDLE;
+        return 0;
+    }
+    r->sp_size = rb.size, r->sp_align = rb.alignment, r->sp_type = type;
+    r->sp_n = (uint32_t)((rb.size + SPARSE_CHUNK - 1) / SPARSE_CHUNK);
+    r->sp_chunk = calloc(r->sp_n, sizeof *r->sp_chunk);
+    r->sp_ref = calloc(r->sp_n, sizeof *r->sp_ref);
+    r->sp_pending = calloc(r->sp_n, 1);
+    if (!r->sp_chunk || !r->sp_ref || !r->sp_pending) rt_fatal("vk: out of memory for a sparse pool's chunk table");
+    VkSparseMemoryBind bb[1];
+    int nbb = 0, ok;
+    plat_mutex_lock(&sparse_lock);
+    ok = sparse_chunk(c, r, 0, bb, &nbb);
+    if (ok) {
+        VkSparseBufferMemoryBindInfo bmi = {.buffer = r->buf, .bindCount = (uint32_t)nbb, .pBinds = bb};
+        VkBindSparseInfo bs = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 1, .pBufferBinds = &bmi};
+        ok = sparse_submit(c, &bs);
+    }
+    plat_mutex_unlock(&sparse_lock);
+    if (!ok) {
+        if (r->sp_chunk[0]) vmaFreeMemory(c->vma, r->sp_chunk[0]);
+        free(r->sp_chunk), free(r->sp_ref), free(r->sp_pending);
+        r->sp_chunk = NULL, r->sp_ref = NULL, r->sp_pending = NULL, r->sp_n = 0, r->sp_bytes = 0;
+        vkDestroyBuffer(c->device, r->buf, NULL);
+        r->buf = VK_NULL_HANDLE;
+        return 0;
+    }
+    sparse_zero(r->buf, bb, nbb);
+    r->alloc = r->sp_chunk[0];
+    r->sparse = 1;
+    rt_log("vk: physical pool of %.1f MiB: sparse, video memory in %llu KiB pieces as images are bound into it",
+           r->size / 1048576.0, (unsigned long long)SPARSE_CHUNK >> 10);
+    return 1;
+}
+
+// 1 when alloc stands for a sparse physical pool (create_tex then makes images for it with
+// vk_mem_sparse_image_flags).
+int vk_mem_phys_sparse(VmaAllocation alloc) {
+    if (!alloc) return 0;
+    plat_mutex_lock_shared(&pool_lock);
+    int s = 0;
+    for (int i = 0; i < nphys; i++)
+        if (phys_list[i]->alloc == alloc) { s = phys_list[i]->sparse; break; }
+    plat_mutex_unlock_shared(&pool_lock);
+    return s;
+}
+
+// A texture in a sparse pool whose image could not be bound there (own memory: a depth format or an offset off the
+// 64 KiB grid): its range of the pool still gets memory, as alloc_physical's pool has memory everywhere, so what the
+// game writes there through the pool's buffer (copies, a buffer view of the same bytes) is there to read back.
+// delta +1 takes references on the chunks, -1 (the entry gone) drops them. 1 when alloc is a sparse pool.
+int vk_mem_phys_cover(VmaAllocation alloc, VkDeviceSize off, VkDeviceSize size, int delta) {
+    VkCtx *c = vk_ctx();
+    if (!alloc || !size || !c) return 0;
+    plat_mutex_lock_shared(&pool_lock);
+    PoolRec *r = NULL;
+    for (int i = 0; i < nphys && !r; i++)
+        if (phys_list[i]->alloc == alloc) r = phys_list[i];
+    if (!r || !r->sparse || off >= r->sp_size) {
+        plat_mutex_unlock_shared(&pool_lock);
+        return 0;
+    }
+    uint32_t first = (uint32_t)(off / SPARSE_CHUNK), last = (uint32_t)((off + size - 1) / SPARSE_CHUNK);
+    if (last >= r->sp_n) last = r->sp_n - 1;
+    VkSparseMemoryBind *bb = calloc(last - first + 1, sizeof *bb);
+    if (!bb) rt_fatal("vk: out of memory for sparse binds");
+    int nbb = 0, ok = 1;
+    plat_mutex_lock(&sparse_lock);
+    if (delta > 0) {
+        for (uint32_t i = first; i <= last && ok; i++) ok = sparse_chunk(c, r, i, bb, &nbb);
+        if (nbb) {
+            VkSparseBufferMemoryBindInfo bmi = {.buffer = r->buf, .bindCount = (uint32_t)nbb, .pBinds = bb};
+            VkBindSparseInfo bs = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 1, .pBufferBinds = &bmi};
+            sparse_submit(c, &bs);
+        }
+        for (uint32_t i = first; i <= last; i++)
+            if (r->sp_chunk[i]) r->sp_ref[i]++, r->sp_pending[i] = 0;
+    } else {
+        for (uint32_t i = first; i <= last; i++)
+            if (r->sp_ref[i]) r->sp_ref[i]--;
+    }
+    plat_mutex_unlock(&sparse_lock);
+    VkBuffer buf = r->buf;
+    plat_mutex_unlock_shared(&pool_lock);
+    sparse_zero(buf, bb, nbb);
+    free(bb);
+    return 1;
+}
+
+// Binds img over [off, off+size) of the sparse physical pool alloc stands for: the chunks it covers get memory if they
+// have none (bound to the pool's buffer too), and the image is bound piece by piece to them. A sparse image is laid out
+// in 64 KiB tiles and can take more bytes than the texture's storage (guest), which the game ends where its next
+// texture begins (3276x1843 RGBA16F: 0x1860000 for a storage of 0x1806000): only the storage, rounded to the block,
+// goes into the pool; the rest of the image gets memory of its own (*tail; freed with the image), so the image's last
+// rows do not share their bytes with the next texture. *pool_size: the bytes bound into the pool. -1: alloc is not a
+// sparse pool (the caller binds into the one allocation); 0: it is, but the image cannot go there; 1: bound.
+int vk_mem_phys_bind_image(VmaAllocation alloc, VkDeviceSize off, VkImage img, const VkMemoryRequirements *req,
+                           int sparse_image, VkDeviceSize guest, VmaAllocation *tail, VkDeviceSize *pool_size) {
+    *tail = NULL;
+    VkCtx *c = vk_ctx();
+    plat_mutex_lock_shared(&pool_lock);   // the record stays while this holds it (vk_pool_fini takes it exclusively)
+    PoolRec *r = NULL;
+    for (int i = 0; i < nphys && !r; i++)
+        if (phys_list[i]->alloc == alloc) r = phys_list[i];
+    if (!r || !r->sparse) {
+        plat_mutex_unlock_shared(&pool_lock);
+        return -1;
+    }
+    VkDeviceSize full = (req->size + req->alignment - 1) / req->alignment * req->alignment;
+    VkDeviceSize size = (guest + req->alignment - 1) / req->alignment * req->alignment;
+    if (size > full || !guest) size = full;
+    int ok = sparse_image && c && off % req->alignment == 0 && off + size <= r->sp_size &&
+             (req->memoryTypeBits >> r->sp_type & 1);
+    VmaAllocationInfo ti = {0};
+    if (ok && full > size) {   // the part past the storage: memory of the image's own
+        VkMemoryRequirements tr = {.size = full - size, .alignment = req->alignment, .memoryTypeBits = 1u << r->sp_type};
+        VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                       .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+        if (vmaAllocateMemory(c->vma, &tr, &aci, tail, &ti) != VK_SUCCESS) *tail = NULL, ok = 0;
+    }
+    if (ok) {
+        uint32_t first = (uint32_t)(off / SPARSE_CHUNK), last = (uint32_t)((off + size - 1) / SPARSE_CHUNK);
+        uint32_t n = last - first + 1;
+        VkSparseMemoryBind *bb = calloc(n, sizeof *bb), *ib = calloc(n + 1, sizeof *ib);
+        if (!bb || !ib) rt_fatal("vk: out of memory for sparse binds");
+        int nbb = 0;
+        plat_mutex_lock(&sparse_lock);
+        for (uint32_t i = first; i <= last && ok; i++) ok = sparse_chunk(c, r, i, bb, &nbb);
+        for (uint32_t i = first; i <= last && ok; i++) {
+            VkDeviceSize lo = (VkDeviceSize)i * SPARSE_CHUNK, hi = lo + SPARSE_CHUNK;
+            VkDeviceSize a = off > lo ? off : lo, b = off + size < hi ? off + size : hi;
+            VmaAllocationInfo info;
+            vmaGetAllocationInfo(c->vma, r->sp_chunk[i], &info);
+            ib[i - first] = (VkSparseMemoryBind){.resourceOffset = a - off, .size = b - a, .memory = info.deviceMemory,
+                                                 .memoryOffset = info.offset + (a - lo)};
+        }
+        if (ok || nbb) {   // new chunks go to the buffer even when the image cannot follow
+            VkSparseBufferMemoryBindInfo bmi = {.buffer = r->buf, .bindCount = (uint32_t)nbb, .pBinds = bb};
+            if (*tail) ib[n++] = (VkSparseMemoryBind){.resourceOffset = size, .size = full - size,
+                                                      .memory = ti.deviceMemory, .memoryOffset = ti.offset};
+            VkSparseImageOpaqueMemoryBindInfo imi = {.image = img, .bindCount = n, .pBinds = ib};
+            VkBindSparseInfo bs = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = nbb ? 1 : 0,
+                                   .pBufferBinds = &bmi, .imageOpaqueBindCount = ok ? 1 : 0, .pImageOpaqueBinds = &imi};
+            if (!sparse_submit(c, &bs)) ok = 0;
+        }
+        if (ok)   // the image holds its chunks until vk_mem_phys_note drops it (a trim never frees them meanwhile)
+            for (uint32_t i = first; i <= last; i++) r->sp_ref[i]++, r->sp_pending[i] = 0;
+        plat_mutex_unlock(&sparse_lock);
+        VkBuffer buf = r->buf;
+        plat_mutex_unlock_shared(&pool_lock);
+        sparse_zero(buf, bb, nbb);   // after pool_lock: the upload lock is never taken under it
+        free(bb);
+        free(ib);
+        if (!ok && *tail) vmaFreeMemory(c->vma, *tail), *tail = NULL;
+        *pool_size = size;
+        return ok;
+    }
+    plat_mutex_unlock_shared(&pool_lock);
+    if (*tail) vmaFreeMemory(c->vma, *tail), *tail = NULL;
+    return ok;
+}
+
 static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->mbuf) vmaDestroyBuffer(c->vma, r->mbuf, r->malloc_);
     if (r->salloc) vmaDestroyBuffer(c->vma, r->buf, r->salloc), r->buf = VK_NULL_HANDLE;
     if (r->buf) vkDestroyBuffer(c->device, r->buf, NULL);
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
+    if (r->sparse) {   // chunk 0 is r->alloc
+        for (uint32_t i = 0; i < r->sp_n; i++)
+            if (r->sp_chunk[i]) vmaFreeMemory(c->vma, r->sp_chunk[i]);
+        free(r->sp_chunk), free(r->sp_ref), free(r->sp_pending);
+        r->alloc = NULL;
+    }
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
+    free(r->uref);
+    free(r->uever);
     free(r);
 }
 
@@ -271,7 +566,9 @@ int vk_pool_init(pool_t *p) {
         ok = r->pt != NULL;
     } else if (p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL) {
         r->kind = POOL_PHYS;
-        ok = alloc_physical(c, r);
+        ok = alloc_physical_sparse(c, r) || alloc_physical(c, r);
+        uint64_t np = (r->size + NVN_VPOOL_PAGE - 1) / NVN_VPOOL_PAGE;
+        if (ok) r->uref = calloc(np, sizeof *r->uref), r->uever = calloc(np, 1);   // NULL: not counted
     } else {
         r->kind = POOL_IMPORT;
         mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
@@ -357,12 +654,156 @@ int vk_pool_map_virtual(pool_t *v, int n, const void *requests) {
         }
         uint64_t first = (uint64_t)rq[i].virtual_offset / NVN_VPOOL_PAGE, count = rq[i].size / NVN_VPOOL_PAGE;
         if (first + count > r->npages) { ok = 0; break; }
+        if (ph) ph->umap_calls++, ph->umap_bytes += rq[i].size;
+        else unmap_calls++, unmap_bytes += rq[i].size;
         for (uint64_t k = 0; k < count; k++)
             r->pt[first + k] = (VPage){ph, ph ? (uint64_t)rq[i].physical_offset + k * NVN_VPOOL_PAGE : 0};
     }
     plat_mutex_unlock(&pool_lock);
     if (!ok) rt_log("vk: MapVirtual on pool %p failed", (void *)v->mem);
+    // The first requests, to see whether the game maps a physical pool whole at start or a page range at a time.
+    static int32_t shown;
+    for (int i = 0; ok && i < n; i++) {
+        long k = plat_inc32(&shown);
+        if (k > 16) break;
+        rt_log("vk: MapVirtual %ld: virtual pool %p +%#llx -> %s %p +%#llx, %#llx bytes", k, (void *)v->mem,
+               (unsigned long long)rq[i].virtual_offset, rq[i].physical_pool ? "physical pool" : "unmapped",
+               (const void *)rq[i].physical_pool, (unsigned long long)rq[i].physical_offset,
+               (unsigned long long)rq[i].size);
+    }
     return ok;
+}
+
+// Occupancy of physical pools, which hold their whole size in video memory from MemoryPoolInitialize (alloc_physical):
+// how much of that images actually cover is what memory committed page by page on first use would cost.
+void vk_mem_phys_note(VmaAllocation alloc, uint64_t off, uint64_t size, int bind) {
+    if (!alloc || !size) return;
+    plat_mutex_lock_shared(&pool_lock);   // a pool leaves phys_list under the exclusive lock, before its record goes
+    PoolRec *r = NULL;
+    for (int i = 0; i < nphys && !r; i++)
+        if (phys_list[i]->alloc == alloc) r = phys_list[i];
+    if (r && r->sparse && !bind && off < r->sp_size) {   // the references vk_mem_phys_bind_image took
+        plat_mutex_lock(&sparse_lock);
+        for (uint64_t i = off / SPARSE_CHUNK; i <= (off + size - 1) / SPARSE_CHUNK && i < r->sp_n; i++)
+            if (r->sp_ref[i]) r->sp_ref[i]--;
+        plat_mutex_unlock(&sparse_lock);
+    }
+    if (r && r->uref && off < r->size) {
+        uint64_t end = off + size > r->size ? r->size : off + size;
+        plat_mutex_lock(&use_lock);
+        for (uint64_t k = off / NVN_VPOOL_PAGE; k < (end + NVN_VPOOL_PAGE - 1) / NVN_VPOOL_PAGE; k++) {
+            if (bind) {
+                if (r->uref[k]++ == 0) r->ulive += NVN_VPOOL_PAGE;
+                if (!r->uever[k]) r->uever[k] = 1, r->uever_bytes += NVN_VPOOL_PAGE;
+            } else if (r->uref[k] && --r->uref[k] == 0) {
+                r->ulive -= NVN_VPOOL_PAGE;
+            }
+        }
+        if (bind) {
+            r->uimages++;
+            if (r->ulive > r->upeak) r->upeak = r->ulive;
+            if (end > r->uhigh) r->uhigh = end;
+        } else if (r->uimages) {
+            r->uimages--;
+        }
+        plat_mutex_unlock(&use_lock);
+    }
+    plat_mutex_unlock_shared(&pool_lock);
+}
+
+// Releasing chunks no image covers any more (after a smaller game resolution or render scale, vk_texture.c drops the
+// released targets of the old sizes and calls this at a submission's start). The chunks are marked and released by a
+// completion callback once the submission about to be recorded is done on the GPU: images destroyed before it are then
+// unused (their own destruction waits as long), and the chunk's buffer range is unbound before its memory goes. A chunk
+// an image is bound over meanwhile stays. Chunk 0 stands for the pool and stays.
+typedef struct { PoolRec *r; uint32_t n, idx[]; } SparseTrim;
+
+static void sparse_trim_done(void *arg) {
+    SparseTrim *t = arg;
+    VkCtx *c = vk_ctx();
+    plat_mutex_lock_shared(&pool_lock);
+    int live = 0;
+    for (int i = 0; i < nphys && !live; i++) live = phys_list[i] == t->r;
+    if (live && c) {
+        PoolRec *r = t->r;
+        VkSparseMemoryBind *ub = calloc(t->n, sizeof *ub);
+        VmaAllocation *gone = calloc(t->n, sizeof *gone);
+        if (!ub || !gone) rt_fatal("vk: out of memory for a sparse trim");
+        uint32_t n = 0;
+        uint64_t bytes = 0;
+        plat_mutex_lock(&sparse_lock);
+        for (uint32_t k = 0; k < t->n; k++) {
+            uint32_t i = t->idx[k];
+            if (!r->sp_pending[i] || r->sp_ref[i] || !r->sp_chunk[i]) continue;
+            VkDeviceSize at = (VkDeviceSize)i * SPARSE_CHUNK, sz = r->sp_size - at < SPARSE_CHUNK ? r->sp_size - at : SPARSE_CHUNK;
+            ub[n] = (VkSparseMemoryBind){.resourceOffset = at, .size = sz};   // no memory: unbound
+            gone[n++] = r->sp_chunk[i];
+            r->sp_chunk[i] = NULL, r->sp_pending[i] = 0, r->sp_bytes -= sz, bytes += sz;
+        }
+        if (n) {
+            VkSparseBufferMemoryBindInfo bmi = {.buffer = r->buf, .bindCount = n, .pBinds = ub};
+            VkBindSparseInfo bs = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 1, .pBufferBinds = &bmi};
+            if (sparse_submit(c, &bs)) {
+                for (uint32_t k = 0; k < n; k++) vmaFreeMemory(c->vma, gone[k]);
+            } else {   // still bound: the memory stays with the chunk
+                for (uint32_t k = 0; k < n; k++) r->sp_chunk[ub[k].resourceOffset / SPARSE_CHUNK] = gone[k];
+                r->sp_bytes += bytes, bytes = 0;
+            }
+        }
+        uint64_t now = r->sp_bytes;
+        plat_mutex_unlock(&sparse_lock);
+        if (bytes) rt_log("vk: sparse pool: %.1f MiB of video memory released, %.1f MiB in use", bytes / 1048576.0,
+                          now / 1048576.0);
+        free(ub);
+        free(gone);
+    }
+    plat_mutex_unlock_shared(&pool_lock);
+    free(t);
+}
+
+void vk_mem_sparse_trim(void) {
+    plat_mutex_lock_shared(&pool_lock);
+    plat_mutex_lock(&sparse_lock);
+    for (int p = 0; p < nphys; p++) {
+        PoolRec *r = phys_list[p];
+        if (!r->sparse) continue;
+        SparseTrim *t = NULL;
+        for (uint32_t i = 1; i < r->sp_n; i++) {
+            if (!r->sp_chunk[i] || r->sp_ref[i] || r->sp_pending[i]) continue;
+            if (!t && !(t = calloc(1, sizeof *t + sizeof *t->idx * r->sp_n))) rt_fatal("vk: out of memory for a sparse trim");
+            t->idx[t->n++] = i;
+            r->sp_pending[i] = 1;
+        }
+        if (t) t->r = r, vk_completion_add(vk_sync_issued() + 1, sparse_trim_done, t);
+    }
+    plat_mutex_unlock(&sparse_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+}
+
+// One line per physical pool with the census: its size, the 64 KiB pages images cover now and at most, the pages ever
+// covered, the highest end ever bound, and the MapVirtual requests that named it.
+static void phys_use_log(uint64_t frame) {
+    plat_mutex_lock_shared(&pool_lock);
+    plat_mutex_lock(&use_lock);
+    for (int i = 0; i < nphys; i++) {
+        const PoolRec *r = phys_list[i];
+        if (!r->uref) continue;
+        rt_log("mem: physical pool %p at frame %llu: %.1f MiB of video memory; images %u covering %.1f MiB now (peak "
+               "%.1f), %.1f MiB ever, highest end %.1f MiB; MapVirtual %llu requests, %.1f MiB (unmapped anywhere: "
+               "%llu, %.1f MiB)",
+               (const void *)r->key, (unsigned long long)frame, (r->sparse ? r->sp_bytes : r->size) / 1048576.0,
+               r->uimages, r->ulive / 1048576.0,
+               r->upeak / 1048576.0, r->uever_bytes / 1048576.0, r->uhigh / 1048576.0,
+               (unsigned long long)r->umap_calls, r->umap_bytes / 1048576.0, (unsigned long long)unmap_calls,
+               unmap_bytes / 1048576.0);
+    }
+    plat_mutex_unlock(&use_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    plat_mutex_lock(&sparse_lock);
+    if (sparse_binds)
+        rt_log("mem: sparse binds %llu, waits %.2f ms in all, longest %.2f ms", (unsigned long long)sparse_binds,
+               sparse_wait_ns / 1e6, sparse_wait_max_ns / 1e6);
+    plat_mutex_unlock(&sparse_lock);
 }
 
 // Per-thread copies of resolved import and physical pools that overlap no other index entry (so pidx_find picks them for
@@ -517,6 +958,7 @@ void vk_mem_census(uint64_t frame) {
     static uint64_t window_start;
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
+    if (frame == 600 || frame == 1800 || (frame && frame % 3600 == 0)) phys_use_log(frame);   // a minute apart
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
         mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
     if (frame == 1200) {   // loading is over: the first window starts here
