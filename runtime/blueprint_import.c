@@ -39,6 +39,8 @@ static uint64_t g_cai;      // the serialized array: entry 0's blob (its u32 siz
 static uint64_t g_parsed;   // the page copy: entry 0's first blob
 static int g_parsed_slots;
 static uint64_t g_scan_ns;  // plat_now_ns() of the last scan, so a failed scan is not repeated every frame
+static uint64_t g_ages_at;  // the live Index array (the 30 ages), 0 when it is not in guest memory
+static uint32_t g_fav_bits;  // bit i: entry i is a favorite, from the save's IsFavorite BoolArray
 
 static uint64_t now_ns(void) { return plat_now_ns(); }
 
@@ -228,10 +230,14 @@ static void drop_thumbnails(void) {
 // creation on the *first* card instead of wherever entry 0 happens to sort.
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 
-// Whether these 30 ages are present in guest memory. The page can only draw by an array it is holding, so finding a save
-// file's ages in the heap says that file is the one the game loaded. Reading the heap is bounded to the region the save
-// data lives in (runtime/memory.c) and stops at the first match.
-static int ages_present_in_guest(const int32_t *ages) {
+// Where these 30 ages sit in guest memory, or 0 when they are nowhere. The page can only draw by an array it is holding,
+// so finding a save file's ages in the heap says both that this file is the one the game loaded and where the live array
+// is. Returns the address so an insert-style import can rotate that array, rather than only a yes/no.
+//
+// This is one exact memchr match for the 120-byte run (like scan_hits, ~0.3 s), bounded to the region the save data
+// lives in (runtime/memory.c). It is called only when the page is drawn or an import runs, never per frame, and does not
+// walk the heap for every 0..29 permutation: an unbounded shape scan there starves the render thread.
+static uint64_t ages_present_in_guest(const int32_t *ages) {
     const RtGuestLayout *L = mem_layout();
     if (!L || !L->heap.size) return 0;
     uint8_t key[4 * N];
@@ -254,7 +260,7 @@ static int ages_present_in_guest(const int32_t *ages) {
         const uint8_t *hit = memchr(p, key[0], (size_t)len);
         while (hit) {
             size_t off = (size_t)(hit - p);
-            if (off + sizeof key <= len && !memcmp(p + off, key, sizeof key)) return 1;
+            if (off + sizeof key <= len && !memcmp(p + off, key, sizeof key)) return at + off;
             size_t step = off + 1;
             hit = step < len ? memchr(p + step, key[0], (size_t)(len - step)) : NULL;
         }
@@ -270,12 +276,39 @@ static int ages_present_in_guest(const int32_t *ages) {
 // how an import lands on card 9 instead of card 1. So each candidate read from a file is checked against the guest
 // memory: the array the game is using is the one that is actually present there.
 static int newest_position_from_save(void) {
+    // Once the live Index array has been located it stays put for the process. Re-reading the save file every import
+    // would try to match the file's (older) ages against guest memory after an earlier import rotated them, which fails
+    // and silently falls back to replacing the first card. Reading the live array directly is both faster and correct
+    // for a run of successive imports.
+    if (g_ages_at) {
+        int32_t live[N];
+        if (guest_read(g_ages_at, live, sizeof live)) {
+            int newest = -1;
+            uint32_t seen = 0;
+            int ok = 1;
+            for (int i = 0; i < N; i++) {
+                if (live[i] < 0 || live[i] >= N || (seen >> live[i] & 1u)) { ok = 0; break; }
+                seen |= 1u << live[i];
+                if (live[i] == 0) newest = i;
+            }
+            if (ok && newest >= 0) {
+                rt_log("blueprint: Index: cached live array at %#llx, newest entry %d",
+                       (unsigned long long)g_ages_at, newest);
+                return newest;
+            }
+        }
+        // The address went stale (the save was reloaded): re-locate it below.
+        g_ages_at = 0;
+        g_fav_bits = 0;
+    }
     const RtConfig *c = rt_config();
     if (!c || !c->profile) return -1;
     uint64_t uid[2] = {0, 0};
     account_uid(uid);
     int best = -1;
     int best_is_live = 0;
+    uint64_t best_ages_at = 0;
+    uint32_t best_fav_bits = 0;
     for (int slot = 0; slot < 6; slot++) {
         char path[PLAT_PATH_MAX];
         snprintf(path, sizeof path, "%s/save/%016llx%016llx/slot_%02d/progress.sav", c->profile,
@@ -296,6 +329,7 @@ static int newest_position_from_save(void) {
         plat_file_close(f);
         int found = -1;
         int32_t ages[N];
+        uint32_t fav_bits = 0;
         if (got == (int64_t)id.size) {
             // The declaration block is (hash, offset) pairs from 0x20 up to the data block; a zero hash marks a section
             // and is followed by its number.
@@ -309,6 +343,12 @@ static int newest_position_from_save(void) {
                 }
                 uint32_t off = rd32(d + pos);
                 pos += 4;
+                // IsFavorite (0x67f4b46b) is a BoolArray of 30 entries held as {count=30; u32 bitmask}: bit i says the
+                // entry i is a favorite. Those entries keep their age and are never the one an insert replaces.
+                if (hash == 0x67F4B46Bu && (uint64_t)off + 8 <= (uint64_t)id.size && rd32(d + off) == N) {
+                    fav_bits = rd32(d + off + 4);
+                    continue;
+                }
                 if (hash != 0xD27F8651u || (uint64_t)off + 4 + 4 * N > (uint64_t)id.size) continue;
                 if (rd32(d + off) != N) continue;
                 memcpy(ages, d + off + 4, sizeof ages);
@@ -324,20 +364,27 @@ static int newest_position_from_save(void) {
                 if (!ok) continue;
                 for (int i = 0; i < N; i++)
                     if (ages[i] == 0) found = i;
-                break;
             }
         }
         free(d);
         if (found < 0) continue;
         // Is this array the one the game is holding? The array the page draws by must be in guest memory, and that is
-        // what tells this slot's ages apart from the other saves'.
-        const int live = ages_present_in_guest(ages);
+        // what tells this slot's ages apart from the other saves'. Remember where it is: an insert-style import rotates
+        // this very array so the change is visible at once and persists with the game's own save.
+        const uint64_t live = ages_present_in_guest(ages);
         if (live || !best_is_live) {
             best = found;
-            best_is_live = live;
+            best_is_live = live != 0;
+            best_ages_at = live;
+            best_fav_bits = fav_bits;
         }
         if (best_is_live) break;   // the loaded save's own array: no other slot can beat it
     }
+    g_ages_at = best_ages_at;
+    g_fav_bits = best_fav_bits;
+    rt_log("blueprint: Index: newest entry %d, live array %s%#llx, %d favorite(s)", best,
+           best_ages_at ? "at " : "not in guest memory ", (unsigned long long)best_ages_at,
+           __builtin_popcount(best_fav_bits));
     return best;
 }
 
@@ -351,14 +398,72 @@ int bp_import_newest(const char *path) {
     if (r != BPC_OK) return BP_IMPORT_BAD_FILE;
     if (!find_lists()) return BP_IMPORT_NO_SAVE;
 
-    // The card to replace is the one the page draws first, which is the entry the save's Index array calls 0. Writing
-    // that entry means the new creation is the first card in the history list, whatever the save's ages happen to be;
-    // writing entry 0 instead would leave the creation wherever that entry sorts. Every other entry keeps its data.
+    // The game's own rule for a new creation: it takes the oldest entry that is NOT a favorite, and the favorites keep
+    // their age (they are pinned to the oldest ages, up to 8 of them). The free entries' ages then each move down one
+    // place, so the card that was first becomes second and the oldest free card is gone. That is the "insert" behaviour
+    // the port has to copy, rather than overwriting the first card and destroying it.
+    //
+    // The Index array is in guest memory (g_ages_at), so rotating it takes effect on the open page at once and is
+    // written back by the game's own save. The blob goes into the entry the rotation frees.
     int pos = newest_position_from_save();
     if (pos < 0) {
         rt_log("blueprint: cannot read the Autobuild Index array from the save file, so the import cannot place the "
                "creation first");
         return BP_IMPORT_NO_ORDER;
+    }
+    int32_t ages[N];
+    if (!g_ages_at || !guest_read(g_ages_at, ages, sizeof ages)) {
+        rt_log("blueprint: the live Index array is not in guest memory; falling back to replacing the first card");
+        g_ages_at = 0;   // no rotation: the legacy replace path below
+    }
+    if (g_ages_at) {
+        // Which entries are free (not favorites). Their ages are 0..(N-1-fav_count); the largest age among them is the
+        // entry that a new creation evicts.
+        int fav[N] = {0};
+        int fav_count = 0;
+        for (int i = 0; i < N; i++) {
+            fav[i] = (g_fav_bits >> i) & 1u;
+            fav_count += fav[i];
+        }
+        // The entry a new creation evicts is the oldest free one: the largest age among the non-favorites.
+        int victim = -1, max_free_age = -1;
+        for (int i = 0; i < N; i++) {
+            if (fav[i]) continue;
+            if (ages[i] > max_free_age) {
+                max_free_age = ages[i];
+                victim = i;
+            }
+        }
+        if (fav_count >= N || victim < 0) {
+            rt_log("blueprint: every history entry is a favorite; there is no free entry to replace");
+            return BP_IMPORT_NO_ROOM;
+        }
+        // Rotate the free entries: every free age increases by one. The one that held the largest free age becomes 0 and
+        // receives the new blob (that is the entry the game would have discarded). Favorites are left exactly as they are.
+        int32_t rotated[N];
+        for (int i = 0; i < N; i++) rotated[i] = ages[i];
+        for (int i = 0; i < N; i++) {
+            if (fav[i]) continue;
+            rotated[i] = i == victim ? 0 : ages[i] + 1;
+        }
+        // The result must still be a permutation of 0..29; a save with unusual ages is refused instead of corrupted.
+        uint32_t seen = 0;
+        int ok = 1;
+        for (int i = 0; i < N; i++) {
+            if (rotated[i] < 0 || rotated[i] >= N || (seen >> rotated[i] & 1u)) { ok = 0; break; }
+            seen |= 1u << rotated[i];
+        }
+        if (!ok) {
+            rt_log("blueprint: the Index array does not have the shape an insert needs; no write made");
+            return BP_IMPORT_NO_ORDER;
+        }
+        if (!guest_write(g_ages_at, rotated, sizeof rotated)) {
+            rt_log("blueprint: cannot rotate the live Index array at %#llx", (unsigned long long)g_ages_at);
+            return BP_IMPORT_NO_ROOM;
+        }
+        pos = victim;
+        rt_log("blueprint: Index: %d favorite(s), evicted free entry %d (age %d -> 0), %d free entries moved down one",
+               fav_count, victim, max_free_age, N - fav_count - 1);
     }
     const uint64_t dst = g_cai + (uint64_t)pos * ITEM_STRIDE;
     if (!guest_write(dst, bp.blob, BPC_BLOB_SIZE)) {
@@ -373,8 +478,8 @@ int bp_import_newest(const char *path) {
         guest_write(page, bp.blob, BPC_BLOB_SIZE);
         guest_write(page + BPC_BLOB_SIZE, bp.blob, BPC_BLOB_SIZE);
     }
-    rt_log("blueprint: %s (%d parts) is now the first draft of the Autobuild history (entry %d, the one the save draws "
-           "first)", bp.names[0], bp.actors, pos);
+    rt_log("blueprint: %s (%d parts) is the first draft of the Autobuild history (entry %d)", bp.names[0], bp.actors,
+           pos);
     drop_thumbnails();
     return BP_IMPORT_OK;
 }
