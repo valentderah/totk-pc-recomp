@@ -120,6 +120,25 @@ static double dlss_share(const char *m) {
     return 0;
 }
 
+// A game resolution that is not 16:9 needs the HUD's layout for its shape (romfs-patches-<w>x<h>, romfs.c
+// overlay_init), which the installer makes but a developer build only has after tools/make_romfs_patches.py --aspect.
+// Without it the camera would widen while the 16:9 HUD stretched across the picture, so the game draws the largest
+// 16:9 size that fits inside the asked one and the camera aspect patch stays off (res_init); gfx_present.c shows the
+// picture with bars (present setting aspect). Not when TOTK_ROMFS_PATCHES names the overlay itself or the game version
+// has no camera aspect patch. TOTK_OUTPUT_RES is restart-only (cfg.c, RESTART), so this one decision holds all run.
+static void shape_fallback(void) {
+    const char *own = cfg_get("TOTK_ROMFS_PATCHES");
+    unsigned out[2] = {R.ow, R.oh};
+    if (own || !res_wants_wide_overlay(out) || romfs_shaped_ready(R.ow, R.oh)) return;
+    unsigned h = R.oh, w = R.ow;
+    if ((uint64_t)w * 9 <= (uint64_t)h * 16) h = (unsigned)((uint64_t)w * 9 / 16) & ~1u;
+    w = (unsigned)((uint64_t)h * 16 / 9) & ~1u;
+    rt_log("resolution: no romfs-patches-%ux%u for the HUD at this shape; the game draws %ux%u (16:9) and the present "
+           "adds bars. Make the layout with: tools/make_romfs_patches.py --version <v121|v143> --aspect %ux%u --out "
+           "build/<version>/romfs-patches-%ux%u", R.ow, R.oh, w, h, R.ow, R.oh, R.ow, R.oh);
+    R.ow = w, R.oh = h;
+}
+
 static void decide(void) {
     if (R.decided) return;
     R.decided = 1;
@@ -131,6 +150,7 @@ static void decide(void) {
     if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 1280 && h >= 720 && w <= 7680 && h <= 4320) {
         R.ow = w & ~1u;
         R.oh = h & ~1u;
+        shape_fallback();
     } else {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
     }
