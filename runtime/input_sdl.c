@@ -23,6 +23,7 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+static volatile int32_t mouse_wheel;          // wheel turned while captured, in 1/120 notches (ikb_wheel_take)
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t mouse_travel;         // raw counts moved in total, captured or not (ikb_mouse_travel)
 static float travel_rem;                      // window thread: the fraction of a count beyond mouse_travel
@@ -264,6 +265,12 @@ void input_sdl_event(const SDL_Event *e) {
     case SDL_EVENT_WINDOW_MOUSE_LEAVE:
         __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);
         break;
+    case SDL_EVENT_MOUSE_WHEEL:   // notches, + away from the player (a flipped wheel reports the other sign)
+        if (captured) {
+            float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
+            plat_add32(&mouse_wheel, (int32_t)(y * 120));
+        }
+        break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
         plat_xchg32(&focused, 1);
         break;
@@ -314,4 +321,13 @@ uint32_t ikb_mouse_travel(void) { return (uint32_t)__atomic_load_n(&mouse_travel
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
+}
+
+int32_t ikb_wheel_take(void) {
+    int32_t o, n;
+    do {
+        o = mouse_wheel;
+        n = o % 120;   // the part of a notch stays for the next call
+    } while (!__atomic_compare_exchange_n(&mouse_wheel, &o, n, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    return o / 120;
 }
