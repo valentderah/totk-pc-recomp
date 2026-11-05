@@ -16,8 +16,9 @@
 // a weapon's decayed one) count once; an actor without a name in the game's text is left out.
 //
 // One host thread reads the newest progress.sav of <profile>/save/<uid> (the slot the game wrote last) at start and
-// again after each save commit that changed files (fs_host.c calls stats_save_changed). Achievements unlock when the
-// statistics reach them and stay unlocked: <profile>/achievements/unlocked.txt holds one "<id> <unix time>" line
+// again after each save commit that changed files (fs_host.c calls stats_save_changed); once a save is loaded it
+// reads the same flags from the game's memory instead, every two seconds (live flags below). Achievements unlock
+// when the statistics reach them and stay unlocked: <profile>/achievements/unlocked.txt holds one "<id> <unix time>" line
 // each, and <profile>/achievements/goals.ini the goals, which the player may edit (achs_define).
 #include <stdint.h>
 #include <stdio.h>
@@ -319,6 +320,157 @@ static int load_save(const char *path) {
     qsort(f, k, sizeof *f, flag_cmp);
     free(flags);
     flags = f, nflags = k;
+    return 1;
+}
+
+// ---- live flags: the game's own GameData manager, read while the game runs
+// The manager keeps one section per flag type, 0x60 bytes apart: Bool at +0x10, Int at +0xd0, Float at +0x190, Enum
+// at +0x250. A section holds its record count (+0), the records (+8), an open-addressing table of (hash, record
+// index) pairs (+0x10, hash modulo its slot count +0x1c, linear probing, hash 0 ends a chain), and the count again
+// (+0x18). A record starts with a vtable; its current value sits at +0x1c in the 0x28-byte Int and Float records
+// and the 0x38-byte Enum records, and is the byte +0x16 of the 0x18-byte Bool records. (Read from the game's getter,
+// main+0x61fdd0 on 1.4.3, and checked against the save's values.) The manager is found by scanning main's data for a
+// pointer whose Int section finds PlayerStatus.MaxLife, so no address is tied to a game version. Each value's
+// address is worked out once; then the values are read every LIVE_MS, so a defeated monster or a new item counts at
+// once instead of at the next save. Without a manager (another layout, before a save is loaded) the save is read.
+enum { SEC_BOOL = 0x10, SEC_INT = 0xd0, SEC_FLOAT = 0x190, SEC_ENUM = 0x250, LIVE_MS = 2000 };
+enum { LV_U32, LV_U8 };
+typedef struct { uint32_t h; uint8_t kind; uint64_t at; } Live;
+static Live *live;
+static size_t nlive;
+static uint64_t live_slot, live_mgr;   // the main address holding the manager pointer, and the manager it held
+static uint64_t live_recs[4];          // the sections' record arrays when the addresses were worked out
+
+// Host pages that can be read without a fault: a guest region mem_query calls mapped may still have pages the host
+// has not committed (an access violation at 0x18000000e8 while scanning showed it).
+static int readable(uint64_t a, uint64_t n) { return a && a + n >= a && plat_mem_readable(a, n); }
+
+static uint64_t rq(uint64_t a) { uint64_t v; memcpy(&v, (const void *)(uintptr_t)a, 8); return v; }
+static uint32_t rw(uint64_t a) { uint32_t v; memcpy(&v, (const void *)(uintptr_t)a, 4); return v; }
+
+typedef struct { uint64_t recs, map; uint32_t count, slots; } Section;
+
+static int section(uint64_t mgr, uint32_t at, uint32_t stride, Section *s) {
+    if (!readable(mgr + at, 0x20)) return 0;
+    s->count = rw(mgr + at), s->recs = rq(mgr + at + 8), s->map = rq(mgr + at + 0x10), s->slots = rw(mgr + at + 0x1c);
+    return s->count && s->count < 1000000 && rw(mgr + at + 0x18) == s->count && s->slots >= s->count &&
+           s->slots < 4000000 && readable(s->map, (uint64_t)s->slots * 8) &&
+           readable(s->recs, (uint64_t)s->count * stride);
+}
+
+// The record index of hash h in section s, or -1.
+static int64_t section_find(const Section *s, uint32_t h) {
+    if (!h) return -1;
+    for (uint32_t i = h % s->slots, n = 0; n < s->slots; n++, i = i + 1 == s->slots ? 0 : i + 1) {
+        uint32_t k = rw(s->map + 8ull * i);
+        if (k == h) {
+            uint32_t idx = rw(s->map + 8ull * i + 4);
+            return idx < s->count ? (int64_t)idx : -1;
+        }
+        if (!k) return -1;
+    }
+    return -1;
+}
+
+// A manager: all four sections hold up, and the Int one finds PlayerStatus.MaxLife (other objects of the game keep
+// an Int table of the same shape).
+static int manager_ok(uint64_t mgr, Section *ints) {
+    Section other;
+    if ((mgr & 7) || mgr <= 0x100000 || !section(mgr, SEC_INT, 0x28, ints) || !section(mgr, SEC_BOOL, 0x18, &other) ||
+        !section(mgr, SEC_ENUM, 0x38, &other) || !section(mgr, SEC_FLOAT, 0x28, &other))
+        return 0;
+    int64_t i = section_find(ints, mm3("PlayerStatus.MaxLife"));
+    return i >= 0 && rq(ints->recs + 0x28ull * (uint64_t)i) != 0;   // a record with its vtable
+}
+
+static void live_add(Live **out, size_t *n, size_t *cap, const Section *s, uint32_t stride, uint32_t off, uint8_t kind,
+                     uint32_t h) {
+    int64_t i = section_find(s, h);
+    if (i < 0) return;
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 8192;
+        Live *g = realloc(*out, *cap * sizeof **out);
+        if (!g) return;
+        *out = g;
+    }
+    (*out)[(*n)++] = (Live){h, kind, s->recs + (uint64_t)stride * (uint64_t)i + off};
+}
+
+static int live_cmp(const void *a, const void *b) {
+    uint32_t x = ((const Live *)a)->h, y = ((const Live *)b)->h;
+    return x < y ? -1 : x > y;
+}
+
+// Finds the manager (once a save is loaded) and the address of every value the statistics read. 1 when ready.
+static const uint32_t kSecs[4] = {SEC_INT, SEC_BOOL, SEC_ENUM, SEC_FLOAT};
+
+// The manager and its record arrays are where the addresses were worked out for (a reload may move them).
+static int live_same(void) {
+    if (!live_slot || !live_mgr || rq(live_slot) != live_mgr || !readable(live_mgr, 0x300)) return 0;
+    for (int i = 0; i < 4; i++)
+        if (rq(live_mgr + kSecs[i] + 8) != live_recs[i]) return 0;
+    return 1;
+}
+
+static int live_find(void) {
+    if (live_same()) return 1;
+    nlive = 0, live_mgr = 0;
+    if (frame_step_world_us() < 0) return 0;
+    Section ints;
+    if (live_slot && manager_ok(rq(live_slot), &ints)) {
+        live_mgr = rq(live_slot);
+    } else {
+        live_slot = 0;
+        const RtLoaded *m = ldr_count() ? ldr_module(0) : NULL;
+        if (!m || m->data_off >= m->size) return 0;
+        uint64_t from = m->base + m->data_off, to = m->base + m->size;
+        for (uint64_t a = from & ~7ull; a + 8 <= to && !live_slot; a += 8) {
+            if (((a - from) & 0xfff) == 0 && !readable(a, 0x1000 < to - a ? 0x1000 : to - a)) {
+                a += 0xff8;
+                continue;
+            }
+            uint64_t p = rq(a);
+            if (p && readable(p, 0x300) && manager_ok(p, &ints)) live_slot = a, live_mgr = p;
+        }
+        if (!live_slot) return 0;
+        rt_log("stats: the game's GameData manager at %#llx (pointer at main+%#llx): statistics read live",
+               (unsigned long long)live_mgr, (unsigned long long)(live_slot - ldr_module(0)->base));
+    }
+    Section bools, enums, floats;
+    if (!section(live_mgr, SEC_BOOL, 0x18, &bools) || !section(live_mgr, SEC_ENUM, 0x38, &enums) ||
+        !section(live_mgr, SEC_FLOAT, 0x28, &floats)) {
+        live_mgr = 0;
+        return 0;
+    }
+    for (int i = 0; i < 4; i++) live_recs[i] = rq(live_mgr + kSecs[i] + 8);
+    Live *out = NULL;
+    size_t n = 0, cap = 0;
+    for (size_t i = 0; i < nactors; i++) {
+        live_add(&out, &n, &cap, &ints, 0x28, 0x1c, LV_U32, flagf("DefeatedEnemyNum.%s", actors[i]));
+        live_add(&out, &n, &cap, &enums, 0x38, 0x1c, LV_U32, flagf("PictureBookData.%s.State", actors[i]));
+        live_add(&out, &n, &cap, &bools, 0x18, 0x16, LV_U8, flagf("IsGet.%s", actors[i]));
+    }
+    live_add(&out, &n, &cap, &ints, 0x28, 0x1c, LV_U32, mm3("PlayerStatus.MaxLife"));
+    live_add(&out, &n, &cap, &floats, 0x28, 0x1c, LV_U32, mm3("PlayerStatus.MaxStamina"));
+    qsort(out, n, sizeof *out, live_cmp);
+    free(live);
+    live = out, nlive = n;
+    rt_log("stats: %zu flags read live", nlive);
+    return nlive > 0;
+}
+
+// The live values in place of the save's flags (the same sorted table compute reads).
+static int live_read(void) {
+    if (!live_same()) return 0;
+    Flag *f = malloc((nlive ? nlive : 1) * sizeof *f);
+    if (!f) return 0;
+    for (size_t i = 0; i < nlive; i++) {
+        f[i].h = live[i].h;
+        f[i].v = live[i].kind == LV_U8 ? *(const volatile uint8_t *)(uintptr_t)live[i].at
+                                       : *(const volatile uint32_t *)(uintptr_t)live[i].at;
+    }
+    free(flags);
+    flags = f, nflags = nlive;
     return 1;
 }
 
@@ -802,9 +954,10 @@ static void stats_main(void *arg) {
     plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);
     int ready = 0;
     for (;;) {
-        plat_sleep_ms(2000);
-        if (!plat_xchg32(&pending, 0)) continue;
+        plat_sleep_ms(LIVE_MS);
+        int saved = plat_xchg32(&pending, 0);
         if (!ready) {
+            if (!saved) continue;
             dicts_load();
             romfs_list("Pack/Actor/", actor_found, NULL);
             if (!nactors) {
@@ -814,24 +967,28 @@ static void stats_main(void *arg) {
             names_load();
             ready = 1;
         }
-        char path[1200];
-        if (!newest_save(path, sizeof path) || !load_save(path)) continue;
+        char path[1200] = "";
+        int is_live = live_find() && live_read();
+        if (!is_live && (!saved || !newest_save(path, sizeof path) || !load_save(path))) continue;
         StatsView s;
         plat_mutex_lock(&lock);
         s = view;
         plat_mutex_unlock(&lock);
+        uint32_t kills = s.kills, items = s.items, weapons = s.weapons;
         compute(&s);
-        s.valid = 1;
-        s.when = (uint64_t)plat_file_mtime(path);
+        s.valid = 1, s.live = is_live;
+        s.when = is_live ? (uint64_t)time(NULL) : (uint64_t)plat_file_mtime(path);
         plat_mutex_lock(&lock);
         view = s;
         int changed = ach_update();
         plat_mutex_unlock(&lock);
         if (changed) ach_save();
-        rt_log("stats: %s: %u monsters defeated (%u of %u kinds), weapons %u/%u, armor %u/%u, sets %u/%u, materials "
-               "%u/%u, compendium %u/%u, %u hearts, %.1f stamina wheels",
-               path, s.kills, s.kinds, s.kinds_max, s.weapons, s.weapons_max, s.armor, s.armor_max, s.sets, s.sets_max,
-               s.items, s.items_max, s.compendium, s.compendium_max, s.hearts, s.stamina_wheels);
+        if (!is_live || s.kills != kills || s.items != items || s.weapons != weapons)
+            rt_log("stats: %s: %u monsters defeated (%u of %u kinds), weapons %u/%u, armor %u/%u, sets %u/%u, "
+                   "materials %u/%u, compendium %u/%u, %u hearts, %.1f stamina wheels",
+                   is_live ? "live" : path, s.kills, s.kinds, s.kinds_max, s.weapons, s.weapons_max, s.armor,
+                   s.armor_max, s.sets, s.sets_max, s.items, s.items_max, s.compendium, s.compendium_max, s.hearts,
+                   s.stamina_wheels);
     }
 }
 
