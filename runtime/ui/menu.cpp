@@ -749,6 +749,19 @@ static void ach_count_row(const char *id, UiTextId label, uint32_t have, uint32_
     else opt_text_row(id, menu_text(label), value, nullptr, menu_text(desc), false);
 }
 
+// The achievement categories of the tab, by what an achievement counts.
+enum { ACH_CATS = 4 };
+static int ach_cat(StatsKind k) {
+    switch (k) {
+    case STATS_KILLS:
+    case STATS_KINDS: return 0;        // monsters
+    case STATS_FAMILY: return 1;       // hunting, family by family
+    case STATS_HEARTS:
+    case STATS_STAMINA: return 3;      // the hero
+    default: return 2;                 // collection: weapons, armor, sets, materials, compendium
+    }
+}
+
 // The description pane of an achievement: its title, what it counts, the progress and when it was unlocked.
 static void ach_desc(const StatsAch *a, const char *title, char *out, size_t n) {
     static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS, UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS, UI_ACH_D_ARMOR,
@@ -820,10 +833,28 @@ static void tab_achievements(float scale) {
             opt_text_row(id, s.family[f].name, value, nullptr, menu_text(UI_ACH_FAMILY_DESC), false);
         }
     }
-    opt_group(UI_ACH_GROUP_LIST);
+    // Categories: stats.c defines the achievements of one category together, so a heading goes before each run, with
+    // how many of the category are unlocked.
+    int unlocked[ACH_CATS] = {0}, total[ACH_CATS] = {0};
     for (int i = 0; i < s.nach; i++) {
         const StatsAch *a = &s.ach[i];
         if (a->kind == STATS_FAMILY && !s.family[a->family].name[0]) continue;
+        total[ach_cat(a->kind)]++;
+        unlocked[ach_cat(a->kind)] += a->unlocked != 0;
+    }
+    int shown_cat = -1;
+    for (int i = 0; i < s.nach; i++) {
+        const StatsAch *a = &s.ach[i];
+        if (a->kind == STATS_FAMILY && !s.family[a->family].name[0]) continue;
+        int cat = ach_cat(a->kind);
+        if (cat != shown_cat) {
+            static const UiTextId names[ACH_CATS] = {UI_ACH_CAT_MONSTERS, UI_ACH_CAT_HUNT, UI_ACH_CAT_COLLECTION,
+                                                     UI_ACH_CAT_HERO};
+            char heading[128];
+            snprintf(heading, sizeof heading, "%s  %d / %d", menu_text(names[cat]), unlocked[cat], total[cat]);
+            opt_group_text(heading);
+            shown_cat = cat;
+        }
         char id[24], title[160], value[48], note[64] = "", desc[1536];
         snprintf(id, sizeof id, "##ach%d", i);
         ach_title(&s, a, title, sizeof title);
