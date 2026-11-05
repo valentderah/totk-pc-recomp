@@ -45,6 +45,18 @@ void vk_caps_driver(VkPhysicalDevice p) {
     vk_caps.amd_sc = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY && strstr(drv.driverInfo, "shader compiler");
     vk_caps.mesa = drv.driverID == VK_DRIVER_ID_MESA_RADV || drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
                    drv.driverID == VK_DRIVER_ID_MESA_NVK;
+    // RADV names the chip in the device name, "AMD Radeon RX 580 Series (RADV POLARIS10)"; the GCN chips are a closed
+    // list, while RDNA chips keep getting new names (NAVI*, GFX11*, PHOENIX...), so only a GCN name sets the flag.
+    vk_caps.radv_gcn = 0;
+    const char *chip = drv.driverID == VK_DRIVER_ID_MESA_RADV ? strstr(p2.properties.deviceName, "(RADV ") : NULL;
+    if (chip) {
+        static const char *const gcn[] = {"TAHITI", "PITCAIRN", "VERDE", "OLAND", "HAINAN", "BONAIRE", "KAVERI",
+                                          "KABINI", "MULLINS", "HAWAII", "TONGA", "ICELAND", "CARRIZO", "FIJI",
+                                          "STONEY", "POLARIS", "VEGAM", "VEGA", "RAVEN", "RENOIR"};
+        chip += 6;
+        for (size_t i = 0; i < sizeof gcn / sizeof *gcn; i++)
+            if (!strncmp(chip, gcn[i], strlen(gcn[i]))) vk_caps.radv_gcn = 1;
+    }
 }
 
 // TOTK_GPL=0 turns graphics pipeline libraries off; they are on wherever the driver has fast linking. AMD's RDNA 1/2

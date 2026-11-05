@@ -102,14 +102,17 @@ The setup builds the K10 game on these CPUs ([building.md](building.md), `--cpu 
 device profile for every setting `totk.ini` does not set: a 30 fps limit, the NVN replay on a thread of its own
 (`replay_async = 1`). Measured on a Phenom II X6 1100T with an RX 580, standing in one scene of 1.4.3: 27.1 fps
 (1% low 21.5) with these, 26.3 (20.0) with `replay_async = 0`; `huge_text = 1` (the code on 2 MiB pages) gave 26.5
-and `core_split = 1` 23.0, so both stay off. The game is CPU-bound there: a lower `render_scale` does not raise the
-frame rate. What helps most, on Linux:
+and `core_split = 1` 23.0, so both stay off. The game is CPU-bound there, and perf showed the replay thread filling one
+core, half of it inside RADV: with the recorder thread (`vk_recorder`, on by default for GCN cards under RADV) the same
+scene at a 60 fps limit went from 28.2 to 34.6 fps (1% low 23.3 to 28.2). The spin handoff (`TOTK_SPIN_HANDOFF_US`
+25, 100 and 200 against 50) made no difference. A lower `render_scale` does not raise the frame rate. What helps most,
+on Linux:
 
 1. The performance overlay (F10) in full mode: the frame rate, mean and longest frame time over a minute in Lookout
    Landing, in the Depths and in the Sky, with the CPU model, the GPU and the settings named.
 2. The same with `replay_async = 0`, with `huge_text = 1`, with `core_split = 1` (the game's threads on three cores,
-   the busy host threads on the other three; six cores only) and with `vk_recorder = 1` (off by default on AMD GPUs,
-   as it hung RDNA 2 to 4; GCN cards such as the RX 580 have not been tried). One change per run.
+   the busy host threads on the other three; six cores only) and with `vk_recorder = 0` (on by default for GCN cards
+   under RADV, off on other AMD GPUs, as it hung RDNA 2 to 4). One change per run.
 3. Where the time goes, with `perf` (package `perf` or `linux-tools`) while standing in Lookout Landing:
 
    ```sh
