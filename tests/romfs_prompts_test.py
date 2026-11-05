@@ -1,8 +1,8 @@
 """tools/make_romfs_patches.py --prompts and tools/button_icons.py on a RomFS made here, with no game files: each prompt
 names the label of the Xbox button that the pad layout presses, the shoulder buttons, triggers, Plus, Minus and the
-d-pad are drawn as on an Xbox controller, the resource size table grows with the fonts, every other file and member
-stays byte for byte, the same input gives the same output, and a RomFS the tool does not recognise fails before it
-writes anything. Both game versions: 1.2.1 (Common.Product.110, 72x72 button guide images) and 1.4.3
+d-pad are drawn as on an Xbox controller, the PC prompts draw every button as its key or mouse button (the defaults or
+a totk.ini's bind_ lines), the resource size table grows with the fonts, every other file and member stays byte for
+byte, the same input gives the same output, and a RomFS the tool does not recognise fails before it writes anything. Both game versions: 1.2.1 (Common.Product.110, 72x72 button guide images) and 1.4.3
 (Common.Product.140, 108x108).
 
 Run: .venv-py314\\Scripts\\python tests\\romfs_prompts_test.py
@@ -296,6 +296,11 @@ LETTERS_1 = {ord('L'): (560, polygon((60, 0), (480, 0), (480, 100), (160, 100), 
                                           rect(pen, 160, 400, 360, 600, True)]),
              ord('R'): (560, lambda pen: [rect(pen, 60, 0, 460, 700), rect(pen, 160, 400, 360, 600, True)])}
 LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600), (520, 700), (40, 700), (40, 600), (230, 600)))}
+# The other characters the PC prompts' keys show (button_icons.PC_LABELS of the defaults): a block with a counter, each
+# its own size.
+LETTERS_2.update({ord(ch): (560, lambda pen, i=i: [rect(pen, 60, 0, 300 + 10 * i, 700), rect(pen, 120, 100, 240, 600, True)])
+                  for i, ch in enumerate('ACDEFMQSW1234⇧G')})
+PC_PANES = {'A': 'E', 'B': '↑', 'X': '▬', 'Y': 'L'}   # the diamond's letters with the default keys
 
 
 class Romfs:
@@ -316,7 +321,8 @@ class Romfs:
         images = {f'Nt_KeyTex{b}_00': (R8_UNORM, size, rnd.randbytes(IMAGE)) for b in 'ABXY'}
         images.update({'Nt_KeyTexL_00^z': (l_format, size, rnd.randbytes(IMAGE)),
                        'Nt_KeyTexZL_00': (R8_UNORM, size, rnd.randbytes(IMAGE)),
-                       'Nt_KeyTexLSt_00': (R8_UNORM, size, rnd.randbytes(IMAGE))})
+                       'Nt_KeyTexLSt_00': (R8_UNORM, size, rnd.randbytes(IMAGE)),
+                       'Nt_KeyTexLSt_01': (R8_UNORM, size, rnd.randbytes(IMAGE))})
         self.text_fonts = [bfotf(cff_font('Text1', LETTERS_1), 0x01020304), bfotf(cff_font('Text2', LETTERS_2), 0x0a0b0c0d)]
         default = {'scft/External.bfotf': bfotf(cff_font('External', BUTTONS), 0x5a17c3e9), 'fnt/rest.bin': rnd.randbytes(700)}
         if text_fonts:
@@ -388,7 +394,7 @@ class PromptsTest(unittest.TestCase):
         cls.romfs = {v: Romfs(cls.base / v / 'romfs', v) for v in VERSIONS}
         cls.outs = {}
         for v, romfs in cls.romfs.items():
-            for style in ('plain', 'xbox', 'xbox-label'):
+            for style in ('plain', 'xbox', 'xbox-label', 'pc'):
                 out = cls.base / v / style
                 proc = romfs.run(out, *(() if style == 'plain' else ('--prompts', style)))
                 assert proc.returncode == 0, proc.stderr
@@ -485,7 +491,7 @@ class PromptsTest(unittest.TestCase):
                         self.assertEqual(after[member], before[member], member)
 
     def test_resource_size_table_grows_with_the_fonts(self):
-        for romfs, style, out, summary in self.each():
+        for romfs, style, out, summary in self.each(('xbox', 'xbox-label', 'pc')):
             with self.subTest(version=romfs.version, style=style):
                 table = restbl_sizes(romfs.read(out, romfs.restbl))
                 original = restbl_sizes(romfs.contents[romfs.restbl])
@@ -501,17 +507,62 @@ class PromptsTest(unittest.TestCase):
                 self.assertEqual(set(table), set(original))
 
     def test_manifest_lists_what_changed_with_both_hashes(self):
-        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label')):
+        for romfs, style, out, _ in self.each(('plain', 'xbox', 'xbox-label', 'pc')):
             with self.subTest(version=romfs.version, style=style):
                 expect = {romfs.common}
                 if style != 'plain':
-                    expect |= {DEFAULT_FONT, REGIONAL_FONT, romfs.restbl} | (set(romfs.mals) if style == 'xbox' else set())
+                    expect |= {DEFAULT_FONT, REGIONAL_FONT, romfs.restbl}
+                    expect |= set(romfs.mals) if style in ('xbox', 'pc') else set()
                 lines = manifest(out)
                 self.assertEqual(set(lines), expect)
                 for path, (size, sha, original) in lines.items():
                     data = (out / path).read_bytes()
                     self.assertEqual((int(size), sha), (len(data), hashlib.sha256(data).hexdigest()), path)
                     self.assertEqual(original, hashlib.sha256(romfs.files[path]).hexdigest(), path)
+
+    def test_pc_prompts_draw_every_button_as_its_key(self):
+        for romfs, _, out, _ in self.each(('pc',)):
+            with self.subTest(version=romfs.version):
+                original = font(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                drawn = font(sarc_files(romfs.read(out, DEFAULT_FONT))['scft/External.bfotf'])
+                advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                pc = icons.pc_icons(icons.text_glyphs(romfs.text_fonts), advances)
+                self.assertIn(0xE05E, pc)   # the left stick's W A S D
+                for cp in range(0xE040, 0xE069):
+                    outline, advance = glyph(drawn, cp)
+                    if cp in pc:
+                        self.assertNotEqual(outline, glyph(original, cp)[0], f'U+{cp:04X} drawn')
+                    else:
+                        self.assertEqual(outline, glyph(original, cp)[0], f'U+{cp:04X} kept')
+                    self.assertEqual(advance, glyph(original, cp)[1], f'U+{cp:04X} keeps its advance')
+                # The key's label is a hole: E is the key, the block and its counter.
+                self.assertEqual(sum(op == 'moveTo' for op, _ in glyph(drawn, 0xE040)[0]), 3)
+                after = sarc_files(romfs.read(out, romfs.common))
+                new = bntx_images(after['timg/__Combined.bntx'])
+                size = VERSIONS[romfs.version]['size']
+                for name, cp in icons.PC_HUD_TEXTURES.items():
+                    image = new[name][2]
+                    pixels = bytes(image[icons.gob_offset(x, y, (size + 63) // 64, 16)] for y in range(size) for x in range(size))
+                    self.assertEqual(pixels, icons.rasterize(pc[cp][1], size), name)
+                panes = pane_texts(after['blyt/DoCommand_00.bflyt'])
+                for b, letter in PC_PANES.items():
+                    self.assertEqual(panes[f'T_{b}_00'], letter, f'diamond letter of {b}')
+                    for path in romfs.mals:
+                        texts = message_texts(sarc_files(romfs.read(out, path))['LayoutMsg/DoCommand_00.msbt'])
+                        self.assertEqual((texts[f'T_{b}_00'], texts['T_Name_00']), (letter, 'A'), path)
+
+    def test_pc_prompts_follow_the_bind_lines(self):
+        romfs = self.romfs['v143']
+        ini = self.base / 'binds' / 'totk.ini'
+        ini.parent.mkdir(parents=True)
+        ini.write_text('[input]\n# bind_A = key:q\nbind_A = pad:east, key:F\nbind_B = pad:south\nbind_X = key:default\n',
+                       encoding='utf-8')
+        out = self.base / 'binds' / 'out'
+        proc = romfs.run(out, '--prompts', 'pc', '--binds', str(ini))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        panes = pane_texts(sarc_files(romfs.read(out, romfs.common))['blyt/DoCommand_00.bflyt'])
+        self.assertEqual({b: panes[f'T_{b}_00'] for b in PC_PANES}, {**PC_PANES, 'A': 'F'})
+        self.assertEqual(icons.pc_binds(ini.read_text(encoding='utf-8')), {**icons.PC_BINDS, 'A': 'f'})
 
     def test_same_input_same_output_and_the_older_flag(self):
         romfs = self.romfs['v121']

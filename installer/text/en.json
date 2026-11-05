@@ -103,7 +103,7 @@
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.cheats_skipped": "The cheats of the mods folder that change the game's code could not be built; the game installs without them. Details: {log}",
  "warn.exefs_skipped": "The mods' ExeFS patches (.ips, .pchtxt) could not be built; the game installs without them. Details: {log}",
- "warn.xbox_prompts_failed": "The Xbox button prompts could not be prepared (exit code {code}); the game keeps the Switch prompts. Details: {log}",
+ "warn.xbox_prompts_failed": "The Xbox or PC button prompts could not be prepared (exit code {code}); the game keeps the Switch prompts. Details: {log}",
  "warn.shaders_skipped": "The graphics driver crashed while building some shaders, so {count} were left out of the preparation. The game builds them when it first needs them, and the driver may crash there too; a driver update may fix it. Details: {log}",
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
  "warn.dlss_kept": "A DLSS library is already in the install folder ({path}); the setup keeps it.",

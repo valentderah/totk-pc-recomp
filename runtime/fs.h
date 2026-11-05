@@ -41,7 +41,8 @@ size_t romfs_overlay_count(void);
 int romfs_patches_loaded(void);                            // a romfs-patches manifest gave at least one file
 // The button prompts (input_prompts_folder): the folder loaded at start, NULL for the game's own prompts; whether a
 // folder had a manifest at start; and why the folder the settings asked for at start was not loaded (ROMFS_PROMPTS_OK
-// for any other folder: it was not asked for).
+// for any other folder: it was not asked for). romfs-patches-pc goes by that name also where romfs-patches-pc-<w>x<h>
+// stands in for it (romfs.c overlay_init).
 enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROMPTS_SHAPE, ROMFS_PROMPTS_MODS,
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
