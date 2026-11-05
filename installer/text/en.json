@@ -51,7 +51,7 @@
  "check.toolchain_broken": "The bundled compiler does not work: {detail}",
  "check.glibc_old": "This system's C library is glibc {version}; the setup's compiler needs {need} or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3 and newer have it). Updating the system fixes this.",
  "check.host_probe_failed": "The computer check did not run (exit code {code}).",
- "check.cpu_too_old": "This processor lacks x86-64-v2 (SSE4.2, POPCNT and CMPXCHG16B), the oldest level the game is built for. Intel Nehalem (2008) or AMD Bulldozer (2011) and newer have it.",
+ "check.cpu_too_old": "This processor lacks x86-64-v2 (SSE4.2, POPCNT and CMPXCHG16B), the oldest level the game is built for. Intel Nehalem (2008), AMD Phenom II/Athlon II (K10, reduced build) or AMD Bulldozer (2011) and newer are accepted.",
  "check.vulkan_missing": "No Vulkan driver is installed. Install the latest driver for your graphics card.",
  "check.vulkan_no_device": "Vulkan finds no graphics card. Install the latest driver for your graphics card.",
  "check.vulkan_too_old": "The game needs a graphics card with Vulkan 1.3; found: {devices}. Update the graphics driver.",

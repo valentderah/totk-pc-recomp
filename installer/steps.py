@@ -428,10 +428,19 @@ class Check(Step):
         except ValueError:
             raise InstallError('check.host_probe_failed', code=r.returncode) from None
         ctx.reporter.log(f'host: {r.stdout.strip()}')
-        if not host['x86_64_v2']:
+        # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add);
+        # k10 runs on AMD Phenom II / Athlon II, which lack SSSE3 and SSE4.1/4.2 as well.
+        forced = getattr(ctx.options, 'cpu', None)
+        if forced:
+            ctx.cpu = forced   # python -m installer --cpu: built here, played on another machine
+        elif host['x86_64_v3']:
+            ctx.cpu = 'v3'
+        elif host['x86_64_v2']:
+            ctx.cpu = 'v2'
+        elif host.get('amd_k10'):
+            ctx.cpu = 'k10'
+        else:
             raise InstallError('check.cpu_too_old')
-        # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
-        ctx.cpu = 'v3' if host['x86_64_v3'] else 'v2'
         if not host['loader']:
             raise InstallError('check.vulkan_missing')
         devices = host['devices']
