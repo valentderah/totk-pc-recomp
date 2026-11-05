@@ -1,4 +1,15 @@
-# TotK Recomp
+# TotK Recomp — AMD K10 fork
+
+> [!NOTE]
+> **This fork adds support for AMD K10 processors (Phenom II X4/X6, Athlon II) on Linux.** These CPUs lack SSSE3 and
+> SSE4.1/4.2, so they cannot run the builds of the [original project](https://github.com/valentderah/totk-pc-recomp).
+> The setup detects a K10 and builds the game for it (`-march=amdfam10`); newer CPUs get the usual builds.
+>
+> - Download: [TotK-Setup-x86_64-0.3.10-k10-linux.AppImage](https://github.com/deadlynch/totk-pc-recomp-k10/releases/latest)
+> - Linux only; Windows is not supported on K10.
+> - The K10 build is the slowest of the three, and building the game on a Phenom II takes 1-3 hours.
+> - Tested under emulation (`qemu -cpu phenom`), not yet on real K10 hardware.
+> - The changes are proposed upstream as pull requests.
 
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
