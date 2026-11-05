@@ -204,16 +204,31 @@ def build_bin(out, llvm, sysroot):
 
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
 
-def runtime_lib(out, llvm, sysroot):
-    """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
+def cpu_profiles():
+    """{cpu: .profdata} of build/pgo for the lifted version: pgo-<v>-<cpu>.profdata, a profile trained on one CPU
+    level's build (tools/pgo.py merge --out; the K10 one played on a Phenom II). The setup compiles that level's
+    install with it (installer/layout.py pgo); the other levels build at -O1 as before."""
+    version = mr.lifted_version()
+    found = {}
+    for p in sorted((MAIN_ROOT / 'build' / 'pgo').glob(f'pgo-{version}-*.profdata')):
+        found[p.stem.removeprefix(f'pgo-{version}-')] = p
+    for cpu, p in found.items():
+        print(f'make_release_linux: {cpu} installs compile with {p.name}')
+    return found
+
+
+def runtime_lib(out, llvm, sysroot, profiles):
+    """libtotkrt.a (x86-64-v3), libtotkrt-v2.a (x86-64-v2) and libtotkrt-k10.a, so machines without AVX2 or SSE4 can
+    install too; a level with a profile (cpu_profiles) builds its library with it."""
     version = mr.lifted_version()
     rt = out / 'runtime'
     for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a'), ('k10', 'libtotkrt-k10.a')):
         build = CHECK / f'rtlib-{cpu}'
         shutil.rmtree(build, ignore_errors=True)
+        pgo = ['--pgo', profiles[cpu]] if cpu in profiles else []
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
              '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
-             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
+             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build, *pgo])
         shutil.copy2(build / 'libtotkrt.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
@@ -576,10 +591,15 @@ def main():
     sysroot = full_sysroot()
     build_deps(out, llvm, sysroot)
     build_bin(out, llvm, sysroot)
-    rtlib = runtime_lib(out, llvm, sysroot)
+    profiles = cpu_profiles()
+    rtlib = runtime_lib(out, llvm, sysroot, profiles)
     build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlib))
     build_python(out, llvm, sysroot)
-    mr.build_sources(out, {})   # no profiles: the Linux setup compiles without one (installer/layout.py, pgo_dir)
+    mr.build_sources(out, {})   # no general profile on Linux; the per-CPU ones go to data/ beside it
+    for prof in profiles.values():
+        for f in (prof, prof.with_suffix('.json')):
+            if f.is_file():
+                shutil.copy2(f, out / 'data' / f.name)
     collect_licenses(out, sysroot)
     build_entry(out)
     mr.check_folder(out)

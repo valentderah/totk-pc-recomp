@@ -12,8 +12,9 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    totk_xlate.exe (+ totk_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
-    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py; Windows only);
-                            without one the game is built at -O1
+    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py); a
+    data/pgo-<v>-<cpu>.profdata  profile trained on one CPU level's build (the Linux K10 one) comes first for that
+                            level; without either the game is built at -O1
     totk.ini.example
     VERSION                 the release version, one line
     temp/                   the default temp folder (created)
@@ -86,11 +87,14 @@ class Layout:
             return None
         return None if self.dev else lib
 
-    def pgo(self, version):
+    def pgo(self, version, cpu=None):
         """The execution profile build_game.py --pgo compiles the update's code with, None without one (the game is
-        then built at -O1)."""
-        p = self.pgo_dir / f'pgo-{version_tag(version)}.profdata' if self.pgo_dir else None
-        return p if p and p.is_file() else None
+        then built at -O1). A profile trained on the build of the CPU level cpu (pgo-<v>-<cpu>.profdata: the K10
+        build's, played on a Phenom II) comes before the update's general one."""
+        if not self.pgo_dir:
+            return None
+        names = ([f'pgo-{version_tag(version)}-{cpu}.profdata'] if cpu else []) + [f'pgo-{version_tag(version)}.profdata']
+        return next((self.pgo_dir / n for n in names if (self.pgo_dir / n).is_file()), None)
 
     def patches(self, version):
         """The code patch table for recomp/gen.py."""
@@ -143,7 +147,7 @@ def release_layout(root):
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
         shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
-        pgo_dir=root / 'data' if WIN else None,
+        pgo_dir=root / 'data',
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
         # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
         temp=root / 'temp' if WIN else None,

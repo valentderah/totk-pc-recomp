@@ -168,6 +168,15 @@ with it too: hot paths laid out straight, hot calls inlined, code that never ran
 bench ran 12-15% faster per frame and a fight outside the training about 6%. The installer builds with
 `data/pgo-<ver>.profdata` of the release when the update has one, else at -O1.
 
+A profile can also belong to one CPU level's build: `data/pgo-<ver>-<cpu>.profdata` comes first for installs of that
+level (installer/layout.py `pgo`), and the Linux release (tools/make_release_linux.py `cpu_profiles`) ships every
+`build/pgo/pgo-<ver>-<cpu>.profdata` and builds that level's runtime library with it. The K10 one was trained on a
+Phenom II X6 1100T: `build_game.py --cpu k10 --pgo gen` (the release LLVM needs `libclang_rt.profile.a` from the LLVM
+tarball for it), played with `LLVM_PROFILE_FILE` pointing at a folder of the player's, then
+`tools/pgo.py merge <build> --version v143 --out build/pgo/pgo-v143-k10.profdata`. Standing in one scene it gave 31.2
+fps against 28.4 without it (frame limit 60), 1% low 26.3 against 22-23, and loads about a third shorter. The -O2
+compile takes about half as long again as the -O1 one.
+
 A profile only fits the generated C it was trained on: functions are matched by name and control-flow hash, so a
 function whose C changes loses its counts without a warning. Retrain after a lifter or generator change, from a clean
 `recomp/`. The instrumented build needs llvm-mingw, as MSYS2's clang has no profile runtime:
