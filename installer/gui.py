@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from . import dpi
@@ -45,6 +46,18 @@ COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808
 # The window's pixels at 100%: Tk scales the fonts by itself (tk scaling), these through installer/dpi.py.
 PAD = dpi.px(14)      # padding of the window and its frames
 WRAP = dpi.px(620)    # wrap width of the long labels
+
+RECENT_WAIT = 1.5   # seconds the window waits for the recorded paths
+
+
+def load_recent(wait=RECENT_WAIT):
+    """recent.load() in a daemon thread, waited for at most `wait` seconds: a recorded path on a disconnected network
+    share can block its stat call for a long time. Nothing is prefilled when it has not returned by then."""
+    out = {}
+    thread = threading.Thread(target=lambda: out.update(recent.load()), daemon=True)
+    thread.start()
+    thread.join(wait)
+    return {} if thread.is_alive() else out
 
 
 def fix_tcl_paths():
@@ -119,7 +132,7 @@ class App:
             # recorded sources fill only empty fields; dest goes last, its trace runs refresh_form (update hint and
             # recorded language). In update mode filled files are harmless: Extract.current hashes one only when its
             # size or mtime differ from the recorded ones.
-            last = recent.load()
+            last = load_recent()
             for name in ('base', 'update', 'keys', 'firmware', 'dest'):
                 if name in last and not self.vars[name].get().strip():
                     self.vars[name].set(last[name])

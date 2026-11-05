@@ -31,6 +31,10 @@ sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
 from installer import dpi  # noqa: E402
 from installer import recent  # noqa: E402
+try:
+    from installer import gui  # noqa: E402
+except ImportError:   # no tkinter
+    gui = None
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -499,6 +503,18 @@ class RecentTest(unittest.TestCase):
         for text in ('not json', '[]', '{"dest": 5}', '{"format": 1}'):
             self.file.write_text(text, encoding='utf-8')
             self.assertEqual(recent.load(), {}, text)
+
+    @unittest.skipIf(gui is None, 'no tkinter')
+    def test_blocking_load_leaves_fields_empty(self):
+        with unittest.mock.patch.object(recent, 'load', side_effect=lambda: time.sleep(5) or {'dest': 'x'}):
+            start = time.monotonic()
+            self.assertEqual(gui.load_recent(0.3), {})
+            self.assertLess(time.monotonic() - start, 2)
+
+    @unittest.skipIf(gui is None, 'no tkinter')
+    def test_fast_load_is_returned(self):
+        with unittest.mock.patch.object(recent, 'load', return_value={'dest': 'x'}):
+            self.assertEqual(gui.load_recent(), {'dest': 'x'})
 
 
 class SmokeTest(unittest.TestCase):
