@@ -88,7 +88,7 @@ Source shorthands:
 | 3.9 | **Integer vertex inputs read as raw bits** (bone indices `R8UI`). | Float-declared inputs convert integers. | NXN Mario: stretched characters; re-translated with `uint` inputs. Ours: attribute types passed to `QueryGraphicsState` (`Program.cs`). | NXN |
 | 3.10 | **BFE / BFI fields past bit 31** (as PTX `bfe` / `bfi`): a field that runs past bit 31 is cut there; one that starts past it extracts 0 (signed: bit 31 repeated) and inserts nothing. TotK 1.4.3's Depths terrain vertex shaders (42 variants) take the position from a register, `((2y + x) * 8) & 0xff` with 5-bit x and y, so up to 248. | `OpBitField*Extract` / `OpBitFieldInsert` undefined when offset or offset + count exceeds 32; AMD's bitfield instructions take offset and width modulo 32. | Ryujinx passes the fields through. UltraTears saw the Depths walls and ground missing on the Steam Deck and a Linux RX 570 (RADV). Ours: clamped where the field is not a constant inside the word (translator patch 0012). RX 9070 on Windows drew the Depths the same before and after. | PTX ISA `bfe`, `bfi` |
 | 3.11 | **SHF by 0** gives the unshifted word (C for `SHF.L`, A for `SHF.R`). | Ryujinx's funnel shifts the other word by 32: undefined in SPIR-V; AMD shifts take the low 5 bits and give A \| C. | yuzu fixed Depths terrain gaps in its funnel shift (PR 10459). Ours: a select on a zero amount (translator patch 0013). In 1.4.3 every register SHF pairs its word with 0, so the result was right already. | — |
-| 3.12 | **Registers read before any write** on a path (paths the structurizer adds included) have no defined value in the game's code; UltraTears reports 0 from the NVIDIA driver. | An `OpVariable` without an initializer loads an undefined value; Mesa folds undefined values freely. | Ours: every function-local variable starts at 0 (`OpConstantNull`, translator patch 0014). | — |
+| 3.12 | **Registers read before any write** on a path (paths the structurizer adds included) have no defined value in the game's code; UltraTears reports 0 from the NVIDIA driver. | An `OpVariable` without an initializer loads an undefined value; Mesa folds undefined values freely. | Ours: on Mesa drivers (RADV, ANV, NVK; `vk_caps_driver`) every function-local variable starts at 0 (`OpConstantNull`, job flag `zero_locals`, translator patch 0016; `TOTK_ZERO_LOCALS` overrides). Elsewhere the load stays undefined: a zero start on every driver (the old patch 0014) made the whole picture shake by about 0.9 output pixels a frame with DLSS or DLAA on an RTX 4080 SUPER (#612). It also moved the SPIR-V hash of the game's FXAA shader out of `FXAA_FS` (`vk_dlaa.c` `vk_dlaa_skip_draw`), the likely cause of the shake; that path is not traced. | — |
 
 ## 4. Memory model
 
@@ -203,11 +203,19 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     tested shrine scene; other scenes still need coverage.** Revalidated on 0.3.4 (c38e0ca): the official executable
     still shows the squares in the same save, while the ported snapshot path removes them. The all-material copy
     path caused a performance regression at the entrance: one sampled frame copied R32F 869 times, 866 for the
-    opaque material. The default now snapshots only fragment-terminating (cutout) shaders, classified by SPIR-V
-    rather than a game-specific hash. Opaque materials keep the existing feedback barriers. In matched diagnostic
-    runs, median GPU time was 13.79 ms with snapshots off, 47.51 ms with all-material snapshots, and 13.73 ms with
-    cutout snapshots. The cutout path retains the black-block fix in the saved entrance views. Mode 2 preserves the
-    all-material copy path for comparison; mode 0 disables snapshots. Other GPUs/scenes still need coverage.
+    opaque material. The first optimization restricted snapshots to fragment-terminating (cutout) shaders,
+    classified by SPIR-V rather than a game-specific hash. On 0.3.4, matched diagnostic median GPU times were
+    13.79 ms with snapshots off, 47.51 ms with all-material snapshots, and 13.73 ms with cutout snapshots.
+    A second shrine on 0.3.7 still flickered: its material samples and writes colour targets 1/3 and linear depth 7
+    without fragment termination or fixed-function blending. The default now also accepts draws that read and
+    write a non-R32F colour target, or blend into another written target. It reuses the first eligible draw's depth
+    snapshot while the frame, attachment-image signature and snapshot generation match, avoiding a copy per mesh.
+    The player reported clean floors without the per-draw slowdown; this update has no matched GPU timing result.
+    This reuse is an approximation: earlier writes or clears of unchanged attachments are not included, so
+    overlapping materials or repeated uses of the same targets need validation. Mode 2 preserves the per-draw,
+    all-material copy path for comparison; mode 0 disables snapshots. `TOTK_FEEDBACK_DEBUG=1` logs decisions and
+    copy counters. Other GPUs/scenes still need coverage. See [shrine feedback snapshots](shrine-feedback.md) for
+    the reuse heuristic, validation history and limitations.
 11. **Border colours.** `vk_texture.c` `make_sampler`: custom colour only with `customBorderColorWithoutFormat`, else transparent
     black; integer formats use the float path. Confirm the RX 9070 reports the feature (grass map needs 0.5).
     **OK if supported.**

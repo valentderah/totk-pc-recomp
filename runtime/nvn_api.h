@@ -75,7 +75,8 @@ uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
 // 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, so a copy
 // holds no OP_CALL or OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
-// immutable host copies that live for the run, one per tex_t.serial. Deferred binds (p_bind_handles.src != 0) hold the
+// immutable host copies ("pins"), one per tex_t.serial, that live while a recording copy names them and a while after
+// (nvn_pins_sweep). Deferred binds (p_bind_handles.src != 0) hold the
 // handles read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
 typedef struct { volatile uint32_t *val; uint32_t mode, value; } p_signal_event;   // OP_SIGNAL_EVENT; mode: NVNeventSignalMode
 typedef struct { uint64_t type, addr; } p_report_counter;  // OP_REPORT_COUNTER: NVNcounterType, NVNcounterData address
@@ -99,6 +100,14 @@ int nvn_handle_live(uint64_t handle);                      // 1 while the handle
                                                            // not added again)
 uint64_t nvn_handle_bytes(uint64_t handle);                // bytes of the copy, OP_BEGIN to OP_END; 0 if not live
 uint64_t nvn_submit_count(void);                           // QueueSubmitCommands calls so far
+// Submits a texture pin outlives its last tex_pin and the release of the last recording copy naming it: about 20 s at
+// one submit a frame (MacNativeGames frees after two 600-submit windows).
+#define NVN_PIN_AGE 1200
+// Frees the texture pins no recording copy has named for NVN_PIN_AGE submits (nvn_api_cmd.c, "texture pins"), except keep[0..nkeep):
+// the replay's current render targets, which carry over to the next submission. Called between submissions by the
+// thread that replays them; now = nvn_submit_count().
+void nvn_pins_sweep(uint64_t now, const tex_t *const *keep, int nkeep);
+void nvn_pins_stats(uint64_t *live, uint64_t *freed);      // pins that exist, pins freed so far
 const char *nvn_op_name(uint32_t op);                      // "DRAW_IDX", ...; "?" past OP_COUNT_
 // MemoryPoolInvalidateMappedRange: the CPU is about to read pool storage the GPU wrote. Weak no-op in nvn_ext.c; a back
 // end that renders into host-side copies defines it and writes them back.

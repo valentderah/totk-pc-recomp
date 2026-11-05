@@ -119,7 +119,7 @@ static struct {                                            // translations in fl
 static char cache_dir[PATH_CAP];
 static char xlate_exe[PATH_CAP];
 static uint8_t xlate_id[32];                               // translator identity (see the keys at the top)
-static int host_f64 = 1, host_set;                         // gfx_shader_set_host
+static int host_f64 = 1, host_zero_locals, host_set;                         // gfx_shader_set_host
 static uint32_t host_sbuf, host_sg[3] = {32, 32, 32}, host_gather;
 static PlatOnce paths_once = PLAT_ONCE_INIT;
 
@@ -313,18 +313,19 @@ static void init_paths(void *param) {
 static void paths(void) { plat_once(&paths_once, init_paths, NULL); }
 
 // Host answers (vk_caps.c, at device creation, before any translation). Answers other than the defaults (Float64,
-// exact storage offsets, 32 lanes, no gather bias) are mixed into the translator identity, so they get their own cache
-// keys.
-void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits) {
+// exact storage offsets, 32 lanes, no gather bias, undefined locals) are mixed into the translator identity, so they
+// get their own cache keys.
+void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits, int zero_locals) {
     paths();
     if (host_set++) return;
-    host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits;
+    host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits, host_zero_locals = zero_locals;
     memcpy(host_sg, subgroup, sizeof host_sg);
-    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits) return;
+    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits && !zero_locals) return;
     uint8_t buf[32 + 96];
     int n = snprintf((char *)buf + 32, 96, "TKHO f64=%d sbuf=%u sg=%u,%u,%u", float64, sbuf_align, subgroup[0], subgroup[1],
                      subgroup[2]);
     if (gather_bits) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " gather=%u", gather_bits);
+    if (zero_locals) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " zero_locals");
     memcpy(buf, xlate_id, 32);
     rt_sha256(buf, 32 + (size_t)n, xlate_id);
     rt_log("gfx_shader: host options %s: own shader cache keys", (char *)buf + 37);
@@ -1174,6 +1175,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
     if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);
     if (host_gather) o += sprintf(o, ",\"gather_bias\":%u", host_gather);
+    if (host_zero_locals) o += sprintf(o, ",\"zero_locals\":true");
     o += sprintf(o, "},\"out\":\"");
     json_esc(&o, cache_dir);
     o += sprintf(o, "\"}");
