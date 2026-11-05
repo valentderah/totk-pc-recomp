@@ -1,10 +1,12 @@
 // Windows interactive-desktop regression: Win32/GDI only, no game, SDL or Vulkan.
-// Uses SendInput, moves the pointer and activates a surrogate window; do not run on a headless desktop.
+// Default mode uses SendInput, moves the pointer and activates a surrogate; do not run on a headless desktop.
 // From the repository root, create build/test or replace the output directory below.
 // clang -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 -I runtime tests/uiwindow_probe.c runtime/uiwindow_win.c -luser32 -lgdi32 -o build/test/uiwindow_probe.exe
 // Run: build/test/uiwindow_probe.exe (PowerShell: & ./build/test/uiwindow_probe.exe)
+// Run with --z-order-only for private overlapping-window checks without SendInput, cursor or foreground changes.
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 #include "uiwindow.h"
 
 static int failures;
@@ -57,8 +59,67 @@ static void drag_dpi(HWND hwnd, int hit) {
     SendMessageW(hwnd, WM_LBUTTONUP, 0, 0);
     SetCursorPos(cursor.x,cursor.y);
 }
-int main(void) {
+static int above(HWND high, HWND low) {
+    for(HWND h=GetWindow(high,GW_HWNDNEXT);h;h=GetWindow(h,GW_HWNDNEXT)) if(h==low) return 1;
+    return 0;
+}
+static void timer_guard(void) {
+    // Wait for the existing one-second recovery guard, not for an uncontrolled timer race.
+    ULONGLONG start=GetTickCount64();
+    while(GetTickCount64()-start<1100) Sleep(5);
+}
+static int z_order_probe(void) {
+    ProbeDrawState da={0},db={0};
+    HWND foreground=GetForegroundWindow();
+    UiWindow *a=uiwindow_open("Z-order probe A",400,300,30,draw,&da);
+    UiWindow *b=uiwindow_open("Z-order probe B",400,300,30,draw,&db);
+    HWND ha=FindWindowW(L"TotkAuxiliaryPanel",L"Z-order probe A");
+    HWND hb=FindWindowW(L"TotkAuxiliaryPanel",L"Z-order probe B");
+    CHECK(a && b && ha && hb,"two private z-order windows opened");
+    if(!a || !b || !ha || !hb) { uiwindow_close(a); uiwindow_close(b); return 1; }
+    CHECK(GetForegroundWindow()==foreground,"opening private panels does not activate them");
+    CHECK((GetWindowLongPtrW(ha,GWL_EXSTYLE)&WS_EX_TOPMOST) && (GetWindowLongPtrW(hb,GWL_EXSTYLE)&WS_EX_TOPMOST),"both panels start topmost");
+    int paused_a=KillTimer(ha,1),paused_b=KillTimer(hb,1);
+    CHECK(paused_a && paused_b,"both automatic redraw timers are paused");
+    if(!paused_a || !paused_b) { uiwindow_close(a); uiwindow_close(b); return 1; }
+    SendMessageW(ha,WM_NULL,0,0); SendMessageW(hb,WM_NULL,0,0);
+    timer_guard();
+    UINT flags=SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE;
+    SetWindowPos(hb,HWND_TOPMOST,360,240,430,340,SWP_NOACTIVATE);
+    SetWindowPos(ha,HWND_TOPMOST,360,240,430,340,SWP_NOACTIVATE);
+    CHECK(above(ha,hb),"private panels overlap with A initially above B");
+    foreground=GetForegroundWindow(); SendMessageW(hb,WM_TIMER,1,0);
+    CHECK(above(ha,hb),"B redraw timer preserves the chosen A-over-B order");
+    CHECK(GetForegroundWindow()==foreground,"B timer does not activate a panel");
+    SetWindowPos(hb,HWND_TOPMOST,0,0,0,0,flags);
+    CHECK(above(hb,ha),"user-selected B-over-A order is established");
+    foreground=GetForegroundWindow(); SendMessageW(ha,WM_TIMER,1,0);
+    CHECK(above(hb,ha),"A redraw timer preserves the chosen B-over-A order");
+    CHECK(GetForegroundWindow()==foreground,"A timer does not activate a panel");
+    SetWindowPos(hb,HWND_NOTOPMOST,0,0,0,0,flags);
+    CHECK(!(GetWindowLongPtrW(hb,GWL_EXSTYLE)&WS_EX_TOPMOST),"test removes topmost from B");
+    timer_guard();
+    foreground=GetForegroundWindow(); SendMessageW(hb,WM_TIMER,1,0);
+    CHECK(GetWindowLongPtrW(hb,GWL_EXSTYLE)&WS_EX_TOPMOST,"timer restores genuinely lost topmost state");
+    CHECK(GetForegroundWindow()==foreground,"topmost recovery does not activate a panel");
+    HWND normal=CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,L"STATIC",L"Z-order normal popup",WS_POPUP,360,240,430,340,NULL,NULL,GetModuleHandleW(NULL),NULL);
+    CHECK(normal!=NULL,"private non-topmost fullscreen-style surrogate opened");
+    if(normal) {
+        ShowWindow(normal,SW_SHOWNOACTIVATE);
+        SetWindowPos(normal,HWND_TOP,0,0,0,0,flags);
+        CHECK(above(ha,normal) && above(hb,normal),"panels remain above an HWND_TOP normal popup as used by F11");
+        DestroyWindow(normal);
+    }
+    CHECK(SendMessageW(hb,WM_MOUSEACTIVATE,0,MAKELPARAM(HTCLIENT,WM_LBUTTONDOWN))==MA_NOACTIVATE,"recovered panel still refuses activation");
+    uiwindow_close(a); uiwindow_close(b);
+    printf("uiwindow z-order probe: %d failures\n",failures); return failures?1:0;
+}
+int main(int argc,char **argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if(argc>1) {
+        if(!strcmp(argv[1],"--z-order-only")) return z_order_probe();
+        fputs("Usage: uiwindow_probe [--z-order-only]\n",stderr); return 2;
+    }
     HWND prior = GetForegroundWindow(); POINT cursor; GetCursorPos(&cursor);
     WNDCLASSW wc={0}; wc.lpfnWndProc=DefWindowProcW; wc.hInstance=GetModuleHandleW(NULL); wc.lpszClassName=L"PanelProbeFocus";
     RegisterClassW(&wc);

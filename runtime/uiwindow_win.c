@@ -150,7 +150,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (GetTickCount64() - w->topmost_at >= 1000) {
             w->topmost_at = GetTickCount64();
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            // Reassert a lost state, not our position among other topmost panels on every redraw.
+            if (!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST))
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         InvalidateRect(hwnd, NULL, FALSE); return 0;
     case UI_REPAINT: InvalidateRect(hwnd, NULL, FALSE); return 0;
