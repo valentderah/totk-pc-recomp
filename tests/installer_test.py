@@ -304,6 +304,17 @@ class LiftKeyTest(unittest.TestCase):
         (mods / 'Fps').rename(mods / 'Fps 2')
         self.assertNotEqual(self.key(), cheats_renamed)
 
+    def test_code_modules_change_the_key(self):
+        # tools/exefs_patches.py builds the hooks of a code module the port runs as its own code (tools/plugins.py)
+        # into the game and names their patch set after "<mod folder>/exefs/subsdk9", as it does an ExeFS patch file
+        before = self.key()
+        self.add_cheats('subsdk9', 'a code module', mod='TSQ', where='exefs')
+        added = self.key()
+        self.assertNotEqual(added, before)
+        mods = self.dest / 'mods'
+        (mods / 'TSQ').rename(mods / 'The Second Quest')
+        self.assertNotEqual(self.key(), added)
+
     def test_status_and_other_files_keep_the_key(self):
         self.add_cheats('277178B7DBA1B6D4.txt', '[a]')
         before = self.key()

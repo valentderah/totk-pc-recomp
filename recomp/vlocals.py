@@ -8,10 +8,10 @@ store, so clang's SROA keeps each local register in an XMM register. This module
 
 - turns the direct forms into the accessors (c->v[n] = e -> VSET, c->v[n] -> VGET, lane forms -> VLANE/VLSET),
 - picks the K registers the function names most often (VMASK),
-- loads them at entry; before every call, rt_dispatch, rt_svc/rt_udf/rt_brk, rt_spin_gate and exit stores the ones
-  the function writes (VSYNC_OUT_D: only if the dirty mask may have the bit; the mask folds to a constant on most
-  paths); after a call reloads them, except V8-V15 with trust (AAPCS64: a callee preserves their low 64 bits, and a
-  conforming caller does not read their upper halves after the call).
+- loads them at entry; before every call, rt_dispatch, rt_svc/rt_udf/rt_brk, a host hook (rt_hook), rt_spin_gate and
+  exit stores the ones the function writes (VSYNC_OUT_D: only if the dirty mask may have the bit; the mask folds to a
+  constant on most paths); after a call reloads them, except V8-V15 with trust (AAPCS64: a callee preserves their low
+  64 bits, and a conforming caller does not read their upper halves after the call).
 
 Why the cap: 32 guest registers on 16 XMM registers spill (all 32 cost +20% instructions, the stack traffic tripled),
 while K = 6..8 removed a quarter of the c->v traffic and kept dependent FP chains in registers; build/v143-vloc
@@ -55,7 +55,7 @@ CALLEE_SAVED = frozenset(range(8, 16))
 PLAIN = '\n    const unsigned VMASK = 0; u128 *const vr = c->v; unsigned vd_ = 0, *const vdp = &vd_; (void)vr; (void)vdp;'
 
 FN = re.compile(r'^(?:static )?void (?:f|fb)_[0-9a-f]+\(Cpu \*c\) \{$', re.M)
-CALL = re.compile(r'\b(?:f|fb)_[0-9a-f]+\(c\);|\brt_dispatch\(c\);|\brt_(?:svc|udf|brk|spin_gate)\(c,[^;]*;')
+CALL = re.compile(r'\b(?:f|fb)_[0-9a-f]+\(c\);|\brt_dispatch\(c\);|\brt_(?:svc|udf|brk|hook|spin_gate)\(c,[^;]*;')
 RET = re.compile(r'(?:__attribute__\(\(musttail\)\)\s*)?\breturn\b[^;]*;')
 RET_BLOCK = re.compile(r'(\{ [^{}]*?(?:__attribute__\(\(musttail\)\) )?return\b[^;]*; \})')
 LANE = re.compile(r'\(\((\w+) \*\)&c->v\[')

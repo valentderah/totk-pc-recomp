@@ -17,7 +17,8 @@ Output, under --out:
   patches.h                    code patch sets for the runtime (recomp/patches.py; no sets without --patches)
 
 Function discovery runs in this process, vectorised over the module's .text words. Function starts are the module
-seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets), every BL target, and code addresses
+seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets, the functions the patch table's hooks call
+through rt_call: recomp/patches.py `fn:` arguments), every BL target, and code addresses
 materialised by ADR or ADRP+ADD (except an ADR that anchors a jump table: one with a `br` in the next 16
 instructions, or one an ADD register form uses as its base right after). A function is [start, next start). A direct branch whose target lies outside its
 function makes the target a new start, until no new start appears.
@@ -64,7 +65,7 @@ import regs  # noqa: E402
 import vlocals  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 from layout import layout, write as write_layout  # noqa: E402
-from lifter import hx  # noqa: E402
+from lifter import Insn, hx  # noqa: E402
 from module import Module  # noqa: E402
 
 TERMINATORS = ('b', 'br', 'ret', 'trap')
@@ -96,15 +97,16 @@ def _sext(v, n):
     return np.where(v & (1 << (n - 1)), v - (1 << n), v)
 
 
-def discover(mod):
-    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics."""
+def discover(mod, extra=()):
+    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics. extra:
+    more absolute function starts (the patch table's hook arguments)."""
     w = mod.words
     n = len(w)
 
     def idx(mask):
         return np.flatnonzero(mask).astype(np.int64)
 
-    seeds = (np.asarray(mod.seeds(), dtype=np.int64) - mod.lo) >> 2
+    seeds = (np.asarray(sorted(set(mod.seeds()) | set(extra)), dtype=np.int64) - mod.lo) >> 2
 
     # B and BL: imm26. BL targets are function starts; B targets join the fixpoint below.
     b_all = idx((w & 0x7C000000) == 0x14000000)
@@ -239,6 +241,7 @@ class Emitter:
         self.v_locals = v_locals   # recomp/vlocals.py: V registers per function in C locals (0: all in c->v)
         self.v_trust = v_trust     # with v_locals: V8-V15 are not reloaded after a call
         self.uses_patches = False
+        self.uses_hooks = False
         self.stats = Counter()
         self.unsupported = Counter()
 
@@ -283,10 +286,14 @@ class Emitter:
 
     def replacements(self, a):
         """The lifted words of each alternative of the patched site a, in set order. Only the last word of an
-        alternative may branch (bl, b, b.cond / cbz / tbz, ret)."""
+        alternative may branch (bl, b, b.cond / cbz / tbz, ret). A host hook (('hook', index), recomp/patches.py) is an
+        rt_hook call with the site's address, which regs.ESCAPE syncs every register around and which leaves the
+        flags alone."""
         out = []
         for _, words in self.patched[a]:
-            lifted = [self.mod.lifter.lift(w, a) for w in words]
+            lifted = [Insn('op', f'rt_hook(c, {w[1]}, {hx(a)});') if isinstance(w, tuple)
+                      else self.mod.lifter.lift(w, a) for w in words]
+            self.uses_hooks |= any(isinstance(w, tuple) for w in words)
             for j, r in enumerate(lifted):
                 last = j == len(lifted) - 1
                 if r.kind != 'op' and not (last and r.kind in ('bl', 'b', 'bcond', 'ret')):
@@ -534,7 +541,7 @@ class Emitter:
 def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
-    emitter.uses_patches = False
+    emitter.uses_patches = emitter.uses_hooks = False
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
@@ -543,6 +550,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
+    if emitter.uses_hooks:
+        protos += 'void rt_hook(Cpu *c, int hook, uint64_t site);\n'   # runtime/patches.c
     vdef = '#define RT_VLOCALS 1\n' if emitter.v_locals else ''   # runtime/simd.h: the V-locals accessors
     return (header(f'{name} chunk {number:04d}') + vdef + '#include "cpu.h"\n#include "simd.h"\n\n' + protos
             + '\n' + '\n\n'.join(body) + '\n')
@@ -884,7 +893,7 @@ def main():
         path = args.exefs / name
         mod = Module(name, path, base, 'c')
         patches.check(table, mod, name)
-        starts, dstats = discover(mod)
+        starts, dstats = discover(mod, table.entries_for(name, base))
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
         n = len(starts) if not args.limit else min(args.limit, len(starts))

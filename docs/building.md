@@ -227,7 +227,11 @@ the lift cache of `recomp/gen.py` (`<mod>/lift_cache.json`), passes `.venv\Scrip
 which lifts a module it makes itself with and without the cache and compares the output (no game files); a new input
 of the chunk text goes into `chunk_key` with a case there. On game files, a lift with the cache into a used output
 folder and a `--no-cache` lift into an empty one give the same files apart from `manifest.json` and
-`lift_cache.json`.
+`lift_cache.json`. A change to the host hooks or the code modules the port runs as
+its own code (`recomp/patches.py` `hook` lines, `tools/plugins.py`, `runtime/plugins.c`, `runtime/patches.c`) passes
+`.venv\Scripts\python tests\plugins_test.py`, `totk.exe --probe-plugins` and `totk.exe --probe-mods`. A handler of
+`runtime/plugins.c` follows the plugin's callback instruction by instruction: check it against the plugin's code (its
+disassembly, or the callback run in Unicorn next to the handler on the same registers and memory).
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

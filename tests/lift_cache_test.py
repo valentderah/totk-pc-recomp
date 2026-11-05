@@ -154,6 +154,18 @@ class LiftCache(unittest.TestCase):
         self.assertEqual(self.gen(patch_file(MOV_W8_200))['chunks_reused'], 2)
         self.assertNotIn('rt_spin_gate', self.chunk(0).read_text())
 
+    def test_hook_is_in_the_key(self):
+        """A host hook at a site (recomp/patches.py `@hook:` words) is a ('hook', index) word of the site: another hook
+        there lifts h's chunk again and nothing else."""
+        def hooked(name):
+            return ('set a0 TEST_A0 0\nhook h0 probe_a\nhook h1 probe_b\n'
+                    f'site a0 main {H:x} {MOV_W8_100:08x} @hook:{name}\n')
+        self.gen(hooked('h0'))
+        self.assertIn('rt_hook(c, 0,', self.chunk(2).read_text())
+        self.assertEqual(self.gen(hooked('h1'))['chunks_reused'], 2)
+        self.assertIn('rt_hook(c, 1,', self.chunk(2).read_text())
+        self.assert_like_fresh(hooked('h1'))
+
     def test_changed_cache_entry_is_not_taken(self):
         """A changed result in lift_cache.json (a folded range, here) fails the entry's digest: the chunk is lifted
         and folded.txt keeps the jump table's real bytes."""
