@@ -26,10 +26,11 @@
 #include "patches.h"
 #endif
 
-// One turn rate for every camera, as a PC game has: degrees per raw count at sensitivity 1. The on-foot camera turns
-// 70 degrees a second at a full stick, so this is a full stick's turn for 1500 counts a second. The stick rates and the
-// ability camera's scales below are those Weeping of the Empire's engine/runtime/pc_mouse.cpp works with.
-#define DEG_PER_COUNT (70.0f / 1500.0f)
+// One turn rate for every camera, as a PC game has: degrees per raw count at sensitivity 1. It is the free camera's rate
+// since the direct mode came (0.08, about 14.3 cm a turn at 800 DPI), so a mouse_sens set for it keeps its meaning. The
+// stick rates and the ability camera's scales below are those Weeping of the Empire's engine/runtime/pc_mouse.cpp
+// works with.
+#define DEG_PER_COUNT 0.08f
 // The stick turns yaw 70 x / 30 degrees per step at the 30 Hz frame ratio: a processed stick value of STICK_PER_COUNT a
 // count turns yaw DEG_PER_COUNT in the cameras that still take the mouse as stick (mouse_stick_add).
 #define STICK_PER_COUNT (DEG_PER_COUNT * 30.0f / 70.0f)
@@ -41,10 +42,10 @@
 // x / 0.8, and pitch linear at 70 / (1.5 * 51).
 #define ABILITY_GAIN_X (1.0f / 0.8f)
 #define ABILITY_GAIN_Y (70.0f / (1.5f * 51.0f))
-// Ultrahand's held object moves by its post-curve input times its speed at a full tilt, as the camera turns by the
-// stick: the mouse's part is the camera's stick value a count, so the object follows the hand as the camera would,
-// at most HAND_MAX full tilts a step
-#define HAND_PER_COUNT STICK_PER_COUNT
+// Ultrahand's held object moves by its post-curve input times its speed at a full tilt: the mouse's part is
+// HAND_PER_COUNT a count over the frame ratio, the rate the direct mode has had since it came, at most HAND_MAX full
+// tilts a step
+#define HAND_PER_COUNT 0.01f
 #define HAND_MAX 3.0f
 
 static int direct_mode(void) {

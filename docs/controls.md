@@ -110,9 +110,8 @@ bind_Y = pad:north, key:mouse_l
 ## Mouse camera
 
 `mouse_mode = direct` (the default) turns the camera by the raw mouse motion on game 1.4.3, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
-angular increments at its final spherical-angle output: 70/1500 = 0.0467 degrees per count on both axes at
-sensitivity 1 (the on-foot camera's full-stick 70 degrees a second for 1500 counts a second; about 24.5 cm a turn at
-800 DPI), with no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with
+angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1 (about
+14.3 cm a turn at 800 DPI), with no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with
 the output. Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and
 velocity filters cannot process it a second time.
 The aiming camera (bow, throwing), the Purah Pad camera, the scope, the ability camera (Ultrahand, Fuse, Ascend,
@@ -145,17 +144,19 @@ Two inputs stay stick input: the waterfall's vertical axis moves the camera's he
 lock-on without a target (HorseLockOnEmpty) turns the stick's position into an offset that returns when the stick
 does, which a mouse has no position for.
 Those receive input after
-the radial dead zone, unit-circle clamp and stick response exponent: x is 0.02 stick units a count over the frame
+the radial dead zone, unit-circle clamp and stick response exponent: x is 0.0343 stick units a count over the frame
 ratio (the stick turns yaw 70 x / 30 degrees a step) and y 70 / 51 times that, linear like their pitch (51 y / 30
 degrees a step), so both axes turn by the same amount for the same motion. `stick_sens` (which scales the game's
 stick turn rates) is divided out. While the player uses an ability and the ability camera's hooks do not take the
 mouse, its part is scaled by 1 / 0.8 and 70 / (1.5 x 51), the ability camera's own stick scales.
 The player's verbs are read every 50 ms from the player actor (the player root's GOT slot main+0x3969918, the
 component array +0x228, its AS component +0x158 and the verbs of its five slots). Ultrahand has a separate hook after
-its manipulation input's power curves; it gets the camera's stick value per count, at most three full tilts a step.
+its manipulation input's power curves; it gets 0.01 stick units a count over the frame ratio, at most three full tilts
+a step.
 `mouse_aim_scale` (0.1 to 3, default 1) multiplies the mouse's motion while the bow is drawn (the verb UseBow or
 DrawnBow with ZR held). The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw
-counts; its scale differs from the stick-emulation mode. Start at 1.
+counts, with the same meaning as in 0.3.10 (the free camera turns 0.08 degrees a count at 1, and now every other camera
+does too); its scale differs from the stick-emulation mode.
 The Controls tab switches between *Direct* and *Stick emulation* (`mouse_mode = stick`).
 The orbit camera keeps its desired pitch at the final angular output, including stationary frames, so a later game
 filter cannot recenter it. The persistent filter state accounts for the camera's current vertical offset instead of
@@ -175,7 +176,7 @@ not consumed by the direct camera or Ultrahand hooks.
 To detach a fused part from what Ultrahand holds, shake the mouse left and right, or press G (`bind_SHAKE`). A press
 swings the right stick left and right for 0.8 s, holding the key keeps it swinging. With `mouse_mode = direct` a shake
 of the mouse while Ultrahand holds an object swings the right stick with it: once the swings (10 degrees of camera turn
-or more each, about 214 counts at sensitivity 1) change direction twice within 0.35 s, the stick goes full tilt the
+or more each, 125 counts at sensitivity 1) change direction twice within 0.35 s, the stick goes full tilt the
 way the mouse moves, each side held at least two frames so the game reads it, and goes neutral as soon as the mouse
 rests. Only your own swings reach the stick, so nothing keeps swinging after you stop; shake until the part comes off.
 The camera hooks ignore that swing (the mouse turns the camera in degrees already). Turning a held object back and

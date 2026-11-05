@@ -190,12 +190,12 @@ int main(void) {
         angles_hook(&c);
     }
     assert(fabsf(guest_float((uintptr_t)camera+0x120)-(40-100*DEG_PER_COUNT))<0.001f);
-    // A held object receives mouse deltas after its own curves at the camera's stick rate, at most HAND_MAX full
+    // A held object receives mouse deltas after its own curves at HAND_PER_COUNT a count, at most HAND_MAX full
     // tilts a step, once per sample, including with camera input off.
-    c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_x=100; raw_y=50; ratio=0.5f; hook(&c);
+    c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_x=200; raw_y=50; ratio=0.5f; hook(&c);
     c.x[19]=(uintptr_t)hand; c.x[8]=0x12345678; c.v[15]=0;
     guest_float_store((uintptr_t)frame+0x60,0); hand_hook(&c);
-    assert(100*HAND_PER_COUNT/ratio>HAND_MAX && fabsf(guest_float((uintptr_t)frame+0x60)-HAND_MAX)<0.00001f);
+    assert(200*HAND_PER_COUNT/ratio>HAND_MAX && fabsf(guest_float((uintptr_t)frame+0x60)-HAND_MAX)<0.00001f);
     assert(fabsf(scalar(c.v[15])+50*HAND_PER_COUNT/ratio)<0.00001f);
     hand_hook(&c); assert(fabsf(scalar(c.v[15])+50*HAND_PER_COUNT/ratio)<0.00001f);
     c.x[21]=1; raw_x=5; raw_y=6; hook(&c); assert(raw_x==0 && raw_y==0 && input_direct_mouse_active());
