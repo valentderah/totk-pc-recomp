@@ -1468,16 +1468,25 @@ static void support_in(const VkExec *ex, float in[3]) {   // what support_fill r
 // between receiver and blocker (0 keeps the game's single compare), y and z: the narrowest and widest disc radius,
 // w: the blocker search radius, all in UV of the cascade map. Radii are in UV, so they hold at any TOTK_SHADOW_SCALE.
 // TOTK_PCSS_K overrides the depth-to-penumbra factor at 100 percent, for tuning.
+// Read again whenever a setting changed (cfg_version): the menu changes TOTK_PCSS while the game runs, and the next
+// support buffer carries the new factor.
 static const float *pcss_params(void) {
-    static float p[4] = {-1, 0, 0, 0};
-    if (p[0] < 0) {
+    static float p[4] = {0, 0.35f / 960.0f, 5.0f / 960.0f, 4.0f / 960.0f};
+    static unsigned seen;
+    static int started, shown = -1;
+    unsigned v = cfg_version();
+    if (!started || v != seen) {
+        started = 1, seen = v;
         int pct = cfg_int("TOTK_PCSS");
         pct = pct < 0 ? 0 : pct > 200 ? 200 : pct;
         const char *k = cfg_get("TOTK_PCSS_K");
         float k100 = k && *k ? (float)atof(k) : 0.5f;
         p[0] = k100 * (float)pct / 100.0f;
-        p[1] = 0.35f / 960.0f, p[2] = 5.0f / 960.0f, p[3] = 4.0f / 960.0f;
-        if (pct) rt_log("vk: soft shadows (PCSS) at %d%% (depth factor %g)", pct, p[0]);
+        if (pct != shown && (pct || shown > 0)) {
+            if (pct) rt_log("vk: soft shadows (PCSS) at %d%% (depth factor %g)", pct, p[0]);
+            else rt_log("vk: soft shadows (PCSS) off");
+        }
+        shown = pct;
     }
     return p;
 }
@@ -1486,15 +1495,11 @@ static const float *pcss_params(void) {
 // shadow filter offset (element 56 .xy of their lighting block), 1 / TOTK_SHADOW_SCALE. The game spaces its four
 // compares for its own shadow map texels; with maps TOTK_SHADOW_SCALE times larger, the same offset in UV spans that
 // many more texels and the near cascade shows four separate copies of each edge. Dividing by the scale keeps the game's
-// spacing in texels. The offset is in UV of the shadow map, so the output resolution plays no part. The scale is read
-// once, as vk_texture.c shadow_scale reads it: the maps keep the size they were made with.
+// spacing in texels. The offset is in UV of the shadow map, so the output resolution plays no part. The scale is the
+// one vk_texture.c applies to the maps (it changes at a submission's start when the menu changes it).
 static const float *shadow_spread_params(void) {
     static float p[4] = {0, 0, 0, 0};
-    if (p[0] == 0) {
-        int scale = cfg_int("TOTK_SHADOW_SCALE");
-        scale = scale < 1 ? 1 : scale > 4 ? 4 : scale;
-        p[0] = 1.0f / (float)scale;
-    }
+    p[0] = 1.0f / (float)vk_texture_shadow_scale();
     return p;
 }
 

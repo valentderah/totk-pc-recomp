@@ -1070,10 +1070,21 @@ spin sdk 541e54 541f98   # 32 instructions; loads
 # store at +0xf4, the height (+0x3f8). The page's size goes in just before the rounding.
 site shadow main 683604 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
 
-# Sun shadow cascade distances (runtime/resolution.c res_shadow_range switches the set on). The depth shadow parameter
-# object (main+0x6fa3c0) registers depth_shadow_near_0_1..3 = 20, 40, 80 m and depth_shadow_far_0 = 160 m as
-# immediates, and the field's .bgsdw files do not override them; with the set on they come from page +64..+76.
-site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8, [page+64]
-site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
-site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
-site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+# Sun shadow cascade distances (runtime/resolution.c res_shadow_range, while the game runs as well). The depth shadow
+# parameter object (registered in main+0x6fa3c0) holds depth_shadow_near_0_1..3 = 20, 40, 80 m and depth_shadow_far_0
+# = 160 m at +0x1948, +0x1968, +0x1988 and +0x19a8. Three places copy them into a cascade set's split array (+0x308):
+# the per-view update main+0x567cec does it every frame (main+0x5680ec, the path while +0x1fc bit 1 of the renderer is
+# clear), the set's creation in main+0x903xxx, and the single-cascade path at main+0xb0d48. With the set on, each
+# load is multiplied by the factor at page +64, so a new factor reaches the cascades at the next frame, and a
+# parameter file that sets other distances keeps them, scaled. q1 is kept on the stack around its use as the factor;
+# the register the page address goes in is overwritten by the next instruction at every site.
+site cascade main 568104 bd594900 bd594900 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x8, #0x1948]: per frame, cascade 0
+site cascade main 568420 bd596900 bd596900 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x8, #0x1968]: cascade 1
+site cascade main 568434 bd598900 bd598900 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x8, #0x1988]: cascade 2
+site cascade main 568448 bd59a900 bd59a900 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x8, #0x19a8]: cascade 3
+site cascade main 568460 bd594900 bd594900 3c9f0fe1 @page:x13 bd4041a1 1e210800 3cc107e1   # ldr s0, [x8, #0x1948]: cascades past 4
+site cascade main 9030b4 bd594aa0 bd594aa0 3c9f0fe1 @page:x9 bd404121 1e210800 3cc107e1   # ldr s0, [x21, #0x1948]: creation, cascade 0
+site cascade main 903104 bd596aa0 bd596aa0 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x21, #0x1968]: cascade 1
+site cascade main 90313c bd598aa0 bd598aa0 3c9f0fe1 @page:x12 bd404181 1e210800 3cc107e1   # ldr s0, [x21, #0x1988]: cascade 2
+site cascade main 903174 bd59aaa0 bd59aaa0 3c9f0fe1 @page:x9 bd404121 1e210800 3cc107e1   # ldr s0, [x21, #0x19a8]: cascade 3
+site cascade main b0d48 bd594940 bd594940 3c9f0fe1 @page:x8 bd404101 1e210800 3cc107e1   # ldr s0, [x10, #0x1948]: single cascade

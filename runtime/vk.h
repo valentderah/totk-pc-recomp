@@ -44,6 +44,11 @@ typedef struct VkCtx {
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
+    // Sparse physical pools (vk_memory.c alloc_physical_sparse): sparseBinding, sparseResidencyBuffer and
+    // sparseResidencyAliased, and a queue whose family binds sparse memory: the transfer-only queue when it can (it
+    // never waits behind the frame's work), else gfx_queue (sparse_shared: under vk_queue_lock). TOTK_POOL_SPARSE=0: off.
+    int has_sparse_pool, sparse_shared;
+    VkQueue sparse_queue;
     int device_index;                       // index in vkEnumeratePhysicalDevices
 } VkCtx;
 enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
@@ -168,7 +173,9 @@ void vk_hdr_release(void);   // before the device goes away
 // The support buffer's HDR parameters (vk_exec_draw.c support_fill, read by shaders/hdr_tonemap.frag).
 void vk_hdr_support(float out[4]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
-int vk_contact_strength(void);   // percent, 0 = off
+int vk_texture_shadow_scale(void);   // the TOTK_SHADOW_SCALE the shadow maps have now (vk_texture.c)
+int vk_contact_strength(void);   // percent, 0 = off; read again after a settings change
+int vk_contact_needs_restart(void);   // on, but the game's scene colour was made without the use they need
 void vk_contact_release(void);   // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
@@ -200,6 +207,17 @@ int  vk_pool_init(pool_t *p);              // CPU-visible: guest storage importe
                                            // VkBuffer; physical: device-local memory; virtual: a 64 KiB page table
 void vk_pool_fini(pool_t *p);              // drops images cut from the pool; waits for the GPU if it used the pool
 int  vk_pool_map_virtual(pool_t *v, int n, const void *requests);   // nvn_mapping_t[n], checked by the front end
+// An image bound into a physical pool's memory at [off, off+size) (bind 1), or its entry destroyed (bind 0): the
+// occupancy the census logs per physical pool (vk_memory.c phys_use_log). Other memory is ignored.
+void vk_mem_phys_note(VmaAllocation alloc, uint64_t off, uint64_t size, int bind);
+// Sparse physical pools (vk_memory.c alloc_physical_sparse): whether alloc stands for one, the image create flags
+// an image needs to be bound into one, and the bind (-1 not a sparse pool, 0 cannot, 1 bound).
+int vk_mem_phys_sparse(VmaAllocation alloc);
+int vk_mem_phys_cover(VmaAllocation alloc, VkDeviceSize off, VkDeviceSize size, int delta);
+void vk_mem_sparse_trim(void);   // chunks no image covers go once the GPU is done with them
+VkImageCreateFlags vk_mem_sparse_image_flags(void);
+int vk_mem_phys_bind_image(VmaAllocation alloc, VkDeviceSize off, VkImage img, const VkMemoryRequirements *req,
+                           int sparse_image, VkDeviceSize guest, VmaAllocation *tail, VkDeviceSize *pool_size);
 void vk_texture_register(int id, const tex_t *t, const view_t *v);  // texture descriptor slot (copied)
 void vk_sampler_register(int id, const samp_par *s);                // sampler descriptor slot (copied)
 void vk_texture_release(const tex_t *t);   // TextureFinalize: the image stays for slots that still name its storage

@@ -235,6 +235,7 @@ static void window_settings_live(void) {
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
+    if (started) res_shadow_live(), res_shadow_range(), res_output_live(), res_scale_live();   // res_init: at start
     const char *e = cfg_value("TOTK_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);

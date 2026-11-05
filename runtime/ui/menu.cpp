@@ -52,6 +52,10 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+int res_shadow_needs_restart(void);
+int res_scale_needs_restart(void);
+int res_output_needs_restart(void);
+int vk_contact_needs_restart(void);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
@@ -509,7 +513,11 @@ static void row_output_res(void) {
         snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
         names[i] = shown[i];
     }
-    opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
+    // Applies between frames on 1.2.1 and 1.4.3 for a size of the same shape up to the display's (resolution.c
+    // res_output_live);
+    // another shape or a larger size waits for a restart.
+    opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC, -1,
+                    res_output_needs_restart() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr);
 }
 
 static void row_render_scale(void) {
@@ -522,7 +530,9 @@ static void row_render_scale(void) {
         snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
         names[i] = shown[i];
     }
-    opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC);
+    // Applies between frames (resolution.c res_scale_live), up to the scene the texture heap made at start holds.
+    opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC, -1,
+                    res_scale_needs_restart() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr);
 }
 
 static void row_shadow_res(void) {
@@ -531,7 +541,10 @@ static void row_shadow_res(void) {
     const char *names[N];
     names[0] = menu_text(UI_MENU_SHADOW_RES_GAME);
     for (int i = 1; i < N; i++) names[i] = vals[i];
-    opt_choice_list("TOTK_SHADOW_RES", UI_MENU_SHADOW_RES, vals, names, N, UI_MENU_SHADOW_RES_DESC);
+    // Applies at the next frame (resolution.c res_shadow_live), except a size the texture heap made at start is too
+    // small for, which waits for a restart.
+    opt_choice_list("TOTK_SHADOW_RES", UI_MENU_SHADOW_RES, vals, names, N, UI_MENU_SHADOW_RES_DESC, -1,
+                    res_shadow_needs_restart() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr);
 }
 
 static void row_shadow_scale(void) {
@@ -677,7 +690,8 @@ static void tab_screen(float scale) {
     row_shadow_scale();
     row_shadow_range();
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
-    opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
+    opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%",
+               vk_contact_needs_restart() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr);
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};

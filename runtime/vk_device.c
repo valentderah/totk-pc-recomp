@@ -103,6 +103,74 @@ static int create_instance(void) {
     return 1;
 }
 
+static const char *missing_required(VkPhysicalDevice pd);
+static int name_has(const char *s, const char *sub);
+
+// What a physical pool needs to get its video memory page by page (vk_memory.c alloc_physical_sparse): the features,
+// and a queue family that binds sparse memory. *family: that family, the transfer-only one first.
+static int sparse_capable(VkPhysicalDevice pd, uint32_t gfx, uint32_t *family) {
+    VkPhysicalDeviceFeatures f;
+    vkGetPhysicalDeviceFeatures(pd, &f);
+    if (!f.sparseBinding || !f.sparseResidencyBuffer || !f.sparseResidencyAliased) return 0;
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+    VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+    vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, qp);
+    int ok = 0;
+    for (uint32_t i = 0; i < nq && !ok; i++)
+        if ((qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && (qp[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+            !(qp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)))
+            *family = i, ok = 1;
+    if (!ok && gfx < nq && (qp[gfx].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT)) *family = gfx, ok = 1;
+    if (!ok)   // the probe has no window to find the graphics family by: any family that binds sparse memory
+        for (uint32_t i = 0; i < nq && !ok; i++)
+            if (qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) *family = i, ok = 1;
+    free(qp);
+    return ok;
+}
+
+// Before the window and the device exist (resolution.c decides the texture heap at mem_init): whether the GPU
+// pick_device will take backs physical pools page by page. The same choice without the presentation check (it needs
+// the window): TOTK_GPU_INDEX, TOTK_GPU_NAME, else the first discrete GPU with Vulkan 1.3 and the required extensions.
+// A throwaway instance without layers or extensions; 0 when anything fails or TOTK_POOL_SPARSE=0.
+int vk_sparse_probe(void) {
+    static int done = -1;
+    if (done >= 0) return done;
+    done = 0;
+    if (!cfg_bool("TOTK_POOL_SPARSE")) return 0;
+    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
+                             .apiVersion = VK_API_VERSION_1_3};
+    VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+    VkInstance inst;
+    if (vkCreateInstance(&ci, NULL, &inst) != VK_SUCCESS) return 0;
+    uint32_t n = 0;
+    vkEnumeratePhysicalDevices(inst, &n, NULL);
+    VkPhysicalDevice *pd = calloc(n ? n : 1, sizeof *pd);
+    vkEnumeratePhysicalDevices(inst, &n, pd);
+    const char *e = cfg_get("TOTK_GPU_INDEX");
+    int want = e && *e ? atoi(e) : -1, best = -1, best_score = -1;
+    const char *name = cfg_get("TOTK_GPU_NAME");
+    for (uint32_t i = 0; i < n; i++) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pd[i], &p);
+        if ((want >= 0 && (int)i != want) || (name && *name && !name_has(p.deviceName, name))) continue;
+        if (p.apiVersion < VK_API_VERSION_1_3 || missing_required(pd[i])) continue;
+        int score = (int)i == want ? 100 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
+                  : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
+        if (score > best_score) best_score = score, best = (int)i;
+    }
+    uint32_t fam;
+    if (best >= 0) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pd[best], &p);
+        done = sparse_capable(pd[best], UINT32_MAX, &fam);
+        rt_log("vk: %s %s physical pools page by page (sparse binding)", p.deviceName, done ? "backs" : "cannot back");
+    }
+    free(pd);
+    vkDestroyInstance(inst, NULL);
+    return done;
+}
+
 static const char *const k_required_ext[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
     VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
@@ -345,6 +413,16 @@ static int create_device(void) {
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
+    // Sparse physical pools: the features are on when the driver has them (the chain above), the queue is one of the two
+    // made here. The resolution decision at start asked vk_sparse_probe; both must agree for the pools to use it.
+    uint32_t sfam = UINT32_MAX;
+    if (cfg_bool("TOTK_POOL_SPARSE") && vk_sparse_probe() && sparse_capable(g_vk.phys, g_vk.gfx_family, &sfam) &&
+        (sfam == g_vk.xfer_family || sfam == g_vk.gfx_family)) {
+        g_vk.has_sparse_pool = 1;
+        g_vk.sparse_shared = sfam == g_vk.gfx_family || g_vk.xfer_shared;
+        g_vk.sparse_queue = g_vk.sparse_shared ? g_vk.gfx_queue : g_vk.xfer_queue;
+        rt_log("vk: sparse binding on the %s queue (family %u)", g_vk.sparse_shared ? "graphics" : "transfer", sfam);
+    }
 
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
