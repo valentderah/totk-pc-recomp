@@ -8,6 +8,9 @@
 //   IsGet.<actor>                    Bool, the player has had that weapon, armor piece or material
 //   PictureBookData.<actor>.State    Enum, the actor's compendium entry: Unopened, TakePhoto or Buy
 //   PlayerStatus.MaxLife             Int, quarter hearts; PlayerStatus.MaxStamina, Float, 1000 a wheel
+//   RecipeCard.Content.<dish>.IsCooked  Bool, the recipe book: the player has cooked that dish (no flag counts
+//                                    how many times); the dishes are the PouchContent labels Item_Cook_*,
+//                                    Item_Roast*, Item_Chilled*, Item_Boiled* and the elixir of each effect
 // A flag counts only when the save holds it, so actors without one (most of Pack/Actor) drop out.
 //
 // The names shown are the game's own, in the game's language: <actor>_Name of ActorMsg/PictureBook.msbt (monsters)
@@ -186,6 +189,41 @@ static void msg_text(const uint8_t *p, size_t n, char *o, size_t cap) {
 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
+// ---- the recipe book's dishes: the cooked, roasted, frozen and boiled foods the game names, and the elixir of each
+// effect (the book keeps one entry per elixir effect, Item_Cook_C_17_<effect>, while the text names only "Elixir")
+static char **cooks;
+static size_t ncooks, cap_cooks;
+
+static void cook_add(const char *actor) {
+    if (ncooks == cap_cooks) {
+        cap_cooks = cap_cooks ? cap_cooks * 2 : 256;
+        char **g = realloc(cooks, cap_cooks * sizeof *cooks);
+        if (!g) return;
+        cooks = g;
+    }
+    if ((cooks[ncooks] = strdup(actor))) ncooks++;
+}
+
+static void cook_note(const char *actor) {
+    static const char *const prefixes[] = {"Item_Cook_", "Item_Roast", "Item_Chilled", "Item_Boiled"};
+    for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++)
+        if (!strncmp(actor, prefixes[i], strlen(prefixes[i]))) {
+            if (!strcmp(actor, "Item_Cook_C_17")) {
+                static const char *const effects[] = {"ResistHot", "ResistBurn", "ResistCold", "ResistElectric",
+                                                      "AttackUp", "QuietnessUp", "DefenseUp", "AllSpeed", "LifeMaxUp",
+                                                      "StaminaRecover", "ExStaminaMaxUp", "NotSlippy", "LightEmission"};
+                for (size_t e = 0; e < sizeof effects / sizeof *effects; e++) {
+                    char name[64];
+                    snprintf(name, sizeof name, "Item_Cook_C_17_%s", effects[e]);
+                    cook_add(name);
+                }
+            } else {
+                cook_add(actor);
+            }
+            return;
+        }
+}
+
 static void msbt_names(const uint8_t *p, size_t n) {
     if (n < 0x20 || memcmp(p, "MsgStdBn", 8) || p[8] != 0xff) return;   // little-endian files only
     uint16_t sections = (uint16_t)(p[0x0e] | p[0x0f] << 8);
@@ -224,6 +262,7 @@ static void msbt_names(const uint8_t *p, size_t n) {
             names[nnames].h = mm3(actor);
             names[nnames].text = strdup(text);
             if (names[nnames].text) nnames++;
+            cook_note(actor);
         }
     }
 }
@@ -450,6 +489,8 @@ static int live_find(void) {
         live_add(&out, &n, &cap, &enums, 0x38, 0x1c, LV_U32, flagf("PictureBookData.%s.State", actors[i]));
         live_add(&out, &n, &cap, &bools, 0x18, 0x16, LV_U8, flagf("IsGet.%s", actors[i]));
     }
+    for (size_t i = 0; i < ncooks; i++)
+        live_add(&out, &n, &cap, &bools, 0x18, 0x16, LV_U8, flagf("RecipeCard.Content.%s.IsCooked", cooks[i]));
     live_add(&out, &n, &cap, &ints, 0x28, 0x1c, LV_U32, mm3("PlayerStatus.MaxLife"));
     live_add(&out, &n, &cap, &floats, 0x28, 0x1c, LV_U32, mm3("PlayerStatus.MaxStamina"));
     qsort(out, n, sizeof *out, live_cmp);
@@ -684,6 +725,19 @@ static void compute(StatsView *s) {
     for (int i = 0; i < ni; i++) s->items += igot[i];
     for (int j = 0; j < ns; j++) s->sets += sgot[j][0] && sgot[j][1] && sgot[j][2];
     s->weapons_max = (uint32_t)nw, s->armor_max = (uint32_t)na, s->items_max = (uint32_t)ni, s->sets_max = (uint32_t)ns;
+    // The recipe book: meals, elixirs (one per effect), the roasted, frozen and boiled foods, and the failures
+    // (Dubious Food, Rock-Hard Food), each counted when its IsCooked flag is set.
+    s->meals = s->meals_max = s->elixirs = s->elixirs_max = s->simple = s->simple_max = s->dubious = 0;
+    for (size_t i = 0; i < ncooks; i++) {
+        const Flag *c = flag(flagf("RecipeCard.Content.%s.IsCooked", cooks[i]));
+        if (!c) continue;
+        const char *a = cooks[i];
+        int done = c->v != 0;
+        if (!strncmp(a, "Item_Cook_O_", 12)) s->dubious |= (uint32_t)done;
+        else if (!strncmp(a, "Item_Cook_C_17_", 15)) s->elixirs_max++, s->elixirs += (uint32_t)done;
+        else if (!strncmp(a, "Item_Cook_", 10)) s->meals_max++, s->meals += (uint32_t)done;
+        else s->simple_max++, s->simple += (uint32_t)done;
+    }
     const Flag *life = flag(mm3("PlayerStatus.MaxLife")), *stamina = flag(mm3("PlayerStatus.MaxStamina"));
     s->hearts = life ? life->v / 4 : 0;
     float st = 0;
@@ -701,10 +755,11 @@ static int nachs;
 
 #define GOALS_MAX 6
 typedef struct { const char *key, *id; StatsKind kind; int family; uint32_t goals[GOALS_MAX]; } GoalSet;
-static GoalSet sets[10 + STATS_FAMILIES];
+static GoalSet sets[24 + STATS_FAMILIES];
 static int nsets;
 
 static void set_add(const char *key, const char *id, StatsKind kind, int family, const uint32_t *goals, int n) {
+    if (nsets == (int)(sizeof sets / sizeof *sets)) return;
     GoalSet *s = &sets[nsets++];
     *s = (GoalSet){key, id, kind, family, {0}};
     for (int i = 0; i < n && i < GOALS_MAX; i++) s->goals[i] = goals[i];
@@ -728,6 +783,11 @@ static void sets_default(void) {
     set_add("armor_sets", "sets_", STATS_SETS, -1, asets, 3);
     set_add("materials", "items_", STATS_ITEMS, -1, items, 2);
     set_add("compendium", "compendium_", STATS_COMPENDIUM, -1, pb, 2);
+    static const uint32_t meals[] = {10, 50, 100}, elixirs[] = {5, 13}, simple[] = {20, 50}, dubious[] = {1};
+    set_add("meals", "meals_", STATS_MEALS, -1, meals, 3);
+    set_add("elixirs", "elixirs_", STATS_ELIXIRS, -1, elixirs, 2);
+    set_add("roasted_frozen", "simple_", STATS_SIMPLE, -1, simple, 2);
+    set_add("dubious_food", "dubious_", STATS_DUBIOUS, -1, dubious, 1);
     set_add("hearts", "hearts_", STATS_HEARTS, -1, hearts, 3);
     set_add("stamina", "stamina_", STATS_STAMINA, -1, stamina, 2);
 }
@@ -752,7 +812,10 @@ static void goals_write(void) {
     for (int s = 0; s < nsets; s++) {
         if (s == 0) at += (size_t)snprintf(out + at, cap - at, "\n# Monsters\n");
         if (s == 2) at += (size_t)snprintf(out + at, cap - at, "\n# Monsters defeated by family, all variants together\n");
-        if (s == 2 + STATS_FAMILIES) at += (size_t)snprintf(out + at, cap - at, "\n# Collection and the hero\n");
+        if (!strcmp(sets[s].key, "weapons")) at += (size_t)snprintf(out + at, cap - at, "\n# Collection\n");
+        if (!strcmp(sets[s].key, "meals"))
+            at += (size_t)snprintf(out + at, cap - at, "\n# Cooking: kinds of dishes in the recipe book\n");
+        if (!strcmp(sets[s].key, "hearts")) at += (size_t)snprintf(out + at, cap - at, "\n# The hero\n");
         at += (size_t)snprintf(out + at, cap - at, "%s =", sets[s].key);
         for (int g = 0; g < GOALS_MAX && sets[s].goals[g]; g++)
             at += (size_t)snprintf(out + at, cap - at, "%s %u", g ? "," : "", sets[s].goals[g]);
@@ -862,6 +925,10 @@ static uint32_t ach_progress(const StatsView *s, const Ach *a) {
     case STATS_SETS: return s->sets;
     case STATS_ITEMS: return s->items;
     case STATS_COMPENDIUM: return s->compendium;
+    case STATS_MEALS: return s->meals;
+    case STATS_ELIXIRS: return s->elixirs;
+    case STATS_SIMPLE: return s->simple;
+    case STATS_DUBIOUS: return s->dubious;
     case STATS_HEARTS: return s->hearts;
     case STATS_STAMINA: return (uint32_t)(s->stamina_wheels + 1e-3f);
     }
@@ -985,9 +1052,11 @@ static void stats_main(void *arg) {
         if (changed) ach_save();
         if (!is_live || s.kills != kills || s.items != items || s.weapons != weapons)
             rt_log("stats: %s: %u monsters defeated (%u of %u kinds), weapons %u/%u, armor %u/%u, sets %u/%u, "
-                   "materials %u/%u, compendium %u/%u, %u hearts, %.1f stamina wheels",
+                   "materials %u/%u, compendium %u/%u, meals %u/%u, elixirs %u/%u, roasted/frozen %u/%u, %u hearts, "
+                   "%.1f stamina wheels",
                    is_live ? "live" : path, s.kills, s.kinds, s.kinds_max, s.weapons, s.weapons_max, s.armor,
-                   s.armor_max, s.sets, s.sets_max, s.items, s.items_max, s.compendium, s.compendium_max, s.hearts,
+                   s.armor_max, s.sets, s.sets_max, s.items, s.items_max, s.compendium, s.compendium_max, s.meals,
+                   s.meals_max, s.elixirs, s.elixirs_max, s.simple, s.simple_max, s.hearts,
                    s.stamina_wheels);
     }
 }

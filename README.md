@@ -48,12 +48,14 @@ The port has achievements and play statistics of its own, on the **Achievements*
 
 - **Statistics**, read from your save: monsters defeated (in all, by kind and by family: Bokoblins, Moblins, Lizalfos,
   Lynels, Hinoxes, Taluses, Gleeoks, constructs and more), weapons, armor pieces and complete armor sets found,
-  materials, compendium entries, hearts and stamina wheels. Names are the game's own, in the game's language.
-- **Achievements** on those statistics, in four categories: Monsters, Hunting, Collection and Hero. Common monsters
+  materials, compendium entries, hearts and stamina wheels, and the kitchen: the kinds of dishes, elixirs and roasted
+  or frozen foods in your recipe book. Names are the game's own, in the game's language.
+- **Achievements** on those statistics, in five categories: Monsters, Hunting, Collection, Kitchen and Hero. Common monsters
   have higher goals in several tiers (100, 500, 1000 Bokoblins), rare ones a single goal (10 Lynels, 3 Gleeoks).
 - Each achievement is a progress bar; select one to see what it counts, how far you are and when you unlocked it.
-- The numbers update every time the game saves, autosaves included. An achievement stays unlocked even if you load
-  an older save.
+- The numbers are live: once a save is loaded they are read from the game's memory every two seconds, so a defeated
+  monster or a new item counts at once. Quit without saving and the save's numbers come back; an achievement stays
+  unlocked even then, and even if you load an older save.
 - The goals are yours to change: `achievements/goals.ini` in the profile folder (`profile` next to `totk.exe` on
   Windows) lists every statistic with its goals (`bokoblin = 100, 500, 1000`). Edit it and restart the game; delete
   it to get the defaults back. Unlock times are kept in `achievements/unlocked.txt` next to it.
