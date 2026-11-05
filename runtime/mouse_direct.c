@@ -173,7 +173,7 @@ enum { VERB_USE_BOW = 59, VERB_USE_SPECIAL_POWER = 61, VERB_DRAWN_BOW = 205, VER
 enum { PLAYER_FOUND = 1, PLAYER_ABILITY = 2, PLAYER_BOW = 4 };
 
 static int readable(uint64_t p, uint64_t n) {
-    return p >= 0x10000 && p < (1ull << 47) && !(p & 7) && plat_mem_readable(p, n);
+    return p >= 0x10000 && p < (1ull << 47) && !(p & 7) && mem_guest_readable(p, n);
 }
 static int32_t guest_s32(uint64_t at) { int32_t v; memcpy(&v, (void *)(uintptr_t)at, sizeof v); return v; }
 static int game_object(uint64_t p, uint64_t n) {   // readable, its vtable in main's image

@@ -45,7 +45,7 @@ void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 void rt_log(const char *fmt, ...) { (void)fmt; }
 float cam_speed_applied(void) { return 1; }
 uint64_t input_buttons_last(void) { return 0; }
-int plat_mem_readable(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // no player: on-foot gains
+int mem_guest_readable(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // no player: on-foot gains
 static float scalar(__uint128_t v) { float f; memcpy(&f,&v,4); return f; }
 int main(void) {
     assert(hook && activity_hook);
