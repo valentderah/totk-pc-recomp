@@ -84,6 +84,7 @@ typedef enum {
     UI_ACH_GROUP_LIST,
     UI_ACH_NO_SAVE,
     UI_ACH_FROM_SAVE,
+    UI_ACH_LIVE,
     UI_ACH_STATS_DESC,
     UI_ACH_FAMILY_DESC,
     UI_ACH_DESC,
