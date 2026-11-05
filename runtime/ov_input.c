@@ -93,6 +93,7 @@ static void npad_states(Cpu *c, uint32_t want) {
     if (live) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
+        armor_sets_filter(&s.buttons, &s.ry);
     }
     *out = s;
     ret_x(c, 1);

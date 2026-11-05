@@ -73,6 +73,8 @@ typedef enum {
     UI_MENU_PLAY_TIME, UI_MENU_PLAY_TIME_DESC,
     UI_MENU_PLAY_TIME_HM,        // hours and minutes: "%llu h %02u min" (unsigned long long hours, unsigned minutes)
     UI_MENU_PLAY_TIME_SESSION,   // note under the total: "this run: %s" (the hours and minutes above)
+    // the Game modifications tab: changes to how the game plays, all off by default
+    UI_MENU_TAB_GAMEMODS, UI_MENU_ARMOR_SETS, UI_MENU_ARMOR_SETS_DESC,
 
     // Mods: the port's own patches and the player's mods folder (mods.c)
     UI_MENU_MODS_BUILTIN, UI_MENU_MODS_INSTALLED,
@@ -239,6 +241,11 @@ typedef enum {
     UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
     UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
     UI_MENU_LAST_ID = UI_MENU_CHEAT_UNSUPPORTED_DESC,
+    // Armor sets (armor_sets.c), drawn in the game's own windows in the game's language (ui_text)
+    UI_ARMOR_REGISTER,        // the item window's row on an armour piece
+    UI_ARMOR_CLEAR, UI_ARMOR_CLEAR_YES,   // the item window's row and the question it opens
+    UI_ARMOR_SET_FMT,         // "%d": a set's number, a row of the set picker
+    UI_ARMOR_STRIP_FMT,       // "%d": a set's number, the name under the shortcut strip
     UI_TEXT_COUNT
 } UiTextId;
 
