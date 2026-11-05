@@ -870,7 +870,7 @@ static void tab_achievements(float scale) {
     if (!s.valid) {
         opt_text(UI_ACH_NO_SAVE);
     } else {
-        char when[32], note[96];
+        char when[32], note[256];   // the Russian text is about 150 bytes of UTF-8
         ach_date(s.when, when, sizeof when);
         snprintf(note, sizeof note, menu_text(s.live ? UI_ACH_LIVE : UI_ACH_FROM_SAVE), when);
         opt_text_str(note);
