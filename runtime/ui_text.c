@@ -255,6 +255,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_ACH_UNLOCKED_AT] = "Unlocked %s",
     [UI_ACH_LOCKED] = "Not unlocked yet.",
     [UI_ACH_KEEPS] = "Counted from the save the game wrote last; once unlocked it stays unlocked, even with an older save.",
+    [UI_ACH_CAT_MONSTERS] = "Monsters",
+    [UI_ACH_CAT_HUNT] = "Hunting",
+    [UI_ACH_CAT_COLLECTION] = "Collection",
+    [UI_ACH_CAT_HERO] = "Hero",
     [UI_MENU_MODS_BUILTIN] = "Built into the port", [UI_MENU_MODS_INSTALLED] = "Installed mods",
     [UI_MENU_MODS_NONE] = "No mods yet. Unpack a mod into the mods folder, one folder per mod with its romfs folder "
                           "inside, and restart the game. TKMM can export its merged mods into a folder there too.",
@@ -834,6 +838,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_ACH_UNLOCKED_AT] = "Открыто %s",
     [UI_ACH_LOCKED] = "Ещё не открыто.",
     [UI_ACH_KEEPS] = "Считается по последнему сохранению игры; открытое достижение остаётся открытым, даже со старым сохранением.",
+    [UI_ACH_CAT_MONSTERS] = "Монстры",
+    [UI_ACH_CAT_HUNT] = "Охота",
+    [UI_ACH_CAT_COLLECTION] = "Коллекция",
+    [UI_ACH_CAT_HERO] = "Герой",
     [UI_MENU_MODS_BUILTIN] = "Встроенные в порт", [UI_MENU_MODS_INSTALLED] = "Установленные моды",
     [UI_MENU_MODS_NONE] = "Модов пока нет. Распакуйте мод в папку mods, каждый мод в свою папку с папкой romfs внутри, и "
                           "перезапустите игру. TKMM тоже может выгрузить туда объединённые моды отдельной папкой.",
@@ -1251,6 +1259,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_ACH_UNLOCKED_AT] = "Desbloqueada em %s",
     [UI_ACH_LOCKED] = "Ainda não desbloqueada.",
     [UI_ACH_KEEPS] = "Contado a partir do último save do jogo; depois de desbloqueada continua desbloqueada, mesmo com um save mais antigo.",
+    [UI_ACH_CAT_MONSTERS] = "Monstros",
+    [UI_ACH_CAT_HUNT] = "Caçada",
+    [UI_ACH_CAT_COLLECTION] = "Coleção",
+    [UI_ACH_CAT_HERO] = "Herói",
     [UI_MENU_MODS_BUILTIN] = "Embutidos no port", [UI_MENU_MODS_INSTALLED] = "Mods instalados",
     [UI_MENU_MODS_NONE] = "Nenhum mod ainda. Descompacte um mod na pasta mods, uma pasta por mod com a pasta romfs dentro, "
                           "e reinicie o jogo. O TKMM também pode exportar os mods mesclados para uma pasta ali.",
@@ -1874,6 +1886,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_ACH_UNLOCKED_AT] = "解锁于 %s",
     [UI_ACH_LOCKED] = "尚未解锁。",
     [UI_ACH_KEEPS] = "根据游戏最后写入的存档计算；解锁后即使读取较早的存档也保持解锁。",
+    [UI_ACH_CAT_MONSTERS] = "魔物",
+    [UI_ACH_CAT_HUNT] = "狩猎",
+    [UI_ACH_CAT_COLLECTION] = "收集",
+    [UI_ACH_CAT_HERO] = "勇者",
     [UI_MENU_MODS_BUILTIN] = "移植版内置", [UI_MENU_MODS_INSTALLED] = "已安装的模组",
     [UI_MENU_MODS_NONE] = "还没有模组。把模组解压到 mods 文件夹，每个模组一个文件夹，里面放 romfs 文件夹，然后重启游戏。"
                           "TKMM 也可以把合并后的模组导出到那里的一个文件夹。",

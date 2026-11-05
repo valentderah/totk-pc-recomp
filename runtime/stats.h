@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define STATS_FAMILIES 18   // monster families with a defeat count of their own (stats.c kFamilies)
-#define STATS_ACH_MAX 64
+#define STATS_ACH_MAX 96
 
 typedef enum {
     STATS_KILLS, STATS_KINDS, STATS_FAMILY, STATS_WEAPONS, STATS_ARMOR, STATS_SETS, STATS_ITEMS, STATS_COMPENDIUM,
