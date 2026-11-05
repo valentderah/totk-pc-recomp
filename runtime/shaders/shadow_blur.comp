@@ -1,0 +1,54 @@
+#version 450
+// The game's two blurs of its quarter-size shadow mask, with depth (runtime/vk_shadowblur.c, TOTK_SHADOW_BLUR=depth).
+// The game spreads each texel over nine along the row, then over nine along the column, neither reading depth, so a
+// foreground object's lit value lands on the shadowed background next to it (and the reverse), as a light strip around
+// silhouettes. Here each tap counts only while its depth is on the pixel's surface. A surface seen at a grazing angle
+// changes depth across the taps, so the allowance grows with the tap's distance.
+// pc.axis.x = 1, the row: result takes all of the depth-aware blur of source.
+// pc.axis.y = 1, the column: source is the row's result and keep the game's merged mask, whose red is the plain blur of
+// source (the merge samples it) and whose other channels are other work. Result is keep with the difference between
+// the depth-aware and the plain blur added to red, so any term the merge gave red stays.
+// The merge also sorts the screen into all-lit, all-dark and mixed tiles from the row's result, and only mixed tiles get
+// per-pixel shadow. The plain blur leaks across a silhouette, which is what marks the tile there as mixed; without the
+// leak, the last texel before the edge stays at exactly 1, its tile counts as all lit, and a shadowed pixel at the end of
+// the tile is drawn lit: a thin bright line that shows while an edge sits on a tile's last column. So where the plain
+// blur would have stored a value between 0 and 1, the row's red stays one step inside that range.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 1) uniform sampler2D depth;   // linear depth at the mask's size, which the mask was made from
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D result;
+layout(set = 0, binding = 3) uniform sampler2D keep;
+
+layout(push_constant) uniform PC { ivec2 size; ivec2 axis; float slope; } pc;
+
+// The game's nine-tap gaussian at one texel per step: the shape measured from its result, centre first.
+const float WEIGHT[5] = float[](0.2270270, 0.1945946, 0.1216216, 0.0540540, 0.0162162);
+const float STEP = 1.0 / 255.0;   // of the RGBA8 mask; the weights sum to just under 1, so values compare as stored
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    float d0 = texelFetch(depth, p, 0).x;
+    vec4 centre = texelFetch(source, p, 0), sum = centre * WEIGHT[0];
+    float total = WEIGHT[0], plain = centre.r * WEIGHT[0];
+    for (int i = 1; i < 5; i++) {
+        for (int side = -1; side <= 1; side += 2) {
+            ivec2 q = clamp(p + pc.axis * side * i, ivec2(0), pc.size - 1);
+            float allowed = max(d0, 1e-5) * pc.slope * float(i);
+            float w = WEIGHT[i] * (1.0 - smoothstep(allowed, 2.0 * allowed, abs(texelFetch(depth, q, 0).x - d0)));
+            vec4 s = texelFetch(source, q, 0);
+            sum += s * w;
+            total += w;
+            plain += s.r * WEIGHT[i];
+        }
+    }
+    vec4 blurred = sum / total;
+    if (pc.axis.x == 1) {
+        if (plain >= 0.5 * STEP && plain < 1.0 - 0.5 * STEP) blurred.r = clamp(blurred.r, STEP, 1.0 - STEP);
+        imageStore(result, p, blurred);
+    } else {
+        vec4 merged = texelFetch(keep, p, 0);
+        imageStore(result, p, vec4(merged.r + blurred.r - plain, merged.gba));
+    }
+}

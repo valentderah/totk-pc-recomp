@@ -135,6 +135,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Moves the steps where shadows turn softer (the game's 20, 40, 80 and 160 m) further "
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
                                   "Takes effect at the next start.",
+    [UI_MENU_SHADOW_BLUR] = "Shadow edges",
+    [UI_MENU_SHADOW_BLUR_DESC] = "The game blurs its shadows without checking depth, which leaves a light strip on shadowed ground beside anything in front of it. Depth-aware stops the blur at those edges. Game keeps the original look. Applies at once.",
+    [UI_MENU_SHADOW_BLUR_DEPTH] = "Depth-aware",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
@@ -599,6 +602,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Отодвигает границы, за которыми тени становятся мягче (в игре 20, 40, 80 и 160 м). "
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
                                   "разрешение теней. Действует после перезапуска.",
+    [UI_MENU_SHADOW_BLUR] = "Края теней",
+    [UI_MENU_SHADOW_BLUR_DESC] = "Игра размывает тени без учёта глубины, из-за чего на затенённом фоне рядом с предметами перед ним остаётся светлая полоса. С учётом глубины размытие останавливается на этих краях. Игра сохраняет исходный вид. Применяется сразу.",
+    [UI_MENU_SHADOW_BLUR_DEPTH] = "С учётом глубины",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
@@ -1396,6 +1402,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
+    [UI_MENU_SHADOW_BLUR] = "Bordas das sombras",
+    [UI_MENU_SHADOW_BLUR_DESC] = "O jogo desfoca as sombras sem considerar a profundidade, o que deixa uma faixa clara no fundo sombreado ao lado do que está na frente dele. Com profundidade, o desfoque para nessas bordas. Jogo mantém o visual original. Aplica na hora.",
+    [UI_MENU_SHADOW_BLUR_DEPTH] = "Com profundidade",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
@@ -1989,6 +1998,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
+    [UI_MENU_SHADOW_BLUR] = "阴影边缘",
+    [UI_MENU_SHADOW_BLUR_DESC] = "游戏模糊阴影时不考虑深度，使前方物体旁的阴影背景上留下一条亮带。深度感知会让模糊止于这些边缘。“游戏”保留原始效果。立即生效。",
+    [UI_MENU_SHADOW_BLUR_DEPTH] = "深度感知",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",

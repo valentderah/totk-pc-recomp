@@ -546,6 +546,12 @@ static void row_shadow_range(void) {
     opt_choice_list("TOTK_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC);
 }
 
+static void row_shadow_blur(void) {   // vk_shadowblur.c
+    static const char *const vals[] = {"game", "depth"};
+    const char *names[] = {menu_text(UI_MENU_ANISO_GAME), menu_text(UI_MENU_SHADOW_BLUR_DEPTH)};
+    opt_choice_list("TOTK_SHADOW_BLUR", UI_MENU_SHADOW_BLUR, vals, names, 2, UI_MENU_SHADOW_BLUR_DESC);
+}
+
 static void row_gpu(void) {
     const char *vals[MAX_GPUS + 1], *names[MAX_GPUS + 1];
     char idx[MAX_GPUS][4];
@@ -674,6 +680,7 @@ static void tab_screen(float scale) {
     opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);
     row_shadow_scale();
     row_shadow_range();
+    row_shadow_blur();
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);

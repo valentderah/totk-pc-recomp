@@ -184,6 +184,8 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
+// vk_exec_draw.c: FNV-1a of the bound program's fragment shader guest code (memoised per program), 0 without one.
+uint64_t vk_exec_fs_hash(VkExec *ex, uint32_t *len);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
                                 uint32_t level, uint32_t base, uint32_t layers, int blocks);   // kept for the image's life
 // vk_exec_xfer.c: OP_COPY_B2B, OP_COPY_B2T, OP_COPY_T2B, OP_COPY_T2T, OP_CLEAR_TEX, OP_SIGNAL_EVENT, OP_REPORT_COUNTER,
@@ -193,6 +195,19 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // sample DLSS's output vk_dlaa_swap_view in its place, so the game's scaling draw scales DLSS's picture.
 extern const VkTexImage *vk_dlaa_swap_img;
 extern VkImageView vk_dlaa_swap_view;
+// vk_shadowblur.c: the game's blurred shadow mask vk_shadowblur_swap_img is sampled through vk_shadowblur_swap_view,
+// the depth-aware blur, by the one pass that reads it (vk_shadowblur_swap_hits, counted by tex_info, ends the swap).
+// vk_shadowblur_watch: tex_info tells vk_shadowblur_sampled what the blur draw samples.
+void vk_shadowblur_draw(VkExec *ex);
+extern int vk_shadowblur_watch;
+void vk_shadowblur_sampled(VkExec *ex, const VkTexImage *img);
+void vk_shadowblur_pass_begin(VkExec *ex);
+void vk_shadowblur_flush(VkExec *ex);
+void vk_shadowblur_pass_end(VkExec *ex);
+void vk_shadowblur_present(uint64_t frame);
+extern const VkTexImage *vk_shadowblur_swap_img;
+extern VkImageView vk_shadowblur_swap_view;
+extern uint32_t vk_shadowblur_swap_hits;
 // vk_contact.c: a pass about to begin (its targets resolved, no pass open), and a dispatch or copy about to be recorded
 void vk_contact_pass_begin(VkExec *ex);
 void vk_contact_flush(VkExec *ex);
