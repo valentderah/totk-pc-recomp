@@ -1,5 +1,6 @@
 // --probe-mods: the mods folder scan, its order and switches (mods.c). Builds a mods folder of its own next to totk.exe,
-// scans it and removes it. Needs no game files.
+// scans it and removes it. Also the resource size table's entries of the members of the mods' packs (restbl_probe.c).
+// Needs no game files.
 #include <stdio.h>
 #include <string.h>
 
@@ -7,6 +8,7 @@
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "restbl.h"
 
 static int fails;
 #define CHECK(c, what) do { if (!(c)) { fails++; fprintf(stderr, "FAIL mods: %s\n", what); } } while (0)
@@ -126,5 +128,6 @@ int probe_mods(void) {
     }
     remove_tree(root);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
-    return fails ? 1 : 0;
+    int table = restbl_probe();
+    return fails || table ? 1 : 0;
 }

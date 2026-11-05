@@ -17,6 +17,9 @@
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
+# Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
+# still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
+# frame_queue = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
@@ -144,7 +147,10 @@
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
 # (3:2). Any other size
 # gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start.
+# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
+# shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
+# a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
+# the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
@@ -158,6 +164,10 @@
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at
 # once.
 # aspect = fit
+# Shape of the pre-rendered movies (16:9) when the game resolution (output_res) is not 16:9: keep, the default, draws
+# them in their own shape with black bars at the sides or above and below; stretch fills the whole picture, as the game
+# does. Read when a movie starts, so a change takes effect at the next movie.
+# movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100
@@ -301,15 +311,20 @@
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
-# right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.
+# right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
+# the map to the keys and the pad. Changes while the game runs.
 # menu_cursor = 1
-# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
+# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
+# camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
+# The mouse's camera motion times this while the bow is drawn (0.1 to 3; mouse_mode = direct, game 1.4.3), on top of
+# the 0.08 degrees per count every camera turns, the bow's included. Changes while the game runs.
+# mouse_aim_scale = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
 # none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and

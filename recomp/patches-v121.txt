@@ -103,6 +103,104 @@ set pooloff  TOTK_POOL_OFFSET_PATCH 1
 site pooloff main ad43f0 93407f22 2a1903e2   # sxtw x2, w25 -> mov w2, w25 (SetStorage offset)
 site pooloff main ad440c 8b39c101 8b394101   # add x1, x8, w25, sxtw -> add x1, x8, w25, uxtw (packaged data source)
 
+# Direct mouse camera (runtime/mouse_direct.c; the same hooks as patches-v143.txt, mapped by enclosing function to the
+# 1.2.1 main, each original word checked). The camera input update (main+0xd18088, 1.4.3 0x874c1c) after its dead zone,
+# clamp and StickExponent keeps x in s11 (1.4.3 s9); the host callback performs the displaced store and adds raw mouse
+# counts. The free orbit (main+0xae28b8) keeps its final angles at [sp+0x3c] / [sp+0x40], Ultrahand's curve results
+# (main+0x1768ebc) are s9 and s15. The host functions are at page +0xfd0 .. +0xf80; the page is main+0x472b000.
+set mouse_direct TOTK_MOUSE_DIRECT_PATCH 1
+site mouse_direct main d18140 bd04228b 94e84fa4   # camera input: str s11, [x20, #0x420]
+site mouse_direct main d181fc 6d4123e9 94e84f71   # camera input activity: ldp d9, d8, [sp, #0x10]
+site mouse_direct main ae28e8 f9400408 94f125b2   # free orbit begin: ldr x8, [x0, #8]
+site mouse_direct main ae355c bd403fed 94f12291   # free orbit angles: ldr s13, [sp, #0x3c]
+site mouse_direct main 176949c b9001be9 94bf0abd   # Ultrahand input: str w9, [sp, #0x18]
+# The aiming, scope, ability, horse and Purah Pad cameras: per axis, the stick load and the angle the turn is added to,
+# each a bl to page +0xf80 told apart by the return address (runtime/mouse_direct.c load_sites_121). Where 1.2.1 adds
+# the turn in a shared helper (main+0x1bb70e8, 0x1bd0d00: *p = wrap(*p + s0)), the hook is on the turn the helper takes
+# (Horse) or on the store of the helper's result (Aiming's pitch target). Every enclosing function saves x30 in its
+# prologue and reads it only to return.
+site mouse_direct main 1d34338 bd4426c1 94a7df12   # Aiming: ldr s1, [x22, #0x424] (stick y)
+site mouse_direct main 1d34374 bd015660 94a7df03   # Aiming: str s0, [x19, #0x154] (pitch target: +0x15c + turn from a helper)
+site mouse_direct main 1d34584 bd4422c1 94a7de7f   # Aiming: ldr s1, [x22, #0x420] (stick x)
+site mouse_direct main 1d345d0 bc5b83a1 94a7de6c   # Aiming: ldur s1, [x29, #-0x48] (yaw)
+site mouse_direct main 1d35fd4 bd4422e0 94a7d7eb   # AimingTelescope: ldr s0, [x23, #0x420] (stick x)
+site mouse_direct main 1d35fe0 bd4426e9 94a7d7e8   # AimingTelescope: ldr s9, [x23, #0x424] (stick y)
+site mouse_direct main 1d36280 bd416260 94a7d740   # AimingTelescope: ldr s0, [x19, #0x160] (pitch)
+site mouse_direct main 1d36224 bd405be1 94a7d757   # AimingTelescope: ldr s1, [sp, #0x58] (yaw)
+site mouse_direct main 1d48478 bd4422cf 94a78ec2   # SpecialPower: ldr s15, [x22, #0x420] (stick x)
+site mouse_direct main 1d48480 bd4426cc 94a78ec0   # SpecialPower: ldr s12, [x22, #0x424] (stick y)
+site mouse_direct main 1d48bb4 bd416262 94a78cf3   # SpecialPower: ldr s2, [x19, #0x160] (pitch)
+site mouse_direct main 1d48b38 bc5a83a1 94a78d12   # SpecialPower: ldur s1, [x29, #-0x58] (yaw)
+site mouse_direct main 1d4070c bd442288 94a7ae1d   # Horse: ldr s8, [x20, #0x420] (stick x)
+site mouse_direct main 1d40740 bd401be0 94a7ae10   # Horse: ldr s0, [sp, #0x18] (yaw turn, which a helper adds to +0x68)
+site mouse_direct main 1d408f8 bd4426a8 94a7ada2   # Horse: ldr s8, [x21, #0x424] (stick y)
+site mouse_direct main 1d409ac bd406661 94a7ad75   # Horse: ldr s1, [x19, #0x64] (pitch)
+site mouse_direct main 1d48ccc bd4422c9 94a78cad   # SpecialPower offset mode: ldr s9, [x22, #0x420] (stick x)
+site mouse_direct main 1d48cf0 bd41da61 94a78ca4   # SpecialPower offset mode: ldr s1, [x19, #0x1d8] (offset x)
+site mouse_direct main 1d48cfc bd4426c9 94a78ca1   # SpecialPower offset mode: ldr s9, [x22, #0x424] (stick y)
+site mouse_direct main 1d48d18 bd41de61 94a78c9a   # SpecialPower offset mode: ldr s1, [x19, #0x1dc] (offset y)
+site mouse_direct main 1d485f8 bd400400 94a78e62   # SpecialPower: ldr s0, [x0, #0x4] (offset scale, read only)
+site mouse_direct main 1d37b44 bd4426ad 94a7d10f   # CameraFinder: ldr s13, [x21, #0x424] (stick y)
+site mouse_direct main 1d37b68 bd405261 94a7d106   # CameraFinder: ldr s1, [x19, #0x50] (pitch)
+site mouse_direct main 1d37bcc bd4422ad 94a7d0ed   # CameraFinder: ldr s13, [x21, #0x420] (stick x)
+site mouse_direct main 1d37bf4 bd405be1 94a7d0e3   # CameraFinder: ldr s1, [sp, #0x58] (yaw)
+# The other player cameras. ClimbObj, EventMultiTalk and EventTalkManual load an angle with a pre-indexed load whose
+# write-back the code after it needs; the mov before it adds the offset instead and the hook loads [base] (no register
+# between the two words, no branch into them). Wakeboard, ShieldSurfing and Tail read the stick twice, once for its
+# length and once for its angle: the first pair gives the same values without degrees of its own (REPEAT).
+site mouse_direct main 1d38e08 bd442301 94a7cc5e   # ClimbObj: ldr s1, [x24, #0x420]
+site mouse_direct main 1d38e10 bd409261 94a7cc5c   # ClimbObj: ldr s1, [x19, #0x90] (yaw)
+site mouse_direct main 1d38dac bd442701 94a7cc75   # ClimbObj: ldr s1, [x24, #0x424]
+site mouse_direct main 1d38da4 aa1303f6 91022276   # ClimbObj: mov x22, x19 -> add x22, x19, #0x88
+site mouse_direct main 1d38db8 bc488ec1 94a7cc72   # ClimbObj: ldr s1, [x22, #0x88]! (pitch), as ldr s1, [x22]
+site mouse_direct main 1d50738 bd4422c0 94a76e12   # Wakeboard: ldr s0, [x22, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d50740 bd4426c1 94a76e10   # Wakeboard: ldr s1, [x22, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d50768 bd4426c0 94a76e06   # Wakeboard: ldr s0, [x22, #0x424] (stick y, kept)
+site mouse_direct main 1d5076c bd4422c1 94a76e05   # Wakeboard: ldr s1, [x22, #0x420]
+site mouse_direct main 1d50e5c bd40da60 94a76c49   # Wakeboard: ldr s0, [x19, #0xd8] (pitch)
+site mouse_direct main 1d508bc bd401fa0 94a76db1   # Wakeboard: ldr s0, [x29, #0x1c] (pitch turn, cut to the pad)
+site mouse_direct main 1d50f20 bd403bec 94a76c18   # Wakeboard: ldr s12, [sp, #0x38] (yaw)
+site mouse_direct main 1d51e10 bd4422cd 94a7685c   # WaterfallClimb: ldr s13, [x22, #0x420]
+site mouse_direct main 1d51fb8 b9403be8 94a767f2   # WaterfallClimb: ldr w8, [sp, #0x38] (yaw)
+site mouse_direct main 1d51f48 bd4426c9 94a7680e   # WaterfallClimb: ldr s9, [x22, #0x424]
+site mouse_direct main 1d4a11c bd442280 94a78799   # Tail: ldr s0, [x20, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d4a124 bd442681 94a78797   # Tail: ldr s1, [x20, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d4a14c bd442680 94a7878d   # Tail (climbing): ldr s0, [x20, #0x424] (stick y)
+site mouse_direct main 1d4a150 bd442281 94a7878c   # Tail: ldr s1, [x20, #0x420]
+site mouse_direct main 1d4a4a0 bd40c260 94a786b8   # Tail (climbing): ldr s0, [x19, #0xc0] (yaw)
+site mouse_direct main 1d4a514 bd40b661 94a7869b   # Tail (climbing): ldr s1, [x19, #0xb4] (pitch)
+site mouse_direct main 1d4c930 bd442320 94a77d94   # LockOn / Target: ldr s0, [x25, #0x420]
+site mouse_direct main 1d4c958 bd442321 94a77d8a   # LockOn / Target: ldr s1, [x25, #0x420] (stick x)
+site mouse_direct main 1d4c97c bd402be0 94a77d81   # LockOn / Target: ldr s0, [sp, #0x28] (yaw turn)
+site mouse_direct main 1d4c98c bd402be9 94a77d7d   # LockOn / Target: ldr s9, [sp, #0x28] (yaw turn)
+site mouse_direct main 1d4cd5c bd442721 94a77c89   # LockOn / Target: ldr s1, [x25, #0x424] (stick y)
+site mouse_direct main 1d4cd80 bd402be0 94a77c80   # LockOn / Target: ldr s0, [sp, #0x28] (pitch turn)
+site mouse_direct main 1d4cd90 bd402beb 94a77c7c   # LockOn / Target: ldr s11, [sp, #0x28] (pitch turn)
+site mouse_direct main 1d443e8 bd4426a9 94a79ee6   # LockOnAimingAt: ldr s9, [x21, #0x424] (stick y)
+site mouse_direct main 1d44430 bd419a61 94a79ed4   # LockOnAimingAt: ldr s1, [x19, #0x198] (pitch offset)
+site mouse_direct main 1d44444 bd4422a9 94a79ecf   # LockOnAimingAt: ldr s9, [x21, #0x420] (stick x)
+site mouse_direct main 1d44490 bd419e61 94a79ebc   # LockOnAimingAt: ldr s1, [x19, #0x19c] (yaw offset)
+site mouse_direct main 1d418dc bd44234b 94a7a9a9   # HorseLockOnEmpty: ldr s11, [x26, #0x420]
+site mouse_direct main 1d3a484 bd44230b 94a7c6bf   # EventMultiTalk: ldr s11, [x24, #0x420]
+site mouse_direct main 1d3a3f8 bd44270b 94a7c6e2   # EventMultiTalk: ldr s11, [x24, #0x424] (stick y)
+site mouse_direct main 1d3a418 aa1303f7 91017277   # EventMultiTalk: mov x23, x19 -> add x23, x19, #0x5c
+site mouse_direct main 1d3a420 bc45cee1 94a7c6d8   # EventMultiTalk: ldr s1, [x23, #0x5c]! (pitch), as ldr s1, [x23]
+site mouse_direct main 1d3a4dc aa1303f6 91019276   # EventMultiTalk: mov x22, x19 -> add x22, x19, #0x64
+site mouse_direct main 1d3a4e4 bc464ec1 94a7c6a7   # EventMultiTalk: ldr s1, [x22, #0x64]! (yaw), as ldr s1, [x22]
+site mouse_direct main 1d3e2b0 bd442729 94a7b734   # EventTalkManual: ldr s9, [x25, #0x424] (stick y)
+site mouse_direct main 1d3e2d4 aa1303f8 9101d278   # EventTalkManual: mov x24, x19 -> add x24, x19, #0x74
+site mouse_direct main 1d3e2d8 bc474f01 94a7b72a   # EventTalkManual: ldr s1, [x24, #0x74]! (pitch), as ldr s1, [x24]
+site mouse_direct main 1d3e33c bd442329 94a7b711   # EventTalkManual: ldr s9, [x25, #0x420] (stick x)
+site mouse_direct main 1d3e360 aa1303f6 9101f276   # EventTalkManual: mov x22, x19 -> add x22, x19, #0x7c
+site mouse_direct main 1d3e364 bc47cec1 94a7b707   # EventTalkManual: ldr s1, [x22, #0x7c]! (yaw), as ldr s1, [x22]
+site mouse_direct main 1d46108 bd4422e0 94a7979e   # ShieldSurfing: ldr s0, [x23, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d46110 bd4426e1 94a7979c   # ShieldSurfing: ldr s1, [x23, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d46138 bd4426e0 94a79792   # ShieldSurfing: ldr s0, [x23, #0x424] (stick y, kept)
+site mouse_direct main 1d4613c bd4422e1 94a79791   # ShieldSurfing: ldr s1, [x23, #0x420] (stick x)
+site mouse_direct main 1d46788 bd40de60 94a795fe   # ShieldSurfing: ldr s0, [x19, #0xdc] (pitch)
+site mouse_direct main 1d46910 bd401fa0 94a7959c   # ShieldSurfing: ldr s0, [x29, #0x1c] (pitch turn, cut to the pad)
+site mouse_direct main 1d467b4 bd403bec 94a795f3   # ShieldSurfing: ldr s12, [sp, #0x38] (yaw)
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v121/exefs --patches recomp/patches-v121.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main ac600 ac620 ac630   # 13 instructions; loads
