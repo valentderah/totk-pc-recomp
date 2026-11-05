@@ -283,6 +283,11 @@
 # Gamepad motion controls (0 = off) and vibration (0 = off).
 # motion = 1
 # rumble = 1
+# The mouse as the controller's motion sensor instead of the camera, for Steam Input's gyro to mouse
+# (docs/controls.md, "Mouse as gyro"; give Steam's gyro a button activator, not a touch one), and its mouse counts per
+# full turn (360 to 20000; match Steam's).
+# mouse_gyro = 0
+# mouse_gyro_dots = 6545
 # Rumble strength in percent (0 to 300; 0 = off) and the exponent on the amplitude (0.2 to 1.5; lower = weak pulses
 # stronger, 1 = linear). rumble_triggers = 1 also drives the impulse triggers of an Xbox pad.
 # rumble_strength = 130

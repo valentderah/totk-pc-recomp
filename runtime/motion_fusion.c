@@ -9,7 +9,9 @@
 // gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; yaw has no reference and drifts with the
 // gyro's bias. The newest MOTION_RING samples are kept; reads are newest first. A restart (StartSixAxisSensor) drops
 // the samples before it: reads return nothing until the next sample, which starts a fresh frame and angle; sampling
-// numbers go on. The feeding thread writes, guest threads read, both under the instance's SRW lock.
+// numbers go on. A source that knows its pose exactly (the mouse, motion_mouse.c) gives the direction itself through
+// motion_feed_pose instead of the fusion, and watches motion_restarts to start its pose over with the angle. The
+// feeding thread writes, guest threads read, both under the instance's SRW lock.
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,7 @@ struct MotionFusion {
     double R[3][3];   // controller -> reference; row i = reference axis i in controller coordinates
     double angle[3];
     int restart;
+    unsigned restarts;   // motion_restart calls so far
 };
 
 MotionFusion *motion_new(void) {
@@ -107,6 +110,22 @@ static void integrate(double R[3][3], const double gyro[3], const double acc[3],
     orthonormalize(R);
 }
 
+// Under the lock: one state, the angle integrated over dt. dir[i * 3 + j] is component j of controller axis i in the
+// reference frame.
+static void push(MotionFusion *m, const double acc[3], const double gyro[3], const double dir[9], double dt) {
+    MotionState *s = &m->ring[m->produced % MOTION_RING];
+    *s = (MotionState){.delta_ns = (int64_t)(dt * 1e9), .sampling = (int64_t)m->produced + 1, .attributes = 1};
+    for (int i = 0; i < 3; i++) {
+        double rps = gyro[i] / (2 * M_PI);
+        m->angle[i] += rps * dt;
+        s->acc[i] = (float)acc[i];
+        s->gyro[i] = (float)rps;
+        s->angle[i] = (float)m->angle[i];
+    }
+    for (int k = 0; k < 9; k++) s->dir[k] = (float)dir[k];
+    m->produced++;
+}
+
 void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uint64_t now) {
     plat_mutex_lock(&m->lock);
     double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
@@ -117,18 +136,34 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uin
         memset(m->angle, 0, sizeof m->angle);
         m->restart = 0;
     } else integrate(m->R, gyro, acc, dt);
-    MotionState *s = &m->ring[m->produced % MOTION_RING];
-    *s = (MotionState){.delta_ns = (int64_t)(dt * 1e9), .sampling = (int64_t)m->produced + 1, .attributes = 1};
-    for (int i = 0; i < 3; i++) {
-        double rps = gyro[i] / (2 * M_PI);
-        m->angle[i] += rps * dt;
-        s->acc[i] = (float)acc[i];
-        s->gyro[i] = (float)rps;
-        s->angle[i] = (float)m->angle[i];
-        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)m->R[j][i];   // direction i = controller axis i in the reference frame
-    }
-    m->produced++;
+    double dir[9];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) dir[i * 3 + j] = m->R[j][i];   // direction i = controller axis i in the reference frame
+    push(m, acc, gyro, dir, dt);
     plat_mutex_unlock(&m->lock);
+}
+
+int motion_feed_pose(MotionFusion *m, const double acc[3], const double gyro[3], const double dir[9], double dt,
+                     uint64_t now, unsigned restarts) {
+    plat_mutex_lock(&m->lock);
+    int ok = m->restarts == restarts;   // a Start since the caller looked: its pose is about to start over, drop this one
+    if (ok) {
+        m->last_ns = now;
+        if (m->restart) {
+            memset(m->angle, 0, sizeof m->angle);
+            m->restart = 0;
+        }
+        push(m, acc, gyro, dir, dt);
+    }
+    plat_mutex_unlock(&m->lock);
+    return ok;
+}
+
+unsigned motion_restarts(MotionFusion *m) {
+    plat_mutex_lock_shared(&m->lock);
+    unsigned n = m->restarts;
+    plat_mutex_unlock_shared(&m->lock);
+    return n;
 }
 
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
@@ -147,6 +182,7 @@ int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
 void motion_restart(MotionFusion *m) {
     plat_mutex_lock(&m->lock);
     m->restart = 1;
+    m->restarts++;
     m->first = m->produced;
     m->last_ns = 0;   // the first sample after the restart integrates nothing across the stop
     memset(m->angle, 0, sizeof m->angle);

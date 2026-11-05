@@ -290,6 +290,8 @@ double frame_step_limit_hz(void);                         // the frame rate the 
 int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
                                                            // (TOTK_FPS_LIMIT, live)
 uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
+uint64_t frame_step_ns(void);                              // game time the last present stepped, 0 before the first:
+                                                           // the frame the game's input covers (any thread)
 // In-launch A/B measurement: TOTK_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
 // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
 // without TOTK_AB. rt_knob(name, def) reads the switch

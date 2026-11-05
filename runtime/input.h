@@ -87,10 +87,16 @@ uint16_t rumble_motor(float a, float curve, float strength);
 int input_rumble_triggers_enabled(void);
 
 // Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
-// gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
+// gamepad's gyro and accelerometer (when it has them) and feeds motion_global(); with TOTK_MOUSE_GYRO=1 it feeds the
+// mouse's motion instead, every 5 ms (motion_mouse.c). Callable from any thread.
 void input_motion_start(void);
 // TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
+// TOTK_MOUSE_GYRO is "1" (live): the mouse drives the six-axis sensor and no longer the right stick.
+int input_mouse_gyro_enabled(void);
+// The game read the six-axis sensor (ov_input.c six_fill, live states): the mouse source spreads its motion over at
+// least the game's read interval. Any thread.
+void input_motion_read_note(uint64_t now_ns);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);
@@ -104,7 +110,53 @@ typedef struct {
 _Static_assert(sizeof(MotionState) == 0x60, "SixAxisSensorState ABI");
 typedef struct MotionFusion MotionFusion;
 MotionFusion *motion_new(void);
-MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
+MotionFusion *motion_global(void);   // the controller's, fed by input.c (the gamepad's sensors or the mouse)
 void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
+// A state whose direction (MotionState.dir layout, unfused) the caller knows, the angle integrated over dt_s. Dropped,
+// returning 0, when a motion_restart came after the caller read `restarts` (motion_restarts): its pose starts over first.
+int motion_feed_pose(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], const double dir[9], double dt_s,
+                     uint64_t now_ns, unsigned restarts);
+unsigned motion_restarts(MotionFusion *m);   // motion_restart calls so far
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
+
+// motion_mouse.c: the mouse as a held controller's motion. Pure: the caller owns the struct and the timing.
+#define MOUSE_GYRO_TICK_NS 5000000ull   // a sample every 5 ms, the Switch's six-axis rate
+enum {
+    MOUSE_GYRO_WINDOW_MAX = 11,   // ticks a count can be spread over
+    MOUSE_GYRO_CATCHUP = 10,      // samples a late wake makes up for; a longer stall starts the schedule over
+};
+// The samples due at `now` on the fixed MOUSE_GYRO_TICK_NS schedule *next (0: none yet): how many, the first one's time
+// in *first, and *next moved past them. A wake late by up to MOUSE_GYRO_CATCHUP ticks makes up the samples it missed,
+// so the game's count of new samples follows the time that passed; the first wake, or one after a longer stall, starts
+// the schedule at now with one sample; an early wake has none due.
+int mouse_gyro_due(uint64_t *next, uint64_t now, uint64_t *first);
+typedef struct {
+    double yaw, pitch;                      // radians: turned since the last init (rate only); the tilt above flat
+    double due[2][MOUSE_GYRO_WINDOW_MAX];   // yaw, pitch still to turn at each coming tick (ring at head)
+    int head;
+} MouseGyro;
+#define MOUSE_GYRO_REST_PITCH 0.2617993877991494   // 15 degrees: the tilt a held controller rests at
+#define MOUSE_GYRO_PITCH_MAX 1.3962634015954636    // 80 degrees up or down from flat at most
+void mouse_gyro_init(MouseGyro *g);   // at rest: nothing turned, the rest tilt, nothing due
+// One tick of dt_s seconds: dx, dy raw mouse counts since the last tick (right and down positive), dots counts per
+// full turn, each tick's counts spread evenly over the next `window` ticks (the game's frame; 1 to
+// MOUSE_GYRO_WINDOW_MAX). Up and down tilt the controller, left and right are a yaw rate with no sideways turn of its
+// direction. Writes the state in the Switch controller frame: acceleration in G as gravity reads, rotation rad/s, dir
+// as MotionState.dir.
+void mouse_gyro_step(MouseGyro *g, int32_t dx, int32_t dy, double dt_s, double dots, int window, double acc_g[3],
+                     double gyro_rad_s[3], double dir[9]);
+// Diagnostic sources (TOTK_MOUSE_GYRO_TEST): MOUSE_GYRO_TEST_RATE a 30 degree per second turn in the rotation rate
+// alone, the pose held at rest; MOUSE_GYRO_TEST_POSE the pose turning at that rate with no rotation reported;
+// MOUSE_GYRO_TEST_STEEP the RATE turn with the controller tilted 60 degrees instead (whether the game takes the turn
+// about world up or about the controller's z); MOUSE_GYRO_TEST_FLICK mouse counts making even flicks
+// (mouse_gyro_flick) through the mouse's own path, traced like TRACE. The others only log (input.c): CALIBRATE the
+// turn of each movement, STREAM how the mouse counts arrive, TRACE every tick to a file.
+enum { MOUSE_GYRO_TEST_OFF, MOUSE_GYRO_TEST_RATE, MOUSE_GYRO_TEST_POSE, MOUSE_GYRO_TEST_CALIBRATE,
+       MOUSE_GYRO_TEST_STREAM, MOUSE_GYRO_TEST_TRACE, MOUSE_GYRO_TEST_STEEP, MOUSE_GYRO_TEST_FLICK };
+void mouse_gyro_test_step(MouseGyro *g, int mode, double dt_s, double acc_g[3], double gyro_rad_s[3], double dir[9]);
+// The counts of a mouse making even flicks, one tick of dt_s at `dots` counts per turn, from a zeroed MouseFlick, in a
+// 2.4 s cycle: 45 degrees right in 0.15 s and back left, 20 degrees up in 0.1 s and back down, each move followed by
+// a pause; whole counts, the fractions carried.
+typedef struct { double t, cx, cy; } MouseFlick;
+void mouse_gyro_flick(MouseFlick *f, double dt_s, double dots, int32_t *dx, int32_t *dy);

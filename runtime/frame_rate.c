@@ -243,9 +243,11 @@ static void speed_report(uint64_t now, double step, int interval) {
 
 static _Atomic int64_t world_us = -1;
 static _Atomic uint64_t game_us;   // game time stepped since the first present (frame_step_ticks)
+static _Atomic uint64_t frame_ns;   // what the last present stepped (frame_step_ns)
 static uint64_t presents;
 
 int64_t frame_step_world_us(void) { return atomic_load_explicit(&world_us, memory_order_relaxed); }
+uint64_t frame_step_ns(void) { return atomic_load_explicit(&frame_ns, memory_order_relaxed); }
 uint64_t frame_step_ticks(void) { return atomic_load_explicit(&game_us, memory_order_relaxed) * 60 / 1000000; }
 
 static void world_clock(double dt, double step) {
@@ -287,6 +289,7 @@ void frame_step_present(uint64_t display_ns, int interval) {
     double game = step_word ? step_now : (interval > 0 ? interval : 1) / 60.0;
     atomic_store_explicit(&game_us, atomic_load_explicit(&game_us, memory_order_relaxed) + (uint64_t)(game * 1e6 + 0.5),
                           memory_order_relaxed);
+    atomic_store_explicit(&frame_ns, (uint64_t)(game * 1e9 + 0.5), memory_order_relaxed);
     world_clock(dt, step);
     if (rt_trace & RT_TRACE_PERF) speed_report(display_ns, step, interval);
 }

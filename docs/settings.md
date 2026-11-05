@@ -83,6 +83,7 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `bind_<button>` | Remaps one Switch button or stick direction to `pad:<name>` or `key:<name>` entries; covers `bind_a`, `bind_b`, `bind_x`, `bind_y`, `bind_l`, `bind_r`, `bind_zl`, `bind_zr`, `bind_plus`, `bind_minus`, `bind_left`, `bind_up`, `bind_right`, `bind_down`, `bind_lclick`, `bind_rclick`, `bind_lstick_left`, `bind_lstick_up`, `bind_lstick_right`, `bind_lstick_down`, `bind_rstick_left`, `bind_rstick_up`, `bind_rstick_right`, `bind_rstick_down` and `bind_shake`. | A line replaces every default of that button; button prompts in the game still show the default layout. The Controls tab of the menu writes these lines; `docs/controls.md` lists the entry names. | Safe |
+| `mouse_gyro_test` (default `off`) | Diagnostics of `mouse_gyro = 1`: `calibrate` logs the turn of each movement, `stream` how the mouse counts arrive, `trace` every 5 ms sample to `mouse_gyro_trace.csv`; `rate`, `pose`, `steep` and `flick` replace the mouse with a synthetic turn or flicks. `docs/controls.md`, "Mouse as gyro", has the details. | `rate`, `pose`, `steep` and `flick` take the aim from the mouse while set; `trace` and `flick` write a file that grows while the mouse moves. | Caution |
 
 ## Paths and files
 

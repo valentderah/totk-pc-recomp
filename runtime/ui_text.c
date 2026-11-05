@@ -230,6 +230,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_MOUSE_GYRO] = "Mouse as gyro",
+    [UI_MENU_MOUSE_GYRO_DESC] = "The mouse moves the controller's motion sensor instead of the camera, for Steam Input's "
+                                "gyro to mouse: aiming then works as with a real gyroscope. Needs motion controls on; "
+                                "the stick turns the camera.",
+    [UI_MENU_MOUSE_GYRO_DOTS] = "Mouse gyro counts per turn",
+    [UI_MENU_MOUSE_GYRO_DOTS_DESC] = "Mouse counts that make one full turn of the controller. Set it to the value "
+                                     "Steam's gyro to mouse uses.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -698,6 +705,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Автоматически", [UI_MENU_CHANNELS_STEREO] = "Стерео", [UI_MENU_CHANNELS_51] = "Объёмный 5.1",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
+    [UI_MENU_MOUSE_GYRO] = "Мышь как гироскоп",
+    [UI_MENU_MOUSE_GYRO_DESC] = "Мышь двигает датчик движения контроллера вместо камеры — для гироскопа в мышь из "
+                                "Steam Input: прицеливание работает как с настоящим гироскопом. Нужно включённое "
+                                "управление движением; камеру поворачивает стик.",
+    [UI_MENU_MOUSE_GYRO_DOTS] = "Отсчётов мыши на оборот",
+    [UI_MENU_MOUSE_GYRO_DOTS_DESC] = "Сколько отсчётов мыши дают полный оборот контроллера. Укажите то же значение, "
+                                     "что использует гироскоп в мышь в Steam.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
     [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
@@ -1090,6 +1104,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Volume geral do jogo.",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
+    [UI_MENU_MOUSE_GYRO] = "Mouse como giroscópio",
+    [UI_MENU_MOUSE_GYRO_DESC] = "O mouse move o sensor de movimento do controle em vez da câmera, para o giroscópio "
+                                "como mouse do Steam Input: a mira funciona como com um giroscópio real. Requer os "
+                                "controles de movimento ligados; o analógico gira a câmera.",
+    [UI_MENU_MOUSE_GYRO_DOTS] = "Contagens do mouse por volta",
+    [UI_MENU_MOUSE_GYRO_DOTS_DESC] = "Contagens do mouse que fazem uma volta completa do controle. Use o mesmo valor "
+                                     "do giroscópio como mouse do Steam.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Quão forte o controle vibra.",
     [UI_MENU_RUMBLE_CURVE] = "Curva da vibração",
@@ -1633,6 +1654,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_VOLUME_DESC] = "游戏的主音量。",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
+    [UI_MENU_MOUSE_GYRO] = "鼠标模拟陀螺仪",
+    [UI_MENU_MOUSE_GYRO_DESC] = "鼠标驱动手柄的体感传感器而不是转动视角，配合 Steam 输入的“陀螺仪转鼠标”："
+                                "瞄准如同使用真实陀螺仪。需要开启体感操作；视角由摇杆转动。",
+    [UI_MENU_MOUSE_GYRO_DOTS] = "鼠标每圈计数",
+    [UI_MENU_MOUSE_GYRO_DOTS_DESC] = "让手柄转一整圈所需的鼠标计数。设为与 Steam 陀螺仪转鼠标相同的值。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄振动的强弱。",
     [UI_MENU_RUMBLE_CURVE] = "振动曲线",
