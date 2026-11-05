@@ -82,6 +82,11 @@ class App:
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'keys', 'firmware', 'dest')}
         self.vars['lang'] = tk.StringVar()
+        self.recorded = {}       # base/update paths prefilled from the recorded ones, by field
+        self.touched = set()     # fields the user picked or typed
+        self.programmatic = False
+        for name in ('base', 'update'):
+            self.vars[name].trace_add('write', lambda *_, n=name: self.touched.add(n) if not self.programmatic else None)
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
@@ -133,9 +138,10 @@ class App:
             # recorded language). In update mode filled files are harmless: Extract.current hashes one only when its
             # size or mtime differ from the recorded ones.
             last = load_recent()
+            self.recorded = {n: last[n] for n in ('base', 'update') if n in last and not self.vars[n].get().strip()}
             for name in ('base', 'update', 'keys', 'firmware', 'dest'):
                 if name in last and not self.vars[name].get().strip():
-                    self.vars[name].set(last[name])
+                    self.set_prefill(name, last[name])
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -340,9 +346,35 @@ class App:
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
                     dlss=self.dlss_var.get())
 
+    def set_prefill(self, name, value):
+        self.programmatic = True
+        try:
+            self.vars[name].set(value)
+        finally:
+            self.programmatic = False
+
+    def match_prefill(self, state):
+        """Prefilled base/update stay only while the chosen install recorded the same file (name and size, one stat);
+        another install would otherwise extract again from them. Fields the user touched are left alone."""
+        for name, value in self.recorded.items():
+            if name in self.touched:
+                continue
+            keep = True
+            if state is not None:
+                known = (state.get('inputs') or {}).get(name)
+                try:
+                    keep = (isinstance(known, dict) and Path(value).name == known.get('name')
+                            and Path(value).stat().st_size == known.get('size'))
+                except (OSError, ValueError):
+                    keep = False
+            want = value if keep else ''
+            if self.vars[name].get() != want:
+                self.set_prefill(name, want)
+
     def refresh_form(self):
         form = self.form()
         state = form.installed_state()
+        self.match_prefill(state)
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))
