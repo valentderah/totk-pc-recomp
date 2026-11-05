@@ -865,18 +865,21 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
+// The host catalog (ui_text.c): every menu id has its own English, Spanish, Russian, Brazilian Portuguese and Simplified
 // Chinese text, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
                                         "pt-BR"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
-        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
-              ui_text_defined("pt-BR", (UiTextId)id), "menu text id %d lacks en, ru or pt-BR", id);
-        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id) && *ui_text_in("pt-BR", (UiTextId)id),
+        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("es", (UiTextId)id) &&
+              ui_text_defined("ru", (UiTextId)id) && ui_text_defined("pt-BR", (UiTextId)id),
+              "menu text id %d lacks en, es, ru or pt-BR", id);
+        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("es", (UiTextId)id) &&
+              *ui_text_in("ru", (UiTextId)id) && *ui_text_in("pt-BR", (UiTextId)id),
               "menu text id %d is empty", id);
         // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set)
         CHECK(strlen(ui_text_in("en", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("es", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("pt-BR", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES,
@@ -922,6 +925,8 @@ static void probe_menu_text(void) {
     // menu_text follows the setting live
     cfg_set("TOTK_MENU_LANG", "ru");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
+    cfg_set("TOTK_MENU_LANG", "es");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("es", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=es");
     cfg_set("TOTK_MENU_LANG", "pt-BR");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("pt-BR", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=pt-BR");
     cfg_set("TOTK_MENU_LANG", "en");
@@ -930,7 +935,12 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "menu_text ignores MENU_LANG=zh-Hans");
     cfg_set("TOTK_MENU_LANG", "");
     const char *sys_lang = ui_text_lang(plat_ui_language());
-    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang : "en";
+    char sys_base[16];
+    snprintf(sys_base, sizeof sys_base, "%.*s", (int)strcspn(sys_lang, "-"), sys_lang);
+    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE)    ? sys_lang
+                          : ui_text_defined(sys_base, UI_MENU_TITLE) ? sys_base
+                          : !strncmp(sys_lang, "zh", 2)              ? "zh-Hans"
+                                                                     : "en";
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
 }
 
