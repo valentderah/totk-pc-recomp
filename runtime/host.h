@@ -282,6 +282,8 @@ void rt_patch_switch(int set, int on);                     // at run time (live 
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
 extern float vk_pcss_layer_scale[4];                       // vk_exec_draw.c: soft-shadow radius factor per sun cascade
                                                            // (translator patch 0017), set by shadow_stable.c
+extern float vk_cascade_blend;                             // vk_exec_draw.c: the band of the cascade blend
+                                                           // (translator patch 0018), set by shadow_stable.c
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns

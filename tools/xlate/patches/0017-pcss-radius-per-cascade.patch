@@ -1,5 +1,3 @@
-diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
-index 373d1a2..3eb276b 100644
 --- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
 +++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
 @@ -1583,7 +1583,18 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
@@ -31,8 +29,6 @@ index 373d1a2..3eb276b 100644
              SpvInstruction radiusV = context.CompositeConstruct(v2, radius, radius);
  
              SpvInstruction acc = zero;
-diff --git a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
-index 9c8b01d..ec19813 100644
 --- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
 +++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
 @@ -27,6 +27,8 @@ namespace Ryujinx.Graphics.Shader

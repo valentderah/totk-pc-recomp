@@ -175,6 +175,24 @@ static double stabilize(uint64_t rec, uint32_t w, uint32_t h) {
     return r;
 }
 
+// The cascade blend (translator patch 0018). The lighting picks one cascade per pixel with a hard step at each split,
+// and a wall that a split crosses switches at once between the two cascades' looks, the line moving with the camera.
+// The patched lighting mixes cascade k with k + 1 over the last CASCADE_BAND of cascade k's split distance, taking
+// cascade k + 1's coordinates from cascade k's with a scale and an offset it reads off the two cascades' lookup rows;
+// that holds only for cascades on shared axes, the ones made here. So the band is on while all four cascades of the
+// set were fitted here this frame (the main+0xb372c loop fits them in order 0..3).
+#define CASCADE_BAND 0.15f
+static void cascade_band(int k) {
+    static int fitted[4], band_on = -1;
+    if (band_on < 0) {
+        const char *e = getenv("TOTK_CASCADE_BLEND");   // test: 0 turns the blend off
+        band_on = !(e && !strcmp(e, "0"));
+    }
+    if (k == 0) fitted[1] = fitted[2] = fitted[3] = 0;
+    fitted[k] = 1;
+    if (k == 3) vk_cascade_blend = band_on && fitted[0] && fitted[1] && fitted[2] ? CASCADE_BAND : 0;
+}
+
 // Both calls of main+0xc31a0 in main+0xb372c come here (the stable set's sites): the game's fit, then the stable one.
 // s0 and s1 pass through untouched in v0 and v1.
 static void cascade_fit(Cpu *c) {
@@ -197,7 +215,13 @@ static void cascade_fit(Cpu *c) {
         float s = (float)(PCSS_REF_RADIUS / r);
         if (s != vk_pcss_layer_scale[k])
             rt_log("shadow_stable: cascade %d radius %.2f m, soft-shadow scale %.3f", k, r, (double)s);
-        vk_pcss_layer_scale[k] = s;
+        static int metres = -1;
+        if (metres < 0) {
+            const char *e = getenv("TOTK_PCSS_METRES");   // test: 0 keeps the soft shadows' radii in UV
+            metres = !(e && !strcmp(e, "0"));
+        }
+        vk_pcss_layer_scale[k] = metres ? s : 1.0f;
+        cascade_band(k);
     } else if (r > 0) {
         static int warned;
         if (!warned++) rt_log("shadow_stable: record %#llx is not in the cascade set's list (x19 %#llx): no soft-shadow scale",

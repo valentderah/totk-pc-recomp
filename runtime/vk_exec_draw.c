@@ -34,9 +34,9 @@
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
-#define SUPPORT_BYTES 1472u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...;
+#define SUPPORT_BYTES 1488u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...;
                               // 1408 pcss and 1424 shadow_spread (translator patches 0010, 0011), 1440 HDR (support_fill),
-                              // 1456 pcss_scale (translator patch 0017)
+                              // 1456 pcss_scale (translator patch 0017), 1472 cascade_blend (translator patch 0018)
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
@@ -1503,6 +1503,9 @@ static const float *shadow_spread_params(void) {
 // search radius and disc limits, so they span the same metres on every cascade. 1 unless runtime/shadow_stable.c knows
 // the cascades' widths (stable_shadows); written there by the guest thread, read here when a draw is recorded.
 float vk_pcss_layer_scale[4] = {1, 1, 1, 1};
+// The cascade_blend field (translator patch 0018): the band, as a fraction of each split distance, over which the
+// lighting mixes a cascade with the next one. 0 (no blend) unless runtime/shadow_stable.c sets it.
+float vk_cascade_blend;
 
 static void support_fill(uint8_t *b, float w, float h, float point_size) {
     memset(b, 0, SUPPORT_BYTES);
@@ -1519,6 +1522,8 @@ static void support_fill(uint8_t *b, float w, float h, float point_size) {
         scale[i] = v > 0 ? v : 1.0f;
     }
     memcpy(b + 1456, scale, 16);   // pcss_scale (translator patch 0017)
+    float blend[4] = {((const volatile float *)&vk_cascade_blend)[0], 0, 0, 0};
+    memcpy(b + 1472, blend, 16);   // cascade_blend (translator patch 0018)
     for (int i = 0; i < 73; i++) memcpy(b + 192 + 16 * i, &one, 4);   // render scale 1: the host renders at guest size
     if (vk_hdr_wanted()) {   // read by the HDR tonemap only (shaders/hdr_tonemap.frag), which declares it past the translator's
         float hdr[4];
