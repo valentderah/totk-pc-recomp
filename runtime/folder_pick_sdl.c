@@ -7,6 +7,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "blueprint_dir.h"
 #include "folder_pick.h"
 #include "host.h"
 #include "input_sdl.h"
@@ -61,10 +62,11 @@ static void SDLCALL on_file(void *userdata, const char *const *list, int filter)
 
 static void show_file(void *arg) {
     FileReq *r = arg;
-    SDL_DialogFileFilter filters[2] = {{"Supported files", r->patterns[0] ? r->patterns : "*.*"},
-                                       {"All files", "*.*"}};
-    SDL_ShowOpenFileDialog(on_file, r, gfx_window_sdl(), filters, r->patterns[0] ? 2 : 1,
-                           r->start[0] ? r->start : NULL, false);
+    // One filter: "Supported files" holds every pattern joined with ';' as SDL takes them, and there is no second
+    // "All files" entry, so the listed extensions are the only ones the player can choose. A caller that offers no
+    // pattern gets "*.*" in that one entry, which is the same as showing every file.
+    SDL_DialogFileFilter filters[1] = {{"Supported files", r->patterns[0] ? r->patterns : "*.*"}};
+    SDL_ShowOpenFileDialog(on_file, r, gfx_window_sdl(), filters, 1, r->start[0] ? r->start : NULL, false);
 }
 
 void file_pick(const char *start, const char *const *patterns, int count, FilePickDone done, void *ctx) {
@@ -75,7 +77,10 @@ void file_pick(const char *start, const char *const *patterns, int count, FilePi
     }
     r->done = done;
     r->ctx = ctx;
-    if (start && *start && !realpath(start, r->start)) r->start[0] = 0;
+    // An empty start asks for the folder the last file dialog browsed; anywhere else is the caller's own answer and
+    // realpath turns it absolute, which is what the dialog wants.
+    const char *at = start && *start ? start : bp_dir_last();
+    if (at && *at && !realpath(at, r->start)) r->start[0] = 0;
     size_t n = 0;
     for (int i = 0; i < count && patterns && patterns[i]; i++) {
         int k = snprintf(r->patterns + n, sizeof r->patterns - n, "%s%s", n ? ";" : "", patterns[i]);

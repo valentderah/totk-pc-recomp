@@ -1,6 +1,6 @@
 // The Win32 front end of folder_pick.h: the shell's folder dialog (IFileOpenDialog with FOS_PICKFOLDERS) and file
-// dialog (without it, with the caller's patterns as the file type filter), owned by the game window, on a thread of its
-// own so the present thread that draws the menu keeps running.
+// dialog (without it, with the caller's patterns as the one file type it offers), owned by the game window, on a
+// thread of its own so the present thread that draws the menu keeps running.
 #include <windows.h>
 #include <shobjidl.h>
 #include <stdlib.h>
@@ -8,6 +8,7 @@
 #include <vector>
 
 extern "C" {
+#include "blueprint_dir.h"
 #include "folder_pick.h"
 #include "host.h"
 #include "input_win.h"
@@ -109,9 +110,11 @@ static void file_main(void *arg) {
             if (i) joined += L";";
             joined += wide(r->patterns[i]);
         }
+        // One file type only: the listed extensions are the only ones the player can choose, so there is no "All files"
+        // entry beside it.
         if (!joined.empty()) {
-            COMDLG_FILTERSPEC spec[2] = {{L"Supported files", joined.c_str()}, {L"All files (*.*)", L"*.*"}};
-            d->SetFileTypes(2, spec);
+            COMDLG_FILTERSPEC spec[1] = {{L"Supported files", joined.c_str()}};
+            d->SetFileTypes(1, spec);
             d->SetFileTypeIndex(1);
         }
         set_start(d, r->start);
@@ -134,7 +137,11 @@ static void file_main(void *arg) {
 }
 
 extern "C" void file_pick(const char *start, const char *const *patterns, int count, FilePickDone done, void *ctx) {
-    FileReq *r = new FileReq{start ? start : "", {}, done, ctx};
+    // An empty start asks for the folder the last file dialog browsed, so the player picks the next file where the
+    // previous one was. The string is copied now: bp_dir_last hands out the runtime's own cache.
+    std::string at = start ? start : "";
+    if (at.empty()) at = bp_dir_last();
+    FileReq *r = new FileReq{at, {}, done, ctx};
     for (int i = 0; i < count && patterns && patterns[i]; i++) r->patterns.push_back(patterns[i]);
     if (!plat_thread_spawn(file_main, r, "file dialog", 0)) {
         rt_log("file_pick: cannot start the dialog thread");

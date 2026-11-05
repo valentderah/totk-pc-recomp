@@ -15,8 +15,10 @@ typedef void (*FilePickDone)(const char *path, void *ctx);
 // The caller keeps one dialog open at a time.
 void folder_pick(const char *start, FolderPickDone done, void *ctx);
 
-// The same for one file, limited to patterns ("*.txt", "*.cai"); count <= 0 shows every file. The dialog also offers
-// "All files", so a file named other than the patterns still opens.
+// The same for one file. start, when NULL or empty, means the folder the file dialog browsed last (blueprint_dir.h),
+// so a player picks the next file where the previous one was; a non-empty start is used as it is. The dialog offers
+// one file type, "Supported files", made of patterns ("*.txt", "*.cai"): the listed extensions are the only ones that
+// can be chosen. count <= 0 shows every file instead.
 void file_pick(const char *start, const char *const *patterns, int count, FilePickDone done, void *ctx);
 
 #ifdef __cplusplus

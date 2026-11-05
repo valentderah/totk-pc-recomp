@@ -1,5 +1,5 @@
-// Importing a .cai blueprint into the game's own Autobuild history, so the creation appears in the native Autobuild
-// page as the newest draft and builds with the native preview, rotation and Zonai costs.
+// Importing a .cai or .txt blueprint into the game's own Autobuild history, so the creation appears in the native
+// Autobuild page as the newest draft and builds with the native preview, rotation and Zonai costs.
 //
 // The history is one save flag: the BinaryArray 0xa56722b6 (AutoBuilder.Draft.Content.CombinedActorInfo), 30 items of
 // {u32 size = 6688; CmbAct blob}. The Autobuild page draws its cards in the order the items sit in that array, so item 0
