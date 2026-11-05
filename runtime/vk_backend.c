@@ -168,9 +168,10 @@ static uint64_t ck_reads, ck_diff, ck_diff_unexplained, ck_diff_idle;
 int vk_replay_async(void) {
     static int on = -1;
     if (on < 0) {
-        // On by default: where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in
-        // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88); where the replay or the game
-        // threads bound the frame it neither gains nor loses. It adds up to a frame of latency.
+        // Off by default. Where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in
+        // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88), the only place a gain was
+        // measured. While it was the default, a GTX 1660 Ti at the 60 fps cap with the GPU at 26 % reported uneven
+        // motion that 0.3.4 did not have (#659). It adds up to a frame of latency.
         on = cfg_bool("TOTK_REPLAY_ASYNC");
         rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d)",
                on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
