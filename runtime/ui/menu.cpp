@@ -34,6 +34,7 @@ static int g_font_bad;
 #include "ui/blueprint_page.h"
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "blueprint_hint.h"
 
 extern "C" {
 #include "amiibo.h"
@@ -1501,6 +1502,7 @@ static void perf_draw(const MenuTarget *t, float scale) {
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
+    bp_hint_frame();       // the Autobuild screen's import entry: its button, and a file the dialog returned
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
@@ -1515,7 +1517,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
+        } else if (!g_perf_mode && !bp_hint_active()) {
             return 0;
         }
     }
@@ -1565,6 +1567,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    bp_hint_draw((int)t->width, (int)t->height, scale);   // the Autobuild screen's import row, when that screen is up
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;

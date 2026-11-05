@@ -316,6 +316,19 @@ static void log_screen(const Focus *f, const char *nm, int n, float lw, float lh
 }
 
 // Once per pad read on the game thread: the pointer's hover and clicks, as pad buttons (A, B) for this read
+// The layout name of the screen the game shows now, "" when no menu is up or the layout cannot be read. The blueprint
+// import draws its hint row only while the Autobuild screen is open, so it needs the same name the cursor logging uses.
+// Any thread: it reads guest memory through mem_query, as the cursor poll does.
+int menu_cursor_screen_name(char *out, int n) {
+    if (out && n > 0) out[0] = 0;
+    if (!out || n <= 1) return 0;
+    main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
+    Focus f = focus_now();
+    if (!f.screen) return 0;
+    layout_name(f.screen, out, (size_t)n);
+    return out[0] != 0;
+}
+
 void menu_cursor_poll(uint64_t *buttons) {
     static int inited, pending_a, held_l, held_r;
     static uint64_t pending_node, pending_until, hold_until, hold_bit, menu_seen;

@@ -146,6 +146,37 @@ rejected.
 `bp_favorites` and `bp_import_newest` walk the game's memory, so both run on a worker thread and the page only collects
 the results. The tab opens instantly; opening it never blocks the game. There is one lookup per tab entry, not a timer.
 
+## 5.1 The entry in the Autobuild screen itself (`runtime/blueprint_hint.cpp`)
+
+The tab above is reached from the settings menu, so it needs the player to know where to look. The second entry is on
+the game's own screen: while the Autobuild page is open, its bottom guide bar shows one more hint, the ⊕ button and the
+word **Import/D导入**, and pressing ⊕ opens the same file picker.
+
+That bar is the game's, not ours: `blyt/AutoBuilder_00.bflyt` holds the align pane `A_Guide_00` with four part panes of
+`PaGuideKeySimple_00`, filled from `LayoutMsg/AutoBuilder_00.msbt`. Its slots are "Select", an unused one, "Confirm",
+"Back". The row is drawn over the game by the present path's ImGui overlay at the bar's position, right of "Back", so
+nothing of the game's archives is edited: no mod, resolution, or language can conflict, and the entry shows on every
+game version and every pad layout.
+
+* **Which screen.** `runtime/menu_cursor.c` `menu_cursor_screen_name()` returns the layout name of the focused game
+  screen, and `AutoBuilder_00` is that name for the Autobuild page. It is read once per pad read, on the game thread,
+  through `bp_hint_poll` (`runtime/input.c` `input_poll`).
+* **Only there.** Outside that screen the row is not drawn and ⊕ is untouched, so the game behaves exactly as before.
+* **The button.** ⊕ on this screen is the game's own "Receive", which needs Zelda Notes and does nothing on this port;
+  `bp_hint_poll` clears the bit from the frame's buttons so the press belongs to the import alone. Nothing else is taken.
+* **The picker and the import.** The dialog runs on `folder_pick`'s thread and only records the path; the next presented
+  frame (`bp_hint_frame`) hands it to a thread of its own, because `bp_import_newest` walks the game's memory. The
+  present path never waits.
+* **Off switch.** `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
+
+Log lines:
+
+```
+blueprint: hint: opening the file picker
+blueprint: hint chose <path>
+blueprint: hint: <path>: <result>
+```
+
 ## 6. Verification
 
 Built from v0.3.10, run on Windows. Cases exercised:
@@ -177,14 +208,18 @@ New:
 | `runtime/blueprint_cai.h/.c` | the `.cai` reader and its checks |
 | `runtime/blueprint_import.h/.c` | finding the live arrays, choosing the entry, writing it, dropping the cached pictures |
 | `runtime/ui/blueprint_page.h/.cpp` | the Blueprints tab: file, checks, the import row, the worker thread |
+| `runtime/blueprint_hint.h/.cpp` | the entry in the Autobuild screen's own guide bar: its button, the picker, the import, the row |
 
 Modified:
 
 | file | change |
 |---|---|
 | `runtime/folder_pick.h`, `folder_pick_win.cpp`, `folder_pick_sdl.c` | a file dialog next to the folder dialog (`file_pick`) |
-| `runtime/ui/menu.cpp` | the tab in the enum, its name row and its page |
-| `runtime/ui_text.h`, `ui_text.c` | 28 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
+| `runtime/ui/menu.cpp` | the tab in the enum, its name row and its page; the hint's frame and draw calls |
+| `runtime/ui_text.h`, `ui_text.c` | 29 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
+| `runtime/input.c`, `input.h` | the hint's pad read, and `menu_cursor_screen_name` |
+| `runtime/menu_cursor.c` | `menu_cursor_screen_name`, the focused screen's layout name |
+| `runtime/cfg.c` | `BLUEPRINT_HINT` |
 
 ## 8. Notes for whoever picks this up
 
