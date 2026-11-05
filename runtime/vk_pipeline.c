@@ -1996,6 +1996,7 @@ static void prebuild_report(void) {
 
 static void pipe_worker(void *arg) {
     int me = (int)(intptr_t)arg;
+    rt_core_split(0);
     plat_mutex_lock(&P.lock);
     for (;;) {
         // With 3 or more workers one never takes low-queue work, so a waiting draw's library starts at once
@@ -2896,6 +2897,7 @@ static void lb_report(const char *how) {
 // Boot: compute pipelines and kept libraries, all entered for the process.
 static void lb_worker(void *arg) {
     (void)arg;
+    rt_core_split(0);
     plat_thread_priority(PLAT_PRIO_IDLE);
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <link.h>
 #include <linux/fs.h>
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
@@ -270,7 +271,8 @@ int plat_intr_resume(PlatIntr *t, uint64_t to) {
 // ---- fibers: a stack switch of our own. glibc's swapcontext saves and restores the signal mask with a system call
 // on every switch, and the game switches fibers often. fiber_swap saves the callee-saved registers, the MXCSR and the
 // x87 control word on the current stack, stores the stack pointer in *save and loads the other one. A new fiber's
-// stack is laid out as fiber_swap leaves one, returning into fiber_entry, which calls fn(arg) (r12 and r13).
+// stack is laid out as fiber_swap leaves one, returning into fiber_entry, which realigns the stack and calls fn(arg)
+// (r12 and r13).
 struct PlatFiber {
     void *sp;
     void *stack;   // mapped stack (NULL for a thread's own context)
@@ -312,6 +314,11 @@ __asm__(".text\n"
         ".type plat_fiber_entry, @function\n"
         ".p2align 4\n"
         "plat_fiber_entry:\n"
+        // fiber_swap's ret lands here with rsp = top - 8, as at the entry of a called function. The call below must
+        // be made with rsp 16-byte aligned so that fn starts with rsp = 8 mod 16, as the System V ABI demands; without
+        // the realignment every 16-byte local of fn is off by 8, which the VEX instructions of a v3 build tolerate
+        // but the SSE ones of a v2 or k10 build (movdqa, pcmpeqb with a memory operand) fault on.
+        "    andq $-16, %rsp\n"
         "    movq %r13, %rdi\n"
         "    callq *%r12\n"
         "    ud2\n"
@@ -991,6 +998,84 @@ void plat_reexec(void) {
 int plat_mem_read(uint64_t addr, void *out, size_t n) {
     struct iovec local = {out, n}, remote = {(void *)(uintptr_t)addr, n};
     return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)n;
+}
+
+// ---- code on huge pages (TOTK_HUGE_TEXT)
+// The lifted game is about 240 MiB of code that calls across all of it, so on 4 KiB pages nearly every far call can
+// miss the instruction TLB; CPUs with small TLBs (AMD K10: 32 L1 and 512 L2 entries for code) feel that most. Here the
+// 2 MiB-aligned middle of the executable segment goes onto 2 MiB pages, at the same addresses:
+// - file-backed first: MADV_HUGEPAGE + MADV_COLLAPSE on the mapping as it is, which kernels with
+//   CONFIG_READ_ONLY_THP_FOR_FS allow; the code stays the file's, so perf and debuggers keep its symbols;
+// - otherwise a copy: anonymous memory with MADV_HUGEPAGE, the code copied in, made read-execute and moved over the
+//   original with mremap. The bytes are the same, so threads running there meanwhile (none yet at start) see either
+//   page; but the code is then anonymous, and perf names its samples by address only (turn this off to profile).
+// Either way needs transparent huge pages enabled ("always" or "madvise" in /sys/kernel/mm/transparent_hugepage).
+#ifndef MADV_COLLAPSE
+#define MADV_COLLAPSE 25
+#endif
+#define HUGE_2M (2ull << 20)
+
+static int text_segment(struct dl_phdr_info *info, size_t size, void *data) {
+    (void)size;
+    uint64_t *r = data;
+    if (r[1]) return 1;   // the first object is the executable
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_X)) {
+            r[0] = info->dlpi_addr + ph->p_vaddr, r[1] = r[0] + ph->p_memsz;
+            return 1;
+        }
+    }
+    return 1;
+}
+
+// Bytes of [lo, hi) mapped by 2 MiB pages, from /proc/self/smaps (AnonHugePages, FilePmdMapped).
+static uint64_t huge_bytes(uint64_t lo, uint64_t hi) {
+    FILE *f = fopen("/proc/self/smaps", "r");
+    if (!f) return 0;
+    char line[512];
+    uint64_t total = 0;
+    int in = 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long a, b, kb;
+        if (sscanf(line, "%llx-%llx ", &a, &b) == 2 && strchr(line, '-') < strchr(line, ' ')) {
+            in = a < hi && b > lo;
+            continue;
+        }
+        if (in && (sscanf(line, "AnonHugePages: %llu kB", &kb) == 1 || sscanf(line, "FilePmdMapped: %llu kB", &kb) == 1))
+            total += kb << 10;
+    }
+    fclose(f);
+    return total;
+}
+
+uint64_t plat_huge_text(uint64_t *code, int *how) {
+    uint64_t seg[2] = {0, 0};
+    dl_iterate_phdr(text_segment, seg);
+    uint64_t lo = (seg[0] + HUGE_2M - 1) & ~(HUGE_2M - 1), hi = seg[1] & ~(HUGE_2M - 1);
+    *code = 0, *how = 0;
+    if (!seg[1] || hi <= lo) return 0;
+    uint64_t n = hi - lo, got;
+    *code = n;
+    if (!madvise((void *)lo, n, MADV_HUGEPAGE) && !madvise((void *)lo, n, MADV_COLLAPSE) &&
+        (got = huge_bytes(lo, hi)) >= n / 2)
+        return *how = 1, got;
+    // the copy, 2 MiB-aligned so the mremap keeps whole huge pages
+    *how = -1;
+    uint8_t *raw = mmap(NULL, n + HUGE_2M, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (raw == MAP_FAILED) return 0;
+    uint8_t *copy = (uint8_t *)(((uintptr_t)raw + HUGE_2M - 1) & ~(uintptr_t)(HUGE_2M - 1));
+    if (copy > raw) munmap(raw, copy - raw);
+    if (copy + n < raw + n + HUGE_2M) munmap(copy + n, raw + n + HUGE_2M - (copy + n));
+    madvise(copy, n, MADV_HUGEPAGE);
+    memcpy(copy, (void *)lo, n);
+    madvise(copy, n, MADV_COLLAPSE);   // pages the copy's faults got as 4 KiB (fragmented memory): collapse them now
+    if (mprotect(copy, n, PROT_READ | PROT_EXEC) ||
+        mremap(copy, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)lo) == MAP_FAILED) {
+        munmap(copy, n);
+        return 0;
+    }
+    return *how = 2, huge_bytes(lo, hi);
 }
 
 int plat_mem_readable(uint64_t addr, uint64_t n) {

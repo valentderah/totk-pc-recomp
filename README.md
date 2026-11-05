@@ -1,4 +1,17 @@
-# TotK Recomp
+# TotK Recomp — AMD K10 fork
+
+> [!NOTE]
+> **This fork adds support for AMD K10 processors (Phenom II X4/X6, Athlon II) on Linux.** These CPUs lack SSSE3 and
+> SSE4.1/4.2, so they cannot run the builds of the [original project](https://github.com/valentderah/totk-pc-recomp).
+> The setup detects a K10 and builds the game for it (`-march=amdfam10`); newer CPUs get the usual builds.
+>
+> - Download: [TotK-Setup-x86_64-0.3.10-k10.1-linux.AppImage](https://github.com/deadlynch/totk-pc-recomp-k10/releases/latest)
+> - Linux only; Windows is not supported on K10.
+> - Tested on a Phenom II X6 1100T with an RX 580: about 27-31 fps standing in the opening areas of 1.4.3, at the 30
+>   fps limit the K10 build sets by itself. The game is CPU-bound there; a lower render scale does not help.
+> - K10 installs compile the game with an execution profile trained on that machine (about 10% more frames, shorter
+>   loads). Building the game on a Phenom II takes about 2-4 hours.
+> - The changes are proposed upstream as pull requests.
 
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
@@ -56,7 +69,7 @@ Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines 
 
 ### Linux
 
-Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3).
+Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3). On Linux, AMD Phenom II and Athlon II (K10), which lack SSE4.2, are also accepted: the setup picks a build for them, the slowest of the three ([docs/building.md](docs/building.md), `--cpu k10`).
 
 1. Download `TotK-Setup-x86_64.AppImage` from [Releases](../../releases/latest), or build it ([docs/installer.md](docs/installer.md), "Linux release").
 2. Make it executable (`chmod +x TotK-Setup-x86_64.AppImage`) and start it. On a Steam Deck, do this in Desktop Mode.

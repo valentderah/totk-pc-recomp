@@ -102,13 +102,21 @@ GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-lab
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 
 
+# --cpu k10 targets AMD family 10h (Phenom II, Athlon II, Opteron 4100/6100): SSE3, SSE4a, POPCNT, LZCNT (ABM),
+# CMPXCHG16B and LAHF/SAHF, but no SSSE3, SSE4.1 or SSE4.2, so below x86-64-v2. Clang lowers the vector builtins of
+# runtime/simd.h to SSE2/SSE3 sequences there (pshufb, blendv, roundps, pmulld and the like become shuffles, compares
+# and libm calls), which is slower still than v2 but runs.
+CPU_MARCH = {'v3': '-march=x86-64-v3', 'v2': '-march=x86-64-v2', 'k10': '-march=amdfam10'}
+CPU_LEVEL = {'v3': 3, 'v2': 2, 'k10': 1}
+
+
 def set_cpu(cpu):
-    """Target x86-64-v3 (the default) or x86-64-v2. RT_CPU_LEVEL lets runtime/main.c's self-test check the same
-    instruction set the build was compiled for."""
-    march = f'-march=x86-64-{cpu}'
+    """Target x86-64-v3 (the default), x86-64-v2 or AMD K10. RT_CPU_LEVEL lets runtime/main.c's self-test check the
+    same instruction set the build was compiled for."""
+    march = CPU_MARCH[cpu]
     GEN_FLAGS[GEN_FLAGS.index('-march=x86-64-v3')] = march
     RT_FLAGS[RT_FLAGS.index('-march=x86-64-v3')] = march
-    RT_FLAGS.append(f'-DRT_CPU_LEVEL={3 if cpu == "v3" else 2}')
+    RT_FLAGS.append(f'-DRT_CPU_LEVEL={CPU_LEVEL[cpu]}')
 
 
 # Profile-guided optimisation (--pgo). Both modes compile the generated code at -O2, the level the profile's inlining and
@@ -764,8 +772,9 @@ def mib(n):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--version', default='v121', help='game version (default v121)')
-    ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
-                    help='target CPU level: v3 (AVX2/FMA, default) or v2 (SSE4.2, for older CPUs; slower)')
+    ap.add_argument('--cpu', choices=('v2', 'v3', 'k10'), default='v3',
+                    help='target CPU level: v3 (AVX2/FMA, default), v2 (SSE4.2, for older CPUs; slower) or k10 '
+                         '(AMD Phenom II / Athlon II: SSE3+SSE4a, no SSSE3/SSE4.1; slowest)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')
     ap.add_argument('--modules', help='comma-separated subset of the layout modules (default all)')
@@ -942,10 +951,11 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
-    if args.cpu == 'v2':
-        # Inline assembly, target attributes and intrinsics pass -march=x86-64-v2 by; one vmovdqa of a YMM register
-        # stops a CPU without AVX (tools/check_isa.py)
-        fail = check_isa.check_objects(objs['runtime'], objdump_tool(), out / 'obj' / 'runtime' / 'isa-v2.json')
+    if args.cpu in ('v2', 'k10'):
+        # Inline assembly, target attributes and intrinsics pass -march by; one vmovdqa of a YMM register stops a CPU
+        # without AVX, one pshufb a CPU without SSSE3 (tools/check_isa.py)
+        fail = check_isa.check_objects(objs['runtime'], objdump_tool(), out / 'obj' / 'runtime' / f'isa-{args.cpu}.json',
+                                       level=args.cpu)
         if fail:
             sys.exit(f'build_game: {fail}')
     if args.compile_only:
