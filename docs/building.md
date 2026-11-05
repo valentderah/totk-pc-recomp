@@ -233,7 +233,11 @@ state and one summary line per run in `summary.tsv`: a Deck halves its frame rat
 when the present mode changes or when the scene resolution grows, and none of that shows in an fps number alone.
 `--binary <totk>` measures a build the installer did not place, `--env K=V` sets a switch for the run, and
 `--script tools/input/spin.txt` turns the camera slowly on the spot instead of walking, so a scene chosen by playing
-to it and saving there is measured from the save.
+to it and saving there is measured from the save; `tools/input/spin360.txt` turns one full turn in one direction, the
+script for comparing builds on the same scene. Each script presses A on the title screen every 5 s for 200 s, since the
+title takes up to two minutes to appear with an empty shader cache, and the presses stop once the world clock starts.
+`profile_deck.sh` uses the install's `profile/` as it is, so copy a clean save into it before each run for every run
+to start from the same place.
 
 ## Checks
 
