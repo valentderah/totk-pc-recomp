@@ -66,6 +66,11 @@ int input_direct_mouse_active(void) {
 
 int input_direct_mouse_enabled(void) { return direct_mode(); }
 
+// A shake of the mouse while Ultrahand holds an object (camera_input, mouse_shake_step): input.c's shake_stick plays the
+// right-stick swing that detaches a fused part, as the shake key does, for a press until this time
+static volatile uint64_t shake_until;
+int input_direct_mouse_shake(void) { return plat_now_ns() < __atomic_load_n(&shake_until, __ATOMIC_RELAXED); }
+
 void input_direct_mouse_radial(int32_t dx, int32_t dy, float sensitivity, float cursor[2], int32_t out[2]) {
     if (!(sensitivity > 0)) { cursor[0] = cursor[1] = 0; out[0] = out[1] = 0; return; }
     cursor[0] += dx * (double)sensitivity / 200;
@@ -266,6 +271,32 @@ static void mouse_stick_add(int32_t dx, int32_t dy, float k, int ability, float 
     }
 }
 
+// The game detaches a fused part when the right stick swings left and right a few times; in direct mode the mouse
+// never reaches that stick. A shake: horizontal swings of at least SHAKE_SWING_DEG of camera turn each, changing
+// direction SHAKE_TURNS times within SHAKE_WINDOW_NS of the first change. Turning a held object back and forth at an
+// ordinary pace takes longer than that, and a reversal after a shorter swing starts the count again.
+#define SHAKE_SWING_DEG 10.0f
+#define SHAKE_TURNS 3
+#define SHAKE_WINDOW_NS 600000000ull
+typedef struct { int dir, turns; float swing; uint64_t first; } MouseShake;
+// deg: this step's horizontal motion in degrees of camera turn. 1 when it completes a shake (the state starts over).
+static int mouse_shake_step(MouseShake *s, float deg, uint64_t now) {
+    if (s->turns && now - s->first > SHAKE_WINDOW_NS) s->turns = 0;
+    if (deg == 0) return 0;
+    int d = deg > 0 ? 1 : -1;
+    if (d == s->dir) { s->swing += fabsf(deg); return 0; }
+    if (s->dir && s->swing >= SHAKE_SWING_DEG) {
+        if (!s->turns) s->first = now;
+        s->turns++;
+    } else {
+        s->turns = 0;
+    }
+    s->dir = d, s->swing = fabsf(deg);
+    if (s->turns < SHAKE_TURNS) return 0;
+    *s = (MouseShake){0};
+    return 1;
+}
+
 // A host call at an instruction site, not an AAPCS64 function replacement. Preserve every guest register except
 // s9/s10, which carry the processed camera input, and perform the displaced store of s9 at [x20 + 0x420].
 static void camera_input(Cpu *c) {
@@ -289,6 +320,14 @@ static void camera_input(Cpu *c) {
         // The bow drawn (in hand with ZR held): mouse_aim_scale times the mouse's motion on every path
         if ((player & PLAYER_BOW) && (input_buttons_last() & (1ull << B_ZR)))
             sensitivity *= (float)fminf(3, fmaxf(0.1, cfg_double("TOTK_MOUSE_AIM_SCALE")));
+        // Ultrahand holding an object: a shake of the mouse is the stick shake (a press held 100 ms for shake_stick)
+        static MouseShake shake;
+        uint64_t step_now = plat_now_ns();
+        if (hand_active(step_now) && mouse_shake_step(&shake, dx * DEG_PER_COUNT * sensitivity, step_now)) {
+            __atomic_store_n(&shake_until, step_now + 100000000ull, __ATOMIC_RELAXED);
+            static int logged;
+            if (!logged) logged = 1, rt_log("mouse: a shake while Ultrahand holds an object shakes the right stick");
+        }
         // The game multiplies camera input by its 30 Hz frame ratio later. Divide by that exact ratio, rather
         // than wall-clock time: an equal distance of mouse motion then gives equal input at every frame rate.
         float ratio = 1;

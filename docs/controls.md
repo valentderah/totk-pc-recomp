@@ -140,9 +140,12 @@ with at least 32 ms of neutral between them. At sensitivity 1, 32 horizontal cou
 cannot queue continued scrolling after the mouse stops. Vertical movement is ignored in these lists. Switching or
 releasing a selector resets its cursor/step state without sending the last movement to the camera. Selector input is
 not consumed by the direct camera or Ultrahand hooks.
-The mouse never stands in for a stick shake: to detach a fused part, press G (`bind_SHAKE`). A press swings the right
-stick left and right for 0.8 s, holding the key keeps it swinging. The arrow keys or the gamepad's right stick shaken by
-hand work too. A mouse gesture for it would also fire while a held object is turned back and forth.
+To detach a fused part from what Ultrahand holds, shake the mouse left and right, or press G (`bind_SHAKE`). A press
+swings the right stick left and right for 0.8 s, holding the key keeps it swinging. With `mouse_mode = direct` a shake
+of the mouse while Ultrahand holds an object plays the same swing: at least three changes of direction within 0.6 s,
+each swing worth 10 degrees of camera turn or more (about 214 counts at sensitivity 1). Turning a held object back and
+forth at an ordinary pace takes longer and does not count. The arrow keys or the gamepad's right stick shaken by hand
+work too.
 A step of the gamepad alone, with no mouse motion and no pitch the mouse holds, reaches the camera exactly as without
 the hooks.
 The mapping below is still used when the camera-input hook is unavailable or the game disables camera input.

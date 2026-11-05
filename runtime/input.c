@@ -621,7 +621,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
             mouse_camera(k, selector);
             pick(&sr[0], &sr[1], k[0], k[1]);
-            int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
+            int32_t shake = shake_stick(input_map_held(down, B_SHAKE) || input_direct_mouse_shake());
             if (shake) sr[0] = shake, sr[1] = 0;
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();

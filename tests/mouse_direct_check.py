@@ -232,7 +232,23 @@ int main(void) {
     puts("direct mouse: final orbit angles, single-count motion, equal axes and held-object routing passed");
     puts("direct mouse: persistent pitch target, radial cursor hold and gamepad-only steps untouched passed");
     puts("direct mouse: final-pitch recenter rejection, explicit handoff and bounded quick-list steps passed");
+    // A shake: three direction changes of swings of at least 10 degrees within 0.6 s of the first change
+    {
+        MouseShake s={0}; uint64_t t=0; int got=0;
+        for(int i=0;i<4;i++) got|=mouse_shake_step(&s,(i&1)?-12.f:12.f,t+=100000000ull);
+        assert(got);
+        s=(MouseShake){0}; t=0; got=0;   // a swing made of several small steps counts as one
+        for(int i=0;i<8;i++) got|=mouse_shake_step(&s,(i/2&1)?-6.f:6.f,t+=50000000ull);
+        assert(got);
+        s=(MouseShake){0}; t=0; got=0;   // the same swings over 1.2 s: a held object turned back and forth
+        for(int i=0;i<4;i++) got|=mouse_shake_step(&s,(i&1)?-12.f:12.f,t+=400000000ull);
+        assert(!got);
+        s=(MouseShake){0}; t=0; got=0;   // swings under 10 degrees
+        for(int i=0;i<8;i++) got|=mouse_shake_step(&s,(i&1)?-4.f:4.f,t+=50000000ull);
+        assert(!got);
+    }
     puts("direct mouse: one turn rate, the pitch's square undone, ability gains and the hold after a handoff passed");
+    puts("direct mouse: a mouse shake while holding, not a slow turn nor small swings passed");
 }
 '''
 
