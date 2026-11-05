@@ -437,8 +437,8 @@ class Check(Step):
             ctx.cpu = 'v3'
         elif host['x86_64_v2']:
             ctx.cpu = 'v2'
-        elif host.get('amd_k10'):
-            ctx.cpu = 'k10'
+        elif host.get('amd_k10') and os.name != 'nt':
+            ctx.cpu = 'k10'   # Linux only: the Windows release ships no libtotkrt-k10.a (tools/make_release.py)
         else:
             raise InstallError('check.cpu_too_old')
         if not host['loader']:
