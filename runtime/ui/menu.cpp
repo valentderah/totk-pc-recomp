@@ -740,11 +740,31 @@ static void ach_date(uint64_t when, char *out, size_t n) {
     strftime(out, n, "%Y-%m-%d %H:%M", &tm);
 }
 
+// A statistic; with a total (weapons 90 / 144) the row is a bar of how much of it the save has.
 static void ach_count_row(const char *id, UiTextId label, uint32_t have, uint32_t max, UiTextId desc) {
     char value[48];
     if (max) snprintf(value, sizeof value, "%u / %u", have, max);
     else snprintf(value, sizeof value, "%u", have);
-    opt_text_row(id, menu_text(label), value, nullptr, menu_text(desc), false);
+    if (max) opt_progress_row(id, menu_text(label), value, nullptr, menu_text(desc), (float)have / (float)max, have >= max);
+    else opt_text_row(id, menu_text(label), value, nullptr, menu_text(desc), false);
+}
+
+// The description pane of an achievement: its title, what it counts, the progress and when it was unlocked.
+static void ach_desc(const StatsAch *a, const char *title, char *out, size_t n) {
+    static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS, UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS, UI_ACH_D_ARMOR,
+                                     UI_ACH_D_SETS,   UI_ACH_D_ITEMS, UI_ACH_D_COMPENDIUM, UI_ACH_D_HEARTS,  UI_ACH_D_STAMINA};
+    uint32_t have = a->progress < a->target ? a->progress : a->target;
+    char progress[96], state[96];
+    snprintf(progress, sizeof progress, menu_text(UI_ACH_PROGRESS), have, a->target,
+             a->target ? (unsigned)(100ull * have / a->target) : 0u);
+    if (a->unlocked > 1) {
+        char when[32];
+        ach_date(a->unlocked, when, sizeof when);
+        snprintf(state, sizeof state, menu_text(UI_ACH_UNLOCKED_AT), when);
+    } else {
+        snprintf(state, sizeof state, "%s", menu_text(a->unlocked ? UI_ACH_UNLOCKED : UI_ACH_LOCKED));
+    }
+    snprintf(out, n, "%s\n\n%s\n\n%s\n%s\n\n%s", title, menu_text(kinds[a->kind]), progress, state, menu_text(UI_ACH_KEEPS));
 }
 
 static void ach_title(const StatsView *s, const StatsAch *a, char *out, size_t n) {
@@ -804,7 +824,7 @@ static void tab_achievements(float scale) {
     for (int i = 0; i < s.nach; i++) {
         const StatsAch *a = &s.ach[i];
         if (a->kind == STATS_FAMILY && !s.family[a->family].name[0]) continue;
-        char id[24], title[160], value[48], note[64] = "";
+        char id[24], title[160], value[48], note[64] = "", desc[1536];
         snprintf(id, sizeof id, "##ach%d", i);
         ach_title(&s, a, title, sizeof title);
         if (a->unlocked) {
@@ -817,7 +837,10 @@ static void tab_achievements(float scale) {
         } else {
             snprintf(value, sizeof value, "%u / %u", a->progress < a->target ? a->progress : a->target, a->target);
         }
-        opt_text_row(id, title, value, note[0] ? note : nullptr, menu_text(UI_ACH_DESC), false);
+        ach_desc(a, title, desc, sizeof desc);
+        uint32_t have = a->progress < a->target ? a->progress : a->target;
+        opt_progress_row(id, title, value, note[0] ? note : nullptr, desc, a->target ? (float)have / (float)a->target : 0.0f,
+                         a->unlocked != 0);
     }
     opt_end();
 }
