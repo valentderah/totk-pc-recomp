@@ -7,6 +7,7 @@
 // cfg_get handed out stays valid) and cfg_save writes only the changed keys back, keeping the rest of the file.
 // Readers take no lock: an entry is complete before n_entries counts it, and value pointers are swapped atomically.
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -327,9 +328,43 @@ static const char *raw_get(const char *name) {
     return NULL;
 }
 
+// ---- the screen's shape (desktop): a primary display of another shape than 16:9 gives output_res a default of that
+// shape while neither the environment nor totk.ini sets it, so the first start fills the screen instead of a 16:9
+// picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
+// ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
+// the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
+static const unsigned SHAPED[][2] = {
+    {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
+    {3840, 1080}, {5120, 1440},                                         // 32:9
+    {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},              // 16:10
+    {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
+};
+static char screen_res[16];   // set once by cfg_init, "" for none
+
+static void screen_default(void) {
+    int sw, sh;
+    if (!plat_screen_size(&sw, &sh)) return;
+    double r = (double)sw / sh;
+    if (fabs(r / (16.0 / 9.0) - 1) <= 0.01) return;
+    int best = -1, fit = -1;
+    for (int i = 0; i < (int)(sizeof SHAPED / sizeof *SHAPED); i++) {
+        unsigned w = SHAPED[i][0], h = SHAPED[i][1];
+        if (fabs((double)w / h / r - 1) > 0.01 || w > (unsigned)sw || h > (unsigned)sh) continue;
+        if (fit < 0 || w > SHAPED[fit][0]) fit = i;   // the largest that fits
+        if (h >= 1080 && (best < 0 || w < SHAPED[best][0])) best = i;
+    }
+    if (best < 0) best = fit;
+    if (best < 0) return;
+    snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
+    if (!raw_get(PREFIX "OUTPUT_RES"))
+        rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
+               sh, screen_res);
+}
+
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
+    if (!profile_of()) return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") ? screen_res : NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
@@ -704,6 +739,7 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
+    if (!profile_of()) screen_default();
     if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");
