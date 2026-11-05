@@ -117,6 +117,10 @@ of them.
    they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
    button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
+   `--aspect <w>x<h>` writes the UI laid out for a game resolution of another shape; with `--hud 16:9` or `--hud 21:9`
+   (a screen wider than that) the HUD stays within the middle 16:9 or 21:9 instead of the screen's corners. The default
+   `--out` then is `build\<ver>\romfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
+   (`21:9`) in `totk.ini` ([totk.ini.example](../totk.ini.example)).
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:

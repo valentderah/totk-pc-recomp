@@ -1067,6 +1067,19 @@ class Prepare(Step):
                                   dest / f'romfs-patches-{size}', '--aspect', size])
             if code:
                 raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+        # The same with the HUD kept narrower than the screen (totk.ini hud_width; runtime/romfs.c overlay_init): the
+        # middle 16:9 on every size wider than 16:9, the middle 21:9 on the sizes wider than 21:9 (the 32:9 ones).
+        for size in ASPECT_SIZES:
+            w, h = (int(v) for v in size.split('x'))
+            for hud, ratio in (('16:9', 16 / 9), ('21:9', 21 / 9)):
+                if w / h < ratio * 1.01 or (hud == '21:9' and w / h <= 2.5): continue
+                name = f'romfs-patches-{size}-hud{hud.replace(":", "x")}'
+                remove(dest / name)
+                code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
+                                     ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
+                                      dest / name, '--aspect', size, '--hud', hud])
+                if code:
+                    raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
         # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
         # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
         # input_prompts_folder). Both are written on every install, so the menu choices work without another run of

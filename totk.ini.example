@@ -152,6 +152,12 @@
 # a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
 # the only shape the setup builds those prompts for.
 # output_res = 1920x1080
+# HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
+# 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the
+# corners of a 32:9 screen stay clear. A cap not narrower than the screen is the same as full, and a 16:9 or taller
+# screen ignores it. The installer prepares these layouts for the sizes in the list above (romfs-patches-<w>x<h>-hud21x9
+# and -hud16x9); without the folder the HUD stays at the edges. Read at start.
+# hud_width = full
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
 # render_scale = game

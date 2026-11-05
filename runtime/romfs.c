@@ -904,6 +904,20 @@ static void overlay_drop(size_t a, size_t b) {
     noverlay -= b - a;
 }
 
+// hud_width (totk.ini) keeps the HUD within the middle 21:9 or 16:9 of a screen wider than that: the same UI layout
+// with the HUD moved less far out (tools/ultrawide_layout.py hud_extent), in a folder named like the plain shaped one
+// plus this suffix (romfs-patches-<w>x<h>-hud21x9, make_romfs_patches.py --hud). Writes the suffix and returns 1 when
+// the setting asks for one at this game resolution; 0 for full or a cap that is not narrower than the screen (more
+// than 1%), as make_romfs_patches.py --hud refuses it. The caller falls back to the plain folder when the suffixed
+// one is not there.
+static int hud_suffix(const unsigned out[2], char suffix[16]) {
+    const char *v = cfg_value("TOTK_HUD_WIDTH");
+    double cap = !strcmp(v, "21:9") ? 21.0 / 9 : !strcmp(v, "16:9") ? 16.0 / 9 : 0;
+    if (!cap || !out[1] || cap >= (double)out[0] / out[1] * 0.99) return 0;
+    snprintf(suffix, 16, "-hud%s", cap > 2 ? "21x9" : "16x9");
+    return 1;
+}
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
@@ -919,19 +933,34 @@ static void overlay_init(void) {
     // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
     // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
     // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
-    char def[2100], path[2100];
+    char def[2100], path[2100], hud[16] = "";
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES"), *mods = cfg_get("TOTK_ROMFS_MODS");
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
     if (!patches && res_wants_wide_overlay(out)) {
-        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
+        // hud_width asks for romfs-patches-<w>x<h>-hud<a>x<b> (hud_suffix); without it the plain folder loads
+        if (hud_suffix(out, hud) &&
+            snprintf(def, sizeof def, "%s/romfs-patches-%ux%u%s/manifest.tsv", index_dir, out[0], out[1], hud) <
+                (int)sizeof def &&
             plat_file_exists(def)) {
             def[strlen(def) - strlen("/manifest.tsv")] = 0;
             patches = def, wide = 1;
         } else {
-            rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
-                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+            if (hud[0])
+                rt_log("RomFS overlay: no romfs-patches-%ux%u%s for hud_width = %s, the HUD stays at the screen's edges "
+                       "(tools/make_romfs_patches.py --aspect %ux%u --hud %s)", out[0], out[1], hud, cfg_value("TOTK_HUD_WIDTH"),
+                       out[0], out[1], cfg_value("TOTK_HUD_WIDTH"));
+        }
+        if (!patches) {
+            if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
+                plat_file_exists(def)) {
+                def[strlen(def) - strlen("/manifest.tsv")] = 0;
+                patches = def, wide = 1;
+            } else {
+                rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
+                       "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+            }
         }
     }
     static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
@@ -939,8 +968,16 @@ static void overlay_init(void) {
         const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
         const char *dir = name;
         if (i == 2) {
-            if (wide) snprintf(pc_dir, sizeof pc_dir, "%s-%ux%u", name, out[0], out[1]);
-            else snprintf(pc_dir, sizeof pc_dir, "%s", name);
+            if (wide) {
+                // hud_width: the pc folder of the HUD variant when it is there, else the plain shaped one
+                char hud_dir[2100], hud_path[2100];
+                if (hud[0] && snprintf(hud_dir, sizeof hud_dir, "%s-%ux%u%s", name, out[0], out[1], hud) < (int)sizeof hud_dir &&
+                    snprintf(hud_path, sizeof hud_path, "%s/%s/manifest.tsv", index_dir, hud_dir) < (int)sizeof hud_path &&
+                    plat_file_exists(hud_path))
+                    snprintf(pc_dir, sizeof pc_dir, "%s", hud_dir);
+                else
+                    snprintf(pc_dir, sizeof pc_dir, "%s-%ux%u", name, out[0], out[1]);
+            } else snprintf(pc_dir, sizeof pc_dir, "%s", name);
             dir = pc_dir;
         }
         prompts_folders[i].name = name;
