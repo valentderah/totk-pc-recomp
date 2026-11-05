@@ -230,7 +230,8 @@ Before a commit:
 
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
-files); a change to the settings passes `totk.exe --probe-cfg`.
+files); a change to the settings passes `totk.exe --probe-cfg` and `python tests\settings_doc_check.py`, which fails
+when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md).
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

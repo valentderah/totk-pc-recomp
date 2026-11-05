@@ -41,7 +41,7 @@
 #endif
 
 #ifdef RT_PATCH_PAGE
-#define HOST_CASCADE_FIT (RT_PATCH_PAGE + 0xf80)   // the bl of the stable set's two sites in main+0xb372c
+#define HOST_CASCADE_FIT (RT_PATCH_PAGE + 0xf70)   // the bl of the stable set's two sites in main+0xb372c
 #define CASCADE_FIT_V143 0xc31a0                   // the game's fit: x0 record, w1 width, w2 height, s0, s1
 #define PCSS_REF_RADIUS 16.0                       // metres: see cascade_fit
 
