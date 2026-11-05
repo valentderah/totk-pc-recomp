@@ -122,6 +122,7 @@ typedef struct {
     uint64_t object, generation, when;
     float pad[2], motion[2], angle[2];   // post-inversion controller input, mouse input, mouse yaw/pitch in degrees
     int camera_enabled;
+    int swing;         // a mouse shake swings the right stick in this step or did in the last (pad[0] is 0 then)
     uint32_t player;   // player_state_logged's flags for this step (0 without mouse motion)
 } MouseSample;
 static MouseSample sample;
@@ -372,7 +373,7 @@ static void camera_input(Cpu *c) {
         }
         // That swing is the mouse's own motion, which turns the camera in degrees already: the camera hooks take the
         // right stick's x as 0 while it swings (the stick read of this step may still carry the last step's side)
-        if (side || last_side) next.pad[0] = 0;
+        if (side || last_side) next.pad[0] = 0, next.swing = 1;
         last_side = side;
         // The game multiplies camera input by its 30 Hz frame ratio later. Divide by that exact ratio, rather
         // than wall-clock time: an equal distance of mouse motion then gives equal input at every frame rate.
@@ -779,6 +780,9 @@ static float load_stick(const LoadSite *s, Cpu *c, float f) {
     load_pending[pair].object = 0;
     MouseSample m = sample_read();
     if (m.object != input || !m.camera_enabled || plat_now_ns() - m.when >= 150000000ull) return f;
+    // A step without the mouse in it keeps the game's value as it is: the gamepad's stick and anything else the game
+    // put there after the input update (the sample's pad is only the stick the update stored)
+    if (!m.angle[0] && !m.angle[1] && !m.swing) return f;
     float scale = 1;
     if (s->flags & (SKIP_OFFSET | ONLY_OFFSET)) {
         uint32_t state;
@@ -843,7 +847,7 @@ static float load_base(const LoadSite *s, Cpu *c, float f) {
                    mode_names[s->mode], DEG_PER_COUNT);
         }
     }
-    return f + degrees;
+    return degrees ? f + degrees : f;   // f + 0 would turn a -0 the game loads into +0
 }
 
 // A turn the game made from a KEEP_STICK load's total t, as K * -t|t| (shield surfing, wakeboard: their pitch squares

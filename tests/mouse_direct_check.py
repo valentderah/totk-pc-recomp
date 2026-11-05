@@ -286,6 +286,16 @@ int main(void) {
         // Aiming yaw: the base yaw on the frame gets dx counts
         assert(LOAD(0x23bee2c,1)==pad_x);
         assert(fabsf(LOAD(0x23beeec,1)-(40-100*DEG_PER_COUNT))<1e-5f);
+        // A step without mouse motion keeps every load as the game made it: a stick value something else changed
+        // after the input update stays, and so does a -0 base angle (bit for bit)
+        {
+            SAMPLE(0,0);
+            guest_float_store((uintptr_t)input+0x420,pad_x+0.125f);
+            assert(LOAD(0x23bee2c,1)==pad_x+0.125f);
+            float neg_zero=-0.0f; memcpy(&frame[0x18-0x12],&neg_zero,4);
+            float got=LOAD(0x23beeec,1); assert(!memcmp(&got,&neg_zero,4));
+            frame[0x18-0x12]=40;
+        }
         // Scope pitch near its lower limit: degrees up to the limit, the rest of the mouse's stick stays
         SAMPLE(0,-50);
         float mouse_y=guest_float((uintptr_t)input+0x424)-pad_y, want=-39-50*DEG_PER_COUNT;
