@@ -295,8 +295,7 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
-// Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
-static int create_swapchain(void) {
+static int build_swapchain(void) {
     flip_locked();   // the acquired image goes out before its swapchain is replaced
     VkCtx *c = vk_ctx();
     VkSurfaceCapabilitiesKHR caps;
@@ -364,8 +363,17 @@ static int create_swapchain(void) {
     }
     free_capture();
     vk_queue_unlock();
-    plat_xchg32(&g_dirty, 0);
     return 1;
+}
+
+// Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held. The stale mark
+// goes before the surface is read: a resize during the build keeps it. The switch to fullscreen at start lands there
+// on the window thread, and the driver does not report the swapchain as out of date.
+static int create_swapchain(void) {
+    plat_xchg32(&g_dirty, 0);
+    if (build_swapchain()) return 1;
+    plat_xchg32(&g_dirty, 1);
+    return 0;
 }
 
 static void sync_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 s0,
