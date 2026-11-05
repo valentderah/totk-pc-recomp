@@ -116,9 +116,13 @@ class App:
             self.vars['dest'].set(str(rebuild))
             root.after(POLL_MS, self.start)
         else:
-            last = recent.load()   # an update needs only the folder: refresh_form shows the hint and the recorded language
-            if last:
-                self.vars['dest'].set(last)
+            # recorded sources fill only empty fields; dest goes last, its trace runs refresh_form (update hint and
+            # recorded language). In update mode filled files are harmless: Extract.current hashes one only when its
+            # size or mtime differ from the recorded ones.
+            last = recent.load()
+            for name in ('base', 'update', 'keys', 'firmware', 'dest'):
+                if name in last and not self.vars[name].get().strip():
+                    self.vars[name].set(last[name])
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -364,7 +368,7 @@ class App:
             self.fit()
             return
         self.form_error.configure(text='')
-        recent.save(form.dest)
+        recent.save(form.dest, {name: getattr(form, name) for name in recent.SOURCES})
         # in a repository the Python running this window: the tools' embeddable Python there has no ._pth entry for
         # the repository, so `-m installer` would not find the package
         python = Path(sys.executable) if self.layout.dev else self.layout.python

@@ -39,8 +39,9 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
 shaders. A newer release that changes nothing game-derived skips the rebuild. The window starts with the last install folder
-it ran on, kept in `%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere), so an update
-needs no other input.
+and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
+`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
+stay empty. A reinstall or a switch to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1

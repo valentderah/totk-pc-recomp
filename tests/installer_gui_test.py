@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,25 +398,107 @@ class RecentTest(unittest.TestCase):
         self.assertEqual(recent.path(), self.file)
 
     def test_missing_file(self):
-        self.assertIsNone(recent.load())
+        self.assertEqual(recent.load(), {})
+
+    def installed(self):
+        (self.dest / statefile.NAME).write_text('{}', encoding='utf-8')
+
+    def files(self):
+        out = {}
+        for name in ('base', 'update', 'keys'):
+            f = self.tmp / (name + '.bin')
+            f.write_text('x', encoding='utf-8')
+            out[name] = str(f)
+        fw = self.tmp / 'fw'
+        fw.mkdir()
+        out['firmware'] = str(fw)
+        return out
+
+    def write(self, **fields):
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.write_text(json.dumps(fields), encoding='utf-8')
 
     def test_folder_without_state(self):
         recent.save(self.dest)
-        self.assertIsNone(recent.load())
+        self.assertEqual(recent.load(), {})
 
     def test_round_trip(self):
-        (self.dest / statefile.NAME).write_text('{}', encoding='utf-8')
-        recent.save(self.dest)
-        self.assertEqual(json.loads(self.file.read_text(encoding='utf-8')),
-                         {'format': 1, 'dest': os.path.abspath(self.dest)})
-        self.assertEqual(recent.load(), os.path.abspath(self.dest))
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        want = {name: os.path.abspath(v) for name, v in src.items()}
+        want['dest'] = os.path.abspath(self.dest)
+        self.assertEqual(json.loads(self.file.read_text(encoding='utf-8')), {'format': 1, **want})
+        self.assertEqual(recent.load(), want)
         self.assertFalse(self.file.with_name('setup.json.tmp').exists())
+
+    def test_empty_field_keeps_saved_value(self):
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        recent.save(self.dest, {'base': '', 'update': '  ', 'keys': src['keys']})
+        self.assertEqual(recent.load()['base'], os.path.abspath(src['base']))
+        self.assertEqual(recent.load()['firmware'], os.path.abspath(src['firmware']))
+
+    def test_missing_path_not_saved(self):
+        self.installed()
+        recent.save(self.dest, {'base': str(self.tmp / 'gone.xci'), 'firmware': str(self.tmp / 'nofw')})
+        self.assertEqual(recent.load(), {'dest': os.path.abspath(self.dest)})
+        self.assertNotIn('base', json.loads(self.file.read_text(encoding='utf-8')))
+
+    def test_vanished_path_dropped_on_load(self):
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        os.remove(src['base'])
+        self.assertNotIn('base', recent.load())
+        self.assertIn('update', recent.load())
+
+    def test_directory_as_file_dropped(self):
+        self.installed()
+        self.write(format=1, dest=str(self.dest), base=str(self.tmp), update=str(self.tmp), keys=str(self.tmp))
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+
+    def test_file_as_firmware_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), firmware=src['base'])
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+
+    def test_dest_file_dropped(self):
+        f = self.tmp / 'afile'
+        f.write_text('x', encoding='utf-8')
+        self.write(format=1, dest=str(f))
+        self.assertEqual(recent.load(), {})
+
+    def test_bad_values_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), base=5, update='', keys='rel/prod.keys', firmware=['x'])
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+        self.write(format=1, dest=str(self.dest), base=src['base'] + '\0x', update=None, keys=True)
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+        self.write(format=1, dest='relative/dir')
+        self.assertEqual(recent.load(), {})
+
+    def test_stat_errors_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), base=src['base'])
+        for exc in (OSError('share gone'), ValueError('embedded null byte')):
+            with unittest.mock.patch.object(Path, 'is_file', side_effect=exc):
+                self.assertEqual(recent.load(), {})
+
+    def test_old_dest_only_format(self):
+        self.installed()
+        self.write(format=0, dest=str(self.dest))
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
 
     def test_garbage_file(self):
         self.file.parent.mkdir()
         for text in ('not json', '[]', '{"dest": 5}', '{"format": 1}'):
             self.file.write_text(text, encoding='utf-8')
-            self.assertIsNone(recent.load(), text)
+            self.assertEqual(recent.load(), {}, text)
 
 
 class SmokeTest(unittest.TestCase):
