@@ -7,7 +7,8 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
+romfs-patches-xbox-label/, romfs-patches-pc/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
@@ -944,7 +945,8 @@ class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx))
+        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx),
+                           ctx.layout.pgo(game_version(ctx)) or 'no profile')
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -970,10 +972,12 @@ class Compile(Step):
         rep.progress('compile', 'compile', force=True)
         cpu = getattr(ctx, 'cpu', 'v3')
         lib = layout.runtime_lib_for(cpu)
+        pgo = layout.pgo(game_version(ctx))
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), '--ninja', layout.ninja,
+            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
+            '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
@@ -1067,9 +1071,10 @@ class Prepare(Step):
         # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
         # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on.
+        # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
+        # prompts for prompts = pc (16:9 only: another shape takes make_romfs_patches.py --prompts pc --aspect).
         failed = None
-        for style in ('xbox', 'xbox-label'):
+        for style in ('xbox', 'xbox-label', 'pc'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',

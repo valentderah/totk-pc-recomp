@@ -12,6 +12,8 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    totk_xlate.exe (+ totk_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
+    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py; Windows only);
+                            without one the game is built at -O1
     totk.ini.example
     VERSION                 the release version, one line
     temp/                   the default temp folder (created)
@@ -24,7 +26,7 @@ Dev mode, root = a repository checkout (no python/python.exe): build/py314-embed
 Python the release ships, with the same packages), else this Python; toolchain/llvm-mingw-*/ and toolchain/deps-mingw;
 runtime/ as the sources with build/install-rtlib/libtotkrt.a and libtotkrt-v2.a (tools/build_game.py --make-runtime-lib
 --out build/install-rtlib, once per --cpu); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/totk_xlate.exe; the shader list from
-refs/MacNativeGames; build/install-temp. The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
+refs/MacNativeGames; build/pgo/pgo-<v>.profdata when there is one; build/install-temp. The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
 dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
 """
 import os
@@ -66,6 +68,7 @@ class Layout:
     temp: Path | None = None
     sysroot: Path | None = None       # Linux release: what the game links against, instead of the host's
     runtime_lib_v2: Path | None = None   # libtotkrt-v2.a: the runtime for CPUs without AVX2 (build_game.py --cpu v2)
+    pgo_dir: Path | None = None       # pgo-<v>.profdata (tools/pgo.py); None: no profiles (Linux)
 
     @property
     def clang(self):
@@ -78,6 +81,12 @@ class Layout:
         if lib and lib.is_file():
             return lib
         return None if self.dev else lib
+
+    def pgo(self, version):
+        """The execution profile build_game.py --pgo compiles the update's code with, None without one (the game is
+        then built at -O1)."""
+        p = self.pgo_dir / f'pgo-{version_tag(version)}.profdata' if self.pgo_dir else None
+        return p if p and p.is_file() else None
 
     def patches(self, version):
         """The code patch table for recomp/gen.py."""
@@ -129,6 +138,7 @@ def release_layout(root):
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
         shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
+        pgo_dir=root / 'data' if WIN else None,
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
         # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
         temp=root / 'temp' if WIN else None,
@@ -154,7 +164,8 @@ def dev_layout(root):
         ninja=UCRT / ('ninja' + EXE), hactool=root / 'toolchain' / 'hactool' / ('hactool' + EXE),
         xlate=root / 'build' / 'xlate' / ('totk_xlate' + EXE),
         dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
-        shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp')
+        shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp',
+        pgo_dir=root / 'build' / 'pgo')
 
 
 def dev_commit(root):

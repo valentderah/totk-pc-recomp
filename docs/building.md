@@ -115,7 +115,8 @@ of them.
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
    For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
    they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`.
+   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
+   `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:
@@ -149,6 +150,33 @@ Settings live in `totk.ini` next to `totk.exe` ([totk.ini.example](../totk.ini.e
 your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pass `--with-romfs`; otherwise put it in
 `romfs\` next to the exe or point `TOTK_ROMFS` at its folder. Run `totk.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
+
+### Profile-guided build
+
+`build_game.py --pgo <file>.profdata` compiles the generated code at -O2 with an execution profile, and the runtime
+with it too: hot paths laid out straight, hot calls inlined, code that never ran compiled for size. On 1.4.3 the fight
+bench ran 12-15% faster per frame and a fight outside the training about 6%. The installer builds with
+`data/pgo-<ver>.profdata` of the release when the update has one, else at -O1.
+
+A profile only fits the generated C it was trained on: functions are matched by name and control-flow hash, so a
+function whose C changes loses its counts without a warning. Retrain after a lifter or generator change, from a clean
+`recomp/`. The instrumented build needs llvm-mingw, as MSYS2's clang has no profile runtime:
+
+```powershell
+$llvm = "toolchain\llvm-mingw-<date>\llvm-mingw-<date>-ucrt-x86_64"
+.venv\Scripts\python tools\build_game.py --version v143 --out build\v143-pgogen --toolchain $llvm --pgo gen
+```
+
+Play `build\v143-pgogen\totk.exe` through varied scenes (fights, towns, riding, building, the Depths, menus) for 20-30
+minutes; it is slower than a normal build. It writes `build\v143-pgogen\pgo\*.profraw` every minute and at exit.
+Scripted runs from saves (`tools/run_game.py`) add to the same file. Then:
+
+```powershell
+.venv\Scripts\python tools\pgo.py merge build\v143-pgogen --version v143
+```
+
+writes `build\pgo\pgo-v143.profdata` and its record (`.json`: the `recomp/` tree it fits). `make_release.py` ships every
+profile of `build\pgo` in `data\` and warns when a record names another `recomp/` tree than the one released.
 
 ## Linux (in progress)
 
