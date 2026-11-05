@@ -215,6 +215,26 @@ site zstd   main 5f574c 97e912a5 94d3aa25   # bl ZSTD_decompress_usingDDict -> p
 site zstd   main bdc910 97d17634 94bc0db4   # bl ZSTD_decompress_usingDDict -> page+0xfe0
 site zstd   main 1852314 979f9fb3 948a3733  # bl ZSTD_decompress_usingDDict -> page+0xfe0
 
+# Armor sets (runtime/armor_sets.c; menu Game modifications > Armor sets, off by default and switched while the game
+# runs): armour pieces are registered to nine sets from the inventory's item window, and the weapon / shield / bow
+# shortcut strip shows the sets on right stick up. Host functions on the patch page +0xe60..+0xef0. The item window's
+# ten rows come from tools/item_window_layout.py.
+set armor    TOTK_ARMOR_SETS     0
+site armor  main b9e5fc aa1303e0 94bd061d   # mov x0, x19 (main loop) -> page+0xe70: the per-frame work
+site armor  main 21786cc 2a1f03e1 52800041   # mov w1, wzr -> #2: the armour item window gets 4 rows (Pattern frame 2)
+site armor  main 2178708 f940fa80 94659dde   # ldr x0, [x20, #0x1f0] -> page+0xe80: Equip, Register to armor set, Clear, Cancel
+site armor  main 217870c 2a1f03e1 d503201f   # mov w1, wzr -> nop
+site armor  main 2178710 52800022 d503201f   # mov w2, #1 -> nop
+site armor  main 2178714 14000147 14000151   # b 0x2178c30 -> b 0x2178c58, past the shared Cancel row
+site armor  main 2179c28 97ffe83c 9465989a   # bl 0x2173d18 (command handler) -> page+0xe90: the Register and set commands
+site armor  main 20c7158 b941bad7 94686352   # ldr w23, [x22, #0x1b8] (strip type) -> page+0xea0
+site armor  main 20c71c4 97ff34d7 9468633b   # bl 0x2094520 (shield tile) -> page+0xeb0: a set as an armour tile
+site armor  main 2183714 97fe9431 946571ef   # bl 0x21287d8 (tile count) -> page+0xed0
+site armor  main 2183774 97fe942e 946571db   # bl 0x212882c (first cursor) -> page+0xee0
+site armor  main 2125db8 97a9ee5e 9466e84e   # bl 0xba1730 (name under the strip) -> page+0xef0
+site armor  main 21829d4 97fe979d 94657523   # bl 0x2128848 (the strip's per-frame cursor, shows the Drop hint) -> page+0xe60
+site armor  main 2183358 97fe8cd2 946572da   # bl 0x21266a0 (strip closes: apply the selection) -> page+0xec0
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v143/exefs --patches recomp/patches-v143.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 spin main 231dc 231ec   # 5 instructions; loads

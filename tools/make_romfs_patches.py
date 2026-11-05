@@ -40,6 +40,10 @@ from the game's own files on the player's machine, nothing added (tools/button_i
   button the prompt names lit in its place with its bar.
 --xbox-prompts is the older name of --prompts xbox. With --aspect, romfs-patches-xbox-<w>x<h> or
 romfs-patches-xbox-label-<w>x<h>: the same prompts with that shape's UI layout.
+
+1.4.3, every style: the inventory's item window gets ten button rows for armour sets (tools/item_window_layout.py,
+runtime/armor_sets.c); the game's own 2-, 3- and 4-row frames are unchanged. The Common archive grows, so the overlay
+carries the resource size table with that entry raised.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
 (button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
@@ -358,8 +362,9 @@ with (args.romfs / 'romfs.bin').open('rb') as image:
     for name, (lo, hi) in sarc_members(pack).items():
         d = zstd.ZstdDict(pack[lo:hi])
         dictionaries[d.dict_id] = d
-    prompt_files = (FONTS + (MALS if letter_panes else []) + [RESTBL]) if args.prompts else []
-    originals = {path: read(path) for path in [ARCHIVE] + prompt_files}
+    prompt_files = (FONTS + (MALS if letter_panes else [])) if args.prompts else []
+    # the resource size table, for an archive that grows (the prompts' fonts, the item window)
+    originals = {path: read(path) for path in [ARCHIVE] + prompt_files + ([RESTBL] if RESTBL else [])}
 raw = originals[ARCHIVE]
 info = zstd.get_frame_info(raw)
 dictionary = dictionaries[info.dictionary_id]
@@ -390,15 +395,18 @@ diff = [i for i in range(len(original)) if original[i] != blarc[i]]
 touched = [members[m] for m in (*MEMBERS, *layout)]
 assert diff and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
 outputs = {ARCHIVE: bytes(blarc)}   # RomFS path -> new contents (before compression)
+sizes = {ARCHIVE: len(original)}   # RomFS path -> size of the original's contents
+
+
+def unpack(path):
+    frame = zstd.get_frame_info(originals[path])
+    data = zstd.decompress(originals[path], zstd_dict=dictionaries.get(frame.dictionary_id))
+    sizes[path] = len(data)
+    return data
+
+
 prompts = None
 if args.prompts:
-    sizes = {ARCHIVE: len(original)}   # RomFS path -> size of the original's contents
-
-    def unpack(path):
-        frame = zstd.get_frame_info(originals[path])
-        data = zstd.decompress(originals[path], zstd_dict=dictionaries.get(frame.dictionary_id))
-        sizes[path] = len(data)
-        return data
     archives = {path: unpack(path) for path in FONTS}
     text = sarc_members(archives[icons.TEXT_ARCHIVE])
     missing = [name for name in icons.TEXT_FONTS if name not in text]
@@ -448,12 +456,26 @@ if args.prompts:
         mals[lo:hi] = msbt
         outputs[path] = bytes(mals)
         messages[path] = len(changed)
-    # An archive that grew needs as much more room in the resource size table, or the game stops when it loads it.
-    grown = {path: len(data) - sizes[path] for path, data in outputs.items() if len(data) > sizes[path]}
-    if grown:
-        outputs[RESTBL] = icons.grow_restbl(unpack(RESTBL), grown)
     prompts = dict(style=args.prompts, textures=KEY_TEXTURES if by_position else [], letters=letters,
-                   diamond=len(diamond), messages=messages, hud=hud, icons=len(drawn), fonts=FONTS, grown=grown)
+                   diamond=len(diamond), messages=messages, hud=hud, icons=len(drawn), fonts=FONTS)
+item_window = None
+if args.version == 'v143':
+    spec = importlib.util.spec_from_file_location('item_window_layout', Path(__file__).with_name('item_window_layout.py'))
+    item_layout = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(item_layout)
+    outputs[ARCHIVE] = item_layout.apply(outputs[ARCHIVE], sarc_members, sarc_replace)
+    item_window = dict(rows=item_layout.ROWS, members=[item_layout.LAYOUT, item_layout.ANIM])
+# An archive that grew needs as much more room in the resource size table, or the game stops when it loads it.
+grown = {path: len(data) - sizes[path] for path, data in outputs.items() if len(data) > sizes[path]}
+if grown:
+    assert RESTBL, 'no System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs in the RomFS'
+    if 'icons' not in globals():
+        spec = importlib.util.spec_from_file_location('button_icons', Path(__file__).with_name('button_icons.py'))
+        icons = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(icons)
+    outputs[RESTBL] = icons.grow_restbl(unpack(RESTBL), grown)
+if prompts is not None:
+    prompts['grown'] = grown
 
 def reusable(path, contents, dictionary):
     """The --reuse folder's copy of path when it holds these contents under the same dictionary, else None. The level 19
@@ -497,4 +519,4 @@ for path, contents in outputs.items():
                                        + ''.join(line + '\n' for line in lines))
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None,
-                      prompts=prompts, reused=reused)))
+                      prompts=prompts, item_window=item_window, grown=grown, reused=reused)))

@@ -199,6 +199,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OPERATION_MODE] = "Console mode",
     [UI_MENU_OPERATION_MODE_DESC] = "Whether the game thinks it runs docked or handheld.",
     [UI_MENU_MODE_DOCKED] = "Docked", [UI_MENU_MODE_HANDHELD] = "Handheld",
+    [UI_ARMOR_REGISTER] = "Register to armor set",
+    [UI_ARMOR_CLEAR] = "Clear all armor sets",
+    [UI_ARMOR_CLEAR_YES] = "Yes, clear all sets",
+    [UI_ARMOR_SET_FMT] = "Set %d",
+    [UI_ARMOR_STRIP_FMT] = "Armor Set %d",
+    [UI_MENU_TAB_GAMEMODS] = "Game modifications",
+    [UI_MENU_ARMOR_SETS] = "Armor sets",
+    [UI_MENU_ARMOR_SETS_DESC] = "On, an armor piece in the inventory gets \"Register to armor set\", which adds it to one of "
+        "nine sets. While the weapon, shield or bow shortcut is held, push the right stick up to see your sets and down to "
+        "go back; let go on a set to put it on. Off (the default), the game is unchanged.",
     [UI_MENU_ASSUME_FOCUS] = "Keep running out of focus",
     [UI_MENU_ASSUME_FOCUS_DESC] = "On (the default), the game keeps running while you are in another window, and the "
                                   "keyboard stays quiet until the window is in front again. Off, it pauses when its "
@@ -729,6 +739,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OPERATION_MODE] = "Режим консоли",
     [UI_MENU_OPERATION_MODE_DESC] = "Игра считает, что консоль в док-станции или в портативном режиме.",
     [UI_MENU_MODE_DOCKED] = "В док-станции", [UI_MENU_MODE_HANDHELD] = "Портативный",
+    [UI_ARMOR_REGISTER] = "Добавить в комплект",
+    [UI_ARMOR_CLEAR] = "Очистить все комплекты",
+    [UI_ARMOR_CLEAR_YES] = "Да, очистить все",
+    [UI_ARMOR_SET_FMT] = "Комплект %d",
+    [UI_ARMOR_STRIP_FMT] = "Комплект брони %d",
+    [UI_MENU_TAB_GAMEMODS] = "Модификации игры",
+    [UI_MENU_ARMOR_SETS] = "Комплекты брони",
+    [UI_MENU_ARMOR_SETS_DESC] = "Включено: у брони в инвентаре появляется пункт «Добавить в комплект», который сохраняет её в "
+        "один из девяти комплектов. Пока удерживается быстрый выбор оружия, щита или лука, наклоните правый стик вверх, "
+        "чтобы увидеть комплекты, и вниз, чтобы вернуться; отпустите на комплекте, чтобы надеть его. Выключено (по "
+        "умолчанию): игра без изменений.",
     [UI_MENU_ASSUME_FOCUS] = "Работать без фокуса",
     [UI_MENU_ASSUME_FOCUS_DESC] = "Включено (по умолчанию): игра идёт, пока вы в другом окне, а клавиатура не "
                                   "действует, пока окно не вернётся на передний план. Выключено: игра встаёт на паузу, "
@@ -1193,6 +1214,17 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                "precisa de Velocidade do jogo pelo relógio.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
+    [UI_ARMOR_REGISTER] = "Registrar em conjunto",
+    [UI_ARMOR_CLEAR] = "Limpar todos os conjuntos",
+    [UI_ARMOR_CLEAR_YES] = "Sim, limpar todos",
+    [UI_ARMOR_SET_FMT] = "Conjunto %d",
+    [UI_ARMOR_STRIP_FMT] = "Conjunto de armadura %d",
+    [UI_MENU_TAB_GAMEMODS] = "Modificações do jogo",
+    [UI_MENU_ARMOR_SETS] = "Conjuntos de armadura",
+    [UI_MENU_ARMOR_SETS_DESC] = "Ligado, uma peça de armadura no inventário ganha \"Registrar em conjunto\", que a adiciona a "
+        "um de nove conjuntos. Enquanto o atalho de arma, escudo ou arco estiver pressionado, mova o analógico direito "
+        "para cima para ver seus conjuntos e para baixo para voltar; solte em um conjunto para vesti-lo. Desligado (o "
+        "padrão), o jogo não muda.",
     [UI_MENU_ASSUME_FOCUS] = "Continuar rodando fora de foco",
     [UI_MENU_ASSUME_FOCUS_DESC] = "Ligado (o padrão), o jogo continua rodando enquanto você está em outra janela, e o "
                                   "teclado fica sem efeito até a janela voltar para a frente. Desligado, ele pausa quando "
@@ -1818,6 +1850,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OPERATION_MODE_DESC] = "游戏认为自己处于底座模式还是掌机模式。",
     [UI_MENU_MODE_DOCKED] = "底座模式",
     [UI_MENU_MODE_HANDHELD] = "掌机模式",
+    [UI_ARMOR_REGISTER] = "登记到防具套装",
+    [UI_ARMOR_CLEAR] = "清除全部防具套装",
+    [UI_ARMOR_CLEAR_YES] = "是，全部清除",
+    [UI_ARMOR_SET_FMT] = "套装 %d",
+    [UI_ARMOR_STRIP_FMT] = "防具套装 %d",
+    [UI_MENU_TAB_GAMEMODS] = "游戏修改",
+    [UI_MENU_ARMOR_SETS] = "防具套装",
+    [UI_MENU_ARMOR_SETS_DESC] = "开启后，背包中的防具会多出“登记到防具套装”选项，可将其加入九套套装之一。按住武器、盾牌或弓的快捷栏时，"
+        "将右摇杆向上推可查看套装，向下推可返回；在某一套装上松开即可穿上。关闭（默认）时，游戏保持原样。",
     [UI_MENU_ASSUME_FOCUS] = "后台保持运行",
     [UI_MENU_ASSUME_FOCUS_DESC] = "开启（默认）时，切到其他窗口游戏仍会继续运行，"
                                   "但键盘要等窗口回到前台才会响应。关闭时，"
@@ -2310,17 +2351,29 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
 };
 
-#define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
-SWKBD_ONLY(text_ja, "文字入力", "名前を入力してください", "ウマ", "OK", "キャンセル", "コントローラー: A = OK、B = キャンセル");
-SWKBD_ONLY(text_fr, "Saisie de texte", "Entrez un nom", "Cheval", "OK", "Annuler", "Manette : A = OK, B = Annuler");
-SWKBD_ONLY(text_de, "Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrechen", "Controller: A = OK, B = Abbrechen");
-SWKBD_ONLY(text_it, "Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla");
-SWKBD_ONLY(text_es, "Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar",
+// The armour sets' game labels follow the game's language (armor_sets.c), so every game language has them.
+#define ARMOR(reg, clear, yes, set, strip) [UI_ARMOR_REGISTER] = reg, [UI_ARMOR_CLEAR] = clear, \
+    [UI_ARMOR_CLEAR_YES] = yes, [UI_ARMOR_SET_FMT] = set, [UI_ARMOR_STRIP_FMT] = strip
+#define SWKBD_ONLY(name, armor, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__), armor}
+SWKBD_ONLY(text_ja, ARMOR("防具セットに登録", "防具セットをすべて消去", "はい、すべて消去", "セット%d", "防具セット%d"),
+           "文字入力", "名前を入力してください", "ウマ", "OK", "キャンセル", "コントローラー: A = OK、B = キャンセル");
+SWKBD_ONLY(text_fr, ARMOR("Ajouter à une tenue", "Effacer toutes les tenues", "Oui, tout effacer", "Tenue %d", "Tenue %d"),
+           "Saisie de texte", "Entrez un nom", "Cheval", "OK", "Annuler", "Manette : A = OK, B = Annuler");
+SWKBD_ONLY(text_de, ARMOR("Zu Rüstungsset hinzufügen", "Alle Rüstungssets löschen", "Ja, alle löschen", "Set %d", "Rüstungsset %d"),
+           "Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrechen", "Controller: A = OK, B = Abbrechen");
+SWKBD_ONLY(text_it, ARMOR("Aggiungi a un set", "Cancella tutti i set", "Sì, cancella tutto", "Set %d", "Set di armature %d"),
+           "Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla");
+SWKBD_ONLY(text_es, ARMOR("Añadir a un conjunto", "Borrar todos los conjuntos", "Sí, borrar todo", "Conjunto %d", "Conjunto %d"),
+           "Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar",
            "Mando: A = Aceptar, B = Cancelar");
-SWKBD_ONLY(text_nl, "Tekstinvoer", "Voer een naam in", "Paard", "OK", "Annuleren", "Controller: A = OK, B = Annuleren");
-SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
-SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
-SWKBD_ONLY(text_ko, "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
+SWKBD_ONLY(text_nl, ARMOR("Aan pantserset toevoegen", "Alle pantsersets wissen", "Ja, alles wissen", "Set %d", "Pantserset %d"),
+           "Tekstinvoer", "Voer een naam in", "Paard", "OK", "Annuleren", "Controller: A = OK, B = Annuleren");
+SWKBD_ONLY(text_pt, ARMOR("Adicionar a um conjunto", "Limpar todos os conjuntos", "Sim, limpar todos", "Conjunto %d", "Conjunto %d"),
+           "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
+SWKBD_ONLY(text_zh_hant, ARMOR("登記到防具套裝", "清除全部防具套裝", "是，全部清除", "套裝 %d", "防具套裝 %d"),
+           "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
+SWKBD_ONLY(text_ko, ARMOR("방어구 세트에 등록", "방어구 세트 모두 삭제", "네, 모두 삭제", "세트 %d", "방어구 세트 %d"),
+           "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
