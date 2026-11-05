@@ -7,6 +7,7 @@
 // cfg_get handed out stays valid) and cfg_save writes only the changed keys back, keeping the rest of the file.
 // Readers take no lock: an entry is complete before n_entries counts it, and value pointers are swapped atomically.
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +42,8 @@ static const char *const known[] = {
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
-    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_IDLE", "FREE_CORES",
+    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
+    "FREEZE_IDLE", "FREE_CORES",
     "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "MENU_LANG", "MENU_TEST",
@@ -65,7 +67,7 @@ static const char *const known[] = {
 
 // The totk.ini section a key cfg_set may write goes to when the file lacks it (totk.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
-    {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
+    {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"}, {"FRAME_QUEUE", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
@@ -135,7 +137,7 @@ static const CfgMeta metas[] = {
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
     {"PCSS", "0", "0..200", RESTART},
     // Game
-    {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE},
+    {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE}, {"FRAME_QUEUE", "0", "0|1", LIVE},
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"MODS_REBUILD", "auto", "auto|off", RESTART},
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
@@ -328,9 +330,51 @@ static const char *raw_get(const char *name) {
     return NULL;
 }
 
+// ---- the screen's shape (desktop): a primary display of another shape than 16:9 gives output_res a default of that
+// shape while neither the environment nor totk.ini sets it, so the first start fills the screen instead of a 16:9
+// picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
+// ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
+// the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
+// Xbox or keyboard prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so
+// a default of another shape would trade the prompts the player chose for the Switch ones.
+static const unsigned SHAPED[][2] = {
+    {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
+    {3840, 1080}, {5120, 1440},                                         // 32:9
+    {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},              // 16:10
+    {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
+};
+static char screen_res[16];   // set once by cfg_init, "" for none
+
+static int switch_prompts(void) {
+    const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
+    return (!p || !strcasecmp(p, "nintendo")) && !(l && !strcasecmp(l, "xbox_prompts"));
+}
+
+static void screen_default(void) {
+    int sw, sh;
+    if (!plat_screen_size(&sw, &sh)) return;
+    double r = (double)sw / sh;
+    if (fabs(r / (16.0 / 9.0) - 1) <= 0.01) return;
+    int best = -1, fit = -1;
+    for (int i = 0; i < (int)(sizeof SHAPED / sizeof *SHAPED); i++) {
+        unsigned w = SHAPED[i][0], h = SHAPED[i][1];
+        if (fabs((double)w / h / r - 1) > 0.01 || w > (unsigned)sw || h > (unsigned)sh) continue;
+        if (fit < 0 || w > SHAPED[fit][0]) fit = i;   // the largest that fits
+        if (h >= 1080 && (best < 0 || w < SHAPED[best][0])) best = i;
+    }
+    if (best < 0) best = fit;
+    if (best < 0) return;
+    snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
+    if (!raw_get(PREFIX "OUTPUT_RES") && switch_prompts())
+        rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
+               sh, screen_res);
+}
+
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
+    if (!profile_of())
+        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && switch_prompts() ? screen_res : NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
@@ -705,6 +749,7 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
+    if (!profile_of()) screen_default();
     if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");
