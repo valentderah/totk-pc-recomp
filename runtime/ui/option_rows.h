@@ -53,6 +53,9 @@ bool opt_button(const char *id, UiTextId label, UiTextId desc, const char *value
 // Ctrl+Down, the drawn arrows; movable rows only) or 0.
 int opt_text_row(const char *id, const char *label, const char *value, const char *note, const char *desc,
                  bool movable);
+// A text row whose background is a progress bar filled to progress (0..1), green once done (the Achievements tab).
+int opt_progress_row(const char *id, const char *label, const char *value, const char *note, const char *desc,
+                     float progress, bool done);
 // Rows and text that are not settings of the cfg table: a label and description of the caller's own (the cheats of
 // the cheat files). opt_toggle_text shows on / off (value: shown instead, NULL for On / Off) and returns true on A, a
 // click, left or right; the caller changes its state. id: unique on the page, the environment check uses it.

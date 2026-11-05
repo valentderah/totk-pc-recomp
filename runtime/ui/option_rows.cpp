@@ -108,6 +108,9 @@ struct RowView {
     bool is_default;     // the value is the setting's default: the "default" mark, the value not highlighted
     bool arrows;         // a stepper: < value >, the arrows click too
     const char *note;    // under the value instead of the "default" mark; NULL for none
+    bool bar;            // the row's background is a progress bar filled to `progress` (0..1)
+    float progress;
+    bool done;           // the bar's goal is reached: drawn green instead of gold
 };
 
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right),
@@ -165,6 +168,12 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     ImFont *font = ImGui::GetFont();
     float r = 9 * g_scale, pad = 16 * g_scale, small = fs * 0.72f;
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), hov || foc ? IM_COL32(255, 255, 255, 22) : IM_COL32(0, 0, 0, 40), r);
+    if (v.bar) {   // the filled part, rounded on the left only until it reaches the right edge
+        float f = v.progress < 0 ? 0 : v.progress > 1 ? 1 : v.progress;
+        if (f > 0)
+            dl->AddRectFilled(p, ImVec2(p.x + w * f, p.y + h), v.done ? IM_COL32(96, 170, 96, 70) : IM_COL32(236, 194, 84, 48),
+                              r, f >= 1 ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
+    }
     dl->AddRect(p, ImVec2(p.x + w, p.y + h),
                 hov || foc ? (off ? IM_COL32(236, 194, 84, 120) : kGold) : IM_COL32(255, 255, 255, off ? 18 : 38), r, 0,
                 hov || foc ? 2.0f : 1.0f);
@@ -228,8 +237,14 @@ static int row(const char *key, UiTextId label, UiTextId desc, const RowView &v)
 
 int opt_text_row(const char *id, const char *label, const char *value, const char *note, const char *desc,
                  bool movable) {
-    RowView v = {value ? value : "", false, false, note};
+    RowView v = {value ? value : "", false, false, note, false, 0, false};
     return row_text(id, label, desc, v, movable);
+}
+
+int opt_progress_row(const char *id, const char *label, const char *value, const char *note, const char *desc,
+                     float progress, bool done) {
+    RowView v = {value ? value : "", false, false, note, true, progress, done};
+    return row_text(id, label, desc, v, false);
 }
 
 // ---- writing a setting: at once in memory (live settings follow), to totk.ini a moment later (opt_save_tick)
