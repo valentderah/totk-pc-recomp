@@ -970,21 +970,42 @@ static void overlay_drop(size_t a, size_t b) {
     noverlay -= b - a;
 }
 
-// The folder <prefix>-<w>x<h> the game resolution w x h takes in base: that exact size when it has a manifest (an
+// The HUD cap for the canonical shape. An inapplicable cap is full, as in installer/steps.py shape_hud. The generator
+// takes that same shape, so a resolution alias near the one-percent boundary cannot ask for an invalid variant.
+static const char *hud_suffix(unsigned w, unsigned h) {
+    unsigned shape[2] = {w, h};
+    cfg_shape_size(w, h, shape);
+    const char *value = cfg_value("TOTK_HUD_WIDTH");
+    double cap = !strcmp(value, "21:9") ? 21.0 / 9 : !strcmp(value, "16:9") ? 16.0 / 9 : 0;
+    return cap && shape[1] && cap < (double)shape[0] / shape[1] * 0.99
+               ? (cap > 2 ? "-hud21x9" : "-hud16x9") : "";
+}
+
+// The folder <prefix>-<w>x<h><suffix> the game resolution w x h takes in base: that exact size when it has a manifest (an
 // install by a setup that wrote every size, or make_romfs_patches.py --aspect <w>x<h> in a source build), else the
 // size of its shape (cfg.c cfg_shape_size), the one folder per shape installer/steps.py Shapes writes. name gets the
 // folder found, or the shape's one when neither has a manifest (for the log). 1 when found.
-static int shaped_name(const char *base, const char *prefix, unsigned w, unsigned h, char *name, size_t cap) {
+static int shaped_name(const char *base, const char *prefix, unsigned w, unsigned h, const char *suffix,
+                       char *name, size_t cap) {
     char path[2400];
     unsigned s[2] = {w, h};
     for (int pass = 0; pass < 2; pass++) {
         if (pass && !cfg_shape_size(w, h, s)) break;
         if (pass && s[0] == w && s[1] == h) break;
-        snprintf(name, cap, "%s-%ux%u", prefix, s[0], s[1]);
+        if (snprintf(name, cap, "%s-%ux%u%s", prefix, s[0], s[1], suffix) >= (int)cap) return 0;
         if (snprintf(path, sizeof path, "%s/%s/manifest.tsv", base, name) < (int)sizeof path && plat_file_exists(path))
             return 1;
     }
     return 0;
+}
+
+// Prefer the selected HUD at both exact and canonical sizes. Boot may fall back to the full HUD, but preparation
+// and the menu's missing-layout note use strict lookup so a full layout cannot hide a missing capped variant.
+static int selected_shape(const char *base, const char *prefix, unsigned w, unsigned h, char *name, size_t cap,
+                          int fallback) {
+    const char *suffix = hud_suffix(w, h);
+    if (shaped_name(base, prefix, w, h, suffix, name, cap)) return 1;
+    return fallback && *suffix && shaped_name(base, prefix, w, h, "", name, cap);
 }
 
 static void overlay_init(void) {
@@ -1012,10 +1033,15 @@ static void overlay_init(void) {
     cfg_shape_size(out[0], out[1], shape);
     if (!patches && res_wants_wide_overlay(out)) {
         char name[128];
-        if (shaped_name(index_dir, "romfs-patches", out[0], out[1], name, sizeof name) &&
+        if (selected_shape(index_dir, "romfs-patches", out[0], out[1], name, sizeof name, 1) &&
             snprintf(def, sizeof def, "%s/%s", index_dir, name) < (int)sizeof def) {
             patches = def, wide = 1;
             rt_log("RomFS overlay: the UI layout for %ux%u from %s", out[0], out[1], name);
+            const char *suffix = hud_suffix(out[0], out[1]);
+            if (*suffix && !ends_with(name, suffix))
+                rt_log("RomFS overlay: the selected HUD layout is missing; using the full HUD. Prepare it in the "
+                       "Screen tab, rerun setup, or run tools/make_romfs_patches.py --aspect %ux%u --hud %s",
+                       shape[0], shape[1], cfg_value("TOTK_HUD_WIDTH"));
         } else {
             rt_log("RomFS overlay: no %s for this game resolution, the UI keeps its 16:9 layout (run the setup again, "
                    "or tools/make_romfs_patches.py --aspect %ux%u)", name, shape[0], shape[1]);
@@ -1027,7 +1053,8 @@ static void overlay_init(void) {
         char *dir = prompts_folders[i].dir;
         prompts_folders[i].name = name;
         if (wide) {
-            prompts_folders[i].ready = shaped_name(index_dir, name, out[0], out[1], dir, sizeof prompts_folders[i].dir);
+            prompts_folders[i].ready = selected_shape(index_dir, name, out[0], out[1], dir,
+                                                      sizeof prompts_folders[i].dir, 1);
             continue;
         }
         snprintf(dir, sizeof prompts_folders[i].dir, "%s", name);
@@ -1041,6 +1068,10 @@ static void overlay_init(void) {
     const char *wanted_dir = prompts_wanted;   // the folder its files come from
     for (int i = 0; i < 3; i++)
         if (prompts_wanted && !strcmp(prompts_folders[i].name, prompts_wanted)) wanted_dir = prompts_folders[i].dir;
+    const char *suffix = hud_suffix(out[0], out[1]);
+    if (wide && prompts_wanted && romfs_prompts_ready(prompts_wanted) && *suffix && !ends_with(wanted_dir, suffix))
+        rt_log("RomFS overlay: the %s prompts have no selected HUD layout; their full HUD loads instead. Prepare "
+               "the layout in the Screen tab or rerun setup", style);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
                   : patches && !wide                      ? ROMFS_PROMPTS_PATCHES
                   : !romfs_prompts_ready(prompts_wanted)  ? (wide ? ROMFS_PROMPTS_SHAPE : ROMFS_PROMPTS_MISSING)
@@ -1128,19 +1159,19 @@ static void index_folder(char *dir, size_t cap) {
 }
 
 // 1 when the folder overlay_init takes for <prefix> at w x h (shaped_name) has a manifest next to romfs-index.bin.
-static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h) {
+static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h, int fallback) {
     char dir[2100], name[128];
     index_folder(dir, sizeof dir);
-    return shaped_name(dir, prefix, w, h, name, sizeof name);
+    return selected_shape(dir, prefix, w, h, name, sizeof name, fallback);
 }
 
 // 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h> of that size or of its shape,
 // the folder overlay_init looks for.
-int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h); }
+int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h, 1); }
 
 // 1 when it has a prompts' folder (input_prompts_folder) with that layout too: <folder>-<w>x<h>, which overlay_init
 // loads in its place with those prompts.
-int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { return shaped_folder_ready(folder, w, h); }
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { return shaped_folder_ready(folder, w, h, 1); }
 
 // ---- the layout for a new screen, from the settings menu (ui/menu.cpp row_output_res)
 // The setup writes the shaped folders for the displays connected when it ran (installer/steps.py Shapes). After a
@@ -1175,9 +1206,9 @@ static int prepare_tools(char *python, size_t pcap, char *script, size_t scap, c
 
 int romfs_shape_missing(unsigned w, unsigned h, const char *prompts_folder) {
     unsigned out[2] = {w, h};
-    if (!res_wants_wide_overlay(out)) return 0;
-    return !shaped_folder_ready("romfs-patches", w, h) ||
-           (prompts_folder && romfs_prompts_ready(prompts_folder) && !shaped_folder_ready(prompts_folder, w, h));
+    if (cfg_get("TOTK_ROMFS_PATCHES") || !res_wants_wide_overlay(out)) return 0;
+    return !shaped_folder_ready("romfs-patches", w, h, 0) ||
+           (prompts_folder && !shaped_folder_ready(prompts_folder, w, h, 0));
 }
 
 int romfs_shape_can_prepare(void) {
@@ -1221,27 +1252,33 @@ int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder) {
     snprintf(size, sizeof size, "%ux%u", s[0], s[1]);
     snprintf(version, sizeof version, "v%d", rt_game_version);
     snprintf(romfs, sizeof romfs, "%s/romfs", dir);
+    const char *suffix = hud_suffix(w, h), *hud = *suffix ? cfg_value("TOTK_HUD_WIDTH") : "full";
     int started = 0, failed = 0;
-    if (!shaped_name(dir, "romfs-patches", w, h, name, sizeof name)) {
-        snprintf(folder, sizeof folder, "romfs-patches-%s", size);
+    if (!selected_shape(dir, "romfs-patches", w, h, name, sizeof name, 0)) {
+        snprintf(folder, sizeof folder, "romfs-patches-%s%s", size, suffix);
         snprintf(out, sizeof out, "%s/%s", dir, folder);
         const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--aspect", size,
-                              NULL};
+                              "--hud", hud, NULL};
         if (shape_spawn(argv, dir, folder)) started++;
         else failed++;
     }
-    snprintf(reuse, sizeof reuse, "%s/%s/manifest.tsv", dir, prompts_folder ? prompts_folder : "");
-    if (prompts_folder && plat_file_exists(reuse) && !shaped_name(dir, prompts_folder, w, h, name, sizeof name)) {
+    if (prompts_folder && !selected_shape(dir, prompts_folder, w, h, name, sizeof name, 0)) {
         const char *style = prompts_folder + strlen("romfs-patches-");
+        snprintf(reuse, sizeof reuse, "%s/%s/manifest.tsv", dir, prompts_folder);
+        int can_reuse = plat_file_exists(reuse);
         snprintf(reuse, sizeof reuse, "%s/%s", dir, prompts_folder);
-        snprintf(folder, sizeof folder, "%s-%s", prompts_folder, size);
+        snprintf(folder, sizeof folder, "%s-%s%s", prompts_folder, size, suffix);
         snprintf(out, sizeof out, "%s/%s", dir, folder);
         // The keyboard and mouse prompts are drawn from totk.ini's bind_ lines, as the setup's PcPrompts and Shapes
         // steps draw them (installer/steps.py pc_binds); a file without such lines gives the keyboard defaults.
         snprintf(binds, sizeof binds, "%s/totk.ini", dir);
         int pc = !strcmp(style, "pc") && plat_file_exists(binds);
-        const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--prompts", style,
-                              "--aspect", size, "--reuse", reuse, pc ? "--binds" : NULL, binds, NULL};
+        const char *argv[24] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--prompts", style,
+                                "--aspect", size, "--hud", hud};
+        int argc = 14;
+        if (can_reuse) argv[argc++] = "--reuse", argv[argc++] = reuse;
+        if (pc) argv[argc++] = "--binds", argv[argc++] = binds;
+        argv[argc] = NULL;
         if (shape_spawn(argv, dir, folder)) started++;
         else failed++;
     }

@@ -525,16 +525,18 @@ static void row_output_res(void) {
     // checks run again only when a setting or the started generation changes.
     static unsigned seen = ~0u;
     static int missing, started;   // started: 0 not asked, 1 running, -1 failed to start
-    static char asked[16];
+    static char asked[128];
+    char request[128];
     const char *now = cfg_value("TOTK_OUTPUT_RES");
+    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+    const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+    snprintf(request, sizeof request, "%s|%s|%s", now, cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
     if (seen != cfg_version()) {
         seen = cfg_version();
         unsigned w = 0, h = 0;
-        const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-        const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
         missing = sscanf(now, "%ux%u", &w, &h) == 2 && romfs_shape_missing(w, h, want);
     }
-    int here = started && !strcmp(asked, now);   // the generation started for the value shown
+    int here = started && !strcmp(asked, request);   // resolution, selected HUD width and button prompts
     const char *note = !missing ? nullptr
                        : here   ? menu_text(started > 0 ? UI_MENU_OUTPUT_RES_PREPARING : UI_MENU_SHAPE_PREPARE_FAILED)
                                 : menu_text(UI_MENU_OUTPUT_RES_NO_LAYOUT);
@@ -542,11 +544,24 @@ static void row_output_res(void) {
     if (!missing || here || !romfs_shape_can_prepare()) return;
     if (!opt_button("##shape_prepare", UI_MENU_SHAPE_PREPARE, UI_MENU_SHAPE_PREPARE_DESC)) return;
     unsigned w = 0, h = 0;
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
     sscanf(now, "%ux%u", &w, &h);
-    snprintf(asked, sizeof asked, "%s", now);
-    started = romfs_shape_prepare(w, h, input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout))
-                  ? 1 : -1;
+    snprintf(asked, sizeof asked, "%s", request);
+    started = romfs_shape_prepare(w, h, want) ? 1 : -1;
+}
+
+// The HUD's width on a screen wider than 16:9 (hud_width, romfs.c hud_suffix): the choices that narrow the HUD at the
+// game resolution in the settings. 21:9 is offered on the 32:9 sizes (wider than 2.5), 16:9 on any size more than 1%
+// wider than 16:9. The row is hidden on a screen that is not wider
+// than that, where the setting does nothing (a value left in totk.ini stays as it is).
+static void row_hud_width(void) {
+    int w = 0, h = 0;
+    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &w, &h) != 2 || h <= 0) return;
+    double aspect = (double)w / h;
+    if (aspect <= 16.0 / 9 * 1.01) return;
+    const char *vals[3] = {"full", "21:9", "16:9"}, *names[3] = {menu_text(UI_MENU_HUD_WIDTH_FULL), "21:9", "16:9"};
+    int n = aspect > 2.5 ? 3 : 2;
+    if (n == 2) vals[1] = vals[2], names[1] = names[2];
+    opt_choice_list("TOTK_HUD_WIDTH", UI_MENU_HUD_WIDTH, vals, names, n, UI_MENU_HUD_WIDTH_DESC);
 }
 
 static void row_render_scale(void) {
@@ -705,6 +720,7 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
+    row_hud_width();
     row_render_scale();
     opt_toggle("TOTK_DYNAMIC_RES", UI_MENU_DYNAMIC_RES, UI_MENU_DYNAMIC_RES_DESC);
     row_shadow_res();
