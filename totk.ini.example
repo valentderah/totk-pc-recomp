@@ -51,9 +51,8 @@
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
 # frame of input delay. The frame rate swings less from frame to frame when uncapped than before, but more than
 # without it. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
-# Works on 1.2.1 only for now; other game versions ignore it. Needs shadow storage, which is on by default on Linux
-# and Wine and needs the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and
-# the log says so.
+# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage, which is on by default on Linux and Wine and needs
+# the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and the log says so.
 # sync_ahead = 0
 # With sync_ahead = 1: when the game changes memory the GPU still reads, queue the copy into the GPU's shadow of that
 # memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
