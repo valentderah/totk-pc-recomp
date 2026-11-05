@@ -21,6 +21,7 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+static volatile int32_t mouse_wheel;          // wheel turned while captured, in 1/120 notches (ikb_wheel_take)
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t captured;             // relative mouse mode is on
 enum { CUR_REL = 1, CUR_ESC = 2 };            // as input_win.c: released by Esc or a click elsewhere; by Esc
@@ -198,6 +199,12 @@ void input_sdl_event(const SDL_Event *e) {
             if (dy) plat_add32(&mouse_dy, dy);
         }
         break;
+    case SDL_EVENT_MOUSE_WHEEL:   // notches, + away from the player (a flipped wheel reports the other sign)
+        if (captured) {
+            float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
+            plat_add32(&mouse_wheel, (int32_t)(y * 120));
+        }
+        break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
         plat_xchg32(&focused, 1);
         break;
@@ -224,4 +231,13 @@ uint32_t ikb_mouse_travel(void) { return 0; }   // (the last-device switch: keys
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
+}
+
+int32_t ikb_wheel_take(void) {
+    int32_t o, n;
+    do {
+        o = mouse_wheel;
+        n = o % 120;   // the part of a notch stays for the next call
+    } while (!__atomic_compare_exchange_n(&mouse_wheel, &o, n, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    return o / 120;
 }

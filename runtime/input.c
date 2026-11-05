@@ -541,6 +541,35 @@ static int32_t shake_stick(int held) {
     return (now - from) / SHAKE_SIDE_NS % 2 ? STICK_MAX : -STICK_MAX;
 }
 
+// The scroll wheel on the Purah Pad's map, which zooms with the right stick's y (up: in): each notch is a full-tilt
+// pulse of MAP_ZOOM_PULSE_NS on that stick with MAP_ZOOM_GAP_NS of neutral after it, so a step of the zoom and a
+// held zoom both see one notch as one push. A fast scroll's notches wait their turn (at most MAP_ZOOM_QUEUE), a turn the
+// other way drops them. Returns the stick y for this poll, 0 between pulses and off the map. Under lock.
+#define MAP_ZOOM_PULSE_NS 100000000ull
+#define MAP_ZOOM_GAP_NS 50000000ull
+#define MAP_ZOOM_QUEUE 4
+static int32_t map_zoom_stick(int32_t notches, int on_map) {
+    static int32_t queued, dir;
+    static uint64_t until;   // the end of the pulse (dir != 0) or of the neutral after it
+    uint64_t now = plat_now_ns();
+    if (!on_map) { queued = dir = 0, until = 0; return 0; }
+    if (notches) {
+        if (queued && (notches > 0) != (queued > 0)) queued = 0;
+        queued += notches;
+        queued = queued > MAP_ZOOM_QUEUE ? MAP_ZOOM_QUEUE : queued < -MAP_ZOOM_QUEUE ? -MAP_ZOOM_QUEUE : queued;
+    }
+    if (dir) {
+        if (now < until) return dir * STICK_MAX;
+        dir = 0, until = now + MAP_ZOOM_GAP_NS;
+        return 0;
+    }
+    if (now < until || !queued) return 0;
+    dir = queued > 0 ? 1 : -1;
+    queued -= dir;
+    until = now + MAP_ZOOM_PULSE_NS;
+    return dir * STICK_MAX;
+}
+
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
@@ -618,9 +647,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             int selector = b & (1ull << B_L) ? 1 : b & (1ull << B_UP) ? 2 :
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
             mouse_camera(k, selector);
-            // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there
-            if (menu_cursor_map()) pick(&sl[0], &sl[1], k[0], k[1]);
+            // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there,
+            // the scroll wheel zooms (map_zoom_stick). Elsewhere the wheel is unbound; its notches are dropped.
+            int map = menu_cursor_map();
+            if (map) pick(&sl[0], &sl[1], k[0], k[1]);
             else pick(&sr[0], &sr[1], k[0], k[1]);
+            int32_t zoom = map_zoom_stick(ikb_wheel_take(), map);
+            if (zoom) pick(&sr[0], &sr[1], 0, zoom);
             int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
             static uint32_t travel_seen;
