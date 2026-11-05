@@ -20,9 +20,11 @@ The port's settings menu gets one new tab, **Blueprints**:
 3. **Import** writes the creation into the save data the game holds in memory and clears the game's cached pictures, so
    the creation appears in the Autobuild history right away as the newest draft — no reload, no restart.
 
-There is no slot to pick. A creation made in the game always takes the newest place of the history, and so does an
-import; the entry it displaces is the one that was newest before, which slides down one position. The other 29 drafts
-keep their data.
+There is no slot to pick. An import behaves exactly like a creation made in the game: the new blueprint becomes the
+first card of the history, every older free card moves down one place, and the oldest free card is discarded. The
+history stays at 30 entries. Cards the player marked as favorites are never discarded and keep their place, as on the
+console (up to 8 favorites). Successive imports therefore stack up in order: importing A, then B, then C leaves
+C first, B second, A third.
 
 ## 2. The two file forms (`runtime/blueprint_file.c`)
 
@@ -158,16 +160,29 @@ shapes are written, because the game keeps both and draws from the parsed one:
 
 Writing one without the other imports the data but leaves the open page showing the previous creation.
 
-### Finding the entry to replace
+### Finding the live Index array
 
-`Index` is **not** in guest memory while the menu runs, so it is read from the save file. That read is where the
-subtlety is: every save slot has its own `Index` array, and only one of them belongs to the file the game has loaded.
-Reading whichever file came first ordered the import by another save's ages — which is exactly how an import landed on
-card 9 instead of card 1 during development.
+`Index` **is** in guest memory. The save file's copy is used only to locate it: the 30 ages form a distinctive 120-byte
+run, and an exact `memchr` match over the heap (the same scan that finds the draft arrays, ~0.3 s) returns the address of
+the live array. Every save slot has its own `Index` array, so each candidate file's ages are tried until one matches;
+the one that matches is the save the game actually loaded. This also fixes the old bug where reading the first file
+ordered an import by another save's ages and it landed on card 9.
 
-The fix is to check each candidate against guest memory: the array the game is drawing by must be present there. The
-first file whose `Index` values are found in the heap is the loaded save, and `Index == 0` in it names the entry drawn
-first. The import writes that entry.
+Once found, the address is cached for the process. That matters for successive imports: after the first import rotates
+the ages, the file's copy is stale, so re-matching it would fail. Reading the cached live array directly gives the
+current ages every time.
+
+### Rotating the ages (the insert)
+
+The game's own rule for a new creation is: favorites keep their age, every other (free) entry's age increases by one,
+and the oldest free entry — the one with the largest age among the non-favorites — is evicted. The new creation takes
+that entry and its age becomes 0, so it is drawn first. The result is still a permutation of 0..29; a save whose ages
+do not fit that shape is refused rather than written. The `IsFavorite` bitmask (30 bits in one `u32`, with a count word
+in front of it) is read from the same save file, so a favorite is never chosen as the victim.
+
+Writing the rotated ages into guest memory means the open Autobuild page reorders at once, and the game writes the new
+order back to `progress.sav` with its own save. The blob is written into the evicted entry in both in-memory copies, as
+described above.
 
 ### Clearing the cached pictures
 
@@ -178,9 +193,9 @@ like a failed import. Clearing them is what makes the new creation appear on the
 
 ### What stays untouched
 
-The array keeps its 30 entries, the item count never changes, and the save never grows. Only one entry's blob changes;
-the entry that was drawn first moves one place down the list because `Index` no longer marks it as the newest, and the
-other 29 entries keep their data byte for byte.
+The array keeps its 30 entries, the item count never changes, and the save never grows. Only one entry's blob changes:
+the evicted oldest free entry. The other 29 entries keep their data byte for byte, the favorites keep their age, and no
+favorite flag is changed (an imported blueprint is not made a favorite).
 
 ## 6. The page (`runtime/ui/blueprint_page.cpp`)
 
@@ -229,14 +244,16 @@ Built from v0.3.10, run on Windows. Cases exercised:
   differ (`Index[0]` was 17, 12 and 10 in the files measured).
 - **History wiped clean.** After the Autobuild history was filled with one repeated creation and then reloaded, imports
   still landed on card 1.
-- **Different files.** A 21-part creation and a 20-part creation (`AsbObj_RopewayArm`, `Item_Fruit_A`) both imported and
-  both appeared first.
-- **Live, no reload.** The creation shows up in the already-open Autobuild page right after pressing Import; the game's
-  own save then persists it with the rest of the progress.
-- **Nothing else disturbed.** The other 29 entries keep their blobs; only the entry that is replaced changes.
+- **The insert rule, successively.** Importing three different `.txt` blueprints in one run (20, 6 and 4 parts) put
+  each one first and moved the earlier ones down: the log shows the evicted free entry changing every time
+  (`17`, `20`, `24`, `8`, `26`) while the cached live `Index` address stays the same and the favorite is held. Re-importing
+  the same file again also lands first, so successive imports stack in order.
+- **Live, no reload.** The creation shows up in the already-open Autobuild page right after pressing Import; the rotated
+  ages are in guest memory, so the game's own save persists the new order with the rest of the progress.
+- **Nothing else disturbed.** The other 29 entries keep their blobs; only the evicted entry changes. Favorites keep their
+  age, no favorite flag is touched, and the array stays at 30 entries.
 - **A `.txt` file, end to end.** Three exports from HyruleWorks decoded in the reader's own harness to blobs
-  byte-identical to Python's `gzip` of the same member, and a real `.txt` import in the running game landed on card 1:
-  `blueprint: E:\totk\json\json2.txt, 6688 bytes: ok` → `AsbObj_WoodSail_A_01 (19 parts) is now the first draft`.
+  byte-identical to Python's `gzip` of the same member, and a real `.txt` import in the running game landed on card 1.
 - **The remembered folder.** The log named the shell's default folder on the first dialog and the chosen file's folder
   before the next one, and `BLUEPRINT_DIR` was written to `totk.ini`.
 - **Damaged `.txt` files.** A file cut anywhere inside the Base64 value, a member that is not Base64, a member that is
@@ -246,11 +263,11 @@ Built from v0.3.10, run on Windows. Cases exercised:
 Log lines that make this checkable:
 
 ```
-blueprint: scan 94 blobs in 280 ms: drafts 0x174c793c8, page copy 0x185011838 (30 entries)
-blueprint: <name> (<n> parts) is now the first draft of the Autobuild history (entry <k>, the one the save draws first)
-blueprint: dropped 30 cached draft picture(s), the game draws them again
-blueprint: the file dialog opens at the shell's own folder, no folder is remembered
-blueprint: the next file dialog opens at E:\totk\json
+blueprint: scan 94 blobs in 398 ms: drafts 0x174c7a4cc, page copy 0x18508f838 (30 entries)
+blueprint: Index: cached live array at 0x184e41288, newest entry 17
+blueprint: Index: 1 favorite(s), evicted free entry 20 (age 28 -> 0), 28 free entries moved down one
+blueprint: <name> (<n> parts) is the first draft of the Autobuild history (entry 20)
+blueprint: dropped 7 cached draft picture(s), the game draws them again
 ```
 
 ## 8. Files
@@ -284,6 +301,12 @@ Modified:
 
 - `Index` decides the display order; the array order does not. Writing entry 0 for "the newest" is the mistake that
   makes an import appear in the middle of the list.
+- `Index` **is** in guest memory and its address can be found by matching the save file's 30 ages exactly. An earlier
+  conclusion that it was not (and that an insert was therefore impossible) came from comparing the wrong save slot:
+  the game was playing `slot_05` while the experiment read `slot_00`. Cache the address once and read the live ages from
+  it for every import, or the second import will try to match stale ages from the file.
+- The rotation is checked to still be a permutation of 0..29 before any write; a save with an unusual age layout is
+  refused rather than corrupted.
 - The cached `Draft_NNN.png` files are part of the state. An import that skips them looks broken even when the memory is
   right.
 - `IsFavorite` (one bit per entry) protects ★ slots; this implementation does not write it, so an import under the
