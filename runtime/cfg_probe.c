@@ -142,6 +142,10 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
+    m = cfg_meta("PERF_WINDOW");
+    CHECK(m && EQ(m->def, "0") && EQ(m->values, "0|1") && m->live, "meta: perf_window is live, off by default");
+    m = cfg_meta("INPUT_WINDOW");
+    CHECK(m && EQ(m->def, "0") && EQ(m->values, "0|1") && m->live, "meta: input_window is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 
