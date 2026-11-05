@@ -17,6 +17,9 @@
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
+# Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
+# still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
+# frame_queue = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
