@@ -109,7 +109,7 @@ bind_Y = pad:north, key:mouse_l
 
 ## Mouse camera
 
-`mouse_mode = direct` (the default) turns the camera by the raw mouse motion on game 1.4.3, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
+`mouse_mode = direct` (the default) turns the camera by the raw mouse motion on games 1.4.3 and 1.2.1, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt` and `recomp/patches-v121.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
 angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1 (about
 14.3 cm a turn at 800 DPI), with no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with
 the output. Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and
@@ -185,7 +185,7 @@ work too.
 A step of the gamepad alone, with no mouse motion and no pitch the mouse holds, reaches the camera exactly as without
 the hooks.
 The mapping below is still used when the camera-input hook is unavailable or the game disables camera input.
-Games 1.1.0 and 1.2.1 have no hooks and keep stick emulation whatever `mouse_mode` says.
+Game 1.1.0 has no hooks and keeps stick emulation whatever `mouse_mode` says. On 1.2.1 `mouse_aim_scale` has no effect (the bow-in-hand state is not read there).
 
 In stick-emulation mode, mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
 
