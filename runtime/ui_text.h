@@ -253,7 +253,9 @@ typedef enum {
     UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT, UI_MENU_BLUEPRINT_IMPORT_NO_ROOM, UI_MENU_BLUEPRINT_IMPORT_FAILED,
     // the worker thread that walks the game's memory
     UI_MENU_BLUEPRINT_IMPORTING, UI_MENU_BLUEPRINT_WORKER_FAILED,
-    UI_MENU_LAST_ID = UI_MENU_BLUEPRINT_WORKER_FAILED,
+    // the entry in the Autobuild screen's own bottom guide bar (runtime/blueprint_hint.cpp): one word next to the button
+    UI_MENU_BLUEPRINT_HINT,
+    UI_MENU_LAST_ID = UI_MENU_BLUEPRINT_HINT,
     UI_TEXT_COUNT
 } UiTextId;
 

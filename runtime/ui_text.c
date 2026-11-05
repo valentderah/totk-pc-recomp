@@ -541,6 +541,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "The import failed.",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Writing the blueprint into the save data...",
     [UI_MENU_BLUEPRINT_WORKER_FAILED] = "The background thread could not be started, so the history cannot be read.",
+    [UI_MENU_BLUEPRINT_HINT] = "Import",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1021,8 +1022,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_BLUEPRINT] = "Чертежи",
     [UI_MENU_BLUEPRINT_INTRO] = "Выберите файл чертежа .cai на этом ПК и импортируйте его. Творение станет самым новым чертежом в истории «Автобилда» вашего сохранения, поэтому предпросмотр и расход энергии Зонаи считает сама игра.",
     [UI_MENU_BLUEPRINT_FILE] = "Файл чертежа",
-                                "слотов «Автобилда». Игра хранит его в сохранении, поэтому собственный предпросмотр и "
-                                "расход зонаев работают как обычно.",
     [UI_MENU_BLUEPRINT_PICK] = "Выбрать файл чертежа",
     [UI_MENU_BLUEPRINT_PICK_DESC] = "Показывает файлы чертежей на этом ПК: .cai, .totkab и .txt.",
     [UI_MENU_BLUEPRINT_NONE] = "нет",
@@ -1038,12 +1037,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_NO_ORDER] = "Порядок, в котором список «Автобилда» рисует чертежи, ещё не в памяти. Откройте в игре список чертежей «Автобилда» один раз и попробуйте снова.",
     [UI_MENU_BLUEPRINT_IMPORT] = "Импортировать",
     [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Добавляет выбранный чертёж в историю «Автобилда» данных сохранения как самый новый чертёж. Список сохраняет 30 записей: новое творение занимает место самого старого, которое игра тоже отбрасывает для творения, построенного вами. Игра сохранит его вместе с остальным прогрессом.",
-                                      "вместе с остальным прогрессом.",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "Сначала выберите подходящий чертёж .cai.",
     [UI_MENU_BLUEPRINT_HISTORY] = "В истории %d чертежей; у самого нового %d деталей.",
     [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "В истории %d чертежей.",
     [UI_MENU_BLUEPRINT_DONE] = "Импортировано: чертёж теперь самый новый в истории «Автобилда», в начале списка. Игра сохранит его вместе с остальным прогрессом.",
-                               "строить. Игра сохранит его вместе с остальным прогрессом.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "Не удалось прочитать файл чертежа.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "Этот файл не чертёж, который порт может импортировать; причина в журнале.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "В данных сохранения нет слота, на который указывает история.",
@@ -1051,6 +1048,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "Импорт не удался.",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Запись чертежа в данные сохранения...",
     [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Не удалось запустить фоновый поток, поэтому историю прочитать нельзя.",
+    [UI_MENU_BLUEPRINT_HINT] = "Импорт",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1563,8 +1561,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_TAB_BLUEPRINT] = "Projetos",
     [UI_MENU_BLUEPRINT_INTRO] = "Escolha um arquivo de projeto .cai deste PC e importe-o. A criação entra no histórico do Construauto do seu salvamento como o projeto mais recente, então a prévia e o custo de energia Zonai são os do próprio jogo.",
     [UI_MENU_BLUEPRINT_FILE] = "Arquivo de projeto",
-                                "do Construauto. O jogo o guarda nos dados de salvamento, então a prévia e o custo de "
-                                "zonaí nativos funcionam como sempre.",
     [UI_MENU_BLUEPRINT_PICK] = "Escolher um arquivo de projeto",
     [UI_MENU_BLUEPRINT_PICK_DESC] = "Mostra os arquivos de projeto deste PC: .cai, .totkab e .txt.",
     [UI_MENU_BLUEPRINT_NONE] = "nenhum",
@@ -1580,12 +1576,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_NO_ORDER] = "A ordem em que a lista do Construauto desenha os projetos ainda não está na memória. Abra a lista de projetos do Construauto no jogo uma vez e tente de novo.",
     [UI_MENU_BLUEPRINT_IMPORT] = "Importar",
     [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Adiciona o projeto escolhido ao histórico do Construauto dos dados de salvamento como o projeto mais recente. A lista mantém as 30 entradas: a criação nova ocupa o lugar da mais antiga, que o jogo também descarta para uma criação que você constrói. O jogo a salva junto com o resto do seu progresso.",
-                                      "salva junto com o resto do seu progresso.",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "Escolha primeiro um projeto .cai válido.",
     [UI_MENU_BLUEPRINT_HISTORY] = "O histórico tem %d projetos; o mais recente tem %d peças.",
     [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "O histórico tem %d projetos.",
     [UI_MENU_BLUEPRINT_DONE] = "Importado: o projeto agora é o mais recente do histórico do Construauto, no topo da lista. O jogo o salva junto com o resto do seu progresso.",
-                               "está lá para construir. O jogo o salva junto com o resto do seu progresso.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "Não foi possível ler o arquivo do projeto.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "O arquivo não é um projeto que este port possa importar; o log explica por "
                                           "quê.",
@@ -1595,7 +1589,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "A importação falhou.",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Gravando o projeto nos dados de salvamento...",
     [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Não foi possível iniciar a thread em segundo plano, então o histórico não pode ser lido.",
-                                        "ser lidos.",
+    [UI_MENU_BLUEPRINT_HINT] = "Importar",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2218,6 +2212,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "导入失败。",
     [UI_MENU_BLUEPRINT_IMPORTING] = "正在把蓝图写入存档数据...",
     [UI_MENU_BLUEPRINT_WORKER_FAILED] = "无法启动后台线程，因此无法读取历史记录。",
+    [UI_MENU_BLUEPRINT_HINT] = "导入",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
