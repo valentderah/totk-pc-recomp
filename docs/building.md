@@ -231,7 +231,14 @@ Before a commit:
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
 files); a change to the settings passes `totk.exe --probe-cfg` and `python tests\settings_doc_check.py`, which fails
-when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md).
+when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md). A change to the mods' ExeFS patches
+(`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
+`.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
+table (no game files), and `totk.exe --probe-mods`. A change to the host hooks or the code modules the port runs as
+its own code (`recomp/patches.py` `hook` lines, `tools/plugins.py`, `runtime/plugins.c`, `runtime/patches.c`) passes
+`.venv\Scripts\python tests\plugins_test.py`, `totk.exe --probe-plugins` and `totk.exe --probe-mods`. A handler of
+`runtime/plugins.c` follows the plugin's callback instruction by instruction: check it against the plugin's code (its
+disassembly, or the callback run in Unicorn next to the handler on the same registers and memory).
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

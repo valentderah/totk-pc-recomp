@@ -283,6 +283,31 @@ void rt_patch_disable(int set);                            // before the guest s
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
                                                            // the next time it runs
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
+// ---- host hooks (recomp/patches.py `hook` lines): patches.c holds the build's table, plugins.c the handlers
+// A site's `@hook:<name>` word calls rt_hook with every guest register in the Cpu. The handler may read and change the
+// whole guest state and guest memory and call guest code (rt_call); it leaves c->sp and c->nzcv as it found them, as
+// the generated code keeps the hooked function's flags across the call.
+#define RT_HOOK_ARGS 4                                     // recomp/patches.py HOOK_ARGS
+typedef struct RtHook RtHook;
+typedef void (*RtHookFn)(Cpu *c, const RtHook *h);
+struct RtHook {
+    const char *name, *handler;                            // the hook line's name and the handler it names
+    int nargs;
+    uint64_t args[RT_HOOK_ARGS];                           // hex numbers as written, a fn: argument as the absolute
+                                                           // address of its function (a function start)
+    RtHookFn fn;                                           // set by rt_hook_bind
+    const void *data;                                      // the handler's own (rt_hook_bind)
+    uint64_t calls;                                        // rt_hook: calls so far; the first is logged
+};
+void rt_hook(Cpu *c, int hook, uint64_t site);             // patches.c: the call of a hook site (hook: its index in
+                                                           // patches.h RT_HOOKS, site: the site's address)
+int rt_hook_bind(RtHook *h);                               // plugins.c: sets h->fn and h->data for the handler h names,
+                                                           // with its state set from h's arguments; 0 (and a log line)
+                                                           // for a handler it does not know or the wrong arguments
+const char *plugins_known(const uint8_t sha256[32]);       // plugins.c: the name of the plugin build with that file
+                                                           // hash it has handlers for (tools/plugins.py), else NULL
+void plugins_probe_known(const char *sha256, const char *name);   // --probe-mods: one more build plugins_known
+                                                           // knows (hex SHA-256; NULL: none)
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
@@ -315,6 +340,7 @@ void rt_boot(void);                                        // boot.c
 int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
+int probe_plugins(void);                                   // plugins_probe.c: the hook handlers of plugins.c
 void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
 void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
 void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
