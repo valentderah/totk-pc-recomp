@@ -769,24 +769,193 @@ int romfs_prompts_off(const char *folder) {
     return folder && prompts_wanted && !strcmp(folder, prompts_wanted) ? prompts_off : ROMFS_PROMPTS_OK;
 }
 
-// The first RomFS file that the overlays [a, b) and [c, d) both replace, or NULL.
-static const char *overlay_clash(size_t a, size_t b, size_t c, size_t d) {
-    for (size_t i = a; i < b; i++)
-        for (size_t j = c; j < d; j++)
-            if (overlays[i].index != ADDED && overlays[i].index == overlays[j].index &&
-                strcmp(overlays[i].name, restbl_rel))   // restbl_overlay merges both tables
-                return overlays[i].name;
-    return NULL;
+// A language message archive under Mals/ (for example Mals/USen.Product.142.sarc.zs).
+static int is_mals_archive(const char *path) {
+    return !strncmp(path, "Mals/", 5) && ends_with(path, ".sarc.zs");
 }
 
-// Drops the overlays [a, b), the ones after them moving down.
-static void overlay_drop(size_t a, size_t b) {
-    for (size_t k = a; k < b; k++) {
-        free((void *)overlays[k].path);
-        free((void *)overlays[k].name);
+static int u32_at(const uint8_t *p, size_t n, size_t off, uint32_t *v) {
+    if (off > n || n - off < 4) return 0;
+    memcpy(v, p + off, 4);
+    return 1;
+}
+
+// SARC member `name` of the archive p[0..n): its start and size; 0 when it is not there.
+static int sarc_member(const uint8_t *p, size_t n, const char *name, size_t *at, size_t *size) {
+    uint32_t data;
+    uint16_t head, count, bom;
+    if (n < 0x14 || memcmp(p, "SARC", 4)) return 0;
+    memcpy(&head, p + 4, 2);
+    memcpy(&bom, p + 6, 2);
+    if (bom != 0xfeff || !u32_at(p, n, 12, &data) || head + 12u > n || memcmp(p + head, "SFAT", 4)) return 0;
+    memcpy(&count, p + head + 6, 2);
+    size_t names = head + 12 + (size_t)count * 16;
+    if (names + 8 > n || memcmp(p + names, "SFNT", 4)) return 0;
+    names += 8;
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t attr, lo, hi;
+        size_t e = head + 12 + (size_t)i * 16;
+        if (!u32_at(p, n, e + 4, &attr) || !u32_at(p, n, e + 8, &lo) || !u32_at(p, n, e + 12, &hi)) return 0;
+        size_t s = names + (size_t)(attr & 0xffffff) * 4, len = strlen(name);
+        if (!(attr >> 24) || s + len + 1 > n || memcmp(p + s, name, len + 1)) continue;
+        if (lo > hi || data + (size_t)hi > n) return 0;
+        *at = data + lo;
+        *size = hi - lo;
+        return 1;
     }
-    memmove(overlays + a, overlays + b, (noverlay - b) * sizeof *overlays);
-    noverlay -= b - a;
+    return 0;
+}
+
+typedef struct { const uint8_t *p; size_t n; } DictBytes;
+static DictBytes zstd_dict_from_pack(const uint8_t *pack, size_t pack_n, unsigned want_id) {
+    uint32_t data;
+    uint16_t head, count, bom;
+    if (pack_n < 0x14 || memcmp(pack, "SARC", 4)) return (DictBytes){0};
+    memcpy(&head, pack + 4, 2);
+    memcpy(&bom, pack + 6, 2);
+    if (bom != 0xfeff || !u32_at(pack, pack_n, 12, &data) || head + 12u > pack_n || memcmp(pack + head, "SFAT", 4))
+        return (DictBytes){0};
+    memcpy(&count, pack + head + 6, 2);
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t lo, hi;
+        size_t e = head + 12 + (size_t)i * 16;
+        if (!u32_at(pack, pack_n, e + 8, &lo) || !u32_at(pack, pack_n, e + 12, &hi) || lo > hi ||
+            data + (size_t)hi > pack_n)
+            return (DictBytes){0};
+        const uint8_t *d = pack + data + lo;
+        size_t dn = hi - lo;
+        ZSTD_DDict *dd = ZSTD_createDDict(d, dn);
+        unsigned id = dd ? ZSTD_getDictID_fromDDict(dd) : 0;
+        ZSTD_freeDDict(dd);
+        if (id == want_id) return (DictBytes){d, dn};
+    }
+    return (DictBytes){0};
+}
+
+static int zstd_unpack(const void *z, size_t n, const uint8_t *pack, size_t pack_n, uint8_t **out, size_t *out_n) {
+    *out = NULL;
+    *out_n = 0;
+    unsigned long long raw_n = ZSTD_getFrameContentSize(z, n);
+    if (raw_n == ZSTD_CONTENTSIZE_UNKNOWN || raw_n == ZSTD_CONTENTSIZE_ERROR || raw_n > (64u << 20)) return 0;
+    uint8_t *raw = malloc((size_t)raw_n ? (size_t)raw_n : 1);
+    if (!raw) return 0;
+    unsigned id = ZSTD_getDictID_fromFrame(z, n);
+    size_t got = 0;
+    if (!id) {
+        got = ZSTD_decompress(raw, (size_t)raw_n, z, n);
+    } else {
+        DictBytes d = zstd_dict_from_pack(pack, pack_n, id);
+        ZSTD_DDict *dd = d.p ? ZSTD_createDDict(d.p, d.n) : NULL;
+        ZSTD_DCtx *dc = dd ? ZSTD_createDCtx() : NULL;
+        got = dc ? ZSTD_decompress_usingDDict(dc, raw, (size_t)raw_n, z, n, dd) : 0;
+        ZSTD_freeDCtx(dc);
+        ZSTD_freeDDict(dd);
+    }
+    if (ZSTD_isError(got) || got != raw_n) {
+        free(raw);
+        return 0;
+    }
+    *out = raw;
+    *out_n = (size_t)raw_n;
+    return 1;
+}
+
+static int zstd_pack(const void *raw, size_t raw_n, unsigned dict_id, const uint8_t *pack, size_t pack_n, uint8_t **out,
+                     size_t *out_n) {
+    *out = NULL;
+    *out_n = 0;
+    size_t cap = ZSTD_compressBound(raw_n);
+    uint8_t *z = malloc(cap);
+    if (!z) return 0;
+    size_t zn = 0;
+    if (!dict_id) {
+        zn = ZSTD_compress(z, cap, raw, raw_n, 19);
+    } else {
+        DictBytes d = zstd_dict_from_pack(pack, pack_n, dict_id);
+        ZSTD_CDict *cd = d.p ? ZSTD_createCDict(d.p, d.n, 19) : NULL;
+        ZSTD_CCtx *cc = cd ? ZSTD_createCCtx() : NULL;
+        zn = cc ? ZSTD_compress_usingCDict(cc, z, cap, raw, raw_n, cd) : 0;
+        ZSTD_freeCCtx(cc);
+        ZSTD_freeCDict(cd);
+    }
+    if (!zn || ZSTD_isError(zn)) {
+        free(z);
+        return 0;
+    }
+    *out = z;
+    *out_n = zn;
+    return 1;
+}
+
+// With prompts that alter the action prompt's face-button letters (xbox on Nintendo layout, and pc), a modded
+// Mals/<language>.Product.*.sarc.zs keeps its own item text, but its LayoutMsg/DoCommand_00.msbt is replaced with the
+// one of the prompts overlay so the face-button diamond stays in sync with the prompts.
+static void mals_overlay(void) {
+    if (!prompts_loaded || (!strcmp(prompts_loaded, "romfs-patches-xbox-label") && strcmp(prompts_loaded, "romfs-patches-pc")))
+        return;
+    const char *prompt_dir = prompts_loaded;
+    if (!strcmp(prompts_loaded, "romfs-patches-pc") && pc_dir[0]) prompt_dir = pc_dir;
+    static const char *const keeps = "the prompt face-button diamond may use the mod's default letters";
+    Overlay *zsdic_base;
+    size_t zsdic_n = 0;
+    uint8_t *zsdic_z = read_served("Pack/ZsDic.pack.zs", &zsdic_base, &zsdic_n, keeps);
+    if (!zsdic_z) return;
+    unsigned long long pack_n = ZSTD_getFrameContentSize(zsdic_z, zsdic_n);
+    uint8_t *pack = pack_n != ZSTD_CONTENTSIZE_UNKNOWN && pack_n != ZSTD_CONTENTSIZE_ERROR && pack_n < (16u << 20)
+                        ? malloc((size_t)pack_n)
+                        : NULL;
+    int pack_ok = pack && ZSTD_decompress(pack, (size_t)pack_n, zsdic_z, zsdic_n) == pack_n;
+    free(zsdic_z);
+    if (!pack_ok) {
+        free(pack);
+        rt_log("RomFS: cannot read Pack/ZsDic.pack.zs; %s", keeps);
+        return;
+    }
+    int merged = 0;
+    for (size_t k = 0; k < noverlay; k++) {
+        const char *rel = overlays[k].name;
+        if (!is_mals_archive(rel)) continue;
+        char prompt_path[4200];
+        if (snprintf(prompt_path, sizeof prompt_path, "%s/%s/%s", index_dir, prompt_dir, rel) >= (int)sizeof prompt_path ||
+            !plat_file_exists(prompt_path))
+            continue;
+        Overlay *base;
+        size_t served_n = 0;
+        uint8_t *served_z = read_served(rel, &base, &served_n, keeps);
+        if (!served_z || !base || !strcmp(base->path, prompt_path)) {
+            free(served_z);
+            continue;
+        }
+        uint64_t prompt_n64 = 0;
+        uint8_t *prompt_z = plat_file_read(prompt_path, &prompt_n64);
+        if (!prompt_z || !prompt_n64) {
+            free(prompt_z);
+            free(served_z);
+            continue;
+        }
+        uint8_t *served = NULL, *prompt = NULL, *out = NULL;
+        size_t served_raw_n = 0, prompt_raw_n = 0, out_n = 0;
+        unsigned served_dict = ZSTD_getDictID_fromFrame(served_z, served_n);
+        int ok = zstd_unpack(served_z, served_n, pack, (size_t)pack_n, &served, &served_raw_n) &&
+                 zstd_unpack(prompt_z, (size_t)prompt_n64, pack, (size_t)pack_n, &prompt, &prompt_raw_n);
+        size_t sat = 0, sn = 0, pat = 0, pn = 0;
+        if (ok) {
+            ok = sarc_member(served, served_raw_n, "LayoutMsg/DoCommand_00.msbt", &sat, &sn) &&
+                 sarc_member(prompt, prompt_raw_n, "LayoutMsg/DoCommand_00.msbt", &pat, &pn) && sn == pn;
+        }
+        if (ok) {
+            memcpy(served + sat, prompt + pat, sn);
+            ok = zstd_pack(served, served_raw_n, served_dict, pack, (size_t)pack_n, &out, &out_n);
+        }
+        if (ok && serve_generated(rel, base, out, out_n, "prompts", "prompt message panes", keeps)) merged++;
+        else free(out);
+        free(prompt);
+        free(served);
+        free(prompt_z);
+        free(served_z);
+    }
+    if (merged) rt_log("RomFS overlay: %d Mals archives merged with prompt message panes", merged);
+    free(pack);
 }
 
 static void overlay_init(void) {
@@ -798,9 +967,10 @@ static void overlay_init(void) {
     // patches with Xbox button icons (make_romfs_patches.py --prompts). The game reads the archives once at boot, so
     // the prompts stay until restart even though the layout itself changes live. Each folder replaces romfs-patches as
     // a whole and the setup builds no folder of another shape with Xbox prompts, so a game resolution that is not 16:9
-    // keeps the Switch prompts. So does a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of
-    // the prompts' fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made
-    // for the game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
+    // keeps the Switch prompts. A RomFS mod that replaces one of the prompts' files loses that file while prompts are
+    // on: the prompts' overlays win for those paths, as the prompts setting picks the prompts in use. The one
+    // exception is Mals/<language>.Product.*.sarc.zs: a mod that adds or renames item text needs its own message
+    // archives, so those files keep normal mod precedence.
     // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
     // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
     // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
@@ -842,11 +1012,14 @@ static void overlay_init(void) {
                   : !romfs_prompts_ready(prompts_wanted)  ? (shaped ? ROMFS_PROMPTS_SHAPE : ROMFS_PROMPTS_MISSING)
                                                           : ROMFS_PROMPTS_OK;
     restbl_find();
-    size_t first = noverlay;
+    enum { PROMPTS_PRIO = 1000000000 };   // above ROMFS mods, except Mals archives (see above)
     if (prompts_wanted && prompts_off == ROMFS_PROMPTS_OK) {
+        size_t prompts_first = noverlay;
         // fits: its manifest path did
         snprintf(path, sizeof path, "%s/%s", index_dir, shaped ? pc_dir : prompts_wanted);
-        if (overlay_load(path, 1, 0)) {
+        if (overlay_load(path, 1, PROMPTS_PRIO)) {
+            for (size_t k = prompts_first; k < noverlay; k++)
+                if (is_mals_archive(overlays[k].name)) overlays[k].prio = 0;   // modded message archives keep precedence
             prompts_loaded = prompts_wanted;
             rt_log("RomFS overlay: %s button prompts (%s)", style, path);
             if (shaped) patches = NULL;   // in place of romfs-patches-<w>x<h>, whose UI layout it carries
@@ -862,32 +1035,21 @@ static void overlay_init(void) {
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
     }
-    size_t prompts_end = noverlay;
     char plain[2100];   // romfs-patches, when it has a manifest
     int plain_ok = snprintf(plain, sizeof plain, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof plain &&
                    plat_file_exists(plain);
     if (plain_ok) plain[strlen(plain) - strlen("/manifest.tsv")] = 0;
     if (!patches && !prompts_loaded && plain_ok) patches = plain;
     if (patches && *patches && strcmp(patches, "0")) overlay_load(patches, 0, 0);
-    size_t mods_first = noverlay;
     if (mods && *mods && strcmp(mods, "0")) overlay_load(mods, 0, 1);
     mods_overlay_init();
-    const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
-    if (clash) {
-        rt_log("RomFS overlay: a RomFS mod replaces %s, which the %s prompts change too; Switch prompts stay", clash,
-               style);
-        overlay_drop(first, prompts_end);
-        prompts_loaded = NULL;
-        prompts_off = ROMFS_PROMPTS_MODS;
-        if (shaped) overlay_load(def, 0, 0);
-        else if (plain_ok) overlay_load(plain, 0, 0);
-    }
     restbl_collect();
     overlay_contest();
     mods_overlay_log();
     restbl_overlay();
     heapdef_overlay();
     camera_overlay();
+    mals_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
     for (size_t k = 1; k < noverlay; k++)   // overlay_contest left one per file; the generated ones replace in place
