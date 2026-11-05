@@ -49,8 +49,9 @@ The port has achievements and play statistics of its own, on the **Achievements*
 - **Statistics**, read from your save: monsters defeated (in all, by kind and by family: Bokoblins, Moblins, Lizalfos,
   Lynels, Hinoxes, Taluses, Gleeoks, constructs and more), weapons, armor pieces and complete armor sets found,
   materials, compendium entries, hearts and stamina wheels, and the kitchen: the kinds of dishes, elixirs and roasted
-  or frozen foods in your recipe book. Names are the game's own, in the game's language.
-- **Achievements** on those statistics, in five categories: Monsters, Hunting, Collection, Kitchen and Hero. Common monsters
+  or frozen foods in your recipe book, and travel: kilometres on the Hero's Path (sky, surface, Depths), deaths and
+  fast travels. Names are the game's own, in the game's language.
+- **Achievements** on those statistics, in six categories: Monsters, Hunting, Collection, Kitchen, Travel and Hero. Common monsters
   have higher goals in several tiers (100, 500, 1000 Bokoblins), rare ones a single goal (10 Lynels, 3 Gleeoks).
 - Each achievement is a progress bar; select one to see what it counts, how far you are and when you unlocked it.
 - The numbers are live: once a save is loaded they are read from the game's memory every two seconds, so a defeated

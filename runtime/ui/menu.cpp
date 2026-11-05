@@ -794,7 +794,7 @@ static void ach_count_row(const char *id, UiTextId label, uint32_t have, uint32_
 }
 
 // The achievement categories of the tab, by what an achievement counts.
-enum { ACH_CATS = 5 };
+enum { ACH_CATS = 6 };
 static int ach_cat(StatsKind k) {
     switch (k) {
     case STATS_KILLS:
@@ -804,8 +804,11 @@ static int ach_cat(StatsKind k) {
     case STATS_ELIXIRS:
     case STATS_SIMPLE:
     case STATS_DUBIOUS: return 3;      // the kitchen: the recipe book
+    case STATS_DISTANCE:
+    case STATS_DIST_SKY:
+    case STATS_DIST_DEPTHS: return 4;  // travel: the Hero's Path
     case STATS_HEARTS:
-    case STATS_STAMINA: return 4;      // the hero
+    case STATS_STAMINA: return 5;      // the hero
     default: return 2;                 // collection: weapons, armor, sets, materials, compendium
     }
 }
@@ -815,6 +818,7 @@ static void ach_desc(const StatsAch *a, const char *title, char *out, size_t n) 
     static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS,    UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS,
                                      UI_ACH_D_ARMOR,  UI_ACH_D_SETS,     UI_ACH_D_ITEMS,      UI_ACH_D_COMPENDIUM,
                                      UI_ACH_D_MEALS,  UI_ACH_D_ELIXIRS,  UI_ACH_D_SIMPLE,     UI_ACH_D_DUBIOUS,
+                                     UI_ACH_D_KM,     UI_ACH_D_KM_SKY,   UI_ACH_D_KM_DEPTHS,
                                      UI_ACH_D_HEARTS, UI_ACH_D_STAMINA};   // in StatsKind order
     uint32_t have = a->progress < a->target ? a->progress : a->target;
     char progress[96], state[96];
@@ -850,6 +854,9 @@ static void ach_title(const StatsView *s, const StatsAch *a, char *out, size_t n
     case STATS_ELIXIRS: snprintf(out, n, menu_text(UI_ACH_T_ELIXIRS), a->target); break;
     case STATS_SIMPLE: snprintf(out, n, menu_text(UI_ACH_T_SIMPLE), a->target); break;
     case STATS_DUBIOUS: snprintf(out, n, "%s", menu_text(UI_ACH_T_DUBIOUS)); break;
+    case STATS_DISTANCE: snprintf(out, n, menu_text(UI_ACH_T_KM), a->target); break;
+    case STATS_DIST_SKY: snprintf(out, n, menu_text(UI_ACH_T_KM_SKY), a->target); break;
+    case STATS_DIST_DEPTHS: snprintf(out, n, menu_text(UI_ACH_T_KM_DEPTHS), a->target); break;
     case STATS_HEARTS: snprintf(out, n, menu_text(UI_ACH_T_HEARTS), a->target); break;
     case STATS_STAMINA: snprintf(out, n, menu_text(UI_ACH_T_STAMINA), a->target); break;
     }
@@ -884,6 +891,17 @@ static void tab_achievements(float scale) {
         ach_count_row("##st_simple", UI_ACH_SIMPLE, s.simple, s.simple_max, UI_ACH_KITCHEN_DESC);
         opt_text_row("##st_dubious", menu_text(UI_ACH_DUBIOUS), menu_text(s.dubious ? UI_ACH_YES : UI_ACH_NO), nullptr,
                      menu_text(UI_ACH_D_DUBIOUS), false);
+        opt_group(UI_ACH_CAT_TRAVEL);
+        const UiTextId km_rows[4] = {UI_ACH_KM, UI_ACH_KM_SKY, UI_ACH_KM_SURFACE, UI_ACH_KM_DEPTHS};
+        const uint32_t km_vals[4] = {s.dist_m, s.dist_layer_m[0], s.dist_layer_m[1], s.dist_layer_m[2]};
+        for (int k = 0; k < 4; k++) {
+            char id[24], km[32];
+            snprintf(id, sizeof id, "##st_km%d", k);
+            snprintf(km, sizeof km, menu_text(UI_ACH_KM_VALUE), km_vals[k] / 1000.0);
+            opt_text_row(id, menu_text(km_rows[k]), km, nullptr, menu_text(UI_ACH_TRAVEL_DESC), false);
+        }
+        ach_count_row("##st_deaths", UI_ACH_DEATHS, s.deaths, 0, UI_ACH_TRAVEL_DESC);
+        ach_count_row("##st_warps", UI_ACH_WARPS, s.warps, 0, UI_ACH_TRAVEL_DESC);
         opt_group(UI_ACH_GROUP_FAMILIES);
         for (int f = 0; f < STATS_FAMILIES; f++) {
             if (!s.family[f].name[0]) continue;
@@ -909,7 +927,7 @@ static void tab_achievements(float scale) {
         int cat = ach_cat(a->kind);
         if (cat != shown_cat) {
             static const UiTextId names[ACH_CATS] = {UI_ACH_CAT_MONSTERS, UI_ACH_CAT_HUNT, UI_ACH_CAT_COLLECTION,
-                                                     UI_ACH_CAT_KITCHEN, UI_ACH_CAT_HERO};
+                                                     UI_ACH_CAT_KITCHEN, UI_ACH_CAT_TRAVEL, UI_ACH_CAT_HERO};
             char heading[128];
             snprintf(heading, sizeof heading, "%s  %d / %d", menu_text(names[cat]), unlocked[cat], total[cat]);
             opt_group_text(heading);

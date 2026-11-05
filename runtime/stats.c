@@ -23,6 +23,7 @@
 // reads the same flags from the game's memory instead, every two seconds (live flags below). Achievements unlock
 // when the statistics reach them and stay unlocked: <profile>/achievements/unlocked.txt holds one "<id> <unix time>" line
 // each, and <profile>/achievements/goals.ini the goals, which the player may edit (achs_define).
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -530,6 +531,58 @@ static int live_read(void) {
     return 1;
 }
 
+// ---- the Hero's Path: <slot>/footprint.sav, the trail the game records for its map (format after Peter Marheine,
+// "Doing what Nintendon't with the Hero's Path", taricorp.net 2023). The file has progress.sav's layout; the Int
+// 149471811 is the number of points and the array 636271612 holds them from its offset + 8 (byte 364), one 32-bit
+// word each, oldest first: map Y in bits 31-20 (its sign bit 19, set for positive), map X in bits 18-6 (sign bit 5,
+// set for negative), the layer in bits 4-3 (0 sky, 1 surface, 2 Depths), bit 2 a warp away from the point, bit 1 a
+// death there. Map units are metres. The distance is the sum of the steps between points of one layer, leaving out
+// the step after a warp or a death and any step over FOOT_JUMP_M (a jump the path does not mark). The game writes the
+// path when it saves, so the distance grows with each save, not live.
+#define FOOT_JUMP_M 500.0
+static struct { uint32_t dist_m, layer_m[3], deaths, warps, points; int valid; } foot;
+
+static void foot_read(const char *progress_path) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s", progress_path);
+    char *slash = strrchr(path, '/');
+    if (!slash || (size_t)(slash - path) + 16 >= sizeof path) return;
+    snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "footprint.sav");
+    uint64_t n = 0;
+    uint8_t *d = plat_file_read(path, &n);
+    if (!d || n < 368 || rd32(d) != 0x01020304u) {
+        free(d);
+        return;
+    }
+    uint32_t end = rd32(d + 8), count = rd32(d + 76), at = 364;
+    if (end > n) end = (uint32_t)n;
+    for (uint32_t o = 0x20; o + 8 <= end; o += 8) {
+        uint32_t h = rd32(d + o), v = rd32(d + o + 4);
+        if (h == 149471811u) count = v;
+        if (h == 636271612u && v + 8 <= n) at = v + 8;
+    }
+    if ((uint64_t)at + 4ull * count > n) count = (uint32_t)((n - at) / 4);
+    double layer[3] = {0, 0, 0};
+    uint32_t deaths = 0, warps = 0;
+    int px = 0, py = 0, pl = -1, pbreak = 1;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t w = rd32(d + at + 4ull * i);
+        int y = (int)(w >> 20 & 0xfff), x = (int)(w >> 6 & 0x1fff), l = (int)(w >> 3 & 3);
+        if (!(w >> 19 & 1)) y = -y;
+        if (w >> 5 & 1) x = -x;
+        deaths += w >> 1 & 1, warps += w >> 2 & 1;
+        if (!pbreak && l == pl && l < 3) {
+            double step = sqrt((double)(x - px) * (x - px) + (double)(y - py) * (y - py));
+            if (step <= FOOT_JUMP_M) layer[l] += step;
+        }
+        px = x, py = y, pl = l, pbreak = (w >> 1 & 3) != 0;
+    }
+    free(d);
+    foot.layer_m[0] = (uint32_t)layer[0], foot.layer_m[1] = (uint32_t)layer[1], foot.layer_m[2] = (uint32_t)layer[2];
+    foot.dist_m = foot.layer_m[0] + foot.layer_m[1] + foot.layer_m[2];
+    foot.deaths = deaths, foot.warps = warps, foot.points = count, foot.valid = 1;
+}
+
 // ---- statistics
 // Defeat goals by how often the family turns up: the common ones (Bokoblins, constructs, Keese) take several tiers up
 // to hundreds, the rare ones (Lynels, Hinoxes, Taluses, Gleeoks, Frox, Wizzrobes) one goal. A tier's id keeps its
@@ -753,6 +806,8 @@ static void compute(StatsView *s) {
         else if (!strncmp(a, "Item_Cook_", 10)) s->meals_max++, s->meals += (uint32_t)done;
         else s->simple_max++, s->simple += (uint32_t)done;
     }
+    s->dist_m = foot.dist_m, s->deaths = foot.deaths, s->warps = foot.warps, s->footprints = foot.points;
+    memcpy(s->dist_layer_m, foot.layer_m, sizeof s->dist_layer_m);
     const Flag *life = flag(mm3("PlayerStatus.MaxLife")), *stamina = flag(mm3("PlayerStatus.MaxStamina"));
     s->hearts = life ? life->v / 4 : 0;
     float st = 0;
@@ -803,6 +858,10 @@ static void sets_default(void) {
     set_add("elixirs", "elixirs_", STATS_ELIXIRS, -1, elixirs, 2);
     set_add("roasted_frozen", "simple_", STATS_SIMPLE, -1, simple, 2);
     set_add("dubious_food", "dubious_", STATS_DUBIOUS, -1, dubious, 1);
+    static const uint32_t km[] = {10, 50, 100, 250, 500}, sky_km[] = {10, 50}, depths_km[] = {10, 50};
+    set_add("kilometres", "km_", STATS_DISTANCE, -1, km, 5);
+    set_add("kilometres_sky", "km_sky_", STATS_DIST_SKY, -1, sky_km, 2);
+    set_add("kilometres_depths", "km_depths_", STATS_DIST_DEPTHS, -1, depths_km, 2);
     set_add("hearts", "hearts_", STATS_HEARTS, -1, hearts, 3);
     set_add("stamina", "stamina_", STATS_STAMINA, -1, stamina, 2);
 }
@@ -830,6 +889,8 @@ static void goals_write(void) {
         if (!strcmp(sets[s].key, "weapons")) at += (size_t)snprintf(out + at, cap - at, "\n# Collection\n");
         if (!strcmp(sets[s].key, "meals"))
             at += (size_t)snprintf(out + at, cap - at, "\n# Cooking: kinds of dishes in the recipe book\n");
+        if (!strcmp(sets[s].key, "kilometres"))
+            at += (size_t)snprintf(out + at, cap - at, "\n# Travel: kilometres on the Hero's Path (all, sky, Depths)\n");
         if (!strcmp(sets[s].key, "hearts")) at += (size_t)snprintf(out + at, cap - at, "\n# The hero\n");
         at += (size_t)snprintf(out + at, cap - at, "%s =", sets[s].key);
         for (int g = 0; g < GOALS_MAX && sets[s].goals[g]; g++)
@@ -944,6 +1005,9 @@ static uint32_t ach_progress(const StatsView *s, const Ach *a) {
     case STATS_ELIXIRS: return s->elixirs;
     case STATS_SIMPLE: return s->simple;
     case STATS_DUBIOUS: return s->dubious;
+    case STATS_DISTANCE: return s->dist_m / 1000;
+    case STATS_DIST_SKY: return s->dist_layer_m[0] / 1000;
+    case STATS_DIST_DEPTHS: return s->dist_layer_m[2] / 1000;
     case STATS_HEARTS: return s->hearts;
     case STATS_STAMINA: return (uint32_t)(s->stamina_wheels + 1e-3f);
     }
@@ -1050,8 +1114,9 @@ static void stats_main(void *arg) {
             ready = 1;
         }
         char path[1200] = "";
+        if (saved && newest_save(path, sizeof path)) foot_read(path);   // the Hero's Path changes only with a save
         int is_live = live_find() && live_read();
-        if (!is_live && (!saved || !newest_save(path, sizeof path) || !load_save(path))) continue;
+        if (!is_live && (!saved || !*path || !load_save(path))) continue;
         StatsView s;
         plat_mutex_lock(&lock);
         s = view;
@@ -1068,11 +1133,11 @@ static void stats_main(void *arg) {
         if (!is_live || s.kills != kills || s.items != items || s.weapons != weapons)
             rt_log("stats: %s: %u monsters defeated (%u of %u kinds), weapons %u/%u, armor %u/%u, sets %u/%u, "
                    "materials %u/%u, compendium %u/%u, meals %u/%u, elixirs %u/%u, roasted/frozen %u/%u, %u hearts, "
-                   "%.1f stamina wheels",
+                   "%.1f stamina wheels, %.1f km travelled (%u deaths, %u fast travels)",
                    is_live ? "live" : path, s.kills, s.kinds, s.kinds_max, s.weapons, s.weapons_max, s.armor,
                    s.armor_max, s.sets, s.sets_max, s.items, s.items_max, s.compendium, s.compendium_max, s.meals,
                    s.meals_max, s.elixirs, s.elixirs_max, s.simple, s.simple_max, s.hearts,
-                   s.stamina_wheels);
+                   s.stamina_wheels, s.dist_m / 1000.0, s.deaths, s.warps);
     }
 }
 

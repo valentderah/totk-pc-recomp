@@ -8,7 +8,8 @@
 
 typedef enum {
     STATS_KILLS, STATS_KINDS, STATS_FAMILY, STATS_WEAPONS, STATS_ARMOR, STATS_SETS, STATS_ITEMS, STATS_COMPENDIUM,
-    STATS_MEALS, STATS_ELIXIRS, STATS_SIMPLE, STATS_DUBIOUS, STATS_HEARTS, STATS_STAMINA
+    STATS_MEALS, STATS_ELIXIRS, STATS_SIMPLE, STATS_DUBIOUS, STATS_DISTANCE, STATS_DIST_SKY, STATS_DIST_DEPTHS,
+    STATS_HEARTS, STATS_STAMINA
 } StatsKind;
 
 typedef struct {
@@ -26,6 +27,8 @@ typedef struct {
     struct { uint32_t count; char name[64]; } family[STATS_FAMILIES];   // name: the game's, in its language
     uint32_t weapons, weapons_max, armor, armor_max, sets, sets_max, items, items_max, compendium, compendium_max;
     uint32_t meals, meals_max, elixirs, elixirs_max, simple, simple_max, dubious;   // the recipe book: kinds cooked
+    // The Hero's Path (footprint.sav): metres travelled on each layer (sky, surface, Depths), deaths, fast travels
+    uint32_t dist_m, dist_layer_m[3], deaths, warps, footprints;
     uint32_t hearts;
     float stamina_wheels;
     int nach;
