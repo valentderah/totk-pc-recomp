@@ -132,6 +132,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Soft shadows",
     [UI_MENU_PCSS_DESC] = "Sun shadows sharp where an object meets the ground and softer the further the shadow falls "
                           "(PCSS). 0 keeps the game's filter. Takes effect at the next start.",
+    [UI_MENU_STABLE_SHADOWS] = "Stable shadows",
+    [UI_MENU_STABLE_SHADOWS_DESC] = "Holds the sun's shadow maps still on the ground, so shadow edges stop crawling "
+                                    "while the camera moves, and blends where one shadow step meets the next. Needs a "
+                                    "fixed Shadow map size (2048 tested): with Game, shadow edges flicker. Game 1.4.3 "
+                                    "only. Takes effect at the next start.",
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
                                      "Traced on the screen after lighting. Takes effect at the next start.",
@@ -603,6 +608,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Мягкие тени",
     [UI_MENU_PCSS_DESC] = "Тени от солнца резкие там, где предмет касается земли, и мягче, чем дальше падает тень "
                           "(PCSS). 0 оставляет фильтр игры. Действует после перезапуска.",
+    [UI_MENU_STABLE_SHADOWS] = "Стабильные тени",
+    [UI_MENU_STABLE_SHADOWS_DESC] = "Карты теней от солнца неподвижны относительно земли: края теней не дрожат при "
+                                    "движении камеры, а переходы между ступенями теней сглажены. Нужен фиксированный "
+                                    "Размер карты теней (проверено с 2048): с вариантом игры края теней мерцают. "
+                                    "Только игра 1.4.3. Вступает в силу при следующем запуске.",
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
                                      "складках. Считаются по экрану после освещения. Действует после перезапуска.",
@@ -1417,6 +1427,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
+    [UI_MENU_STABLE_SHADOWS] = "Sombras estáveis",
+    [UI_MENU_STABLE_SHADOWS_DESC] = "Mantém os mapas de sombra do sol parados em relação ao chão, então as bordas das "
+                                    "sombras não tremem quando a câmera se move, e suaviza a passagem entre um degrau "
+                                    "de sombra e o próximo. Precisa de um Tamanho do mapa de sombras fixo (testado com "
+                                    "2048): com o do jogo, as bordas piscam. Só no jogo 1.4.3. Vale a partir da "
+                                    "próxima inicialização.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
@@ -2017,6 +2033,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
+    [UI_MENU_STABLE_SHADOWS] = "稳定阴影",
+    [UI_MENU_STABLE_SHADOWS_DESC] = "让太阳阴影贴图相对地面保持不动：镜头移动时阴影边缘不再抖动，并平滑相邻阴影层级之间的过渡。需要固定的阴影贴图尺寸（已测试 2048）：使用游戏默认时阴影边缘会闪烁。仅限游戏 1.4.3。下次启动时生效。",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",

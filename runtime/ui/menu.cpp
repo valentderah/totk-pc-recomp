@@ -677,6 +677,8 @@ static void tab_screen(float scale) {
     row_shadow_scale();
     row_shadow_range();
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
+    // The stable patch set (recomp/patches-v143.txt) has sites on 1.4.3 only.
+    if (rt_game_version == 143) opt_toggle("TOTK_STABLE_SHADOWS", UI_MENU_STABLE_SHADOWS, UI_MENU_STABLE_SHADOWS_DESC);
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
