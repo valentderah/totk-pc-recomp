@@ -750,22 +750,28 @@ static void ach_count_row(const char *id, UiTextId label, uint32_t have, uint32_
 }
 
 // The achievement categories of the tab, by what an achievement counts.
-enum { ACH_CATS = 4 };
+enum { ACH_CATS = 5 };
 static int ach_cat(StatsKind k) {
     switch (k) {
     case STATS_KILLS:
     case STATS_KINDS: return 0;        // monsters
     case STATS_FAMILY: return 1;       // hunting, family by family
+    case STATS_MEALS:
+    case STATS_ELIXIRS:
+    case STATS_SIMPLE:
+    case STATS_DUBIOUS: return 3;      // the kitchen: the recipe book
     case STATS_HEARTS:
-    case STATS_STAMINA: return 3;      // the hero
+    case STATS_STAMINA: return 4;      // the hero
     default: return 2;                 // collection: weapons, armor, sets, materials, compendium
     }
 }
 
 // The description pane of an achievement: its title, what it counts, the progress and when it was unlocked.
 static void ach_desc(const StatsAch *a, const char *title, char *out, size_t n) {
-    static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS, UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS, UI_ACH_D_ARMOR,
-                                     UI_ACH_D_SETS,   UI_ACH_D_ITEMS, UI_ACH_D_COMPENDIUM, UI_ACH_D_HEARTS,  UI_ACH_D_STAMINA};
+    static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS,    UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS,
+                                     UI_ACH_D_ARMOR,  UI_ACH_D_SETS,     UI_ACH_D_ITEMS,      UI_ACH_D_COMPENDIUM,
+                                     UI_ACH_D_MEALS,  UI_ACH_D_ELIXIRS,  UI_ACH_D_SIMPLE,     UI_ACH_D_DUBIOUS,
+                                     UI_ACH_D_HEARTS, UI_ACH_D_STAMINA};   // in StatsKind order
     uint32_t have = a->progress < a->target ? a->progress : a->target;
     char progress[96], state[96];
     snprintf(progress, sizeof progress, menu_text(UI_ACH_PROGRESS), have, a->target,
@@ -796,6 +802,10 @@ static void ach_title(const StatsView *s, const StatsAch *a, char *out, size_t n
         break;
     case STATS_ITEMS: snprintf(out, n, menu_text(UI_ACH_T_ITEMS), a->target); break;
     case STATS_COMPENDIUM: snprintf(out, n, menu_text(UI_ACH_T_COMPENDIUM), a->target); break;
+    case STATS_MEALS: snprintf(out, n, menu_text(UI_ACH_T_MEALS), a->target); break;
+    case STATS_ELIXIRS: snprintf(out, n, menu_text(UI_ACH_T_ELIXIRS), a->target); break;
+    case STATS_SIMPLE: snprintf(out, n, menu_text(UI_ACH_T_SIMPLE), a->target); break;
+    case STATS_DUBIOUS: snprintf(out, n, "%s", menu_text(UI_ACH_T_DUBIOUS)); break;
     case STATS_HEARTS: snprintf(out, n, menu_text(UI_ACH_T_HEARTS), a->target); break;
     case STATS_STAMINA: snprintf(out, n, menu_text(UI_ACH_T_STAMINA), a->target); break;
     }
@@ -824,6 +834,12 @@ static void tab_achievements(float scale) {
         char wheels[32];
         snprintf(wheels, sizeof wheels, "%.1f", s.stamina_wheels);
         opt_text_row("##st_stamina", menu_text(UI_ACH_STAMINA), wheels, nullptr, menu_text(UI_ACH_STATS_DESC), false);
+        opt_group(UI_ACH_CAT_KITCHEN);
+        ach_count_row("##st_meals", UI_ACH_MEALS, s.meals, s.meals_max, UI_ACH_KITCHEN_DESC);
+        ach_count_row("##st_elixirs", UI_ACH_ELIXIRS, s.elixirs, s.elixirs_max, UI_ACH_KITCHEN_DESC);
+        ach_count_row("##st_simple", UI_ACH_SIMPLE, s.simple, s.simple_max, UI_ACH_KITCHEN_DESC);
+        opt_text_row("##st_dubious", menu_text(UI_ACH_DUBIOUS), menu_text(s.dubious ? UI_ACH_YES : UI_ACH_NO), nullptr,
+                     menu_text(UI_ACH_D_DUBIOUS), false);
         opt_group(UI_ACH_GROUP_FAMILIES);
         for (int f = 0; f < STATS_FAMILIES; f++) {
             if (!s.family[f].name[0]) continue;
@@ -849,7 +865,7 @@ static void tab_achievements(float scale) {
         int cat = ach_cat(a->kind);
         if (cat != shown_cat) {
             static const UiTextId names[ACH_CATS] = {UI_ACH_CAT_MONSTERS, UI_ACH_CAT_HUNT, UI_ACH_CAT_COLLECTION,
-                                                     UI_ACH_CAT_HERO};
+                                                     UI_ACH_CAT_KITCHEN, UI_ACH_CAT_HERO};
             char heading[128];
             snprintf(heading, sizeof heading, "%s  %d / %d", menu_text(names[cat]), unlocked[cat], total[cat]);
             opt_group_text(heading);
