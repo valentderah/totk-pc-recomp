@@ -1,6 +1,6 @@
-// The Blueprints tab (ui/menu.cpp): choose a .cai blueprint file on this PC (folder_pick.h file_pick), check it with
-// blueprint_cai.h, and add it to the game's Autobuild history with blueprint_import.h. The game keeps the history in
-// its save data, so the native preview, rotation and Zonai energy costs work unchanged, and the imported creation
+// The Blueprints tab (ui/menu.cpp): choose a .cai or .txt blueprint file on this PC (folder_pick.h file_pick), check it
+// with blueprint_file.h, and add it to the game's Autobuild history with blueprint_import.h. The game keeps the history
+// in its save data, so the native preview, rotation and Zonai energy costs work unchanged, and the imported creation
 // appears as the newest draft of the list the Autobuild page draws.
 //
 // The page is one row: choose a file, then import it. There is no slot to pick: a new creation in the game always takes
@@ -24,6 +24,8 @@
 
 extern "C" {
 #include "blueprint_cai.h"
+#include "blueprint_dir.h"
+#include "blueprint_file.h"
 #include "blueprint_import.h"
 #include "folder_pick.h"
 #include "platform/platform.h"
@@ -31,12 +33,6 @@ extern "C" {
 // host.h pulls in cpu.h, which is C only: the one function the page needs from it, as the menu declares it.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 }
-
-enum {
-    // The largest community file: the 6688-byte blob and the 24 bytes some downloads append. A file cannot be a
-    // blueprint with less, and more cannot matter, so only these bytes are read.
-    BLUEPRINT_READ_BYTES = 6712,
-};
 
 // What the worker thread is doing (queued by the page, cleared when it is done).
 enum { BLUEPRINT_TASK_IDLE, BLUEPRINT_TASK_LOOKUP, BLUEPRINT_TASK_IMPORT };
@@ -53,8 +49,7 @@ static unsigned g_gen;   // bumped when a file is chosen, so the page reloads it
 // ---- the chosen file: read and checked on the draw thread (the menu runs on the present path)
 static unsigned g_loaded_gen;
 static char g_loaded_path[PLAT_PATH_MAX];
-static uint8_t g_blob[BLUEPRINT_READ_BYTES];
-static size_t g_read_bytes;
+static uint8_t g_blob[BPF_READ_MAX];
 static uint64_t g_file_size;   // the whole file's size, even when only the first bytes were read
 static bool g_read_ok;         // the file opened and was read (it may still be too short)
 static enum BpcResult g_parse;
@@ -83,6 +78,9 @@ static int g_result;
 
 static void on_file(const char *path, void *ctx) {
     (void)ctx;
+    // Remembered here rather than in the page, so the next dialog opens where this one was browsed even if the player
+    // leaves the tab (or the game) before it draws again (blueprint_dir.h).
+    if (path && *path) bp_dir_remember(path);
     plat_mutex_lock(&g_lock);
     if (path && *path) {
         snprintf(g_path, sizeof g_path, "%s", path);
@@ -100,33 +98,22 @@ static const char *base_name(const char *path) {
     return name;
 }
 
-// Reads the file's first bytes and checks them. The page only ever reads its own buffer, never the whole file: a
-// wrongly named huge file is not worth reading, and nothing past the blob is part of a blueprint.
+// Reads the file and checks it. blueprint_file.h decides the form from the content, so a .cai and a .txt file both
+// arrive here as the same validated blueprint.
 static void load_file(const char *path) {
     snprintf(g_loaded_path, sizeof g_loaded_path, "%s", path);
-    g_read_bytes = 0;
     g_file_size = 0;
     g_read_ok = false;
     g_parse = BPC_TOO_SHORT;
     memset(&g_bp, 0, sizeof g_bp);
-    PlatFile *f = plat_file_open(path);
-    if (!f) {
+    int64_t size = plat_file_size(path);
+    if (size < 0) {
         rt_log("blueprint: cannot open %s", path);
         return;
     }
-    PlatFileId id;
-    if (plat_file_id(f, &id)) g_file_size = id.size;
-    int64_t got = plat_file_pread(f, g_blob, (uint32_t)sizeof g_blob, 0);
-    plat_file_close(f);
-    if (got < 0) {
-        rt_log("blueprint: cannot read %s", path);
-        return;
-    }
+    g_file_size = (uint64_t)size;
     g_read_ok = true;
-    g_read_bytes = (size_t)got;
-    if (!g_file_size) g_file_size = g_read_bytes;
-    g_parse = bpc_parse(g_blob, g_read_bytes, &g_bp);
-    rt_log("blueprint: %s, %llu bytes: %s", path, (unsigned long long)g_file_size, bpc_result_text(g_parse));
+    g_parse = bp_file_read(path, g_blob, &g_bp);
     if (g_parse == BPC_OK) rt_log("blueprint: %d actors, first %s", g_bp.actors, g_bp.names[0]);
 }
 
@@ -280,14 +267,14 @@ void tab_blueprint(float scale) {
     opt_text(UI_MENU_BLUEPRINT_INTRO);
 
     opt_group(UI_MENU_BLUEPRINT_FILE);
-    static const char *const patterns[] = {"*.cai", "*.totkab", "*.txt"};
+    static const char *const patterns[] = {"*.cai", "*.txt"};
     if (opt_button("##blueprint_pick", UI_MENU_BLUEPRINT_PICK, UI_MENU_BLUEPRINT_PICK_DESC,
                    have_file ? base_name(path) : menu_text(UI_MENU_BLUEPRINT_NONE)) &&
         !picking) {
         plat_mutex_lock(&g_lock);
         g_pick_open = true;
         plat_mutex_unlock(&g_lock);
-        file_pick("", patterns, 3, on_file, nullptr);
+        file_pick("", patterns, 2, on_file, nullptr);
     }
     if (have_file) {
         ImGui::TextWrapped("%s", g_loaded_path);

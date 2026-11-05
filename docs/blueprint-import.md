@@ -13,8 +13,9 @@ Everything below was measured on a running game, on several save files, with the
 
 The port's settings menu gets one new tab, **Blueprints**:
 
-1. **Choose a blueprint file** opens the host's file dialog (`.cai`, `.totkab`, `.txt`). The file is read and validated
-   while the game keeps running.
+1. **Choose a blueprint file** opens the host's file dialog. Only two extensions are offered, `.cai` and `.txt`, and
+   nothing else can be picked; the file is read and validated while the game keeps running. The dialog opens at the
+   folder it was last used in, so a second import is one click away.
 2. The page shows what the file holds: the part count, or why the file was rejected.
 3. **Import** writes the creation into the save data the game holds in memory and clears the game's cached pictures, so
    the creation appears in the Autobuild history right away as the newest draft — no reload, no restart.
@@ -23,7 +24,50 @@ There is no slot to pick. A creation made in the game always takes the newest pl
 import; the entry it displaces is the one that was newest before, which slides down one position. The other 29 drafts
 keep their data.
 
-## 2. The `.cai` file (`runtime/blueprint_cai.c`)
+## 2. The two file forms (`runtime/blueprint_file.c`)
+
+Both forms carry the same 6688-byte CAI blob; only the wrapping differs, so one entry point decides the form from the
+file's content and hands the blob to `bpc_parse` either way.
+
+- **`.cai`** is the blob itself, at the start of the file (section 3).
+- **`.txt`** is the JSON object a build site offers as a build's export (section 2.1): the blob gzip-compressed and
+  Base64-encoded in one member.
+
+A file whose name says neither form is refused without being read. Inside a `.txt`, the JSON member is the only thing
+taken: it is exactly the bytes the game's own files hold, while the object's other members are the same content already
+parsed into JSON, and writing those back would mean serializing them again with no guarantee of the byte layout the
+game expects.
+
+### 2.1 The `.txt` container (`runtime/blueprint_txt.c`, `runtime/blueprint_inflate.c`)
+
+```json
+{"combinedActorInfoBase64": "H4sIA...", "combinedActorInfo": {...}, "parts": [...], "unknownActorNames": [...]}
+```
+
+`combinedActorInfoBase64` is a gzip stream of the 6688-byte blob, Base64-encoded. The reader:
+
+1. finds the member's quoted name (a bounded scan, not a JSON parser — the files are one flat object from one exporter),
+2. refuses a backslash inside the value, which a Base64 run never contains,
+3. Base64-decodes the run, requiring a multiple of four characters with proper `=` padding,
+4. inflates it into a buffer no larger than the blob,
+5. requires exactly 6688 bytes out, then lets `bpc_parse` make the final decision.
+
+zlib does the inflating (`libz.a`, already on the link line for other work — `tools/build_game.py` names it). The bounds
+are this code's own: the output goes into the caller's buffer and never past it, a stream that wants more room is
+refused rather than truncated, and the gzip trailer's CRC32 and length are both checked so a cut-off download is
+reported instead of half-decoded. A bare deflate stream without the gzip wrapper is accepted too, with neither check.
+
+The three test files this was verified against are 18492 and 19748 bytes and decode to blobs byte-identical to what
+Python's `gzip` gives for the same member.
+
+### 2.2 The remembered folder (`runtime/blueprint_dir.c`)
+
+The folder of the last chosen file is kept in `totk.ini` as `BLUEPRINT_DIR`, under `[files]`. `bp_dir_last` hands it to
+the dialog when the caller passes an empty start folder, and returns `""` when the folder no longer exists, so a deleted
+folder is not a reason for the dialog to fail. `bp_dir_remember` is called by both entry points (the tab's button and the
+Autobuild screen's row), so they share one memory.
+
+## 3. The CAI blob (`runtime/blueprint_cai.c`)
 
 A blob is 6688 bytes and holds up to 21 actors. Community files are 6688 bytes or 6712 bytes (the blob plus 24 bytes:
 two camera vectors). Only the first 6688 bytes are the blob.
@@ -41,7 +85,7 @@ two camera vectors). Only the first 6688 bytes are the blob.
 (printable, NUL-terminated inside its 128-byte field), all 38 matrix floats finite, the bounding box finite. A damaged
 or foreign file is rejected with the reason the page shows, before anything is written.
 
-## 3. Where the history lives in the save data
+## 4. Where the history lives in the save data
 
 `AutoBuilder.Draft.Content` is **five parallel arrays of 30 entries** in `progress.sav`. They are indexed by physical
 entry (0..29) and carry **no display order of their own**; the order the page draws by comes from `Index`:
@@ -94,7 +138,7 @@ The header bytes before each array's data are **not** the same for every type, w
 | BoolArray | 8 (the count, then a u32 holding how many bits are stored — 32 for 30 entries) |
 | Vector3Array | 4 |
 
-## 4. How the import works (`runtime/blueprint_import.c`)
+## 5. How the import works (`runtime/blueprint_import.c`)
 
 The game keeps the loaded save data in guest memory, and on this port guest memory is host memory
 (`runtime/memory.c`), so an import is a write into it.
@@ -138,7 +182,7 @@ The array keeps its 30 entries, the item count never changes, and the save never
 the entry that was drawn first moves one place down the list because `Index` no longer marks it as the newest, and the
 other 29 entries keep their data byte for byte.
 
-## 5. The page (`runtime/ui/blueprint_page.cpp`)
+## 6. The page (`runtime/ui/blueprint_page.cpp`)
 
 One row: **Choose a blueprint file**, then **Import**. The chosen file's part count is shown, or the reason it was
 rejected.
@@ -146,7 +190,7 @@ rejected.
 `bp_favorites` and `bp_import_newest` walk the game's memory, so both run on a worker thread and the page only collects
 the results. The tab opens instantly; opening it never blocks the game. There is one lookup per tab entry, not a timer.
 
-## 5.1 The entry in the Autobuild screen itself (`runtime/blueprint_hint.cpp`)
+## 6.1 The entry in the Autobuild screen itself (`runtime/blueprint_hint.cpp`)
 
 The tab above is reached from the settings menu, so it needs the player to know where to look. The second entry is on
 the game's own screen: while the Autobuild page is open, its bottom guide bar shows one more hint, the ⊕ button and the
@@ -177,7 +221,7 @@ blueprint: hint chose <path>
 blueprint: hint: <path>: <result>
 ```
 
-## 6. Verification
+## 7. Verification
 
 Built from v0.3.10, run on Windows. Cases exercised:
 
@@ -190,6 +234,14 @@ Built from v0.3.10, run on Windows. Cases exercised:
 - **Live, no reload.** The creation shows up in the already-open Autobuild page right after pressing Import; the game's
   own save then persists it with the rest of the progress.
 - **Nothing else disturbed.** The other 29 entries keep their blobs; only the entry that is replaced changes.
+- **A `.txt` file, end to end.** Three exports from HyruleWorks decoded in the reader's own harness to blobs
+  byte-identical to Python's `gzip` of the same member, and a real `.txt` import in the running game landed on card 1:
+  `blueprint: E:\totk\json\json2.txt, 6688 bytes: ok` → `AsbObj_WoodSail_A_01 (19 parts) is now the first draft`.
+- **The remembered folder.** The log named the shell's default folder on the first dialog and the chosen file's folder
+  before the next one, and `BLUEPRINT_DIR` was written to `totk.ini`.
+- **Damaged `.txt` files.** A file cut anywhere inside the Base64 value, a member that is not Base64, a member that is
+  not a gzip stream, a non-JSON file and an object without the member are all refused with their own reason and none
+  reaches the save data.
 
 Log lines that make this checkable:
 
@@ -197,15 +249,21 @@ Log lines that make this checkable:
 blueprint: scan 94 blobs in 280 ms: drafts 0x174c793c8, page copy 0x185011838 (30 entries)
 blueprint: <name> (<n> parts) is now the first draft of the Autobuild history (entry <k>, the one the save draws first)
 blueprint: dropped 30 cached draft picture(s), the game draws them again
+blueprint: the file dialog opens at the shell's own folder, no folder is remembered
+blueprint: the next file dialog opens at E:\totk\json
 ```
 
-## 7. Files
+## 8. Files
 
 New:
 
 | file | what |
 |---|---|
 | `runtime/blueprint_cai.h/.c` | the `.cai` reader and its checks |
+| `runtime/blueprint_file.h/.c` | one entry point for a blueprint file of either form: decides the form from the content, unwraps a `.txt`, then validates |
+| `runtime/blueprint_txt.h/.c` | the `.txt` container: the JSON member, Base64, and the decompressed blob |
+| `runtime/blueprint_inflate.h/.c` | gzip/deflate decoding bounded by the caller's buffer (zlib, already linked) |
+| `runtime/blueprint_dir.h/.c` | the folder a blueprint dialog last browsed, kept in `totk.ini` |
 | `runtime/blueprint_import.h/.c` | finding the live arrays, choosing the entry, writing it, dropping the cached pictures |
 | `runtime/ui/blueprint_page.h/.cpp` | the Blueprints tab: file, checks, the import row, the worker thread |
 | `runtime/blueprint_hint.h/.cpp` | the entry in the Autobuild screen's own guide bar: its button, the picker, the import, the row |
@@ -214,14 +272,15 @@ Modified:
 
 | file | change |
 |---|---|
-| `runtime/folder_pick.h`, `folder_pick_win.cpp`, `folder_pick_sdl.c` | a file dialog next to the folder dialog (`file_pick`) |
+| `runtime/folder_pick.h`, `folder_pick_win.cpp`, `folder_pick_sdl.c` | a file dialog next to the folder dialog (`file_pick`); it opens at the folder browsed last and offers only the caller's extensions |
 | `runtime/ui/menu.cpp` | the tab in the enum, its name row and its page; the hint's frame and draw calls |
 | `runtime/ui_text.h`, `ui_text.c` | 29 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
 | `runtime/input.c`, `input.h` | the hint's pad read, and `menu_cursor_screen_name` |
 | `runtime/menu_cursor.c` | `menu_cursor_screen_name`, the focused screen's layout name |
-| `runtime/cfg.c` | `BLUEPRINT_HINT` |
+| `runtime/cfg.c` | `BLUEPRINT_HINT` and `BLUEPRINT_DIR` |
+| `tools/build_game.py` | `libz.a` on the link line, for the `.txt` reader |
 
-## 8. Notes for whoever picks this up
+## 9. Notes for whoever picks this up
 
 - `Index` decides the display order; the array order does not. Writing entry 0 for "the newest" is the mistake that
   makes an import appear in the middle of the list.

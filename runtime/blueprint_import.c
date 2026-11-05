@@ -1,5 +1,5 @@
-// Importing a .cai blueprint into the game's own Autobuild history, so the creation appears in the native Autobuild
-// page as the newest draft and builds with the native preview, rotation and Zonai costs.
+// Importing a .cai or .txt blueprint into the game's own Autobuild history, so the creation appears in the native
+// Autobuild page as the newest draft and builds with the native preview, rotation and Zonai costs.
 //
 // The history is one save flag: the BinaryArray 0xa56722b6 (AutoBuilder.Draft.Content.CombinedActorInfo), 30 items of
 // {u32 size = 6688; CmbAct blob}. The Autobuild page draws its cards in the order the items sit in that array: item 0 is
@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "blueprint_cai.h"
+#include "blueprint_file.h"
 #include "blueprint_import.h"
 #include "host.h"
 #include "platform/platform.h"
@@ -342,20 +343,12 @@ static int newest_position_from_save(void) {
 
 int bp_import_newest(const char *path) {
     if (!path || !*path) return BP_IMPORT_NO_FILE;
-    uint8_t buf[BPC_BLOB_SIZE + 24];
-    PlatFile *f = plat_file_open(path);
-    if (!f) {
-        rt_log("blueprint: cannot open %s", path);
-        return BP_IMPORT_NO_FILE;
-    }
-    int64_t got = plat_file_pread(f, buf, sizeof buf, 0);
-    plat_file_close(f);
+    // The file is read whole: a .txt blueprint is a JSON object with the blob gzip-compressed and Base64-encoded inside
+    // it (blueprint_file.h), so the blob cannot be read at a fixed offset.
+    static uint8_t storage[BPF_READ_MAX];
     BpcBlueprint bp;
-    enum BpcResult r = bpc_parse(buf, got > 0 ? (size_t)got : 0, &bp);
-    if (r != BPC_OK) {
-        rt_log("blueprint: %s: %s", path, bpc_result_text(r));
-        return got < (int64_t)BPC_BLOB_SIZE ? BP_IMPORT_NO_FILE : BP_IMPORT_BAD_FILE;
-    }
+    enum BpcResult r = bp_file_read(path, storage, &bp);
+    if (r != BPC_OK) return BP_IMPORT_BAD_FILE;
     if (!find_lists()) return BP_IMPORT_NO_SAVE;
 
     // The card to replace is the one the page draws first, which is the entry the save's Index array calls 0. Writing
@@ -390,7 +383,7 @@ const char *bp_import_text(int r) {
     switch (r) {
     case BP_IMPORT_OK: return "ok";
     case BP_IMPORT_NO_FILE: return "cannot read the blueprint file";
-    case BP_IMPORT_BAD_FILE: return "the file is not a .cai blueprint this port can import";
+    case BP_IMPORT_BAD_FILE: return "the file is not a blueprint this port can import";
     case BP_IMPORT_NO_SAVE: return "no loaded save data: load a save first";
     case BP_IMPORT_NO_ORDER: return "the Autobuild history is not in memory";
     case BP_IMPORT_BAD_SLOT: return "the entry is outside the list the save holds";

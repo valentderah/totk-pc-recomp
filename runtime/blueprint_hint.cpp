@@ -1,6 +1,6 @@
 // The blueprint import entry on the game's own Autobuild screen: the ⊕ button and the word "Import" in the screen's
-// bottom guide bar, that button opening the host's file picker, and the chosen .cai file going into the Autobuild
-// history through blueprint_import.h.
+// bottom guide bar, that button opening the host's file picker, and the chosen .cai or .txt file going into the
+// Autobuild history through blueprint_import.h.
 //
 // The game draws that bar itself (blyt/AutoBuilder_00.bflyt: the A_Guide_00 align pane and its Pa_Guide_0N parts, filled
 // from LayoutMsg/AutoBuilder_00.msbt). This row is drawn over the game, right of the bar's "Back" hint, by the present
@@ -30,6 +30,7 @@
 #include "blueprint_hint.h"
 
 extern "C" {
+#include "blueprint_dir.h"
 #include "blueprint_import.h"
 #include "cfg.h"
 #include "folder_pick.h"
@@ -111,6 +112,9 @@ void bp_hint_poll(uint64_t *buttons) {
 
 static void on_file(const char *path, void *ctx) {
     (void)ctx;
+    // The dialog's answer carries the folder it was browsed in, so the screen's own entry keeps the same memory as the
+    // Blueprints tab's button does (blueprint_dir.h).
+    if (path && *path) bp_dir_remember(path);
     plat_mutex_lock(&g_lock);
     g_dialog_open = 0;
     if (path && *path) {
@@ -140,7 +144,7 @@ static void open_picker(void) {
     }
     g_dialog_open = 1;
     plat_mutex_unlock(&g_lock);
-    static const char *const patterns[] = {"*.cai", "*.totkab"};
+    static const char *const patterns[] = {"*.cai", "*.txt"};
     rt_log("blueprint: hint: opening the file picker");
     file_pick("", patterns, 2, on_file, NULL);
 }
