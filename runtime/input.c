@@ -619,10 +619,16 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             pick(&sr[0], &sr[1], k[0], k[1]);
             int selector = b & (1ull << B_L) ? 1 : b & (1ull << B_UP) ? 2 :
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
+            // Only while the wheel or a strip is on screen (menu_cursor.c reads the focused screen): L also soothes the
+            // horse and turns menu tabs, the D-pad does other things too, and then the mouse stays on the camera.
+            // Before the screens were read (the menu cursor off) the buttons alone decide, as before.
+            if (selector && menu_cursor_shortcut() == 0) selector = 0;
             mouse_camera(k, selector);
             pick(&sr[0], &sr[1], k[0], k[1]);
-            int32_t shake = shake_stick(input_map_held(down, B_SHAKE) || input_direct_mouse_shake());
+            int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
+            // A mouse shake (mouse_direct.c) moves the stick with the mouse, side by side, and lets go when it rests
+            else if (input_direct_mouse_shake()) sr[0] = input_direct_mouse_shake() * STICK_MAX, sr[1] = 0;
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();
             if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;

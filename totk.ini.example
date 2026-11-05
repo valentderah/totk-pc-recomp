@@ -311,8 +311,8 @@
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.0467 degrees per count, the same in every camera mode (about 24.5 cm a turn at 800 DPI).
 # mouse_sens = 1
-# The mouse's camera motion times this while the bow is drawn (0.1 to 3; mouse_mode = direct, game 1.4.3). The game's
-# bow camera already turns slower than on foot; this changes the mouse on top of that. Changes while the game runs.
+# The mouse's camera motion times this while the bow is drawn (0.1 to 3; mouse_mode = direct, game 1.4.3), on top of
+# the 0.0467 degrees per count every camera turns, the bow's included. Changes while the game runs.
 # mouse_aim_scale = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
