@@ -126,11 +126,12 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   the merged RomFS (15.9 GiB) before it deletes them. The check computes the exact figure.
 - Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
-  finish screen with Open folder. English, Russian, Brazilian Portuguese or Simplified Chinese, chosen from the Windows
-  display language (zh-CN and zh-SG give Chinese; the Traditional Chinese regions give English), switchable in the
-  window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans>.json`. A Chinese window still starts with
-  English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
-  from a firmware folder. A folder with
+  finish screen with Open folder. English, Russian, Brazilian Portuguese, Simplified Chinese or Spanish, chosen from
+  the Windows display language (zh-CN and zh-SG give Chinese; the Traditional Chinese regions give English), switchable in the
+  window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans|es>.json`. Spanish regions share the `es` window
+  catalog. A Spanish window starts with Spanish as the game language; Latin American Spanish remains selectable.
+  A Chinese window still starts with English as the game language, because Chinese game text needs the Switch shared
+  fonts, which the setup extracts only from a firmware folder. A folder with
   `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
   closes itself. The window is not stretched on a display whose scale is the system DPI: `installer/dpi.py` makes the
   process system DPI aware before Tk starts, Tk then draws the fonts at the display's scale and `dpi.px` sizes the
@@ -147,7 +148,7 @@ The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
 TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
-installer/            the installer: steps, CLI, window, en/ru/zh-Hans text catalog
+installer/            the installer: steps, CLI, window, en/ru/pt-BR/zh-Hans/es text catalogs
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)

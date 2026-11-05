@@ -27,7 +27,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
+- Setup in English, Russian, Brazilian Portuguese, Simplified Chinese and Spanish
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout

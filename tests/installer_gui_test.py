@@ -287,7 +287,8 @@ class CatalogTest(unittest.TestCase):
             self.assertEqual([i for i in ids if not cat.has(i)], [])
 
     def test_codes_become_names(self):
-        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский'), ('pt-BR', 'Coreano'), ('zh-Hans', '韩语')):
+        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский'), ('pt-BR', 'Coreano'), ('zh-Hans', '韩语'),
+                             ('es', 'Coreano')):
             cat = Catalog(lang)
             self.assertIn(korean, cat('warn.lang_needs_fonts', lang='ko'))
             self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
@@ -320,9 +321,26 @@ class CatalogTest(unittest.TestCase):
 
     def test_windows_langid_picks_the_window_language(self):
         for langid, lang in ((0x0419, 'ru'), (0x0819, 'ru'), (0x0416, 'pt-BR'), (0x0816, 'en'),
+                             (0x040a, 'es'), (0x080a, 'es'), (0x0c0a, 'es'), (0x240a, 'es'), (0x580a, 'es'),
                              (0x0804, 'zh-Hans'), (0x1004, 'zh-Hans'),
                              (0x0404, 'en'), (0x0c04, 'en'), (0x1404, 'en'), (0x0409, 'en'), (0x0411, 'en')):
             self.assertEqual(ui_language_for_langid(langid), lang, hex(langid))
+
+    def test_spanish_posix_locales_pick_the_window_language(self):
+        with unittest.mock.patch('installer.guilogic.os.name', 'posix'):
+            for loc in ('es', 'es_ES.UTF-8', 'es_CO.UTF-8', 'es_MX', 'es-419', 'ES-ar.utf8', 'es_ES@euro'):
+                for variable in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
+                    with self.subTest(locale=loc, variable=variable):
+                        with unittest.mock.patch.dict(os.environ, {variable: loc}, clear=True):
+                            self.assertEqual(windows_ui_language(), 'es')
+            for values, expected in (({'LC_ALL': 'en_US.UTF-8', 'LANG': 'es_CO.UTF-8'}, 'en'),
+                                     ({'LC_MESSAGES': 'en_US.UTF-8', 'LANG': 'es_CO.UTF-8'}, 'en'),
+                                     ({'LANG': 'estonian'}, 'en')):
+                with unittest.mock.patch.dict(os.environ, values, clear=True):
+                    self.assertEqual(windows_ui_language(), expected)
+
+    def test_spanish_window_starts_with_spanish_game_text(self):
+        self.assertEqual(default_game_language('es'), 'es')
 
     def test_chinese_window_starts_with_a_game_language_that_needs_no_shared_fonts(self):
         self.assertEqual(default_game_language('zh-Hans'), 'en-US')
