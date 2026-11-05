@@ -12,9 +12,16 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
-# Distant detail (patches-v121.txt explains both): no sites found in this version yet, so the switches do nothing.
+# Distant detail (patches-v121.txt explains both). The level picker main+0x1ee8424 is 1.2.1's main+0x27d225c with the
+# same first words, and its early b.eq goes straight to the ret, so the 1.2.1 site words fit as they are.
 set lod      TOTK_LOD_DETAIL     0
+site lod     main 1ee842c 71000520 5100052b 4b0b03ec 2a0b018c 131f7d8c b9402840 0a0c0000 6b00001f   # subs w0, w9, #1 -> the 1.2.1 words (one-level mask, floor in w0, cmp w0, w0: b.eq taken)
+# The graphics settings setup (main+0x5868c4) inlines the three getters 1.2.1 calls: the value 1.2.1 reads at
+# main+0xc7eb24 is the ldr w10, [x10, #0x38] at main+0x58692c, and the getters' slow paths (main+0x586bc8, 0x586c18,
+# 0x586f44) come back before the compare. So the site is the compare, which every path reaches: w10 = 9 skips the
+# list walk to the epilogue (main+0x58729c), which does not read w10.
 set steady   TOTK_LOD_STEADY     0
+site steady  main 586954 7100215f 5280012a 7100215f   # cmp w10, #8 -> mov w10, #9; cmp w10, #8 (b.gt 0x58729c taken)
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)

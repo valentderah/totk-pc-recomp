@@ -121,7 +121,7 @@ static const CfgMeta metas[] = {
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"FXAA", "1", "0|1", LIVE},
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
     {"ANISO", "game", "game|2|4|8|16", RESTART},   // vk_texture.c sampler_features
-    {"LOD_DETAIL", "0", "0|1", RESTART}, {"LOD_STEADY", "0", "0|1", RESTART},   // patch sets lod and steady (1.2.1)
+    {"LOD_DETAIL", "0", "0|1", RESTART}, {"LOD_STEADY", "0", "0|1", RESTART},   // patch sets lod and steady (1.2.1, 1.4.3)
     // colour adjustment (vk_color.c); the preset is the menu's, the four values are what the present uses
     {"COLOR_PRESET", "default", "default|vivid|clarity|custom", LIVE}, {"COLOR_BRIGHTNESS", "0", "-30..30", LIVE},
     {"COLOR_CONTRAST", "100", "70..150", LIVE}, {"COLOR_SATURATION", "100", "50..200", LIVE},
