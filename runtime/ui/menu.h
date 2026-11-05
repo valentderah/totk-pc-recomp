@@ -35,6 +35,10 @@ void menu_event_mouse_button(int button, int down);   // 0 left, 1 right, 2 midd
 void menu_event_wheel(float dx, float dy);
 void menu_event_focus(int focused);
 
+// Runs under the present lock before any minimized/acquire-failure return; requires the current physical device.
+// Polls the separate window and synchronizes sampling without a swapchain target or ImGui frame.
+void menu_perf_update(VkPhysicalDevice phys);
+
 // ---- the overlay, drawn into the swapchain image after the game image (gfx_present.c, present lock held)
 typedef struct {
     VkInstance instance;
