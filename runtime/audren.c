@@ -349,6 +349,7 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v) {
 
 static void render_thread(void *p) {
     AudioRenderer *r = p;
+    rt_core_split(0);
     plat_thread_priority(PLAT_PRIO_HIGHEST);
     const uint64_t frame_ns = (uint64_t)r->param.sample_count * 1000000000ull / (uint64_t)r->param.sample_rate;
     const double frame = (double)r->param.sample_count / r->param.sample_rate;

@@ -513,6 +513,15 @@ static void portable_paths(RtConfig *c) {
 
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    if (cfg_bool("TOTK_HUGE_TEXT")) {   // before the game's threads start (platform linux.c plat_huge_text)
+        uint64_t code;
+        int how;
+        uint64_t got = plat_huge_text(&code, &how);
+        static const char *const what[] = {"failed, the code stays on 4 KiB pages", "nothing to move",
+                                           "file-backed", "an anonymous copy; perf names no symbols there, huge_text = 0 to profile"};
+        rt_log("huge text: %llu of %llu MiB of code on 2 MiB pages (%s)", (unsigned long long)(got >> 20),
+               (unsigned long long)(code >> 20), what[how + 1]);
+    }
     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
     rt_log("version: TotK Recomp %s, game %d.%d.%d", rt_port_version, rt_game_version / 100, rt_game_version / 10 % 10,
            rt_game_version % 10);

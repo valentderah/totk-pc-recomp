@@ -241,6 +241,10 @@ typedef struct {
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
 int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
+// Moves the executable's code onto 2 MiB pages where the host can (TOTK_HUGE_TEXT); called once at start. Returns the
+// bytes now on huge pages; *code gets the bytes it tried to move and *how what happened: 0 nothing (the code is not
+// 2 MiB-aligned anywhere or the platform has no such pages), 1 file-backed huge pages, 2 an anonymous copy, -1 failed.
+uint64_t plat_huge_text(uint64_t *code, int *how);
 void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
 void plat_aligned_free(void *p);
 

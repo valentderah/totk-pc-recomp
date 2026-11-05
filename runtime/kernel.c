@@ -1471,6 +1471,7 @@ static PlatIntr *ap_open_self(void) {
 
 static void thread_main(void *p) {
     RtThread *t = p;
+    rt_core_split(1);
     tcur = t;
     t->tid = plat_thread_id();
     PlatIntr *self = ap_open_self();
@@ -1539,6 +1540,7 @@ void kern_main_stack(uint64_t *base, uint64_t *size) {
 
 static void guest_main(void *p) {
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
+    rt_core_split(1);
     Cpu *c;
     kern_main_thread(&c);
     if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);

@@ -55,6 +55,7 @@ static void exec_packet(uint32_t op, void *p);
 
 static void rec_main(void *arg) {
     (void)arg;
+    rt_core_split(0);
     plat_thread_priority(rec_prio);
     uint64_t t = 0;
     for (;;) {
