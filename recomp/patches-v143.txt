@@ -146,7 +146,11 @@ site mouse_direct main 23c2964 bd404be1 945c7587   # CameraFinder: ldr s1, [sp, 
 site mouse_direct main 23c3dd0 bd442301 945c706c   # ClimbObj: ldr s1, [x24, #0x420]
 site mouse_direct main 23c3dd8 bd409261 945c706a   # ClimbObj: ldr s1, [x19, #0x90] (yaw)
 site mouse_direct main 23c3d64 bd442701 945c7087   # ClimbObj: ldr s1, [x24, #0x424]
-site mouse_direct main 23c3d70 bc488ec1 945c7084   # ClimbObj: ldr s1, [x22, #0x88]! (pitch)
+# ClimbObj's pitch is a pre-indexed load, ldr s1, [x22, #0x88]!, whose write-back the code after it needs (ldp and
+# str through x22). A host call cannot write x22: the lifter keeps X19-X29 in locals across a call. So the mov before
+# it adds the 0x88 instead (x22 = x19 + 0x88) and the hook loads [x22] with no write-back.
+site mouse_direct main 23c3d5c aa1303f6 91022276   # ClimbObj: mov x22, x19 -> add x22, x19, #0x88
+site mouse_direct main 23c3d70 bc488ec1 945c7084   # ClimbObj: ldr s1, [x22, #0x88]! (pitch), as ldr s1, [x22]
 site mouse_direct main 23da694 bd4422c1 945c163b   # Wakeboard: ldr s1, [x22, #0x420]
 site mouse_direct main 23da698 bd4426c0 945c163a   # Wakeboard: ldr s0, [x22, #0x424] (stick y, kept)
 site mouse_direct main 23da840 bd40da60 945c15d0   # Wakeboard: ldr s0, [x19, #0xd8] (pitch)

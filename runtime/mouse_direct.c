@@ -586,9 +586,9 @@ static void hand_input(Cpu *c) {
 //     other bow cameras (Bow, Bow_Crouch, Bow_Zoom, Bow_Horse, Bow_Zoom_Horse) are Aiming.
 //   Tail (wall climbing, parameter set Climb; main+0x23d4950): the stick as angle and length; in its manual state
 //     (+0x16c == 4) yaw +0xc0 and pitch +0xb4 -= x / y * speed * frame ratio. ClimbObj (main+0x23c3a98): pitch +0x88
-//     (a pre-indexed load) and yaw +0x90 likewise. WaterfallClimb (main+0x23dce00): yaw = the camera's yaw - x * speed
-//     * frame ratio, kept at [x29-0x34] and loaded into w8 (the base); its vertical axis moves the camera's height
-//     (ManualHeightMin..Max), not an angle, and stays stick input (watched).
+//     (through x22, set by a patched mov) and yaw +0x90 likewise. WaterfallClimb (main+0x23dce00): yaw = the camera's
+//     yaw - x * speed * frame ratio, kept at [x29-0x34] and loaded into w8 (the base); its vertical axis moves the
+//     camera's height (ManualHeightMin..Max), not an angle, and stays stick input (watched).
 //   EventMultiTalk (main+0x23c531c) and EventTalkManual (main+0x23c8ffc): pitch / yaw fields -= stick * speed *
 //     frame ratio; MultiTalk's x load is also its input test (EPSILON).
 //   ShieldSurfing (main+0x23d0088) and Wakeboard (main+0x23da61c), one template: the stick as angle and length; yaw
@@ -656,7 +656,9 @@ static const LoadSite load_sites[] = {
     {0x23c3dd0, 0xbd442301, MODE_CLIMB, 0, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x420]
     {0x23c3dd8, 0xbd409261, MODE_CLIMB, 0, ROLE_BASE, 0, 0},             // ldr s1, [x19, #0x90] (yaw)
     {0x23c3d64, 0xbd442701, MODE_CLIMB, 1, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x424]
-    {0x23c3d70, 0xbc488ec1, MODE_CLIMB, 1, ROLE_BASE, 0, 0},             // ldr s1, [x22, #0x88]! (pitch; x22 = x19)
+    // The game's pitch load is ldr s1, [x22, #0x88]! (bc488ec1). recomp/patches-v143.txt makes the mov before it
+    // set x22 = x19 + 0x88, so the hook performs it as the plain load below and writes no register but s1.
+    {0x23c3d70, 0xbd4002c1, MODE_CLIMB, 1, ROLE_BASE, 0, 0},             // ldr s1, [x22] (pitch +0x88)
     {0x23da694, 0xbd4422c1, MODE_WAKEBOARD, 0, ROLE_STICK, 22, EPSILON},    // ldr s1, [x22, #0x420]
     {0x23da698, 0xbd4426c0, MODE_WAKEBOARD, 1, ROLE_STICK, 22, KEEP_STICK}, // ldr s0, [x22, #0x424]
     {0x23da840, 0xbd40da60, MODE_WAKEBOARD, 1, ROLE_BASE, 0, 0},         // ldr s0, [x19, #0xd8] (pitch)
@@ -697,8 +699,9 @@ static const LoadSite load_sites[] = {
 };
 #define LOAD_SITES (sizeof load_sites / sizeof load_sites[0])
 
-// The original single-register 32-bit loads: LDR S (unsigned offset), LDUR S, LDR S pre-indexed (the base register
-// becomes the address) and LDUR W (a float's bits in a general register). Their address:
+// The original single-register 32-bit loads: LDR S (unsigned offset), LDUR S and LDUR W (a float's bits in a general
+// register). Never a load with write-back: the hook is a call, and the lifted caller keeps X19-X29 in locals that a
+// call does not reload (recomp/regs.py), so a base register written here would be lost. Their address:
 static uint64_t load_address(const Cpu *c, uint32_t insn) {
     unsigned n = (insn >> 5) & 31;
     uint64_t base = n == 31 ? c->sp : c->x[n];
@@ -707,7 +710,6 @@ static uint64_t load_address(const Cpu *c, uint32_t insn) {
     if (imm9 & 0x100) imm9 -= 0x200;
     return base + (int64_t)imm9;
 }
-static int load_pre_index(uint32_t insn) { return (insn & 0xffe00c00u) == 0xbc400c00u; }
 static int load_to_general(uint32_t insn) { return (insn & 0xffe00c00u) == 0xb8400000u; }
 
 // Degrees a stick load left for its base load, on this thread: per mode and axis, for one camera object
@@ -866,7 +868,6 @@ static void camera_load(Cpu *c) {
     }
     uint64_t at = load_address(c, s->insn);
     float f = guest_float(at);
-    if (load_pre_index(s->insn)) c->x[(s->insn >> 5) & 31] = at;   // the pre-indexed load's write-back
     if (s->role == ROLE_SCALE) {   // the ability camera's offset scale: P.y is this load, P.x the float before it
         plat_mutex_lock(&sample_lock);
         offset_scale.object = c->x[19];

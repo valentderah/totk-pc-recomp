@@ -366,8 +366,8 @@ int main(void) {
         guest_float_store((uintptr_t)cam+0xc0,7); guest_float_store((uintptr_t)cam+0xb4,8);
         assert(LOAD(0x23d4b14,12)==pad_x && LOAD(0x23d4b1c,13)==pad_y);
         assert(fabsf(LOAD(0x23d4f34,0)-(7-100*DEG_PER_COUNT))<1e-5f && fabsf(LOAD(0x23d5028,1)-(8-50*DEG_PER_COUNT))<1e-5f);
-        // Climbing an object: the pitch's pre-indexed load writes its address back to x22
-        SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[22]=(uintptr_t)cam;
+        // Climbing an object: the patched mov has set x22 = x19 + 0x88; the pitch load writes no register but s1
+        SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[22]=(uintptr_t)cam+0x88;
         guest_float_store((uintptr_t)cam+0x88,4); guest_float_store((uintptr_t)cam+0x90,5);
         assert(LOAD(0x23c3d64,1)==pad_y && fabsf(LOAD(0x23c3d70,1)-(4-50*DEG_PER_COUNT))<1e-5f);
         assert(c.x[22]==(uintptr_t)cam+0x88);
