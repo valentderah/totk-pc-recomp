@@ -122,6 +122,12 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
+// UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
+// the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this
+// submission (a copy, a fill, a storage write), which retires the overlays it touches.
+void vk_exec_ub_flush(VkExec *ex);
+void vk_exec_ub_foreign(VkExec *ex, uint64_t addr, uint64_t n);
+void vk_exec_ub_perf(void);
 // vk_texture.c (TOTK_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.
