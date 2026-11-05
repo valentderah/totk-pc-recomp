@@ -48,7 +48,8 @@ guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes aro
 with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
-build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
+build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts, -<w>x<h> added with
+--aspect and -hud<a>x<b> with --hud), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
 """
 import argparse
 import compression.zstd as zstd
@@ -64,11 +65,12 @@ ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--version', choices=('v110', 'v121', 'v143'), default='v121')
 ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/romfs')
 ap.add_argument('--out', type=Path,
-                help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
+                help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts, then -<w>x<h> with '
+                     '--aspect and -hud<a>x<b> with --hud)')
 ap.add_argument('--aspect', help='<w>x<h> of a game resolution of another shape than 16:9: also lay the UI out for it')
 ap.add_argument('--hud', choices=('full', '21:9', '16:9'), default='full',
                 help='with --aspect on a wider screen: the HUD stays within the middle 21:9 or 16:9 (default full: the '
-                     'screen\'s corners); the default --out gets a -hud21x9 or -hud16x9 suffix')
+                     'screen\'s corners)')
 ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
                 help='Xbox button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
                      'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters), '
@@ -82,10 +84,13 @@ if args.hud != 'full':
     if not args.aspect: ap.error('--hud needs --aspect')
     _w, _h = (int(v) for v in args.aspect.lower().split('x'))
     if HUD_CAP >= _w / _h * 0.99: ap.error(f'--hud {args.hud} is not narrower than a {_w}x{_h} screen (that is --hud full)')
-if args.hud != 'full' and not args.out:   # romfs-patches[-<prompts>]-<w>x<h>-hud<a>x<b>, the name runtime/romfs.c overlay_init looks for
-    args.out = root / 'build' / args.version / (f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches')
-    args.out = args.out.with_name(f'{args.out.name}-{_w}x{_h}-hud{args.hud.replace(":", "x")}')
-args.out = args.out or root / 'build' / args.version / (f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches')
+if not args.out:
+    # The folder runtime/romfs.c overlay_init looks for: romfs-patches[-<prompts>][-<w>x<h>[-hud<a>x<b>]]. Without the
+    # size, an --aspect run would replace the 16:9 romfs-patches the game loads at 1920x1080.
+    name = f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches'
+    if args.aspect: name += '-' + args.aspect.lower()
+    if args.hud != 'full': name += '-hud' + args.hud.replace(':', 'x')
+    args.out = root / 'build' / args.version / name
 index = json.loads((args.romfs / 'index.json').read_text())
 assert index['status'] == 'pass'
 files = {f['path']: f for f in index['files']}
