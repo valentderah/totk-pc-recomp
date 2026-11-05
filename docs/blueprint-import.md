@@ -1,32 +1,32 @@
 # Importing `.cai` Autobuild blueprints into the game
 
-Status: **prototype works** — a `.cai` blueprint file is read, validated, and written into the game's own Autobuild
-blueprint list, and the game then shows it in its native blueprint page and saves it with the rest of the progress.
+Status: **works** — a `.cai` blueprint file is read, validated, and written into the game's own Autobuild history, where
+it appears as the **first card of the list** (the newest draft) and builds with the native preview, rotation and Zonai
+energy costs.
 
 Upstream request: issue #680, "Implement the .cai blueprint import feature" (`valentderah/totk-pc-recomp`).
 Baseline: v0.3.10 (`101132a6`).
+
+Everything below was measured on a running game, on several save files, with the list wiped clean in between.
 
 ## 1. What the feature does
 
 The port's settings menu gets one new tab, **Blueprints**:
 
-1. **Choose a blueprint file** opens the host's own file dialog (`.cai`, `.totkab`, `.txt`), and the file is read and
-   checked while the game keeps running.
+1. **Choose a blueprint file** opens the host's file dialog (`.cai`, `.totkab`, `.txt`). The file is read and validated
+   while the game keeps running.
 2. The page shows what the file holds: the part count, or why the file was rejected.
-3. The page lists the game's **30 Autobuild slots** with the part count of what each holds now, and the player picks the
-   one to replace. Replacing is the only operation: the list length and the save layout never change, so the other
-   entries are untouched.
-4. **Import into slot N** writes the blueprint into the save data the game holds in memory, drops the game's cached
-   picture of that slot, and the game's own save then persists it.
+3. **Import** writes the creation into the save data the game holds in memory and clears the game's cached pictures, so
+   the creation appears in the Autobuild history right away as the newest draft — no reload, no restart.
 
-The point of writing into the save data (instead of the port drawing a second, host-side list) is that everything
-downstream is the game's own code: the native preview, rotation, the Zonai energy cost, the "not enough parts" rule and
-the save it writes are unchanged, because the game cannot tell an imported creation from one the player built.
+There is no slot to pick. A creation made in the game always takes the newest place of the history, and so does an
+import; the entry it displaces is the one that was newest before, which slides down one position. The other 29 drafts
+keep their data.
 
-## 2. How a `.cai` file is read (`runtime/blueprint_cai.c`)
+## 2. The `.cai` file (`runtime/blueprint_cai.c`)
 
-A blob is 6688 bytes and holds up to 21 actors. Community files are 6688 bytes or 6712 bytes (the blob plus 24 bytes of
-unknown meaning); the game's own assets are longer. Only the first 6688 bytes are the blob, and the rest is ignored.
+A blob is 6688 bytes and holds up to 21 actors. Community files are 6688 bytes or 6712 bytes (the blob plus 24 bytes:
+two camera vectors). Only the first 6688 bytes are the blob.
 
 ```
  0x0000  header, 12 bytes: magic "CmbAct", u8 pad[2], u8 version (=2), u8 count, u8 count-1, u8 pad
@@ -41,90 +41,142 @@ unknown meaning); the game's own assets are longer. Only the first 6688 bytes ar
 (printable, NUL-terminated inside its 128-byte field), all 38 matrix floats finite, the bounding box finite. A damaged
 or foreign file is rejected with the reason the page shows, before anything is written.
 
-## 3. How the import works (`runtime/blueprint_import.c`)
+## 3. Where the history lives in the save data
 
-The Autobuild list is one `BinaryArray` flag in `progress.sav` (GameData hash `0xa56722b6`): 30 items, each
-`{u32 size = 6688, blob}`. The game keeps the loaded save data in guest memory, and because guest memory is host memory
-on this port (`runtime/memory.c`), the import is a write into that memory:
+`AutoBuilder.Draft.Content` is **five parallel arrays of 30 entries** in `progress.sav`. They are indexed by physical
+entry (0..29) and carry **no display order of their own**; the order the page draws by comes from `Index`:
 
-- The list is found by scanning the guest heap for the blob magic `CmbAct`, grouping the hits by their stride, and
-  checking the group's shape (30 items at 6692 bytes with the right size fields). The address is cached for the run and
-  re-checked on each use; a failed scan is retried at most once a second, so a save that is still loading does not stall
-  the page.
-- The game keeps the list in two shapes and **both** are written: the serialized array (the bytes the game writes back
-  to `progress.sav`) and the parsed copies the blueprint page draws (two 6688-byte records per slot). Writing only the
-  serialized copy persists the import but leaves the open page showing the old creation.
-- `runtime/fs`'s read of `progress.sav` is not needed for this; the scan finds the buffer whatever its address.
-- The game caches a picture of each slot as `<profile>/cache/<i>/icon/Draft_NNN.png`, drawn once per creation. After a
-  write those are removed and the game draws them again, so a replaced slot does not keep the old picture.
+| GameData hash | name | type | meaning |
+|---|---|---|---|
+| `0xa56722b6` | `CombinedActorInfo` | BinaryArray | the drafts: 30 items of `{u32 size = 6688; CmbAct blob}` |
+| `0xd27f8651` | `Index` | IntArray | the **age** of each entry: `0` is the card drawn first, `29` the last. A permutation of 0..29 |
+| `0x67f4b46b` | `IsFavorite` | BoolArray | the ★ mark, one bit per entry |
+| `0xc5bf2815` | `CameraPos` | Vector3Array | the camera position the draft was framed with |
+| `0xef74dca7` | `CameraAt` | Vector3Array | the camera target |
 
-One write replaces exactly one slot: the item count, the sizes and the position of every other entry are untouched.
+This is the fact the implementation is built on, and the one that cost the most time to establish: **the array order is
+not the display order.** Writing entry 0 does not put a creation on the first card — it puts it wherever entry 0 sorts,
+which differs per save file.
 
-## 4. The host side (`runtime/ui/blueprint_page.cpp`)
+Measured on three save files, with the import writing entry 0:
 
-The page must never stall the present path, and the import walks a few gigabytes of guest memory. Both the lookup and
-the write run on a worker thread of their own (as the file dialog already does, `runtime/folder_pick.h`); the page only
-queues one request and collects the result while it draws. The tab therefore opens instantly, says "looking for the
-favourite slots" while that runs, and needs no retry timer: one attempt is queued per tab entry, plus a row to retry.
+| save file | `Index[0]` | card the import appeared on |
+|---|---|---|
+| slot_00 | 17 | 18 |
+| slot_01 | 12 | 13 |
+| slot_02..05 | 10 | 11 |
 
-## 5. Verification
+`Index[0] + 1` matched the card number exactly in every case. That is how the causal link was proven, and it is why the
+final code looks up `Index` instead of writing entry 0.
 
-Built from the v0.3.10 baseline with the feature applied. Log line confirms the baseline:
-`version: TotK Recomp 0.3.10, game 1.4.3`.
+### Reading array bounds from the file
 
-1. Settings -> Blueprints opens immediately; no slow frame in the log; the slot grid shows the game's own 30 entries
-   with their part counts.
-2. A 19-part community blueprint was written into the list while the game was running (the same three writes
-   `bp_import` performs), the cached pictures were dropped, and the reference screenshot
-   `build/blueprint/shots-clean/ACCEPTED-v0310-history-woodSail.png` shows the imported creation in the game's native
-   **↺ history** list, drawn from the new data (the pictures regenerate at ~93 KB instead of the old ~12 KB).
-3. The game then saved the modified list by itself: `slot_01/progress.sav` changed hash and its slot 1 now holds the 19
-   actors of the imported creation. Reloading that save keeps it.
-
-### A replacement touches only its own slot
-
-`build/blueprint/verify_single_slot.py` reads all 30 blobs of the live list before the write, writes one slot the way
-`bp_import` does (serialized item plus both parsed blobs), and reads all 30 back:
+The five arrays are found through the save's own declaration table, never by offset arithmetic (offsets differ per
+file):
 
 ```
-before: slot 1 = 4 actors, AsbObj_WoodStick_A_LL_01
-serialized slots changed: [1]
-parsed slots changed:     [1]
-after:  slot 1 = 19 actors, AsbObj_WoodSail_A_01
-RESULT: only the chosen slot changed, the other 29 are byte-identical
++0x00 u32 magic 0x01020304
++0x04 u32 format version
++0x08 u32 data_off          start of the data region
++0x0c .. 0x1f zero padding
++0x20 ..  declaration table: pairs of {u32 hash; u32 value}
+          a zero hash marks a section and the next word is its number
+data region: for arrays, u32 count then the items
+          a Binary item is {u32 size; u8 data[size]}
 ```
 
-The item count, every other entry's bytes and the save layout are unchanged, so an import cannot damage the blueprints
-the player already has. (An earlier experiment that filled all 30 slots was a way to make the page show *something*
-before the lists were located; it is not what the feature does and `bp_import` never writes more than one slot.)
+The header bytes before each array's data are **not** the same for every type, which is easy to get wrong:
 
-Not yet verified end to end: pressing the page's Import button on the v0.3.10 build (the test wrote the same memory from
-outside the game to isolate the data path). The page's slot list is by index, while the history list draws its cards in
-the save's own order (see 6), so the two do not line up one to one; the player picks the slot whose contents they want
-to replace.
+| type | bytes before the first item |
+|---|---|
+| BinaryArray | 4 (only the count; an item carries its own size) |
+| IntArray | 4 |
+| BoolArray | 8 (the count, then a u32 holding how many bits are stored — 32 for 30 entries) |
+| Vector3Array | 4 |
 
-## 6. Known limitations
+## 4. How the import works (`runtime/blueprint_import.c`)
 
-- **One list only.** The 30-slot array is the **↺ history** list. The ★ mark in the game's list is a separate save flag
-  (a `BoolArray`, one bit per slot) that the import does not set, so an imported creation shows up under history, not
-  under ★ favourites. Setting that bit for the imported slot is future work.
-- **Display order is not slot order.** The order the history list shows its entries in is its own save flag (an
-  `IntArray` of 30 slot indices; its first value is the card at the top). In the test save it is
-  `[12, 11, 10, 9, 8, 0, …]`, so slot 1 is the sixth card and slot 13 the first — which is why replacing slot 1 left the
-  top card alone. The page lists slots in index order; the player picks the entry they want to replace.
-- `.totkab` (the `TOTKAuto` wrapper around a CAI) is recognised and refused with a reason; decoding it is separate work.
-- The importer writes into the game's live save buffer, so an import must not race the game's own save. In the port the
-  menu blocks game input while it is open, and the worker performs the write between two frames of the game's own save.
+The game keeps the loaded save data in guest memory, and on this port guest memory is host memory
+(`runtime/memory.c`), so an import is a write into it.
+
+### Finding the arrays
+
+The draft array is found by scanning the guest heap for the blob magic `CmbAct`, grouping the hits by stride, and
+checking the shape of the group (30 entries at a 6692-byte stride, with the size fields and version bytes right). The
+address is cached for the run and re-checked on each use. The scan covers the heap only — the region the save data lives
+in — so it takes about 0.3 s instead of walking the whole address space.
+
+The page copy is the same scan's other group: 60 blobs at a 6688-byte stride (two per entry, no size fields). Both
+shapes are written, because the game keeps both and draws from the parsed one:
+
+* **serialized** — what the game writes back to `progress.sav`
+* **parsed** — the records the Autobuild page reads when it draws
+
+Writing one without the other imports the data but leaves the open page showing the previous creation.
+
+### Finding the entry to replace
+
+`Index` is **not** in guest memory while the menu runs, so it is read from the save file. That read is where the
+subtlety is: every save slot has its own `Index` array, and only one of them belongs to the file the game has loaded.
+Reading whichever file came first ordered the import by another save's ages — which is exactly how an import landed on
+card 9 instead of card 1 during development.
+
+The fix is to check each candidate against guest memory: the array the game is drawing by must be present there. The
+first file whose `Index` values are found in the heap is the loaded save, and `Index == 0` in it names the entry drawn
+first. The import writes that entry.
+
+### Clearing the cached pictures
+
+The game draws a picture of each draft once and caches it as `<profile>/cache/<i>/icon/Draft_NNN.png`. After a write
+those files describe the old contents, so they are removed and the game draws them again. **Without this the change is
+invisible**: the data in memory is correct, but the page keeps showing the picture it drew before, which looks exactly
+like a failed import. Clearing them is what makes the new creation appear on the already-open page.
+
+### What stays untouched
+
+The array keeps its 30 entries, the item count never changes, and the save never grows. Only one entry's blob changes;
+the entry that was drawn first moves one place down the list because `Index` no longer marks it as the newest, and the
+other 29 entries keep their data byte for byte.
+
+## 5. The page (`runtime/ui/blueprint_page.cpp`)
+
+One row: **Choose a blueprint file**, then **Import**. The chosen file's part count is shown, or the reason it was
+rejected.
+
+`bp_favorites` and `bp_import_newest` walk the game's memory, so both run on a worker thread and the page only collects
+the results. The tab opens instantly; opening it never blocks the game. There is one lookup per tab entry, not a timer.
+
+## 6. Verification
+
+Built from v0.3.10, run on Windows. Cases exercised:
+
+- **Different save files.** The import lands on **card 1** in every one of the six save slots, whose `Index` arrays all
+  differ (`Index[0]` was 17, 12 and 10 in the files measured).
+- **History wiped clean.** After the Autobuild history was filled with one repeated creation and then reloaded, imports
+  still landed on card 1.
+- **Different files.** A 21-part creation and a 20-part creation (`AsbObj_RopewayArm`, `Item_Fruit_A`) both imported and
+  both appeared first.
+- **Live, no reload.** The creation shows up in the already-open Autobuild page right after pressing Import; the game's
+  own save then persists it with the rest of the progress.
+- **Nothing else disturbed.** The other 29 entries keep their blobs; only the entry that is replaced changes.
+
+Log lines that make this checkable:
+
+```
+blueprint: scan 94 blobs in 280 ms: drafts 0x174c793c8, page copy 0x185011838 (30 entries)
+blueprint: <name> (<n> parts) is now the first draft of the Autobuild history (entry <k>, the one the save draws first)
+blueprint: dropped 30 cached draft picture(s), the game draws them again
+```
 
 ## 7. Files
 
 New:
 
-| file | lines | what |
-|---|---|---|
-| `runtime/blueprint_cai.h/.c` | 55 / 105 | the `.cai` reader and its checks |
-| `runtime/blueprint_import.h/.c` | 45 / 290 | finding the live list, writing one slot, dropping the cached pictures |
-| `runtime/ui/blueprint_page.h/.cpp` | 8 / 415 | the Blueprints tab: file, checks, slot grid, import row, worker thread |
+| file | what |
+|---|---|
+| `runtime/blueprint_cai.h/.c` | the `.cai` reader and its checks |
+| `runtime/blueprint_import.h/.c` | finding the live arrays, choosing the entry, writing it, dropping the cached pictures |
+| `runtime/ui/blueprint_page.h/.cpp` | the Blueprints tab: file, checks, the import row, the worker thread |
 
 Modified:
 
@@ -132,4 +184,15 @@ Modified:
 |---|---|
 | `runtime/folder_pick.h`, `folder_pick_win.cpp`, `folder_pick_sdl.c` | a file dialog next to the folder dialog (`file_pick`) |
 | `runtime/ui/menu.cpp` | the tab in the enum, its name row and its page |
-| `runtime/ui_text.h`, `ui_text.c` | 33 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
+| `runtime/ui_text.h`, `ui_text.c` | 28 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
+
+## 8. Notes for whoever picks this up
+
+- `Index` decides the display order; the array order does not. Writing entry 0 for "the newest" is the mistake that
+  makes an import appear in the middle of the list.
+- The cached `Draft_NNN.png` files are part of the state. An import that skips them looks broken even when the memory is
+  right.
+- `IsFavorite` (one bit per entry) protects ★ slots; this implementation does not write it, so an import under the
+  history tab never touches the player's favourites.
+- The camera arrays (`CameraPos`, `CameraAt`, hash `0xc5bf2815` / `0xef74dca7`) hold the framing the template was
+  captured with; a `.cai` of 6712 bytes carries both and they can be written with the draft.
