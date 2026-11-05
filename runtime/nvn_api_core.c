@@ -471,7 +471,7 @@ NVN_API(nvnQueueFenceSync) {
     s->fenced = 1;
     s->fence = nvn_fence_last();
 }
-// TOTK_SYNC_AHEAD=1: one more frame in flight. Each frame the game waits (one nvnSyncWait, 1.2.1 lr 0x7000b23dfc) for
+// TOTK_SYNC_AHEAD=1: one more frame in flight. Each frame the game waits (one nvnSyncWait, frame_wait_lr) for
 // the frame it presented last; on the Switch that work is long done by then, here it is still in the replay and on the
 // GPU (about 11 ms from the submit), and the wait sets the frame time. With the switch on, that wait, and only that
 // one, waits for the frame before it instead. What the game reads back of GPU results after the wait can then be a
@@ -479,8 +479,13 @@ NVN_API(nvnQueueFenceSync) {
 // queued for the GPU or wait (nvn_sync_ahead_guard). The wait still lasts until the replay thread submitted the asked
 // value, so no copy of that value itself picks up those writes. pa_fence: the newest fence at the latest present and
 // the one before, present thread only for writes. pa_guard: the newest value the game was told is done early.
-#define FRAME_WAIT_LR_121 0x7000b23dfcull
 static uint64_t pa_fence[2], pa_guard;
+// The return address of that wait. 1.2.1: 0x7000b23dfc. 1.4.3: 0x70002db99c, the second of the two nvnSyncWait calls
+// in f_70002db8ac; like on 1.2.1 its sync comes from a two-entry ring indexed per frame, and the first call waits on
+// one object's sync behind a mode check. 0: no site known, the switch stays off.
+static uint64_t frame_wait_lr(void) {
+    return rt_game_version == 121 ? 0x7000b23dfcull : rt_game_version == 143 ? 0x70002db99cull : 0;
+}
 static int sync_ahead(void) {
     static int on = -1;
     if (on < 0) {
@@ -493,7 +498,7 @@ static int sync_ahead(void) {
                    "the game waits for the GPU as before");
             on = 0;
         }
-        if (on && rt_game_version != 121) {
+        if (on && !frame_wait_lr()) {
             rt_log("nvn: TOTK_SYNC_AHEAD: no frame wait site is known for this game version; the game waits for the "
                    "GPU as before");
             on = 0;
@@ -518,7 +523,7 @@ NVN_API(nvnSyncWait) {
     const GfxBackend *b = gfx_backend();
     uint64_t want = s->fence;
     // Only the game's per-frame wait lags, and not a poll (timeout 0).
-    if (timeout && c->x[30] == FRAME_WAIT_LR_121 && sync_ahead() && b->fence_done() < want) {
+    if (timeout && c->x[30] == frame_wait_lr() && sync_ahead() && b->fence_done() < want) {
         uint64_t p0 = __atomic_load_n(&pa_fence[0], __ATOMIC_ACQUIRE);
         uint64_t p1 = __atomic_load_n(&pa_fence[1], __ATOMIC_ACQUIRE);
         if (want <= p0 && want > p1) want = p1;
