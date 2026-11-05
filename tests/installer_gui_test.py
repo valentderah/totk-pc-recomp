@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
 from installer import dpi  # noqa: E402
+from installer import recent  # noqa: E402
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -379,6 +380,42 @@ class DpiTest(unittest.TestCase):
         self.assertGreaterEqual(int(awareness), 1)   # 1 system aware, 2 per-monitor aware
         self.assertAlmostEqual(float(scaling), float(scale) * 96 / 72, places=6)
         self.assertEqual((int(pad), int(wrap)), (round(14 * float(scale)), round(620 * float(scale))))
+
+
+class RecentTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = self.tmp / 'sub' / 'setup.json'
+        old = os.environ.get(recent.ENV)
+        os.environ[recent.ENV] = str(self.file)
+        self.addCleanup(lambda: os.environ.pop(recent.ENV, None) if old is None else os.environ.update({recent.ENV: old}))
+        self.dest = self.tmp / 'TotK'
+        self.dest.mkdir()
+
+    def test_override_is_honoured(self):
+        self.assertEqual(recent.path(), self.file)
+
+    def test_missing_file(self):
+        self.assertIsNone(recent.load())
+
+    def test_folder_without_state(self):
+        recent.save(self.dest)
+        self.assertIsNone(recent.load())
+
+    def test_round_trip(self):
+        (self.dest / statefile.NAME).write_text('{}', encoding='utf-8')
+        recent.save(self.dest)
+        self.assertEqual(json.loads(self.file.read_text(encoding='utf-8')),
+                         {'format': 1, 'dest': os.path.abspath(self.dest)})
+        self.assertEqual(recent.load(), os.path.abspath(self.dest))
+        self.assertFalse(self.file.with_name('setup.json.tmp').exists())
+
+    def test_garbage_file(self):
+        self.file.parent.mkdir()
+        for text in ('not json', '[]', '{"dest": 5}', '{"format": 1}'):
+            self.file.write_text(text, encoding='utf-8')
+            self.assertIsNone(recent.load(), text)
 
 
 class SmokeTest(unittest.TestCase):

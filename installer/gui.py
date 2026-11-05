@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import dpi
@@ -34,6 +35,7 @@ except ImportError:
 
 from . import ini
 from . import layout as layouts
+from . import recent
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
                        Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
 
@@ -113,6 +115,10 @@ class App:
             self.bind_text(self.title, 'text', 'ui.rebuild_title')
             self.vars['dest'].set(str(rebuild))
             root.after(POLL_MS, self.start)
+        else:
+            last = recent.load()   # an update needs only the folder: refresh_form shows the hint and the recorded language
+            if last:
+                self.vars['dest'].set(last)
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -358,6 +364,7 @@ class App:
             self.fit()
             return
         self.form_error.configure(text='')
+        recent.save(form.dest)
         # in a repository the Python running this window: the tools' embeddable Python there has no ._pth entry for
         # the repository, so `-m installer` would not find the package
         python = Path(sys.executable) if self.layout.dev else self.layout.python
@@ -606,6 +613,7 @@ def grab(root, path):
 def selftest(layout, shots=None):
     """Every screen in every language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
+    os.environ[recent.ENV] = os.path.join(tempfile.mkdtemp(prefix='totk-selftest-'), 'setup.json')
     root = tk.Tk()
     root.geometry('+60+40')
     app = App(root, 'en', layout)
