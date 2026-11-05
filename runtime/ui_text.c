@@ -506,10 +506,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
     [UI_MENU_TAB_BLUEPRINT] = "Blueprints",
-    [UI_MENU_BLUEPRINT_GROUP] = "Blueprint file",
-    [UI_MENU_BLUEPRINT_INTRO] = "Choose a .cai blueprint file on this PC, then import it into one of the 30 Autobuild "
-                                "favourite slots. The game keeps it in its save data, so the native preview and the "
-                                "Zonai energy costs work as usual.",
+    [UI_MENU_BLUEPRINT_INTRO] = "Choose a .cai blueprint file on this PC and import it. The creation joins the Autobuild "
+                                "history of your save as the newest draft, so the game's own preview and Zonai energy "
+                                "costs work as usual.",
+    [UI_MENU_BLUEPRINT_FILE] = "Blueprint file",
     [UI_MENU_BLUEPRINT_PICK] = "Choose a blueprint file",
     [UI_MENU_BLUEPRINT_PICK_DESC] = "Shows the blueprint files on this PC: .cai, .totkab and .txt.",
     [UI_MENU_BLUEPRINT_NONE] = "none",
@@ -521,28 +521,26 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_ERR_VERSION] = "The blueprint version is not 2.",
     [UI_MENU_BLUEPRINT_ERR_COUNT] = "The actor count in the header is not 1 to 21, or its two copies disagree.",
     [UI_MENU_BLUEPRINT_ERR_ACTOR] = "An actor has no valid name, or a transform that is not a number.",
-    [UI_MENU_BLUEPRINT_SLOTS] = "Autobuild favourite slots",
-    [UI_MENU_BLUEPRINT_SLOTS_HINT] = "The slot number and the part count of what it holds; an empty slot shows -.",
-    [UI_MENU_BLUEPRINT_NO_SAVE] = "The save data is not loaded yet. Load a save, then import.",
-    [UI_MENU_BLUEPRINT_SLOT_INFO] = "Slot %d holds a creation of %d parts.",
-    [UI_MENU_BLUEPRINT_SLOT_EMPTY] = "Slot %d is empty.",
-    [UI_MENU_BLUEPRINT_REPLACE] = "Importing replaces the creation this slot holds.",
-    [UI_MENU_BLUEPRINT_IMPORT] = "Import into slot %d",
-    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Writes the chosen blueprint into this favourite slot of the save data. The game "
-                                      "saves it with the rest of your progress.",
+    [UI_MENU_BLUEPRINT_IMPORT] = "Import",
+    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Adds the chosen blueprint to the Autobuild history as the first draft of the list. "
+                                      "The history keeps its 30 entries, so the creation that was on top moves one "
+                                      "place down and the rest keep their data. The game saves it with the rest of "
+                                      "your progress.",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "Choose a valid .cai blueprint first.",
-    [UI_MENU_BLUEPRINT_DONE] = "The blueprint is in slot %d now: open the Autobuild blueprint list in the game and it is "
-                               "there to build. The game saves it with the rest of your progress.",
+    [UI_MENU_BLUEPRINT_HISTORY] = "The history holds %d drafts; the newest has %d parts.",
+    [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "The history holds %d drafts.",
+    [UI_MENU_BLUEPRINT_NO_SAVE] = "The save data is not loaded yet. Load a save, then import.",
+    [UI_MENU_BLUEPRINT_NO_ORDER] = "The order the Autobuild list draws its drafts in is not in memory yet. Open the "
+                                   "Autobuild blueprint list in the game once, then try again.",
+    [UI_MENU_BLUEPRINT_DONE] = "Imported: the blueprint is the first card of the Autobuild history now. The game saves "
+                               "it with the rest of your progress.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "The blueprint file could not be read.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "The file is not a blueprint this port can import; the log says why.",
-    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "The save data does not hold that slot.",
+    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "The save data does not hold the slot the history points at.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_ROOM] = "The save data could not be found in the game's memory; nothing was written.",
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "The import failed.",
-    [UI_MENU_BLUEPRINT_SEARCHING] = "Looking for the favourite slots in the save data...",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Writing the blueprint into the save data...",
-    [UI_MENU_BLUEPRINT_RETRY] = "Look for the favourite slots",
-    [UI_MENU_BLUEPRINT_RETRY_DESC] = "Searches the game's memory for the 30 favourite slots. This can take a moment.",
-    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "The background thread could not be started, so the slots cannot be read.",
+    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "The background thread could not be started, so the history cannot be read.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1021,8 +1019,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
     [UI_MENU_TAB_BLUEPRINT] = "Чертежи",
-    [UI_MENU_BLUEPRINT_GROUP] = "Файл чертежа",
-    [UI_MENU_BLUEPRINT_INTRO] = "Выберите файл чертежа .cai на этом ПК, затем импортируйте его в один из 30 избранных "
+    [UI_MENU_BLUEPRINT_INTRO] = "Выберите файл чертежа .cai на этом ПК и импортируйте его. Творение станет самым новым чертежом в истории «Автобилда» вашего сохранения, поэтому предпросмотр и расход энергии Зонаи считает сама игра.",
+    [UI_MENU_BLUEPRINT_FILE] = "Файл чертежа",
                                 "слотов «Автобилда». Игра хранит его в сохранении, поэтому собственный предпросмотр и "
                                 "расход зонаев работают как обычно.",
     [UI_MENU_BLUEPRINT_PICK] = "Выбрать файл чертежа",
@@ -1036,28 +1034,23 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_ERR_VERSION] = "Версия чертежа не 2.",
     [UI_MENU_BLUEPRINT_ERR_COUNT] = "Число акторов в заголовке не от 1 до 21 или две его копии не совпадают.",
     [UI_MENU_BLUEPRINT_ERR_ACTOR] = "У актора нет допустимого имени или его преобразование не является числом.",
-    [UI_MENU_BLUEPRINT_SLOTS] = "Избранные слоты «Автобилда»",
-    [UI_MENU_BLUEPRINT_SLOTS_HINT] = "Номер слота и число деталей того, что в нём; пустой слот показан как -.",
     [UI_MENU_BLUEPRINT_NO_SAVE] = "Данные сохранения ещё не загружены. Загрузите сохранение, затем импортируйте.",
-    [UI_MENU_BLUEPRINT_SLOT_INFO] = "В слоте %d творение из %d деталей.",
-    [UI_MENU_BLUEPRINT_SLOT_EMPTY] = "Слот %d пуст.",
-    [UI_MENU_BLUEPRINT_REPLACE] = "Импорт заменит творение в этом слоте.",
-    [UI_MENU_BLUEPRINT_IMPORT] = "Импортировать в слот %d",
-    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Записывает выбранный чертёж в этот избранный слот сохранения. Игра сохранит его "
+    [UI_MENU_BLUEPRINT_NO_ORDER] = "Порядок, в котором список «Автобилда» рисует чертежи, ещё не в памяти. Откройте в игре список чертежей «Автобилда» один раз и попробуйте снова.",
+    [UI_MENU_BLUEPRINT_IMPORT] = "Импортировать",
+    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Добавляет выбранный чертёж в историю «Автобилда» данных сохранения как самый новый чертёж. Список сохраняет 30 записей: новое творение занимает место самого старого, которое игра тоже отбрасывает для творения, построенного вами. Игра сохранит его вместе с остальным прогрессом.",
                                       "вместе с остальным прогрессом.",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "Сначала выберите подходящий чертёж .cai.",
-    [UI_MENU_BLUEPRINT_DONE] = "Чертёж теперь в слоте %d: откройте в игре список чертежей «Автобилда», и его можно "
+    [UI_MENU_BLUEPRINT_HISTORY] = "В истории %d чертежей; у самого нового %d деталей.",
+    [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "В истории %d чертежей.",
+    [UI_MENU_BLUEPRINT_DONE] = "Импортировано: чертёж теперь самый новый в истории «Автобилда», в начале списка. Игра сохранит его вместе с остальным прогрессом.",
                                "строить. Игра сохранит его вместе с остальным прогрессом.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "Не удалось прочитать файл чертежа.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "Этот файл не чертёж, который порт может импортировать; причина в журнале.",
-    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "В данных сохранения нет такого слота.",
+    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "В данных сохранения нет слота, на который указывает история.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_ROOM] = "Не удалось найти данные сохранения в памяти игры; ничего не записано.",
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "Импорт не удался.",
-    [UI_MENU_BLUEPRINT_SEARCHING] = "Идёт поиск избранных слотов в данных сохранения...",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Запись чертежа в данные сохранения...",
-    [UI_MENU_BLUEPRINT_RETRY] = "Найти избранные слоты",
-    [UI_MENU_BLUEPRINT_RETRY_DESC] = "Ищет 30 избранных слотов в памяти игры. Это может занять некоторое время.",
-    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Не удалось запустить фоновый поток, поэтому слоты прочитать нельзя.",
+    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Не удалось запустить фоновый поток, поэтому историю прочитать нельзя.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1568,8 +1561,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
     [UI_MENU_TAB_BLUEPRINT] = "Projetos",
-    [UI_MENU_BLUEPRINT_GROUP] = "Arquivo de projeto",
-    [UI_MENU_BLUEPRINT_INTRO] = "Escolha um arquivo de projeto .cai deste PC e importe-o para um dos 30 slots favoritos "
+    [UI_MENU_BLUEPRINT_INTRO] = "Escolha um arquivo de projeto .cai deste PC e importe-o. A criação entra no histórico do Construauto do seu salvamento como o projeto mais recente, então a prévia e o custo de energia Zonai são os do próprio jogo.",
+    [UI_MENU_BLUEPRINT_FILE] = "Arquivo de projeto",
                                 "do Construauto. O jogo o guarda nos dados de salvamento, então a prévia e o custo de "
                                 "zonaí nativos funcionam como sempre.",
     [UI_MENU_BLUEPRINT_PICK] = "Escolher um arquivo de projeto",
@@ -1583,30 +1576,25 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_ERR_VERSION] = "A versão do projeto não é 2.",
     [UI_MENU_BLUEPRINT_ERR_COUNT] = "O número de atores no cabeçalho não é de 1 a 21, ou suas duas cópias não conferem.",
     [UI_MENU_BLUEPRINT_ERR_ACTOR] = "Um ator não tem nome válido, ou uma transformação não é um número.",
-    [UI_MENU_BLUEPRINT_SLOTS] = "Slots favoritos do Construauto",
-    [UI_MENU_BLUEPRINT_SLOTS_HINT] = "O número do slot e a contagem de peças do que ele guarda; um slot vazio mostra -.",
     [UI_MENU_BLUEPRINT_NO_SAVE] = "Os dados de salvamento ainda não foram carregados. Carregue um jogo e importe.",
-    [UI_MENU_BLUEPRINT_SLOT_INFO] = "O slot %d guarda uma criação de %d peças.",
-    [UI_MENU_BLUEPRINT_SLOT_EMPTY] = "O slot %d está vazio.",
-    [UI_MENU_BLUEPRINT_REPLACE] = "A importação substitui a criação que este slot guarda.",
-    [UI_MENU_BLUEPRINT_IMPORT] = "Importar para o slot %d",
-    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Grava o projeto escolhido neste slot favorito dos dados de salvamento. O jogo o "
+    [UI_MENU_BLUEPRINT_NO_ORDER] = "A ordem em que a lista do Construauto desenha os projetos ainda não está na memória. Abra a lista de projetos do Construauto no jogo uma vez e tente de novo.",
+    [UI_MENU_BLUEPRINT_IMPORT] = "Importar",
+    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "Adiciona o projeto escolhido ao histórico do Construauto dos dados de salvamento como o projeto mais recente. A lista mantém as 30 entradas: a criação nova ocupa o lugar da mais antiga, que o jogo também descarta para uma criação que você constrói. O jogo a salva junto com o resto do seu progresso.",
                                       "salva junto com o resto do seu progresso.",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "Escolha primeiro um projeto .cai válido.",
-    [UI_MENU_BLUEPRINT_DONE] = "O projeto está no slot %d agora: abra a lista de projetos do Construauto no jogo e ele "
+    [UI_MENU_BLUEPRINT_HISTORY] = "O histórico tem %d projetos; o mais recente tem %d peças.",
+    [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "O histórico tem %d projetos.",
+    [UI_MENU_BLUEPRINT_DONE] = "Importado: o projeto agora é o mais recente do histórico do Construauto, no topo da lista. O jogo o salva junto com o resto do seu progresso.",
                                "está lá para construir. O jogo o salva junto com o resto do seu progresso.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "Não foi possível ler o arquivo do projeto.",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "O arquivo não é um projeto que este port possa importar; o log explica por "
                                           "quê.",
-    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "Os dados de salvamento não têm esse slot.",
+    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "Os dados de salvamento não têm o slot para o qual o histórico aponta.",
     [UI_MENU_BLUEPRINT_IMPORT_NO_ROOM] = "Não foi possível encontrar os dados de salvamento na memória do jogo; nada foi "
                                          "gravado.",
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "A importação falhou.",
-    [UI_MENU_BLUEPRINT_SEARCHING] = "Procurando os slots favoritos nos dados de salvamento...",
     [UI_MENU_BLUEPRINT_IMPORTING] = "Gravando o projeto nos dados de salvamento...",
-    [UI_MENU_BLUEPRINT_RETRY] = "Procurar os slots favoritos",
-    [UI_MENU_BLUEPRINT_RETRY_DESC] = "Procura os 30 slots favoritos na memória do jogo. Isso pode levar um momento.",
-    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Não foi possível iniciar a thread em segundo plano, então os slots não podem "
+    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "Não foi possível iniciar a thread em segundo plano, então o histórico não pode ser lido.",
                                         "ser lidos.",
 };
 
@@ -2202,8 +2190,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
     [UI_MENU_TAB_BLUEPRINT] = "蓝图",
-    [UI_MENU_BLUEPRINT_GROUP] = "蓝图文件",
-    [UI_MENU_BLUEPRINT_INTRO] = "从本机选择一个 .cai 蓝图文件，再把它导入 30 个自动建造收藏槽位之一。游戏把它存进存档，所以预览、旋转和左纳乌能量消耗都照常由游戏处理。",
+    [UI_MENU_BLUEPRINT_INTRO] = "从本机选择一个 .cai 蓝图文件并导入。该作品会成为存档自动建造历史记录中最新的蓝图，预览和左纳乌能量消耗都照常由游戏处理。",
+    [UI_MENU_BLUEPRINT_FILE] = "蓝图文件",
     [UI_MENU_BLUEPRINT_PICK] = "选择蓝图文件",
     [UI_MENU_BLUEPRINT_PICK_DESC] = "显示本机上的蓝图文件：.cai、.totkab 和 .txt。",
     [UI_MENU_BLUEPRINT_NONE] = "无",
@@ -2215,26 +2203,21 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_ERR_VERSION] = "蓝图版本不是 2。",
     [UI_MENU_BLUEPRINT_ERR_COUNT] = "文件头中的构件数量不在 1 到 21 之间，或两个数量字节不一致。",
     [UI_MENU_BLUEPRINT_ERR_ACTOR] = "某个构件没有有效名称，或它的变换不是数字。",
-    [UI_MENU_BLUEPRINT_SLOTS] = "自动建造收藏槽位",
-    [UI_MENU_BLUEPRINT_SLOTS_HINT] = "槽位编号及其所存作品的构件数；空槽位显示为 -。",
     [UI_MENU_BLUEPRINT_NO_SAVE] = "存档数据尚未载入。请先载入存档，再导入。",
-    [UI_MENU_BLUEPRINT_SLOT_INFO] = "槽位 %d 存有一件 %d 个构件的作品。",
-    [UI_MENU_BLUEPRINT_SLOT_EMPTY] = "槽位 %d 为空。",
-    [UI_MENU_BLUEPRINT_REPLACE] = "导入将替换该槽位现有的作品。",
-    [UI_MENU_BLUEPRINT_IMPORT] = "导入到槽位 %d",
-    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "把所选蓝图写入存档中的这个收藏槽位，游戏会把它和其他进度一起保存。",
+    [UI_MENU_BLUEPRINT_NO_ORDER] = "自动建造列表绘制蓝图所用的顺序尚未载入内存。在游戏中打开一次自动建造蓝图列表，然后重试。",
+    [UI_MENU_BLUEPRINT_IMPORT] = "导入",
+    [UI_MENU_BLUEPRINT_IMPORT_DESC] = "把所选蓝图作为最新的蓝图加入存档的自动建造历史记录。列表仍保留 30 条：新作品占据最旧那条的位置——你自己建造作品时游戏也是这样处理的。游戏会把它和其他进度一起保存。",
     [UI_MENU_BLUEPRINT_NEED_FILE] = "请先选择一个有效的 .cai 蓝图。",
-    [UI_MENU_BLUEPRINT_DONE] = "蓝图已存入槽位 %d：在游戏内打开自动建造的蓝图列表即可使用，游戏会把它和其他进度一起保存。",
+    [UI_MENU_BLUEPRINT_HISTORY] = "历史记录共有 %d 个蓝图，最新的一个有 %d 个构件。",
+    [UI_MENU_BLUEPRINT_HISTORY_EMPTY] = "历史记录共有 %d 个蓝图。",
+    [UI_MENU_BLUEPRINT_DONE] = "已导入：该蓝图现在是自动建造历史记录中最新的一个，位于列表顶端。游戏会把它和其他进度一起保存。",
     [UI_MENU_BLUEPRINT_IMPORT_NO_FILE] = "无法读取蓝图文件。",
     [UI_MENU_BLUEPRINT_IMPORT_BAD_FILE] = "该文件不是本移植版可导入的蓝图，原因见日志。",
-    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "存档数据中没有这个槽位。",
+    [UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT] = "存档数据中没有历史记录所指向的槽位。",
     [UI_MENU_BLUEPRINT_IMPORT_NO_ROOM] = "未能在游戏内存中找到存档数据，没有写入任何内容。",
     [UI_MENU_BLUEPRINT_IMPORT_FAILED] = "导入失败。",
-    [UI_MENU_BLUEPRINT_SEARCHING] = "正在存档数据中查找收藏槽位...",
     [UI_MENU_BLUEPRINT_IMPORTING] = "正在把蓝图写入存档数据...",
-    [UI_MENU_BLUEPRINT_RETRY] = "查找收藏槽位",
-    [UI_MENU_BLUEPRINT_RETRY_DESC] = "在游戏内存中查找 30 个收藏槽位，可能需要一点时间。",
-    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "无法启动后台线程，因此无法读取收藏槽位。",
+    [UI_MENU_BLUEPRINT_WORKER_FAILED] = "无法启动后台线程，因此无法读取历史记录。",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

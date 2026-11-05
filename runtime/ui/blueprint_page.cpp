@@ -1,15 +1,19 @@
 // The Blueprints tab (ui/menu.cpp): choose a .cai blueprint file on this PC (folder_pick.h file_pick), check it with
-// blueprint_cai.h and write it into one of the game's 30 Autobuild favourite slots (blueprint_import.h). The game keeps
-// the favourites in its save data, so the native preview, rotation and Zonai energy costs work unchanged.
+// blueprint_cai.h, and add it to the game's Autobuild history with blueprint_import.h. The game keeps the history in
+// its save data, so the native preview, rotation and Zonai energy costs work unchanged, and the imported creation
+// appears as the newest draft of the list the Autobuild page draws.
+//
+// The page is one row: choose a file, then import it. There is no slot to pick: a new creation in the game always takes
+// the place of the oldest draft, and importing does the same, so the player never has to know which save-data slot
+// holds what.
 //
 // The dialog runs on the folder_pick thread, so the callback only stores the path and a counter (ui/amiibo_page.cpp does
 // the same); the page reads and checks the file when it draws. The file buffer stays for as long as the page shows that
 // file, because BpcBlueprint's name pointers borrow from it.
 //
-// bp_favorites and bp_import find the favourites list by walking the game's memory, which takes seconds on the first
-// call. The menu draws on the present path, so those calls run on a worker thread of their own (as the file dialog does)
-// and the page only collects their results: opening the tab never blocks the game, and the slot area says what the
-// worker is doing.
+// bp_favorites and bp_import_newest find the save data by walking the game's memory, which takes up to a second on the
+// first call. The menu draws on the present path, so those calls run on a worker thread of their own (as the file dialog
+// does) and the page only collects their results: the tab never blocks the game.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,7 +36,6 @@ enum {
     // The largest community file: the 6688-byte blob and the 24 bytes some downloads append. A file cannot be a
     // blueprint with less, and more cannot matter, so only these bytes are read.
     BLUEPRINT_READ_BYTES = 6712,
-    BLUEPRINT_SLOT_COLUMNS = 6,       // favourite slot buttons per row
 };
 
 // What the worker thread is doing (queued by the page, cleared when it is done).
@@ -63,26 +66,20 @@ static PlatCond g_worker_cond = PLAT_COND_INIT;
 static int g_task;          // BLUEPRINT_TASK_*: the page's request; cleared by the worker when done
 static bool g_task_taken;   // the worker has started g_task: a request queued now waits for it to finish
 static char g_task_path[PLAT_PATH_MAX];
-static int g_task_slot;
 static bool g_lookup_done;
 static bool g_lookup_found;
 static BpFavorites g_lookup_fav;
 static bool g_import_done;
 static int g_import_result;
-static int g_import_slot;
 
-// ---- the page's own view of the slots (draw thread only), filled from the worker's results
+// ---- the page's own view (draw thread only), filled from the worker's results
 static int g_worker_state = BLUEPRINT_WORKER_NONE;
 static BpFavorites g_fav;
 static bool g_fav_ok;
-static bool g_lookup_tried;   // a lookup has been queued at least once
-static bool g_lookup_pending;
 static bool g_import_pending;
 static uint64_t g_last_frame = ~0ull;   // the frame the page last drew: one lookup attempt per tab entry
-static int g_slot = -1;
 static bool g_result_shown;
 static int g_result;
-static int g_result_slot;
 
 static void on_file(const char *path, void *ctx) {
     (void)ctx;
@@ -152,35 +149,8 @@ static const char *parse_message(void) {
     return menu_text(UI_MENU_BLUEPRINT_ERR_ACTOR);
 }
 
-// The 30 favourite slots as a grid of buttons, six per row, each with its number and the part count of what it holds ("-"
-// when empty). A press only chooses the slot; the import row below writes into it. The buttons are ordinary ImGui items,
-// so the D-pad and the left stick move between them as they do between the rows of the other tabs.
-static void draw_slots(void) {
-    const ImGuiStyle &st = ImGui::GetStyle();
-    const int slots = g_fav.slots < BP_SLOTS ? g_fav.slots : BP_SLOTS;
-    const float width = (ImGui::GetContentRegionAvail().x - st.ItemSpacing.x * (BLUEPRINT_SLOT_COLUMNS - 1)) /
-                        BLUEPRINT_SLOT_COLUMNS;
-    for (int i = 0; i < slots; i++) {
-        if (i % BLUEPRINT_SLOT_COLUMNS) ImGui::SameLine();
-        char label[32];
-        if (g_fav.actors[i] > 0) snprintf(label, sizeof label, "%02d  %d", i + 1, g_fav.actors[i]);
-        else snprintf(label, sizeof label, "%02d  -", i + 1);
-        const bool selected = i == g_slot;
-        if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.21f, 0.44f, 0.31f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.56f, 0.39f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.33f, 0.64f, 0.45f, 1.0f));
-        }
-        if (ImGui::Button(label, ImVec2(width, 0))) {
-            g_slot = i;
-            opt_focus_key("##blueprint_import");   // A on a slot chooses it and puts the cursor on the import row
-        }
-        if (selected) ImGui::PopStyleColor(3);
-    }
-}
-
-// The thread that runs the slow calls: bp_favorites and bp_import walk the guest memory, and the menu must not wait for
-// them. It runs until the process ends, one task at a time; the page collects each result when it draws.
+// The thread that runs the slow calls: bp_favorites and bp_import_newest walk the guest memory, and the menu must not
+// wait for them. It runs until the process ends, one task at a time; the page collects each result when it draws.
 static void blueprint_worker(void *arg) {
     (void)arg;
     for (;;) {
@@ -190,7 +160,6 @@ static void blueprint_worker(void *arg) {
         const int task = g_task;
         char path[PLAT_PATH_MAX];
         snprintf(path, sizeof path, "%s", g_task_path);
-        const int slot = g_task_slot;
         plat_mutex_unlock(&g_worker_lock);
         if (task == BLUEPRINT_TASK_LOOKUP) {
             BpFavorites fav;
@@ -204,10 +173,9 @@ static void blueprint_worker(void *arg) {
             g_task_taken = false;
             plat_mutex_unlock(&g_worker_lock);
         } else {
-            const int result = bp_import(path, slot);
+            const int result = bp_import_newest(path);
             plat_mutex_lock(&g_worker_lock);
             g_import_result = result;
-            g_import_slot = slot;
             g_import_done = true;
             g_task = BLUEPRINT_TASK_IDLE;
             g_task_taken = false;
@@ -226,34 +194,30 @@ static bool worker_start(void) {
 }
 
 // Queues a lookup. One request waits at a time, and a new one replaces a request the worker has not started yet; a
-// request the worker is running is left to finish (the UI disables its buttons while one is in flight). Draw thread only.
+// request the worker is running is left to finish. Draw thread only.
 static void queue_lookup(void) {
     if (!worker_start()) return;
     plat_mutex_lock(&g_worker_lock);
     if (!g_lookup_done && !g_import_done && (g_task == BLUEPRINT_TASK_IDLE || !g_task_taken)) {
         g_task = BLUEPRINT_TASK_LOOKUP;
-        g_lookup_pending = true;
         g_import_pending = false;   // a request that has not started yet is replaced by this one
-        g_lookup_tried = true;
         plat_cond_signal(&g_worker_cond);
-        rt_log("blueprint: looking for the favourite slots (worker thread)");
+        rt_log("blueprint: looking for the Autobuild history (worker thread)");
     }
     plat_mutex_unlock(&g_worker_lock);
 }
 
-// Queues writing path into slot; the worker reads the file again and writes the game's save data in memory. Draw thread
-// only. A later lookup reads the list again, so the slots show what the write left.
-static void queue_import(const char *path, int slot) {
+// Queues writing path in as the newest draft; the worker reads the file again and writes the game's save data in
+// memory. Draw thread only. A later lookup reads the list again, so the page can say what the import changed.
+static void queue_import(const char *path) {
     if (!worker_start()) return;
     plat_mutex_lock(&g_worker_lock);
     if (!g_lookup_done && !g_import_done && (g_task == BLUEPRINT_TASK_IDLE || !g_task_taken)) {
         g_task = BLUEPRINT_TASK_IMPORT;
         snprintf(g_task_path, sizeof g_task_path, "%s", path);
-        g_task_slot = slot;
         g_import_pending = true;
-        g_lookup_pending = false;
         plat_cond_signal(&g_worker_cond);
-        rt_log("blueprint: importing %s into slot %d (worker thread)", path, slot + 1);
+        rt_log("blueprint: importing %s (worker thread)", path);
     }
     plat_mutex_unlock(&g_worker_lock);
 }
@@ -262,33 +226,27 @@ static void queue_import(const char *path, int slot) {
 static void collect_worker_results(void) {
     bool lookup_done, lookup_found, import_done;
     BpFavorites fav;
-    int import_result, import_slot;
+    int import_result;
     plat_mutex_lock(&g_worker_lock);
     lookup_done = g_lookup_done;
     lookup_found = g_lookup_found;
     fav = g_lookup_fav;
     import_done = g_import_done;
     import_result = g_import_result;
-    import_slot = g_import_slot;
     g_lookup_done = false;
     g_import_done = false;
     plat_mutex_unlock(&g_worker_lock);
     if (lookup_done) {
-        g_lookup_pending = false;
         g_fav_ok = lookup_found;
-        if (lookup_found) {
-            g_fav = fav;
-            if (g_slot >= g_fav.slots) g_slot = -1;
-        }
+        if (lookup_found) g_fav = fav;
     }
     if (import_done) {
         g_import_pending = false;
         g_result = import_result;
-        g_result_slot = import_slot;
         g_result_shown = true;
-        rt_log("blueprint: import into slot %d: %s", import_slot + 1, bp_import_text(import_result));
-        // Read the list again: bp_import writes both copies of the slot, and the search address is cached by now, so
-        // this is the honest way to show what the slots hold after the write.
+        rt_log("blueprint: import: %s", bp_import_text(import_result));
+        // Read the history again: bp_import_newest writes both copies of the draft, and the search address is cached by
+        // now, so this is the honest way to show what the list holds after the write.
         if (import_result == BP_IMPORT_OK) queue_lookup();
     }
 }
@@ -307,8 +265,8 @@ void tab_blueprint(float scale) {
         g_result_shown = false;   // the last import named the file before this one
     }
     collect_worker_results();
-    // One lookup attempt per tab entry: the slot grid fills in by itself, and a page left while the save was still
-    // loading tries again when the player comes back. The worker keeps the present thread free either way.
+    // One lookup attempt per tab entry: the page can say what the history holds, and a page left while the save was
+    // still loading tries again when the player comes back. The worker keeps the present thread free either way.
     const uint64_t frame = ImGui::GetFrameCount();
     const bool reentered = frame > g_last_frame + 1;   // another tab was drawn last frame
     g_last_frame = frame;
@@ -316,17 +274,12 @@ void tab_blueprint(float scale) {
 
     const bool have_file = path[0] != 0;
     const bool file_ok = g_read_ok && g_parse == BPC_OK;
-    const bool have_slot = g_fav_ok && g_slot >= 0 && g_slot < g_fav.slots;
-    // The import finds the save data itself (bp_import does its own lookup), so the page's slot list is only a chooser:
-    // with no list (the lookup failed or is still running) the first slot is the target and the result text says what
-    // happened. A failed lookup must never block the import.
-    const int import_slot = have_slot ? g_slot : 0;
     const bool worker_failed = g_worker_state == BLUEPRINT_WORKER_FAILED;
 
     opt_begin("##blueprint", scale);
     opt_text(UI_MENU_BLUEPRINT_INTRO);
 
-    opt_group(UI_MENU_BLUEPRINT_GROUP);
+    opt_group(UI_MENU_BLUEPRINT_FILE);
     static const char *const patterns[] = {"*.cai", "*.totkab", "*.txt"};
     if (opt_button("##blueprint_pick", UI_MENU_BLUEPRINT_PICK, UI_MENU_BLUEPRINT_PICK_DESC,
                    have_file ? base_name(path) : menu_text(UI_MENU_BLUEPRINT_NONE)) &&
@@ -348,66 +301,44 @@ void tab_blueprint(float scale) {
         }
     }
 
-    // ---- the favourite slots and the import into one of them
-    opt_group(UI_MENU_BLUEPRINT_SLOTS);
-    if (g_fav_ok) {
-        if (g_lookup_pending) opt_text(UI_MENU_BLUEPRINT_SEARCHING);
-        else opt_text(UI_MENU_BLUEPRINT_SLOTS_HINT);
-        if (g_import_pending) ImGui::BeginDisabled();   // the chosen slot must not move under the write
-        draw_slots();
-        if (g_import_pending) ImGui::EndDisabled();
-        // What the chosen slot holds now: the import replaces it, and the player should see that before pressing.
-        if (have_slot) {
-            char text[192];
-            const int parts = g_fav.actors[g_slot];
-            if (parts > 0) {
-                snprintf(text, sizeof text, menu_text(UI_MENU_BLUEPRINT_SLOT_INFO), g_slot + 1, parts);
-                ImGui::TextWrapped("%s", text);
-                opt_text(UI_MENU_BLUEPRINT_REPLACE, true);
-            } else {
-                snprintf(text, sizeof text, menu_text(UI_MENU_BLUEPRINT_SLOT_EMPTY), g_slot + 1);
-                ImGui::TextWrapped("%s", text);
-            }
-        }
-    } else if (g_lookup_pending) {
-        opt_text(UI_MENU_BLUEPRINT_SEARCHING);
-    } else if (worker_failed) {
-        opt_text(UI_MENU_BLUEPRINT_WORKER_FAILED, true);
-    } else {
-        if (g_lookup_tried) opt_text(UI_MENU_BLUEPRINT_NO_SAVE, true);
-        if (opt_button("##blueprint_retry", UI_MENU_BLUEPRINT_RETRY, UI_MENU_BLUEPRINT_RETRY_DESC)) queue_lookup();
-    }
-
-    char label[96];
-    snprintf(label, sizeof label, menu_text(UI_MENU_BLUEPRINT_IMPORT), import_slot + 1);
+    // ---- the one action: add the chosen file to the history
+    opt_group(UI_MENU_BLUEPRINT_IMPORT);
     if (worker_failed) opt_disable_next(UI_MENU_BLUEPRINT_WORKER_FAILED);
     else if (!file_ok) opt_disable_next(UI_MENU_BLUEPRINT_NEED_FILE);
     else if (g_import_pending) opt_disable_next(UI_MENU_BLUEPRINT_IMPORTING);
-    if (opt_text_row("##blueprint_import", label, "", nullptr, menu_text(UI_MENU_BLUEPRINT_IMPORT_DESC), false) == 2 &&
+    const char *value = g_import_pending ? menu_text(UI_MENU_BLUEPRINT_IMPORTING) : "";
+    if (opt_text_row("##blueprint_import", menu_text(UI_MENU_BLUEPRINT_IMPORT), value, nullptr,
+                     menu_text(UI_MENU_BLUEPRINT_IMPORT_DESC), false) == 2 &&
         !g_import_pending && file_ok)
-        queue_import(g_loaded_path, import_slot);
+        queue_import(g_loaded_path);
 
-    if (g_import_pending) {
-        opt_text(UI_MENU_BLUEPRINT_IMPORTING);
-    } else if (g_result_shown) {
+    // What the history holds now: top is the entry the page draws first, which an import replaces.
+    if (g_fav_ok && g_fav.slots > 0) {
+        char text[256];
+        const int top = g_fav.top >= 0 && g_fav.top < g_fav.slots ? g_fav.top : 0;
+        if (g_fav.actors[top] > 0)
+            snprintf(text, sizeof text, menu_text(UI_MENU_BLUEPRINT_HISTORY), g_fav.slots, g_fav.actors[top]);
+        else snprintf(text, sizeof text, menu_text(UI_MENU_BLUEPRINT_HISTORY_EMPTY), g_fav.slots);
+        ImGui::TextWrapped("%s", text);
+    }
+
+    if (g_result_shown) {
         const char *fmt = menu_text(UI_MENU_BLUEPRINT_IMPORT_FAILED);
         switch (g_result) {
         case BP_IMPORT_OK: fmt = menu_text(UI_MENU_BLUEPRINT_DONE); break;
         case BP_IMPORT_NO_FILE: fmt = menu_text(UI_MENU_BLUEPRINT_IMPORT_NO_FILE); break;
         case BP_IMPORT_BAD_FILE: fmt = menu_text(UI_MENU_BLUEPRINT_IMPORT_BAD_FILE); break;
         case BP_IMPORT_NO_SAVE: fmt = menu_text(UI_MENU_BLUEPRINT_NO_SAVE); break;
+        case BP_IMPORT_NO_ORDER: fmt = menu_text(UI_MENU_BLUEPRINT_NO_ORDER); break;
         case BP_IMPORT_BAD_SLOT: fmt = menu_text(UI_MENU_BLUEPRINT_IMPORT_BAD_SLOT); break;
         case BP_IMPORT_NO_ROOM: fmt = menu_text(UI_MENU_BLUEPRINT_IMPORT_NO_ROOM); break;
         default: break;
         }
-        char text[512];
-        if (g_result == BP_IMPORT_OK) snprintf(text, sizeof text, fmt, g_result_slot + 1);
-        else snprintf(text, sizeof text, "%s", fmt);
         const bool ok = g_result == BP_IMPORT_OK;
         ImGui::PushStyleColor(ImGuiCol_Text,
                               ok ? ImVec4(0.55f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.66f, 0.40f, 1.0f));
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(text);
+        ImGui::TextUnformatted(fmt);
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
     }
