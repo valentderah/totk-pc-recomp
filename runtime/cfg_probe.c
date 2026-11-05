@@ -238,6 +238,10 @@ int probe_cfg(void) {
     CHECK(input_map_buttons(dn) == (1ull << B_ZR | 1ull << B_PLUS | 1ull << B_MINUS | 1ull << B_STICK_L | 1ull << B_RIGHT),
           "keys: X ZR, Tab Plus, M Minus, Left Ctrl stick click, 3 D-pad right");
     memset(dn, 0, sizeof dn);
+    dn[KEY_G] = 1;
+    CHECK(input_map_buttons(dn) == 0 && input_map_held(dn, B_SHAKE) && !input_map_held(dn, B_A),
+          "keys: G shakes and presses no button");
+    memset(dn, 0, sizeof dn);
     dn[KEY_W] = 1;
     input_map_stick(dn, 0, st);
     CHECK(st[0] == 0 && st[1] == 32767, "keys: W is left stick up");
@@ -305,6 +309,11 @@ int probe_cfg(void) {
     CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
               input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
           "prompts: the game's own unless set to Xbox");
+    CHECK(input_prompts_pick("PC", "nintendo") == PROMPTS_PC && input_prompts_pick("pc", "xbox_prompts") == PROMPTS_PC &&
+              EQ(input_prompts_folder(PROMPTS_PC, "nintendo"), "romfs-patches-pc") &&
+              EQ(input_prompts_folder(PROMPTS_PC, "xbox"), "romfs-patches-pc") &&
+              EQ(input_prompts_folder(PROMPTS_PC, NULL), "romfs-patches-pc"),
+          "prompts: pc shows the keyboard and mouse whatever the pad layout");
     CHECK(input_prompts_pick(NULL, "xbox_prompts") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox_prompts") == PROMPTS_NINTENDO,
           "prompts: 0.1.9's pad_layout = xbox_prompts means Xbox while prompts is unset");
     CHECK(!input_prompts_folder(PROMPTS_NINTENDO, "nintendo") && !input_prompts_folder(PROMPTS_NINTENDO, "xbox"),

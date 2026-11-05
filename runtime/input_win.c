@@ -83,6 +83,7 @@ uint32_t input_key_char(int key) {
 
 // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
+static volatile LONG mouse_travel;          // raw counts moved in total, captured or not (ikb_mouse_travel)
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
@@ -137,10 +138,14 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     case WM_INPUT: {
         RAWINPUT ri;
         UINT sz = sizeof ri;
-        if (cur_captured && GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+        if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
             ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            InterlockedAdd(&mouse_dx, ri.data.mouse.lLastX);
-            InterlockedAdd(&mouse_dy, ri.data.mouse.lLastY);
+            LONG x = ri.data.mouse.lLastX, y = ri.data.mouse.lLastY;
+            InterlockedAdd(&mouse_travel, (x < 0 ? -x : x) + (y < 0 ? -y : y));
+            if (cur_captured) {
+                InterlockedAdd(&mouse_dx, x);
+                InterlockedAdd(&mouse_dy, y);
+            }
         }
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
@@ -202,6 +207,27 @@ int ikb_down(int key) {
 int ikb_escape(void) { return key_down(VK_ESCAPE); }
 
 int ikb_captured(void) { return cur_captured != 0; }
+
+int ikb_pointer(float *nx, float *ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    POINT p;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r) || r.right < 1 || r.bottom < 1 || !GetCursorPos(&p) ||
+        !ScreenToClient(h, &p))
+        return 0;
+    *nx = (float)p.x / (float)r.right, *ny = (float)p.y / (float)r.bottom;
+    return p.x >= 0 && p.y >= 0 && p.x < r.right && p.y < r.bottom;
+}
+
+void ikb_pointer_set(float nx, float ny) {
+    HWND h = gfx_window_handle();
+    RECT r;
+    if (!h || GetForegroundWindow() != h || !GetClientRect(h, &r)) return;
+    POINT p = {(LONG)(nx * r.right), (LONG)(ny * r.bottom)};
+    if (ClientToScreen(h, &p)) SetCursorPos(p.x, p.y);
+}
+
+uint32_t ikb_mouse_travel(void) { return (uint32_t)mouse_travel; }
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);

@@ -253,10 +253,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Which controller's buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, "
                              "RB, LT, RT, Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button "
                              "the layout above presses (with Nintendo (A right) the right button is labelled B, so the "
-                             "prompts for A show B). The game reads its prompts at start, so they change after a "
-                             "restart. They are part of the game's files, so a button you remap in Controls keeps its "
-                             "old prompt on screen.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+                             "prompts for A show B). PC: the keys and mouse buttons of the keyboard's default layout "
+                             "(E, Shift, Space, left click...) and the mouse for the camera. The game reads its prompts "
+                             "at start, so they change after a restart. They are part of the game's files, so a button "
+                             "you remap in Controls keeps its old prompt on screen.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
@@ -273,6 +274,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_LSTICK_DEADZONE] = "Left stick dead zone", [UI_MENU_RSTICK_DEADZONE] = "Right stick dead zone",
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own: let go of the stick, read \"stick now\" and set the dead zone a few percent above it.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
+    [UI_MENU_MOUSE_MODE] = "Mouse camera",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direct: the camera turns by how far the mouse moves, as in a PC game, with no stick dead zone or curve (game 1.4.3; other versions use stick emulation). Stick emulation: the mouse acts as the right stick.",
+    [UI_MENU_MOUSE_STICK] = "Stick emulation",
+    [UI_MENU_MOUSE_DIRECT] = "Direct",
+    [UI_MENU_MENU_CURSOR] = "Mouse in the game's menus",
+    [UI_MENU_MENU_CURSOR_DESC] = "In the game's own menus (title, inventory, shops, dialogue choices) the pointer shows: the item under it is selected, left click confirms, right click goes back. Only after the mouse or a key was used last, so a gamepad sees the menus unchanged (game 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
     [UI_MENU_WALK_KEY] = "Walk key",
@@ -314,6 +321,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_MOVE] = "Moves Link like the left stick. The controller's left stick always works too.",
     [UI_BIND_DESC_CAMERA] = "Turns the camera like the right stick. The mouse and the controller's right stick always "
                             "work too.",
+    [UI_BIND_SHAKE] = "Shake the camera stick",
+    [UI_BIND_DESC_SHAKE] = "Swings the right stick left and right for the game: detaches a fused part from what "
+                           "Ultrahand holds. Holding the key keeps shaking.",
     [UI_KEY_SPACE] = "Space", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Left Shift", [UI_KEY_LCTRL] = "Left Ctrl",
     [UI_KEY_UP] = "Up arrow", [UI_KEY_DOWN] = "Down arrow", [UI_KEY_LEFT] = "Left arrow",
     [UI_KEY_RIGHT] = "Right arrow",
@@ -716,10 +726,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Кнопки какого контроллера показывают подсказки игры. Nintendo: как в самой игре. Xbox: "
                              "LB, RB, LT, RT, Menu, View и крестовина, а A, B, X и Y подписаны так же, как кнопка, "
                              "которую нажимает раскладка выше (в Nintendo (A справа) правая кнопка подписана B, и "
-                             "подсказки A показывают B). Игра читает подсказки при запуске, так что они меняются после "
-                             "перезапуска. Подсказки записаны в файлах игры, поэтому у кнопки, переназначенной на "
-                             "вкладке управления, на экране остаётся прежняя подсказка.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+                             "подсказки A показывают B). PC: клавиши и кнопки мыши стандартной раскладки клавиатуры "
+                             "(E, Shift, пробел, левый клик...) и мышь для камеры. Игра читает подсказки при запуске, "
+                             "так что они меняются после перезапуска. Подсказки записаны в файлах игры, поэтому у "
+                             "кнопки, переназначенной на вкладке управления, на экране остаётся прежняя подсказка.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
@@ -736,6 +747,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_LSTICK_DEADZONE] = "Мёртвая зона левого стика", [UI_MENU_RSTICK_DEADZONE] = "Мёртвая зона правого стика",
     [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами: отпустите стик, посмотрите «стик сейчас» и поставьте мёртвую зону на несколько процентов выше.",
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
+    [UI_MENU_MOUSE_MODE] = "Управление мышью",
+    [UI_MENU_MOUSE_MODE_DESC] = "Прямое: камера поворачивается на столько, на сколько сдвинута мышь, как в играх для ПК, без мёртвой зоны и кривой стика (версия игры 1.4.3; на других версиях эмуляция стика). Эмуляция стика: мышь работает как правый стик.",
+    [UI_MENU_MOUSE_STICK] = "Эмуляция стика",
+    [UI_MENU_MOUSE_DIRECT] = "Прямое",
+    [UI_MENU_MENU_CURSOR] = "Мышь в меню игры",
+    [UI_MENU_MENU_CURSOR_DESC] = "В меню самой игры (заставка, инвентарь, магазины, варианты ответа) появляется указатель: пункт под ним выбирается, левый щелчок подтверждает, правый возвращает назад. Только если последними использовались мышь или клавиатура, поэтому с геймпадом меню не меняются (версия игры 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
@@ -780,6 +797,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_MOVE] = "Двигает Линка, как левый стик. Левый стик контроллера тоже всегда работает.",
     [UI_BIND_DESC_CAMERA] = "Поворачивает камеру, как правый стик. Мышь и правый стик контроллера тоже всегда "
                             "работают.",
+    [UI_BIND_SHAKE] = "Встряхнуть стик камеры",
+    [UI_BIND_DESC_SHAKE] = "Качает правый стик влево-вправо: отцепляет приклеенную деталь от того, что держит "
+                           "Ультрарука. Пока клавиша зажата, тряска продолжается.",
     [UI_KEY_SPACE] = "Пробел", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Левый Shift", [UI_KEY_LCTRL] = "Левый Ctrl",
     [UI_KEY_UP] = "Стрелка вверх", [UI_KEY_DOWN] = "Стрелка вниз", [UI_KEY_LEFT] = "Стрелка влево",
     [UI_KEY_RIGHT] = "Стрелка вправо",
@@ -1144,6 +1164,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                           "funciona.",
     [UI_BIND_DESC_CAMERA] = "Gira a câmera como o analógico direito. O mouse e o analógico direito do controle também "
                             "sempre funcionam.",
+    [UI_BIND_SHAKE] = "Sacudir o analógico da câmera",
+    [UI_BIND_DESC_SHAKE] = "Balança o analógico direito para os lados: solta uma peça fundida do que a Ultramão segura. "
+                           "Segurar a tecla continua sacudindo.",
     [UI_KEY_SPACE] = "Espaço", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Shift esquerdo",
     [UI_KEY_LCTRL] = "Ctrl esquerdo",
     [UI_KEY_UP] = "Seta para cima", [UI_KEY_DOWN] = "Seta para baixo", [UI_KEY_LEFT] = "Seta para a esquerda",
@@ -1353,11 +1376,20 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Os botões de qual controle os ícones do jogo mostram. Nintendo: os do próprio jogo. "
                              "Xbox: LB, RB, LT, RT, Menu, Exibir e uma cruz direcional, e A, B, X e Y com a letra do "
                              "botão que o layout acima aperta (com Nintendo (A à direita) o botão da direita tem a "
-                             "letra B, então os ícones de A mostram B). O jogo lê os ícones ao iniciar, então eles "
-                             "mudam depois de reiniciar. Eles fazem parte dos arquivos do jogo, então um botão "
-                             "remapeado em Controles continua com o ícone antigo na tela.",
+                             "letra B, então os ícones de A mostram B). PC: as teclas e os botões do mouse do layout "
+                             "padrão do teclado (E, Shift, Espaço, clique esquerdo...) e o mouse para a câmera. O jogo "
+                             "lê os ícones ao iniciar, então eles mudam depois de reiniciar. Eles fazem parte dos "
+                             "arquivos do jogo, então um botão remapeado em Controles continua com o ícone antigo na "
+                             "tela.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_MOUSE_MODE] = "Câmera com o mouse",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico (jogo 1.4.3; as outras versões usam a emulação do analógico). Emulação do analógico: o mouse age como o analógico direito.",
+    [UI_MENU_MOUSE_STICK] = "Emulação do analógico",
+    [UI_MENU_MOUSE_DIRECT] = "Direta",
+    [UI_MENU_MENU_CURSOR] = "Mouse nos menus do jogo",
+    [UI_MENU_MENU_CURSOR_DESC] = "Nos menus do próprio jogo (título, inventário, lojas, escolhas de diálogo) o ponteiro aparece: o item sob ele fica selecionado, o clique esquerdo confirma e o direito volta. Só depois de usar o mouse ou uma tecla por último, então com um controle os menus ficam como antes (jogo 1.4.3).",
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
@@ -1703,6 +1735,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_BIND_DESC_DPAD] = "快捷选择。",
     [UI_BIND_DESC_MOVE] = "像左摇杆一样移动林克。手柄的左摇杆始终可用。",
     [UI_BIND_DESC_CAMERA] = "像右摇杆一样转动视角。鼠标和手柄的右摇杆始终可用。",
+    [UI_BIND_SHAKE] = "晃动视角摇杆",
+    [UI_BIND_DESC_SHAKE] = "让右摇杆左右晃动：把究极手抓着的物体上粘着的零件拆下。按住该键会一直晃动。",
     [UI_KEY_SPACE] = "空格",
     [UI_KEY_TAB] = "Tab",
     [UI_KEY_LSHIFT] = "左 Shift",
@@ -1963,9 +1997,17 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS] = "按键提示",
     [UI_MENU_PROMPTS_DESC] = "游戏的按键提示显示哪种手柄的按键。Nintendo：游戏原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
-                             "B）。游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
+                             "B）。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
+                             "游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_MOUSE_MODE] = "鼠标视角",
+    [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线（游戏 1.4.3；其他版本使用摇杆模拟）。摇杆模拟：鼠标相当于右摇杆。",
+    [UI_MENU_MOUSE_STICK] = "摇杆模拟",
+    [UI_MENU_MOUSE_DIRECT] = "直接",
+    [UI_MENU_MENU_CURSOR] = "在游戏菜单中使用鼠标",
+    [UI_MENU_MENU_CURSOR_DESC] = "在游戏自身的菜单中（标题、背包、商店、对话选项）显示指针：指针下的项目被选中，左键确认，右键返回。仅在最后使用的是鼠标或键盘时生效，因此使用手柄时菜单保持不变（游戏 1.4.3）。",
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",

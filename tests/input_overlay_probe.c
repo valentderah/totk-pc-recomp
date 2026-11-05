@@ -38,6 +38,7 @@ float cam_speed_applied(void) { abort(); }
 uint64_t frame_step_ticks(void) { abort(); }
 int64_t frame_step_world_us(void) { abort(); }
 int menu_is_open(void) { abort(); }
+int menu_cursor_pointer(void) { abort(); }
 void menu_toggle(void) { abort(); }
 void menu_perf_cycle(void) { abort(); }
 MotionFusion *motion_global(void) { abort(); }

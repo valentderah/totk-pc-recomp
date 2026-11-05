@@ -24,7 +24,7 @@ enum {
 
 // One render target of OP_SET_RT, resolved to its vk_texture.c image for the current command buffer.
 typedef struct {
-    const tex_t *tex;                    // payload copy (lives for the run); NULL: no target in this slot
+    const tex_t *tex;                    // texture pin of ex->rt (nvn_pins_sweep keeps it); NULL: no target in this slot
     VkImage image;                       // VK_NULL_HANDLE: no target or not renderable (logged once)
     VkFormat format;                     // view format: the view's when it reinterprets a same-size format
     VkImageViewType view_type;           // 2D, or 2D_ARRAY for more than one layer
@@ -142,8 +142,9 @@ void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info);
 // Scissor 0 clipped to the render area of the open pass; extent 0: nothing to draw.
 VkRect2D vk_exec_scissor(const VkExec *ex);
 void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass size when no attachment is set
-// 1: every target of the current pass (any 1: at least one) was rendered in the previous presented frame (per-frame
-// targets); 0 otherwise, or when the pass has none.
+// 1: every target of the current pass (any 1: at least one, and not only the depth target while a colour target is
+// rendered for the first time) was rendered in the previous presented frame (per-frame targets); 0 otherwise, or when
+// the pass has none.
 int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);

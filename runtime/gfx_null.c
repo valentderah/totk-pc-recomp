@@ -100,6 +100,7 @@ static void null_replay(uint64_t handle) {
 }
 
 static uint64_t null_submit(const uint64_t *handles, int n) {
+    nvn_pins_sweep(nvn_submit_count(), NULL, 0);   // no replay state outlives a submission here
     for (int i = 0; i < n; i++) null_replay(handles[i]);
     return __atomic_add_fetch(&fence, 1, __ATOMIC_ACQ_REL);
 }

@@ -548,6 +548,15 @@ static void save_capture(const char *path) {
 // TOTK_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
 // on the Steam Deck's 1280x800 screen gets bars of 40 rows above and below; a 16:9 picture in a 21:9 window, bars at the
 // sides).
+// Where the last present put the picture, as fractions of the swapchain (x, y, w, h): menu_cursor.c's pointer
+static float g_pic[4];
+static volatile int32_t g_pic_ok;
+int gfx_picture_rect(float out[4]) {
+    if (!__atomic_load_n(&g_pic_ok, __ATOMIC_ACQUIRE)) return 0;
+    memcpy(out, g_pic, sizeof g_pic);
+    return 1;
+}
+
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = out[1] = 0, out[2] = dw, out[3] = dh;
     if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("TOTK_ASPECT"), "stretch")) return;
@@ -622,6 +631,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     const int rect[4] = {cx, cy, cw, ch};
     int to[4];   // where the picture goes in the swapchain image: {x, y, w, h}
     gfx_fit_rect(cw, ch, (int)g_sc_ext.width, (int)g_sc_ext.height, to);
+    if (g_sc_ext.width && g_sc_ext.height) {
+        for (int i = 0; i < 4; i++) g_pic[i] = (float)to[i] / (float)(i & 1 ? g_sc_ext.height : g_sc_ext.width);
+        __atomic_store_n(&g_pic_ok, 1, __ATOMIC_RELEASE);
+    }
     if (to[2] != (int)g_sc_ext.width || to[3] != (int)g_sc_ext.height) {   // black bars beside or above and below it
         VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
