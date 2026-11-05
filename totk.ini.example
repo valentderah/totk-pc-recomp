@@ -381,7 +381,7 @@
 [files]
 # Folder the blueprint file dialog opens in. The port remembers the last folder a file was chosen from. Default: none
 # (the shell's last folder). Written by the game when a blueprint is imported.
-# blueprint_dir =
+# blueprint_dir = 
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put
 # their mods into the mods folder instead ([mods]). Default: none.
 # romfs_mods =
