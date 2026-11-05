@@ -17,7 +17,8 @@
 //
 // One host thread reads the newest progress.sav of <profile>/save/<uid> (the slot the game wrote last) at start and
 // again after each save commit that changed files (fs_host.c calls stats_save_changed). Achievements unlock when the
-// statistics reach them and stay unlocked: <profile>/achievements.txt holds one "<id> <unix time>" line each.
+// statistics reach them and stay unlocked: <profile>/achievements/unlocked.txt holds one "<id> <unix time>" line
+// each, and <profile>/achievements/goals.ini the goals, which the player may edit (achs_define).
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,18 +326,21 @@ static int load_save(const char *path) {
 // Defeat goals by how often the family turns up: the common ones (Bokoblins, constructs, Keese) take several tiers up
 // to hundreds, the rare ones (Lynels, Hinoxes, Taluses, Gleeoks, Frox, Wizzrobes) one goal. A tier's id keeps its
 // goal ("family_Bokoblin_100"), so goals added later leave unlocked ones in place.
-static const struct { const char *prefix; uint32_t tiers[3]; } kFamilies[STATS_FAMILIES] = {
-    {"Enemy_Bokoblin_", {100, 500, 1000}}, {"Enemy_Moriblin_", {50, 250, 500}}, {"Enemy_Lizalfos_", {50, 250, 500}},
-    {"Enemy_Horablin_", {30, 150}},        {"Enemy_Lynel_", {10}},              {"Enemy_Giant_", {10}},
-    {"Enemy_Golem_", {10}},                {"Enemy_CaveMaster_", {5, 50}},      {"Enemy_Drake_", {3}},
-    {"Enemy_Mogurudo_", {3}},              {"Enemy_LikeLike_", {25, 100}},      {"Enemy_Wizzrobe_", {10}},
-    {"Enemy_Zonau_", {100, 500, 1000}},    {"Enemy_Keese", {50, 250}},          {"Enemy_Chuchu", {50, 250}},
-    {"Enemy_Octarock", {25, 100}},         {"Enemy_Zombie_", {25, 100}},        {"Enemy_Assassin_", {20, 100}}};
+static const struct { const char *prefix, *key; uint32_t tiers[3]; } kFamilies[STATS_FAMILIES] = {
+    {"Enemy_Bokoblin_", "bokoblin", {100, 500, 1000}}, {"Enemy_Moriblin_", "moblin", {50, 250, 500}},
+    {"Enemy_Lizalfos_", "lizalfos", {50, 250, 500}},   {"Enemy_Horablin_", "horriblin", {30, 150}},
+    {"Enemy_Lynel_", "lynel", {10}},                   {"Enemy_Giant_", "hinox", {10}},
+    {"Enemy_Golem_", "talus", {10}},                   {"Enemy_CaveMaster_", "bubbulfrog", {5, 50}},
+    {"Enemy_Drake_", "gleeok", {3}},                   {"Enemy_Mogurudo_", "frox", {3}},
+    {"Enemy_LikeLike_", "like_like", {25, 100}},       {"Enemy_Wizzrobe_", "wizzrobe", {10}},
+    {"Enemy_Zonau_", "construct", {100, 500, 1000}},   {"Enemy_Keese", "keese", {50, 250}},
+    {"Enemy_Chuchu", "chuchu", {50, 250}},             {"Enemy_Octarock", "octorok", {25, 100}},
+    {"Enemy_Zombie_", "gibdo", {25, 100}},             {"Enemy_Assassin_", "yiga", {20, 100}}};
 
 static PlatMutex lock = PLAT_MUTEX_INIT;   // view, unlocked
 static StatsView view;
 static uint64_t unlocked[STATS_ACH_MAX];   // unix time, 0 locked
-static char ach_path[1100];
+static char ach_path[1100], goals_path[1100];   // <profile>/achievements/unlocked.txt and goals.ini
 
 // Distinct names among a category's actors: the index of name in seen[], appended when new.
 static int name_slot(const char **seen, int *n, int cap, const char *name) {
@@ -536,45 +540,164 @@ static void compute(StatsView *s) {
 }
 
 // ---- achievements
+// The goals: a set per statistic (and per monster family), each goal one achievement whose id is the set's id prefix
+// and the goal ("kills_100", "family_Bokoblin_500"), so an unlock stays with its goal whatever else changes.
+// <profile>/achievements/goals.ini overrides the defaults below; the game writes it with them on its first run.
 typedef struct { const char *id; StatsKind kind; int family; uint32_t target; } Ach;
 static Ach achs[STATS_ACH_MAX];
 static int nachs;
 
-static void ach_add(const char *id, StatsKind kind, int family, uint32_t target) {
-    if (nachs < STATS_ACH_MAX) achs[nachs++] = (Ach){id, kind, family, target};
+#define GOALS_MAX 6
+typedef struct { const char *key, *id; StatsKind kind; int family; uint32_t goals[GOALS_MAX]; } GoalSet;
+static GoalSet sets[10 + STATS_FAMILIES];
+static int nsets;
+
+static void set_add(const char *key, const char *id, StatsKind kind, int family, const uint32_t *goals, int n) {
+    GoalSet *s = &sets[nsets++];
+    *s = (GoalSet){key, id, kind, family, {0}};
+    for (int i = 0; i < n && i < GOALS_MAX; i++) s->goals[i] = goals[i];
+}
+
+static void sets_default(void) {
+    static const uint32_t kills[] = {1, 100, 1000, 5000}, kinds[] = {25, 50, 75}, weapons[] = {25, 75},
+                          armor[] = {25, 100}, asets[] = {1, 10, 25}, items[] = {50, 150}, pb[] = {100, 250},
+                          hearts[] = {10, 20, 30}, stamina[] = {2, 3};
+    set_add("monsters", "kills_", STATS_KILLS, -1, kills, 4);
+    set_add("species", "kinds_", STATS_KINDS, -1, kinds, 3);
+    static char ids[STATS_FAMILIES][40];
+    for (int f = 0; f < STATS_FAMILIES; f++) {
+        snprintf(ids[f], sizeof ids[f], "family_%s", kFamilies[f].prefix + 6);
+        int n = 0;
+        while (n < 3 && kFamilies[f].tiers[n]) n++;
+        set_add(kFamilies[f].key, ids[f], STATS_FAMILY, f, kFamilies[f].tiers, n);
+    }
+    set_add("weapons", "weapons_", STATS_WEAPONS, -1, weapons, 2);
+    set_add("armor", "armor_", STATS_ARMOR, -1, armor, 2);
+    set_add("armor_sets", "sets_", STATS_SETS, -1, asets, 3);
+    set_add("materials", "items_", STATS_ITEMS, -1, items, 2);
+    set_add("compendium", "compendium_", STATS_COMPENDIUM, -1, pb, 2);
+    set_add("hearts", "hearts_", STATS_HEARTS, -1, hearts, 3);
+    set_add("stamina", "stamina_", STATS_STAMINA, -1, stamina, 2);
+}
+
+static int u32_cmp(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static const char kGoalsHead[] =
+    "# Achievement goals of the Achievements tab in the settings menu (F1).\n"
+    "# Each line: a statistic, '=', then up to 6 goals separated by commas; each goal is one achievement.\n"
+    "# Change, add or remove goals, then restart the game. Nothing after '=' turns a line's achievements off.\n"
+    "# A line that is missing or not understood keeps its default; delete this file to get every default back.\n"
+    "# Unlocked achievements are in unlocked.txt next to this file; a goal you change starts locked.\n";
+
+static void goals_write(void) {
+    size_t cap = 8192, at = 0;
+    char *out = malloc(cap);
+    if (!out) return;
+    at += (size_t)snprintf(out + at, cap - at, "%s", kGoalsHead);
+    for (int s = 0; s < nsets; s++) {
+        if (s == 0) at += (size_t)snprintf(out + at, cap - at, "\n# Monsters\n");
+        if (s == 2) at += (size_t)snprintf(out + at, cap - at, "\n# Monsters defeated by family, all variants together\n");
+        if (s == 2 + STATS_FAMILIES) at += (size_t)snprintf(out + at, cap - at, "\n# Collection and the hero\n");
+        at += (size_t)snprintf(out + at, cap - at, "%s =", sets[s].key);
+        for (int g = 0; g < GOALS_MAX && sets[s].goals[g]; g++)
+            at += (size_t)snprintf(out + at, cap - at, "%s %u", g ? "," : "", sets[s].goals[g]);
+        at += (size_t)snprintf(out + at, cap - at, "\n");
+    }
+    if (!plat_file_write_atomic(goals_path, out, at)) rt_log("stats: cannot write %s", goals_path);
+    else rt_log("stats: wrote the default achievement goals to %s", goals_path);
+    free(out);
+}
+
+static int key_eq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++)
+        if ((*a | 32) != (*b | 32)) return 0;
+    return !*a && !*b;
+}
+
+// goals.ini over the defaults: "key = n, n, ..." lines; '#' or ';' starts a comment.
+static void goals_read(void) {
+    uint64_t n = 0;
+    char *raw = (char *)plat_file_read(goals_path, &n);
+    if (!raw) {
+        goals_write();
+        return;
+    }
+    char *buf = malloc(n + 1);
+    if (!buf) {
+        free(raw);
+        return;
+    }
+    memcpy(buf, raw, n), buf[n] = 0;
+    free(raw);
+    int read = 0, bad = 0;
+    for (char *line = buf, *next; line; line = next) {
+        next = strpbrk(line, "\r\n");
+        if (next) *next++ = 0;
+        char *c = strpbrk(line, "#;");
+        if (c) *c = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            for (char *p = line; *p; p++) bad |= *p != ' ' && *p != '\t';
+            continue;
+        }
+        *eq = 0;
+        char key[48];
+        if (sscanf(line, " %47[A-Za-z_]", key) != 1) {
+            bad = 1;
+            continue;
+        }
+        GoalSet *set = NULL;
+        for (int s = 0; s < nsets; s++)
+            if (key_eq(sets[s].key, key)) set = &sets[s];
+        if (!set) {
+            rt_log("stats: goals.ini: unknown statistic '%s'", key);
+            bad = 1;
+            continue;
+        }
+        uint32_t goals[GOALS_MAX];
+        int k = 0, ok = 1;
+        for (char *p = eq + 1; *p;) {
+            while (*p == ' ' || *p == '\t' || *p == ',') p++;
+            if (!*p) break;
+            char *end;
+            unsigned long v = strtoul(p, &end, 10);
+            if (end == p || v < 1 || v > 1000000000ul || k == GOALS_MAX) {
+                ok = 0;
+                break;
+            }
+            int dup = 0;
+            for (int i = 0; i < k; i++) dup |= goals[i] == v;
+            if (!dup) goals[k++] = (uint32_t)v;
+            p = end;
+        }
+        if (!ok) {
+            rt_log("stats: goals.ini: '%s' keeps its default goals (goals are 1 to 1000000000, at most %d)", key,
+                   GOALS_MAX);
+            bad = 1;
+            continue;
+        }
+        qsort(goals, (size_t)k, sizeof *goals, u32_cmp);
+        memset(set->goals, 0, sizeof set->goals);
+        memcpy(set->goals, goals, (size_t)k * sizeof *goals);
+        read++;
+    }
+    free(buf);
+    rt_log("stats: achievement goals from %s (%d lines read%s)", goals_path, read, bad ? ", some ignored" : "");
 }
 
 static void achs_define(void) {
-    ach_add("kills_1", STATS_KILLS, -1, 1);
-    ach_add("kills_100", STATS_KILLS, -1, 100);
-    ach_add("kills_1000", STATS_KILLS, -1, 1000);
-    ach_add("kills_5000", STATS_KILLS, -1, 5000);
-    ach_add("kinds_25", STATS_KINDS, -1, 25);
-    ach_add("kinds_50", STATS_KINDS, -1, 50);
-    ach_add("kinds_75", STATS_KINDS, -1, 75);
-    static char ids[STATS_FAMILIES][3][40];
-    for (int f = 0; f < STATS_FAMILIES; f++) {
-        for (int t = 0; t < 3 && kFamilies[f].tiers[t]; t++) {
-            snprintf(ids[f][t], sizeof ids[f][t], "family_%s%u", kFamilies[f].prefix + 6, kFamilies[f].tiers[t]);
-            ach_add(ids[f][t], STATS_FAMILY, f, kFamilies[f].tiers[t]);
+    static char ids[STATS_ACH_MAX][48];
+    sets_default();
+    goals_read();
+    for (int s = 0; s < nsets; s++)
+        for (int g = 0; g < GOALS_MAX && sets[s].goals[g] && nachs < STATS_ACH_MAX; g++) {
+            snprintf(ids[nachs], sizeof ids[nachs], "%s%u", sets[s].id, sets[s].goals[g]);
+            achs[nachs] = (Ach){ids[nachs], sets[s].kind, sets[s].family, sets[s].goals[g]};
+            nachs++;
         }
-    }
-    ach_add("weapons_25", STATS_WEAPONS, -1, 25);
-    ach_add("weapons_75", STATS_WEAPONS, -1, 75);
-    ach_add("armor_25", STATS_ARMOR, -1, 25);
-    ach_add("armor_100", STATS_ARMOR, -1, 100);
-    ach_add("sets_1", STATS_SETS, -1, 1);
-    ach_add("sets_10", STATS_SETS, -1, 10);
-    ach_add("sets_25", STATS_SETS, -1, 25);
-    ach_add("items_50", STATS_ITEMS, -1, 50);
-    ach_add("items_150", STATS_ITEMS, -1, 150);
-    ach_add("compendium_100", STATS_COMPENDIUM, -1, 100);
-    ach_add("compendium_250", STATS_COMPENDIUM, -1, 250);
-    ach_add("hearts_10", STATS_HEARTS, -1, 10);
-    ach_add("hearts_20", STATS_HEARTS, -1, 20);
-    ach_add("hearts_30", STATS_HEARTS, -1, 30);
-    ach_add("stamina_2", STATS_STAMINA, -1, 2);
-    ach_add("stamina_3", STATS_STAMINA, -1, 3);
 }
 
 static uint32_t ach_progress(const StatsView *s, const Ach *a) {
@@ -593,6 +716,11 @@ static uint32_t ach_progress(const StatsView *s, const Ach *a) {
     return 0;
 }
 
+// Lines of unlocked.txt whose achievement the goals no longer have: written back unchanged, so an unlock comes back
+// when its goal does.
+static char *other_unlocks;
+static size_t other_n;
+
 static void ach_load(void) {
     uint64_t n = 0;
     char *t = (char *)plat_file_read(ach_path, &n);
@@ -604,8 +732,15 @@ static void ach_load(void) {
             char id[64];
             unsigned long long when = 0;
             if (sscanf(line, "%63s %llu", id, &when) != 2) continue;
+            int known = 0;
             for (int i = 0; i < nachs; i++)
-                if (!strcmp(achs[i].id, id)) unlocked[i] = when ? when : 1;
+                if (!strcmp(achs[i].id, id)) unlocked[i] = when ? when : 1, known = 1;
+            size_t len = strlen(line);
+            char *g = known ? NULL : realloc(other_unlocks, other_n + len + 2);
+            if (g) {
+                memcpy(g + other_n, line, len), g[other_n + len] = '\n';
+                other_unlocks = g, other_n += len + 1;
+            }
         }
         free(buf);
     }
@@ -613,9 +748,10 @@ static void ach_load(void) {
 }
 
 static void ach_save(void) {
-    char *out = malloc(64u * STATS_ACH_MAX);
+    char *out = malloc(64u * STATS_ACH_MAX + other_n);
     if (!out) return;
     size_t at = 0;
+    if (other_n) memcpy(out, other_unlocks, other_n), at = other_n;
     for (int i = 0; i < nachs; i++)
         if (unlocked[i]) at += (size_t)snprintf(out + at, 64, "%s %llu\n", achs[i].id, (unsigned long long)unlocked[i]);
     if (!plat_file_write_atomic(ach_path, out, at)) rt_log("stats: cannot write %s", ach_path);
@@ -704,7 +840,11 @@ void stats_init(void) {
     if (plat_xchg32(&started, 1)) return;
     const char *dir = rt_config()->profile;
     if (!dir || !*dir) return;
-    snprintf(ach_path, sizeof ach_path, "%s/achievements.txt", dir);
+    char folder[1100];
+    snprintf(folder, sizeof folder, "%s/achievements", dir);
+    plat_file_mkdir_p(folder);
+    snprintf(ach_path, sizeof ach_path, "%s/unlocked.txt", folder);
+    snprintf(goals_path, sizeof goals_path, "%s/goals.ini", folder);
     achs_define();
     ach_load();
     plat_mutex_lock(&lock);
