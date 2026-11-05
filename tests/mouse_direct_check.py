@@ -16,11 +16,11 @@ HARNESS = r'''
 static int raw_x, raw_y, takes, captured=1, foreground=1, allowed=1, mode=1, patched=1, selecting;
 static float ratio=0.5f;
 static uint64_t now=1000000000;
-static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook;
+static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook, load_hook;
 const char *cfg_get(const char *key) { (void)key; return mode ? "direct" : "stick"; }
 const char *cfg_value(const char *key) { return cfg_get(key); }
 double cfg_double(const char *key) { (void)key; return 1; }
-int rt_patch_set(const char *s) { (void)s; return 0; }
+int rt_patch_set(const char *s) { return strcmp(s,"mouse_direct") ? -1 : 0; }   // no fov / aspect set: 16:9, 50 deg
 int rt_patch_enabled(int s) { (void)s; return patched; }
 int ikb_captured(void) { return captured; }
 int ikb_foreground(void) { return foreground; }
@@ -38,11 +38,14 @@ void *rt_patch_page(void) { return &ratio; }
 void rt_register_host(uint64_t addr, GuestFn fn) {
     if(addr==HOST_MOUSE_DIRECT) hook=fn; else if(addr==HOST_MOUSE_ACTIVITY) activity_hook=fn;
     else if(addr==HOST_MOUSE_ORBIT_BEGIN) begin_hook=fn; else if(addr==HOST_MOUSE_ORBIT_ANGLES) angles_hook=fn;
-    else if(addr==HOST_MOUSE_HAND) hand_hook=fn; else abort();
+    else if(addr==HOST_MOUSE_HAND) hand_hook=fn; else if(addr==HOST_MOUSE_LOAD) load_hook=fn; else abort();
 }
 void plat_mutex_lock(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 void rt_log(const char *fmt, ...) { (void)fmt; }
+float cam_speed_applied(void) { return 1; }
+uint64_t input_buttons_last(void) { return 0; }
+int mem_guest_readable(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // no player: on-foot gains
 static float scalar(__uint128_t v) { float f; memcpy(&f,&v,4); return f; }
 int main(void) {
     assert(hook && activity_hook);
@@ -53,19 +56,29 @@ int main(void) {
     expected=c;
     raw_x=100; raw_y=-50;
     hook(&c);
-    assert(fabsf(scalar(c.v[9])-2)<1e-6f);
-    assert(fabsf(scalar(c.v[10])-1)<1e-6f);
+    // x is STICK_PER_COUNT a count over the frame ratio; y PITCH_GAIN times that, for the cameras' linear pitch
+    assert(fabsf(scalar(c.v[9])-100*STICK_PER_COUNT/ratio)<1e-5f);
+    assert(fabsf(scalar(c.v[10])-PITCH_GAIN*50*STICK_PER_COUNT/ratio)<1e-5f);
     float stored; memcpy(&stored,target+0x420,4); assert(stored==scalar(c.v[9]));
     expected.v[9]=c.v[9]; expected.v[10]=c.v[10]; assert(!memcmp(&expected,&c,sizeof c));
     assert(input_direct_mouse_active());
     // The next read sees no repeated movement. Gamepad/keyboard input is preserved.
     expected=c; hook(&c); assert(!memcmp(&expected,&c,sizeof c));
-    // Equal mouse distance produces equal integrated input at 30, 60 and 144 Hz; there is no unit-circle clamp.
+    // Equal mouse distance turns the camera equally at 30, 60 and 144 Hz, yaw by x and pitch linearly by y, and as
+    // many degrees a count on both axes; there is no unit-circle clamp.
     float rates[]={30,60,144};
     for(int i=0;i<3;i++) {
         ratio=30/rates[i]; raw_x=10000; raw_y=10000; c.v[9]=c.v[10]=0; hook(&c);
-        assert(fabsf(scalar(c.v[9])*ratio-100)<0.001f);
-        assert(fabsf(scalar(c.v[10])*ratio+100)<0.001f);
+        float y=scalar(c.v[10]);
+        assert(fabsf(scalar(c.v[9])*ratio-10000*STICK_PER_COUNT)<0.001f);
+        assert(fabsf(y*ratio/PITCH_GAIN+10000*STICK_PER_COUNT)<0.001f);
+    }
+    // The ability camera's offset mode turns the stored stick at its own scales: they are undone.
+    {
+        float x=0, y=0; mouse_stick_add(100,-50,0.04f,1,&x,&y);
+        assert(fabsf(x-100*0.04f*ABILITY_GAIN_X)<1e-5f && fabsf(y-50*0.04f*ABILITY_GAIN_Y)<1e-5f);
+        x=y=0; mouse_stick_add(100,-50,0.04f,0,&x,&y);
+        assert(fabsf(x-4)<1e-5f && fabsf(y-PITCH_GAIN*2)<1e-5f);
     }
     // One count is not discarded by a dead zone.
     ratio=0.5f; raw_x=1; raw_y=0; c.v[9]=c.v[10]=0; hook(&c); assert(scalar(c.v[9])>0);
@@ -100,18 +113,18 @@ int main(void) {
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
         assert(guest_float((uintptr_t)target+0x420)==0 && guest_float((uintptr_t)target+0x424)==0);
         c.x[20]=(uintptr_t)camera; c.sp=(uintptr_t)frame; angles_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)frame+0x44)-26)<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)frame+0x48)-32)<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-26)<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)frame+0x44)-(30-50*DEG_PER_COUNT))<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)frame+0x48)-(40-100*DEG_PER_COUNT))<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(30-50*DEG_PER_COUNT))<0.0001f);
         c.x[0]=(uintptr_t)camera; begin_hook(&c); angles_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)frame+0x48)-32)<0.0001f); // one sample cannot repeat next update
+        assert(fabsf(guest_float((uintptr_t)frame+0x48)-(40-100*DEG_PER_COUNT))<0.0001f); // one sample cannot repeat next update
         // The next input frame is stationary and the game's parameter update rewrites the old default target.
         // Restoring the mouse's desired target makes the camera filter stay at the new pitch, not spring to zero.
         c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_x=raw_y=0; hook(&c);
         guest_float_store((uintptr_t)camera+0x15c,0);
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
         float current=guest_float((uintptr_t)camera+0x108), goal=guest_float((uintptr_t)camera+0x15c);
-        assert(fabsf(goal-26)<0.0001f && fabsf((current+goal)*0.5f-26)<0.0001f);
+        assert(fabsf(goal-(30-50*DEG_PER_COUNT))<0.0001f && fabsf((current+goal)*0.5f-(30-50*DEG_PER_COUNT))<0.0001f);
         // A later game filter overwrites the pitch after the begin hook. Neither a stationary frame nor the next
         // tiny mouse delta may integrate from that recentered result.
         guest_float_store((uintptr_t)camera+0x108,0);
@@ -120,18 +133,18 @@ int main(void) {
         guest_float_store((uintptr_t)camera+0x88,0.3f);
         guest_float_store((uintptr_t)frame+0x44,0);
         c.x[20]=(uintptr_t)camera; angles_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)frame+0x44)-26)<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-7)<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)camera+0x108)-12)<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)frame+0x44)-(30-50*DEG_PER_COUNT))<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-((30-50*DEG_PER_COUNT)-19))<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)camera+0x108)-((30-50*DEG_PER_COUNT)-14))<0.0001f);
         for(int i=0;i<100;i++) {
             guest_float_store((uintptr_t)frame+0x44,0); angles_hook(&c);
-            assert(fabsf(guest_float((uintptr_t)camera+0x108)-12)<0.0001f);
+            assert(fabsf(guest_float((uintptr_t)camera+0x108)-((30-50*DEG_PER_COUNT)-14))<0.0001f);
         }
         c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_y=1; hook(&c);
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
         guest_float_store((uintptr_t)frame+0x44,0);
         c.x[20]=(uintptr_t)camera; angles_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)frame+0x44)-26.08f)<0.0001f);
+        assert(fabsf(guest_float((uintptr_t)frame+0x44)-((30-50*DEG_PER_COUNT)+DEG_PER_COUNT))<0.0001f);
         // An explicit controller recenter still hands pitch back to the game.
         uint64_t recenter=0x20; memcpy(target+0x148,&recenter,8);
         c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; hook(&c);
@@ -140,6 +153,19 @@ int main(void) {
         c.x[20]=(uintptr_t)camera; angles_hook(&c);
         assert(guest_float((uintptr_t)frame+0x44)==5);
         memset(target+0x148,0,8);
+        // When the game lets go (the recenter or an aim ends), the mouse holds the pitch the camera has then: neither its
+        // target from before nor the game's default target pulls the camera back.
+        guest_float_store((uintptr_t)camera+0x108,3);   // the game left the pitch at 3 + the offset 14
+        c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; hook(&c);
+        c.x[0]=(uintptr_t)camera; begin_hook(&c);
+        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(17-14-5))<0.0001f);
+        guest_float_store((uintptr_t)frame+0x44,0);
+        c.x[20]=(uintptr_t)camera; angles_hook(&c);
+        assert(fabsf(guest_float((uintptr_t)frame+0x44)-17)<0.0001f);
+        guest_float_store((uintptr_t)camera+0x15c,0);   // the game's parameter update writes its default target
+        c.x[20]=(uintptr_t)target; hook(&c);
+        c.x[0]=(uintptr_t)camera; begin_hook(&c);
+        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(17-14-5))<0.0001f);
         memset(camera+0x88,0,4); memset(camera+0x10c,0,4); memset(camera+0x11c,0,4);
     }
     // A gamepad-only step (no mouse motion, no pitch hold) leaves the camera input and the angles as the game made them.
@@ -163,14 +189,15 @@ int main(void) {
         guest_float_store((uintptr_t)frame+0x48,guest_float((uintptr_t)camera+0x120));
         angles_hook(&c);
     }
-    assert(fabsf(guest_float((uintptr_t)camera+0x120)-32)<0.001f);
-    // A held object receives mouse deltas after its own curves, once per sample, including with camera input off.
+    assert(fabsf(guest_float((uintptr_t)camera+0x120)-(40-100*DEG_PER_COUNT))<0.001f);
+    // A held object receives mouse deltas after its own curves at the camera's stick rate, at most HAND_MAX full
+    // tilts a step, once per sample, including with camera input off.
     c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_x=100; raw_y=50; ratio=0.5f; hook(&c);
     c.x[19]=(uintptr_t)hand; c.x[8]=0x12345678; c.v[15]=0;
     guest_float_store((uintptr_t)frame+0x60,0); hand_hook(&c);
-    assert(fabsf(guest_float((uintptr_t)frame+0x60)-2)<0.00001f);
-    assert(fabsf(scalar(c.v[15])+1)<0.00001f);
-    hand_hook(&c); assert(fabsf(scalar(c.v[15])+1)<0.00001f);
+    assert(100*HAND_PER_COUNT/ratio>HAND_MAX && fabsf(guest_float((uintptr_t)frame+0x60)-HAND_MAX)<0.00001f);
+    assert(fabsf(scalar(c.v[15])+50*HAND_PER_COUNT/ratio)<0.00001f);
+    hand_hook(&c); assert(fabsf(scalar(c.v[15])+50*HAND_PER_COUNT/ratio)<0.00001f);
     c.x[21]=1; raw_x=5; raw_y=6; hook(&c); assert(raw_x==0 && raw_y==0 && input_direct_mouse_active());
     // A radial selector retains its virtual cursor between mouse packets, including repeated HID polls.
     float cursor[2]={0}; int32_t selector[2], held_selector[2];
@@ -205,6 +232,194 @@ int main(void) {
     puts("direct mouse: final orbit angles, single-count motion, equal axes and held-object routing passed");
     puts("direct mouse: persistent pitch target, radial cursor hold and gamepad-only steps untouched passed");
     puts("direct mouse: final-pitch recenter rejection, explicit handoff and bounded quick-list steps passed");
+    // A shake: two direction changes of swings of at least 10 degrees within 0.35 s, then the stick follows the mouse
+    // side by side and lets go when it rests; nothing plays on after the mouse
+    {
+        MouseShake s={0}; uint64_t t=0;
+        assert(mouse_shake_step(&s,12,t+=100000000ull)==0);
+        assert(mouse_shake_step(&s,-12,t+=100000000ull)==0);   // one change: not yet a shake
+        assert(mouse_shake_step(&s,12,t+=100000000ull)==1);    // the second: the stick takes the mouse's side
+        assert(mouse_shake_step(&s,-12,t+=100000000ull)==-1);  // and follows it
+        assert(mouse_shake_step(&s,0,t+=30000000ull)==-1);     // a side is held two frames, so it is read
+        assert(mouse_shake_step(&s,0,t+=40000000ull)==0);      // the mouse rests: neutral, no swing of its own
+        for(int i=0;i<10;i++) assert(mouse_shake_step(&s,0,t+=50000000ull)==0);
+        assert(!s.turns);                                       // and the shake is over
+        // Fast reversals: a side never lasts less than two frames
+        s=(MouseShake){0}; t=0; int side=0, flips=0; uint64_t last=0, shortest=~0ull;
+        for(int i=0;i<20;i++) {
+            int now_side=mouse_shake_step(&s,(i&1)?-12.f:12.f,t+=30000000ull);
+            if(now_side!=side) { if(side&&now_side&&last) shortest=t-last<shortest?t-last:shortest; side=now_side; last=t; flips++; }
+        }
+        assert(flips>3 && shortest>=SHAKE_SIDE_NS);
+        // A swing made of several small steps counts as one
+        s=(MouseShake){0}; t=0; int got=0;
+        for(int i=0;i<8;i++) got|=mouse_shake_step(&s,(i/2&1)?-6.f:6.f,t+=50000000ull)!=0;
+        assert(got);
+        s=(MouseShake){0}; t=0; got=0;   // the same swings 0.4 s apart: a held object turned back and forth
+        for(int i=0;i<6;i++) got|=mouse_shake_step(&s,(i&1)?-12.f:12.f,t+=400000000ull)!=0;
+        assert(!got);
+        s=(MouseShake){0}; t=0; got=0;   // swings under 10 degrees
+        for(int i=0;i<8;i++) got|=mouse_shake_step(&s,(i&1)?-4.f:4.f,t+=50000000ull)!=0;
+        assert(!got);
+    }
+    // The aiming, scope, ability and horse cameras: the stick loads give the gamepad's part, the angle loads the
+    // mouse's degrees, once per sample
+    {
+        assert(load_hook);
+        unsigned char input[0x500]={0}, cam[0x200]={0}; float frame[0x20]={0};
+        float pad_x=0.25f, pad_y=-0.5f;
+        #define LOAD(site,reg) (c.x[30]=MOD_MAIN_BASE+(site)+4, load_hook(&c), scalar(c.v[reg]))
+        #define SAMPLE(dx,dy) do { c.x[20]=(uintptr_t)input; c.x[21]=0; c.v[9]=0; c.v[10]=0; \
+            memcpy(&c.v[9],&pad_x,4); memcpy(&c.v[10],&pad_y,4); raw_x=(dx); raw_y=(dy); hook(&c); \
+            guest_float_store((uintptr_t)input+0x424,scalar(c.v[10])); } while(0)
+        ratio=0.5f;
+        SAMPLE(100,-50);
+        float stick_x=guest_float((uintptr_t)input+0x420), stick_y=guest_float((uintptr_t)input+0x424);
+        assert(stick_x!=pad_x && stick_y!=pad_y);   // the stick the game stored has the mouse in it
+        c.x[19]=(uintptr_t)cam; c.x[22]=(uintptr_t)input; c.x[29]=(uintptr_t)(frame+0x18);
+        guest_float_store((uintptr_t)cam+0x15c,10); frame[0x18-0x12]=40;   // [x29-0x48]
+        // Aiming pitch: stick y is the pad's, the pitch target base gets dy counts of degrees
+        assert(LOAD(0x23beb94,1)==pad_y);
+        assert(fabsf(LOAD(0x23bebc8,1)-(10-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x23bebc8,1)==10);   // a base load with no stick load before it is the game's own
+        assert(LOAD(0x23beb94,1)==pad_y && LOAD(0x23bebc8,1)==10);   // the same sample turns the camera once
+        // Aiming yaw: the base yaw on the frame gets dx counts
+        assert(LOAD(0x23bee2c,1)==pad_x);
+        assert(fabsf(LOAD(0x23beeec,1)-(40-100*DEG_PER_COUNT))<1e-5f);
+        // Scope pitch near its lower limit: degrees up to the limit, the rest of the mouse's stick stays
+        SAMPLE(0,-50);
+        float mouse_y=guest_float((uintptr_t)input+0x424)-pad_y, want=-39-50*DEG_PER_COUNT;
+        guest_float_store((uintptr_t)cam+0x160,-39); guest_float_store((uintptr_t)cam+0x1ac,-40);
+        guest_float_store((uintptr_t)cam+0x1b0,40); c.x[23]=(uintptr_t)input;
+        float y=LOAD(0x23c0a1c,11);
+        assert(fabsf(y-(pad_y+mouse_y*((want+40)/(want+39))))<1e-5f);
+        assert(fabsf(LOAD(0x23c0b00,0)-(-40))<1e-5f);
+        // Inside the limits all of it is degrees
+        SAMPLE(0,-50); guest_float_store((uintptr_t)cam+0x160,0);
+        assert(LOAD(0x23c0a1c,11)==pad_y && fabsf(LOAD(0x23c0b00,0)+50*DEG_PER_COUNT)<1e-5f);
+        // The ability camera's offset mode (input +0x15c bit 8) keeps the mouse in the stick and adds no degrees
+        SAMPLE(100,0); uint32_t offset_mode=0x100; memcpy(input+0x15c,&offset_mode,4);
+        assert(LOAD(0x23d2eec,8)==guest_float((uintptr_t)input+0x420));
+        frame[0x18-0x14]=7; assert(LOAD(0x23d34cc,1)==7);   // [x29-0x50]
+        offset_mode=0; memcpy(input+0x15c,&offset_mode,4);
+        // Horse: the input is x20 / x21; another camera's input or a stale sample is left alone
+        SAMPLE(100,-50); c.x[20]=(uintptr_t)input; c.x[21]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x68,5); guest_float_store((uintptr_t)cam+0x64,6);
+        assert(LOAD(0x23cb274,8)==pad_x && fabsf(LOAD(0x23cb2a0,1)-(5-100*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x23cb3f8,8)==pad_y && fabsf(LOAD(0x23cb424,1)-(6-50*DEG_PER_COUNT))<1e-5f);
+        SAMPLE(100,-50); unsigned char other[0x500]; memcpy(other,input,sizeof other); c.x[20]=(uintptr_t)other;
+        assert(LOAD(0x23cb274,8)==guest_float((uintptr_t)other+0x420) && LOAD(0x23cb2a0,1)==5);
+        c.x[20]=(uintptr_t)input; now+=150000000ull;
+        assert(LOAD(0x23cb274,8)==guest_float((uintptr_t)input+0x420) && LOAD(0x23cb2a0,1)==5);
+        // The ability camera's offset mode (Recall's cursor): before its scale was read the mouse stays in the stick;
+        // then the offset moves so that the aim, o * P + atan(o * tan(half view angle)), moves by the mouse's degrees
+        now+=1; SAMPLE(100,-50); c.x[23]=(uintptr_t)input; offset_mode=0x100; memcpy(input+0x15c,&offset_mode,4);
+        guest_float_store((uintptr_t)cam+0x1d8,1); guest_float_store((uintptr_t)cam+0x1dc,0);
+        assert(LOAD(0x23d2f30,8)==guest_float((uintptr_t)input+0x420) && LOAD(0x23d2f5c,2)==1);
+        float scale_p[2]={2,4}; c.x[0]=(uintptr_t)scale_p;
+        assert(LOAD(0x23d3210,0)==4);
+        SAMPLE(100,-50); c.x[23]=(uintptr_t)input;
+        {
+            float ty=tanf(25*RECALL_PI/180), tx=ty*16/9, k=180/RECALL_PI;
+            #define AIM(o,r,t) ((o)*(r)+atanf((o)*(t))*k)
+            assert(LOAD(0x23d2f30,8)==pad_x);
+            float ox=LOAD(0x23d2f5c,2);
+            assert(fabsf(AIM(ox,2,tx)-AIM(1,2,tx)-100*DEG_PER_COUNT)<1e-3f);
+            assert(LOAD(0x23d2f6c,8)==pad_y);
+            float oy=LOAD(0x23d2f98,2);
+            assert(fabsf(AIM(oy,4,ty)-50*DEG_PER_COUNT)<1e-3f);
+            assert(ox>1 && ox-1<100*DEG_PER_COUNT/2 && oy>0 && oy<50*DEG_PER_COUNT/4);   // slower than the camera alone
+            #undef AIM
+        }
+        // outside the offset mode these sites are the game's
+        offset_mode=0; memcpy(input+0x15c,&offset_mode,4); SAMPLE(100,-50); c.x[23]=(uintptr_t)input;
+        assert(LOAD(0x23d2f30,8)==guest_float((uintptr_t)input+0x420) && LOAD(0x23d2f5c,2)==1);
+        // The Purah Pad camera: pitch +0x50, yaw [sp+0x48]
+        uint64_t spbuf[0x10]={0}; uint64_t old_sp=c.sp; c.sp=(uintptr_t)spbuf;
+        SAMPLE(100,-50); c.x[21]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x50,3); guest_float_store((uintptr_t)spbuf+0x48,9);
+        assert(LOAD(0x23c2890,13)==pad_y && fabsf(LOAD(0x23c28b4,1)-(3-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x23c2934,13)==pad_x && fabsf(LOAD(0x23c2964,1)-(9-100*DEG_PER_COUNT))<1e-5f);
+        c.sp=old_sp;
+        // Lock-on: the stick gives the pad's part, both reads of the step's turn ([sp+0x20]) get the mouse's degrees
+        {
+            uint64_t lock_sp[0x10]={0}, keep_sp=c.sp; c.sp=(uintptr_t)lock_sp;
+            SAMPLE(100,-50); c.x[24]=(uintptr_t)input; guest_float_store((uintptr_t)lock_sp+0x20,0.5f);
+            assert(LOAD(0x23d756c,0)==guest_float((uintptr_t)input+0x420));   // the input test keeps the mouse
+            assert(LOAD(0x23d7594,1)==pad_x);
+            assert(fabsf(LOAD(0x23d75b4,0)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+            assert(fabsf(LOAD(0x23d75c4,9)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+            assert(LOAD(0x23d75c4,9)==0.5f);   // once both reads took them, the degrees are spent
+            assert(LOAD(0x23d7998,1)==pad_y);
+            assert(fabsf(LOAD(0x23d79b8,0)-(0.5f-50*DEG_PER_COUNT))<1e-5f);
+            assert(fabsf(LOAD(0x23d79c8,10)-(0.5f-50*DEG_PER_COUNT))<1e-5f);
+            c.sp=keep_sp;
+        }
+        // The bow drawn while locked on: the pad's stick, the offsets +0x198 (pitch) and +0x19c (yaw) get the degrees
+        SAMPLE(100,-50); c.x[21]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x198,2); guest_float_store((uintptr_t)cam+0x19c,3);
+        assert(LOAD(0x23cecb4,9)==pad_y && fabsf(LOAD(0x23cecf8,1)-(2-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x23ced0c,9)==pad_x && fabsf(LOAD(0x23ced4c,1)-(3-100*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x23ced4c,1)==3);   // the gyro path's join reads the offset with no stick load before it
+        // Climbing (Tail): the pad's stick on both loads, yaw +0xc0 and pitch +0xb4 get the degrees
+        SAMPLE(100,-50); c.x[20]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0xc0,7); guest_float_store((uintptr_t)cam+0xb4,8);
+        assert(LOAD(0x23d4b14,12)==pad_x && LOAD(0x23d4b1c,13)==pad_y);
+        assert(fabsf(LOAD(0x23d4f34,0)-(7-100*DEG_PER_COUNT))<1e-5f && fabsf(LOAD(0x23d5028,1)-(8-50*DEG_PER_COUNT))<1e-5f);
+        // Climbing an object: the patched mov has set x22 = x19 + 0x88; the pitch load writes no register but s1
+        SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[22]=(uintptr_t)cam+0x88;
+        guest_float_store((uintptr_t)cam+0x88,4); guest_float_store((uintptr_t)cam+0x90,5);
+        assert(LOAD(0x23c3d64,1)==pad_y && fabsf(LOAD(0x23c3d70,1)-(4-50*DEG_PER_COUNT))<1e-5f);
+        assert(c.x[22]==(uintptr_t)cam+0x88);
+        assert(LOAD(0x23c3dd0,1)==pad_x && fabsf(LOAD(0x23c3dd8,1)-(5-100*DEG_PER_COUNT))<1e-5f);
+        // Waterfall climbing: the yaw is loaded into w8 as bits; the height (stick y) stays the game's
+        {
+            float wf[0x20]={0}; uint64_t keep29=c.x[29]; c.x[29]=(uintptr_t)(wf+0x10);
+            SAMPLE(100,-50); c.x[22]=(uintptr_t)input; wf[0x10-0x0d]=11;   // [x29-0x34]
+            assert(LOAD(0x23dced8,13)==pad_x);
+            c.x[30]=MOD_MAIN_BASE+0x23dd070+4; c.x[8]=~0ull; load_hook(&c);
+            float w; uint32_t wb=(uint32_t)c.x[8]; memcpy(&w,&wb,4);
+            assert(c.x[8]>>32==0 && fabsf(w-(11-100*DEG_PER_COUNT))<1e-5f);
+            assert(LOAD(0x23dd008,9)==guest_float((uintptr_t)input+0x424));
+            assert(sample_watched==sample.generation && sample_watched_mode==MODE_WATERFALL);
+            c.x[29]=keep29;
+        }
+        // Dialogue: the yaw stick load is also the input test, so with the pad's x at rest it gives a tiny value in the
+        // mouse's direction (input, no turn) and the yaw gets the degrees
+        {
+            float keep_x=pad_x; pad_x=0;
+            SAMPLE(100,-50); c.x[23]=(uintptr_t)input;
+            guest_float_store((uintptr_t)cam+0x5c,1); guest_float_store((uintptr_t)cam+0x64,2);
+            float tx=LOAD(0x23c54d4,11);
+            assert(tx>0 && tx<1e-9f && fabsf(LOAD(0x23c5554,1)-(2-100*DEG_PER_COUNT))<1e-5f);
+            assert(LOAD(0x23c542c,11)==pad_y && fabsf(LOAD(0x23c546c,1)-(1-50*DEG_PER_COUNT))<1e-5f);
+            SAMPLE(0,-50); c.x[23]=(uintptr_t)input; assert(LOAD(0x23c54d4,11)==0);   // no mouse x: the pad's 0
+            pad_x=keep_x;
+        }
+        // Shield surfing: stick y keeps the mouse (other parameters follow it), the pitch +0xdc gets the degrees and the
+        // pitch turn the game made from y is cut to the pad's share (the turn squares y)
+        {
+            uint64_t ssp[0x10]={0}, keep_sp=c.sp; c.sp=(uintptr_t)ssp;
+            SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+            float total=guest_float((uintptr_t)input+0x424);
+            guest_float_store((uintptr_t)cam+0xdc,12); guest_float_store((uintptr_t)ssp+0x10,0.3f);
+            guest_float_store((uintptr_t)ssp+0x3c,20);
+            assert(LOAD(0x23d0100,1)==pad_x && LOAD(0x23d0104,0)==total);
+            assert(fabsf(LOAD(0x23d02ac,0)-(12-50*DEG_PER_COUNT))<1e-5f);
+            float cut=LOAD(0x23d0a34,0);
+            assert(fabsf(cut-0.3f*(pad_y*fabsf(pad_y))/(total*fabsf(total)))<1e-6f);
+            assert(LOAD(0x23d0a34,0)==0.3f);   // once
+            assert(fabsf(LOAD(0x23d087c,9)-(20-100*DEG_PER_COUNT))<1e-5f);
+            c.sp=keep_sp;
+        }
+        // The stick mode leaves every load to the game
+        mode=0; c.x[20]=(uintptr_t)input; assert(LOAD(0x23cb274,8)==guest_float((uintptr_t)input+0x420)); mode=1;
+        #undef LOAD
+        #undef SAMPLE
+    }
+    puts("direct mouse: aiming, scope, ability, Recall cursor, horse, Purah Pad, lock-on, bow lock-on, climbing, waterfall, dialogue and shield cameras in degrees passed");
+    puts("direct mouse: one turn rate, linear pitch, ability gains and the hold after a handoff passed");
+    puts("direct mouse: a mouse shake followed side by side and released at rest, not a slow turn nor small swings passed");
 }
 '''
 
@@ -291,6 +506,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='totk-mouse-') as tmp:
         folder = Path(tmp)
         (folder / 'patches.h').write_text('#define RT_PATCH_PAGE 0x7003adf000ull\n')
+        (folder / 'layout.h').write_text('#define MOD_MAIN_BASE 0x7000000000ull\n')
         source = folder / 'check.c'
         source.write_text(HARNESS)
         exe = folder / ('check.exe' if os.name == 'nt' else 'check')

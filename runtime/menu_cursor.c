@@ -385,3 +385,14 @@ void menu_cursor_poll(uint64_t *buttons) {
         else pending_a = 1, pending_node = at, pending_until = now + 300;
     }
 }
+
+// The L ability wheel or a D-pad strip (materials, weapons, shields, bows) has the focus: 1 / 0, -1 with the menu
+// cursor off (the screens are not read). input.c asks while L or the D-pad is held, before it gives the mouse to their
+// selectors: L also soothes the horse and turns menu tabs, the D-pad does other things too.
+int menu_cursor_shortcut(void) {
+    if (!enabled()) return -1;
+    Focus f = focus_now();
+    char nm[48] = "";
+    if (f.screen) layout_name(f.screen, nm, sizeof nm);
+    return f.screen && (!strcmp(nm, "ShortCutMainItem_00") || !strcmp(nm, "ShortCut_00"));
+}

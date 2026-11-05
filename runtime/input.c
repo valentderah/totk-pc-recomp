@@ -608,6 +608,8 @@ int input_pad_stick_percent(double pct[2]) {
     return ok;
 }
 
+static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_buttons_last)
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -646,6 +648,10 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             pick(&sr[0], &sr[1], k[0], k[1]);
             int selector = b & (1ull << B_L) ? 1 : b & (1ull << B_UP) ? 2 :
                            b & (1ull << B_LEFT) ? 3 : b & (1ull << B_RIGHT) ? 4 : 0;
+            // Only while the wheel or a strip is on screen (menu_cursor.c reads the focused screen): L also soothes the
+            // horse and turns menu tabs, the D-pad does other things too, and then the mouse stays on the camera.
+            // Before the screens were read (the menu cursor off) the buttons alone decide, as before.
+            if (selector && menu_cursor_shortcut() == 0) selector = 0;
             mouse_camera(k, selector);
             // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there,
             // the scroll wheel zooms (map_zoom_stick). Elsewhere the wheel is unbound; its notches are dropped.
@@ -656,6 +662,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             if (zoom) pick(&sr[0], &sr[1], 0, zoom);
             int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
+            // A mouse shake (mouse_direct.c) moves the stick with the mouse, side by side, and lets go when it rests
+            else if (input_direct_mouse_shake()) sr[0] = input_direct_mouse_shake() * STICK_MAX, sr[1] = 0;
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();
             if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;
@@ -679,8 +687,11 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     if (overlay) menu_perf_cycle();
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
+    __atomic_store_n(&g_buttons_last, b, __ATOMIC_RELAXED);
     *buttons = b; *lx = sl[0]; *ly = sl[1]; *rx = sr[0]; *ry = sr[1];
 }
+
+uint64_t input_buttons_last(void) { return __atomic_load_n(&g_buttons_last, __ATOMIC_RELAXED); }
 
 // Text entry (swkbd_*.c): while it is open the game reads no input, as behind the keyboard applet; after it closes
 // the game reads none until every button and stick direction is released, so the press that closed it stays there.
