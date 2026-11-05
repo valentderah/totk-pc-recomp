@@ -51,8 +51,12 @@
 #define HAND_MAX 3.0f
 
 static int direct_mode(void) {
-    // cfg_value: unset is the settings table's default (direct), as the menu shows it
-    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
+    const char *mode = cfg_value("TOTK_MOUSE_MODE");
+    return (!strcmp(mode, "direct") || !strcmp(mode, "smooth")) && rt_patch_enabled(rt_patch_set("mouse_direct"));
+}
+
+static int is_smooth_mode(void) {
+    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "smooth");
 }
 
 static uint64_t last_update;
@@ -406,18 +410,57 @@ static void camera_input(Cpu *c) {
             double hz = frame_step_limit_hz();
             if (hz > 0) ratio = (float)(30 / hz);
         }
-        if (isfinite(ratio) && ratio > 0 && sensitivity > 0 && (dx || dy)) {
+        if (isfinite(ratio) && ratio > 0 && (sensitivity > 0 || is_smooth_mode()) && (dx || dy)) {
             if (accept) mouse_input_object = c->x[20];
             float x, y;
             memcpy(&x, &c->v[rx], sizeof x);
             memcpy(&y, &c->v[10], sizeof y);
+            float use_dx = (float)dx, use_dy = (float)dy;
+            if (is_smooth_mode()) {
+                static float filt_dx, filt_dy;
+                static uint64_t last_smooth_ns;
+                uint64_t now_ns = plat_now_ns();
+                if (cfg_bool("TOTK_MOUSE_INVERT_Y")) dy = -dy;
+                int smooth_ms = cfg_int("TOTK_MOUSE_SMOOTH_MS");
+                if (smooth_ms > 0 && last_smooth_ns) {
+                    float dt = (float)(now_ns - last_smooth_ns) * 1e-9f;
+                    if (dt > 0.0f && dt < 0.1f) {
+                        float tau = (float)smooth_ms * 0.001f;
+                        float alpha = 1.0f - expf(-dt / tau);
+                        filt_dx += alpha * ((float)dx - filt_dx);
+                        filt_dy += alpha * ((float)dy - filt_dy);
+                    } else {
+                        filt_dx = (float)dx;
+                        filt_dy = (float)dy;
+                    }
+                } else {
+                    filt_dx = (float)dx;
+                    filt_dy = (float)dy;
+                }
+                last_smooth_ns = now_ns;
+                use_dx = filt_dx;
+                use_dy = filt_dy;
+
+                float look_speed = (float)cfg_double("TOTK_MOUSE_LOOK_SPEED");
+                if (look_speed > 0.0f) sensitivity = look_speed / DEG_PER_COUNT;
+
+                uint64_t held = guest_pointer(c->x[20] + 0x148);
+                int is_scope = ((held >> 32) & 1) != 0;
+                float mult = 1.0f;
+                if (is_scope) {
+                    mult = (float)cfg_double("TOTK_MOUSE_SCOPE_MULT");
+                } else if ((flags & 1) == 0 && (player & PLAYER_BOW) && (input_buttons_last() & (1ull << B_ZR))) {
+                    mult = (float)cfg_double("TOTK_MOUSE_AIM_MULT");
+                }
+                if (mult > 0.0f) sensitivity *= mult;
+            }
             float hand = HAND_PER_COUNT * sensitivity / ratio;
-            next.motion[0] = fminf(HAND_MAX, fmaxf(-HAND_MAX, dx * hand * (flags & 2 ? -1 : 1)));
-            next.motion[1] = fminf(HAND_MAX, fmaxf(-HAND_MAX, -dy * hand * (flags & 4 ? -1 : 1)));
-            next.angle[0] = -dx * DEG_PER_COUNT * sensitivity * (flags & 2 ? -1 : 1);
-            next.angle[1] = dy * DEG_PER_COUNT * sensitivity * (flags & 4 ? -1 : 1);
+            next.motion[0] = fminf(HAND_MAX, fmaxf(-HAND_MAX, use_dx * hand * (flags & 2 ? -1 : 1)));
+            next.motion[1] = fminf(HAND_MAX, fmaxf(-HAND_MAX, -use_dy * hand * (flags & 4 ? -1 : 1)));
+            next.angle[0] = -use_dx * DEG_PER_COUNT * sensitivity * (flags & 2 ? -1 : 1);
+            next.angle[1] = use_dy * DEG_PER_COUNT * sensitivity * (flags & 4 ? -1 : 1);
             // stick_sens multiplies the game's stick turn rates (camera_speed.c): the mouse divides it out
-            if (accept) mouse_stick_add(dx, dy, STICK_PER_COUNT * sensitivity / (ratio * cam_speed_applied()), ability,
+            if (accept) mouse_stick_add(use_dx, use_dy, STICK_PER_COUNT * sensitivity / (ratio * cam_speed_applied()), ability,
                                         &x, &y);
             uint32_t xb, yb;
             memcpy(&xb, &x, sizeof xb);
@@ -427,7 +470,8 @@ static void camera_input(Cpu *c) {
             static int logged;
             if (!logged) {
                 logged = 1;
-                rt_log("mouse: direct camera input after the stick dead zone, clamp and exponent");
+                rt_log("mouse: %s camera input after the stick dead zone, clamp and exponent",
+                       is_smooth_mode() ? "smooth" : "direct");
             }
         }
     }
@@ -558,8 +602,13 @@ static void hand_input(Cpu *c) {
             if (ml->hand_x_sp) x = guest_float(c->sp + ml->hand_x_sp);
             else memcpy(&x, &c->v[ml->hand_x_reg], sizeof x);
             memcpy(&y, &c->v[15], sizeof y);
-            x += m.motion[0];
-            y += m.motion[1];
+            float hmult = 1.0f;
+            if (is_smooth_mode()) {
+                hmult = (float)cfg_double("TOTK_MOUSE_ULTRAHAND_MULT");
+                if (hmult <= 0.0f) hmult = 1.0f;
+            }
+            x += m.motion[0] * hmult;
+            y += m.motion[1] * hmult;
             uint32_t bits;
             if (ml->hand_x_sp) guest_float_store(c->sp + ml->hand_x_sp, x);
             else memcpy(&bits, &x, sizeof bits), c->v[ml->hand_x_reg] = bits;

@@ -310,10 +310,19 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
-# Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
+# Mouse camera mode: direct (default), smooth, or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
+# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Smooth adds exponential
+# motion filtering, independent look speed, zoom-aware aim and scope scaling, and Ultrahand tuning. Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
+#
+# Smooth mouse mode settings (mouse_mode = smooth):
+# mouse_look_speed = 0.08
+# mouse_smooth_ms = 8
+# mouse_aim_mult = 0.80
+# mouse_scope_mult = 0.40
+# mouse_ultrahand_mult = 1.50
+# mouse_invert_y = 0
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
 # right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
