@@ -845,6 +845,11 @@ static void ps_set(uint64_t addr, uint64_t n, uint8_t v) {
 }
 
 static void ww_open(void) {
+    const char *force = getenv("TOTK_WATCH");
+    if (force && !strcmp(force, "soft")) {
+        fprintf(stderr, "platform: TOTK_WATCH=soft: the soft-dirty fallback is used even though userfaultfd exists\n");
+        return;
+    }
     int fd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
     struct uffdio_api api = {.api = UFFD_API,
                              .features = UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED};
@@ -862,6 +867,75 @@ static void ww_open(void) {
     ww_fd = fd;
 }
 
+// ---- soft-dirty write watch: the fallback when asynchronous userfaultfd write protection is unavailable (a kernel
+// older than 6.7, or a userfaultfd the distribution does not allow). /proc/self/clear_refs (4) clears the soft-dirty bit
+// of every page in the process and /proc/self/pagemap reports bit 55 for the pages written since then. The bits are
+// process-wide, so a clear drops the other ranges' history too: a range is reported from the bits as they stand, and the
+// bits are cleared only once every watched range has been queried in the current epoch. A range that is never queried
+// keeps the epoch open, which reports too much rather than too little — slow, but never stale.
+enum { SD_MAX_RANGES = 32 };
+static struct { uint64_t addr, n; uint8_t queried; } sd_range[SD_MAX_RANGES];
+static int sd_n, sd_clear = -1, sd_pagemap = -1, sd_on;
+static PlatMutex sd_lock = PLAT_MUTEX_INIT;
+
+static int sd_init(void) {
+    if (sd_on) return 1;
+    plat_mutex_lock(&sd_lock);
+    if (!sd_on) {
+        if (sd_clear < 0) {
+            sd_clear = open("/proc/self/clear_refs", O_WRONLY | O_CLOEXEC);
+            sd_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+        }
+        if (sd_clear >= 0 && sd_pagemap >= 0) {
+            sd_on = 1;
+            fprintf(stderr, "platform: soft-dirty write watch: no asynchronous userfaultfd write protection, scanning "
+                            "/proc/self/pagemap instead (a watched range is reported in full until the epoch closes)\n");
+        }
+    }
+    plat_mutex_unlock(&sd_lock);
+    return sd_on;
+}
+
+static void sd_clear_all(void) {
+    if (sd_clear < 0) return;
+    if (pwrite(sd_clear, "4", 1, 0) != 1) sd_on = 0;   // the kernel dropped the facility: report nothing as written
+    for (int i = 0; i < sd_n; i++) sd_range[i].queried = 0;
+}
+
+static void sd_track(uint64_t addr, uint64_t n) {
+    if (!sd_init()) return;
+    plat_mutex_lock(&sd_lock);
+    for (int i = 0; i < sd_n; i++)
+        if (sd_range[i].addr == addr) {
+            plat_mutex_unlock(&sd_lock);
+            return;
+        }
+    if (sd_n < SD_MAX_RANGES) {
+        sd_range[sd_n].addr = addr;
+        sd_range[sd_n].n = n;
+        sd_range[sd_n].queried = 1;
+        sd_n++;
+    }
+    plat_mutex_unlock(&sd_lock);
+}
+
+static uint64_t sd_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max) {
+    size_t want = (size_t)(n / PG);
+    uint64_t buf[256];
+    uint64_t got = 0;
+    for (size_t done = 0; done < want && got < max;) {
+        size_t take = want - done < 256 ? want - done : 256;
+        ssize_t r = pread(sd_pagemap, buf, take * sizeof buf[0], (off_t)((addr / PG + done) * sizeof buf[0]));
+        if (r <= 0) break;
+        size_t entries = (size_t)r / sizeof buf[0];
+        for (size_t i = 0; i < entries && got < max; i++)
+            if ((buf[i] >> 55) & 1) pages[got++] = addr + (done + i) * PG;
+        done += entries;
+        if (entries < take) break;
+    }
+    return got;
+}
+
 int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
     plat_mutex_lock(&vm_lock);
     if (!pstate) {
@@ -869,6 +943,7 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
         pstate = p == MAP_FAILED ? NULL : p;
     }
     if (watch && ww_fd < 0 && pm_fd < 0) ww_open();
+    if (watch && ww_fd < 0) sd_track(addr, n);   // no asynchronous userfaultfd: the soft-dirty fallback carries the watch
     void *p = pstate && addr + n <= PS_LIMIT
                   ? mmap((void *)(uintptr_t)addr, n, PROT_NONE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0)
@@ -927,7 +1002,21 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
 
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !n) return 0;
-    if (ww_fd < 0) return UINT64_MAX;
+    if (ww_fd < 0) {
+        if (!sd_on) return UINT64_MAX;
+        plat_mutex_lock(&sd_lock);
+        uint64_t got = sd_written(addr, n, pages, max);
+        if (reset) {
+            int all = 1;
+            for (int i = 0; i < sd_n; i++)
+                if (sd_range[i].addr == addr) sd_range[i].queried = 1;
+            for (int i = 0; i < sd_n; i++)
+                if (!sd_range[i].queried) all = 0;
+            if (all) sd_clear_all();
+        }
+        plat_mutex_unlock(&sd_lock);
+        return got;
+    }
     struct page_region r[256];
     uint64_t got = 0;
     for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
