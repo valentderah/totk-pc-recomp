@@ -153,6 +153,35 @@ int plat_cpu_cores(uint64_t *all, uint64_t *first) {
     return cores;
 }
 
+// The L3 group of cpu0 and everything outside it. A chiplet CPU (the BC-250's two CCX, a Zen 2/3 desktop part) exposes
+// one shared_cpu_map per L3 instance, and a process whose guest and host threads share one cache evicts itself; on a
+// monolithic die the map covers every CPU and this reports 0.
+int plat_cpu_cache_groups(uint64_t *first, uint64_t *second) {
+    *first = *second = 0;
+    uint64_t all = 0, one = 0;
+    if (!plat_cpu_cores(&all, &one)) return 0;
+    FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_map", "r");
+    if (!f) return 0;
+    char buf[64] = {0};
+    int got = fscanf(f, "%63s", buf) == 1;
+    fclose(f);
+    if (!got) return 0;
+    uint64_t a = strtoull(buf, NULL, 16) & all, b = all & ~a;
+    if (!a || !b || __builtin_popcountll(a) < 4 || __builtin_popcountll(b) < 4) return 0;   // one group, or lopsided
+    *first = a;
+    *second = b;
+    return 1;
+}
+
+void plat_thread_pin(uint64_t mask) {
+    if (!mask) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int i = 0; i < 64; i++)
+        if (mask >> i & 1) CPU_SET(i, &set);
+    sched_setaffinity(0, sizeof set, &set);
+}
+
 // Linux has no process-wide affinity: each thread of /proc/self/task gets the mask, and threads started later inherit
 // it from the thread that starts them.
 int plat_process_affinity(uint64_t mask) {
