@@ -212,6 +212,10 @@
 # NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
 # Read at start.
 # dlaa = 0
+# What dlaa runs: dlss (NVIDIA DLSS, above) or fsr (AMD FSR: FSR 4 on Radeon RX 9000, 7000 and 6000 GPUs, FSR 3.1 on
+# others; Windows, with amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll from AMD's FSR SDK next to
+# totk.exe, which the setup downloads). The dlss mode below applies to both; dlss_preset is DLSS's only. Read at start.
+# dlaa_backend = dlss
 # What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
 # scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
 # to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows

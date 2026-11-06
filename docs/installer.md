@@ -24,6 +24,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
+  amd_fidelityfx_*_vk.dll        AMD FSR (loader and upscaler), downloaded by the setup's FSR step likewise
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -85,7 +86,13 @@ loads the saves 1.4.3 wrote.
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+8. **FSR** (the window's tick box, on by default, or `--fsr`; Windows with an AMD GPU): download
+   `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from AMD's FSR SDK repository
+   (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, tag `v2.4.0`, `Kits/FidelityFX/signedbin/`, AMD FSR SDK
+   license) into the install folder and check their sizes and SHA-256 (`steps.py`, `Fsr`). Both go in only when both
+   downloaded and matched. `dlaa_backend = fsr` loads them from the folder of totk.exe. Libraries already in the folder
+   are kept; without an AMD GPU the step only logs; a failed download warns and the next run tries again.
+9. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).

@@ -22,6 +22,9 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
   (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
+- AMD FSR 4 on Radeon RX 9000, 7000 and 6000 GPUs (FSR 3.1 on others), in the same modes as DLSS: the setup downloads
+  AMD's signed FSR SDK libraries (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, AMD FSR SDK license) when it
+  finds an AMD GPU; pick *Upscaler: AMD FSR* in the menu (Windows; not yet checked in play)
 - HDR10 output with peak, game and HUD brightness settings
 - 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
@@ -53,7 +56,8 @@ Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines 
 2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once. With
    an NVIDIA RTX GPU it also downloads NVIDIA DLSS, unless you untick *Download NVIDIA DLSS*; turn DLSS on in the
-   menu (F1).
+   menu (F1). With an AMD GPU it downloads AMD FSR the same way; in the menu turn on *NVIDIA DLSS / DLAA* and pick
+   *Upscaler: AMD FSR*.
 4. Play `totk.exe` from the install folder.
 
 ### Linux

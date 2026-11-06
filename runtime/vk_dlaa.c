@@ -11,6 +11,10 @@
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
+//
+// dlaa_backend = fsr (TOTK_DLAA_BACKEND, read at start) hands the same frame to AMD's FSR instead (vk_ffx.c): the
+// arming, the jitter, the motion vectors, the masks and the copy of the result below are shared, and only the call that
+// upscales differs (evaluate). NGX is then never loaded.
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -26,6 +30,7 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "vk_ffx.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
@@ -112,6 +117,16 @@ int vk_dlaa_wanted(void) {
     return wanted;
 }
 
+// FSR instead of DLSS (TOTK_DLAA_BACKEND=fsr), fixed for the run like dlaa: the backend's extensions are chosen at
+// device creation. On Linux FSR is not available, and this choice leaves DLAA off rather than falling back to DLSS.
+static int fsr_backend(void) {
+    static int fsr = -1;
+    if (fsr < 0) fsr = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
+    return fsr;
+}
+
+static int ngx_wanted(void) { return vk_dlaa_wanted() && !fsr_backend(); }
+
 static int core_load(void) {
     if (N.tried) return N.loaded;
     N.tried = 1;
@@ -167,7 +182,7 @@ static int listed(const char *const *list, uint32_t n, const char *s) {
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
-    if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (!ngx_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < ni; i++)
         if (!listed(ext, *n, ie[i]) && *n < max) ext[(*n)++] = ie[i];
 }
@@ -176,7 +191,11 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
                          uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
-    if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (fsr_backend()) {
+        vk_ffx_device_exts(have, nhave, ext, n, max);
+        return;
+    }
+    if (!ngx_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < nd; i++) {
         int ok = 0;
         for (uint32_t k = 0; k < nhave && !ok; k++) ok = !strcmp(have[k].extensionName, de[i]);
@@ -226,7 +245,11 @@ static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
 #endif
 
 void vk_dlaa_init(void) {
-    if (!vk_dlaa_wanted() || !core_load()) return;
+    if (vk_dlaa_wanted() && fsr_backend()) {
+        vk_ffx_init();
+        return;
+    }
+    if (!ngx_wanted() || !core_load()) return;
 #ifdef _WIN32
     wchar_t wdir[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
@@ -263,7 +286,10 @@ void vk_dlaa_init(void) {
            driver ? "; the driver needs an update" : "");
 }
 
-int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+// The backend of this run came up: DLSS through NGX, or FSR (vk_ffx.c).
+static int be_available(void) { return fsr_backend() ? vk_ffx_available() : N.available; }
+
+int vk_dlaa_available(void) { return vk_dlaa_wanted() && be_available(); }
 
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
@@ -300,6 +326,7 @@ static struct {
         VkImageView mask_view, chars_view[2];
         int chars_cur, chars_ok; // chars[chars_cur] is written next; chars_ok: the other holds last frame's
         NgxHandle *feat;
+        void *ffx;               // the FSR context instead (fsr_backend)
         uint64_t used;           // evals count when it last ran
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
@@ -341,7 +368,7 @@ static struct {
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+static int dl_active(void) { return be_available() && !D.failed && D.on; }
 
 static void dl_fail(const char *what, NgxResult r) {
     rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
@@ -377,6 +404,7 @@ static void free_size(struct Size *e) {
         if (e->chars[i]) vmaDestroyImage(c->vma, e->chars[i], e->chars_mem[i]);
     }
     if (e->feat) N.release(e->feat);
+    if (e->ffx) vk_ffx_release(e->ffx);
     memset(e, 0, sizeof *e);
 }
 
@@ -966,6 +994,57 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// The camera FSR asks for (its depth handling and its disocclusion use them; DLSS does not): the near and far distances,
+// the vertical field of view, and whether depth 1 is near and the far plane infinite. From the projection in rows 7-10
+// of this frame's scene camera block (CAM_BYTES), rows of a row-major 4x4 with OpenGL clip depth as dlaa_mv.comp reads
+// the view-projection: clip z = A z + B, clip w = s z with s = +-1 (row 10 is (0, 0, s, 0)), so the depth range's ends
+// (ndc z = -1 and +1, depth 0 and 1) sit at z = B / (s ndc - A), and the field of view comes from row 8's
+// 1 / tan(fov / 2). A frame whose block does not have that shape (or has no camera block) reuses the last camera that
+// did: FSR's contexts are created with the depth flags, and the first run (1.4.3 at the title screen, RX 9070 XT) read
+// 0.1 m to 1001 m, 45 degrees, depth not inverted, while later contexts of the dynamic resolution's other sizes got the
+// defaults and inverted, infinite depth. Before any camera was read the defaults are 0.1 m to 1000 m, 50 degrees, depth
+// not inverted. The first read and the first miss are logged, each once.
+static void cam_params(float *cn, float *cf, float *fov, int *inv, int *inf) {
+    static struct { int ok; float cn, cf, fov; int inv, inf; } last = {0, 0.1f, 1000.0f, 0.8727f, 0, 0};
+    *cn = last.cn, *cf = last.cf, *fov = last.fov, *inv = last.inv, *inf = last.inf;
+    static int logged_ok, logged_miss;
+    const float *p = D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr + 7 * 16, 64) : NULL;
+    const char *why = "no camera block";
+    if (p) {
+        const float *r8 = p + 4, *r9 = p + 8, *r10 = p + 12;
+        double s = r10[2], A = r9[2], B = r9[3], f = fabs((double)r8[1]);
+        double z0 = 0, z1 = 0;
+        why = "not a perspective projection";
+        if (fabs(fabs(s) - 1.0) < 1e-3 && fabs(r10[0]) < 1e-4 && fabs(r10[1]) < 1e-4 && fabs(r10[3]) < 1e-4 &&
+            f > 0.05 && f < 20.0 && fabs(B) > 1e-9) {
+            double d0 = -s - A, d1 = s - A;   // denominators at depth 0 (ndc -1) and depth 1 (ndc +1)
+            z0 = fabs(d0) > 1e-9 ? fabs(B / d0) : INFINITY;
+            z1 = fabs(d1) > 1e-9 ? fabs(B / d1) : INFINITY;
+            double nz = fmin(z0, z1), fz = fmax(z0, z1);
+            if (nz > 1e-4 && nz < 100.0 && fz > nz) {
+                *inv = z1 < z0;
+                *inf = !isfinite(fz) || fz > 1e7;
+                *cn = (float)nz, *cf = *inf ? 1e30f : (float)fz, *fov = (float)(2.0 * atan(1.0 / f));
+                last.ok = 1, last.cn = *cn, last.cf = *cf, last.fov = *fov, last.inv = *inv, last.inf = *inf;
+                why = NULL;
+            } else {
+                why = "depth range out of bounds";
+            }
+        }
+    }
+    if (!why && !logged_ok) {
+        logged_ok = 1;
+        char fartxt[32];   // not "far": windows.h defines that as a macro
+        if (*inf) snprintf(fartxt, sizeof fartxt, "infinite");
+        else snprintf(fartxt, sizeof fartxt, "%.0f m", *cf);
+        rt_log("fsr: camera from c4: near %.3f m, far %s, vertical fov %.1f degrees, depth %s", *cn, fartxt,
+               *fov * 57.29578, *inv ? "inverted" : "not inverted");
+    } else if (why && !logged_miss) {
+        logged_miss = 1;
+        rt_log("fsr: camera block not read (%s): %s", why, last.ok ? "the last camera read is kept" : "defaults");
+    }
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -981,7 +1060,11 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     struct Size *e = size_for(cb, w, h, ow, oh);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
-    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
+    int fsr = fsr_backend();
+    // FSR is handed whole images, not views: the light target and the depth must be their image's first level and layer
+    if (fsr && (t->level || t->base_layer || z->level || z->base_layer))
+        return dl_fail("FSR input (the scene targets are not level 0, layer 0 of their images)", 0);
+    if (!fsr && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
@@ -1002,8 +1085,38 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;
-    rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
+    rec_drain();   // NGX and FSR record into the command buffer themselves: the recorder thread must have made every call so far
     if (timed) T.cpu_drain += kern_now_ns() - c0;
+    // The time since the previous evaluation, which DLSS and FSR weigh their history by; 60 fps before the first and
+    // after a gap (a pause, a load), where no history carries over anyway.
+    uint64_t now = plat_now_ns();
+    double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
+    D.last_eval_ns = now;
+    float dt_ms = dt > 0 && dt < 100 ? (float)dt : 16.67f;
+    if (fsr) {
+        float cn, cf, fov;
+        int inv, inf;
+        cam_params(&cn, &cf, &fov, &inv, &inf);
+        if (!e->ffx) {
+            e->ffx = vk_ffx_create(w, h, ow, oh, inv, inf);
+            if (!e->ffx) return dl_fail("FSR context creation", 0);
+            D.reset = 1;
+        }
+        if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+        // The same bias mask DLSS would get, as FSR's reactive mask: how much to favour this frame's colour
+        VkFfxDispatch fd = {.color = {t->image, t->format, w, h}, .depth = {z->image, z->format, w, h},
+                            .mv = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h},
+                            .out = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh},
+                            .jx = jx, .jy = jy, .dt_ms = dt_ms, .cam_near = cn, .cam_far = cf, .fov_y = fov,
+                            .reset = D.reset};
+        if (mk) fd.reactive = (VkFfxImage){mk->mask, VK_FORMAT_R8_UNORM, w, h};
+        else if (masked) fd.reactive = (VkFfxImage){e->mask, VK_FORMAT_R8_UNORM, w, h};
+        c0 = timed ? kern_now_ns() : 0;
+        int ok = vk_ffx_dispatch(e->ffx, cb, &fd);
+        if (timed) T.cpu_ngx += kern_now_ns() - c0;
+        if (!ok) return dl_fail("FSR dispatch", 0);
+        goto upscaled;   // the copy of the result and what follows are the same as DLSS's
+    }
     if (!e->feat) {
         p_setu(p, "CreationNodeMask", 1);
         p_setu(p, "VisibilityNodeMask", 1);
@@ -1059,17 +1172,13 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     p_setu(p, "DLSS.Render.Subrect.Dimensions.Height", h);
     p_setf(p, "DLSS.Pre.Exposure", 1.0f);
     p_setf(p, "DLSS.Exposure.Scale", 1.0f);
-    // The time since the previous evaluation, which DLSS weighs its history by; 60 fps before the first and after a
-    // gap (a pause, a load), where no history carries over anyway.
-    uint64_t now = plat_now_ns();
-    double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
-    D.last_eval_ns = now;
-    p_setf(p, "FrameTimeDeltaInMsec", dt > 0 && dt < 100 ? (float)dt : 16.67f);
+    p_setf(p, "FrameTimeDeltaInMsec", dt_ms);
     c0 = timed ? kern_now_ns() : 0;
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
     if (timed) T.cpu_ngx += kern_now_ns() - c0;
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
-    if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's own commands
+upscaled:
+    if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's or FSR's own commands
     D.reset = 0;
     D.last = e, e->used = D.evals + 1;
     full_barrier(cb);
@@ -1109,13 +1218,23 @@ static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+// A scene DLAA may run on: DLAA_SCENE_MIN_W wide at least, and at least a quarter of the output's width, below which
+// no mode scales (Ultra Performance renders a third, the game's dynamic resolution a little less). At a 3440x1440
+// output a 387x288 G-buffer and light target (seen while loading, 1.4.3) armed the frame and FSR scaled it ninefold
+// into the output.
+static int scene_wide(uint32_t w) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    return w >= DLAA_SCENE_MIN_W && (uint64_t)w * 4 >= o[0];
+}
+
 void vk_dlaa_pass(VkExec *ex) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
     if (!dl_active() || D.done) return;
     // The G-buffer: several colour targets with a D32F depth of at least DLAA_SCENE_MIN_W wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
-    if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W) {
+    if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && scene_wide(z->width)) {
         D.gbuf = 1, D.armed = 0;
         // target 0 is the object-class buffer (RGBA8, the scene size): the characters' bias mask reads its green. A
         // smaller pass of the same shape (640x360, seen while loading) does not replace the scene's in the same frame.
@@ -1129,7 +1248,7 @@ void vk_dlaa_pass(VkExec *ex) {
     // D32F depth after the lighting (852x480 under a 1704x960 scene), and DLSS ran on that and wrote its picture into
     // the scene's own light target, which left every object black.
     if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W &&
+        c->width == z->width && c->height == z->height && scene_wide(c->width) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d) {
         int first = !D.armed;
@@ -1174,6 +1293,7 @@ static void dlss_mode(void) {
 
 // The preset, read again when a setting changed (the menu); a different one recreates the features at the next DLAA run.
 static void preset_check(void) {
+    if (fsr_backend()) return;   // DLSS models only: FSR's version is fixed at start (vk_ffx_init)
     unsigned v = cfg_version();
     if (v == D.cfg_seen) return;
     D.cfg_seen = v;
@@ -1190,9 +1310,9 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("TOTK_DLAA");
+    int on = be_available() && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
-        rt_log("dlaa: %s", on ? "on" : "off");
+        rt_log("dlaa: %s%s%s", on ? "on" : "off", on && fsr_backend() ? ", with " : "", on && fsr_backend() ? vk_ffx_version() : "");
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;

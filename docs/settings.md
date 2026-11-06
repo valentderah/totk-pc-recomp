@@ -156,6 +156,8 @@ Many rows below are developer tools that only act together with another setting 
 | `dlaa_survey` (default `0`) | `1` logs what is drawn into the light target that DLSS reads. | Adds log output and per-draw work. | Caution |
 | `dlaa_times` (default `0`) | `1` times the DLSS passes on the GPU. | Adds GPU timestamps and log lines. | Caution |
 | `dlss_reactive` (default `0`) | `1` builds a reactive mask for DLSS where it ran. | Changes how DLSS blends moving areas; a test setting. | Caution |
+| `fsr_debug` (default `0`) | `1` creates the FSR contexts (`dlaa_backend = fsr`) with AMD's API checks on, whose findings go to the log. | Adds log output and some CPU time per frame; a test setting. | Caution |
+| `fsr_jitter_sign` (default `1`) | `-1` hands FSR the camera jitter with the opposite sign (`dlaa_backend = fsr`). | With the wrong sign FSR's picture wobbles and loses detail; a test setting for checking the convention. | Caution |
 | `mv_check` | Frame interval; every that many DLSS frames copies the light target and motion images to host memory and logs how well the vectors explain the picture. | Costs a GPU-to-host copy and a comparison on the completion thread at each interval. | Caution |
 | `mv_survey` (default `0`) | `1` notes the uniform blocks of each scene draw and compares them with those of earlier frames. | Adds per-draw work and log output. | Caution |
 | `mvobj_all` (default `0`) | `1` also lists draws for object motion that read no object blocks (terrain and grass). | More draws are checked and listed, which costs time. | Caution |

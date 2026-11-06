@@ -129,6 +129,14 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
   vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+- FSR (`vk_ffx.c`, `dlaa_backend = fsr`, Windows). The same frame, jitter, motion vectors and masks go to AMD's FSR
+  instead of DLSS: `vk_dlaa.c` `evaluate` calls `vk_ffx_dispatch` where it would call NGX, and everything around it is
+  shared. `amd_fidelityfx_loader_vk.dll` (FSR SDK 2.4) is loaded at run time from the executable's folder and finds
+  `amd_fidelityfx_upscaler_vk.dll` next to it; only the descriptor layouts of `ffx_api_min.h` are compiled in. At
+  start the upscaler's versions for the device are listed and the newest FSR 4 is pinned where the DLL offers it (the
+  DLL decides which GPUs get it), else its default (FSR 3.1). `vk_device.c` enables `VK_KHR_cooperative_matrix` and
+  `VK_EXT_shader_float8` with their features when the device has them. FSR also asks for the camera's near and far
+  distances and field of view, which `cam_params` reads from the projection in the scene camera block.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

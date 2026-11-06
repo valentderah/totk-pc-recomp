@@ -552,7 +552,7 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'fsr', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()
@@ -717,6 +717,78 @@ class DlssTest(unittest.TestCase):
     def test_skipped_without_an_rtx_gpu(self):
         self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
         self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
+        self.assertEqual(self.warnings(), [])
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'FSR is Windows-only')
+class FsrTest(unittest.TestCase):
+    """The FSR step: off without --fsr, needs an AMD GPU, keeps a player's libraries, installs both files or none."""
+
+    NAMES = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, src = base / 'dest', base / 'temp', base / 'src'
+        for d in (self.dest, temp, src):
+            d.mkdir()
+        files = []
+        for i, name in enumerate(self.NAMES):
+            (src / name).write_bytes(bytes([65 + i]) * (1000 + i))
+            files.append((name, 1000 + i, steps.file_sha256(src / name)))
+        self.src = src
+        self.saved = steps.FSR_BASE, steps.FSR_FILES
+        steps.FSR_BASE = src.as_uri() + '/'   # urllib reads file: URLs as it reads https: ones
+        steps.FSR_FILES = tuple(files)
+        amd = {'devices': [{'name': 'AMD Radeon RX 9070 XT', 'api': [1, 4, 0], 'type': 2}]}
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=amd, reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(fsr=True))
+
+    def tearDown(self):
+        steps.FSR_BASE, steps.FSR_FILES = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def warnings(self):
+        return [json.loads(line)['id'] for line in self.ctx.reporter.out.getvalue().splitlines()
+                if json.loads(line)['type'] == 'warning']
+
+    def test_off_without_the_option(self):
+        self.ctx.options.fsr = False
+        self.assertEqual(steps.Fsr().run(self.ctx), {})
+        self.assertFalse(any((self.dest / n).exists() for n in self.NAMES))
+        self.assertNotEqual(steps.Fsr().key(self.ctx), steps.Fsr().key(SimpleNamespace(options=SimpleNamespace(fsr=True))))
+
+    def test_downloads_and_checks_both_libraries(self):
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.FSR_VERSION})
+        for n in self.NAMES:
+            self.assertEqual((self.dest / n).read_bytes(), (self.src / n).read_bytes())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertTrue(steps.Fsr().current(self.ctx, rec))
+        (self.dest / self.NAMES[1]).unlink()
+        self.assertFalse(steps.Fsr().current(self.ctx, rec))
+
+    def test_a_wrong_file_installs_neither(self):
+        name, size, _ = steps.FSR_FILES[1]
+        steps.FSR_FILES = (steps.FSR_FILES[0], (name, size, '0' * 64))
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'failed': True})
+        self.assertFalse(any((self.dest / n).exists() for n in self.NAMES))
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertEqual(self.warnings(), ['warn.fsr_download_failed'])
+        self.assertFalse(steps.Fsr().current(self.ctx, rec))
+
+    def test_keeps_the_players_libraries(self):
+        (self.dest / self.NAMES[1]).write_bytes(b'newer')
+        self.assertEqual(steps.Fsr().run(self.ctx), {'kept': True})
+        self.assertEqual((self.dest / self.NAMES[1]).read_bytes(), b'newer')
+        self.assertFalse((self.dest / self.NAMES[0]).exists())
+        self.assertEqual(self.warnings(), ['warn.fsr_kept'])
+
+    def test_skipped_without_an_amd_gpu(self):
+        self.ctx.host = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
+        self.assertEqual(steps.Fsr().run(self.ctx), {'skipped': 'no_amd'})
         self.assertEqual(self.warnings(), [])
 
 
