@@ -64,6 +64,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `vram_limit_mib` | Pretends the device-local memory budget is at most this many MiB, for the paths that react to the budget (`tex_vram_pressure`, mirror refusal); the driver knows nothing of it. | Lets a large card drive those paths; a low value drops released textures and refuses mirrors that would have fit. | Caution |
 | `background_window` | `1` keeps the window behind the user's windows, never fullscreen at start, and F11 keeps its place; SDL windows ignore it. | The window does not come to the front or flash, so it is easy to miss; meant for unattended runs. | Caution |
 | `gpu` | `vulkan` or `null`: the graphics back end; `null` has no GPU, completes every submit at once and returns zeros for texture reads. | `null` shows no picture; any other value stops the start with an error. | Caution |
 | `input` | `none` reports no input from the keyboard, mouse or controllers. | The game gets no controller input and the menu cursor stops following the mouse; `input_script` still applies. | Caution |
@@ -131,8 +132,8 @@ Many rows below are developer tools that only act together with another setting 
 | `pcss_k` (default `0.5`) | Depth-to-penumbra factor of soft shadows at 100 percent, for tuning. | Changes how wide soft shadows blur; has no effect while `pcss` is `0`. | Caution |
 | `pipe_sync` | Any value other than `0` or empty stops graphics pipelines from being built in the background. | Pipelines are built on the render path, which causes stutter when new effects appear. | Caution |
 | `push_stage` | `fs` pushes the descriptor set from the fragment stage instead of the vertex stage. | The log names the stage in use; the code does not say what changes in the picture. | Unknown |
-| `rec_end` (default `1`) | `0` lets the submitting thread end a recorded part again, as an older version did. | On some AMD cards the GPU hangs or the scene turns green and then white when a submission is split. | Risky |
-| `tex_vram_pressure` (default `90`) | Percent of the device-local memory budget above which unused released textures are dropped, 0 to 100; `0` is off. | A low value drops textures sooner and re-uploads them; `0` keeps them and lets a 4 GiB card spill into system memory. Also a slider in the menu. | Caution |
+| `rec_end` (default `1`) | `0` lets the submitting thread begin, end and submit a recorded part again, as older versions did. | On some AMD cards the GPU hangs or the scene turns green and then white when a submission is split. | Risky |
+| `tex_vram_pressure` (default `90`) | Percent of the device-local memory budget above which released textures are dropped, 0 to 100; `0` is off. First those the game has overwritten with a later texture and left alone for 30 s, then those that can be uploaded again. | A low value drops textures sooner and re-uploads them; `0` keeps them and lets the card spill into system memory. Also a slider in the menu. | Caution |
 | `txd_transpose` (default `1`) | `0` turns off the swap of gradient components for gradient texture samples. | Terrain textures turned across the screen show crawling patches again. | Caution |
 | `ubo_snapshot` (default `1`) | `0` binds live memory for uniform blocks; `ab` alternates with the `ab` blocks. | Without snapshots late draws read another object's matrix, so objects can be drawn in the wrong place. | Risky |
 | `vk_no_float64` (default `0`) | `1` clears the 64-bit float feature, so the translator lowers FP64 to FP32. | Shaders change, so the shader cache entries for it are made again; precision of FP64 shaders drops. | Caution |

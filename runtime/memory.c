@@ -288,6 +288,35 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     return R_OK;
 }
 
+// The runtime's readers of game objects (menu_cursor.c, mouse_direct.c) check every pointer before they follow it. An
+// OS query (plat_mem_readable: VirtualQuery) costs tens of microseconds in this process, and a reader that checks a
+// few dozen pointers at a time stalls the game thread for milliseconds. The game's objects live in the committed heap
+// and its globals in the modules' images, which are readable for as long as they are mapped: those answer from the
+// layout. Any other range asks the OS. The heap only shrinks when the game asks for it (mem_set_heap_size), not while
+// it runs.
+int mem_guest_readable(uint64_t a, uint64_t n) {
+    static uint64_t fast, slow;
+    if (a + n < a) return 0;
+    uint64_t hs = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE);
+    int ok = a >= L.heap.base && a + n <= L.heap.base + hs;
+    for (int i = 0; !ok && i < ldr_count(); i++) {
+        const RtLoaded *m = ldr_module(i);
+        ok = a >= m->base && a + n <= m->base + m->size;
+    }
+    if (ok) {
+        if (__atomic_add_fetch(&fast, 1, __ATOMIC_RELAXED) == 100000)
+            rt_log("memory: 100000 guest reads checked by the layout, %llu by the OS",
+                   (unsigned long long)__atomic_load_n(&slow, __ATOMIC_RELAXED));
+    } else {
+        ok = plat_mem_readable(a, n);
+        uint64_t s = __atomic_add_fetch(&slow, 1, __ATOMIC_RELAXED);
+        if (!(s & (s - 1)) && s >= 1024)   // 1024, 2048, 4096...: how often the layout could not answer
+            rt_log("memory: guest reads checked by the layout %llu, by the OS %llu",
+                   (unsigned long long)__atomic_load_n(&fast, __ATOMIC_RELAXED), (unsigned long long)s);
+    }
+    return ok;
+}
+
 // ---- module data permissions (0x02, 0x03) and module pages for QueryMemory
 static int module_index(uint64_t a) {
     for (int i = 0; i < ldr_count(); i++) {

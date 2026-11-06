@@ -167,6 +167,9 @@ void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen r
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
+int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be read without a fault: inside a loaded
+                                                           // module or the committed heap answered from the layout,
+                                                           // anything else by plat_mem_readable (an OS query)
 
 // ---- modules (loader.c)
 typedef struct {
@@ -313,6 +316,10 @@ int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
 void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
+void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
+void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
+int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 without a profile
+int probe_playtime(void);                                  // playtime.c: the file, the ticks and the save
 int probe_discord(void);                                   // discord_rpc.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c

@@ -57,6 +57,7 @@ extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
+int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -668,6 +669,8 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
+    static const UiTextId movie_aspect[] = {UI_MENU_MOVIE_ASPECT_KEEP, UI_MENU_MOVIE_ASPECT_STRETCH};
+    opt_choice("TOTK_MOVIE_ASPECT", UI_MENU_MOVIE_ASPECT, movie_aspect, 2, UI_MENU_MOVIE_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
@@ -696,13 +699,28 @@ static void tab_screen(float scale) {
     opt_end();
 }
 
+// Play time across runs (playtime.c), read only. Hidden while it is not counted (no profile directory).
+static void row_play_time(void) {
+    uint64_t total, session;
+    if (!playtime_get(&total, &session)) return;
+    char value[64], run[64], note[96];
+    snprintf(value, sizeof value, menu_text(UI_MENU_PLAY_TIME_HM), (unsigned long long)(total / 3600),
+             (unsigned)(total / 60 % 60));
+    snprintf(run, sizeof run, menu_text(UI_MENU_PLAY_TIME_HM), (unsigned long long)(session / 3600),
+             (unsigned)(session / 60 % 60));
+    snprintf(note, sizeof note, menu_text(UI_MENU_PLAY_TIME_SESSION), run);
+    opt_text_row("##play_time", menu_text(UI_MENU_PLAY_TIME), value, note, menu_text(UI_MENU_PLAY_TIME_DESC), false);
+}
+
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
+    opt_toggle("TOTK_FRAME_QUEUE", UI_MENU_FRAME_QUEUE, UI_MENU_FRAME_QUEUE_DESC);
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    row_play_time();
     opt_end();
 }
 

@@ -9,6 +9,7 @@
 // Without the RomFS (no game data) it prints why and exits 0. TOTK_PROBE_MOVIE_SHOT=<file.ppm> saves the middle frame.
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -267,7 +268,104 @@ static int paced(uint64_t obj, const uint8_t *data, const Track *t, int limit, u
     return 0;
 }
 
+// The shape-keeping resampler (ov_movie.c movie_fit_new / movie_fit_apply) on a synthetic 1920x1080 I420 picture, which
+// needs no game data. The planes are gradients, which a box filter keeps linear, so every output sample has an expected
+// value: luma rises left to right and top to bottom, U rises left to right, V falls top to bottom. A 16:9 output must give
+// no plan; the others must give bars (Y 16, U = V 128) that are symmetric, a picture of the movie's shape once the game
+// stretches the frame, and samples of the picture where the gradients say. TOTK_PROBE_MOVIE_BENCH=1 also times the frame.
+#define FIT_CHECK(cond, ...)                                                                                           \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            printf("probe-movie: FAILED: ");                                                                           \
+            printf(__VA_ARGS__);                                                                                       \
+            printf("\n");                                                                                              \
+            rc = 1;                                                                                                    \
+            goto done;                                                                                                 \
+        }                                                                                                              \
+    } while (0)
+static int check_fit(void) {
+    enum { W = 1920, H = 1080, CW = W / 2, CH = H / 2 };
+    int rc = 0;
+    MovieFit *f = NULL;
+    uint8_t *y = malloc((size_t)W * H), *u = malloc((size_t)CW * CH), *v = malloc((size_t)CW * CH);
+    uint8_t *out = malloc((size_t)W * H * 3 / 2);
+    FIT_CHECK(y && u && v && out, "fit test buffers");
+    for (int j = 0; j < H; j++)
+        for (int i = 0; i < W; i++) y[j * W + i] = (uint8_t)(32 + 150.0 * (i + 0.5) / W + 60.0 * (j + 0.5) / H + 0.5);
+    for (int j = 0; j < CH; j++)
+        for (int i = 0; i < CW; i++) {
+            u[j * CW + i] = (uint8_t)(40 + 150.0 * (i + 0.5) / CW + 0.5);
+            v[j * CW + i] = (uint8_t)(220 - 150.0 * (j + 0.5) / CH + 0.5);
+        }
+    const uint8_t *plane[3] = {y, u, v};
+    const int stride[3] = {W, CW, CW};
+    FIT_CHECK(!movie_fit_new(W, H, 1920, 1080) && !movie_fit_new(W, H, 2560, 1440), "16:9 outputs need no plan");
+    static const unsigned outs[][2] = {{5120, 1440}, {3440, 1440}, {1280, 800}, {1920, 1200}};
+    for (int k = 0; k < 4; k++) {
+        unsigned ow = outs[k][0], oh = outs[k][1];
+        f = movie_fit_new(W, H, ow, oh);
+        FIT_CHECK(f, "%ux%u: no plan", ow, oh);
+        memset(out, 0xAA, (size_t)W * H * 3 / 2);   // a byte nothing else produces: every pixel must be written
+        movie_fit_apply(f, plane, stride, out);
+        const uint8_t *uv = out + (size_t)W * H;
+        int l = 0, r = W - 1, t = 0, b = H - 1;   // the picture's extent: where luma leaves 16, on the middle row and column
+        while (l < W && out[(H / 2) * W + l] == 16) l++;
+        while (r >= 0 && out[(H / 2) * W + r] == 16) r--;
+        while (t < H && out[t * W + W / 2] == 16) t++;
+        while (b >= 0 && out[b * W + W / 2] == 16) b--;
+        int pw = r - l + 1, ph = b - t + 1;
+        FIT_CHECK(pw > 2 && ph > 2, "%ux%u: no picture found", ow, oh);
+        FIT_CHECK(abs(l - (W - 1 - r)) <= 2 && abs(t - (H - 1 - b)) <= 2,
+                  "%ux%u: bars not symmetric: left %d right %d, top %d bottom %d", ow, oh, l, W - 1 - r, t, H - 1 - b);
+        // On screen the picture covers pw/W of the width and ph/H of the height of an ow x oh canvas; 1 = the movie's shape.
+        double shape = ((double)pw / W * ow) / ((double)ph / H * oh) / ((double)W / H);
+        FIT_CHECK(fabs(shape - 1) < 0.01, "%ux%u: picture %dx%d shows at %.3f of the movie's shape", ow, oh, pw, ph, shape);
+        FIT_CHECK(l == 0 || ph == H, "%ux%u: sideways bars with a squeezed height", ow, oh);
+        for (int j = 0; j < H; j++)   // everything outside the picture is black in luma and chroma, left and right alike
+            for (int i = 0; i < W; i++)
+                if (j < t || j > b || i < l || i > r)
+                    FIT_CHECK(out[j * W + i] == 16, "%ux%u: luma (%d,%d) is %d, not black", ow, oh, i, j, out[j * W + i]);
+        for (int j = 0; j < CH; j++)
+            for (int i = 0; i < CW; i++) {
+                int outside = 2 * j + 1 < t || 2 * j > b || 2 * i + 1 < l || 2 * i > r;
+                const uint8_t *c = uv + (size_t)j * W + 2 * i;
+                if (outside) FIT_CHECK(c[0] == 128 && c[1] == 128, "%ux%u: chroma (%d,%d) is %d/%d, not black", ow, oh, i, j,
+                                       c[0], c[1]);
+            }
+        static const double fr[] = {0.1, 0.35, 0.5, 0.8, 0.95};   // samples of the picture, as fractions of it
+        for (int a = 0; a < 5; a++)
+            for (int c = 0; c < 5; c++) {
+                int px = (int)(pw * fr[a]), py = (int)(ph * fr[c]);   // picture pixel
+                double sx = (px + 0.5) * W / pw, sy = (py + 0.5) * H / ph;   // where it comes from in the source
+                double ey = 32 + 150.0 * sx / W + 60.0 * sy / H;
+                int got = out[(t + py) * W + l + px];
+                FIT_CHECK(fabs(got - ey) <= 2, "%ux%u: luma at picture (%d,%d) is %d, want %.1f", ow, oh, px, py, got, ey);
+                int cx = px / 2, cy = py / 2, cpw = pw / 2, cph = ph / 2;
+                double sux = (cx + 0.5) * CW / cpw, svy = (cy + 0.5) * CH / cph;
+                const uint8_t *q = uv + (size_t)(t / 2 + cy) * W + 2 * (l / 2 + cx);
+                double eu = 40 + 150.0 * sux / CW, ev = 220 - 150.0 * svy / CH;
+                FIT_CHECK(fabs(q[0] - eu) <= 3 && fabs(q[1] - ev) <= 3,
+                          "%ux%u: chroma at picture (%d,%d) is U %d V %d, want U %.1f V %.1f", ow, oh, cx, cy, q[0], q[1], eu,
+                          ev);
+            }
+        if (cfg_get("TOTK_PROBE_MOVIE_BENCH")) {
+            uint64_t t0 = plat_now_ns();
+            for (int i = 0; i < 100; i++) movie_fit_apply(f, plane, stride, out);
+            printf("probe-movie: fit %ux%u: %.2f ms per frame\n", ow, oh, (plat_now_ns() - t0) / 1e8);
+        }
+        printf("probe-movie: fit %ux%u: picture %dx%d at (%d,%d) of the frame, bars Y 16 / UV 128, gradients as expected\n",
+               ow, oh, pw, ph, l, t);
+        movie_fit_free(f);
+        f = NULL;
+    }
+done:
+    movie_fit_free(f);
+    free(y), free(u), free(v), free(out);
+    return rc;
+}
+
 int probe_movie(void) {
+    if (check_fit()) return 1;
     const char *dir = rt_config()->romfs;
     char image[PLAT_PATH_MAX];
     snprintf(image, sizeof image, "%s/romfs.bin", dir);
