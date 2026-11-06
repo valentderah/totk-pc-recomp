@@ -849,9 +849,34 @@ static void restbl_overlay(void) {
 // their parents grow. The base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS
 // original; the grown table is written to <profile>/resolution/ and served in the base's place. A served mod table
 // whose own TextureHeap is grown (an HD texture pack's, resolution.c res_heapdef_tex_grown) is not the base: its
-// growth is already in the amount (resolution.c mod_tex_heap_kib), so the RomFS original grows by it and is served in
-// the mod's place. A mod table that changes other heaps only stays the base.
+// growth is already in the amount (resolution.c mod_tex_heap_kib). In its place the table of the highest switched-on
+// mod below it that changes other heaps only grows by the amount (plain_mod_heapdef: with the pack above The Second
+// Quest, the default order for HDPacks.com's "4kTextures", the game's own sizes for RSDB and UI were too small for
+// that mod's files and the game crashed loading a save), else the RomFS original; either is served in the pack's
+// place. A mod table that changes other heaps only and is served itself stays the base.
 #define HEAPDEF "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
+
+// The HeapDef table of the highest switched-on mod that changes other heaps only (malloc'd, *n, *who its name); NULL
+// when no mod has one. Mods above the served table ship none, so the first found is the highest below it.
+static void *plain_mod_heapdef(size_t *n, const char **who) {
+    for (int i = 0; i < mods_count(); i++) {
+        const ModInfo *m = mods_at(i);
+        char path[2300];
+        if (!m->enabled || !m->romfs[0] ||
+            snprintf(path, sizeof path, "%s/%s", m->romfs, HEAPDEF) >= (int)sizeof path)
+            continue;
+        uint64_t fn = 0;
+        uint8_t *f = plat_file_read(path, &fn);
+        if (!f) continue;
+        if (fn < (16u << 20) && res_heapdef_plain(f, (size_t)fn)) {
+            *n = (size_t)fn;
+            *who = m->name;
+            return f;
+        }
+        free(f);
+    }
+    return NULL;
+}
 static void heapdef_overlay(void) {
     if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes()) return;
     static const char keeps[] = "the game keeps its own resolution";
@@ -861,8 +886,11 @@ static void heapdef_overlay(void) {
     size_t out_n = 0;
     if (in && base && base->mod && res_heapdef_tex_grown(in, n)) {
         free(in);
-        in = read_original(HEAPDEF, &n, keeps);
-        if (in)
+        const char *who = NULL;
+        if ((in = plain_mod_heapdef(&n, &who)))
+            rt_log("RomFS: %s: the HeapDef of %s with the texture heap growth in place of the mod's table",
+                   mods_at(base->mod - 1)->name, who);
+        else if ((in = read_original(HEAPDEF, &n, keeps)))
             rt_log("RomFS: %s: the game's own HeapDef with the mod's texture heap growth in place of the mod's table",
                    mods_at(base->mod - 1)->name);
     }
