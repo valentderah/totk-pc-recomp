@@ -27,7 +27,7 @@ static struct {
     _Alignas(64) volatile uint64_t head;      // words published by the producer; the recorder reads it
     _Alignas(64) volatile uint64_t tail;      // words consumed by the recorder; the producer reads it when it seems full
     _Alignas(64) volatile int32_t sleeping;   // the recorder waits for wake_ev; written only around a sleep
-    _Alignas(64) uint64_t Q.put_h;              // producer only: words written
+    _Alignas(64) uint64_t put_h;              // producer only: words written
     uint64_t pub_h;                           // the last head published
     uint64_t tail_seen;                       // tail as last read, at most the real one: the room it leaves is there
     uint64_t pub_words;                       // TOTK_REC_PUB: publish head once this many words wait (pub)
