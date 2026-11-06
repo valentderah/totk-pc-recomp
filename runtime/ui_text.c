@@ -210,6 +210,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "draws frames. Kept in playtime.txt in the profile folder, next to the saves.",
     [UI_MENU_PLAY_TIME_HM] = "%llu h %02u min", [UI_MENU_PLAY_TIME_SESSION] = "this run: %s",
     [UI_MENU_TAB_ACHIEVEMENTS] = "Achievements",
+    [UI_ACH_SWITCH] = "Statistics and achievements",
+    [UI_ACH_SWITCH_DESC] = "Reads your save, and the game while it runs, for the statistics and achievements "
+                           "below. Off: nothing is read and nothing is written. On: the goals and unlocks are "
+                           "kept in the achievements folder of the profile (goals.ini, which you may edit, and "
+                           "unlocked.txt).",
     [UI_ACH_GROUP_STATS] = "Statistics",
     [UI_ACH_GROUP_FAMILIES] = "Monsters by family",
     [UI_ACH_GROUP_LIST] = "Achievements",
@@ -824,7 +829,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PLAY_TIME_DESC] = "Время в игре за все запуски. Считается, пока окно игры в фокусе и игра рисует кадры. "
                                "Хранится в playtime.txt в папке профиля, рядом с сохранениями.",
     [UI_MENU_PLAY_TIME_HM] = "%llu ч %02u мин", [UI_MENU_PLAY_TIME_SESSION] = "в этом запуске: %s",
-    [UI_MENU_TAB_ACHIEVEMENTS] = "Достижения",
+    [UI_MENU_TAB_ACHIEVEMENTS] = "Успехи",
+    [UI_ACH_SWITCH] = "Статистика и достижения",
+    [UI_ACH_SWITCH_DESC] = "Читает сохранение, а пока игра идёт, и саму игру, чтобы вести статистику и "
+                           "достижения ниже. Выключено: ничего не читается и не записывается. Включено: цели и "
+                           "открытые достижения хранятся в папке achievements профиля (goals.ini, его можно "
+                           "править, и unlocked.txt).",
     [UI_ACH_GROUP_STATS] = "Статистика",
     [UI_ACH_GROUP_FAMILIES] = "Монстры по семействам",
     [UI_ACH_GROUP_LIST] = "Достижения",
@@ -1278,6 +1288,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                "jogo desenha quadros. Fica em playtime.txt na pasta do perfil, junto dos saves.",
     [UI_MENU_PLAY_TIME_HM] = "%llu h %02u min", [UI_MENU_PLAY_TIME_SESSION] = "nesta sessão: %s",
     [UI_MENU_TAB_ACHIEVEMENTS] = "Conquistas",
+    [UI_ACH_SWITCH] = "Estatísticas e conquistas",
+    [UI_ACH_SWITCH_DESC] = "Lê o seu save, e o jogo enquanto ele roda, para as estatísticas e conquistas abaixo. "
+                           "Desligado: nada é lido e nada é gravado. Ligado: as metas e as conquistas obtidas "
+                           "ficam na pasta achievements do perfil (goals.ini, que você pode editar, e "
+                           "unlocked.txt).",
     [UI_ACH_GROUP_STATS] = "Estatísticas",
     [UI_ACH_GROUP_FAMILIES] = "Monstros por família",
     [UI_ACH_GROUP_LIST] = "Conquistas",
@@ -1937,6 +1952,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                "保存在配置文件夹的 playtime.txt 中，与存档放在一起。",
     [UI_MENU_PLAY_TIME_HM] = "%llu 小时 %02u 分钟", [UI_MENU_PLAY_TIME_SESSION] = "本次运行：%s",
     [UI_MENU_TAB_ACHIEVEMENTS] = "成就",
+    [UI_ACH_SWITCH] = "统计与成就",
+    [UI_ACH_SWITCH_DESC] = "读取你的存档，并在游戏运行时读取游戏本身，用于下方的统计和成就。关闭：不读取也不写入任何内容。开启：目标和已解锁的成就保存在配置文件夹的 achievements "
+                           "文件夹中（可编辑的 goals.ini 和 unlocked.txt）。",
     [UI_ACH_GROUP_STATS] = "统计",
     [UI_ACH_GROUP_FAMILIES] = "按种族统计的魔物",
     [UI_ACH_GROUP_LIST] = "成就",

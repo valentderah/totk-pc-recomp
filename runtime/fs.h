@@ -28,6 +28,13 @@ enum { FS_ENTRY_DIRECTORY = 0, FS_ENTRY_FILE = 1 };                 // nn::fs::D
 #define ROMFS_HANDLE_BASE 0x100000000ull
 void *romfs_load(const char *rel, size_t *n, const char *why);   // a RomFS file as the game reads it; malloc'd
 void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx);   // image paths under prefix
+// SARC member name of archive[0..n): its start and size; 0 when it is not there.
+int romfs_sarc_member(const void *archive, size_t n, const char *name, size_t *at, size_t *size);
+// The dictionary member ("pack.zsdic") of Pack/ZsDic.pack.zs as served: bytes valid for the run; 0 when missing.
+int romfs_zsdic(const char *member, const void **p, size_t *n);
+// A zstd frame with its content size of at most max bytes, unpacked with the game's dictionary its id names (none for
+// a frame without one): malloc'd, NULL when it cannot be.
+void *romfs_zs_unpack(const void *in, size_t n, size_t max, size_t *out_n);
 int romfs_owns(const char *path);                          // path is on the mounted RomFS ("<mount>:...")
 int romfs_handle(uint64_t h);                              // h is a RomFS file handle
 uint32_t romfs_mount(const char *name);                    // nn::fs::MountRom; a second name is fatal
