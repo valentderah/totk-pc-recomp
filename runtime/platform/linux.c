@@ -156,8 +156,30 @@ int plat_cpu_cores(uint64_t *all, uint64_t *first) {
 // The L3 group of cpu0 and everything outside it. A chiplet CPU (the BC-250's two CCX, a Zen 2/3 desktop part) exposes
 // one shared_cpu_map per L3 instance, and a process whose guest and host threads share one cache evicts itself; on a
 // monolithic die the map covers every CPU and this reports 0.
+// The vendor whose chiplet parts this split is for. It is read rather than assumed because the topology test alone is
+// not enough to tell the two cases apart: Intel's hybrid parts (Arrow Lake, Lunar Lake) also publish more than one L3
+// instance, but their groups are P-cores and E-cores, a difference of core type rather than two symmetric CCX.
+static int cpu_vendor_is_amd(void) {
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    char line[256];
+    int amd = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "vendor_id", 9)) continue;
+        amd = strstr(line, "AuthenticAMD") != NULL;
+        break;
+    }
+    fclose(f);
+    return amd;
+}
+
 int plat_cpu_cache_groups(uint64_t *first, uint64_t *second) {
     *first = *second = 0;
+    if (!cpu_vendor_is_amd())
+        // Intel hybrid CPUs have to come later: their two L3 instances are P-cores and E-cores, so the split belongs to
+        // a core type pinned by tile (cpuid leaf 0x1a, hybrid information) rather than to "the first group and the rest".
+        // Pinning the host's Vulkan work to the E-cores would be worse than not pinning at all.
+        return 0;
     uint64_t all = 0, one = 0;
     if (!plat_cpu_cores(&all, &one)) return 0;
     FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_map", "r");
