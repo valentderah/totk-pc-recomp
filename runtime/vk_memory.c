@@ -565,10 +565,23 @@ void vk_mem_census(uint64_t frame) {
     window_start = frame;
 }
 
+// TOTK_VRAM_LIMIT_MIB: pretend the device-local budget is at most this many MiB, so the paths that react to the budget
+// can be driven on a card larger than the one a report came from. The driver knows nothing of it.
+static uint64_t vram_limit(void) {
+    static int64_t limit = -1;
+    if (limit < 0) {
+        const char *s = cfg_get("TOTK_VRAM_LIMIT_MIB");
+        limit = s && *s ? (int64_t)strtoull(s, NULL, 10) << 20 : 0;
+        if (limit) rt_log("mem: device-local budget limited to %lld MiB (TOTK_VRAM_LIMIT_MIB)", (long long)(limit >> 20));
+    }
+    return (uint64_t)limit;
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
     if (!c) return 0;
+    uint64_t limit = vram_limit();
     const VkPhysicalDeviceMemoryProperties *mp = &c->mem_props;
     if (c->has_memory_budget) {
         VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
@@ -578,6 +591,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
             if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
+        if (limit && *budget > limit) *budget = limit;
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -585,6 +599,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     for (uint32_t h = 0; h < mp->memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
+    if (limit && *budget > limit) *budget = limit;
     return *budget != 0;
 }
 
@@ -2085,6 +2100,7 @@ static void vram_log(uint64_t frame) {
            alloc_bytes / M, (unsigned long long)t.live, (unsigned long long)t.own_live, t.bytes_live / M,
            (unsigned long long)t.released, (unsigned long long)t.own_released, t.bytes_released / M, (long long)m_live_n,
            m_live_bytes / M, dead_pending());
+    vk_texture_released_log(frame);
 }
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
