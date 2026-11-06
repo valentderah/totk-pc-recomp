@@ -3,11 +3,11 @@
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the optional firmware
 folder, the game language and the install folder, runs `python -m installer ...` as a subprocess and shows its JSON
 events. Decisions live in guilogic.py; this file only draws. The window text is in
-installer/text/<en|ru|pt-BR|zh-Hans>.json under "ui.*" and "launcher.*" ids. On Windows the window follows the
+installer/text/<en|ru|pt-BR|zh-Hans|es>.json under "ui.*" and "launcher.*" ids. On Windows the window follows the
 display's DPI (installer/dpi.py): fonts and paddings grow with the scale, so Windows does not stretch it.
 
     --selftest [--shots DIR]   build every screen in every language and close by itself (PNG per screen with --shots)
-    --lang en|ru|pt-BR|zh-Hans window language (default: the Windows display language)
+    --lang en|ru|pt-BR|zh-Hans|es window language (default: the Windows display language)
     --rebuild DIR              rebuild the install folder DIR for its mods (totk.exe starts this, build-cache/rebuild.txt):
                                the run starts at once with that folder, and the game starts again when it succeeds
 """
