@@ -1561,7 +1561,11 @@ const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8
             break;
         }
     XWait *w;
-    while ((w = *wait_slot(r.key)) && !w->failed) plat_cond_wait(&X.done, &X.lock);
+    while ((w = *wait_slot(r.key)) && !w->failed) {
+        uint64_t wt0 = waitstat_now();
+        plat_cond_wait(&X.done, &X.lock);
+        if (wt0) waitstat_add("shader translation", plat_now_ns() - wt0);
+    }
     plat_mutex_unlock(&X.lock);
     perf_end(PERF_XLATE, p0);
     if (w) return NULL;                                    // failed: logged by the worker
