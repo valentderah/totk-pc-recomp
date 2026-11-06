@@ -938,7 +938,11 @@ static void tab_advanced(float scale) {
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
-    opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    {
+        const char *vals[] = {"auto", "0", "1"};
+        const char *names[] = {menu_text(UI_MENU_AUTO), menu_text(UI_MENU_OFF), menu_text(UI_MENU_ON)};
+        opt_choice_list("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, vals, names, 3, UI_MENU_REPLAY_ASYNC_DESC);
+    }
     opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
