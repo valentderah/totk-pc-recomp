@@ -35,6 +35,7 @@ typedef struct {
     StatsAch ach[STATS_ACH_MAX];
 } StatsView;
 
-void stats_init(void);              // the reading thread; game runs only (main.c)
+void stats_init(void);              // the reading thread, once TOTK_ACHIEVEMENTS is on; game runs only (main.c,
+                                    // and the Achievements tab when the player switches it on)
 void stats_save_changed(void);      // fs_host.c: a save commit changed files
 void stats_view(StatsView *out);    // a copy of the latest statistics

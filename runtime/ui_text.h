@@ -75,6 +75,7 @@ typedef enum {
     UI_MENU_PLAY_TIME_SESSION,   // note under the total: "this run: %s" (the hours and minutes above)
     // Achievements tab (stats.c)
     UI_MENU_TAB_ACHIEVEMENTS,
+    UI_ACH_SWITCH, UI_ACH_SWITCH_DESC,   // the tab's switch, TOTK_ACHIEVEMENTS
     UI_ACH_GROUP_STATS,
     UI_ACH_GROUP_FAMILIES,
     UI_ACH_GROUP_LIST,

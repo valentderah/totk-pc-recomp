@@ -820,8 +820,14 @@ static void ach_title(const StatsView *s, const StatsAch *a, char *out, size_t n
 
 static void tab_achievements(float scale) {
     static StatsView s;   // a copy per frame: stats.c updates it on its own thread
-    stats_view(&s);
     opt_begin("##achievements", scale);
+    opt_toggle("TOTK_ACHIEVEMENTS", UI_ACH_SWITCH, UI_ACH_SWITCH_DESC);
+    if (!cfg_bool("TOTK_ACHIEVEMENTS")) {   // off: only the switch, and stats.c reads and writes nothing
+        opt_end();
+        return;
+    }
+    stats_init();   // switched on in this run: starts the thread the first time (stats.c)
+    stats_view(&s);
     opt_group(UI_ACH_GROUP_STATS);
     if (!s.valid) {
         opt_text(UI_ACH_NO_SAVE);
@@ -1372,8 +1378,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
         for (int k = 0; k < TAB_COUNT; k++) {
             char label[128];
-            snprintf(label, sizeof label, " %s ###tab%d", menu_text(kTabNames[k]), k);   // the id stays per language; one
-            // space each side, so the ten tabs fit the menu's width in the longest language (Russian) unshortened
+            snprintf(label, sizeof label, "  %s  ###tab%d", menu_text(kTabNames[k]), k);   // the id stays per language
             if (!ImGui::BeginTabItem(label, nullptr, g_tab_request == k ? ImGuiTabItemFlags_SetSelected : 0)) continue;
             g_tab = k;
             if (g_focus_page == k) {

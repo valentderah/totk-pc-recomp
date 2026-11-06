@@ -70,6 +70,7 @@ Many rows below are developer tools that only act together with another setting 
 | `input` | `none` reports no input from the keyboard, mouse or controllers. | The game gets no controller input and the menu cursor stops following the mouse; `input_script` still applies. | Caution |
 | `input_script` | Path of a file with lines `<frame> <button> [hold]` or `<frame> LSTICK or RSTICK <x> <y> [hold]` that are ORed into the real input. | The game presses those buttons by itself; a file that cannot be opened is logged and ignored. | Caution |
 | `menu_test` | `<frame>[:<frames per page>]` opens the menu at that frame, shows each tab for 30 frames (or the given count), saves one screenshot per tab and closes the menu. | The menu opens by itself and screenshots are written. | Caution |
+| `menu_test_focus` | With `menu_test`: the row id (`##ach20`) that takes the cursor when its page is drawn, so that page's screenshot shows it scrolled into view. | Only changes which part of a long page the screenshot shows. | Safe |
 | `menu_test_dir` | Folder for the `menu_test` screenshots; the default is the working directory. | Only moves the output. | Safe |
 | `menu_test_set` | `<frame>:<key>=<value>[,...][;...]` changes settings live at that frame, with or without the menu open; `SAVE=1` also writes `totk.ini`. | Settings change during play without input, and `SAVE=1` rewrites the file. | Caution |
 | `probe_movie` | Text that picks the movie for `totk.exe --probe-movie`: the first file whose path contains it. | Only used by the movie decoder probe; ignored in normal play. | Safe |
@@ -89,6 +90,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `achievements` (default `0`) | `1` turns on the Achievements tab's statistics: a thread reads the newest save and, once a save is loaded, the game's GameData flags, and writes `goals.ini` and `unlocked.txt` under `<profile>/achievements/`. `0` starts no thread and writes nothing. | The tab shows only its switch while off; turned on during play, the statistics appear after the next read. | Safe |
 | `amiibo_dir` | Folder the Amiibo tab starts in; the tab saves the folder you last browsed here. | Only changes which folder the tab lists first. | Safe |
 | `exefs` | Folder of the game's ExeFS (with `main.npdm`); a relative path is relative to `totk.exe`'s folder. | Without it, an `exefs` folder next to `totk.exe` is used, else the path set at build time. The game code is compiled into `totk.exe`, and the loader checks the files here by SHA-256, so files from another build or game version stop the start with a message. | Caution |
 | `mods_dir` (default `mods`) | Folder that holds one subfolder per player mod, beside `totk.exe`. | Mods found there replace game files; see `docs/mods.md`. | Caution |
