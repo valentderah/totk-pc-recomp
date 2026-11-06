@@ -5,7 +5,8 @@
 // TOTK_OPERATION_MODE=handheld it is the handheld controller (id 0x20, style bit 1) and player 1 is not connected,
 // which is the controller the game reads in that mode. Mouse and keyboard report no input. The controller has two
 // vibration devices (left, right) played on the gamepad's motors (TOTK_RUMBLE=0: none) and a six-axis sensor fed by
-// the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
+// the gamepad's gyro and accelerometer, or by the mouse with TOTK_MOUSE_GYRO=1 (TOTK_MOTION=0, live: reads at rest).
+// State layouts follow libnx HID.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -449,7 +450,9 @@ static int six_fill(MotionState *s, int max, const uint32_t *h, const char *fn) 
     if (max <= 0) return 0;
     if (!s) rt_fatal("nn::hid::detail::%s: null output", fn);
     int live = six_axis_ours(h, fn) && six_running && input_motion_enabled();
-    int n = live ? motion_read(motion_global(), s, max, kern_now_ns()) : 0;
+    uint64_t now = kern_now_ns();
+    if (live) input_motion_read_note(now);   // the mouse source spreads its motion over at least the read interval
+    int n = live ? motion_read(motion_global(), s, max, now) : 0;
     if (!n) {
         static const MotionState rest = {.acc = {0, 0, -1}, .dir = {1, 0, 0, 0, 1, 0, 0, 0, 1}};
         for (int i = 0; i < max; i++) s[i] = rest;
