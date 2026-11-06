@@ -156,7 +156,7 @@ def main():
         if src.name in NEEDS_GAME:
             print('skip %s: needs headers generated from the game' % src.relative_to(ROOT))
             continue
-        obj = objdir / (str(src.relative_to(ROOT)).replace('/', '_') + '.o')
+        obj = objdir / (src.relative_to(ROOT).as_posix().replace('/', '_') + '.o')   # one flat folder on any host
         r = run([cc, *flags, *inc, '-c', str(src), '-o', str(obj)])
         if r.returncode:
             failed.append((src, r.stderr))
