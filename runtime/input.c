@@ -396,6 +396,31 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
+// The pad's power state: logged when the pad is opened and whenever it changes (a DualSense reports charging, charged,
+// on battery with a percentage, or wired). Checked every POWER_MS: SDL asks the device, which is not free.
+enum { POWER_MS = 30000 };
+static uint64_t next_power_check;
+static int power_state = -1, power_percent = -2;
+
+static void check_power(int log_always) {
+    if (!pad || !SDL_GamepadConnected(pad)) return;
+    int percent = -1;
+    SDL_PowerState st = SDL_GetGamepadPowerInfo(pad, &percent);
+    if (!log_always && st == power_state && percent == power_percent) return;
+    power_state = st, power_percent = percent;
+    if (st == SDL_POWERSTATE_UNKNOWN) return;   // the first query after opening has no answer yet: say nothing
+    const char *what = st == SDL_POWERSTATE_CHARGING        ? "charging"
+                     : st == SDL_POWERSTATE_CHARGED         ? "charged"
+                     : st == SDL_POWERSTATE_ON_BATTERY      ? "on battery"
+                     : st == SDL_POWERSTATE_NO_BATTERY      ? "wired"
+                     : st == SDL_POWERSTATE_UNKNOWN         ? "state unknown"
+                                                            : "not reported";
+    if (percent >= 0) rt_log("input: gamepad power: %s (%d%%)", what, percent);
+    else rt_log("input: gamepad power: %s", what);
+    if (st == SDL_POWERSTATE_ON_BATTERY && percent >= 0 && percent <= 15)
+        rt_log("input: WARNING - gamepad battery low (%d%% left)", percent);
+}
+
 // Open the first gamepad when none is open or the open one went away; logs once per change.
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
@@ -425,6 +450,8 @@ static void scan_pads(void) {
                                                                                       : PAD_LABEL_NONE);
     }
     pad_layout = -1;
+    power_state = -1, power_percent = -2;
+    next_power_check = plat_now_ns() / 1000000u;   // the first poll reports it: a query right at open answers "unknown"
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     rt_log("input: gamepad \"%s\" (%s, %s, east button %s)", SDL_GetGamepadName(pad), pad_rumble ? "rumble" : "no rumble",
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
@@ -574,6 +601,10 @@ static int32_t map_zoom_stick(int32_t notches, int on_map) {
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
     SDL_UpdateGamepads();
+    if (pad && plat_now_ns() / 1000000u >= next_power_check) {
+        next_power_check = plat_now_ns() / 1000000u + POWER_MS;
+        check_power(0);
+    }
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
