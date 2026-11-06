@@ -52,6 +52,7 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+const char *vk_dlaa_name(void);   // vk_dlaa.h
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
@@ -1360,16 +1361,26 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
-// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
-// in use.
+// The DLSS mode's name as the menu shows it, for the upscaler line.
+static UiTextId dlss_mode_text(const char *m) {
+    return !strcmp(m, "quality") ? UI_MENU_DLSS_QUALITY : !strcmp(m, "balanced") ? UI_MENU_DLSS_BALANCED
+         : !strcmp(m, "performance") ? UI_MENU_DLSS_PERFORMANCE : !strcmp(m, "ultra_performance") ? UI_MENU_DLSS_ULTRA
+         : UI_MENU_DLSS_DLAA;
+}
+
+// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), the
+// temporal upscaler that scales the scene (vk_dlaa.c, DLSS or FSR, with its mode), how the present scales the image to
+// the window (gfx_present.c, the last present), the frame limit and the presentation mode in use.
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
+    const char *up = vk_dlaa_name();
+    if (up) snprintf(v[6], sizeof v[6], "%s, %s", up, menu_text(dlss_mode_text(cfg_value("TOTK_DLSS"))));
+    else snprintf(v[6], sizeof v[6], "%s", menu_text(UI_MENU_OV_NONE));
     if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
@@ -1385,17 +1396,18 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
     snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
+    static const UiTextId labels[7] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_UPSCALER,
                                        UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    static const int order[7] = {0, 1, 2, 6, 3, 4, 5};   // the upscaler line after the scene it scales
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
-        perf_right(v[i], false);
+        perf_right(v[order[i]], !up && order[i] == 6);
     }
     ImGui::EndTable();
 }

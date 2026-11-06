@@ -291,6 +291,16 @@ static int be_available(void) { return fsr_backend() ? vk_ffx_available() : N.av
 
 int vk_dlaa_available(void) { return vk_dlaa_wanted() && be_available(); }
 
+static int dl_active(void);
+static uint64_t dl_evals(void);
+
+// The temporal upscaler at work, for the performance overlay (ui/menu.cpp perf_picture): "FSR 4.1.2" or "DLSS" once
+// it has run, NULL while DLAA is off, failed or has not run yet.
+const char *vk_dlaa_name(void) {
+    if (!dl_active() || !dl_evals()) return NULL;
+    return fsr_backend() ? vk_ffx_version() : "DLSS";
+}
+
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
 // the scene depth (d32f at the scene size), one of them the R11G11B10F light target; lighting and the transparents
@@ -369,6 +379,7 @@ const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
 static int dl_active(void) { return be_available() && !D.failed && D.on; }
+static uint64_t dl_evals(void) { return D.evals; }
 
 static void dl_fail(const char *what, NgxResult r) {
     rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
