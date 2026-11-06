@@ -31,10 +31,10 @@ fetch() {
     echo "$name: $commit"
 }
 
-fetch LASRecomp      https://github.com/peiikai/LASRecomp.git        da35b83a9611d046a9a681aae668d7085954d37f
-fetch MacNativeGames https://github.com/ly05010419/MacNativeGames.git b75be8cfa704df3701e86130c8ced268e79d6b11 history
-fetch d2r-mobile     https://github.com/jhaizhou-ops/d2r-mobile.git  53e7c5bb9ca3ea53e2160005be8fbe920cd9cb53
-fetch nxnative       https://github.com/seedds/nxnative.git          d5b380b3a80495609c2e751bb994911a638935ad
+fetch LASRecomp      https://github.com/peiikai/LASRecomp.git        a6b4f03844ecfb4012f18deff96da8b410aeafcd
+fetch MacNativeGames https://github.com/ly05010419/MacNativeGames.git d1509b4b62211265fad5449cf53cc9f13484ecc5 history
+fetch d2r-mobile     https://github.com/jhaizhou-ops/d2r-mobile.git  fae8c680fe98f79179cf3fab85f7a6c14ee28600
+fetch nxnative       https://github.com/seedds/nxnative.git          99330eb81c873c3aafe9fc92194c9687d77fcdbb
 fetch SwitchRecomp   https://github.com/bgyss/SwitchRecomp.git       0f99e1c5c1e78fdc8e01e58a0f8dc8622e82976b
 fetch deko3d           https://github.com/devkitPro/deko3d.git         373bfd43d8b2d805fa2eb7d406dbb823032df958
-fetch SavageWindRecomp https://github.com/Revivedx/SavageWindRecomp.git 575ad88e02f9a89a9a885d90039d48af33c982f4
+fetch SavageWindRecomp https://github.com/Revivedx/SavageWindRecomp.git bf6146c14c37fee8781a601e5a544b93dff6d75e

@@ -9,19 +9,21 @@ holds only the game; the installer and its tools stay outside it.
 1. Downloads `TotK-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
    starts `TotK-Setup.exe`.
 2. Picks:
-   - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP);
+   - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP); an NSZ or XCZ (compressed by the nsz
+     tool) works as it is, the setup unpacks it itself;
    - their `prod.keys`;
    - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
      needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
+4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
 ```
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
+  nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -36,7 +38,10 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
-shaders. A newer release that changes nothing game-derived skips the rebuild.
+shaders. A newer release that changes nothing game-derived skips the rebuild. The window starts with the last install folder
+and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
+`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
+stay empty. A reinstall or a switch to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -44,7 +49,7 @@ loads the saves 1.4.3 wrote.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
+1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
@@ -65,13 +70,20 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written three times: `romfs-patches`, and `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`). The two Xbox folders are optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The three prompt folders are
+   optional: when one cannot be made, the setup warns and finishes.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+7. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+   `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
+   license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
+   the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
+   folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
+   download warns, the game runs without DLSS, and the next run of the setup tries again.
+8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
@@ -122,9 +134,12 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   window still starts with English, because that game text needs the Switch shared fonts, which the setup extracts
   only from a firmware folder. A folder with
   `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
-  closes itself.
-- `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
-  of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
+  closes itself. The window is not stretched on a display whose scale is the system DPI: `installer/dpi.py` makes the
+  process system DPI aware before Tk starts, Tk then draws the fonts at the display's scale and `dpi.px` sizes the
+  paddings and wrap widths with it; the launcher does the same for its error box.
+- `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the display scale, the self-closing window and
+  one end-to-end run of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its
+  docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
   `config.local.toml`.
 
@@ -141,21 +156,35 @@ llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM excep
 runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated code and modules.c/romfs.c/patches.c
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
-data/                 shader_list.tsv (MacNativeGames, MIT)
+data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
+                      update's code and the runtime libraries compile with (building.md, "Profile-guided build")
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
 - Every bundled third-party piece gets a row in `THIRD_PARTY_NOTICES.md`.
-- The release contains nothing game-derived; `make_release.py` runs `tools/check_content.py` over the folder before it
-  finishes.
+- The release contains no code, data, text or assets of the game; `make_release.py` runs `tools/check_content.py` over
+  the folder before it finishes. The execution profiles name lifted functions by address (`f_<address>`) and hold
+  branch counts and control-flow hashes of the generated C.
+
+## Switch system fonts
+
+Simplified Chinese, Traditional Chinese and Korean text needs the Switch system fonts (`0-standard.bfttf` and the other
+nn::pl shared fonts). The game does not ship them. Without them it exits before its first frame in those languages
+(`rt_fatal` in `runtime/ov_system.c`). Supply them from your own console, in either way:
+
+- Give the setup the firmware folder (`--firmware DIR`, or the window's firmware field); the Fonts step extracts them to
+  `shared-fonts/` in the install folder.
+- Run `python tools/extract_fonts.py --firmware <dir>` with `.venv-py314` and the keys from `config.local.toml`, or
+  point `TOTK_SHARED_FONTS` at a folder that holds the extracted fonts.
 
 ## Linux release
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `TotK-Setup-x86_64.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
-Desktop Mode. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
+Desktop Mode. The command-line setup needs the desktop session's display (`DISPLAY` or `WAYLAND_DISPLAY`) because preparing the
+shaders opens a window; the check step fails at once without it. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
 Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `totk` there with
 `libSDL3.so.0` beside it. The folder inside the AppImage:
 
@@ -191,7 +220,8 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 
 ## Constraints
 
-- The installer steps contain no Win32 calls: Linux runs the same steps with its own compiler ("Linux release").
+- The installer steps contain no Win32 calls; only the window's DPI awareness (`installer/dpi.py`) is Windows-only, and
+  it does nothing elsewhere. Linux runs the same steps with its own compiler ("Linux release").
 - The keys file path is passed to the tools; key values never appear in the UI, logs or files.
 - The window is a front end over the CLI (`python -m installer --base ... --update ... --keys ... --lang ... --dest
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
@@ -203,8 +233,17 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   the file and asks to copy it again (`extract.DamagedFile`). A failed merge checks the base Program NCA alone to tell
   which file is damaged.
 - Unsigned exe: SmartScreen warns on first start.
+- NSZ and XCZ input (game files compressed by the nsz tool: NCAs stored as NCZ, their sections decrypted and
+  compressed with zstd): the check step tells them by their content, not their name (an NSP or XCI holding NCZ files),
+  so the file dialog has one filter for all four. It unpacks each into `<temp>/unpacked/<base|update>.nsp`
+  (`tools/ncz.py`), an NSP of the NSZ's files or of the XCZ's secure partition, and the extraction reads that.
+  Unpacking encrypts the sections again, so every NCA comes back byte for byte, and checks each against the hash its
+  name carries; a mismatch is `check.input_damaged`. It needs the unpacked size free in the temp folder (checked
+  first), runs at about 500 MB/s, and an interrupted setup reuses a finished NSP of the same file. The extract step
+  deletes the folder when it is done. An XCZ update is refused like an XCI one.
 
 ## Later
 
 - Re-warm the driver cache on start after a move, GPU or driver change.
-- NSZ and XCZ input.
+- Per-monitor DPI in the setup window: Tk 9 has none, so a display whose scale differs from the primary one still gets
+  the window stretched.

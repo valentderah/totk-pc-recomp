@@ -86,6 +86,7 @@ struct GfxShader {
     uint32_t in_mask, out_mask;                            // user Locations of Input / Output variables
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
+    uint32_t mvprev_banks;                                 // .res.json "mvprev_banks" (patch 0015), 0 none
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -118,7 +119,7 @@ static struct {                                            // translations in fl
 static char cache_dir[PATH_CAP];
 static char xlate_exe[PATH_CAP];
 static uint8_t xlate_id[32];                               // translator identity (see the keys at the top)
-static int host_f64 = 1, host_set;                         // gfx_shader_set_host
+static int host_f64 = 1, host_zero_locals, host_set;                         // gfx_shader_set_host
 static uint32_t host_sbuf, host_sg[3] = {32, 32, 32}, host_gather;
 static PlatOnce paths_once = PLAT_ONCE_INIT;
 
@@ -312,18 +313,19 @@ static void init_paths(void *param) {
 static void paths(void) { plat_once(&paths_once, init_paths, NULL); }
 
 // Host answers (vk_caps.c, at device creation, before any translation). Answers other than the defaults (Float64,
-// exact storage offsets, 32 lanes, no gather bias) are mixed into the translator identity, so they get their own cache
-// keys.
-void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits) {
+// exact storage offsets, 32 lanes, no gather bias, undefined locals) are mixed into the translator identity, so they
+// get their own cache keys.
+void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits, int zero_locals) {
     paths();
     if (host_set++) return;
-    host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits;
+    host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits, host_zero_locals = zero_locals;
     memcpy(host_sg, subgroup, sizeof host_sg);
-    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits) return;
+    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits && !zero_locals) return;
     uint8_t buf[32 + 96];
     int n = snprintf((char *)buf + 32, 96, "TKHO f64=%d sbuf=%u sg=%u,%u,%u", float64, sbuf_align, subgroup[0], subgroup[1],
                      subgroup[2]);
     if (gather_bits) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " gather=%u", gather_bits);
+    if (zero_locals) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " zero_locals");
     memcpy(buf, xlate_id, 32);
     rt_sha256(buf, 32 + (size_t)n, xlate_id);
     rt_log("gfx_shader: host options %s: own shader cache keys", (char *)buf + 37);
@@ -593,6 +595,25 @@ static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int 
     return s;
 }
 
+const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json) {
+    if (words < 5 || spirv[0] != 0x07230203 || !spirv_complete(spirv, words) ||
+        !reflection_valid(res_json, strlen(res_json)))
+        return NULL;
+    GfxShader *s = calloc(1, sizeof *s);
+    if (!s) return NULL;
+    size_t rn = strlen(res_json);
+    uint8_t *buf = malloc(words * 4 + rn);
+    s->spirv = malloc(words * 4), s->reflection = malloc(rn + 1);
+    if (!buf || !s->spirv || !s->reflection) rt_fatal("gfx_shader: out of memory");
+    memcpy(buf, spirv, words * 4), memcpy(buf + words * 4, res_json, rn);
+    rt_sha256(buf, words * 4 + rn, s->key);
+    free(buf);
+    memcpy(s->spirv, spirv, words * 4), memcpy(s->reflection, res_json, rn + 1);
+    s->words = words, s->reflection_size = rn;
+    reflect(s);
+    return s;
+}
+
 // The pack, then the loose files (a newer translation of a key the pack holds a bad copy of); NULL when neither has a
 // valid pair (the caller translates again and writes loose files).
 static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid) {
@@ -759,18 +780,81 @@ out:
     free(loc), free(packed), free(ttype), free(tcomps), free(pointee);
 }
 
+// Every gradient sample (OpImageSampleExplicitLod with Grad) whose two gradients are each built from two components gets
+// them transposed, dx = (a, c) and dy = (b, d) from dx = (a, b) and dy = (c, d), by two new OpCompositeConstruct before
+// it. TotK's shaders fill a TXD's gradient registers per coordinate (du/dx, du/dy, dv/dx, dv/dy), and the translator
+// (Ryujinx, InstEmitTexture EmitTxd) builds dx = (first two registers), dy = (last two) = (du/dx, du/dy) and
+// (dv/dx, dv/dy): a mip level chosen from the wrong derivatives, too sharp on terrain faces turned across the screen,
+// which crawled in patches that followed the faces (1.4.3, the Depths). TOTK_TXD_TRANSPOSE=0 turns it off.
+// Applied to the SPIR-V after it is loaded, so the shader cache is untouched.
+enum { OP_COMPOSITE_CONSTRUCT = 80, OP_SAMPLE_EXPLICIT = 88, IO_GRAD = 4 };
+
+static void patch_txd_transpose(GfxShader *s) {
+    static int on = -1;
+    static volatile int32_t n_logged;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_TXD_TRANSPOSE");
+        on = !(e && *e == '0');
+    }
+    uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    if (!on || n < 5) return;
+    uint32_t bound = w[3] < (1u << 20) ? w[3] : (1u << 20);
+    uint64_t *cc = calloc(bound, sizeof *cc);   // word index of a 2-constituent OpCompositeConstruct defining the id
+    int found = 0;
+    if (!cc) return;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        if (op == OP_COMPOSITE_CONSTRUCT && len == 5 && w[i + 2] < bound) cc[w[i + 2]] = i;
+        if (op == OP_SAMPLE_EXPLICIT && len >= 8 && w[i + 5] == IO_GRAD && w[i + 6] < bound && w[i + 7] < bound &&
+            cc[w[i + 6]] && cc[w[i + 7]] && w[cc[w[i + 6]] + 1] == w[cc[w[i + 7]] + 1])
+            found++;
+        i += len;
+    }
+    if (!found) goto out;
+    uint32_t *o = malloc((n + (uint64_t)found * 10) * sizeof *o);
+    if (!o) goto out;
+    uint64_t k = 0;
+    uint32_t next = w[3];
+    for (uint64_t i = 0; i < 5; i++) o[k++] = w[i];
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (op == OP_SAMPLE_EXPLICIT && len >= 8 && w[i + 5] == IO_GRAD && w[i + 6] < bound && w[i + 7] < bound &&
+            cc[w[i + 6]] && cc[w[i + 7]] && w[cc[w[i + 6]] + 1] == w[cc[w[i + 7]] + 1]) {
+            const uint32_t *dx = w + cc[w[i + 6]], *dy = w + cc[w[i + 7]];   // [hdr, type, id, a, b], [hdr, type, id, c, d]
+            uint32_t ndx = next++, ndy = next++;
+            o[k++] = 5u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = dx[1], o[k++] = ndx, o[k++] = dx[3], o[k++] = dy[3];
+            o[k++] = 5u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = dx[1], o[k++] = ndy, o[k++] = dx[4], o[k++] = dy[4];
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+            o[k - len + 6] = ndx, o[k - len + 7] = ndy;
+        } else {
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        }
+        i += len;
+    }
+    o[3] = next;
+    free(s->spirv);
+    s->spirv = o, s->words = k;
+    if (plat_inc32(&n_logged) <= 4) rt_log("gfx_shader: %d gradient samples now read their derivatives per coordinate", found);
+out:
+    free(cc);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
     char stage[8];
     json_str(js, js + strlen(js), "stage", stage, sizeof stage);
     s->stage = !strcmp(stage, "cs") ? GFX_STAGE_CS : !strcmp(stage, "ps") ? GFX_STAGE_FS : GFX_STAGE_VS;
+    s->mvprev_banks = (uint32_t)json_int(js, js + strlen(js), "mvprev_banks", 0);
     for (int k = 0; k < GFX_RES_KINDS; k++) {
         int count = json_objects(js, kinds[k], NULL, s, k);
         s->res[k] = calloc(count ? count : 1, sizeof *s->res[k]);
         json_objects(js, kinds[k], add_res, s, k);
     }
     reflect_spirv(s);
+    patch_txd_transpose(s);
 }
 
 // ---- use masks (see the cache key at the top)
@@ -975,7 +1059,7 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
     memcpy(p, a->frag_out_type, 8), p += 8;
     for (int i = 0; i < 3; i++) *p++ = (uint8_t)a->local[i], *p++ = (uint8_t)(a->local[i] >> 8);
     put_u32(&p, a->shared_bytes);
-    *p++ = a->depth_minus_w;
+    *p++ = (uint8_t)(a->depth_minus_w | (a->mvprev ? 0x80 : 0));
     return (size_t)(p - o);
 }
 
@@ -1007,6 +1091,7 @@ static void mask_answers(const GfxShaderAnswers *a, const UseMask *m, GfxShaderA
         if (m->fouts >> i & 1) o->frag_out_type[i] = a->frag_out_type[i];
     memcpy(o->local, a->local, sizeof o->local);
     o->shared_bytes = a->shared_bytes;
+    o->mvprev = a->mvprev;   // another translation, not an answer the use mask covers
 }
 
 // The cache key of an input id under the current translator.
@@ -1086,9 +1171,11 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     if (!strcmp(stage, "ps") && (control[0x718] & 1)) o += sprintf(o, ",\"early_fragment_tests\":true");
     int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
+    if (a && a->mvprev && !strcmp(stage, "vs")) o += sprintf(o, ",\"mvprev\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
     if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);
     if (host_gather) o += sprintf(o, ",\"gather_bias\":%u", host_gather);
+    if (host_zero_locals) o += sprintf(o, ",\"zero_locals\":true");
     o += sprintf(o, "},\"out\":\"");
     json_esc(&o, cache_dir);
     o += sprintf(o, "\"}");
@@ -1288,8 +1375,18 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     if (!req) return plat_file_delete(code_path), fail("out of memory", hex);
     build_request(req, hex, r->stage_name, code_path, r->c1, r->c1_len, a, control);
     int ok = svc_request(req, reply, sizeof reply);
+    // TOTK_XLATE_KEEP=1: a last-frame variant's job stays as <key>.job (one request line) with its code, to run the
+    // translator on by hand (totk_xlate --serve < <key>.job)
+    static int keep = -1;
+    if (keep < 0) keep = rt_knob("XLATE_KEEP", "0");
+    int kept = keep && a && a->mvprev;
+    if (kept) {
+        char job_path[PATH_CAP + 80];
+        snprintf(job_path, sizeof job_path, "%s/%s.job", cache_dir, hex);
+        write_file(job_path, req, strlen(req));
+    }
     free(req);
-    plat_file_delete(code_path);
+    if (!kept) plat_file_delete(code_path);
     if (!ok) return fail("translator unavailable", hex);
     if (strncmp(reply, "ok ", 3)) {
         plat_file_delete(spv_path), plat_file_delete(res_path);
@@ -1644,6 +1741,8 @@ uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]) {
     return s->in_mask;
 }
 
+uint32_t gfx_shader_mvprev_banks(const GfxShader *s) { return s->mvprev_banks; }
+
 uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]) {
     if (io) memcpy(io, s->out, sizeof s->out);
     return s->out_mask;
@@ -1733,7 +1832,7 @@ static void unpack_answers(const uint8_t *p, GfxShaderAnswers *a) {
     memcpy(a->frag_out_type, p, 8), p += 8;
     for (int i = 0; i < 3; i++) a->local[i] = (uint16_t)(p[0] | p[1] << 8), p += 2;
     memcpy(&a->shared_bytes, p, 4), p += 4;
-    a->depth_minus_w = *p;
+    a->depth_minus_w = *p & 0x7f, a->mvprev = *p >> 7;
 }
 
 // Reads a record file's body (after its header) into *body; 0 when absent, and a file with another header is removed.

@@ -1913,6 +1913,8 @@ static void rec_fill(KeyRec *r, const VkPipeState *s) {
 // A pipeline was built for a draw: queue its record for the file. Caller holds P.lock.
 static void keys_note(const VkPipeState *s) {
     if (!A.on || !K.path[0]) return;
+    static const uint8_t none[32];
+    if (s->fs && !memcmp(gfx_shader_input_id(s->fs), none, 32)) return;   // the runtime's own shader (gfx_shader_own)
     KeyRec r;
     rec_fill(&r, s);
     if (!seen_add(rec_hash(&r))) return;

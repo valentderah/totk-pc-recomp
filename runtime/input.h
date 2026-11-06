@@ -6,6 +6,35 @@
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+// 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
+// (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
+int input_kbm_last(void);
+// Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
+// accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
+// separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.
+int input_direct_mouse_active(void);
+int input_direct_mouse_enabled(void);
+// A radial selector uses a persistent virtual cursor while its opening button is held.
+void input_direct_mouse_radial(int32_t dx, int32_t dy, float sensitivity, float cursor[2], int32_t out[2]);
+// Horizontal quick selectors receive short, separated steps instead of a latched radial-cursor direction.
+typedef struct { float distance; uint64_t pulse_until, neutral_until; int direction; } InputMouseRow;
+void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMouseRow *row, int32_t out[2]);
+int input_direct_mouse_selector_active(void);
+// Consume direct mouse counts, including one-shot MOUSE events from an input script. enabled=0 discards scripted
+// counts while leaving the real mouse for menu input. Live counts require cursor capture and foreground focus.
+void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);
+// The buttons (B_* bits) of the last poll, keys and gamepad merged; any thread (mouse_direct.c: ZR for the bow's scale)
+uint64_t input_buttons_last(void);
+// mouse_direct.c: the right stick's side a mouse shake gives while Ultrahand holds an object (-1 / +1), 0 while the
+// mouse does not shake; input.c puts it on the stick
+int input_direct_mouse_shake(void);
+// menu_cursor.c: the L ability wheel or a D-pad strip has the focus: 1 / 0, -1 with the menu cursor off (not read)
+int menu_cursor_shortcut(void);
+// menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
+// menu has the pointer, so the mouse camera's capture is released
+void menu_cursor_poll(uint64_t *buttons);
+int menu_cursor_pointer(void);
+int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

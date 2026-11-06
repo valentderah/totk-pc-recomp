@@ -7,9 +7,19 @@
 # Frame rate limit: 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the refresh rate of the
 # window's monitor, at most 240). A higher rate gives 240: above it the game's physics runs out of memory. Above 60
 # is experimental and needs realtime = 1. Changes while the game runs take effect at once.
+# With mailbox or fifo presentation (vk_present, the default) a frame reaches the screen at a vertical blank, so a limit
+# that does not divide the monitor's refresh rate keeps each frame on screen for a different number of refreshes. On a
+# 320 Hz monitor 80, 64, 40 and 32 divide it and 90 does not: 90 fps alternates 3 and 4 refreshes per frame, which reads
+# as judder while the frame counter still shows 90. Likewise on 240 Hz 60, 48 and 40 divide it and on 144 Hz 72, 48 and
+# 36 do, while 60 does not. vk_present = immediate shows a frame as soon as it is presented, without this quantisation,
+# at the cost of tearing. A monitor running with variable refresh (FreeSync, G-Sync) follows the frames instead, so
+# there any limit inside its range is even.
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
+# Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
+# still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
+# frame_queue = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
@@ -25,7 +35,8 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game (1 = on). Adds up to a frame of latency.
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
+# game waits for the GPU; adds up to a frame of latency.
 # replay_async = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
@@ -48,16 +59,22 @@
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
 # prewarm_xlate = 8
-# Vulkan graphics pipeline library, 0 or 1. Default: on, except on AMD's driver for RDNA 1 and 2 (RX 5000 and 6000).
+# Vulkan graphics pipeline library, 0 or 1. Default: on.
 # gpl = 1
 
 # Textures and memory.
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU
 # has it, gpu otherwise).
 # astc = auto
+# With astc = gpu: re-encode the decoded ASTC textures to BC3, a quarter of the video memory, textures slightly blockier,
+# 0 or 1. Default: on when the GPU has less than 5 GB of video memory, off otherwise.
+# astc_bc = 1
 # Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
-# every copy; slow).
+# every copy; slow). On a discrete GPU import can be far slower than mirror, not slightly slower: the GPU reads the
+# game's pools over PCIe. A 5070 Ti Laptop went from 6 ms to 135-230 ms of GPU time per frame with import (5 fps on the
+# title screen, bound: gpu, every line of the perf window waiting on a fence). The log names the mode in use: "mem:
+# mode import" or "mem: mode mirror".
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
@@ -126,10 +143,14 @@
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
 # game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
-# prepares the UI layout for ten sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440 (32:9),
-# 1280x800, 1680x1050, 1920x1200 and 2560x1600 (16:10). Any other size
+# prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
+# (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
+# (3:2). Any other size
 # gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start.
+# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
+# shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
+# a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
+# the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
@@ -143,6 +164,10 @@
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at
 # once.
 # aspect = fit
+# Shape of the pre-rendered movies (16:9) when the game resolution (output_res) is not 16:9: keep, the default, draws
+# them in their own shape with black bars at the sides or above and below; stretch fills the whole picture, as the game
+# does. Read when a movie starts, so a change takes effect at the next movie.
+# movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100
@@ -160,8 +185,8 @@
 # color_saturation = 100
 # color_gamma = 1
 # Sun shadow map size: game (the game's own, which changes with the view and drops to about 400 near the ground, so
-# leaf shadows look blocky and jump) or a fixed 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with it.
-# Read at start.
+# leaf shadows look blocky and jump) or a fixed 256, 512, 768, 1024, 1536 or 2048. Above 960 the texture heap grows with
+# it. 256 is coarser than the game's own and is for integrated GPUs short of memory bandwidth. Read at start.
 # shadow_res = game
 
 # Shadow map resolution: the game's sun cascades are 960x960 (and its static shadow maps 1440 and 720) whatever the game
@@ -181,13 +206,30 @@
 # patch 0010), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with nvngx_dlss.dll (from NVIDIA's DLSS SDK) next to
-# totk.exe; elsewhere the setting does nothing. The HUD is drawn after it and is not touched. Read at start.
+# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
+# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
+# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
+# Read at start.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced or performance (the scene at 67, 58 or
-# 50 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering to match). With dlaa
-# = 0 the game's own scaling is used at that size. Read at start.
+# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
+# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
+# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
+# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
 # dlss = dlaa
+# The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
+# ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
+# characters, a little more flicker). Any other model by its letter, a to m: on slower RTX cards the older model e is
+# cheaper. Changes while the game runs take effect at once (DLSS starts a new history).
+# dlss_preset = default
+# Per-object motion vectors for DLSS: characters, animals and moving objects get their own motion instead of the
+# camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
+# on a laptop CPU); 0 leaves camera-only motion. Read at start.
+# dlaa_objmv = 1
+# Characters' trails: where a character, animal or held item moves without motion vectors of its own (all of them with
+# dlaa_objmv = 0), DLSS can drag a faint copy of it. The G-buffer marks those objects; on them and where they were the
+# frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
+# more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
+# dlss_char_mask = 65
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
@@ -200,6 +242,9 @@
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
+# Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
+# picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
+# hdr_hue = 80
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
@@ -211,6 +256,18 @@
 # Windows display language (zh-Hans for Traditional Chinese), English if it is none of them.
 # menu_lang = en
 
+[discord]
+# Rich Presence: "Playing TotK Recomp" with the play time in your Discord status while the game runs, through the
+# local IPC of a running Discord client. 1 = on; the Menu tab of the settings menu (F1) switches it too, and the
+# change reaches the presence thread at once.
+# discord_rpc = 0
+# The application whose name and artwork the status shows. The default is the project's own application,
+# registered as "TotK Recomp" with the port's green ring icon as its art. Register your own at
+# discord.com/developers (name and art are yours to choose) and put its id here.
+# discord_app_id = 1567232599846293504
+# The key of the application's uploaded art asset shown as the status's large image.
+# discord_image = totk_512x512
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default
@@ -218,6 +275,9 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
+# game is told the same channel count and mixes for it. Takes effect at the next start.
+# audio_channels = stereo
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
@@ -233,9 +293,11 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
-# The buttons the game's prompts show: nintendo (the game's own) or xbox (LB RB LT RT, Menu, View and a d-pad cross,
+# The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
-# (docs/controls.md, "Xbox button prompts").
+# (docs/controls.md, "Xbox button prompts"). pc: the key or mouse button the keyboard defaults press each button with
+# (E, Shift, Space, left click, Q, R, right click, F, Tab, M, 1 to 4, W A S D, Ctrl, C) and the mouse for the right
+# stick, whatever pad_layout (docs/controls.md, "PC button prompts").
 # prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
@@ -248,8 +310,21 @@
 # tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
 # lstick_deadzone = 8
 # rstick_deadzone = 8
-# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
+# Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
+# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
+# mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
+# mouse_mode = direct
+# The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
+# menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
+# right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
+# the map to the keys and the pad. Changes while the game runs.
+# menu_cursor = 1
+# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
+# camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
+# The mouse's camera motion times this while the bow is drawn (0.1 to 3; mouse_mode = direct, game 1.4.3), on top of
+# the 0.08 degrees per count every camera turns, the bow's included. Changes while the game runs.
+# mouse_aim_scale = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
 # none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
@@ -262,9 +337,10 @@
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
 # direction: bind_<A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK> or bind_<LSTICK RSTICK>_<LEFT UP RIGHT
-# DOWN> = comma separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
-# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions take keys
-# only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
+# DOWN>, or bind_SHAKE (G: shakes the right stick, which detaches a fused part from what Ultrahand holds) = comma
+# separated pad:<name> and key:<name> entries, key:default / pad:default for that part's defaults, or none.
+# A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions and
+# SHAKE take keys only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
 #   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert
@@ -313,8 +389,13 @@
 # takes longer than flight_spike_ms (0 to 60000).
 # flight = 0
 # flight_spike_ms = 100
-# Largest render target (bytes, 0 to 1073741824) that goes back to its game memory when the game waits for a GPU fence.
-# A game that reads a larger target without invalidating it sees stale bytes at the default. With trace = gfx the log
-# names each dirty target over the limit that stays on the GPU ("fence write-back skipped-for-size") and each one over
-# 65536 bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
+# GPU pass marks: after a GPU crash (device lost) the log names the render pass or dispatch the GPU had started and the
+# last one it finished. Unset: on AMD GPUs (VK_AMD_buffer_marker). 1: also on NVIDIA GPUs
+# (VK_NV_device_diagnostic_checkpoints), which NVIDIA says costs a little. 0: off.
+# pass_crumbs = 1
+# Render targets up to this size (bytes, 0 to 1073741824) go back to their game memory whenever the game waits for a
+# GPU fence. A larger target goes back too unless the GPU drew it in each of the last 16 frames. A game that reads a
+# larger target drawn every frame without invalidating it sees stale bytes at the default. With trace = gfx the log
+# names each dirty target that stays on the GPU ("fence write-back skipped-drawn-every-frame") and each one over 65536
+# bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
 # wb_fence_limit = 65536

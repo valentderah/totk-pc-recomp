@@ -24,8 +24,8 @@
 // matches a RomFS path only without case is served under the RomFS spelling.
 //
 // The resource size table: with a player mod enabled, the game's table is rebuilt at start with the tables the mods
-// ship merged in and the entries of the mods' files raised to what they need (restbl_overlay), and served from
-// <profile>/mods/ in place of the game's or a mod's table.
+// ship merged in and the entries of the mods' files raised to what they need (restbl_overlay), the members of their
+// packs too (restbl_packs), and served from <profile>/mods/ in place of the game's or a mod's table.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -621,10 +621,122 @@ static Restbl *restbl_unpack(const void *z, size_t n) {
     return t;
 }
 
+// ---- the members of the mods' packs (restbl_pack_raise). The game loads each member of a pack (Pack/**/*.pack.zs, a
+// SARC archive compressed with a dictionary of Pack/ZsDic.pack.zs) as a resource of its own, in a heap sized by the
+// member's own entry, so a mod that changes a member and ships no table for it (or an older one) leaves the game's
+// entry. A member that outgrew its entry's slack loads, then its heap runs out: TotK 1.4.3 writes through a null
+// pointer at main+0x21794c when the 0x68-byte object an .ainb member builds after its file no longer fits.
+#define PACK_MAX (256u << 20)   // the largest pack taken, decompressed (AI.Global.Product.140.pack: 24 MiB)
+typedef struct { ZSTD_DDict *dict[4]; unsigned id[4]; int n; ZSTD_DCtx *dctx; } Packs;
+
+// The bytes of zstd frame z[0..n), with the dictionary of ps its header names; malloc'd. NULL when it is not such a
+// frame with a recorded size of at most PACK_MAX.
+static uint8_t *pack_unpack(Packs *ps, const void *z, size_t n, size_t *out_n) {
+    unsigned long long raw = ZSTD_getFrameContentSize(z, n);
+    unsigned id = ZSTD_getDictID_fromFrame(z, n);
+    ZSTD_DDict *dd = NULL;
+    for (int i = 0; i < ps->n; i++)
+        if (ps->id[i] == id) dd = ps->dict[i];
+    if (raw == ZSTD_CONTENTSIZE_UNKNOWN || raw == ZSTD_CONTENTSIZE_ERROR || raw > PACK_MAX || (id && !dd) || !ps->dctx)
+        return NULL;
+    uint8_t *d = malloc(raw ? (size_t)raw : 1);
+    size_t got = !d ? 0 : dd ? ZSTD_decompress_usingDDict(ps->dctx, d, (size_t)raw, z, n, dd)
+                             : ZSTD_decompressDCtx(ps->dctx, d, (size_t)raw, z, n);
+    if (!d || ZSTD_isError(got) || got != raw) {
+        free(d);
+        return NULL;
+    }
+    *out_n = (size_t)raw;
+    return d;
+}
+
+static void pack_dict_add(const char *name, const uint8_t *data, size_t size, void *ctx) {
+    Packs *ps = ctx;
+    ZSTD_DDict *dd = ps->n < 4 && ends_with(name, ".zsdic") ? ZSTD_createDDict(data, size) : NULL;   // a copy
+    if (!dd) return;
+    ps->dict[ps->n] = dd;
+    ps->id[ps->n++] = ZSTD_getDictID_fromDDict(dd);
+}
+
+// The dictionaries of Pack/ZsDic.pack.zs as served (zs.zsdic, pack.zsdic, bcett.byml.zsdic): a SARC compressed
+// without one. 0 when it holds none.
+static int packs_open(Packs *ps) {
+    Overlay *base;
+    size_t n = 0, rn = 0;
+    ps->dctx = ZSTD_createDCtx();
+    void *z = read_served("Pack/ZsDic.pack.zs", &base, &n, "the members of the mods' packs keep their entries");
+    uint8_t *raw = z ? pack_unpack(ps, z, n, &rn) : NULL;
+    int ok = raw && restbl_sarc_each(raw, rn, pack_dict_add, ps) && ps->n;
+    free(z);
+    free(raw);
+    return ok;
+}
+
+static void packs_close(Packs *ps) {
+    for (int i = 0; i < ps->n; i++) ZSTD_freeDDict(ps->dict[i]);
+    ZSTD_freeDCtx(ps->dctx);
+}
+
+// Overlay o (a pack) and the game's copy of it, decompressed; NULL when o cannot be read or unpacked. *orig stays NULL
+// for a pack the game lacks or whose copy cannot be read.
+static uint8_t *pack_pair(Packs *ps, const Overlay *o, size_t *n, uint8_t **orig, size_t *orig_n) {
+    uint64_t zn = 0;
+    void *z = plat_file_read(o->path, &zn);
+    uint8_t *mod = z ? pack_unpack(ps, z, (size_t)zn, n) : NULL;
+    free(z);
+    *orig = NULL;
+    if (!mod || o->index == ADDED) return mod;
+    Entry e = entry(o->index);
+    void *g = e.size < READ_CHUNK ? malloc(e.size ? (size_t)e.size : 1) : NULL;
+    if (g && read_at(image, g, (uint32_t)e.size, e.offset) == (int64_t)e.size)
+        *orig = pack_unpack(ps, g, (size_t)e.size, orig_n);
+    free(g);
+    return mod;
+}
+
+typedef struct { const char *pack, *mod; int lines; } PackNote;
+
+static void pack_note(const char *key, uint32_t was, uint32_t now, void *ctx) {
+    PackNote *pn = ctx;
+    if (pn->lines++ < 16)
+        rt_log("RomFS: resource size table: %s in %s (%s): entry %u -> %u", key, pn->pack, pn->mod, was, now);
+}
+
+// The entries of the members of every pack a mod serves, raised in out against the game's table base; the number
+// raised, *packs the number of packs with one.
+static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines) {
+    Packs ps = {0};
+    int raised = 0, opened = 0, bad = 0;
+    *packs = 0;
+    for (size_t k = 0; k < noverlay; k++) {
+        const Overlay *o = &overlays[k];
+        if ((!o->mod && o->prio != 1) || !ends_with(o->name, ".pack.zs")) continue;
+        if (!opened++ && !packs_open(&ps)) {
+            rt_log("RomFS: no zstd dictionary in Pack/ZsDic.pack.zs; the members of mods' packs keep their entries");
+            break;
+        }
+        // A pack whose game copy cannot be read counts as new: each member gets an estimate, which only raises entries.
+        size_t n = 0, orig_n = 0;
+        uint8_t *orig, *mod = pack_pair(&ps, o, &n, &orig, &orig_n);
+        PackNote pn = {o->name, owner_name(o), *lines};
+        int r = mod ? restbl_pack_raise(out, base, mod, n, orig, orig_n, pack_note, &pn) : -1;
+        if (r < 0 && bad++ < 4) rt_log("RomFS: %s (%s) is not a pack this build reads; its members keep their entries",
+                                       o->name, owner_name(o));
+        *lines = pn.lines;
+        raised += r > 0 ? r : 0;
+        *packs += r > 0;
+        free(mod);
+        free(orig);
+    }
+    packs_close(&ps);
+    return raised;
+}
+
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
-// has, restbl_estimate for an added one). Never lowers the game's entries.
+// has, restbl_estimate for an added one), the members of the packs mods serve too (restbl_packs). Never lowers the
+// game's entries.
 static void restbl_overlay(void) {
     int player = 0;
     for (size_t k = 0; k < noverlay; k++) player |= overlays[k].mod || overlays[k].prio == 1;
@@ -691,8 +803,10 @@ static void restbl_overlay(void) {
         }
         raised += want && restbl_raise(out, key, want);
     }
+    int packs = 0, lines = 0, members = restbl_packs(out, base, &packs, &lines);
+    if (lines > 16) rt_log("RomFS: resource size table: %d more entries of pack members raised", lines - 16);
     restbl_free(base);
-    if (!merged && !raised && !served) {
+    if (!merged && !raised && !members && !served) {
         restbl_free(out);
         rt_log("RomFS: resource size table: the mods' files fit the game's entries (%.0f ms)", (now_s() - t0) * 1000);
         return;
@@ -711,7 +825,8 @@ static void restbl_overlay(void) {
     }
     if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps))
         rt_log("RomFS: resource size table: %d tables merged (%d entries), %d entries raised for mod files (%d "
-               "added files estimated), %.0f ms", tables, merged, raised, estimated, (now_s() - t0) * 1000);
+               "added files estimated), %d for members of %d mod packs, %.0f ms", tables, merged, raised, estimated,
+               members, packs, (now_s() - t0) * 1000);
 }
 
 // The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
@@ -750,14 +865,17 @@ static void camera_overlay(void) {
 // The button prompts' folders (input_prompts_folder) and whether each had a manifest next to romfs-index.bin at start;
 // the one the settings asked for at start, the one overlay_init loaded (NULL: the game's own prompts) and why the first
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
-static struct { const char *name; int ready; } prompts_folders[2];
+// romfs-patches-pc keeps that name, but at a game resolution of another shape than 16:9 its files come from pc_dir,
+// romfs-patches-pc-<w>x<h> (overlay_init).
+static struct { const char *name; int ready; } prompts_folders[3];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
+static char pc_dir[64];
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 3; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -798,6 +916,9 @@ static void overlay_init(void) {
     // keeps the Switch prompts. So does a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of
     // the prompts' fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made
     // for the game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
+    // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
+    // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
+    // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
     char def[2100], path[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES"), *mods = cfg_get("TOTK_ROMFS_MODS");
     int wide = 0;
@@ -813,34 +934,46 @@ static void overlay_init(void) {
                    "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
         }
     }
-    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each folder
-    for (int i = 0; i < 2; i++) {
-        prompts_folders[i].name = input_prompts_folder(PROMPTS_XBOX, layouts[i]);
+    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
+    for (int i = 0; i < 3; i++) {
+        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
+        const char *dir = name;
+        if (i == 2) {
+            if (wide) snprintf(pc_dir, sizeof pc_dir, "%s-%ux%u", name, out[0], out[1]);
+            else snprintf(pc_dir, sizeof pc_dir, "%s", name);
+            dir = pc_dir;
+        }
+        prompts_folders[i].name = name;
         prompts_folders[i].ready =
-            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, prompts_folders[i].name) < (int)sizeof path &&
-            plat_file_exists(path);
+            snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, dir) < (int)sizeof path && plat_file_exists(path);
     }
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    prompts_wanted = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+    int pick = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), shaped = wide && pick == PROMPTS_PC;
+    const char *style = pick == PROMPTS_PC ? "keyboard and mouse" : "Xbox";
+    prompts_wanted = input_prompts_folder(pick, layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
-                  : wide                                  ? ROMFS_PROMPTS_SHAPE
-                  : patches                               ? ROMFS_PROMPTS_PATCHES
-                  : !romfs_prompts_ready(prompts_wanted)  ? ROMFS_PROMPTS_MISSING
+                  : wide && !shaped                       ? ROMFS_PROMPTS_SHAPE
+                  : patches && !wide                      ? ROMFS_PROMPTS_PATCHES
+                  : !romfs_prompts_ready(prompts_wanted)  ? (shaped ? ROMFS_PROMPTS_SHAPE : ROMFS_PROMPTS_MISSING)
                                                           : ROMFS_PROMPTS_OK;
     restbl_find();
     size_t first = noverlay;
     if (prompts_wanted && prompts_off == ROMFS_PROMPTS_OK) {
-        snprintf(path, sizeof path, "%s/%s", index_dir, prompts_wanted);   // fits: its manifest path did
+        // fits: its manifest path did
+        snprintf(path, sizeof path, "%s/%s", index_dir, shaped ? pc_dir : prompts_wanted);
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
-            rt_log("RomFS overlay: Xbox button prompts (%s)", path);
+            rt_log("RomFS overlay: %s button prompts (%s)", style, path);
+            if (shaped) patches = NULL;   // in place of romfs-patches-<w>x<h>, whose UI layout it carries
         } else {
             prompts_off = ROMFS_PROMPTS_FAILED;
             rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", path);
         }
     } else if (prompts_wanted) {
-        rt_log("RomFS overlay: prompts = xbox, but %s; Switch prompts stay",
-               prompts_off == ROMFS_PROMPTS_SHAPE     ? "the game resolution takes its own UI layout"
+        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay", pick == PROMPTS_PC ? "pc" : "xbox",
+               prompts_off == ROMFS_PROMPTS_SHAPE     ? (shaped ? "the game resolution has no romfs-patches-pc-<w>x<h> "
+                                                                  "(tools/make_romfs_patches.py --prompts pc --aspect)"
+                                                             : "the game resolution takes its own UI layout")
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
     }
@@ -856,11 +989,13 @@ static void overlay_init(void) {
     mods_overlay_init();
     const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
     if (clash) {
-        rt_log("RomFS overlay: a RomFS mod replaces %s, which the Xbox prompts change too; Switch prompts stay", clash);
+        rt_log("RomFS overlay: a RomFS mod replaces %s, which the %s prompts change too; Switch prompts stay", clash,
+               style);
         overlay_drop(first, prompts_end);
         prompts_loaded = NULL;
         prompts_off = ROMFS_PROMPTS_MODS;
-        if (plain_ok) overlay_load(plain, 0, 0);
+        if (shaped) overlay_load(def, 0, 0);
+        else if (plain_ok) overlay_load(plain, 0, 0);
     }
     restbl_collect();
     overlay_contest();

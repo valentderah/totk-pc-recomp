@@ -20,7 +20,7 @@
     {KEY_SPACE, B_X}, {KEY_LSHIFT, B_B}, {KEY_E, B_A}, {KEY_Q, B_L}, {KEY_R, B_R}, \
     {KEY_LCTRL, B_STICK_L}, {KEY_C, B_STICK_R}, \
     {KEY_1, B_LEFT}, {KEY_2, B_UP}, {KEY_3, B_RIGHT}, {KEY_4, B_DOWN}, \
-    {KEY_TAB, B_PLUS}, {KEY_M, B_MINUS}
+    {KEY_TAB, B_PLUS}, {KEY_M, B_MINUS}, {KEY_G, B_SHAKE}
 
 // By position: south is Switch B, east A, west Y, north X (Nintendo layout); the Xbox layout swaps A with B and X with Y
 // (south A, as the Xbox labels; cross A on a PlayStation pad). The triggers are ZL and ZR.
@@ -31,7 +31,7 @@
     {PAD_ZR, B_ZR}
 #define NINTENDO_PADS DEFAULT_PADS(B_B, B_A, B_Y, B_X)
 #define XBOX_PADS DEFAULT_PADS(B_A, B_B, B_X, B_Y)
-enum { DEFAULT_KEY_COUNT = 26, DEFAULT_PAD_COUNT = 16 };
+enum { DEFAULT_KEY_COUNT = 27, DEFAULT_PAD_COUNT = 16 };
 _Static_assert(sizeof (Binding[]){DEFAULT_KEYS} / sizeof (Binding) == DEFAULT_KEY_COUNT, "DEFAULT_KEY_COUNT");
 
 static const InputMap defaults = {{DEFAULT_KEYS}, DEFAULT_KEY_COUNT, {{NINTENDO_PADS}, {XBOX_PADS}},
@@ -41,7 +41,7 @@ InputMap input_map = {{DEFAULT_KEYS}, DEFAULT_KEY_COUNT, {{NINTENDO_PADS}, {XBOX
 
 static const char *const action_names[ACTION_COUNT] = {
     "A", "B", "X", "Y", "LCLICK", "RCLICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN",
-    "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN"};
+    "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN", "SHAKE"};
 static const char *const pad_names[PAD_COUNT] = {
     NULL, "south", "east", "west", "north", "lstick", "rstick", "l", "r", "start", "back",
     "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr", "lpaddle1", "rpaddle1", "lpaddle2", "rpaddle2"};
@@ -143,7 +143,7 @@ int input_map_bind(const char *button, const char *list) {
         }
         if (!ok) {
             bad++;
-            rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions take keys only)",
+            rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions and SHAKE take keys only)",
                    button, tok);
         }
     }
@@ -289,11 +289,13 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
 }
 
 int input_prompts_pick(const char *prompts, const char *pad_layout) {
-    if (prompts && *prompts) return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
+    if (prompts && *prompts)
+        return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : !strcasecmp(prompts, "pc") ? PROMPTS_PC : PROMPTS_NINTENDO;
     return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
 }
 
 const char *input_prompts_folder(int prompts, const char *pad_layout) {
+    if (prompts == PROMPTS_PC) return "romfs-patches-pc";
     if (prompts != PROMPTS_XBOX) return NULL;
     // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
     // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.
@@ -313,6 +315,12 @@ uint64_t input_map_buttons(const uint8_t down[KEY_COUNT]) {
     for (int i = 0; i < input_map.nkeys; i++)
         if (input_map.keys[i].action < B_SL_LEFT && down[input_map.keys[i].key]) b |= 1ull << input_map.keys[i].action;
     return b;
+}
+
+int input_map_held(const uint8_t down[KEY_COUNT], int action) {
+    for (int i = 0; i < input_map.nkeys; i++)
+        if (input_map.keys[i].action == action && down[input_map.keys[i].key]) return 1;
+    return 0;
 }
 
 void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]) {

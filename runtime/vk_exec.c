@@ -491,18 +491,28 @@ static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
     return tfr_match(e, t) && (e->last == stamp ? e->prev : e->last) == stamp - 1;
 }
 
+// No frame before the current one rendered the target (a slot another subresource took reads the same).
+static int tfr_first(const VkExecTarget *t, uint64_t stamp) {
+    const TargetFrames *e = tfr_slot(t);
+    return !tfr_match(e, t) || !(e->last == stamp ? e->prev : e->last);
+}
+
+// With any, a recent depth target alone does not make the pass per-frame when a colour target is rendered for the
+// first time: the game's item icon capture (an inventory or Fuse icon) draws into a new colour target with the
+// per-frame depth buffer, once. Its draws skipped there stay missing from the icon until the item is captured again.
 int vk_exec_targets_recent(VkExec *ex, int any) {
     resolve_rt(ex);
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    int n = 0, recent = 0;
+    int n = 0, color = 0, depth = 0, color_first = 0;
     for (int i = 0; i < 9; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if (!t->image) continue;
         n++;
-        if (tfr_recent(t, stamp)) recent++;
+        if (tfr_recent(t, stamp)) *(i < 8 ? &color : &depth) = 1;
         else if (!any) return 0;
+        else if (i < 8 && tfr_first(t, stamp)) color_first = 1;
     }
-    return any ? recent > 0 : n > 0;
+    return any ? color || (depth && !color_first) : n > 0;
 }
 
 // One line naming each target of the current pass: format, extent, layer and the two frames it was last rendered in
@@ -612,6 +622,20 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) da = a;
         if (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = a;
     }
+    // The start mark goes between the barrier and vkCmdBeginRendering, its end right after vkCmdEndRendering
+    // (vk_exec_pass_end): outside the pass, and without breaking it.
+    VkPassMark *m = ex->mark = vk_pass_mark_begin(ex->cb, VK_MARK_PASS, ex->fence);
+    if (m) {
+        m->step = ex->mark_passes++;
+        m->w = ex->pass_w, m->h = ex->pass_h, m->d = ex->pass_layers;
+        m->ncolor = (uint8_t)(ex->pass_ncolor < 8 ? ex->pass_ncolor : 8);
+        for (int i = 0; i < m->ncolor; i++) m->color[i] = ex->pass_color[i];
+        m->depth = ex->pass_depth ? ex->pass_depth : ex->pass_stencil;
+        // The shaders bound now are the first draw's when it repeats the pipeline state; when it does not,
+        // vk_exec_draw.c prepare_draw replaces them as it records the new state.
+        vk_exec_draw_shaders(&m->first[0], &m->first[1]);
+        ex->mark_draws0 = vk_exec_frame.draws;
+    }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
                           .layerCount = ex->pass_layers, .colorAttachmentCount = ex->pass_ncolor,
                           .pColorAttachments = ca,
@@ -629,6 +653,14 @@ void vk_exec_pass_end(VkExec *ex) {
     vkCmdEndRendering(ex->cb);
     ex->recorded++;
     ex->in_pass = 0;
+    if (ex->mark) {
+        // vk_exec_frame_log resets the frame counters at a present (TOTK_TRACE=gfx): then only the draws since it count
+        uint64_t d = vk_exec_frame.draws, d0 = ex->mark_draws0;
+        ex->mark->draws = (uint32_t)(d >= d0 ? d - d0 : d);
+        if (ex->mark->draws) vk_exec_draw_shaders(&ex->mark->last[0], &ex->mark->last[1]);
+        vk_pass_mark_end(ex->cb, ex->mark);
+        ex->mark = NULL;
+    }
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
@@ -897,10 +929,16 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
     VkExec *ex = &X;
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
+    const tex_t *keep[9];   // the render targets carry over to this submission (set_rt compares them by pointer)
+    memcpy(keep, ex->rt.color, sizeof ex->rt.color);
+    keep[8] = ex->rt.depth;
+    nvn_pins_sweep(nvn_submit_count(), keep, 9);
     ex->cb = cb;
     ex->fence = fence;
     ex->recorded = 0;
     ex->in_pass = 0;
+    ex->mark = NULL;
+    ex->mark_passes = ex->mark_dispatches = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;
     ex->rt_resolved = 0;   // images may have changed since the last command buffer
     ex->nviews = 0;

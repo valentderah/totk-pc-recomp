@@ -8,7 +8,8 @@
 // 8-bit sRGB window texture it presents. So:
 // 1. vk_hdr_shader_swap: the tonemap's fragment shader becomes shaders/hdr_tonemap.frag, which keeps values above 1
 //    (relative to the HUD's white) and rolls off at the peak. It is recognised by its constants and resources, not by
-//    a hash, so another game version or translator still finds it; its SPIR-V is replaced in memory only.
+//    a hash, so another game version or translator still finds it; its SPIR-V is replaced in memory only. The game's
+//    FSR 1 upscale after it would clamp the picture to 1 again; fsr_unclamp drops that clamp in its SPIR-V.
 // 2. vk_hdr_draw / vk_hdr_present_source: a draw into a presented window texture that samples one float texture of
 //    its size is that copy; the present then reads the float texture instead of the window texture. Any other last
 //    draw into it leaves the window texture, decoded from sRGB: menus and movies stay SDR at the HUD's white.
@@ -50,7 +51,7 @@ void vk_hdr_off(void) { g_wanted = 0; }
 
 // The three nits, read again when the settings change. The replay (every draw's support buffer) and the present
 // thread read them: an update fills the snapshot not in use and then publishes it.
-typedef struct { float peak, game, ui; } Nits;
+typedef struct { float peak, game, ui, hue; } Nits;
 static struct { unsigned seen; int cur; Nits snap[2]; PlatMutex lock; } N = {.seen = ~0u, .lock = PLAT_MUTEX_INIT};
 
 static Nits nits(void) {
@@ -62,6 +63,7 @@ static Nits nits(void) {
             n->peak = fmaxf((float)cfg_double("TOTK_HDR_PEAK_NITS"), 80.0f);
             n->game = fmaxf((float)cfg_double("TOTK_HDR_GAME_NITS"), 80.0f);
             n->ui = fmaxf((float)cfg_double("TOTK_HDR_UI_NITS"), 80.0f);
+            n->hue = fminf(fmaxf((float)cfg_double("TOTK_HDR_HUE"), 0.0f), 100.0f) / 100.0f;
             __atomic_store_n(&N.cur, !N.cur, __ATOMIC_RELEASE);
             __atomic_store_n(&N.seen, v, __ATOMIC_RELEASE);
         }
@@ -74,7 +76,8 @@ void vk_hdr_support(float out[4]) {
     Nits n = nits();
     out[0] = n.game / n.ui;                              // the picture's white against the HUD's
     out[1] = n.peak > n.game ? n.peak / n.game : 1.0f;   // the peak against the picture's white
-    out[2] = out[3] = 0;
+    out[2] = n.hue;                                      // hue correction of highlights (hdr_tonemap.frag)
+    out[3] = 0;
 }
 
 // ---- 1. the tonemap shader
@@ -90,8 +93,80 @@ static int name_is(const uint32_t *a, uint32_t len, const char *s) {   // OpName
     return (len - 2) * 4 >= n + 1 && !memcmp(a + 1, s, n + 1);
 }
 
+// The game's FSR 1 pass after the tonemap (some frames take it in place of the plain pass, at 1:1 as well as when it
+// scales up; what picks it is not known yet) ends with clamp(colour, 0.0, 1.0) per channel, which cuts the HDR
+// highlights back to the HUD's white for as long as the game takes it. Its own 0..1 clamps of the filter weights each
+// feed a float bit trick (OpBitcast), so only the clamps whose result is stored to the shader's output change, to
+// max(x, 0.0): one word shorter, so the words after it move down and the module shrinks. Recognised by FSR's two
+// reciprocal constants (0x7ef07ebb, 0x7ef19fff) and its one texture fp_t_tcb_8. Returns the clamps changed, -1 for
+// that shader with no output clamp found (a translator that stores the colour another way), 0 for any other shader.
+enum { SPV_OP_EXT_INST_IMPORT = 11, SPV_OP_EXT_INST = 12, SPV_OP_VARIABLE = 59, SPV_OP_STORE = 62,
+       SPV_OP_ACCESS_CHAIN = 65, SPV_SC_OUTPUT = 3, GLSL_FMAX = 40, GLSL_FCLAMP = 43 };
+
+static int fsr_unclamp(uint32_t *w, uint64_t *words) {
+    uint64_t n = *words;
+    uint32_t bound = w[3], glsl = 0, float_type = 0, zero = 0, one = 0;
+    int magic = 0, tex = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return 0;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_EXT_INST_IMPORT && len >= 3 && name_is(a, len, "GLSL.std.450")) glsl = a[0];
+        else if (op == SPV_OP_TYPE_FLOAT && len == 3 && a[1] == 32) float_type = a[0];
+        else if (op == SPV_OP_CONSTANT && len == 4) {
+            magic |= (a[2] == 0x7ef07ebbu) | (a[2] == 0x7ef19fffu) << 1;
+            if (a[0] == float_type && float_type && a[2] == 0) zero = a[1];
+            if (a[0] == float_type && float_type && a[2] == 0x3f800000u) one = a[1];
+        } else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "fp_t_tcb_8")) tex = 1;
+        i += len;
+    }
+    if (magic != 3 || !tex) return 0;
+    if (!glsl || !zero || !one || !bound) return -1;
+    uint8_t *out = calloc(bound, 1);   // id -> 1: a pointer into an Output variable, 2: a value stored through one
+    if (!out) return 0;
+    for (uint64_t i = 5; i < n; i += w[i] >> 16) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_VARIABLE && len >= 4 && a[2] == SPV_SC_OUTPUT && a[1] < bound) out[a[1]] = 1;
+        else if (op == SPV_OP_ACCESS_CHAIN && len >= 4 && a[2] < bound && out[a[2]] == 1 && a[1] < bound) out[a[1]] = 1;
+        else if (op == SPV_OP_STORE && len >= 3 && a[0] < bound && out[a[0]] == 1 && a[1] < bound) out[a[1]] = 2;
+    }
+    int changed = 0;
+    uint64_t k = 5;   // the write position: never past the read position, as instructions only shrink
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;   // result type, result, set, instruction, x, min, max
+        if (op == SPV_OP_EXT_INST && len == 8 && a[2] == glsl && a[3] == GLSL_FCLAMP && a[1] < bound && out[a[1]] == 2 &&
+            a[5] == zero && a[6] == one) {
+            uint32_t ins[7] = {7u << 16 | SPV_OP_EXT_INST, a[0], a[1], a[2], GLSL_FMAX, a[4], zero};
+            memmove(w + k, ins, sizeof ins);
+            k += 7, changed++;
+        } else {
+            memmove(w + k, w + i, len * sizeof *w);
+            k += len;
+        }
+        i += len;
+    }
+    free(out);
+    *words = k;
+    return changed ? changed : -1;
+}
+
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
     if (!vk_hdr_wanted() || !*spirv || *words < 5) return;
+    int unclamped = fsr_unclamp(*spirv, words);
+    if (unclamped > 0) {
+        static volatile int32_t fsrs;
+        rt_log("hdr: the game's FSR pass keeps values above 1 (%d output clamps; %d so far)", unclamped,
+               plat_inc32(&fsrs));
+        return;
+    }
+    if (unclamped < 0) {
+        static volatile int32_t missed;
+        if (plat_inc32(&missed) == 1)
+            rt_log("hdr: the game's FSR pass was found but no clamp of its output; it still clips HDR highlights");
+        return;
+    }
     const uint32_t *w = *spirv;
     uint64_t n = *words;
     // the game's constants: the BT.601 red weight, -1/ln 2 (e^-x as exp2), 2/3 (the grade's red weight), the bloom clamp

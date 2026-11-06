@@ -29,9 +29,10 @@ static bool amiibo_validate_dump(const uint8_t *data, uint64_t size) {
         return false;
     }
 
-    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C).
-    // Byte 0x0C must be 0xE1 (NDEF Magic / Type 2 Tag CC container byte).
-    if (data[0x0C] != 0xE1) {
+    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C). An amiibo's is F1 10 FF EE, not the E1 of a plain
+    // NDEF tag (3dbrew, "Amiibo"); the CC is not encrypted, so encrypted dumps carry it too.
+    static const uint8_t amiibo_cc[4] = {0xF1, 0x10, 0xFF, 0xEE};
+    if (memcmp(data + 0x0C, amiibo_cc, sizeof amiibo_cc)) {
         return false;
     }
 
@@ -55,6 +56,12 @@ static bool amiibo_validate_dump(const uint8_t *data, uint64_t size) {
     return true;
 }
 
+// The 7-byte UID of an NTAG215 dump: bytes 0..2, then 4..7. Byte 3 is the check byte BCC0.
+static void copy_uid(uint8_t out[7], const uint8_t *dump) {
+    memcpy(out, dump, 3);
+    memcpy(out + 3, dump + 4, 4);
+}
+
 static void parse_dump_info(const char *path) {
     memset(&g_info, 0, sizeof(g_info));
     if (path) {
@@ -68,15 +75,15 @@ static void parse_dump_info(const char *path) {
         snprintf(g_info.filename, sizeof(g_info.filename), "%s", name);
     }
 
-    // UID: bytes 0..6 (7 bytes) or up to 9
-    memcpy(g_info.uuid, g_dump, 7);
+    copy_uid(g_info.uuid, g_dump);
     g_info.uuid_len = 7;
 
-    // Amiibo ID at offset 0x54 (8 bytes)
+    // Amiibo ID at offset 0x54 (8 bytes, 3dbrew "Amiibo"): character ID and variant, figure type, model number
+    // (big-endian), series, format version 02
     memcpy(g_info.character_id, g_dump + 0x54, 3);
-    g_info.series_id = g_dump[0x57];
+    g_info.nfp_type = g_dump[0x57];
     g_info.numbering_id = ((uint16_t)g_dump[0x58] << 8) | g_dump[0x59];
-    g_info.nfp_type = g_dump[0x5A];
+    g_info.series_id = g_dump[0x5A];
     g_info.version = g_dump[0x5B];
 }
 
@@ -106,17 +113,25 @@ bool amiibo_is_device_present(void) {
     return res;
 }
 
+// While the game waits for a tag it stops and starts detection again several times a second (tens with the menu open),
+// so the log names the first few and then a count every 200th start.
+static uint64_t g_detect_starts;
+static uint64_t g_detect_stop_ns;   // the last stop: the menu holds "searching" across the game's restarts
+
 void amiibo_start_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
     g_detecting = true;
-    rt_log("amiibo: start detection");
+    uint64_t n = ++g_detect_starts;
+    if (n <= 3) rt_log("amiibo: start detection");
+    else if (n % 200 == 0) rt_log("amiibo: detection started %llu times so far", (unsigned long long)n);
     plat_mutex_unlock(&g_amiibo_lock);
 }
 
 void amiibo_stop_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
+    if (g_detecting) g_detect_stop_ns = plat_now_ns();
     g_detecting = false;
-    rt_log("amiibo: stop detection");
+    if (g_detect_starts <= 3) rt_log("amiibo: stop detection");
     plat_mutex_unlock(&g_amiibo_lock);
 }
 
@@ -173,6 +188,15 @@ AmiiboDeviceState amiibo_get_device_state(void) {
     }
     plat_mutex_unlock(&g_amiibo_lock);
     return AMIIBO_DEV_STATE_INITIALIZED;
+}
+
+AmiiboDeviceState amiibo_get_reader_state(void) {
+    AmiiboDeviceState state = amiibo_get_device_state();
+    if (state != AMIIBO_DEV_STATE_INITIALIZED) return state;
+    plat_mutex_lock(&g_amiibo_lock);
+    bool recent = g_detect_stop_ns && plat_now_ns() - g_detect_stop_ns < 1000000000ull;
+    plat_mutex_unlock(&g_amiibo_lock);
+    return recent ? AMIIBO_DEV_STATE_SEARCHING : state;
 }
 
 bool amiibo_load_file(const char *path) {
@@ -303,7 +327,7 @@ void amiibo_get_tag_info(void *out_tag_info) {
     uint8_t *out = (uint8_t *)out_tag_info;
     memset(out, 0, 0x58);
     // UUID: offset 0x00, 10 bytes max
-    memcpy(out + 0x00, g_dump, 7);
+    copy_uid(out, g_dump);
     out[0x0A] = 7;          // UUID length
     // Protocol at offset 0x20: TypeA = 1
     *(uint32_t *)(out + 0x20) = 1;
@@ -316,15 +340,14 @@ void amiibo_get_model_info(void *out_model_info) {
     plat_mutex_lock(&g_amiibo_lock);
     uint8_t *out = (uint8_t *)out_model_info;
     memset(out, 0, 0x40);
-    // Character ID at 0x00 (3 bytes)
-    memcpy(out + 0x00, g_dump + 0x54, 3);
-    // Series ID at 0x03 (1 byte)
-    out[0x03] = g_dump[0x57];
-    // Numbering ID at 0x04 (2 bytes, big-endian from 0x58)
-    out[0x04] = g_dump[0x58];
-    out[0x05] = g_dump[0x59];
-    // NFP Type at 0x06 (1 byte)
-    out[0x06] = g_dump[0x5A];
+    // nn::nfp::ModelInfo from the amiibo ID at 0x54: character ID and variant in the tag's byte order, series, model
+    // number little-endian (big-endian on the tag), figure type. The game tells figures of one character apart by the
+    // model number.
+    memcpy(out + 0x00, g_dump + 0x54, 3);   // character ID, variant
+    out[0x03] = g_dump[0x5A];               // series
+    out[0x04] = g_dump[0x59];               // model number
+    out[0x05] = g_dump[0x58];
+    out[0x06] = g_dump[0x57];               // figure type
     plat_mutex_unlock(&g_amiibo_lock);
 }
 
@@ -333,7 +356,7 @@ void amiibo_get_common_info(void *out_common_info) {
     uint8_t *out = (uint8_t *)out_common_info;
     memset(out, 0, 0x40);
     // Last write date: 0x00..0x03
-    out[0x00] = 0x07; out[0x01] = 0xE7; // 2023
+    out[0x00] = 0xE7; out[0x01] = 0x07; // 2023, u16 little-endian
     out[0x02] = 0x05; out[0x03] = 0x0C; // May 12
     // Write counter: 0x04..0x05
     out[0x04] = 0x00; out[0x05] = 0x01;
@@ -351,7 +374,7 @@ void amiibo_get_register_info(void *out_register_info) {
     // Mii CharInfo at 0x00..0x57 (dummy valid mii)
     out[0x00] = 0x03; // version 3
     // First write date at 0x58..0x5B
-    out[0x58] = 0x07; out[0x59] = 0xE7;
+    out[0x58] = 0xE7; out[0x59] = 0x07;   // 2023, u16 little-endian
     out[0x5A] = 0x05; out[0x5B] = 0x0C;
     // Amiibo Name at 0x5C: copy up to 40 bytes NUL-terminated
     const char *name = g_info.filename[0] ? g_info.filename : "Amiibo";

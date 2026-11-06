@@ -1,0 +1,71 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -33,8 +33,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         {
+             foreach (AstOperand local in function.Locals)
+             {
+-                SpvInstruction localPointerType = context.TypePointer(StorageClass.Function, context.GetType(local.VarType));
+-                SpvInstruction spvLocal = context.Variable(localPointerType, StorageClass.Function);
++                SpvInstruction localType = context.GetType(local.VarType);
++                SpvInstruction localPointerType = context.TypePointer(StorageClass.Function, localType);
++
++                // TOTK: on hosts that ask for it (Mesa's compilers fold undefined values freely), a register read on a
++                // path that did not write it reads 0 instead of an undefined value.
++                SpvInstruction spvLocal = context.HostCapabilities.ZeroLocals
++                    ? context.Variable(localPointerType, StorageClass.Function, context.ConstantNull(localType))
++                    : context.Variable(localPointerType, StorageClass.Function);
+ 
+                 context.AddLocalVariable(spvLocal);
+                 context.DeclareLocal(local, spvLocal);
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -188,6 +188,9 @@ namespace Ryujinx.Graphics.Shader
+         // the user output location it went to (-1: none) and the banks the position depends on (bit n: cn).
+         bool QueryMotionPrevious() => false;
+ 
++        // TOTK: true when function-local variables start at 0 (CodeGen/Spirv/Declarations.cs DeclareLocals).
++        bool QueryZeroLocals() => false;
++
+         void ReportMotionPrevious(int location, int banks)
+         {
+         }
+--- a/src/Ryujinx.Graphics.Shader/Translation/HostCapabilities.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/HostCapabilities.cs
+@@ -12,6 +12,7 @@ namespace Ryujinx.Graphics.Shader.Translation
+         public readonly bool SupportsShaderNonUniformIndexing;
+         public readonly bool SupportsTextureShadowLod;
+         public readonly bool SupportsViewportMask;
++        public readonly bool ZeroLocals;
+ 
+         public HostCapabilities(
+             bool reducedPrecision,
+@@ -23,7 +24,8 @@ namespace Ryujinx.Graphics.Shader.Translation
+             bool supportsShaderFloat64,
+             bool supportsShaderNonUniformIndexing,
+             bool supportsTextureShadowLod,
+-            bool supportsViewportMask)
++            bool supportsViewportMask,
++            bool zeroLocals)
+         {
+             ReducedPrecision = reducedPrecision;
+             SupportsFragmentShaderInterlock = supportsFragmentShaderInterlock;
+@@ -35,6 +37,7 @@ namespace Ryujinx.Graphics.Shader.Translation
+             SupportsShaderNonUniformIndexing = supportsShaderNonUniformIndexing;
+             SupportsTextureShadowLod = supportsTextureShadowLod;
+             SupportsViewportMask = supportsViewportMask;
++            ZeroLocals = zeroLocals;
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -372,7 +372,8 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 GpuAccessor.QueryHostSupportsShaderFloat64(),
+                 GpuAccessor.QueryHostSupportsShaderNonUniformIndexing(),
+                 GpuAccessor.QueryHostSupportsTextureShadowLod(),
+-                GpuAccessor.QueryHostSupportsViewportMask());
++                GpuAccessor.QueryHostSupportsViewportMask(),
++                GpuAccessor.QueryZeroLocals());
+ 
+             CodeGenParameters parameters = new CodeGenParameters(attributeUsage, definitions, resourceManager.Properties, hostCapabilities, GpuAccessor, Options.TargetApi);
+ 

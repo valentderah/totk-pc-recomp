@@ -6,8 +6,7 @@
 //   - minStorageBufferOffsetAlignment above 4 (TOTK_VK_SSBO_ALIGN=<power of two> raises it): the translator computes
 //     storage offsets from the guest address rounded down to that alignment (Ryujinx's unaligned storage path), and
 //     vk_exec_draw.c ssbo_info binds the rounded-down address, so shader writes reach guest memory instead of a copy.
-//   - no graphics pipeline library with fast linking (TOTK_GPL=0 forces it; the default on AMD's RDNA 1/2 driver):
-//     vk_caps.gpl = 0, the extension stays disabled, and pipelines are built whole.
+//   - no graphics pipeline library with fast linking (TOTK_GPL=0 forces it): vk_caps.gpl = 0, the extension stays disabled, and pipelines are built whole.
 //   - no 32-lane pin (no subgroupSizeControl, 32 outside min..max, or TOTK_VK_SUBGROUP_PIN=0): stages run at the
 //     device's subgroupSize (SPIR-V 1.3 without a required size) and the translator is told that size.
 //     TOTK_VK_SUBGROUP=<n> pins n instead of 32 where the driver allows it.
@@ -44,17 +43,22 @@ void vk_caps_driver(VkPhysicalDevice p) {
     // AMD split RDNA 1 and 2 off into a driver branch of their own; its driverInfo reads
     // "26.10.1 (AMD proprietary shader compiler)" where the RDNA 3 and 4 driver names LLPC.
     vk_caps.amd_sc = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY && strstr(drv.driverInfo, "shader compiler");
+    vk_caps.mesa = drv.driverID == VK_DRIVER_ID_MESA_RADV || drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
+                   drv.driverID == VK_DRIVER_ID_MESA_NVK;
 }
 
-// TOTK_GPL=0/1 forces graphics pipeline libraries off or on. Default off on AMD's RDNA 1/2 driver branch: every boot
-// that lost the device there had a cold pipeline cache and draws waiting on fast-linked pipelines, and a run with GPL
-// off booted (issue #5); Savage Wind Recomp turns GPL off on RDNA 4 under RADV for a GPU hang at the title screen.
+// TOTK_GPL=0 turns graphics pipeline libraries off; they are on wherever the driver has fast linking. AMD's RDNA 1/2
+// driver branch had them off for a while: its device losses at boot (issue #5) came with a cold pipeline cache, but
+// their cause was GPU writes past 3D BC images (vk_exec.c, "3D BC render targets"). With that fixed, the RDNA 1/2
+// driver boots with GPL from a cold cache and fast-links without a failure, while with GPL off every new pipeline is
+// built whole on the draw's path (frames of 0.5-1.2 s on an RX 6600, issue #381). Savage Wind Recomp turns GPL off on
+// RDNA 4 under RADV for a GPU hang at the title screen.
 int vk_caps_gpl(const VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *f,
                 const VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *p) {
     gpl_lib = f->graphicsPipelineLibrary;
     gpl_fast = p->graphicsPipelineLibraryFastLinking;
-    const char *e = cfg_get("TOTK_GPL");   // no fixed default: it depends on the driver, see above
-    vk_caps.gpl = gpl_lib && gpl_fast && (e && *e ? strcmp(e, "0") != 0 : !vk_caps.amd_sc);
+    const char *e = cfg_get("TOTK_GPL");
+    vk_caps.gpl = gpl_lib && gpl_fast && !(e && !strcmp(e, "0"));
     return vk_caps.gpl;
 }
 
@@ -112,7 +116,10 @@ void vk_caps_init(VkCtx *c) {
     // BotW and TotK on AMD). The translator biases gather coordinates by the host's sub-texel precision; NVIDIA rounds
     // as Maxwell does. TOTK_GATHER_BIAS=<bits> forces it (0: off).
     uint32_t gather = env_u32("TOTK_GATHER_BIAS", c->props.vendorID == 0x10de ? 0 : l->subTexelPrecisionBits);
-    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather);
+    // A register read before any write is an undefined load in SPIR-V, and Mesa folds undefined values freely, so on
+    // Mesa function-local variables start at 0 (docs/maxwell.md 3.12). TOTK_ZERO_LOCALS=1 forces it, 0 turns it off.
+    uint32_t zero_locals = env_u32("TOTK_ZERO_LOCALS", (uint32_t)vk_caps.mesa);
+    gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather, zero_locals != 0);
     if (gather) rt_log("vk caps: gather coordinates biased for %u sub-texel bits (TOTK_GATHER_BIAS)", gather);
 
     char dv[32];
@@ -137,10 +144,8 @@ void vk_caps_init(VkCtx *c) {
            has_ext(ep, ne, "VK_EXT_graphics_pipeline_library"), depth_ok(p, VK_FORMAT_D16_UNORM),
            depth_ok(p, VK_FORMAT_D24_UNORM_S8_UINT), depth_ok(p, VK_FORMAT_X8_D24_UNORM_PACK32), depth_ok(p, VK_FORMAT_D32_SFLOAT),
            depth_ok(p, VK_FORMAT_D32_SFLOAT_S8_UINT));
-    const char *ge = cfg_get("TOTK_GPL");
     rt_log("vk caps: gpl %s fast-link %s (graphicsPipelineLibrary %u%s)", vk_caps.gpl ? "yes" : "no",
-           gpl_fast ? "yes" : "no", (unsigned)gpl_lib,
-           !gpl_lib || !gpl_fast || vk_caps.gpl ? "" : ge && *ge ? ", off by TOTK_GPL=0" : ", off on AMD's RDNA 1/2 driver");
+           gpl_fast ? "yes" : "no", (unsigned)gpl_lib, !gpl_lib || !gpl_fast || vk_caps.gpl ? "" : ", off by TOTK_GPL=0");
     rt_log("vk caps: fallbacks: float64 %s, storage buffers %s %u, subgroup pin %u on stages %#x, translator subgroup vs/fs/cs %u/%u/%u",
            vk_caps.float64 ? "native" : "softfloat64", vk_caps.sbuf_align ? "rounded down to" : "exact, alignment",
            (unsigned)l->minStorageBufferOffsetAlignment, want, (unsigned)vk_caps.sg_pin_stages, told[0], told[1], told[2]);
