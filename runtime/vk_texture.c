@@ -1573,6 +1573,14 @@ uint64_t vk_texture_last_write(const tex_t *t) {
     return f;
 }
 
+int vk_texture_pool_bytes_only(const tex_t *t) {
+    lock();
+    Tex *e = entry_of(t);
+    int only = e && e->pub.mirrored && !e->pub.gpu_owned;
+    unlock();
+    return only;
+}
+
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img) {
     Region g;
     if (!region_of(t, v, r, row, img, &g)) return 0;

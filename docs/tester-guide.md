@@ -105,7 +105,9 @@ device profile for every setting `totk.ini` does not set: a 30 fps limit, the NV
 and `core_split = 1` 23.0, so both stay off. The game is CPU-bound there, and perf showed the replay thread filling one
 core, half of it inside RADV: with the recorder thread (`vk_recorder`, on by default for GCN cards under RADV) the same
 scene at a 60 fps limit went from 28.2 to 34.6 fps (1% low 23.3 to 28.2). The spin handoff (`TOTK_SPIN_HANDOFF_US`
-25, 100 and 200 against 50) made no difference. A lower `render_scale` does not raise the frame rate. What helps most,
+25, 100 and 200 against 50) and the time read through the TSC instead of `clock_gettime` made no difference. Walking
+an open-world save (`tools/input/walk.txt`), WriteTexels without a replay drain (vk_backend.c `vk_be_write_texels`)
+took 0.5-1.4 s of waits a run off the game threads. A lower `render_scale` does not raise the frame rate. What helps most,
 on Linux:
 
 1. The performance overlay (F10) in full mode: the frame rate, mean and longest frame time over a minute in Lookout

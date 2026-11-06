@@ -175,7 +175,9 @@ Phenom II X6 1100T: `build_game.py --cpu k10 --pgo gen` (the release LLVM needs 
 tarball for it), played with `LLVM_PROFILE_FILE` pointing at a folder of the player's, then
 `tools/pgo.py merge <build> --version v143 --out build/pgo/pgo-v143-k10.profdata`. Standing in one scene it gave 31.2
 fps against 28.4 without it (frame limit 60), 1% low 26.3 against 22-23, and loads about a third shorter. The -O2
-compile takes about half as long again as the -O1 one.
+compile takes about half as long again as the -O1 one. Three runs of `tools/input/walk.txt` through an open-world save
+(the save restored before each, `TOTK_INPUT_SCRIPT`, `--seconds 210`) were merged in later: walking there, 2.8-3.5%
+more frames and 15% fewer frames over 50 ms than with the first profile alone, the first scene unchanged.
 
 A profile only fits the generated C it was trained on: functions are matched by name and control-flow hash, so a
 function whose C changes loses its counts without a warning. Retrain after a lifter or generator change, from a clean

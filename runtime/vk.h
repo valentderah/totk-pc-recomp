@@ -414,6 +414,9 @@ void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into b
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img);   // bytes ReadTexels spans; 0 for a bad region
+// Mirrored and never rendered into: WriteTexels writes its pool bytes only, so it needs no replay drain (vk_backend.c
+// vk_be_write_texels).
+int vk_texture_pool_bytes_only(const tex_t *t);
 int vk_texture_small_dirty(void);                   // a small mirrored target holds GPU texels its storage lacks
 void vk_texture_write_back_small(uint64_t fence);   // writes those rendered by work up to fence back to storage
 void vk_texture_debug(const VkTexImage *img, uint32_t *uploads, int *last_change, int *pages_written);   // vk_dump
