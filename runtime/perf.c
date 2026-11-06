@@ -252,6 +252,16 @@ static void cpu_placement(void) {
             mode = 0;
     }
     int on = RT_KNOB_ON(mode);
+    // Two affinity groups are in use (kernel.c: guest_cpu_mask puts the guest on one and the host on the other): the
+    // process is deliberately split, and collapsing it to one processor per core would undo that instead of improving
+    // it. The placement is skipped, not applied on top.
+    uint64_t groups[2];
+    if (plat_cpu_groups(groups) == 2) {
+        static int said;
+        if (on && !said++) rt_log("cpu: one-per-core skipped: the process is split across two affinity groups");
+        applied = on;
+        return;
+    }
     if (on == applied) return;
     applied = on;
     plat_process_affinity(on ? one : all);

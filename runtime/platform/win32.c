@@ -268,6 +268,20 @@ int plat_thread_spawn(PlatThreadFn fn, void *arg, const char *name, size_t stack
     return t != NULL;
 }
 
+int plat_cpu_groups(uint64_t masks[2]) {
+    masks[0] = masks[1] = 0;
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return 0;
+    masks[0] = (uint64_t)proc;   // one group: Windows does not expose the cache topology the split needs
+    return 1;
+}
+
+void plat_thread_set_default_affinity(uint64_t mask) { (void)mask; }   // one group, so nothing to start threads in
+
+void plat_thread_pin(uint64_t mask) {
+    if (mask) SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)mask);
+}
+
 uint64_t plat_thread_affinity(PlatThread *t, uint64_t mask) {
     return (uint64_t)SetThreadAffinityMask(t ? t->h : GetCurrentThread(), (DWORD_PTR)mask);
 }
