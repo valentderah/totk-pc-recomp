@@ -1389,6 +1389,27 @@ void *plat_lib_open(const char *name) {
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
 
+void plat_lib_error(char *out, size_t cap) { snprintf(out, cap, "error %lu", GetLastError()); }
+
+int plat_ngx_core_path(char *out, size_t cap) {
+    wchar_t dir[WPATH];
+    DWORD n = sizeof dir;
+    char d[PLAT_PATH_MAX];
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", L"FullPath", RRF_RT_REG_SZ,
+                     NULL, dir, &n) != ERROR_SUCCESS ||
+        !WideCharToMultiByte(CP_UTF8, 0, dir, -1, d, (int)sizeof d, NULL, NULL))
+        return 0;
+    return snprintf(out, cap, "%s\\_nvngx.dll", d) < (int)cap;
+}
+
+int plat_exe_dir_wide(wchar_t *out, size_t cap) {
+    DWORD len = GetModuleFileNameW(NULL, out, (DWORD)cap);
+    if (!len || len >= cap) return 0;
+    while (len && out[len - 1] != L'\\' && out[len - 1] != L'/') len--;
+    out[len] = 0;
+    return len != 0;
+}
+
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.
 

@@ -1456,6 +1456,41 @@ int plat_open_folder(const char *path) {
 void *plat_lib_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
 void *plat_lib_sym(void *lib, const char *name) { return lib ? dlsym(lib, name) : NULL; }
 
+void plat_lib_error(char *out, size_t cap) {
+    const char *e = dlerror();
+    snprintf(out, cap, "%s", e ? e : "unknown error");
+}
+
+int plat_ngx_core_path(char *out, size_t cap) { return snprintf(out, cap, "libnvidia-ngx.so.1") < (int)cap; }
+
+// UTF-8 to UTF-32 wchar_t, without the C library's locale (the runtime never sets one, so mbstowcs would stop at the
+// first non-ASCII byte). Returns 0 on malformed input or when out has no room.
+static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
+    const unsigned char *u = (const unsigned char *)in;
+    size_t n = 0;
+    while (*u) {
+        unsigned c = *u++, more = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 4;
+        if (more == 4) return 0;
+        if (more) c &= 0x3F >> more;
+        for (unsigned k = 0; k < more; k++, u++) {
+            if ((*u & 0xC0) != 0x80) return 0;
+            c = c << 6 | (*u & 0x3F);
+        }
+        if (n + 1 >= cap) return 0;
+        out[n++] = (wchar_t)c;
+    }
+    out[n] = 0;
+    return 1;
+}
+
+int plat_exe_dir_wide(wchar_t *out, size_t cap) {
+    char dir[PLAT_PATH_MAX];
+    char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
+    if (!cut) return 0;
+    cut[1] = 0;
+    return utf8_to_wide(dir, out, cap);
+}
+
 // ---- machine load: /proc/stat and /proc/self/stat for the CPU, hwmon for the temperature, the amdgpu sysfs files of
 // the render device for the GPU.
 
