@@ -293,22 +293,31 @@ static int heapdef_open(const void *in, size_t n, Byml *b, uint32_t *heaps, cons
 #define HEAPDEF_REL "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
 static struct { int done; uint64_t kib; } MT;
 
-static void mod_heapdef(const char *name, const char *romfs, void *ctx) {
-    (void)ctx;
-    char path[2300];
-    if (snprintf(path, sizeof path, "%s/%s", romfs, HEAPDEF_REL) >= (int)sizeof path) return;
-    uint64_t n = 0;
-    uint8_t *in = plat_file_read(path, &n);
-    if (!in) return;
+// "TextureHeap" of the HeapDef table in[0..n) in KiB; 0 when the table cannot be read or has no such size (the failure
+// is logged with why).
+static int32_t heapdef_tex_kib(const void *in, size_t n, const char *why) {
     Byml b;
     uint32_t heaps;
     size_t th_at = 0;
     int32_t th = 0;
-    if (heapdef_open(in, (size_t)n, &b, &heaps, "its texture heap is left out") &&
-        (th_at = heap_size_field(&b, heaps, "TextureHeap")))
-        memcpy(&th, b.p + th_at, 4);
+    if (!heapdef_open(in, n, &b, &heaps, why)) return 0;
+    if ((th_at = heap_size_field(&b, heaps, "TextureHeap"))) memcpy(&th, b.p + th_at, 4);
+    else rt_log("resolution: the HeapDef table has no TextureHeap size; %s", why);
     free(b.p);
+    return th;
+}
+
+static void mod_heapdef(const char *name, const char *romfs, void *ctx) {
+    (void)ctx;
+    char path[2300], why[400];
+    if (snprintf(path, sizeof path, "%s/%s", romfs, HEAPDEF_REL) >= (int)sizeof path) return;
+    uint64_t n = 0;
+    uint8_t *in = plat_file_read(path, &n);
+    if (!in) return;
+    snprintf(why, sizeof why, "mod %s: its texture heap growth is left out", name);
+    int32_t th = heapdef_tex_kib(in, (size_t)n, why);
     free(in);
+    if (!th) return;
     int64_t grow = (int64_t)th - (int64_t)TEX_HEAP_KIB;
     if (grow > (int64_t)(4096u << 10)) grow = 4096u << 10;
     if (grow > 0 && (uint64_t)grow > MT.kib) MT.kib = (uint64_t)grow;
@@ -321,7 +330,11 @@ static uint64_t mod_tex_heap_kib(void) {
     return MT.kib;
 }
 
-int res_tex_heap_from_mod(void) { return mod_tex_heap_kib() > 0; }
+// Only such a table is swapped for the game's own (romfs.c heapdef_overlay): a mod table that changes other heaps
+// keeps them. A table it cannot read stays the base (logged).
+int res_heapdef_tex_grown(const void *in, size_t n) {
+    return heapdef_tex_kib(in, n, "the mod's table stays the base") > (int32_t)TEX_HEAP_KIB;
+}
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
