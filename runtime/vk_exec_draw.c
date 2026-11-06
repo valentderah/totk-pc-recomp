@@ -426,6 +426,7 @@ static void dummies_init(void) {
 }
 
 static void twins_release(VkCtx *c);
+static void feedback_copies_release(VkCtx *c);
 
 // Releases the stand-ins and the depth twins. The device must be idle; the game path leaves them to process exit like
 // the pipelines.
@@ -433,6 +434,7 @@ void vk_exec_draw_shutdown(void) {
     if (!Z.ready) return;
     VkCtx *c = vk_ctx();
     twins_release(c);
+    feedback_copies_release(c);
     for (int i = 0; i < DV_COUNT; i++) {
         if (Z.img[i].sview != Z.img[i].view) vkDestroyImageView(c->device, Z.img[i].sview, NULL);
         vkDestroyImageView(c->device, Z.img[i].view, NULL);
@@ -1173,12 +1175,289 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     return m;
 }
 
-// Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
-// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
+// R32F linear depth needs a snapshot when the draw also writes it. A barrier orders earlier draws, but cannot order
+// samples against writes of other fragments of this draw. On the RTX 3070, captures of the shrine's soft material
+// blend point to those new depths selecting an empty G-buffer, producing flickering black blocks. Keep the normal
+// blend and sample the depth before this draw instead. This path handles single-level, single-layer 2D colour
+// images; other feedback attachments keep the existing layout/barrier handling.
+#define FB_COPIES 8
+typedef struct { VkTexImage img; VmaAllocation alloc; uint64_t used, gen; } FeedbackCopy;
+static FeedbackCopy feedback_copies[FB_COPIES];
+static struct { VkImage source; FeedbackCopy *copy; } feedback_reads[8];
+static uint32_t feedback_nreads;
+static uint64_t feedback_clock, feedback_bind_gen, feedback_gen;
+// Reuse the first hazardous draw's snapshot while the frame and attachment set match. This approximates soft
+// materials blending against an earlier opaque scene, avoiding a copy and render pass restart for every mesh.
+// It intentionally does not include intervening writes to the same attachments; mode 2 copies before every draw.
+static struct { uint64_t sig, gen; VkImage image; FeedbackCopy *copy; } feedback_pass_snap;
+static nvn_hmap feedback_cutouts;
+
+// The first shrine capture implicated a cutout material draw. Classify by fragment termination rather than a
+// particular game's shader bytecode hash; self-reading and blended materials are checked separately below.
+// FEEDBACK_R32_COPY=2 retains the old all-material snapshot path for comparison.
+static int feedback_is_cutout(const GfxShader *fs) {
+    if (!feedback_cutouts.klen) nvn_hm_init(&feedback_cutouts, sizeof fs);
+    uintptr_t cached = (uintptr_t)nvn_hm_get(&feedback_cutouts, &fs);
+    if (cached) return (int)cached - 1;
+    uint64_t words;
+    const uint32_t *w = gfx_shader_spirv(fs, &words);
+    int cutout = 0;
+    for (uint64_t i = 5; i < words;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
+        if (!n || i + n > words) { cutout = 1; break; }
+        // OpKill, OpTerminateInvocation, OpDemoteToHelperInvocation (SPIR-V).
+        if (op == 252 || op == 4416 || op == 5380) { cutout = 1; break; }
+        i += n;
+    }
+    nvn_hm_put(&feedback_cutouts, &fs, (void *)(uintptr_t)(cutout + 1));
+    return cutout;
+}
+
+// A wrong linear-depth read only shows up when the draw mixes its result with the G-buffer instead of replacing it.
+// TotK does that two ways: fixed-function blending on the target, or a shader that samples a colour target it also
+// writes and blends in the shader. The second way has blend_en = 0 and no discard, so neither the cutout test nor a
+// blend test sees it; a shrine whose floor is drawn that way kept flickering. Both ways write what they sample, which
+// is the hazard itself, so such a draw gets a snapshot. The linear-depth attachment is left out of that test: every
+// eligible draw samples and writes it, and that alone does not colour the floor.
+static int feedback_blended(const VkPipeState *s, uint32_t mask) {
+    for (int i = 0; i < 8; i++)
+        if (!(mask >> i & 1) && (s->color.blend_en >> i & 1) && vk_pipeline_target_wmask(s, i)) return 1;
+    return 0;
+}
+
+// Whether the draw samples a colour target it also writes, other than the linear-depth image itself.
+static int feedback_reads_own_colour(const VkExec *ex, uint32_t mask, uint32_t wmask) {
+    for (uint32_t i = 0; i < 8; i++) {
+        const VkTexImage *src = ex->color[i].img;
+        if ((mask >> i & 1) && (wmask >> i & 1) && src && src->format != VK_FORMAT_R32_SFLOAT) return 1;
+    }
+    return 0;
+}
+
+// The present's frame counter and current attachment images. This is a reuse heuristic, not a content version:
+// clears and writes to unchanged attachments do not change it. Snapshot-induced pass restarts keep the signature.
+static uint64_t feedback_pass_sig(const VkExec *ex) {
+    uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    h = (h ^ ex->pass_ncolor) * 0x100000001b3ull;
+    for (uint32_t i = 0; i < 8; i++)
+        h = (h ^ (uint64_t)(uintptr_t)(i < ex->pass_ncolor ? ex->color[i].image : VK_NULL_HANDLE)) * 0x100000001b3ull;
+    return (h ^ (uint64_t)(uintptr_t)ex->depth.image) * 0x100000001b3ull;
+}
+
+// TOTK_FEEDBACK_DEBUG=1: one line per distinct shader/attachment/decision at its first sighting,
+// plus a running summary. A player's run then says which feedback draws the snapshot covers and what copying every
+// eligible material would cost there.
+static struct {
+    uint64_t draws, eligible, copied, cutout, blended, own, skipped, last[7];
+    struct { const GfxShader *fs; uint32_t mask, wmask, blend_en; uint8_t ncolor, cut, blend, copied; } seen[48];
+    int nseen;
+} fb_stat;
+
+static int feedback_debug(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = cfg_get("TOTK_FEEDBACK_DEBUG");
+        on = v && *v && strcmp(v, "0");
+    }
+    return on;
+}
+
+static uint64_t feedback_spv_hash(const GfxShader *fs) {
+    uint64_t words, h = 0xcbf29ce484222325ull;
+    const uint32_t *w = gfx_shader_spirv(fs, &words);
+    for (uint64_t i = 5; i < words; i++) h = (h ^ w[i]) * 0x100000001b3ull;
+    return h;
+}
+
+static void feedback_note(const VkPipeState *s, const GfxShader *fs, uint32_t mask, uint32_t wmask,
+                          int cut, int blend, int copied) {
+    if (!feedback_debug()) return;
+    for (int i = 0; i < fb_stat.nseen; i++)
+        if (fb_stat.seen[i].fs == fs && fb_stat.seen[i].mask == mask && fb_stat.seen[i].wmask == wmask &&
+            fb_stat.seen[i].blend_en == s->color.blend_en && fb_stat.seen[i].copied == copied) return;
+    if (fb_stat.nseen >= 48) return;
+    uint8_t ncolor = 0;
+    for (int i = 0; i < 8; i++) if (s->color_fmt[i]) ncolor = (uint8_t)(i + 1);
+    fb_stat.seen[fb_stat.nseen++] = (typeof(fb_stat.seen[0])){fs, mask, wmask, s->color.blend_en, ncolor,
+                                                              (uint8_t)cut, (uint8_t)blend, (uint8_t)copied};
+    rt_log("vk_exec: feedback draw spv=%016llx ncolor=%u cutout=%d blend=%d mask=%#x wmask=%#x blend_en=%#x "
+           "fmt=%d,%d,%d,%d,%d,%d,%d,%d copied=%#x", (unsigned long long)feedback_spv_hash(fs), ncolor, cut, blend,
+           mask, wmask, s->color.blend_en, s->color_fmt[0], s->color_fmt[1], s->color_fmt[2], s->color_fmt[3],
+           s->color_fmt[4], s->color_fmt[5], s->color_fmt[6], s->color_fmt[7], copied);
+}
+
+static void feedback_window(void) {
+    static uint64_t calls;
+    if (++calls & 4095 || !feedback_debug()) return;
+    rt_log("vk_exec: feedback window: %llu feedback draws, %llu eligible attachments, %llu snapshots taken, "
+           "%llu skipped (not cutout, blended or self-readable), %llu cutout shaders, %llu blended draws, "
+           "%llu draws reading their own colour",
+           (unsigned long long)(fb_stat.draws - fb_stat.last[0]), (unsigned long long)(fb_stat.eligible - fb_stat.last[1]),
+           (unsigned long long)(fb_stat.copied - fb_stat.last[2]), (unsigned long long)(fb_stat.skipped - fb_stat.last[6]),
+           (unsigned long long)(fb_stat.cutout - fb_stat.last[3]),
+           (unsigned long long)(fb_stat.blended - fb_stat.last[4]), (unsigned long long)(fb_stat.own - fb_stat.last[5]));
+    fb_stat.last[0] = fb_stat.draws, fb_stat.last[1] = fb_stat.eligible, fb_stat.last[2] = fb_stat.copied;
+    fb_stat.last[3] = fb_stat.cutout, fb_stat.last[4] = fb_stat.blended, fb_stat.last[5] = fb_stat.own;
+    fb_stat.last[6] = fb_stat.skipped;
+}
+
+typedef struct { VkImage image; VmaAllocation alloc; ViewNode *views; } FeedbackRetired;
+static void feedback_retired_free(void *arg) {
+    FeedbackRetired *r = arg;
+    VkCtx *c = vk_ctx();
+    for (ViewNode *n = r->views, *next; n; n = next) {
+        next = n->next;
+        vkDestroyImageView(c->device, n->view, NULL);
+        free(n);
+    }
+    vmaDestroyImage(c->vma, r->image, r->alloc);
+    free(r);
+}
+
+// Remove cached views now, but keep their handles and the image until the submission being recorded has finished.
+static void feedback_copy_release(FeedbackCopy *f, uint64_t fence) {
+    if (!f->img.image) return;
+    FeedbackRetired *r = malloc(sizeof *r);
+    if (!r) rt_fatal("vk: out of memory");
+    *r = (FeedbackRetired){f->img.image, f->alloc, NULL};
+    vk_texture_lock();
+    if (views_by_image.klen) {
+        r->views = nvn_hm_del(&views_by_image, &r->image);
+        for (ViewNode *n = r->views; n; n = n->next) nvn_hm_del(&view_of, &n->k);
+    }
+    vk_texture_unlock();
+    if (fence) vk_completion_add(fence, feedback_retired_free, r);
+    else feedback_retired_free(r);
+    memset(f, 0, sizeof *f);
+}
+
+static void feedback_copies_release(VkCtx *c) {
+    (void)c;
+    for (int i = 0; i < FB_COPIES; i++) feedback_copy_release(&feedback_copies[i], 0);
+    feedback_nreads = 0;
+    memset(&feedback_pass_snap, 0, sizeof feedback_pass_snap);
+    nvn_hm_clear(&feedback_cutouts, NULL);
+}
+
+static FeedbackCopy *feedback_copy_get(VkExec *ex, const VkTexImage *src) {
+    FeedbackCopy *best = NULL;
+    for (int i = 0; i < FB_COPIES; i++) {
+        FeedbackCopy *f = &feedback_copies[i];
+        if (f->used == feedback_clock) continue;   // another attachment of this draw already uses it
+        if (f->img.image && f->img.width == src->width && f->img.height == src->height) { best = f; break; }
+        if (!best || f->used < best->used) best = f;
+    }
+    if (!best) rt_fatal("vk: too many linear-depth feedback attachments");
+    if (!best->img.image || best->img.width != src->width || best->img.height != src->height) {
+        feedback_copy_release(best, ex->fence);
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R32_SFLOAT, .extent = {src->width, src->height, 1}, .mipLevels = 1, .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(vk_ctx()->vma, &ci, &ai, &best->img.image, &best->alloc, NULL) != VK_SUCCESS)
+            rt_fatal("vk: linear-depth feedback snapshot allocation failed");
+        rt_log("vk_exec: linear-depth feedback snapshot %ux%u", src->width, src->height);
+    }
+    VkImage image = best->img.image;
+    best->img = *src;   // preserve the texture's swizzle and sampled-view metadata
+    best->img.image = image;
+    best->img.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    best->used = feedback_clock;
+    return best;
+}
+
+static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t mask) {
+    feedback_clock++;
+    static int on = -1;
+    if (on < 0) on = cfg_int("TOTK_FEEDBACK_R32_COPY");
+    if (!on) return 0;
+    VkPipeState s = ex->pipe;
+    s.fs = fs;
+    uint32_t wmask = 0, elig = 0;
+    if (mask)
+        for (uint32_t i = 0; i < 8; i++) {
+            const VkExecTarget *t = &ex->color[i];
+            const VkTexImage *src = t->img;
+            if (vk_pipeline_target_wmask(&s, (int)i)) wmask |= 1u << i;
+            if (!(mask >> i & 1) || !(wmask >> i & 1) || !src || src->format != VK_FORMAT_R32_SFLOAT ||
+                src->type != VK_IMAGE_TYPE_2D || src->levels != 1 || src->layers != 1 || src->samples != 1 ||
+                src->image != t->image || !(src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) continue;
+            elig |= 1u << i;
+        }
+    int cut = mask ? feedback_is_cutout(fs) : 0;
+    int blend = mask ? feedback_blended(&s, mask) : 0;
+    int own = mask ? feedback_reads_own_colour(ex, mask, wmask) : 0;
+    if (mask) fb_stat.draws++, fb_stat.cutout += (uint64_t)cut, fb_stat.blended += (uint64_t)blend;
+    fb_stat.own += (uint64_t)own;
+    fb_stat.eligible += (uint64_t)__builtin_popcount(elig);
+    if (on == 1 && !cut && !blend && !own) {
+        fb_stat.skipped += (uint64_t)__builtin_popcount(elig);
+        if (mask) feedback_note(&s, fs, mask, wmask, cut, blend, 0);
+        return 0;
+    }
+    uint32_t copied = 0;
+    uint64_t sig = elig ? feedback_pass_sig(ex) : 0;
+    typeof(feedback_pass_snap) cached = feedback_pass_snap;
+    if (on == 1 && cached.copy && cached.sig == sig && cached.copy->gen == cached.gen && cached.copy->img.image)
+        for (uint32_t i = 0; i < 8; i++)
+            if ((elig >> i & 1) && cached.image == ex->color[i].img->image) {
+                // Reserve before allocating any other attachment, including lower-numbered ones.
+                cached.copy->used = feedback_clock;
+                break;
+            }
+    for (uint32_t i = 0; i < 8; i++) {
+        if (!(elig >> i & 1)) continue;
+        const VkTexImage *src = ex->color[i].img;
+        copied |= 1u << i;
+        // Bind the cached snapshot without another copy. Reserve it so another attachment cannot overwrite it.
+        if (on == 1 && cached.copy && cached.sig == sig && cached.image == src->image &&
+            cached.copy->gen == cached.gen && cached.copy->img.image) {
+            feedback_reads[feedback_nreads++] = (typeof(feedback_reads[0])){src->image, cached.copy};
+            continue;
+        }
+        // Two attachment slots may name the same image: one snapshot serves both.
+        int found = 0;
+        for (uint32_t k = 0; k < feedback_nreads; k++) if (feedback_reads[k].source == src->image) found = 1;
+        if (found) continue;
+        FeedbackCopy *f = feedback_copy_get(ex, src);
+        f->gen = ++feedback_gen;
+        vk_exec_barrier(ex);   // end rendering and put the source in GENERAL before the copy
+        VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = f->img.image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+        vkCmdPipelineBarrier2(ex->cb, &di);
+        VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {src->width, src->height, 1}};
+        vkCmdCopyImage(ex->cb, src->image, VK_IMAGE_LAYOUT_GENERAL, f->img.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        ex->recorded += 2;
+        fb_stat.copied++;
+        feedback_reads[feedback_nreads++] = (typeof(feedback_reads[0])){src->image, f};
+        if (on == 1) feedback_pass_snap = (typeof(feedback_pass_snap)){sig, f->gen, src->image, f};
+    }
+    if (mask) feedback_note(&s, fs, mask, wmask, cut, blend, (int)copied);
+    if (feedback_nreads) {
+        feedback_bind_gen++;   // descriptor build skipping must include the snapshot bindings
+        vk_exec_pass_begin(ex);   // the full barrier makes the copies visible to fragment sampling
+    }
+    return copied;
+}
+
+// Before the pipeline lookup: snapshot writable linear depth, then order the remaining feedback attachments.
+// Returns attachments still sampled directly in the feedback layout (the pipeline flag and feedback_barrier).
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
+    feedback_window();
     int mode = vk_ctx()->feedback;
+    if (feedback_nreads) feedback_bind_gen++;
+    feedback_nreads = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
+    m &= ~feedback_snapshot(ex, fs, m);
     uint32_t d = m & ex->fb_dirty;
     if (d) vk_exec_frame.fb_draws++;
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
@@ -1463,11 +1742,22 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin; in a pass larger than it, the scene's light target, once DLSS scaled it this frame, for DLSS's
 // output (vk_dlaa.c).
-static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out) {
+static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, int stage, VkDescriptorImageInfo *out) {
     tex_info_lookup(ex, r, h, storage, separate, out);
     if (h && !storage && vk_dlaa_swap_img && ex->in_pass && ex->pass_w > vk_dlaa_swap_img->width + 1 &&
         vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == vk_dlaa_swap_img)
         out->imageView = vk_dlaa_swap_view, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    if (stage == NVN_STAGE_FS && !storage && h && feedback_nreads) {
+        view_t v;
+        int hv;
+        const VkTexImage *src = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+        for (uint32_t i = 0; src && i < feedback_nreads; i++)
+            if (feedback_reads[i].source == src->image) {
+                VkImageView view = get_view(ex, &feedback_reads[i].copy->img, &v, hv, r->type, 0);
+                if (view) out->imageView = view, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                break;
+            }
+    }
     if (!twin_dispatch || storage || separate || !h || !(r->type & 0x400)) return;
     VkImageViewType vt = res_view_type(r->type);
     if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY) return;
@@ -1739,6 +2029,7 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT((uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
     PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
     PUT(vk_mem_gen() + vk_usnap_gen());   // both only grow
+    PUT(feedback_bind_gen);
     for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
         float in[3];
@@ -1888,7 +2179,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                     uint64_t h = 0;
                     if (img) h = slot >= 0 && slot < 32 ? ex->img[st][slot] : 0;
                     else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
-                    tex_info(ex, r, h, img, r->separate, &o[k].image);
+                    tex_info(ex, r, h, img, r->separate, st, &o[k].image);
                     o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
                 }
                 vk_texture_unlock();
@@ -2488,7 +2779,7 @@ static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
             vk_texture_lock();
             for (uint32_t k = 0; k < cnt; k++) {
                 int slot = r->slot + (int)k;
-                tex_info(ex, r, slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0, 0, r->separate, &o[k].image);
+                tex_info(ex, r, slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0, 0, r->separate, st, &o[k].image);
             }
             vk_texture_unlock();
         } else {

@@ -194,7 +194,28 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     ground, and the sage spirit next to Link was not drawn. `vk_exec_draw.c` (feedback loops) now detects such a draw:
     with `VK_EXT_attachment_feedback_loop_layout` and `dynamicRenderingLocalRead` the target moves to the feedback
     layout and a by-region barrier precedes the draw; without them the pass restarts behind a full barrier
-    (`TOTK_FEEDBACK`). **Fixed.**
+    (`TOTK_FEEDBACK`). On the RTX 3070 Laptop (driver 616.56), the Nachoyah Shrine floor still flickered as black
+    rectangles with either mode: its soft material blend samples R32F linear depth while writing that same image.
+    Barriers between draws cannot order a draw's samples against its own fragments' writes. `feedback_snapshot`
+    now copies writable, sampled single-level/single-layer R32F targets before the draw and redirects its fragment
+    reads to the copy, retaining the material blend. `TOTK_FEEDBACK_R32_COPY=0` restores the flicker in the same save
+    and camera; the default copy path removes it. Read-only R32F targets keep the existing path. **Fixed in the
+    tested shrine scene; other scenes still need coverage.** Revalidated on 0.3.4 (c38e0ca): the official executable
+    still shows the squares in the same save, while the ported snapshot path removes them. The all-material copy
+    path caused a performance regression at the entrance: one sampled frame copied R32F 869 times, 866 for the
+    opaque material. The first optimization restricted snapshots to fragment-terminating (cutout) shaders,
+    classified by SPIR-V rather than a game-specific hash. On 0.3.4, matched diagnostic median GPU times were
+    13.79 ms with snapshots off, 47.51 ms with all-material snapshots, and 13.73 ms with cutout snapshots.
+    A second shrine on 0.3.7 still flickered: its material samples and writes colour targets 1/3 and linear depth 7
+    without fragment termination or fixed-function blending. The default now also accepts draws that read and
+    write a non-R32F colour target, or blend into another written target. It reuses the first eligible draw's depth
+    snapshot while the frame, attachment-image signature and snapshot generation match, avoiding a copy per mesh.
+    The player reported clean floors without the per-draw slowdown; this update has no matched GPU timing result.
+    This reuse is an approximation: earlier writes or clears of unchanged attachments are not included, so
+    overlapping materials or repeated uses of the same targets need validation. Mode 2 preserves the per-draw,
+    all-material copy path for comparison; mode 0 disables snapshots. `TOTK_FEEDBACK_DEBUG=1` logs decisions and
+    copy counters. Other GPUs/scenes still need coverage. See [shrine feedback snapshots](shrine-feedback.md) for
+    the reuse heuristic, validation history and limitations.
 11. **Border colours.** `vk_texture.c` `make_sampler`: custom colour only with `customBorderColorWithoutFormat`, else transparent
     black; integer formats use the float path. Confirm the RX 9070 reports the feature (grass map needs 0.5).
     **OK if supported.**
