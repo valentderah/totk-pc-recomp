@@ -308,8 +308,9 @@ static int heapdef_open(const void *in, size_t n, Byml *b, uint32_t *heaps, cons
 // for that room and the application pool has none: it crashed at start (issue #673). So before mem_init sizes the pool,
 // every switched-on mod's HeapDef is read (mods.c mods_peek_romfs: mods_scan needs paths main sets later) and the
 // largest TextureHeap growth over the shipped size counts as TOTK_TEX_HEAP_EXTRA_MB (the larger of the two, at most
-// 4 GiB). romfs.c heapdef_overlay then serves the game's own table grown by that amount in the mod's place, so the
-// other heaps keep the sizes of the game version that runs.
+// 4 GiB). romfs.c heapdef_overlay then serves another table grown by that amount in the pack's place: the table of the
+// highest switched-on mod below it whose texture heap is not grown, else the game's own, so the other heaps keep the
+// sizes the content that runs needs.
 #define HEAPDEF_REL "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
 static struct { int done; uint64_t kib; } MT;
 
@@ -354,6 +355,13 @@ static uint64_t mod_tex_heap_kib(void) {
 // keeps them. A table it cannot read stays the base (logged).
 int res_heapdef_tex_grown(const void *in, size_t n) {
     return heapdef_tex_kib(in, n, "the mod's table stays the base") > (int32_t)TEX_HEAP_KIB;
+}
+
+// A table that can stand in for an HD pack's (romfs.c heapdef_overlay): readable, with TextureHeap at most the shipped
+// size. A content mod's table (The Second Quest grows RSDB and UI for its own files) is one.
+int res_heapdef_plain(const void *in, size_t n) {
+    int32_t th = heapdef_tex_kib(in, n, "it does not stand in for the texture pack's table");
+    return th > 0 && th <= (int32_t)TEX_HEAP_KIB;
 }
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
