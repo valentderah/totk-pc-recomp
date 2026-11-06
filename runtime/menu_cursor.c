@@ -53,7 +53,7 @@ enum { PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59
 static uint64_t main_lo, main_hi;
 
 static int ok_at(uint64_t p, uint64_t n) {
-    return p >= 0x10000 && p < (1ull << 47) && (p & 7) == 0 && plat_mem_readable(p, n);
+    return p >= 0x10000 && p < (1ull << 47) && (p & 7) == 0 && mem_guest_readable(p, n);
 }
 static uint64_t rd64(uint64_t a) { uint64_t v; memcpy(&v, (const void *)(uintptr_t)a, 8); return v; }
 static uint32_t rd32(uint64_t a) { uint32_t v; memcpy(&v, (const void *)(uintptr_t)a, 4); return v; }
@@ -157,10 +157,44 @@ static Focus focus_now(void) {
 static void layout_name(uint64_t scr, char *out, size_t n) {
     snprintf(out, n, "?");
     uint64_t lyt = rd64(scr + SCR_LAYOUT), name = ok_at(lyt, LYT_NAME + 8) ? rd64(lyt + LYT_NAME) : 0;
-    if (name < 0x10000 || name >= (1ull << 47) || !plat_mem_readable(name, n)) return;
+    if (name < 0x10000 || name >= (1ull << 47) || !mem_guest_readable(name, n)) return;
     memcpy(out, (const void *)(uintptr_t)name, n - 1);
     out[n - 1] = 0;
     for (char *q = out; *q; q++) if (*q < 0x20 || *q > 0x7e) { *q = 0; break; }
+}
+// The open screens: eui::ScreenMgr's screen array, count at +0x8 and its pointers at +0x10 (1.0.0's layout, which the
+// 1.4.3 constructor keeps). The map has no focus box, so it is found here: the Purah Pad's frame (AppMenuOverlay_00)
+// with AppMap_00 and the menu's background AppMenuBG_00 open. The Scope opens the frame over AppMap_00 without that
+// background (Weeping of the Empire's engine/runtime/totk_menu_cursor.cpp census tells them apart the same way).
+// TOTK_MENU_CURSOR_LOG=1 logs the open screens whenever the set changes.
+enum { SM_COUNT = 0x8, SM_SCREENS = 0x10 };
+static int map_open(void) {
+    uint64_t sm = screen_mgr();
+    if (!sm) return 0;
+    int32_t n = (int32_t)rd32(sm + SM_COUNT);
+    uint64_t arr = rd64(sm + SM_SCREENS);
+    if (n <= 0 || n > 1024 || !ok_at(arr, 8ull * (uint64_t)n)) return 0;
+    const char *e = cfg_get("TOTK_MENU_CURSOR_LOG");
+    int verbose = e && !strcmp(e, "1"), pad = 0, map = 0, bg = 0;
+    char list[1024];
+    size_t len = 0;
+    uint64_t h = 1469598103934665603ull;
+    for (int32_t i = 0; i < n; i++) {
+        uint64_t scr = rd64(arr + 8ull * (uint64_t)i);
+        if (!game_object(scr, SCR_REQUEST + 1) || rd8(scr + SCR_STATE) != SCR_OPENED) continue;
+        char nm[48];
+        layout_name(scr, nm, sizeof nm);
+        pad |= !strcmp(nm, "AppMenuOverlay_00");
+        map |= !strcmp(nm, "AppMap_00");
+        bg |= !strcmp(nm, "AppMenuBG_00");
+        if (!verbose) continue;
+        for (const char *c = nm; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
+        if (len < sizeof list - 64) len += (size_t)snprintf(list + len, sizeof list - len, "%s%s", len ? " " : "", nm);
+    }
+    static uint64_t last;
+    static int lines;
+    if (verbose && h != last && lines < 200) last = h, lines++, rt_log("menu_cursor: open screens: %s", list);
+    return pad && map && bg;
 }
 static void layout_size(uint64_t scr, float *lw, float *lh) {
     *lw = 1920, *lh = 1080;
@@ -245,8 +279,10 @@ static int gameplay_screen(const char *nm) {
 }
 
 static volatile int32_t g_pointer;   // a menu has the pointer: input_cursor_allowed releases the capture
+static volatile int32_t g_map;       // the Purah Pad's map is open (not the Scope): the mouse moves its cursor
 
 int menu_cursor_pointer(void) { return __atomic_load_n(&g_pointer, __ATOMIC_RELAXED); }
+int menu_cursor_map(void) { return __atomic_load_n(&g_map, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
@@ -282,29 +318,40 @@ static void log_screen(const Focus *f, const char *nm, int n, float lw, float lh
 // Once per pad read on the game thread: the pointer's hover and clicks, as pad buttons (A, B) for this read
 void menu_cursor_poll(uint64_t *buttons) {
     static int inited, pending_a, held_l, held_r;
-    static uint64_t pending_node, pending_until, hold_until, hold_bit;
+    static uint64_t pending_node, pending_until, hold_until, hold_bit, menu_seen;
     static float last_px = -1, last_py = -1;
     if (!inited) {
         inited = 1;
         main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
-    if (!enabled()) { set_pointer(0); return; }
+    if (!enabled()) { set_pointer(0); __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED); return; }
     Focus f = focus_now();
     char nm[48] = "";
     if (f.screen) layout_name(f.screen, nm, sizeof nm);
+    // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries
+    uint64_t now = plat_now_ms();
+    static uint64_t map_at;
+    static int map, map_logged;
+    if (!map_at || now - map_at >= 100) map_at = now, map = map_open();
+    if (map && !map_logged) map_logged = 1, rt_log("menu_cursor: the map is open: the mouse moves its cursor");
+    __atomic_store_n(&g_map, map, __ATOMIC_RELAXED);
     // With the gamepad as the last device the menus stay as they are on the console: no pointer, the capture kept.
     // Moving the mouse (or a key) makes keyboard and mouse the last device and the pointer comes.
     int menu = f.screen && !gameplay_screen(nm) && ikb_foreground() && input_kbm_last();
-    set_pointer(menu);
+    if (menu) menu_seen = now;
+    // A menu's focus gap (a tab switch, a popup opening: no focus box for a frame or two) keeps the pointer where it
+    // is, for up to 300 ms: releasing it there captured it again and centred it when the next tab took the focus
+    int gap = !menu && !f.screen && menu_seen && now - menu_seen < 300 && ikb_foreground() && input_kbm_last();
+    set_pointer(menu || gap);
     int l = ikb_down(KEY_MOUSE_L), r = ikb_down(KEY_MOUSE_R);
     int click_l = l && !held_l, click_r = r && !held_r;
     held_l = l, held_r = r;
-    uint64_t now = plat_now_ms();
     if (now < hold_until) {   // a click's button, held for 60 ms so the game sees one press whatever its read rate
         *buttons |= hold_bit;
         return;
     }
+    if (gap) return;   // a click's focus request waits for the next screen
     if (!menu) { pending_a = 0; last_px = last_py = -1; return; }
     if (pending_a) {   // the focus asked for by a click: A once it is there
         if (rd64(f.control + CTL_ACTIVE) == pending_node) {
@@ -337,4 +384,15 @@ void menu_cursor_poll(uint64_t *buttons) {
         if (at == f.node) { hold_until = now + 60, hold_bit = 1ull << B_A; *buttons |= hold_bit; }
         else pending_a = 1, pending_node = at, pending_until = now + 300;
     }
+}
+
+// The L ability wheel or a D-pad strip (materials, weapons, shields, bows) has the focus: 1 / 0, -1 with the menu
+// cursor off (the screens are not read). input.c asks while L or the D-pad is held, before it gives the mouse to their
+// selectors: L also soothes the horse and turns menu tabs, the D-pad does other things too.
+int menu_cursor_shortcut(void) {
+    if (!enabled()) return -1;
+    Focus f = focus_now();
+    char nm[48] = "";
+    if (f.screen) layout_name(f.screen, nm, sizeof nm);
+    return f.screen && (!strcmp(nm, "ShortCutMainItem_00") || !strcmp(nm, "ShortCut_00"));
 }

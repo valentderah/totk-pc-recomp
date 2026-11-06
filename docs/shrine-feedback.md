@@ -68,12 +68,17 @@ The report also records a passing executable selftest and installer validation. 
 scene colour before tonemapping/upscaling; per-pixel depth correlation was inconclusive. The A/B result supports
 the snapshot workaround, but does not independently rule out every other contributing rendering issue.
 
-For this PR update, Codex merged upstream 0.3.10 at `101132a6`, retaining both upstream `FLUSH_SPAN` and the feedback
+The first integration merged upstream 0.3.10 at `101132a6`, retaining both upstream `FLUSH_SPAN` and the feedback
 configuration. The complete Windows runtime compiled successfully (113 objects) through the supported llvm-mingw
 build path. Local checks of the actual snapshot functions, with mocked Vulkan calls, cover eligibility, reuse,
-frame/generation invalidation, disabled and per-draw modes, and multiple/duplicate attachments. Content guard and
-diff checks pass. These checks do not validate GPU synchronization or visuals. The merged 0.3.10 game has not been
-run in gameplay; other GPUs, Linux, other shrines and overlapping-material cases remain untested.
+frame/generation invalidation, disabled and per-draw modes, and multiple/duplicate attachments. These checks do not
+validate GPU synchronization or visuals. The game has not been run in gameplay for the merged upstream code; other
+GPUs, Linux, other shrines and overlapping-material cases remain untested.
+
+This branch now also merges upstream 0.3.11 at `0ae47a5`. The configuration conflict retains upstream
+`FRAME_QUEUE` and `FLUSH_SPAN` alongside `FEEDBACK_R32_COPY` and `FEEDBACK_DEBUG`; both feedback settings are
+documented in `docs/settings.md`, whose runtime-setting check passes. A full 0.3.11 runtime build and gameplay run
+have not yet been performed.
 
 The original cutout workaround and this integration were prepared with Codex. The expanded material conditions,
 reuse heuristic and diagnostics were supplied by the user's DeepSeek-assisted update. Only source and

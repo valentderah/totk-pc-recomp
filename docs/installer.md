@@ -38,7 +38,10 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
-shaders. A newer release that changes nothing game-derived skips the rebuild.
+shaders. A newer release that changes nothing game-derived skips the rebuild. The window starts with the last install folder
+and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
+`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
+stay empty. A reinstall or a switch to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -129,9 +132,12 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
   from a firmware folder. A folder with
   `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
-  closes itself.
-- `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
-  of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
+  closes itself. The window is not stretched on a display whose scale is the system DPI: `installer/dpi.py` makes the
+  process system DPI aware before Tk starts, Tk then draws the fonts at the display's scale and `dpi.px` sizes the
+  paddings and wrap widths with it; the launcher does the same for its error box.
+- `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the display scale, the self-closing window and
+  one end-to-end run of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its
+  docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
   `config.local.toml`.
 
@@ -212,7 +218,8 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 
 ## Constraints
 
-- The installer steps contain no Win32 calls: Linux runs the same steps with its own compiler ("Linux release").
+- The installer steps contain no Win32 calls; only the window's DPI awareness (`installer/dpi.py`) is Windows-only, and
+  it does nothing elsewhere. Linux runs the same steps with its own compiler ("Linux release").
 - The keys file path is passed to the tools; key values never appear in the UI, logs or files.
 - The window is a front end over the CLI (`python -m installer --base ... --update ... --keys ... --lang ... --dest
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
@@ -236,3 +243,5 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 ## Later
 
 - Re-warm the driver cache on start after a move, GPU or driver change.
+- Per-monitor DPI in the setup window: Tk 9 has none, so a display whose scale differs from the primary one still gets
+  the window stretched.

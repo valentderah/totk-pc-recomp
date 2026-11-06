@@ -157,6 +157,17 @@ static void make_key(const tex_t *t, TexKey *k) {
 }
 
 // Keys equal apart from the descriptor's swizzle selectors: the same storage, format and geometry.
+// The colour format without its sRGB decode: a target and its sRGB view share one texel layout (slot_resolve).
+static int linear_format(int f) {
+    switch (f) {
+    case NVN_FORMAT_RGBA8_SRGB: return NVN_FORMAT_RGBA8;
+    case NVN_FORMAT_RGBX8_SRGB: return NVN_FORMAT_RGBX8;
+    case NVN_FORMAT_BGRA8_SRGB: return NVN_FORMAT_BGRA8;
+    case NVN_FORMAT_BGRX8_SRGB: return NVN_FORMAT_BGRX8;
+    default: return f;
+    }
+}
+
 static int same_but_swizzle(const TexKey *a, const TexKey *b) {
     TexKey x = *a, y = *b;
     x.d.swizzle_r = x.d.swizzle_g = x.d.swizzle_b = x.d.swizzle_a = 0;
@@ -1125,10 +1136,16 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
         // Prefer the live entry that differs from the slot descriptor only in its swizzle: transient render targets
         // share storage, and the newest one at the address is usually another size. The map screen samples its
         // 2250x1080 map target through an (R,G,B,1) descriptor and followed a 960x60 target at the same address.
+        // Only an entry of the slot's texel format follows (sRGB aside): Maxwell reads the storage through the slot
+        // descriptor's format, and an entry of another format holds another texture's texels. The quick menu samples
+        // its 768x432 RGB10A2 scene capture through a slot whose entry was released; after a fuse the Autobuild
+        // thumbnail of the fused object, RGBA8 at the same storage, was the live entry, and the menu drew it behind
+        // the wheel (the object's silhouette, or garbled colours). Without such an entry the released one keeps the
+        // slot: its image holds what was last written through that descriptor.
         Tex *own = e, *any = NULL;
         e = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr); p; p = p->next_at) {
-            if (p->released) continue;
+            if (p->released || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
             if (!any) any = p;
             if (same_but_swizzle(&p->key, &k)) { e = p; break; }
         }

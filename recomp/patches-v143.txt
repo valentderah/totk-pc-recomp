@@ -112,6 +112,82 @@ site mouse_direct main 874d7c 6d40a3e9 94c9ac91
 site mouse_direct main 18e444 f9400408 94e546db
 site mouse_direct main 18f108 bd4047ec 94e543a6
 site mouse_direct main 1d59460 b9004be8 94761acc
+# The aiming, scope, ability, horse and Purah Pad camera cameras: per axis, the float load the stick turn is computed
+# from (the gamepad's part only) and the load of the angle it is added to (plus the mouse's degrees), each a bl to page
+# +0xf80, told apart by the return address (runtime/mouse_direct.c camera_load, load_sites). Every enclosing function
+# saves x30 in its prologue, so the bl's link register write is harmless.
+site mouse_direct main 23beb94 bd4426c1 945c84fb   # Aiming: ldr s1, [x22, #0x424] (stick y)
+site mouse_direct main 23bebc8 bd415e61 945c84ee   # Aiming: ldr s1, [x19, #0x15c] (pitch)
+site mouse_direct main 23bee2c bd4422c1 945c8455   # Aiming: ldr s1, [x22, #0x420] (stick x)
+site mouse_direct main 23beeec bc5b83a1 945c8425   # Aiming: ldur s1, [x29, #-0x48] (yaw)
+site mouse_direct main 23c0a10 bd4422e0 945c7d5c   # AimingTelescope: ldr s0, [x23, #0x420] (stick x)
+site mouse_direct main 23c0a1c bd4426eb 945c7d59   # AimingTelescope: ldr s11, [x23, #0x424] (stick y)
+site mouse_direct main 23c0b00 bd416260 945c7d20   # AimingTelescope: ldr s0, [x19, #0x160] (pitch)
+site mouse_direct main 23c0e80 bd405be1 945c7c40   # AimingTelescope: ldr s1, [sp, #0x58] (yaw)
+site mouse_direct main 23d2eec bd4422e8 945c3425   # SpecialPower: ldr s8, [x23, #0x420] (stick x)
+site mouse_direct main 23d2ef4 bd4426ee 945c3423   # SpecialPower: ldr s14, [x23, #0x424] (stick y)
+site mouse_direct main 23d3158 bd416260 945c338a   # SpecialPower: ldr s0, [x19, #0x160] (pitch)
+site mouse_direct main 23d34cc bc5b03a1 945c32ad   # SpecialPower: ldur s1, [x29, #-0x50] (yaw)
+site mouse_direct main 23cb274 bd442288 945c5343   # Horse: ldr s8, [x20, #0x420] (stick x)
+site mouse_direct main 23cb2a0 bd406a61 945c5338   # Horse: ldr s1, [x19, #0x68] (yaw)
+site mouse_direct main 23cb3f8 bd4426a8 945c52e2   # Horse: ldr s8, [x21, #0x424] (stick y)
+site mouse_direct main 23cb424 bd406661 945c52d7   # Horse: ldr s1, [x19, #0x64] (pitch)
+site mouse_direct main 23d2f30 bd4422e8 945c3414   # SpecialPower offset mode: ldr s8, [x23, #0x420] (stick x)
+site mouse_direct main 23d2f5c bd41da62 945c3409   # SpecialPower offset mode: ldr s2, [x19, #0x1d8] (offset x)
+site mouse_direct main 23d2f6c bd4426e8 945c3405   # SpecialPower offset mode: ldr s8, [x23, #0x424] (stick y)
+site mouse_direct main 23d2f98 bd41de62 945c33fa   # SpecialPower offset mode: ldr s2, [x19, #0x1dc] (offset y)
+site mouse_direct main 23d3210 bd400400 945c335c   # SpecialPower: ldr s0, [x0, #0x4] (offset scale, read only)
+site mouse_direct main 23c2890 bd4426ad 945c75bc   # CameraFinder: ldr s13, [x21, #0x424] (stick y)
+site mouse_direct main 23c28b4 bd405261 945c75b3   # CameraFinder: ldr s1, [x19, #0x50] (pitch)
+site mouse_direct main 23c2934 bd4422ad 945c7593   # CameraFinder: ldr s13, [x21, #0x420] (stick x)
+site mouse_direct main 23c2964 bd404be1 945c7587   # CameraFinder: ldr s1, [sp, #0x48] (yaw)
+# The other player cameras (runtime/mouse_direct.c load_sites; a ROLE_WATCH load stays the game's and only names its
+# mode in the log when the mouse was in it):
+site mouse_direct main 23c3dd0 bd442301 945c706c   # ClimbObj: ldr s1, [x24, #0x420]
+site mouse_direct main 23c3dd8 bd409261 945c706a   # ClimbObj: ldr s1, [x19, #0x90] (yaw)
+site mouse_direct main 23c3d64 bd442701 945c7087   # ClimbObj: ldr s1, [x24, #0x424]
+# ClimbObj's pitch is a pre-indexed load, ldr s1, [x22, #0x88]!, whose write-back the code after it needs (ldp and
+# str through x22). A host call cannot write x22: the lifter keeps X19-X29 in locals across a call. So the mov before
+# it adds the 0x88 instead (x22 = x19 + 0x88) and the hook loads [x22] with no write-back.
+site mouse_direct main 23c3d5c aa1303f6 91022276   # ClimbObj: mov x22, x19 -> add x22, x19, #0x88
+site mouse_direct main 23c3d70 bc488ec1 945c7084   # ClimbObj: ldr s1, [x22, #0x88]! (pitch), as ldr s1, [x22]
+site mouse_direct main 23da694 bd4422c1 945c163b   # Wakeboard: ldr s1, [x22, #0x420]
+site mouse_direct main 23da698 bd4426c0 945c163a   # Wakeboard: ldr s0, [x22, #0x424] (stick y, kept)
+site mouse_direct main 23da840 bd40da60 945c15d0   # Wakeboard: ldr s0, [x19, #0xd8] (pitch)
+site mouse_direct main 23da894 bd4017e0 945c15bb   # Wakeboard: ldr s0, [sp, #0x14] (pitch turn, cut to the pad)
+site mouse_direct main 23daed8 bd403fe9 945c142a   # Wakeboard: ldr s9, [sp, #0x3c] (yaw)
+site mouse_direct main 23dced8 bd4422cd 945c0c2a   # WaterfallClimb: ldr s13, [x22, #0x420]
+site mouse_direct main 23dd070 b85cc3a8 945c0bc4   # WaterfallClimb: ldur w8, [x29, #-0x34] (yaw)
+site mouse_direct main 23dd008 bd4426c9 945c0bde   # WaterfallClimb: ldr s9, [x22, #0x424]
+site mouse_direct main 23d4b14 bd44228c 945c2d1b   # Tail: ldr s12, [x20, #0x420]
+site mouse_direct main 23d4b1c bd44268d 945c2d19   # Tail (climbing): ldr s13, [x20, #0x424] (stick y)
+site mouse_direct main 23d4f34 bd40c260 945c2c13   # Tail (climbing): ldr s0, [x19, #0xc0] (yaw)
+site mouse_direct main 23d5028 bd40b661 945c2bd6   # Tail (climbing): ldr s1, [x19, #0xb4] (pitch)
+site mouse_direct main 23d756c bd442300 945c2285   # LockOn / Target: ldr s0, [x24, #0x420]
+site mouse_direct main 23d7594 bd442301 945c227b   # LockOn / Target: ldr s1, [x24, #0x420] (stick x)
+site mouse_direct main 23d75b4 bd4023e0 945c2273   # LockOn / Target: ldr s0, [sp, #0x20] (yaw turn)
+site mouse_direct main 23d75c4 bd4023e9 945c226f   # LockOn / Target: ldr s9, [sp, #0x20] (yaw turn)
+site mouse_direct main 23d7998 bd442701 945c217a   # LockOn / Target: ldr s1, [x24, #0x424] (stick y)
+site mouse_direct main 23d79b8 bd4023e0 945c2172   # LockOn / Target: ldr s0, [sp, #0x20] (pitch turn)
+site mouse_direct main 23d79c8 bd4023ea 945c216e   # LockOn / Target: ldr s10, [sp, #0x20] (pitch turn)
+site mouse_direct main 23cecb4 bd4426a9 945c44b3   # LockOnAimingAt: ldr s9, [x21, #0x424] (stick y)
+site mouse_direct main 23cecf8 bd419a61 945c44a2   # LockOnAimingAt: ldr s1, [x19, #0x198] (pitch offset)
+site mouse_direct main 23ced0c bd4422a9 945c449d   # LockOnAimingAt: ldr s9, [x21, #0x420] (stick x)
+site mouse_direct main 23ced4c bd419e61 945c448d   # LockOnAimingAt: ldr s1, [x19, #0x19c] (yaw offset)
+site mouse_direct main 23cc4b4 bd44232b 945c4eb3   # HorseLockOnEmpty: ldr s11, [x25, #0x420]
+site mouse_direct main 23c54d4 bd4422eb 945c6aab   # EventMultiTalk: ldr s11, [x23, #0x420]
+site mouse_direct main 23c542c bd4426eb 945c6ad5   # EventMultiTalk: ldr s11, [x23, #0x424] (stick y)
+site mouse_direct main 23c546c bd405e61 945c6ac5   # EventMultiTalk: ldr s1, [x19, #0x5c] (pitch)
+site mouse_direct main 23c5554 bd406661 945c6a8b   # EventMultiTalk: ldr s1, [x19, #0x64] (yaw)
+site mouse_direct main 23c90ac bd442709 945c5bb5   # EventTalkManual: ldr s9, [x24, #0x424] (stick y)
+site mouse_direct main 23c90d8 bd407661 945c5baa   # EventTalkManual: ldr s1, [x19, #0x74] (pitch)
+site mouse_direct main 23c9140 bd442309 945c5b90   # EventTalkManual: ldr s9, [x24, #0x420] (stick x)
+site mouse_direct main 23c9170 bd407e61 945c5b84   # EventTalkManual: ldr s1, [x19, #0x7c] (yaw)
+site mouse_direct main 23d0100 bd4422c1 945c3fa0   # ShieldSurfing: ldr s1, [x22, #0x420] (stick x)
+site mouse_direct main 23d0104 bd4426c0 945c3f9f   # ShieldSurfing: ldr s0, [x22, #0x424] (stick y, kept)
+site mouse_direct main 23d02ac bd40de60 945c3f35   # ShieldSurfing: ldr s0, [x19, #0xdc] (pitch)
+site mouse_direct main 23d0a34 bd4013e0 945c3d53   # ShieldSurfing: ldr s0, [sp, #0x10] (pitch turn, cut to the pad)
+site mouse_direct main 23d087c bd403fe9 945c3dc1   # ShieldSurfing: ldr s9, [sp, #0x3c] (yaw)
 
 # The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c):
 # every call of ZSTD_decompressMultiFrame (main+0x3a1f0: dctx, dst, capacity, src, size, dict, dict size, ddict) and of
