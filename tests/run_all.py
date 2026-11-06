@@ -27,6 +27,10 @@ WIN = os.name == 'nt'
 MSYS_BIN = Path(r'C:\msys64\ucrt64\bin')     # clang/gcc for flags_check and excl_mt
 
 
+# The needs that only --all meets: game files, a build, the embeddable Python, a desktop. A compiler (cc) is not one.
+GAME_NEEDS = {'exefs', 'exe', 'romfs', 'embed', 'gui'}
+
+
 def interp(venv):
     """.venv / .venv-py314, falling back to this interpreter when the venv is absent."""
     d = ROOT / venv
@@ -35,7 +39,8 @@ def interp(venv):
 
 
 # name: (venv, needs, args, why the need is there)
-#   needs: None | needs joined by '+' (exefs | exe | romfs | embed | gui)
+#   needs: None | needs joined by '+' (exefs | exe | romfs | embed | gui | cc)
+#   name: the script below tests/, without .py (diff/simd is tests/diff/simd.py)
 TESTS = {
     # ---- no game files, no build ----
     'flags_check':              ('.venv', None, [], ''),
@@ -46,7 +51,16 @@ TESTS = {
     'installer_test':           ('.venv-py314', None, [], ''),
     'ncz_test':                 ('.venv-py314', None, [], ''),
     'romfs_prompts_test':       ('.venv-py314', None, [], ''),
+    'exefs_patches_test':       ('.venv', None, [], ''),
+    'settings_doc_check':       ('.venv', None, [], ''),
+    'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
+    'diff/atomic':              ('.venv', None, [], ''),
+    'diff/simd':                ('.venv', None, [], ''),
     # ---- read the game or a build ----
+    'diff/lift':                ('.venv', 'exefs', ['--exefs', '<exefs>'],
+                                 'samples instructions from the game modules; needs an unpacked exefs'),
+    'diff/func':                ('.venv', 'exefs', ['--exefs', '<exefs>'],
+                                 'lifts whole functions of the game modules; needs an unpacked exefs'),
     'jumptables_check':         ('.venv', 'exefs', ['--exefs', '<exefs>'],
                                  'replays the modules through Unicorn; needs an unpacked exefs'),
     'mods_romfs_check':         ('.venv', 'exe+romfs', ['--exe', '<exe>', '--version', 'v143', '--romfs', '<romfs>'],
@@ -115,6 +129,16 @@ def find_embed():
     return None
 
 
+def find_cc():
+    """clang for the tests that compile C: MSYS2 UCRT64's on Windows, else the one on PATH."""
+    c = MSYS_BIN / 'clang.exe'
+    if WIN and c.exists():
+        return c
+    import shutil
+    w = shutil.which('clang')
+    return Path(w) if w else None
+
+
 def resolve(needs):
     """({placeholder: what the arg takes}, or the reasons the needs cannot be met here)."""
     if needs is None:
@@ -137,6 +161,10 @@ def resolve(needs):
             p = find_embed()
             if p is None: missing.append('no build/py314-embed (tools/make_release.py makes it)')
             else: vals['<embed>'] = str(p)
+        elif need == 'cc':
+            p = find_cc()
+            if p is None: missing.append('no clang (MSYS2 UCRT64 on Windows)')
+            else: vals['<cc>'] = str(p)
         elif need == 'gui':
             missing.append('drives a window; run it by hand on a desktop session')
         else:
@@ -148,7 +176,7 @@ def run_one(name, all_ok, timeout, verbose):
     venv, needs, args, why = TESTS[name]
     if not (ROOT / 'tests' / f'{name}.py').exists():
         return 'SKIP', 0.0, 'not on this branch', ''
-    if needs is not None and not all_ok:
+    if needs is not None and not all_ok and set(needs.split('+')) & GAME_NEEDS:
         return 'SKIP', 0.0, f'needs {needs}: {why} (--all)', ''
     value, reason = resolve(needs)
     if reason:
@@ -188,7 +216,7 @@ def main():
     if a.list:
         for n in TESTS:
             venv, needs, _, why = TESTS[n]
-            print(f'{n:26} {venv:12} {needs or "-":6} {why}')
+            print(f'{n:26} {venv:12} {needs or "-":9} {why}')
         return 0
 
     names = list(TESTS)
