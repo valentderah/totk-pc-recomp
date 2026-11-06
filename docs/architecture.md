@@ -52,11 +52,14 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Window, keyboard and mouse: Win32 (`gfx_window.c`, `input_win.c`). Gamepad and audio output: SDL3. Voice: libopus (BSD). Movies: the SDK's `movie::Decoder` is replaced by a host VP9 decoder over libvpx (BSD, static; `runtime/ov_movie.c`), because FFmpeg from MSYS2 is a GPL build.
 - zstd: most RomFS files of 1.4.3 are zstd frames. The patch set `zstd` sends the game's two decoder entry points to
   libzstd on the host (`ov_zstd.c`, `TOTK_ZSTD_NATIVE`); the lifted decoder took almost three times as long.
-- Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
-  variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
-  drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
-  Simplified Chinese). The Chinese glyphs come from a system font (Microsoft YaHei, `plat_font_path`) merged into the
-  font atlas.
+- Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*` variables
+  and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui, drawn into the
+  swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese, Simplified
+  Chinese, Persian). The Chinese glyphs come from a system font (Microsoft YaHei, `plat_font_path`) merged into the font
+  atlas, the Persian ones from an embedded Vazirmatn cut (`ui/fonts/`). Persian is written right to left in joined
+  letters, which Dear ImGui does not do: `menu_text` hands it the text shaped (`rtl_text.c` rtl_shape: the joined letter
+  forms, in logical order, so widths and wrapping stay right) and a hook at the top of `ImFont::RenderText`
+  (`ui/rtl_imgui.cpp`) draws each line in display order (rtl_visual), right-aligned in a wrapped block.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores

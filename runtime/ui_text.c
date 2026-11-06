@@ -1,13 +1,16 @@
 // Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
-// The software keyboard has every language; the menu has English, Russian, Brazilian Portuguese and Simplified
-// Chinese.
+// The software keyboard has every language; the menu has English, Russian, Brazilian Portuguese, Simplified Chinese
+// and Persian.
 #include <stdatomic.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
 #include "ov.h"
 #include "platform/platform.h"
+#include "rtl_text.h"
 #include "ui_text.h"
 
 typedef struct { const char *lang; const char *const *text; } Row;
@@ -19,7 +22,8 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_MENU_LANGNAME_NL] = "Nederlands", [UI_MENU_LANGNAME_RU] = "Русский", \
     [UI_MENU_LANGNAME_ZH_HANS] = "简体中文", [UI_MENU_LANGNAME_ZH_HANT] = "繁體中文", [UI_MENU_LANGNAME_KO] = "한국어", \
     [UI_MENU_LANGNAME_PT_BR] = "Português (Brasil)", [UI_MENU_LANGNAME_EN_GB] = "English (UK)", \
-    [UI_MENU_LANGNAME_FR_CA] = "Français (Canada)", [UI_MENU_LANGNAME_ES_419] = "Español (Latinoamérica)"
+    [UI_MENU_LANGNAME_FR_CA] = "Français (Canada)", [UI_MENU_LANGNAME_ES_419] = "Español (Latinoamérica)", \
+    [UI_MENU_LANGNAME_FA] = "فارسی"
 
 // SWKBD: TITLE, PROMPT, DEFAULT_NAME (at most 9 UTF-16 units, no '@' '%' '\'), OK, CANCEL, PAD_HINT.
 #define SWKBD(title, prompt, name, ok, cancel, hint) \
@@ -2075,10 +2079,672 @@ SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancel
 SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 SWKBD_ONLY(text_ko, "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
 
+// Persian, in logical order as typed: menu_text shapes it (rtl_text.c) and the menu draws its lines right to left
+// (ui/rtl_imgui.cpp).
+static const char *const text_fa[UI_TEXT_COUNT] = {
+    SWKBD("ورود متن", "یک نام وارد کنید", "اسب", "تأیید", "لغو", "دسته: A = تأیید، B = لغو"),
+    [UI_MENU_TITLE] = "تنظیمات",
+    [UI_MENU_TAB_SCREEN] = "نمایش",
+    [UI_MENU_TAB_GAME] = "بازی",
+    [UI_MENU_TAB_MODS] = "مادها",
+    [UI_MENU_TAB_SOUND] = "صدا",
+    [UI_MENU_TAB_CONTROLS] = "کنترل‌ها",
+    [UI_MENU_TAB_AMIIBO] = "amiibo",
+    [UI_MENU_TAB_MENU] = "منو",
+    [UI_MENU_TAB_ADVANCED] = "پیشرفته",
+    [UI_MENU_CONTINUE] = "ادامه",
+    [UI_MENU_QUIT] = "خروج از بازی",
+    [UI_MENU_ON] = "روشن",
+    [UI_MENU_OFF] = "خاموش",
+    [UI_MENU_AUTO] = "خودکار",
+    [UI_MENU_DEFAULT_MARK] = "پیش‌فرض",
+    [UI_MENU_AFTER_RESTART] = "پس از اجرای دوباره",
+    [UI_MENU_SET_BY_ENV] = "تعیین‌شده با متغیر محیطی",
+    [UI_MENU_SAVE_FAILED] = "ذخیرهٔ تنظیمات ممکن نشد",
+    [UI_MENU_VERSION] = "TotK Recomp %s، بازی %s",
+    [UI_MENU_FULLSCREEN] = "تمام‌صفحه",
+    [UI_MENU_FULLSCREEN_DESC] = "بازی کل صفحه را می‌گیرد؛ کلید F11 آن را روشن و خاموش می‌کند.",
+    [UI_MENU_WINDOW_SIZE] = "اندازهٔ پنجره",
+    [UI_MENU_WINDOW_SIZE_DESC] = "اندازهٔ پنجرهٔ بازی وقتی تمام‌صفحه نیست.",
+    [UI_MENU_WINDOW_SIZE_CUSTOM] = "دلخواه",
+    [UI_MENU_PRESENT] = "روش نمایش",
+    [UI_MENU_PRESENT_DESC] = "اینکه فریم‌های آماده چگونه به صفحه می‌رسند.",
+    [UI_MENU_PRESENT_MAILBOX] = "Mailbox",
+    [UI_MENU_PRESENT_VSYNC] = "VSync",
+    [UI_MENU_PRESENT_IMMEDIATE] = "فوری",
+    [UI_MENU_PRESENT_IN_USE] = "در حال استفاده: %s",
+    [UI_MENU_GPU] = "کارت گرافیک",
+    [UI_MENU_GPU_DESC] = "دستگاه Vulkan که بازی را رسم می‌کند.",
+    [UI_MENU_GPU_AUTO] = "خودکار",
+    [UI_MENU_PERF_OVERLAY] = "نمایشگر کارایی",
+    [UI_MENU_PERF_OVERLAY_DESC] = "نرخ فریم در گوشهٔ بالا سمت راست. حالت کامل، زمان فریم‌ها را با نمودار، بار CPU "
+                                     "و GPU و حافظه، دماها و انتظارهای رشتهٔ رندر هم نشان می‌دهد. کلید F10 بین "
+                                     "حالت‌ها جابه‌جا می‌شود.",
+    [UI_MENU_PERF_OFF] = "خاموش",
+    [UI_MENU_PERF_FPS] = "FPS",
+    [UI_MENU_PERF_FULL] = "کامل",
+    [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_MENU_GRAPHICS] = "تصویر",
+    [UI_MENU_OUTPUT_RES] = "وضوح بازی",
+    [UI_MENU_OUTPUT_RES_DESC] = "اندازه‌ای که بازی تصویر و رابط کاربری خود را در آن رسم می‌کند. بالاتر از 1920 x "
+                                   "1080، بازی به حافظهٔ گرافیکی و زمان GPU بیشتری نیاز دارد. اندازهٔ عریض‌تر (21:9) "
+                                   "دید دوربین را بازتر می‌کند و HUD را به گوشه‌های صفحه می‌برد؛ اندازهٔ بلندتر "
+                                   "(16:10، 3:2) آن را به لبه‌های بالا و پایین می‌برد.",
+    [UI_MENU_RENDER_SCALE] = "مقیاس رندر سه‌بعدی",
+    [UI_MENU_RENDER_SCALE_DESC] = "اندازهٔ صحنهٔ سه‌بعدی نسبت به وضوح بازی؛ FSR خود بازی آن را به همان اندازه "
+                                     "می‌رساند. بالاتر از 100 % لبه‌های دندانه‌دار را نرم می‌کند (سوپرسمپلینگ)، با "
+                                     "هزینهٔ زیاد برای GPU.",
+    [UI_MENU_RENDER_SCALE_GAME] = "بازی (83 %)",
+    [UI_MENU_UPSCALER] = "مقیاس‌دهی به پنجره",
+    [UI_MENU_UPSCALER_DESC] = "اینکه وقتی پنجره از وضوح بازی بزرگ‌تر است، تصویر چگونه بزرگ می‌شود. FSR لبه‌ها و "
+                                 "جزئیات را از روش دوخطی تیزتر نگه می‌دارد.",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1",
+    [UI_MENU_UPSCALER_BILINEAR] = "دوخطی",
+    [UI_MENU_ASPECT] = "نسبت تصویر",
+    [UI_MENU_ASPECT_DESC] = "وقتی نسبت پنجره با نسبت وضوح بازی فرق دارد (تصویر 16:9 روی صفحهٔ 21:9): نسبت تصویر با "
+                               "نوار سیاه حفظ شود، یا تصویر روی کل پنجره کشیده شود.",
+    [UI_MENU_ASPECT_FIT] = "نوار سیاه",
+    [UI_MENU_ASPECT_STRETCH] = "کشیدن",
+    [UI_MENU_MOVIE_ASPECT] = "نسبت ویدیوها",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "وقتی وضوح بازی 16:9 نیست، ویدیوهای میان‌پرده نسبت خودشان را با نوار سیاه حفظ "
+                                     "کنند، یا روی کل تصویر کشیده شوند. از ویدیوی بعدی اعمال می‌شود.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "نوار سیاه",
+    [UI_MENU_MOVIE_ASPECT_STRETCH] = "کشیدن",
+    [UI_MENU_FOV] = "میدان دید",
+    [UI_MENU_FOV_DESC] = "اینکه دوربین چه مقدار از جهان را نشان می‌دهد، به درصدی از مقدار خود بازی. فقط برای نسخهٔ "
+                            "1.4.3 بازی.",
+    [UI_MENU_SHADOW_RES] = "اندازهٔ نقشهٔ سایه",
+    [UI_MENU_SHADOW_RES_DESC] = "اندازهٔ نقشهٔ سایهٔ خورشید. اندازهٔ خود بازی با زاویهٔ دید تغییر می‌کند و نزدیک "
+                                   "زمین تا حدود 400 پایین می‌آید، برای همین سایهٔ برگ‌ها پله‌پله و لرزان دیده "
+                                   "می‌شود؛ اندازهٔ ثابت آن‌ها را ساکن‌تر و تیزتر نگه می‌دارد. بالاتر از 1024 سایه‌ها "
+                                   "زمان GPU و حافظهٔ گرافیکی بیشتری می‌گیرند؛ 256 از اندازهٔ خود بازی درشت‌تر است و "
+                                   "برای GPUهای مجتمع با پهنای باند حافظهٔ کم است.",
+    [UI_MENU_SHADOW_RES_GAME] = "بازی (متغیر)",
+    [UI_MENU_ANISO] = "فیلتر بافت",
+    [UI_MENU_ANISO_DESC] = "فیلتر ناهمسانگرد (Anisotropic) بافت سطوح: زمین، جاده‌ها و دیوارهایی که با زاویهٔ کم "
+                              "دیده می‌شوند تا دوردست تیز می‌مانند و تار نمی‌شوند. بازی: سطحی که خود بازی می‌خواهد، "
+                              "مثل کنسول سوییچ.",
+    [UI_MENU_ANISO_GAME] = "بازی",
+    [UI_MENU_SHARPNESS] = "تیزی FSR",
+    [UI_MENU_SHARPNESS_DESC] = "تیز کردن پس از مقیاس‌دهی FSR؛ 0 آن را خاموش می‌کند.",
+    [UI_MENU_COLOR] = "رنگ",
+    [UI_MENU_COLOR_PRESET] = "پروفایل رنگ",
+    [UI_MENU_COLOR_PRESET_DESC] = "چهار مقدار پایین را تنظیم می‌کند. زنده: کنتراست و اشباع بیشتر، سایه‌ها کمی "
+                                     "بازتر (مخصوص نمایشگرهای OLED). شفاف: کمی کنتراست، اشباع و روشنایی بیشتر. تغییر "
+                                     "هر مقدار، پروفایل را به «دلخواه» می‌برد. HUD همراه تصویر تغییر می‌کند؛ این منو "
+                                     "تغییر نمی‌کند.",
+    [UI_MENU_COLOR_DEFAULT] = "پیش‌فرض بازی",
+    [UI_MENU_COLOR_VIVID] = "زنده (OLED)",
+    [UI_MENU_COLOR_CLARITY] = "شفاف",
+    [UI_MENU_COLOR_CUSTOM] = "دلخواه",
+    [UI_MENU_COLOR_BRIGHTNESS] = "روشنایی",
+    [UI_MENU_COLOR_BRIGHTNESS_DESC] = "به همهٔ رنگ‌ها اضافه می‌شود؛ 0 تغییری نمی‌دهد.",
+    [UI_MENU_COLOR_CONTRAST] = "کنتراست",
+    [UI_MENU_COLOR_CONTRAST_DESC] = "رنگ‌ها را از خاکستری میانی دور می‌کند (بالاتر از 100 %) یا به آن نزدیک "
+                                       "می‌کند؛ 100 % تغییری نمی‌دهد.",
+    [UI_MENU_COLOR_SATURATION] = "اشباع رنگ",
+    [UI_MENU_COLOR_SATURATION_DESC] = "شدت رنگ در برابر خاکستری؛ 100 % تغییری نمی‌دهد.",
+    [UI_MENU_COLOR_GAMMA] = "گاما",
+    [UI_MENU_COLOR_GAMMA_DESC] = "کمتر از 1 تُن‌های تیره و میانی را روشن‌تر می‌کند و بیشتر از 1 تیره‌ترشان می‌کند؛ "
+                                    "1 تغییری نمی‌دهد.",
+    [UI_MENU_HDR_GROUP] = "HDR",
+    [UI_MENU_HDR] = "خروجی HDR",
+    [UI_MENU_HDR_DESC] = "نقاط روشن پرنور روی نمایشگر HDR. لازم است HDR در ویندوز («Use HDR») یا در یک کامپوزیتور "
+                            "Wayland با مدیریت رنگ روشن باشد؛ وگرنه تصویر SDR می‌ماند. پس از اجرای دوباره اعمال "
+                            "می‌شود. پروفایل رنگ بالا برای SDR است و در HDR استفاده نمی‌شود.",
+    [UI_MENU_HDR_PEAK] = "بیشینهٔ روشنایی",
+    [UI_MENU_HDR_PEAK_DESC] = "بیشینهٔ روشنایی نمایشگر شما بر حسب nit؛ روشن‌ترین نقاط همان‌جا متوقف می‌شوند.",
+    [UI_MENU_HDR_GAME] = "روشنایی بازی",
+    [UI_MENU_HDR_GAME_DESC] = "روشنایی سفید تصویر (سفید کاغذی) بر حسب nit. عدد 203 مرجع HDR است؛ در اتاق روشن آن "
+                                 "را بالا ببرید.",
+    [UI_MENU_HDR_UI] = "روشنایی HUD و منو",
+    [UI_MENU_HDR_UI_DESC] = "روشنایی سفید HUD و این منو بر حسب nit.",
+    [UI_MENU_HDR_HUE] = "اصلاح رنگ نقاط روشن",
+    [UI_MENU_HDR_HUE_DESC] = "رنگ‌های روشنی مثل آتش و جرقه، مثل تصویر SDR خود بازی به سمت سفید می‌روند تا با نوری "
+                                "که می‌تابانند هماهنگ باشند؛ 0 آن‌ها را کاملاً اشباع نگه می‌دارد.",
+    [UI_MENU_SHADOW_SCALE] = "وضوح سایه",
+    [UI_MENU_SHADOW_SCALE_DESC] = "نقشه‌های سایهٔ خورشید را در هر ضلع این تعداد برابر بزرگ‌تر از 960x960 خود بازی "
+                                     "رسم می‌کند: لبه‌های سایه و سایهٔ برگ‌ها تیزتر می‌شوند. از اجرای بعدی اعمال "
+                                     "می‌شود.",
+    [UI_MENU_PCSS] = "سایه‌های نرم",
+    [UI_MENU_PCSS_DESC] = "سایه‌های خورشید جایی که جسم به زمین می‌رسد تیز و هرچه سایه دورتر می‌افتد نرم‌تر می‌شوند "
+                             "(PCSS). مقدار 0 فیلتر خود بازی را نگه می‌دارد. از اجرای بعدی اعمال می‌شود.",
+    [UI_MENU_CONTACT_SHADOWS] = "سایه‌های تماسی",
+    [UI_MENU_CONTACT_SHADOWS_DESC] = "سایه‌های کوچک خورشید که نقشه‌های سایه از دست می‌دهند: زیر پاها، زیر سنگ‌ها، "
+                                        "در علف‌ها و چین‌ها. پس از نورپردازی روی تصویر محاسبه می‌شوند. از اجرای بعدی "
+                                        "اعمال می‌شود.",
+    [UI_MENU_SHADOW_RANGE] = "برد لایه‌های سایه",
+    [UI_MENU_SHADOW_RANGE_DESC] = "پله‌هایی را که سایه‌ها در آن‌ها نرم‌تر می‌شوند (20، 40، 80 و 160 متر در خود "
+                                     "بازی) دورتر می‌برد. نقشهٔ سایه روی زمین بیشتری پخش می‌شود: «وضوح سایه» را هم "
+                                     "همراه آن بالا ببرید. از اجرای بعدی اعمال می‌شود.",
+    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS برای صحنهٔ سه‌بعدی (کارت‌های NVIDIA RTX؛ "
+                             DLSS_FILE
+                             " کنار "
+                             EXE_FILE
+                             "): لبه‌های نرم‌تر و لرزش کمتر. به HUD دست نمی‌زند. حالت پایین، وضوحی را که از آن کار "
+                             "می‌کند تعیین می‌کند. پس از اجرای دوباره اعمال می‌شود.",
+    [UI_MENU_DLSS_PRESET] = "مدل DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "کدام مدل DLSS اجرا شود. خودکار برای هر حالت توصیهٔ NVIDIA را دنبال می‌کند: K "
+                                    "برای DLAA، کیفیت و متعادل، M برای کارایی، L برای کارایی فوق‌العاده. J: شبح کمی "
+                                    "کمتر پشت شخصیت‌های در حال حرکت، کمی لرزش بیشتر. K: تیزترین مدل در همهٔ حالت‌ها. "
+                                    "بلافاصله اعمال می‌شود.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "خودکار",
+    [UI_MENU_DLSS_PRESET_K] = "K (تیزترین)",
+    [UI_MENU_DLSS_PRESET_J] = "J (شبح کمتر)",
+    [UI_MENU_DLSS_CHARS] = "ردّ شخصیت‌ها در DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "ردّ کم‌رنگ پشت شخصیت‌ها، حیوانات و چیزهایی که در دست دارند را کم می‌کند: DLSS "
+                                   "آنجا کمتر از فریم‌های قبلی استفاده می‌کند. حالت قوی‌تر ردّ بیشتری را پاک می‌کند و "
+                                   "آن لبه‌ها را کمی ناصاف‌تر می‌گذارد. بلافاصله اعمال می‌شود.",
+    [UI_MENU_DLSS_CHARS_OFF] = "خاموش",
+    [UI_MENU_DLSS_CHARS_LIGHT] = "کم",
+    [UI_MENU_DLSS_CHARS_MEDIUM] = "متوسط",
+    [UI_MENU_DLSS_CHARS_FULL] = "کامل",
+    [UI_MENU_DLSS] = "حالت DLSS",
+    [UI_MENU_DLSS_DESC] = "DLAA صحنهٔ سه‌بعدی را با وضوح کامل رسم می‌کند. کیفیت، متعادل، کارایی و کارایی "
+                             "فوق‌العاده آن را با 67، 58، 50 و 33 % رسم می‌کنند و DLSS آن را بزرگ می‌کند، که در زمان "
+                             "GPU صرفه‌جویی می‌کند؛ این حالت‌ها جای «مقیاس رندر سه‌بعدی» را می‌گیرند. بلافاصله اعمال "
+                             "می‌شود.",
+    [UI_MENU_DLSS_DLAA] = "DLAA (بومی)",
+    [UI_MENU_DLSS_QUALITY] = "کیفیت",
+    [UI_MENU_DLSS_BALANCED] = "متعادل",
+    [UI_MENU_DLSS_PERFORMANCE] = "کارایی",
+    [UI_MENU_DLSS_ULTRA] = "کارایی فوق‌العاده",
+    [UI_MENU_FXAA] = "ضددندانه‌دار بازی (FXAA)",
+    [UI_MENU_FXAA_DESC] = "نرم‌کنندهٔ لبهٔ FXAA خود بازی. جزئیات ریز را کمی تار می‌کند؛ با DLAA روشن به آن نیازی "
+                             "نیست.",
+    [UI_MENU_FPS_LIMIT] = "محدودیت نرخ فریم",
+    [UI_MENU_FPS_LIMIT_DESC] = "بیشترین تعداد فریمی که بازی در هر ثانیه رسم می‌کند. بالاتر از 60 آزمایشی است و به "
+                                  "«سرعت بازی همگام با ساعت» نیاز دارد.",
+    [UI_MENU_FPS_30] = "30 FPS",
+    [UI_MENU_FPS_40] = "40 FPS",
+    [UI_MENU_FPS_45] = "45 FPS",
+    [UI_MENU_FPS_60] = "60 FPS",
+    [UI_MENU_FPS_90] = "90 FPS",
+    [UI_MENU_FPS_120] = "120 FPS",
+    [UI_MENU_FPS_144] = "144 FPS",
+    [UI_MENU_FPS_DISPLAY] = "نرخ مانیتور",
+    [UI_MENU_FPS_DISPLAY_HZ] = "نرخ مانیتور (%.0f Hz)",
+    [UI_MENU_FRAME_QUEUE] = "صف فریم",
+    [UI_MENU_FRAME_QUEUE_DESC] = "بازی فریمی را شروع می‌کند در حالی که فریم قبلی منتظر نوبتش روی صفحه است: "
+                                    "فریم‌های جاافتادهٔ بسیار کمتر در حد محدودیت، تا یک فریم تأخیر ورودی بیشتر. "
+                                    "بلافاصله اعمال می‌شود.",
+    [UI_MENU_REALTIME] = "سرعت بازی همگام با ساعت",
+    [UI_MENU_REALTIME_DESC] = "بازی را با زمان واقعی جلو می‌برد، تا یک فریم کند بازی را کند نکند.",
+    [UI_MENU_CLOTH_REALTIME] = "پارچه همگام با ساعت",
+    [UI_MENU_CLOTH_REALTIME_DESC] = "پارچه و مو را هم با زمان واقعی جلو می‌برد.",
+    [UI_MENU_HIGHFPS_FIX] = "اصلاحات نرخ فریم بالا",
+    [UI_MENU_HIGHFPS_FIX_DESC] = "فیزیکی را که بالاتر از 30 فریم بر ثانیه درست کار نمی‌کند اصلاح می‌کند، و اشیایی "
+                                    "را که بالاتر از 60 نیمه‌شفاف یا نامرئی می‌مانند.",
+    [UI_MENU_GAME_LANG] = "زبان بازی",
+    [UI_MENU_GAME_LANG_DESC] = "زبان متن‌ها و صداهای بازی.",
+    [UI_MENU_GAME_LANG_AUTO] = "خودکار",
+    [UI_MENU_OPERATION_MODE] = "حالت کنسول",
+    [UI_MENU_OPERATION_MODE_DESC] = "اینکه بازی فکر کند روی داک اجرا می‌شود یا دستی.",
+    [UI_MENU_MODE_DOCKED] = "روی داک",
+    [UI_MENU_MODE_HANDHELD] = "دستی",
+    [UI_MENU_ASSUME_FOCUS] = "ادامهٔ اجرا بیرون از پنجره",
+    [UI_MENU_ASSUME_FOCUS_DESC] = "روشن (پیش‌فرض): وقتی در پنجرهٔ دیگری هستید بازی به اجرا ادامه می‌دهد و "
+                                     "صفحه‌کلید تا وقتی پنجره دوباره جلو بیاید کاری نمی‌کند. خاموش: وقتی پنجره از "
+                                     "فوکوس خارج شود بازی متوقف می‌شود، مثل فشردن Home روی سوییچ؛ بارگذاری‌ای که "
+                                     "این‌طور قطع شود ممکن است برای همیشه بایستد.",
+    [UI_MENU_MODS_BUILTIN] = "داخل پورت",
+    [UI_MENU_MODS_INSTALLED] = "مادهای نصب‌شده",
+    [UI_MENU_MODS_NONE] = "هنوز ماده‌ای نیست. ماد را در پوشهٔ mods باز کنید، برای هر ماد یک پوشه که پوشهٔ romfs آن "
+                             "داخلش باشد، و بازی را دوباره اجرا کنید. TKMM هم می‌تواند مادهای ادغام‌شده‌اش را در یک "
+                             "پوشه همان‌جا خروجی بگیرد.",
+    [UI_MENU_MODS_OPEN] = "باز کردن پوشهٔ مادها",
+    [UI_MENU_MODS_OPEN_DESC] = "پوشه‌ای را که بازی مادها را از آن بارگذاری می‌کند نشان می‌دهد. اگر وجود نداشته "
+                                  "باشد ساخته می‌شود.",
+    [UI_MENU_MODS_ROW_DESC] = "فایل‌های بازی که جایگزین می‌کند: %u. فایل‌های تازه‌ای که اضافه می‌کند: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u فایل آن از %s می‌آید که در فهرست بالاتر است.",
+    [UI_MENU_MODS_MOVE_HINT] = "دکمهٔ بالایی یا Ctrl+Up آن را بالا می‌برد، دکمهٔ چپ یا Ctrl+Down آن را پایین "
+                                  "می‌برد. وقتی دو ماد یک فایل را تغییر دهند، ماد بالاتر برنده است. تغییرات پس از "
+                                  "اجرای دوباره اعمال می‌شوند.",
+    [UI_MENU_MODS_EMPTY] = "این پوشه هیچ فایل romfs، exefs یا cheats ندارد.",
+    [UI_MENU_MODS_SUBSDK] = "این ماد کد بازی خودش را دارد (افزونهٔ subsdk یا main جایگزین). پورت نمی‌تواند ماژول "
+                               "کد بارگذاری کند، پس کل ماد خاموش می‌ماند.",
+    [UI_MENU_MODS_EXEFS_LATER] = "این ماد کد بازی را وصله می‌کند (exefs). بازی دفعهٔ بعد که شروع شود وصله‌ها را در "
+                                    "خود می‌سازد (بازسازی چنددقیقه‌ای)؛ تا آن موقع کل ماد خاموش می‌ماند.",
+    [UI_MENU_MODS_CHEATS] = "تقلب‌ها: %d. آن‌ها را در زبانهٔ «تقلب‌ها» روشن کنید.",
+    [UI_MENU_MODS_CHEATS_FILE] = "تقلب‌های این نسخهٔ بازی هنگام شروع از cheats\\%s در این ماد خوانده می‌شوند.",
+    [UI_MENU_MODS_BAD_NAME] = "نام پوشه نویسهٔ | دارد که فهرست مادها بین نام‌ها به کار می‌برد. نام پوشه را تغییر "
+                                 "دهید.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u فایل آن برای نسخهٔ دیگری از بازی ساخته شده و کنار گذاشته می‌شود. نسخه‌ای از "
+                                      "این ماد را پیدا کنید که برای نسخهٔ بازی شما ساخته شده باشد.",
+    [UI_MENU_MODS_UNUSED] = "استفاده نمی‌شود",
+    [UI_MENU_MODS_FPS60] = "وصلهٔ 60 FPS",
+    [UI_MENU_MODS_FPS60_DESC] = "وصلهٔ خود پورت برای 60 فریم بر ثانیه. آن را با «محدودیت نرخ فریم» در زبانهٔ "
+                                   "«بازی» تنظیم کنید.",
+    [UI_MENU_MODS_RES] = "وصلهٔ وضوح",
+    [UI_MENU_MODS_RES_DESC] = "وصلهٔ خود پورت برای وضوح‌های بالاتر از 1080p. آن را با «وضوح بازی» در زبانهٔ "
+                                 "«نمایش» تنظیم کنید.",
+    [UI_MENU_MODS_QUICKMENU] = "اصلاح منوی سریع",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "اصلاح پورت برای پس‌زمینهٔ سیاه منوهای سلاح، سپر و مواد در 60 FPS.",
+    [UI_MENU_VOLUME] = "بلندی صدا",
+    [UI_MENU_VOLUME_DESC] = "بلندی کلی صدای بازی.",
+    [UI_MENU_AUDIO_CHANNELS] = "بلندگوها",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "خروجی استریو یا فراگیر 5.1. خودکار وقتی تنظیم بلندگوی ویندوز شش کانال یا "
+                                       "بیشتر داشته باشد 5.1 را انتخاب می‌کند. پس از اجرای دوباره اعمال می‌شود.",
+    [UI_MENU_CHANNELS_AUTO] = "خودکار",
+    [UI_MENU_CHANNELS_STEREO] = "استریو",
+    [UI_MENU_CHANNELS_51] = "فراگیر 5.1",
+    [UI_MENU_MOTION] = "کنترل حرکتی",
+    [UI_MENU_MOTION_DESC] = "نشانه‌گیری با ژیروسکوپ دسته.",
+    [UI_MENU_RUMBLE_STRENGTH] = "شدت لرزش",
+    [UI_MENU_RUMBLE_STRENGTH_DESC] = "اینکه دسته چقدر قوی بلرزد.",
+    [UI_MENU_RUMBLE_CURVE] = "منحنی لرزش",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "مقدارهای کمتر لرزش ضعیف را قوی‌تر می‌کنند.",
+    [UI_MENU_RUMBLE_TRIGGERS] = "لرزش ماشه‌ها (Xbox)",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "ماشه‌های دستهٔ Xbox را هم می‌لرزاند.",
+    [UI_MENU_PAD_LAYOUT] = "چیدمان دکمه‌ها",
+    [UI_MENU_PAD_LAYOUT_DESC] = "کدام دکمه A است. Nintendo: دکمهٔ سمت راست، مثل سوییچ. Xbox: دکمهٔ پایینی، "
+                                   "همان‌طور که روی دستهٔ Xbox نوشته شده (ضربدر روی دستهٔ PlayStation). خودکار برای "
+                                   "دسته‌هایی با برچسب Nintendo، چیدمان Nintendo و برای بقیه Xbox را انتخاب می‌کند. "
+                                   "اینکه راهنماهای بازی دکمه‌های کدام دسته را نشان دهند، در «راهنمای دکمه‌ها» تنظیم "
+                                   "می‌شود.",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "خودکار",
+    [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A سمت راست)",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A پایین)",
+    [UI_MENU_PAD_LAYOUT_IN_USE] = "در حال استفاده: %s",
+    [UI_MENU_PROMPTS] = "راهنمای دکمه‌ها",
+    [UI_MENU_PROMPTS_DESC] = "اینکه راهنماهای بازی دکمه‌های کدام دسته را نشان دهند. Nintendo: دکمه‌های خود بازی. "
+                                "Xbox: دکمه‌های LB، RB، LT، RT، Menu، View و صلیب جهت‌نما، و A، B، X و Y همان‌طور که "
+                                "روی دکمه‌ای که چیدمان بالا فشار می‌دهد نوشته شده (با Nintendo (A سمت راست) روی دکمهٔ "
+                                "سمت راست B نوشته شده، پس راهنماهای A، B نشان می‌دهند). PC: کلیدها و دکمه‌های ماوس در "
+                                "چیدمان پیش‌فرض صفحه‌کلید (E، Shift، Space، کلیک چپ...) و ماوس برای دوربین. بازی "
+                                "راهنماهایش را هنگام شروع می‌خواند، پس پس از اجرای دوباره عوض می‌شوند. آن‌ها جزو "
+                                "فایل‌های بازی‌اند، پس دکمه‌ای که در «کنترل‌ها» تغییرش دهید راهنمای قبلی خود را روی "
+                                "صفحه نگه می‌دارد.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
+    [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_PROMPTS_MISSING] = "فایل‌های راهنما پیدا نشد: برنامهٔ نصب را دوباره اجرا کنید",
+    [UI_MENU_PROMPTS_FAILED] = "فایل‌های راهنما آسیب دیده‌اند: برنامهٔ نصب را دوباره اجرا کنید",
+    [UI_MENU_PROMPTS_RESTART] = "راهنماها پس از اجرای دوباره عوض می‌شوند",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "در وضوح بازی غیر از 16:9 خاموش است",
+    [UI_MENU_PROMPTS_OFF_MODS] = "خاموش: یک ماد RomFS فایل‌های آن را جایگزین می‌کند",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "تا وقتی TOTK_ROMFS_PATCHES تنظیم شده خاموش است",
+    [UI_MENU_RESTART] = "اجرای دوباره، همین حالا",
+    [UI_MENU_RESTART_DESC] = "بازی را می‌بندد و با راهنماهای جدید دوباره اجرا می‌کند. پیشرفت پس از آخرین ذخیره از "
+                                "دست می‌رود.",
+    [UI_MENU_RESTART_CONFIRM] = "بازی همین حالا دوباره اجرا شود؟ پیشرفت پس از آخرین ذخیره از دست می‌رود.",
+    [UI_MENU_RESTART_YES] = "اجرای دوباره",
+    [UI_MENU_RESTART_SAVING] = "بازی در حال ذخیره است: کمی بعد می‌توانید دوباره اجرا کنید.",
+    [UI_MENU_GROUP_STICKS] = "آنالوگ‌ها",
+    [UI_MENU_LSTICK_DEADZONE] = "ناحیهٔ مردهٔ آنالوگ چپ",
+    [UI_MENU_RSTICK_DEADZONE] = "ناحیهٔ مردهٔ آنالوگ راست",
+    [UI_MENU_STICK_DEADZONE_DESC] = "اینکه آنالوگ دسته چقدر حرکت کند تا بازی آن را حس کند. اگر شخصیت یا دوربین "
+                                       "خودبه‌خود حرکت می‌کند، آن را بالا ببرید: آنالوگ را رها کنید، «آنالوگ اکنون» "
+                                       "را بخوانید و ناحیهٔ مرده را چند درصد بالاتر از آن بگذارید.",
+    [UI_MENU_STICK_DEADZONE_NOW] = "آنالوگ اکنون: %.0f %%",
+    [UI_MENU_MOUSE_MODE] = "دوربین با ماوس",
+    [UI_MENU_MOUSE_MODE_DESC] = "مستقیم: دوربین به اندازهٔ حرکت ماوس می‌چرخد، مثل بازی‌های PC، بدون ناحیهٔ مرده یا "
+                                   "منحنی آنالوگ (بازی 1.4.3 و 1.2.1؛ 1.1.0 از شبیه‌سازی آنالوگ استفاده می‌کند). "
+                                   "شبیه‌سازی آنالوگ: ماوس مثل آنالوگ راست کار می‌کند.",
+    [UI_MENU_MOUSE_STICK] = "شبیه‌سازی آنالوگ",
+    [UI_MENU_MOUSE_DIRECT] = "مستقیم",
+    [UI_MENU_MENU_CURSOR] = "ماوس در منوهای بازی",
+    [UI_MENU_MENU_CURSOR_DESC] = "در منوهای خود بازی (صفحهٔ اول، کوله‌پشتی، فروشگاه‌ها، گزینه‌های گفت‌وگو) نشانگر "
+                                    "دیده می‌شود: گزینهٔ زیر آن انتخاب می‌شود، کلیک چپ تأیید می‌کند و کلیک راست "
+                                    "برمی‌گردد. فقط وقتی آخرین بار از ماوس یا صفحه‌کلید استفاده شده باشد، تا منوها "
+                                    "برای دسته بدون تغییر بمانند (بازی 1.4.3).",
+    [UI_MENU_MOUSE_SENS] = "حساسیت دوربین ماوس",
+    [UI_MENU_MOUSE_SENS_DESC] = "اینکه ماوس دوربین را با چه سرعتی بچرخاند.",
+    [UI_MENU_WALK_KEY] = "کلید راه رفتن",
+    [UI_MENU_WALK_KEY_DESC] = "نگه داشتنش آنالوگ‌های صفحه‌کلید را تا نیمه کج می‌کند تا با صفحه‌کلید راه بروید و "
+                                 "ندوید. «مقیاس راه رفتن» مقدارش را تعیین می‌کند. روی دسته و ماوس اثری ندارد.",
+    [UI_MENU_WALK_KEY_TAKEN] = "همچنین %s",
+    [UI_MENU_WALK_SCALE] = "مقیاس راه رفتن",
+    [UI_MENU_WALK_SCALE_DESC] = "میزان کج شدن آنالوگ‌های صفحه‌کلید وقتی کلید راه رفتن نگه داشته شده. نیمه یعنی راه "
+                                   "رفتن، کامل یعنی دویدن.",
+    [UI_MENU_STICK_SENS] = "سرعت دوربین آنالوگ",
+    [UI_MENU_STICK_SENS_DESC] = "سرعت دوربین آنالوگ راست خود بازی را، همراه بیشینهٔ آن، در هر پنج حساسیت دوربین "
+                                   "بازی چند برابر می‌کند. ماوس تنظیم جداگانهٔ خودش را دارد.",
+    [UI_BINDS_HELP] = "یک خانه را انتخاب کنید و A یا Enter را بزنید، سپس کلید، دکمهٔ ماوس یا دکمهٔ دسته را. Delete "
+                         "یا X یک خانه را پاک می‌کند. کلیدی که در حال استفاده است به اینجا منتقل می‌شود؛ دکمهٔ دسته "
+                         "با دکمه‌ای که جایش را می‌گیرد جابه‌جا می‌شود.",
+    [UI_BINDS_COL_KEY1] = "کلید 1",
+    [UI_BINDS_COL_KEY2] = "کلید 2",
+    [UI_BINDS_COL_PAD] = "دسته",
+    [UI_BINDS_GROUP_BUTTONS] = "دکمه‌ها",
+    [UI_BINDS_GROUP_MOVE] = "حرکت",
+    [UI_BINDS_GROUP_CAMERA] = "دوربین",
+    [UI_BINDS_PRESS_KEY] = "یک کلید یا دکمهٔ ماوس برای %s فشار دهید",
+    [UI_BINDS_PRESS_PAD] = "یک دکمهٔ دسته برای %s فشار دهید",
+    [UI_BINDS_CANCEL_HINT] = "Esc لغو می‌کند، یا %d ثانیه صبر کنید",
+    [UI_BINDS_TAKEN] = "%s از %s گرفته شد",
+    [UI_BINDS_SWAPPED] = "%s با %s جابه‌جا شد",
+    [UI_BINDS_RESET] = "بازنشانی همهٔ دکمه‌ها",
+    [UI_BINDS_RESET_DESC] = "بازگشت به کلیدها و دکمه‌های پیش‌فرض دسته. چیدمان دکمه‌های بالا دوباره اعمال می‌شود: "
+                               "دکمه‌های دسته‌ای که تغییر داده‌اید تا این بازنشانی همان‌جا که گذاشته‌اید می‌مانند.",
+    [UI_BIND_A] = "A",
+    [UI_BIND_B] = "B",
+    [UI_BIND_X] = "X",
+    [UI_BIND_Y] = "Y",
+    [UI_BIND_LCLICK] = "فشردن آنالوگ چپ",
+    [UI_BIND_RCLICK] = "فشردن آنالوگ راست",
+    [UI_BIND_L] = "L",
+    [UI_BIND_R] = "R",
+    [UI_BIND_ZL] = "ZL",
+    [UI_BIND_ZR] = "ZR",
+    [UI_BIND_PLUS] = "مثبت (+)",
+    [UI_BIND_MINUS] = "منفی (-)",
+    [UI_BIND_LEFT] = "جهت‌نمای چپ",
+    [UI_BIND_UP] = "جهت‌نمای بالا",
+    [UI_BIND_RIGHT] = "جهت‌نمای راست",
+    [UI_BIND_DOWN] = "جهت‌نمای پایین",
+    [UI_BIND_LSTICK_LEFT] = "حرکت به چپ",
+    [UI_BIND_LSTICK_UP] = "حرکت به جلو",
+    [UI_BIND_LSTICK_RIGHT] = "حرکت به راست",
+    [UI_BIND_LSTICK_DOWN] = "حرکت به عقب",
+    [UI_BIND_RSTICK_LEFT] = "دوربین به چپ",
+    [UI_BIND_RSTICK_UP] = "دوربین به بالا",
+    [UI_BIND_RSTICK_RIGHT] = "دوربین به راست",
+    [UI_BIND_RSTICK_DOWN] = "دوربین به پایین",
+    [UI_BIND_DESC_A] = "تعامل، برداشتن، صحبت.",
+    [UI_BIND_DESC_B] = "دویدن، لغو، بازگشت.",
+    [UI_BIND_DESC_X] = "پرش.",
+    [UI_BIND_DESC_Y] = "حمله.",
+    [UI_BIND_DESC_LCLICK] = "خم شدن.",
+    [UI_BIND_DESC_RCLICK] = "دید اول‌شخص.",
+    [UI_BIND_DESC_L] = "توانایی‌ها.",
+    [UI_BIND_DESC_R] = "پرت کردن سلاح.",
+    [UI_BIND_DESC_ZL] = "سپر، قفل روی هدف.",
+    [UI_BIND_DESC_ZR] = "کمان.",
+    [UI_BIND_DESC_PLUS] = "منو، کوله‌پشتی.",
+    [UI_BIND_DESC_MINUS] = "نقشه.",
+    [UI_BIND_DESC_DPAD] = "انتخاب سریع.",
+    [UI_BIND_DESC_MOVE] = "لینک را مثل آنالوگ چپ حرکت می‌دهد. آنالوگ چپ دسته هم همیشه کار می‌کند.",
+    [UI_BIND_DESC_CAMERA] = "دوربین را مثل آنالوگ راست می‌چرخاند. ماوس و آنالوگ راست دسته هم همیشه کار می‌کنند.",
+    [UI_BIND_SHAKE] = "تکان دادن آنالوگ دوربین",
+    [UI_BIND_DESC_SHAKE] = "آنالوگ راست را برای بازی به چپ و راست تکان می‌دهد: قطعهٔ جوش‌خورده را از چیزی که "
+                              "اولتراهند نگه داشته جدا می‌کند. نگه داشتن کلید تکان دادن را ادامه می‌دهد.",
+    [UI_KEY_SPACE] = "Space",
+    [UI_KEY_TAB] = "Tab",
+    [UI_KEY_LSHIFT] = "Shift چپ",
+    [UI_KEY_LCTRL] = "Ctrl چپ",
+    [UI_KEY_UP] = "فلش بالا",
+    [UI_KEY_DOWN] = "فلش پایین",
+    [UI_KEY_LEFT] = "فلش چپ",
+    [UI_KEY_RIGHT] = "فلش راست",
+    [UI_KEY_MOUSE_L] = "دکمهٔ چپ ماوس",
+    [UI_KEY_MOUSE_R] = "دکمهٔ راست ماوس",
+    [UI_KEY_MOUSE_M] = "دکمهٔ وسط ماوس",
+    [UI_KEY_MOUSE_X1] = "ماوس 4",
+    [UI_KEY_MOUSE_X2] = "ماوس 5",
+    [UI_KEY_ENTER] = "Enter",
+    [UI_KEY_BACKSPACE] = "Backspace",
+    [UI_KEY_RSHIFT] = "Shift راست",
+    [UI_KEY_RCTRL] = "Ctrl راست",
+    [UI_KEY_LALT] = "Alt",
+    [UI_KEY_CAPSLOCK] = "Caps Lock",
+    [UI_KEY_INSERT] = "Insert",
+    [UI_KEY_DELETE] = "Delete",
+    [UI_KEY_HOME] = "Home",
+    [UI_KEY_END] = "End",
+    [UI_KEY_PAGEUP] = "Page Up",
+    [UI_KEY_PAGEDOWN] = "Page Down",
+    [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_PAD_SOUTH] = "دکمهٔ پایینی",
+    [UI_PAD_EAST] = "دکمهٔ راست",
+    [UI_PAD_WEST] = "دکمهٔ چپ",
+    [UI_PAD_NORTH] = "دکمهٔ بالایی",
+    [UI_PAD_LSTICK] = "آنالوگ چپ",
+    [UI_PAD_RSTICK] = "آنالوگ راست",
+    [UI_PAD_L] = "بامپر چپ",
+    [UI_PAD_R] = "بامپر راست",
+    [UI_PAD_START] = "Start",
+    [UI_PAD_BACK] = "Back",
+    [UI_PAD_DPAD_LEFT] = "جهت‌نمای چپ",
+    [UI_PAD_DPAD_UP] = "جهت‌نمای بالا",
+    [UI_PAD_DPAD_RIGHT] = "جهت‌نمای راست",
+    [UI_PAD_DPAD_DOWN] = "جهت‌نمای پایین",
+    [UI_PAD_ZL] = "ماشهٔ چپ",
+    [UI_PAD_ZR] = "ماشهٔ راست",
+    [UI_PAD_LPADDLE1] = "دکمهٔ پشتی چپ",
+    [UI_PAD_RPADDLE1] = "دکمهٔ پشتی راست",
+    [UI_PAD_LPADDLE2] = "دکمهٔ پشتی چپ 2",
+    [UI_PAD_RPADDLE2] = "دکمهٔ پشتی راست 2",
+    [UI_PAD_CROSS] = "ضربدر",
+    [UI_PAD_CIRCLE] = "دایره",
+    [UI_PAD_SQUARE] = "مربع",
+    [UI_PAD_TRIANGLE] = "مثلث",
+    [UI_MENU_AMIIBO_DIR] = "پوشهٔ amiibo",
+    [UI_MENU_AMIIBO_OPEN] = "باز کردن",
+    [UI_MENU_AMIIBO_DEFAULT_DIR] = "پوشهٔ پیش‌فرض",
+    [UI_MENU_AMIIBO_REFRESH] = "تازه‌سازی",
+    [UI_MENU_AMIIBO_PICK] = "فایل‌های amiibo (فایل‌های .bin یا .nfc به حجم 540 بایت):",
+    [UI_MENU_AMIIBO_NO_DIR] = "پوشهٔ %s باز نمی‌شود",
+    [UI_MENU_AMIIBO_READER] = "کارت‌خوان NFC",
+    [UI_MENU_AMIIBO_STATE] = "کارت‌خوان:",
+    [UI_MENU_AMIIBO_STATE_IDLE] = "آماده",
+    [UI_MENU_AMIIBO_STATE_SEARCHING] = "بازی منتظر یک amiibo است",
+    [UI_MENU_AMIIBO_STATE_FOUND] = "amiibo روی کارت‌خوان است",
+    [UI_MENU_AMIIBO_STATE_MOUNTED] = "بازی در حال خواندن amiibo است",
+    [UI_MENU_AMIIBO_STATE_OFF] = "خاموش",
+    [UI_MENU_AMIIBO_FILE] = "فایل انتخاب‌شده:",
+    [UI_MENU_AMIIBO_NO_FILE] = "(فایلی انتخاب نشده)",
+    [UI_MENU_AMIIBO_TAP] = "زدن amiibo",
+    [UI_MENU_AMIIBO_REMOVE] = "برداشتن amiibo",
+    [UI_MENU_AMIIBO_AUTO_REMOVE] = "برداشتن خودکار amiibo پس از زدن",
+    [UI_MENU_AMIIBO_HOLD] = "مدت ماندن روی کارت‌خوان",
+    [UI_MENU_AMIIBO_SECONDS] = "%.1f ثانیه",
+    [UI_MENU_AMIIBO_TAG] = "amiibo روی کارت‌خوان:",
+    [UI_MENU_AMIIBO_NO_TAG] = "هیچ amiibo روی کارت‌خوان نیست.",
+    [UI_MENU_AMIIBO_TAG_FILE] = "فایل: %s",
+    [UI_MENU_AMIIBO_TAG_ID] = "شخصیت %s، سری %02x، شماره %04x، نوع %02x",
+    [UI_MENU_AMIIBO_TAG_UID] = "UID: %s",
+    [UI_MENU_AMIIBO_READY] = "آماده",
+    [UI_MENU_AMIIBO_TAPPED] = "زده شد: %s",
+    [UI_MENU_AMIIBO_LOAD_FAILED] = "فایل amiibo نیست (NTAG215 با 540 بایت): %s",
+    [UI_MENU_AMIIBO_REMOVED] = "amiibo برداشته شد",
+    [UI_MENU_AMIIBO_STATUS] = "وضعیت: %s",
+    [UI_MENU_MENU_LANG] = "زبان منو",
+    [UI_MENU_MENU_LANG_DESC] = "زبان این منو و نمایشگر کارایی.",
+    [UI_MENU_MENU_LANG_AUTO] = "خودکار (از ویندوز)",
+    [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
+    [UI_MENU_DISCORD_RPC_DESC] = "تا وقتی بازی اجراست، «Playing TotK Recomp» را با مدت بازی در وضعیت Discord شما "
+                                    "نشان می‌دهد. discord_app_id و discord_image در totk.ini برنامه را انتخاب می‌کنند.",
+    [UI_MENU_ADV_WARNING] = "این تنظیمات برای آزمایش و عیب‌یابی است. فقط وقتی تغییرشان دهید که می‌دانید چرا.",
+    [UI_MENU_GROUP_SCHED] = "زمان‌بندی",
+    [UI_MENU_GROUP_SHADERS] = "شیدرها و پایپ‌لاین‌ها",
+    [UI_MENU_GROUP_TEXMEM] = "بافت‌ها و حافظه",
+    [UI_MENU_GROUP_FIXES] = "اصلاحات رندر",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan",
+    [UI_MENU_GROUP_DIAG] = "عیب‌یابی",
+    [UI_MENU_ASYNC_PREEMPT] = "پیش‌دستی هستهٔ مجازی",
+    [UI_MENU_ASYNC_PREEMPT_DESC] = "به یک رشتهٔ بازی اجازه می‌دهد رشتهٔ دیگری را روی همان هستهٔ مجازی قطع کند.",
+    [UI_MENU_PREEMPT_OFF] = "خاموش",
+    [UI_MENU_PREEMPT_ON] = "روشن",
+    [UI_MENU_PREEMPT_INHERIT] = "فقط وراثت",
+    [UI_MENU_REPLAY_ASYNC] = "آماده‌سازی فریم GPU در رشتهٔ جدا",
+    [UI_MENU_REPLAY_ASYNC_DESC] = "فریم‌ها را به‌جای رشتهٔ بازی در یک رشتهٔ جداگانه برای GPU آماده می‌کند. تا یک "
+                                     "فریم تأخیر اضافه می‌کند.",
+    [UI_MENU_TIMER_1MS] = "تایمر 1 میلی‌ثانیه‌ای ویندوز",
+    [UI_MENU_TIMER_1MS_DESC] = "دقت تایمر سیستم را برای فاصلهٔ یکنواخت‌تر فریم‌ها به 1 میلی‌ثانیه می‌رساند.",
+    [UI_MENU_PIPE_WAIT] = "رسیدگی به رسم‌های منتظر",
+    [UI_MENU_PIPE_WAIT_DESC] = "پیش‌فرض زمان‌بندی فعلی را با یک کارگر رزروشده برای رسم‌های منتظر نگه می‌دارد؛ "
+                                  "قدیمی (رسم) از زمان‌بندی قبلی استفاده می‌کند.",
+    [UI_MENU_PIPE_WAIT_DEFAULT] = "پیش‌فرض",
+    [UI_MENU_PIPE_WAIT_DRAW] = "قدیمی (رسم)",
+    [UI_MENU_PIPE_SKIP] = "رسم‌های ردشده هنگام ساخت پایپ‌لاین",
+    [UI_MENU_PIPE_SKIP_DESC] = "کدام رسم‌ها به‌جای منتظر ماندن برای پایپ‌لاین‌شان کنار گذاشته شوند.",
+    [UI_MENU_PIPE_SKIP_STRICT] = "سخت‌گیرانه",
+    [UI_MENU_PIPE_SKIP_ANY] = "هر کدام",
+    [UI_MENU_PIPE_SKIP_FULLSCREEN] = "پاس‌های تمام‌صفحه",
+    [UI_MENU_LIB_PREBUILD] = "پیش‌ساخت کتابخانهٔ مراحل",
+    [UI_MENU_LIB_PREBUILD_DESC] = "کتابخانه‌های مراحل شیدر را از قبل در پس‌زمینه می‌سازد.",
+    [UI_MENU_LIB_PREBUILD_THREADS] = "رشته‌های پیش‌ساخت کتابخانهٔ مراحل",
+    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "رشته‌هایی که برای پیش‌ساخت به کار می‌روند؛ خودکار عددی را بر اساس CPU "
+                                             "شما انتخاب می‌کند.",
+    [UI_MENU_PIPE_PREBUILD] = "پیش‌ساخت پایپ‌لاین",
+    [UI_MENU_PIPE_PREBUILD_DESC] = "پایپ‌لاین‌های شناخته‌شده را از قبل می‌سازد.",
+    [UI_MENU_PREWARM_XLATE] = "گرم‌کردن مترجم",
+    [UI_MENU_PREWARM_XLATE_DESC] = "رشته‌هایی که شیدرهای شناخته‌شده را هنگام شروع ترجمه می‌کنند؛ خودکار نیمی از "
+                                      "رشته‌های CPU را می‌گیرد، حداکثر 16.",
+    [UI_MENU_GPL] = "کتابخانهٔ پایپ‌لاین گرافیکی",
+    [UI_MENU_GPL_DESC] = "از افزونهٔ کتابخانهٔ پایپ‌لاین Vulkan استفاده می‌کند؛ اگر درایور شما با آن مشکل دارد "
+                            "خاموشش کنید.",
+    [UI_MENU_ASTC] = "رمزگشایی بافت ASTC",
+    [UI_MENU_ASTC_DESC] = "جایی که بافت‌های فشردهٔ ASTC رمزگشایی می‌شوند.",
+    [UI_MENU_ASTC_AUTO] = "خودکار",
+    [UI_MENU_ASTC_GPU] = "شیدر GPU",
+    [UI_MENU_ASTC_NATIVE] = "بومی",
+    [UI_MENU_ASTC_CPU] = "CPU",
+    [UI_MENU_MEMORY] = "حالت حافظهٔ GPU",
+    [UI_MENU_MEMORY_DESC] = "اینکه حافظهٔ بازی چگونه با GPU به اشتراک گذاشته شود.",
+    [UI_MENU_MEMORY_AUTO] = "خودکار",
+    [UI_MENU_MEMORY_IMPORT] = "وارد کردن",
+    [UI_MENU_MEMORY_MIRROR] = "آینه",
+    [UI_MENU_MEMORY_VERIFY] = "بررسی",
+    [UI_MENU_TEX_ALIAS] = "هم‌پوشانی بافت",
+    [UI_MENU_TEX_ALIAS_DESC] = "بافت تازه‌ای که روی حافظهٔ یک بافت فعال ساخته می‌شود، به‌جای خالی بودن با محتوای "
+                                  "همان شروع می‌شود.",
+    [UI_MENU_TEX_VRAM_PRESSURE] = "محدودیت حافظهٔ بافت",
+    [UI_MENU_TEX_VRAM_PRESSURE_DESC] = "درصدی از حافظهٔ گرافیکی که بالاتر از آن، بافت‌هایی که بازی رها کرده کنار "
+                                          "گذاشته می‌شوند (وقتی دوباره لازم شوند از حافظهٔ ذخیره‌سازی برمی‌گردند). 0 "
+                                          "آن‌ها را نگه می‌دارد.",
+    [UI_MENU_ASTC_BC] = "فشرده‌سازی ASTC به BC3",
+    [UI_MENU_ASTC_BC_DESC] = "با رمزگشای GPU: بافت‌های ASTC رمزگشایی‌شده را دوباره به BC3 تبدیل می‌کند، با "
+                                "یک‌چهارم حافظهٔ گرافیکی. بافت‌ها کمی پله‌پله‌تر دیده می‌شوند. خودکار: برای GPUهای با "
+                                "4 گیگابایت حافظهٔ گرافیکی یا کمتر روشن است.",
+    [UI_MENU_LOD_GUARD] = "محافظ LOD",
+    [UI_MENU_LOD_GUARD_DESC] = "با صبر کردن تا بازی بازنویسی داده‌های سطح جزئیات (LOD) را پیش از خواندن GPU تمام "
+                                  "کند، جلوی چشمک زدن اشیا در جای اشتباه یا تخت دیده شدن دوردست برای یک فریم را "
+                                  "می‌گیرد.",
+    [UI_MENU_FIX_C0] = "اصلاح بافر ثابت",
+    [UI_MENU_FIX_C0_DESC] = "بانک ثابت c0 رزروشدهٔ درایور (اندازه‌های ذخیره‌سازی، اندازهٔ dispatch، اندازهٔ نقطه، "
+                               "base instance) را به‌جای خواندن صفر پر می‌کند.",
+    [UI_MENU_FIX_ZERO] = "صفر کردن حافظهٔ تازهٔ GPU",
+    [UI_MENU_FIX_ZERO_DESC] = "مخزن‌های تازهٔ حافظهٔ GPU با صفر پر شده شروع می‌شوند، همان‌طور که حافظهٔ سوییچ.",
+    [UI_MENU_BIND_SKIP] = "رد کردن اتصال‌های تکراری",
+    [UI_MENU_BIND_SKIP_DESC] = "بهینه‌سازی: اتصال‌هایی را که تغییر نکرده‌اند رد می‌کند.",
+    [UI_MENU_SHADER_MEMO] = "حافظهٔ شیدر",
+    [UI_MENU_SHADER_MEMO_DESC] = "بهینه‌سازی: جست‌وجوهای شیدر را به خاطر می‌سپارد.",
+    [UI_MENU_PIPE_MEMO] = "حافظهٔ پایپ‌لاین",
+    [UI_MENU_PIPE_MEMO_DESC] = "بهینه‌سازی: وقتی وضعیت رسم قبلی تکرار شود از پایپ‌لاین همان دوباره استفاده می‌کند.",
+    [UI_MENU_TEX_MEMO] = "حافظهٔ اتصال بافت",
+    [UI_MENU_TEX_MEMO_DESC] = "بهینه‌سازی: توصیفگرهای بافت را بین رسم‌ها به خاطر می‌سپارد.",
+    [UI_MENU_DESC_TEMPLATE] = "قالب‌های توصیفگر",
+    [UI_MENU_DESC_TEMPLATE_DESC] = "بهینه‌سازی: توصیفگرها را یکجا به‌روز می‌کند.",
+    [UI_MENU_PUSH_SKIP] = "رد کردن push constantهای تکراری",
+    [UI_MENU_PUSH_SKIP_DESC] = "بهینه‌سازی: push constantهایی را که تغییر نکرده‌اند رد می‌کند.",
+    [UI_MENU_SPLIT_DRAWS] = "ارسال زودهنگام به GPU",
+    [UI_MENU_SPLIT_DRAWS_DESC] = "کار GPU را بین پاس‌ها هر N رسم بخش‌بخش ارسال می‌کند تا GPU زودتر شروع کند؛ 0 آن "
+                                    "را خاموش می‌کند.",
+    [UI_MENU_VK_VALIDATION] = "لایهٔ اعتبارسنجی",
+    [UI_MENU_VK_VALIDATION_DESC] = "همهٔ فراخوانی‌های Vulkan را بررسی می‌کند و بازی را خیلی کند می‌کند.",
+    [UI_MENU_VK_VALIDATION_MISSING] = "لایهٔ اعتبارسنجی نصب نیست.",
+    [UI_MENU_VK_DYN_VERTEX] = "وضعیت پویای ورودی رأس",
+    [UI_MENU_VK_DYN_VERTEX_DESC] = "ورودی پویای رأس را به‌اجبار روشن یا خاموش می‌کند؛ پیش‌فرض به GPU بستگی دارد.",
+    [UI_MENU_VK_DYN_A2C] = "alpha to coverage پویا",
+    [UI_MENU_VK_DYN_A2C_DESC] = "alpha to coverage پویا را به‌اجبار روشن یا خاموش می‌کند. پیش‌فرض: روی درایور AMD "
+                                   "برای RDNA 2 و قدیمی‌تر که با آن شخصیت‌ها را سیاه رسم می‌کند خاموش، و در جاهای "
+                                   "دیگر روشن.",
+    [UI_MENU_VK_SUBGROUP_PIN] = "تثبیت اندازهٔ subgroup",
+    [UI_MENU_VK_SUBGROUP_PIN_DESC] = "اندازهٔ subgroup شیدر را ثابت می‌کند.",
+    [UI_MENU_TRACE] = "گزارش کارایی",
+    [UI_MENU_TRACE_DESC] = "زمان‌بندی فریم‌ها را در یک فایل می‌نویسد.",
+    [UI_MENU_FLIGHT] = "ثبت‌کنندهٔ رویدادها",
+    [UI_MENU_FLIGHT_DESC] = "تاریخچهٔ کوتاهی نگه می‌دارد و وقتی فریمی قفل شود آن را ذخیره می‌کند.",
+    [UI_MENU_FLIGHT_SPIKE_MS] = "آستانهٔ قفل شدن (ms)",
+    [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "زمان فریمی که قفل شدن به حساب می‌آید.",
+    [UI_MENU_PASS_CRUMBS] = "نشانه‌گذاری پاس‌های GPU",
+    [UI_MENU_PASS_CRUMBS_DESC] = "پس از کرش GPU، گزارش نام پاس رندری را که در حال اجرا بود می‌نویسد. خودکار: فقط "
+                                    "AMD. روشن: NVIDIA هم، با هزینهٔ کم.",
+    [UI_MENU_INPUT_RECORD] = "ضبط ورودی",
+    [UI_MENU_INPUT_RECORD_DESC] = "ورودی‌های شما را برای گزارش باگ در یک فایل می‌نویسد.",
+    [UI_MENU_OPEN_LOG] = "باز کردن پوشهٔ گزارش‌ها",
+    [UI_MENU_OPEN_LOG_DESC] = "پوشهٔ فایل‌های گزارش را نشان می‌دهد.",
+    [UI_MENU_COPY_INFO] = "کپی اطلاعات سیستم",
+    [UI_MENU_COPY_INFO_DESC] = "GPU، درایور، CPU، RAM و تنظیمات تغییرکرده را در کلیپ‌بورد کپی می‌کند.",
+    [UI_MENU_COPY_INFO_DONE] = "کپی شد",
+    [UI_MENU_ACTION_FAILED] = "انجام نشد",
+    [UI_MENU_RESET] = "بازنشانی همهٔ تنظیمات به پیش‌فرض",
+    [UI_MENU_RESET_DESC] = "روی همهٔ زبانه‌ها اعمال می‌شود.",
+    [UI_MENU_RESET_CONFIRM] = "همهٔ تنظیمات به پیش‌فرض برگردند؟",
+    [UI_MENU_RESET_YES] = "بازنشانی",
+    [UI_MENU_RESET_NO] = "لغو",
+    [UI_MENU_OV_FPS] = "%.0f FPS",
+    [UI_MENU_OV_FRAME_MS] = "%.1f ms",
+    [UI_MENU_OV_GAME_PCT] = "بازی %.0f%%",
+    [UI_MENU_OV_MAX_MS] = "بیشینه %.1f ms",
+    [UI_MENU_OV_FPS_LABEL] = "FPS",
+    [UI_MENU_OV_FRAME_LABEL] = "فریم",
+    [UI_MENU_OV_FMT_FPS] = "%.0f",
+    [UI_MENU_OV_LOW1] = "1%% پایین %.0f",
+    [UI_MENU_OV_LOW01] = "0.1%% پایین %.0f",
+    [UI_MENU_OV_GPU] = "GPU",
+    [UI_MENU_OV_CPU] = "CPU",
+    [UI_MENU_OV_RAM] = "RAM",
+    [UI_MENU_OV_VRAM] = "VRAM",
+    [UI_MENU_OV_TEMP] = "دما",
+    [UI_MENU_OV_POWER] = "توان",
+    [UI_MENU_OV_CLOCK] = "فرکانس",
+    [UI_MENU_OV_NONE] = "-",
+    [UI_MENU_OV_REPLAY] = "آماده‌سازی فریم GPU",
+    [UI_MENU_OV_GPU_TIME] = "مشغولی GPU در هر فریم",
+    [UI_MENU_OV_PIPE_WAIT] = "انتظار پایپ‌لاین",
+    [UI_MENU_OV_SHADER_WAIT] = "انتظار شیدر",
+    [UI_MENU_OV_TEX_UPLOADS] = "بارگذاری بافت",
+    [UI_MENU_OV_FMT_PCT] = "%.0f%%",
+    [UI_MENU_OV_FMT_TEMP] = "%.0f °C",
+    [UI_MENU_OV_FMT_POWER] = "%.0f W",
+    [UI_MENU_OV_FMT_MHZ] = "%.0f MHz",
+    [UI_MENU_OV_FMT_GB] = "%.1f GB",
+    [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
+    [UI_MENU_OV_GAME_GB] = "بازی %.1f GB",
+    [UI_MENU_OV_FMT_MS] = "%.2f ms",
+    [UI_MENU_OV_PER_FRAME] = "%.1f در هر فریم",
+    [UI_MENU_OV_WINDOW] = "پنجره",
+    [UI_MENU_OV_OUTPUT] = "تصویر بازی",
+    [UI_MENU_OV_SCENE] = "صحنهٔ سه‌بعدی",
+    [UI_MENU_OV_SCALING] = "مقیاس‌دهی",
+    [UI_MENU_OV_LIMIT] = "محدودیت فریم",
+    [UI_MENU_OV_PRESENT] = "روش نمایش",
+    [UI_MENU_OV_FMT_SIZE] = "%ux%u",
+    [UI_MENU_OV_FMT_SCENE] = "%ux%u، %.0f%%",
+    [UI_MENU_OV_FMT_FSR] = "AMD FSR 1، تیزی %d%%",
+    [UI_MENU_OV_SCALE_NONE] = "هیچ (1:1)",
+    [UI_MENU_OV_SCALE_BILINEAR] = "دوخطی",
+    [UI_MENU_OV_SCALE_DOWN] = "دوخطی (FSR فقط بزرگ می‌کند)",
+    [UI_MENU_TAB_CHEATS] = "تقلب‌ها",
+    [UI_MENU_CHEATS_NONE] = "برای این نسخهٔ بازی تقلبی نیست. تقلب‌های یک ماد، فایل تقلب Atmosphere در پوشهٔ cheats "
+                               "آن هستند که به نام بیلد بازی نام‌گذاری شده: mods\\<mod>\\cheats\\%s. برای خواندنشان "
+                               "بازی را دوباره اجرا کنید. برای تقلب‌هایی که کد بازی را تغییر می‌دهند، بازی هنگام شروع "
+                               "خودش را بازسازی می‌کند (چند دقیقه).",
+    [UI_MENU_CHEATS_MOD] = "%s: %d تقلب",
+    [UI_MENU_CHEAT_CODE_DESC] = "کد بازی را تغییر می‌دهد. بلافاصله روشن و خاموش می‌شود.",
+    [UI_MENU_CHEAT_KEY_DESC] = "تا وقتی %s را نگه دارید کد بازی را تغییر می‌دهد. بلافاصله روشن و خاموش می‌شود.",
+    [UI_MENU_CHEAT_DATA_DESC] = "تا وقتی روشن است، هر فریم در حافظهٔ بازی می‌نویسد.",
+    [UI_MENU_CHEAT_MASTER] = "همیشه روشن",
+    [UI_MENU_CHEAT_MASTER_DESC] = "کد اصلی (master) فایل: همیشه روشن است.",
+    [UI_MENU_CHEAT_RESTORE] = "لازم نیست",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "فقط کد خود بازی را برمی‌گرداند. خاموش کردن یک تقلب همین کار را انجام می‌دهد.",
+    [UI_MENU_CHEAT_REBUILD] = "پس از بازسازی",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "این تقلب کد بازی را تغییر می‌دهد و از آخرین ساخت بازی تازه است یا ویرایش شده. "
+                                      "بازی دفعهٔ بعد که شروع شود آن را در خود می‌سازد (چند دقیقه)، یا از «بازسازی "
+                                      "بازی، همین حالا» استفاده کنید.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "پشتیبانی نمی‌شود",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "این تقلب با این نسخهٔ بازی قابل استفاده نیست:",
+    [UI_MENU_CHEATS_REBUILD] = "بازسازی بازی، همین حالا",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "بعضی تقلب‌ها کد بازی را تغییر می‌دهند و در آن ساخته نشده‌اند: تازه‌اند یا "
+                                       "ویرایش شده‌اند، یا آخرین بازسازی‌شان شکست خورده یا لغو شده است. بازی را "
+                                       "می‌بندد؛ برنامهٔ نصب آن‌ها را در بازی می‌سازد (چند دقیقه) و بازی را دوباره "
+                                       "اجرا می‌کند. پیشرفت پس از آخرین ذخیره از دست می‌رود.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "این ماد کد بازی را طوری وصله می‌کند (exefs) که پورت نمی‌تواند اعمال کند، "
+                                          "پس کل ماد خاموش می‌ماند. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "وصله‌های کد آن (exefs) برای نسخهٔ دیگری از بازی ساخته شده‌اند.",
+    [UI_MENU_MODS_EXEFS_ON] = "وصله‌های کد در حال استفاده: %d فایل.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "وصله‌های کد در حال استفاده: %d فایل. این‌ها جای وصلهٔ خود پورت %s را "
+                                         "می‌گیرند که تا وقتی این ماد روشن است خاموش می‌ماند.",
+};
+
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
     {"nl", text_nl}, {"pt", text_pt}, {"ru", text_ru}, {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant},
-    {"ko", text_ko}, {"pt-BR", text_pt_br},
+    {"ko", text_ko}, {"pt-BR", text_pt_br}, {"fa", text_fa},
 };
 
 const char *ui_text_lang(const char *code) {
@@ -2125,20 +2791,52 @@ const char *ui_text_in(const char *lang, UiTextId id) {
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
 
-// A language's own strings, for the font that draws them: the merged system font must cover the whole menu of the
-// language, not only its name (ui/menu.cpp fonts_up).
+// The form the menu draws a catalog string in: a string with Arabic-script letters (the Persian row, and the name
+// of Persian in every row) shaped by rtl_shape, any other the catalog string itself. Shaped copies are kept by the
+// address of their catalog string in an open table that only grows (about 560 strings use it), under a spin lock in
+// case menu_text is called from more than one thread.
+static const char *display_form(const char *text) {
+    enum { SLOTS = 2048 };
+    static struct { const char *src, *shaped; } table[SLOTS];
+    static atomic_flag lock = ATOMIC_FLAG_INIT;
+    if (!text || !rtl_has(text, NULL)) return text;
+    const char *out = text;
+    size_t h = (size_t)((uintptr_t)text >> 3) % SLOTS;
+    while (atomic_flag_test_and_set_explicit(&lock, memory_order_acquire)) {}
+    for (size_t i = 0; i < SLOTS; i++) {
+        size_t k = (h + i) % SLOTS;
+        if (table[k].src == text) {
+            out = table[k].shaped;
+            break;
+        }
+        if (!table[k].src) {
+            size_t cap = 2 * strlen(text) + 1;   // a shaped letter takes 3 bytes against the 2 of its base letter
+            char *shaped = (char *)malloc(cap);
+            if (shaped) {
+                rtl_shape(text, shaped, cap);
+                table[k].src = text, table[k].shaped = out = shaped;
+            }
+            break;
+        }
+    }
+    atomic_flag_clear_explicit(&lock, memory_order_release);
+    return out;
+}
+
+// A language's own strings, in the form the menu draws them (display_form), for the font that draws them: the merged
+// font must cover the whole menu of the language, not only its name (ui/menu.cpp fonts_up).
 void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx) {
     const Row *r = find_row(lang);
     if (!r) return;
     for (int id = 0; id < (int)UI_TEXT_COUNT; id++)
-        if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
+        if (r->text[id] && *r->text[id]) visit(ctx, display_form(r->text[id]));
 }
 
 // The menu language, re-read when cfg_version changes. TOTK_MENU_LANG names a catalog language ("en", "ru", "pt-BR",
-// "zh-Hans"); unset, it follows the system UI language, through the same code map the game language uses ("zh-CN" ->
-// "zh-Hans"). Windows names a region with it ("ru-RU"), so a tag without menu text tries its language alone ("ru"). A
-// language whose row has no menu text (only the software keyboard does) shows English, so other Windows locales keep the
-// English menu.
+// "zh-Hans", "fa"); unset, it follows the system UI language, through the same code map the game language uses
+// ("zh-CN" -> "zh-Hans"). Windows names a region with it ("ru-RU", "fa-IR"), so a tag without menu text tries its
+// language alone ("ru", "fa"). A language whose row has no menu text (only the software keyboard does) shows English,
+// so other Windows locales keep the English menu.
 static const char *resolve_menu_lang(void) {
     const char *v = cfg_value("TOTK_MENU_LANG");
     const char *sys = plat_ui_language();
@@ -2161,5 +2859,5 @@ const char *menu_text(UiTextId id) {
         atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
         atomic_store_explicit(&seen, v, memory_order_relaxed);
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return display_form(ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id));
 }

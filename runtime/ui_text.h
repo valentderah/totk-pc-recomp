@@ -163,7 +163,7 @@ typedef enum {
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
     UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_EN_GB,
-    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419,
+    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419, UI_MENU_LANGNAME_FA,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -241,16 +241,18 @@ typedef enum {
 
 // Bytes of the menu's description pane (ui/option_rows.cpp, struct Desc): a description plus the note appended to it
 // ("after restart", "set by environment variable", a disabled row's note). UTF-8 Cyrillic takes two bytes a letter, so
-// the longest Russian description is about 850 bytes; the probe checks every menu text leaves room for a note.
+// the longest Russian description is about 850 bytes; shaped Persian takes three (the longest, about 1350 bytes); the
+// probe checks every menu text leaves room for a note.
 enum { UI_DESC_BYTES = 2048 };
 
 // UTF-8 text for id in the language of ov_language(); English when the catalog has no row for that language.
 const char *ui_text(UiTextId id);
 // The same for an explicit catalog language ("en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans",
-// "zh-Hant", "ko", "pt-BR"); an empty entry gives the English text.
+// "zh-Hant", "ko", "pt-BR", "fa"); an empty entry gives the English text.
 const char *ui_text_in(const char *lang, UiTextId id);
 // Calls visit(ctx, text) for every string the row of lang has its own text for (an id that falls back to English is not
-// visited): the font builder covers the glyphs of the text a language shows (ui/menu.cpp).
+// visited), in the form the menu draws it (menu_text: Persian shaped): the font builder covers the glyphs of the text a
+// language shows (ui/menu.cpp).
 void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx);
 // 1 when the row of lang has its own text for id (no fallback to English), for the probe.
 int ui_text_defined(const char *lang, UiTextId id);
@@ -263,7 +265,9 @@ const char *ui_text_lang(const char *switch_code);
 typedef struct { const char *code; UiTextId name; } UiGameLang;
 int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans");
-// unset, the system UI language when the catalog has menu text for it (English, Russian, Brazilian Portuguese,
-// Simplified Chinese), else English. Follows a live change of the setting.
+// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans",
+// "fa"); unset, the system UI language when the catalog has menu text for it (English, Russian, Brazilian Portuguese,
+// Simplified Chinese, Persian), else English. Follows a live change of the setting. Text with Arabic-script letters
+// (Persian, and its name in the language lists) comes shaped (rtl_text.c rtl_shape: joined letter forms, logical
+// order), shaped once and kept; the menu draws its lines right to left (ui/rtl_imgui.cpp).
 const char *menu_text(UiTextId id);

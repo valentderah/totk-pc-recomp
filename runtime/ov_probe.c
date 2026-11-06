@@ -21,6 +21,7 @@
 #include "kernel.h"
 #include "ov.h"
 #include "platform/platform.h"
+#include "rtl_text.h"
 #include "utf16.h"
 #include "ui_text.h"
 
@@ -865,11 +866,12 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
-// Chinese text, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese, Simplified
+// Chinese and Persian text, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG
+// (Persian shaped: rtl_text.c).
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
-                                        "pt-BR"};
+                                        "pt-BR", "fa"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
               ui_text_defined("pt-BR", (UiTextId)id), "menu text id %d lacks en, ru or pt-BR", id);
@@ -882,6 +884,11 @@ static void probe_menu_text(void) {
               strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES,
               "menu text id %d is too long for the description pane", id);
         CHECK(ui_text_defined("zh-Hans", (UiTextId)id), "menu text id %d lacks Simplified Chinese", id);
+        // Persian is drawn shaped, a joined letter taking 3 UTF-8 bytes against the 2 of its base letter
+        static char shaped[2 * UI_DESC_BYTES];
+        CHECK(ui_text_defined("fa", (UiTextId)id) &&
+              rtl_shape(ui_text_in("fa", (UiTextId)id), shaped, sizeof shaped) + 256 < UI_DESC_BYTES,
+              "menu text id %d lacks Persian or is too long for the description pane once shaped", id);
     }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
     // other languages fall back to English for the menu, and keep their own keyboard texts
@@ -889,7 +896,7 @@ static void probe_menu_text(void) {
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_FA; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
@@ -916,6 +923,24 @@ static void probe_menu_text(void) {
     CHECK(strstr(ui_text_in("pt-BR", UI_MENU_OV_GAME_PCT), "%.0f%%") &&
           strstr(ui_text_in("pt-BR", UI_MENU_OV_MAX_MS), "%.1f") &&
           strstr(ui_text_in("pt-BR", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("zh-Hans", UI_MENU_OV_LOW01), "%.0f"), "pt-BR overlay format lost its conversion");
+    CHECK(strstr(ui_text_in("fa", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("fa", UI_MENU_OV_MAX_MS), "%.1f") &&
+          strstr(ui_text_in("fa", UI_MENU_OV_LOW1), "%.0f") && strstr(ui_text_in("fa", UI_MENU_OV_LOW01), "%.0f"),
+          "Persian overlay format lost its conversion");
+    // Persian shaping and display order (rtl_text.c): lam + alef as one ligature, heh + hamza above as heh with yeh
+    // above, a line right to left with its number and Latin run kept in their own order, Latin text untouched
+    {
+        char a[256], b[256];
+        rtl_shape("سلام", a, sizeof a);
+        CHECK(!strcmp(a, "\uFEB3\uFEFC\uFEE1"), "rtl_shape: lam + alef is not one ligature");
+        rtl_shape("صفحهٔ", a, sizeof a);
+        CHECK(!strcmp(a, "\uFEBB\uFED4\uFEA4\uFBA5"), "rtl_shape: heh + hamza above is not heh with yeh above");
+        rtl_shape("نرخ مانیتور (144 Hz)", a, sizeof a);
+        rtl_visual(a, a + strlen(a), b, sizeof b);
+        CHECK(!strcmp(b, "(Hz 144) \uFEAD\uFEEE\uFE98\uFBFF\uFEE7\uFE8E\uFEE3 \uFEA5\uFEAE\uFEE7"),
+              "rtl_visual: wrong display order");
+        CHECK(!rtl_has("Mailbox 144", NULL) && rtl_shape("Mailbox", a, sizeof a) == 7 && !strcmp(a, "Mailbox"),
+              "rtl_shape changed Latin text");
+    }
     // a Brazilian game language gets the Brazilian keyboard row, Portugal's Portuguese keeps its own
     CHECK(!strcmp(ui_text_lang("pt-BR"), "pt-BR") && !strcmp(ui_text_lang("pt"), "pt") &&
           strcmp(ui_text_in("pt-BR", UI_SWKBD_PROMPT), ui_text_in("pt", UI_SWKBD_PROMPT)), "pt-BR keyboard row not used");
@@ -926,12 +951,18 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("pt-BR", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=pt-BR");
     cfg_set("TOTK_MENU_LANG", "en");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
+    CHECK(!strcmp(menu_text(UI_MENU_LANGNAME_FA), "\uFED3\uFE8E\uFEAD\uFEB3\uFBFD"), "the name of Persian is not shaped");
     cfg_set("TOTK_MENU_LANG", "zh-Hans");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "menu_text ignores MENU_LANG=zh-Hans");
+    cfg_set("TOTK_MENU_LANG", "fa");
+    CHECK(!strcmp(menu_text(UI_MENU_CONTINUE), "\uFE8D\uFEA9\uFE8D\uFEE3\uFEEA") &&
+          menu_text(UI_MENU_CONTINUE) == menu_text(UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=fa or does not shape it");
     cfg_set("TOTK_MENU_LANG", "");
     const char *sys_lang = ui_text_lang(plat_ui_language());
     const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang : "en";
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
+    char auto_text[256];   // the menu's form of the text: shaped for Persian (a Persian Windows), as it is for the others
+    rtl_shape(ui_text_in(auto_lang, UI_MENU_CONTINUE), auto_text, sizeof auto_text);
+    CHECK(!strcmp(menu_text(UI_MENU_CONTINUE), auto_text), "menu_text auto ignores the system language");
 }
 
 static void probe_main(Cpu *c) {
