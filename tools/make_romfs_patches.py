@@ -49,6 +49,12 @@ diamond's letters become those characters. Drawn from the game's own files like 
 guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes around the action prompt name the keys
 with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
 
+--lang <code>: with --prompts, write only the files the installed game language uses: the default Font archive plus
+the CJK language's own (CNzh, KRko or TWzh) and that language's Mals. The setup passes the game language, so a Western
+pack is about 14 MB instead of 70 MB (a CJK one 20 to 28 MB); a language with no Mals archive (pt on 1.2.1) keeps the
+game's own letters in the diamond, with the PlayStation or Xbox face images and button font still drawn. Without --lang
+every language is written, as before.
+
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
 """
@@ -74,6 +80,9 @@ ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'playstation', 'play
                      'PlayStation shapes on the Nintendo layout and playstation-xbox for xbox and auto, '
                      'pc for the keyboard and mouse')
 ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_ lines the key icons follow')
+ap.add_argument('--lang', help='build the prompts for this game language only (a Switch code such as es, en-US or '
+                               'zh-Hant, or a locale such as de-DE): its font archive and Mals, not the other '
+                               'languages\'; default: every language')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
@@ -241,6 +250,44 @@ for p in files:
         MALS[m[1]] = (int(m[2]), p)
 MALS = sorted(p for _, p in MALS.values())
 LAYOUT_MSG = 'LayoutMsg/DoCommand_00.msbt'
+# The font archive the game uses for every language, and the one each CJK language adds: the button font lives in all
+# of them, but the rest of each archive is the text of that language. --lang keeps the default and the language's own.
+DEFAULT_FONT = 'Font/Font.Nin_NX_NVN.bfarc.zs'
+LANG_FONT = {'ko': 'Font/Font_KRko.Nin_NX_NVN.bfarc.zs', 'zh-Hans': 'Font/Font_CNzh.Nin_NX_NVN.bfarc.zs',
+             'zh-Hant': 'Font/Font_TWzh.Nin_NX_NVN.bfarc.zs'}
+# The Mals archive of each game language (runtime/ui_text.c ui_text_game_langs, installer/ini.py LANGUAGES). The game
+# ships USpt only from 1.4.3, so pt and pt-BR on 1.2.1 have no message archive to change.
+LANG_MALS = {
+    'ja': ('JPja',), 'en-US': ('USen',), 'en-GB': ('EUen',), 'fr': ('EUfr',), 'fr-CA': ('USfr',),
+    'de': ('EUde',), 'it': ('EUit',), 'es': ('EUes',), 'es-419': ('USes',), 'nl': ('EUnl',),
+    'pt': ('USpt',), 'pt-BR': ('USpt',), 'ru': ('EUru',), 'ko': ('KRko',),
+    'zh-Hans': ('CNzh',), 'zh-Hant': ('TWzh',),
+}
+
+
+def canonical_lang(lang):
+    """The LANG_MALS key for a Switch language code or a Windows locale (the installer's codes, and the aliases older
+    installers wrote). Anything unknown stays as it is and yields no message archive."""
+    lang = lang.replace('_', '-').lower()
+    if lang in ('zh-cn', 'zh-sg', 'zh-hans'): return 'zh-Hans'
+    if lang in ('zh-tw', 'zh-hk', 'zh-mo', 'zh-hant'): return 'zh-Hant'
+    if lang in ('es-mx', 'es-us', 'es-419'): return 'es-419'
+    if lang in ('en-au', 'en-nz', 'en-ie'): return 'en-GB'
+    if lang == 'en-ca': return 'en-US'
+    if lang in ('de-at', 'de-ch'): return 'de'
+    if lang in ('fr-be', 'fr-ch'): return 'fr'
+    if lang == 'pt-pt': return 'pt'
+    for code in LANG_MALS:
+        if lang == code.lower(): return code
+    base = lang.split('-')[0]
+    return {'en': 'en-US', 'pt': 'pt', 'zh': 'zh-Hans'}.get(base, base)
+
+
+if args.lang:
+    lang = canonical_lang(args.lang)
+    wanted = set(LANG_MALS.get(lang, ()))
+    MALS = [p for p in MALS if p.split('/')[1].split('.')[0] in wanted]
+    FONTS = [p for p in FONTS if p in (DEFAULT_FONT, LANG_FONT.get(lang))]
 # The resource size table (System/Resource/ResourceSizeTable.Product.<n>...rsizetable.zs, matched as loosely as
 # MacNativeGames make_button_icons.py does), likewise the newest version in the RomFS.
 RESTBL = max((p for p in files if p.startswith('System/Resource/ResourceSizeTable.') and p.endswith('.rsizetable.zs')),
@@ -249,7 +296,7 @@ by_position = args.prompts == 'xbox'   # the face buttons' prompts swapped to th
 pc = args.prompts == 'pc'
 ps = args.prompts in ('playstation', 'playstation-xbox')
 ps_layout = 'nintendo' if args.prompts == 'playstation' else 'xbox'
-letter_panes = by_position or pc or ps      # the one-letter panes around the action prompt change
+letter_panes = (by_position or pc or ps) and bool(MALS)   # the one-letter panes around the action prompt change
 if args.prompts:
     assert FONTS, 'no Font/Font*.Nin_NX_NVN.bfarc.zs in the RomFS'
     assert MALS or not letter_panes, 'no Mals/<language>.Product.<version>.sarc.zs in the RomFS'

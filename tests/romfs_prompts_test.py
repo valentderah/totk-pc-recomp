@@ -584,6 +584,81 @@ class PromptsTest(unittest.TestCase):
                     if member not in ('timg/__Combined.bntx', 'blyt/DoCommand_00.bflyt') and not member.startswith('anim/'):
                         self.assertEqual(after[member], before[member], member)
 
+    def test_prompt_pack_language(self):
+        """--lang writes only the installed language's font archive(s) and Mals, and still draws the prompts when the
+        language has no Mals (pt on 1.2.1) or uses a regional font (ko)."""
+        romfs = self.romfs['v121']
+        default, regional, restbl = DEFAULT_FONT, REGIONAL_FONT, romfs.restbl
+        euen, usen = romfs.mals
+        shape = PS_SHAPE['nintendo']
+        xbox_letters = {'A': 'B', 'B': 'A', 'X': 'Y', 'Y': 'X'}
+
+        def panes_of(mapping):
+            return {f'T_{b}_00': mapping[b] for b in 'ABXY'} | {'T_Name_00': 'A'}
+
+        cases = [
+            # style, lang, files, fonts, Mals, the diamond's text
+            ('playstation', 'en-US', {romfs.common, default, restbl, usen}, [default], [usen], panes_of(shape)),
+            ('playstation', 'en-GB', {romfs.common, default, restbl, euen}, [default], [euen], panes_of(shape)),
+            ('playstation', 'en-AU', {romfs.common, default, restbl, euen}, [default], [euen], panes_of(shape)),
+            ('playstation', 'ko', {romfs.common, default, regional, restbl}, [default, regional], [], PANES),
+            ('playstation', 'de-DE', {romfs.common, default, restbl}, [default], [], PANES),
+            ('playstation', 'es-MX', {romfs.common, default, restbl}, [default], [], PANES),
+            ('playstation', 'zh-CN', {romfs.common, default, restbl}, [default], [], PANES),
+            ('playstation', 'pt-BR', {romfs.common, default, restbl}, [default], [], PANES),
+            ('playstation', 'es', {romfs.common, default, restbl}, [default], [], PANES),
+            ('xbox-label', 'en-US', {romfs.common, default, restbl}, [default], [], PANES),
+            ('xbox', 'en-US', {romfs.common, default, restbl, usen}, [default], [usen], panes_of(xbox_letters)),
+            ('pc', 'en-US', {romfs.common, default, restbl, usen}, [default], [usen], panes_of(PC_PANES)),
+        ]
+        for i, (style, lang, expected, fonts, mals, panes_expected) in enumerate(cases):
+            with self.subTest(style=style, lang=lang):
+                out = self.base / 'lang' / str(i)
+                proc = romfs.run(out, '--prompts', style, '--lang', lang)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                summary = json.loads(proc.stdout.strip().splitlines()[-1])
+                self.assertEqual(set(manifest(out)), expected)
+                self.assertEqual(summary['prompts']['fonts'], fonts)
+                self.assertEqual(sorted(summary['prompts']['messages']), sorted(mals))
+                common = sarc_files(romfs.read(out, romfs.common))
+                panes = pane_texts(common['blyt/DoCommand_00.bflyt'])
+                for name in ('T_A_00', 'T_B_00', 'T_X_00', 'T_Y_00'):
+                    self.assertEqual(panes[name], panes_expected[name], f'{style}/{lang}: {name}')
+                for path in mals:
+                    texts = message_texts(sarc_files(romfs.read(out, path))['LayoutMsg/DoCommand_00.msbt'])
+                    for name in ('T_A_00', 'T_B_00', 'T_X_00', 'T_Y_00'):
+                        self.assertEqual(texts[name], panes_expected[name], f'{style}/{lang}: {path}: {name}')
+                    self.assertEqual((texts['T_Name_00'], texts['Greeting']), ('A', 'Hello'))
+                    self.assertEqual(sarc_files(romfs.read(out, path))['LayoutMsg/Other_00.msbt'], msbt({'T_A_00': 'A'}))
+                if style == 'playstation':
+                    # The pack keeps the PlayStation face and L/ZL images and glyphs, with or without Mals.
+                    images = bntx_images(common['timg/__Combined.bntx'])
+                    advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                    ps = icons.playstation_icons(icons.text_glyphs(romfs.text_fonts), advances, 'nintendo')
+                    size = VERSIONS[romfs.version]['size']
+                    for name, cp in icons.PS_HUD_TEXTURES.items():
+                        fmt, width, image = images[name]
+                        pixels = bytes(image[icons.gob_offset(x, y, (size + 63) // 64, 16)]
+                                       for y in range(size) for x in range(size))
+                        self.assertEqual(pixels, icons.rasterize(ps[cp][1], size), name)
+                    drawn = font(sarc_files(romfs.read(out, DEFAULT_FONT))['scft/External.bfotf'])
+                    original = font(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                    for cp in FACE.values():
+                        self.assertNotEqual(glyph(drawn, cp), glyph(original, cp), f'U+{cp:04X} drawn')
+                elif style == 'xbox-label':
+                    # No Mals, and the face textures keep the game's letters: only L and ZL are redrawn.
+                    images = bntx_images(common['timg/__Combined.bntx'])
+                    old = bntx_images(sarc_files(romfs.contents[romfs.common])['timg/__Combined.bntx'])
+                    for name in ('Nt_KeyTexA_00', 'Nt_KeyTexB_00', 'Nt_KeyTexX_00', 'Nt_KeyTexY_00'):
+                        self.assertEqual(images[name], old[name], name)
+                    glyphs = icons.xbox_icons(icons.text_glyphs(romfs.text_fonts))
+                    size = VERSIONS[romfs.version]['size']
+                    for name, cp in icons.HUD_TEXTURES.items():
+                        fmt, width, image = images[name]
+                        pixels = bytes(image[icons.gob_offset(x, y, (size + 63) // 64, 16)]
+                                       for y in range(size) for x in range(size))
+                        self.assertEqual(pixels, icons.rasterize(glyphs[cp][1], size), name)
+
     def test_resource_size_table_grows_with_the_fonts(self):
         for romfs, style, out, summary in self.each(('xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc')):
             with self.subTest(version=romfs.version, style=style):

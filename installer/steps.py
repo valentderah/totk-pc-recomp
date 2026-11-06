@@ -1043,9 +1043,11 @@ class Prepare(Step):
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
-        # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
+        # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders. The game language is in
+        # it because the prompt folders carry that language's fonts and Mals (make_romfs_patches.py --lang): changing
+        # the language in a later setup run rebuilds them.
         return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
-                           shader_list_text(layout), *tools)
+                           shader_list_text(layout), requested_lang(ctx), *tools)
 
     def current(self, ctx, record):
         dest = ctx.dest
@@ -1099,13 +1101,15 @@ class Prepare(Step):
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
         # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
         # prompts for prompts = pc (16:9 only: another shape takes make_romfs_patches.py --prompts pc --aspect).
+        # --lang keeps only the installed game language's font and Mals, which cuts each pack from about 70 MB to 14 MB
+        # (20 to 28 MB for Chinese or Korean); the key above rebuilds them after a language change.
         failed = None
         for style in ('xbox', 'xbox-label', 'playstation', 'playstation-xbox', 'pc'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
                                  ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
-                                  '--prompts', style])
+                                  '--prompts', style, '--lang', ctx.lang])
             if code:
                 remove(out)
                 failed = failed or (code, log)

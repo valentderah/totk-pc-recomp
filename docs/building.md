@@ -118,7 +118,9 @@ of them.
    `build\<ver>\romfs-patches-xbox`, `-xbox-label`, `-playstation` and `-playstation-xbox`
    ([controls.md](controls.md), "Xbox and PlayStation button prompts"), which `build_game.py` copies next to `totk.exe`
    like `romfs-patches`. `--prompts pc` writes `romfs-patches-pc`, the keyboard and mouse prompts
-   ([controls.md](controls.md), "PC button prompts").
+   ([controls.md](controls.md), "PC button prompts"). Add `--lang <code>` (es, en-US, zh-Hant, ...) to write only the
+   installed language's font archive and Mals (about 14 MB instead of 70 MB; 20 to 28 MB for Chinese or Korean); the
+   setup passes the installed language. Without `--lang` every language is written.
 
    A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
    draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a

@@ -76,7 +76,10 @@ loads the saves 1.4.3 wrote.
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
    and `auto`), `romfs-patches-playstation` and `romfs-patches-playstation-xbox` (PlayStation prompts, the same split),
    and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The five prompt folders are optional: when
-   one cannot be made, the setup warns and finishes.
+   one cannot be made, the setup warns and finishes. Each prompt folder carries only the installed game language's
+   files (`make_romfs_patches.py --lang`): the default font plus the CJK font of that language, and that language's
+   `Mals`. A Western pack is about 14 MB instead of 70 MB, a CJK one 20 to 28 MB. The prepare step's key includes the
+   language, so a setup run after changing `lang` rebuilds them.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.

@@ -14,6 +14,16 @@ LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 
              'zh-Hans', 'zh-Hant')
 # Older installer builds wrote these two codes; they are read as the canonical ones and rewritten on the next install.
 ALIASES = {'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant'}
+# Windows locales and the Switch code each one is the game language of (runtime/ui_text.c ui_text_lang). TotK's own
+# language codes are the LANGUAGES ones; a totk.ini may name a Windows locale instead, and update-totk.sh passes it.
+WINDOWS_LOCALES = {
+    'de-DE': 'de', 'de-AT': 'de', 'de-CH': 'de',
+    'it-IT': 'it', 'nl-NL': 'nl', 'nl-BE': 'nl', 'ru-RU': 'ru', 'ja-JP': 'ja', 'ko-KR': 'ko',
+    'es-ES': 'es', 'es-MX': 'es-419', 'es-US': 'es-419',
+    'fr-FR': 'fr', 'fr-BE': 'fr', 'fr-CH': 'fr',
+    'pt-PT': 'pt', 'en-AU': 'en-GB', 'en-NZ': 'en-GB', 'en-IE': 'en-GB', 'en-CA': 'en-US',
+    'zh-CN': 'zh-Hans', 'zh-SG': 'zh-Hans', 'zh-TW': 'zh-Hant', 'zh-HK': 'zh-Hant', 'zh-MO': 'zh-Hant',
+}
 # Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the fonts step extracts from the
 # firmware folder when the player gives one.
 NEED_SHARED_FONTS = ('ko', 'zh-Hans', 'zh-Hant')
@@ -24,8 +34,15 @@ SECTION = re.compile(r'^\s*\[(.*)\]\s*$')
 
 
 def canonical_language(lang):
-    """The code LANGUAGES lists for lang: an alias of an older installer build is mapped, anything else is kept."""
-    return ALIASES.get(lang, lang)
+    """The code LANGUAGES lists for lang: an alias of an older installer build or a Windows locale is mapped, anything
+    else is kept."""
+    lang = ALIASES.get(lang, lang)
+    if lang in LANGUAGES:
+        return lang
+    if lang in WINDOWS_LOCALES:
+        return WINDOWS_LOCALES[lang]
+    base = lang.split('-')[0]
+    return base if base in LANGUAGES else lang
 
 
 def set_language(text, lang):
