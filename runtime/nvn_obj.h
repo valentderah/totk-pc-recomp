@@ -69,6 +69,10 @@ typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func, reduction; 
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
 typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
 _Static_assert(sizeof(samp_par) == 44, "TOTK sampler parameters");
+// TotK's NVNsamplerBuilder is 0x40 bytes, not the 0x60 of nvn.h: the game keeps builders in 0x40-byte stack slots
+// with saved registers right after them (main+0x1c9428 has its builder at sp+0, x29/x30 at sp+0x40).
+#define TOTK_SAMPLER_BUILDER_SIZE 0x40
+_Static_assert(sizeof(samp_builder_t) <= TOTK_SAMPLER_BUILDER_SIZE, "samp_builder_t fits TotK's sampler builder");
 
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the back end's resolved result
 

@@ -334,11 +334,15 @@ NVN_API(nvnTextureInvalidateTexels) { (void)c; }
 
 // ---------- Samplers
 #define SB(c) (&((samp_builder_t *)arg_p(c, 0))->p)
-// void nvnSamplerBuilderSetDefaults(NVNsamplerBuilder *b): keeps the device; GL defaults
+// void nvnSamplerBuilderSetDefaults(NVNsamplerBuilder *b): keeps the device; GL defaults. The whole builder is
+// cleared, as NVN does, not only the part samp_builder_t uses: builders live on the stack, and the bytes past our
+// fields would otherwise keep whatever the stack held, so two builders set up the same way could differ when game code
+// copies, hashes or compares them. The size is TotK's (nvn_obj.h TOTK_SAMPLER_BUILDER_SIZE); clearing more would
+// overwrite the caller's saved registers.
 NVN_API(nvnSamplerBuilderSetDefaults) {
     samp_builder_t *b = arg_p(c, 0);
     NVNdevice *dev = b->dev;
-    memset(b, 0, sizeof *b);
+    memset(b, 0, TOTK_SAMPLER_BUILDER_SIZE);
     b->dev = dev;
     samp_par *o = &b->p;
     o->minf = NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR;
