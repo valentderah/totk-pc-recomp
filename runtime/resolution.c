@@ -540,7 +540,7 @@ int res_wants_wide_overlay(const unsigned out[2]) {
 }
 
 // Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the
-// factor on page +60 (recomp/patches-v143.txt, set fov). The horizontal angle follows through the aspect ratio. 100
+// factor on page +60 (recomp/patches-v121.txt and patches-v143.txt, set fov). The horizontal angle follows through the aspect ratio. 100
 // switches the set off, so the camera code is the game's own. Runs on a settings change (gfx_present.c
 // window_settings_live), the first time at the first present.
 #define FOV_MIN 70

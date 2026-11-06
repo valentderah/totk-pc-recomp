@@ -92,6 +92,15 @@ site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 
+# Field of view (runtime/resolution.c res_fov_live writes TOTK_FOV / 100 to page +60 and switches the set). The two
+# camera sites of set aspect first load the camera's vertical view angle in radians (+0x13c), which sead's perspective
+# projection stores at +0xa0 with the sine, cosine and tangent of its half, so the whole projection follows the product.
+# The camera's own copy keeps the game's angle for its other readers. x8 and s2 are free: both are caller-saved and
+# nothing reads them before the bl of the sine that follows.
+set fov      TOTK_FOV_PATCH      0
+site fov main cb4ad8 bd413e60 @page:x8 bd413e60 bd403d02 1e220800   # ldr s0, [x19, #0x13c]; ldr s2, [x8, #60]; fmul s0, s0, s2 (camera update)
+site fov main 1252194 bd413e60 @page:x8 bd413e60 bd403d02 1e220800  # the same (camera setup)
+
 # Texture pool offsets past 2 GiB (MacNativeGames ca311e2d). The texture loader keeps a texture's place in its pool as a
 # 32-bit offset (main+0xad4294: sub x25, x9, x10, stored as the word w25) and widens it as a signed number for
 # nvnTextureBuilderSetStorage's offset and for SetPackagedTextureData's source (the pool's CPU address + offset). The
