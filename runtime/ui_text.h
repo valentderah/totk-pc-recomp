@@ -70,6 +70,9 @@ typedef enum {
     UI_MENU_GAME_LANG, UI_MENU_GAME_LANG_DESC, UI_MENU_GAME_LANG_AUTO,
     UI_MENU_OPERATION_MODE, UI_MENU_OPERATION_MODE_DESC, UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD,
     UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC,
+    UI_MENU_PLAY_TIME, UI_MENU_PLAY_TIME_DESC,
+    UI_MENU_PLAY_TIME_HM,        // hours and minutes: "%llu h %02u min" (unsigned long long hours, unsigned minutes)
+    UI_MENU_PLAY_TIME_SESSION,   // note under the total: "this run: %s" (the hours and minutes above)
 
     // Mods: the port's own patches and the player's mods folder (mods.c)
     UI_MENU_MODS_BUILTIN, UI_MENU_MODS_INSTALLED,
