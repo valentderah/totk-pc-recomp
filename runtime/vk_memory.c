@@ -2142,7 +2142,11 @@ static void retire(VkCtx *c, int wait_all) {
     int k = 0;
     for (; k < ninflight; k++) {
         Batch *b = &inflight[k];
-        if (wait_all) vkWaitForFences(c->device, 1, &b->fence, VK_TRUE, UINT64_MAX);
+        if (wait_all) {
+            uint64_t wm0 = waitstat_now();
+            vkWaitForFences(c->device, 1, &b->fence, VK_TRUE, UINT64_MAX);
+            if (wm0) waitstat_add("memory fence", plat_now_ns() - wm0);
+        }
         else if (vkGetFenceStatus(c->device, b->fence) != VK_SUCCESS) break;
         free_staging(c, b);
         done_seq = b->seq;

@@ -582,12 +582,17 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (wsys_minimized() || !g_sc) goto out;
 
     unsigned slot = g_frame % FRAMES;
+    uint64_t ws0 = waitstat_now();
     if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) {
         rt_log("gfx: present fence wait timed out");
+        if (ws0) waitstat_add("present fence", plat_now_ns() - ws0);
         goto out;
     }
+    if (ws0) waitstat_add("present fence", plat_now_ns() - ws0);
     uint32_t idx = 0;
+    ws0 = waitstat_now();
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+    if (ws0) waitstat_add("present acquire", plat_now_ns() - ws0);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
