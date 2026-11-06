@@ -383,6 +383,12 @@
 # Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
 # Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
 # shared_fonts =
+# Folder with amiibo dump files (.bin). Default: amiibo next to totk.exe.
+# amiibo_dir =
+# Randomize tag UID on each tap to bypass the in-game daily limit (1 or 0). Default: 1.
+# amiibo_random_uid = 1
+# Repeat scans with original tag UID by advancing the virtual calendar date on tap (1 or 0). Default: 0.
+# amiibo_repeat_orig_uid = 0
 
 [cheats]
 # One line per cheat of the mods' cheat files, mods\<mod>\cheats\<build id>.txt (docs/cheats.md); the Cheats tab of

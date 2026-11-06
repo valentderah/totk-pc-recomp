@@ -12,6 +12,7 @@
 
 #include "imgui.h"
 #include "ui/amiibo_page.h"
+#include "ui/menu.h"
 #include "ui/option_rows.h"
 
 extern "C" {
@@ -33,6 +34,24 @@ static const char kDefaultAmiiboDir[] = "./amiibo";
 static std::string g_current_dir = kDefaultAmiiboDir;
 static std::vector<FileEntry> g_entries;
 static int g_selected_entry = -1;
+
+static std::vector<std::string> g_all_files;
+static int g_all_index = -1;
+static PlatMutex g_files_lock = PLAT_MUTEX_INIT;
+
+// Toast notification
+static PlatMutex g_toast_lock = PLAT_MUTEX_INIT;
+static std::string g_toast_title;
+static std::string g_toast_sub;
+static uint64_t g_toast_start_ns = 0;
+
+static void set_toast(const std::string &title, const std::string &sub) {
+    plat_mutex_lock(&g_toast_lock);
+    g_toast_title = title;
+    g_toast_sub = sub;
+    g_toast_start_ns = plat_now_ns();
+    plat_mutex_unlock(&g_toast_lock);
+}
 // The last action: a catalog id and the file or folder it names, formatted when drawn (the menu language can change)
 static UiTextId g_status_id = UI_MENU_AMIIBO_READY;
 static std::string g_status_arg;
@@ -126,6 +145,182 @@ static void refresh_dir(void) {
     });
 }
 
+static void scan_all_files(void) {
+    plat_mutex_lock(&g_files_lock);
+    g_all_files.clear();
+    std::error_code ec;
+
+    std::vector<std::string> search_roots = { g_current_dir };
+    if (g_current_dir != kDefaultAmiiboDir) {
+        search_roots.push_back(kDefaultAmiiboDir);
+    }
+
+    for (const auto &root : search_roots) {
+        fs::path root_p(root);
+        if (!fs::exists(root_p, ec) || !fs::is_directory(root_p, ec)) continue;
+        for (const auto &entry : fs::recursive_directory_iterator(root_p, fs::directory_options::skip_permission_denied, ec)) {
+            if (ec) break;
+            std::error_code status_ec;
+            if (!entry.is_regular_file(status_ec)) continue;
+            std::string fn = entry.path().filename().string();
+            if (iequals(fn, "key_retail.bin")) continue;
+            std::string ext = entry.path().extension().string();
+            if (iequals(ext, ".bin") || iequals(ext, ".nfc")) {
+                g_all_files.push_back(entry.path().string());
+            }
+        }
+    }
+
+    std::sort(g_all_files.begin(), g_all_files.end());
+    g_all_files.erase(std::unique(g_all_files.begin(), g_all_files.end()), g_all_files.end());
+
+    const AmiiboInfo *cur = amiibo_get_current_info();
+    g_all_index = -1;
+    if (cur && cur->filename[0]) {
+        for (size_t i = 0; i < g_all_files.size(); ++i) {
+            if (fs::path(g_all_files[i]).filename().string() == cur->filename) {
+                g_all_index = (int)i;
+                break;
+            }
+        }
+    }
+    if (g_all_index < 0 && !g_all_files.empty()) {
+        g_all_index = 0;
+    }
+    plat_mutex_unlock(&g_files_lock);
+}
+
+extern "C" void amiibo_quick_tap(void) {
+    if (!amiibo_has_tag() && amiibo_get_current_info()->filename[0] == '\0') {
+        scan_all_files();
+        plat_mutex_lock(&g_files_lock);
+        if (!g_all_files.empty()) {
+            if (g_all_index < 0 || g_all_index >= (int)g_all_files.size()) g_all_index = 0;
+            std::string p = g_all_files[g_all_index];
+            plat_mutex_unlock(&g_files_lock);
+            amiibo_load_file(p.c_str());
+        } else {
+            plat_mutex_unlock(&g_files_lock);
+            set_toast("No Amiibo Found", "Put .bin dumps in amiibo folder");
+            return;
+        }
+    }
+    const AmiiboInfo *info = amiibo_get_current_info();
+    std::string name = info->filename[0] ? info->filename : "Amiibo";
+    amiibo_tap_tag();
+    set_status(UI_MENU_AMIIBO_TAPPED, name);
+    set_toast(fs::path(name).stem().string(), "Tapped • Scanning into game");
+}
+
+extern "C" void amiibo_quick_next(void) {
+    scan_all_files();
+    plat_mutex_lock(&g_files_lock);
+    if (g_all_files.empty()) {
+        plat_mutex_unlock(&g_files_lock);
+        set_toast("No Amiibo Found", "Put .bin dumps in amiibo folder");
+        return;
+    }
+    g_all_index = (g_all_index + 1) % (int)g_all_files.size();
+    std::string path = g_all_files[g_all_index];
+    int idx = g_all_index + 1;
+    int total = (int)g_all_files.size();
+    plat_mutex_unlock(&g_files_lock);
+
+    std::string stem = fs::path(path).stem().string();
+    std::string filename = fs::path(path).filename().string();
+    amiibo_load_file(path.c_str());
+    set_status(UI_MENU_AMIIBO_READY, filename);
+
+    char sub[128];
+    snprintf(sub, sizeof sub, "Selected (%d/%d) • R3+Up to Tap", idx, total);
+    set_toast(stem, sub);
+}
+
+extern "C" void amiibo_quick_prev(void) {
+    scan_all_files();
+    plat_mutex_lock(&g_files_lock);
+    if (g_all_files.empty()) {
+        plat_mutex_unlock(&g_files_lock);
+        set_toast("No Amiibo Found", "Put .bin dumps in amiibo folder");
+        return;
+    }
+    g_all_index = (g_all_index - 1 + (int)g_all_files.size()) % (int)g_all_files.size();
+    std::string path = g_all_files[g_all_index];
+    int idx = g_all_index + 1;
+    int total = (int)g_all_files.size();
+    plat_mutex_unlock(&g_files_lock);
+
+    std::string stem = fs::path(path).stem().string();
+    std::string filename = fs::path(path).filename().string();
+    amiibo_load_file(path.c_str());
+    set_status(UI_MENU_AMIIBO_READY, filename);
+
+    char sub[128];
+    snprintf(sub, sizeof sub, "Selected (%d/%d) • R3+Up to Tap", idx, total);
+    set_toast(stem, sub);
+}
+
+extern "C" void amiibo_quick_menu(void) {
+    menu_open_tab(TAB_AMIIBO);
+}
+
+extern "C" void amiibo_toast_draw(float screen_w, float screen_h, float scale) {
+    (void)screen_h;
+    uint64_t now = plat_now_ns();
+    plat_mutex_lock(&g_toast_lock);
+    uint64_t elapsed = now - g_toast_start_ns;
+    if (elapsed > 3000000000ull || g_toast_title.empty()) {
+        plat_mutex_unlock(&g_toast_lock);
+        return;
+    }
+    std::string title = g_toast_title;
+    std::string sub = g_toast_sub;
+    plat_mutex_unlock(&g_toast_lock);
+
+    float alpha = 1.0f;
+    if (elapsed > 2200000000ull) {
+        alpha = 1.0f - (float)(elapsed - 2200000000ull) / 800000000.0f;
+        if (alpha < 0.0f) alpha = 0.0f;
+    }
+    int a = (int)(alpha * 255.0f);
+
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const char badge[] = "AMIIBO";
+    ImVec2 badge_sz = ImGui::CalcTextSize(badge);
+    ImVec2 title_sz = ImGui::CalcTextSize(title.c_str());
+    ImVec2 sub_sz = ImGui::CalcTextSize(sub.c_str());
+
+    float text_w = std::max(title_sz.x, sub_sz.x);
+    float box_w = badge_sz.x + text_w + 40.0f * scale;
+    if (box_w < 280.0f * scale) box_w = 280.0f * scale;
+    float box_h = 44.0f * scale;
+    float box_x = (screen_w - box_w) * 0.5f;
+    float box_y = 28.0f * scale;
+
+    ImVec2 p0(box_x, box_y);
+    ImVec2 p1(box_x + box_w, box_y + box_h);
+
+    dl->AddRectFilled(p0, p1, IM_COL32(18, 20, 26, (int)(230 * alpha)), 8.0f * scale);
+    dl->AddRect(p0, p1, IM_COL32(237, 194, 84, (int)(180 * alpha)), 8.0f * scale, 0, 1.5f * scale);
+
+    float badge_pad_x = 8.0f * scale;
+    float badge_w = badge_sz.x + badge_pad_x * 2;
+    float badge_h = 24.0f * scale;
+    ImVec2 bp0(box_x + 10.0f * scale, box_y + (box_h - badge_h) * 0.5f);
+    ImVec2 bp1(bp0.x + badge_w, bp0.y + badge_h);
+    dl->AddRectFilled(bp0, bp1, IM_COL32(237, 194, 84, (int)(220 * alpha)), 4.0f * scale);
+    dl->AddText(ImVec2(bp0.x + badge_pad_x, bp0.y + (badge_h - badge_sz.y) * 0.5f),
+                IM_COL32(20, 20, 20, a), badge);
+
+    float text_x = bp1.x + 12.0f * scale;
+    float text_y = box_y + 6.0f * scale;
+    dl->AddText(ImVec2(text_x, text_y), IM_COL32(255, 255, 255, a), title.c_str());
+    if (!sub.empty()) {
+        dl->AddText(ImVec2(text_x, text_y + title_sz.y + 1.0f * scale),
+                    IM_COL32(237, 194, 84, (int)(210 * alpha)), sub.c_str());
+    }
+}
+
 void tab_amiibo(float scale) {
     (void)scale;   // the rows take ImGui's own sizes, already scaled with the font
     static bool s_inited = false;
@@ -213,7 +408,10 @@ void tab_amiibo(float scale) {
                     break;
                 }
             } else {
-                if (ImGui::IsMouseDoubleClicked(0)) tap(g_current_dir, e.name);
+                if (ImGui::IsMouseDoubleClicked(0) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown) ||
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp)) {
+                    tap(g_current_dir, e.name);
+                }
             }
         }
     }
@@ -278,6 +476,22 @@ void tab_amiibo(float scale) {
         }
     }
 
+    bool random_uid = amiibo_get_random_uid();
+    if (ImGui::Checkbox(menu_text(UI_MENU_AMIIBO_RANDOM_UID), &random_uid)) {
+        amiibo_set_random_uid(random_uid);
+    }
+
+    bool repeat_orig = amiibo_get_repeat_orig_uid();
+    if (ImGui::Checkbox(menu_text(UI_MENU_AMIIBO_REPEAT_ORIG_UID), &repeat_orig)) {
+        amiibo_set_repeat_orig_uid(repeat_orig);
+    }
+    if (repeat_orig && amiibo_get_clock_offset() > 0) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(menu_text(UI_MENU_AMIIBO_RESET_CLOCK))) {
+            amiibo_reset_clock_offset();
+        }
+    }
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextUnformatted(menu_text(UI_MENU_AMIIBO_TAG));
@@ -300,6 +514,18 @@ void tab_amiibo(float scale) {
     char status[512];
     snprintf(status, sizeof status, menu_text(g_status_id), g_status_arg.c_str());
     ImGui::TextDisabled(menu_text(UI_MENU_AMIIBO_STATUS), status);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1.0f), "Shortcuts");
+    ImGui::TextDisabled("Controller in-game:");
+    ImGui::BulletText("R3 + D-Pad Up: Tap / Scan Amiibo");
+    ImGui::BulletText("R3 + D-Pad Right: Next Amiibo");
+    ImGui::BulletText("R3 + D-Pad Left: Previous Amiibo");
+    ImGui::BulletText("R3 + D-Pad Down: Open Amiibo Menu");
+    ImGui::TextDisabled("Keyboard in-game:");
+    ImGui::BulletText("F3: Tap | [ / ]: Prev / Next | F2: Menu");
+    ImGui::TextDisabled("In list: Press A or X to Tap directly");
 
     ImGui::EndChild();
 }

@@ -47,6 +47,7 @@ void input_menu(int open);
 // of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
+int input_amiibo_gate(int *held_mask, uint64_t *buttons); // R3+D-pad: 1 tap, 2 next, 3 prev, 4 menu
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);

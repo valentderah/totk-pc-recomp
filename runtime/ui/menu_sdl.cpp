@@ -12,6 +12,7 @@
 extern "C" {
 #include "input.h"
 #include "input_sdl.h"
+#include "ui/amiibo_page.h"
 #include "ui/menu.h"
 }
 
@@ -44,14 +45,32 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
-        if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
-                               (e->key.scancode == SDL_SCANCODE_ESCAPE && !menu_is_open()))) {
-            menu_toggle();
-            return;
-        }
-        if (e->key.scancode == SDL_SCANCODE_F10) {
-            if (!e->key.repeat) menu_perf_cycle();
-            return;
+        if (!e->key.repeat) {
+            if (e->key.scancode == SDL_SCANCODE_F1 ||
+                (e->key.scancode == SDL_SCANCODE_ESCAPE && !menu_is_open())) {
+                menu_toggle();
+                return;
+            }
+            if (e->key.scancode == SDL_SCANCODE_F2) {
+                amiibo_quick_menu();
+                return;
+            }
+            if (e->key.scancode == SDL_SCANCODE_F3) {
+                amiibo_quick_tap();
+                return;
+            }
+            if (e->key.scancode == SDL_SCANCODE_LEFTBRACKET) {
+                amiibo_quick_prev();
+                return;
+            }
+            if (e->key.scancode == SDL_SCANCODE_RIGHTBRACKET) {
+                amiibo_quick_next();
+                return;
+            }
+            if (e->key.scancode == SDL_SCANCODE_F10) {
+                menu_perf_cycle();
+                return;
+            }
         }
         [[fallthrough]];
     case SDL_EVENT_KEY_UP:

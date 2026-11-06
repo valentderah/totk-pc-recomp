@@ -395,3 +395,41 @@ int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[
 int input_overlay_gate(int *held, uint64_t *buttons) {
     return chord(held, buttons, 1ull << B_STICK_L | 1ull << B_STICK_R);
 }
+
+// Right stick click (R3) held with D-Pad buttons performs quick amiibo actions:
+// R3 + D-Pad Up:    1 (Tap / Scan currently selected amiibo)
+// R3 + D-Pad Right: 2 (Select next amiibo)
+// R3 + D-Pad Left:  3 (Select previous amiibo)
+// R3 + D-Pad Down:  4 (Open amiibo menu)
+int input_amiibo_gate(int *held_mask, uint64_t *buttons) {
+    if (!(*buttons & (1ull << B_STICK_R))) {
+        *held_mask = 0;
+        return 0;
+    }
+    int act = 0;
+    uint64_t dpad = *buttons & ((1ull << B_UP) | (1ull << B_RIGHT) | (1ull << B_LEFT) | (1ull << B_DOWN));
+    if (dpad) {
+        *buttons &= ~((1ull << B_STICK_R) | dpad);
+        if ((dpad & (1ull << B_UP)) && !(*held_mask & 1)) {
+            *held_mask |= 1;
+            act = 1;
+        }
+        if ((dpad & (1ull << B_RIGHT)) && !(*held_mask & 2)) {
+            *held_mask |= 2;
+            act = 2;
+        }
+        if ((dpad & (1ull << B_LEFT)) && !(*held_mask & 4)) {
+            *held_mask |= 4;
+            act = 3;
+        }
+        if ((dpad & (1ull << B_DOWN)) && !(*held_mask & 8)) {
+            *held_mask |= 8;
+            act = 4;
+        }
+    }
+    if (!(dpad & (1ull << B_UP))) *held_mask &= ~1;
+    if (!(dpad & (1ull << B_RIGHT))) *held_mask &= ~2;
+    if (!(dpad & (1ull << B_LEFT))) *held_mask &= ~4;
+    if (!(dpad & (1ull << B_DOWN))) *held_mask &= ~8;
+    return act;
+}

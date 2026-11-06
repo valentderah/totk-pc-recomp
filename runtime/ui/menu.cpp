@@ -93,9 +93,16 @@ static int change_open(int want) {
 static void set_open(int open) { change_open(open); }
 
 static int g_failed_flag();
+static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 extern "C" int menu_is_open(void) { return g_open.load(std::memory_order_relaxed); }
 extern "C" void menu_toggle(void) {
     if (!g_failed_flag()) change_open(-1);
+}
+extern "C" void menu_open_tab(int tab) {
+    if (!g_failed_flag()) {
+        g_tab_request = tab;
+        change_open(1);
+    }
 }
 
 // ---- events from the window adapter, queued while the menu is open; the present path hands them to ImGui
@@ -381,7 +388,6 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -1056,7 +1062,6 @@ static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
                                               UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
-static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
 
 // A row of another tab: that tab opens with the row under the cursor.
@@ -1575,6 +1580,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    amiibo_toast_draw((float)t->width, (float)t->height, scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;

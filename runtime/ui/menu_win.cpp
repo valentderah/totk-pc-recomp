@@ -13,6 +13,7 @@
 extern "C" {
 #include "input.h"
 #include "input_win.h"
+#include "ui/amiibo_page.h"
 #include "ui/menu.h"
 }
 
@@ -47,15 +48,37 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
     case WM_SYSKEYDOWN:
         // bit 30: auto-repeat
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
-        if (!(l & (1 << 30)) && (w == VK_F1 || (w == VK_ESCAPE && !menu_is_open()))) {
-            menu_toggle();
-            *res = 0;
-            return 1;
-        }
-        if (w == VK_F10) {   // also keeps F10 from opening the window menu
-            if (!(l & (1 << 30))) menu_perf_cycle();
-            *res = 0;
-            return 1;
+        if (!(l & (1 << 30))) {
+            if (w == VK_F1 || (w == VK_ESCAPE && !menu_is_open())) {
+                menu_toggle();
+                *res = 0;
+                return 1;
+            }
+            if (w == VK_F2) {
+                amiibo_quick_menu();
+                *res = 0;
+                return 1;
+            }
+            if (w == VK_F3) {
+                amiibo_quick_tap();
+                *res = 0;
+                return 1;
+            }
+            if (w == VK_OEM_4) { // '['
+                amiibo_quick_prev();
+                *res = 0;
+                return 1;
+            }
+            if (w == VK_OEM_6) { // ']'
+                amiibo_quick_next();
+                *res = 0;
+                return 1;
+            }
+            if (w == VK_F10) {   // also keeps F10 from opening the window menu
+                menu_perf_cycle();
+                *res = 0;
+                return 1;
+            }
         }
         [[fallthrough]];
     case WM_KEYUP:
