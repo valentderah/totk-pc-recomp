@@ -1106,11 +1106,24 @@ static void tab_mods(float scale) {
             if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
             else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
         }
-        char code[512] = "", problem[512] = "";
+        char code[512] = "", problem[512] = "", skipped[512] = "", plugins[768] = "";
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
-        else if (m->nsets)
-            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        else if (m->nsets || m->ndata)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
+        if (m->code[0] && m->problem != MOD_PLUGIN)   // used without that code (mods_without_code = 1)
+            snprintf(skipped, sizeof skipped, menu_text(UI_MENU_MODS_CODE_SKIPPED), m->code);
+        for (int k = 0; k < m->nplugins; k++) {   // its code modules the port runs as its own code
+            char line[256];
+            if (m->plugin[k].shadowed[0])
+                snprintf(line, sizeof line, menu_text(UI_MENU_MODS_CODE_SHADOWED), m->plugin[k].module,
+                         m->plugin[k].shadowed);
+            else
+                snprintf(line, sizeof line, menu_text(UI_MENU_MODS_CODE_BUILTIN), m->plugin[k].module,
+                         m->plugin[k].name);
+            size_t at = strlen(plugins);
+            snprintf(plugins + at, sizeof plugins - at, "%s%s", at ? "\n\n" : "", line);
+        }
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
         case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
@@ -1123,7 +1136,7 @@ static void tab_mods(float scale) {
         default: break;
         }
         int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
-        const char *parts[] = {over, other, cheat, code, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        const char *parts[] = {over, other, cheat, code, plugins, skipped, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
         for (const char *part : parts)
             if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
         const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
@@ -1139,6 +1152,11 @@ static void tab_mods(float scale) {
             opt_save_soon();
         }
     }
+    // The switch for mods with their own code shows once a mod with code the port cannot run is there (or the switch
+    // is on)
+    bool code_mods = cfg_bool("TOTK_MODS_WITHOUT_CODE");
+    for (int i = 0; i < n && !code_mods; i++) code_mods = mods_at(i)->code[0] != 0;
+    if (code_mods) opt_toggle("TOTK_MODS_WITHOUT_CODE", UI_MENU_MODS_WITHOUT_CODE, UI_MENU_MODS_WITHOUT_CODE_DESC);
     bool rebuild =
         cheats_rebuild_pending() && opt_button("##restart", UI_MENU_CHEATS_REBUILD, UI_MENU_CHEATS_REBUILD_DESC);
     static uint64_t open_failed;   // plat_now_ns until which the button says it failed

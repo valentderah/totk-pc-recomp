@@ -9,10 +9,14 @@ Output, under --out:
   <mod>/<mod>_NNNN.c           one `void f_<addr>(Cpu *c)` per guest function, about --chunk-bytes of C per file
   <mod>/<mod>_table.c          sorted <mod>_fn_addrs[] / <mod>_fn_ptrs[] / <mod>_fn_count for rt_dispatch
   <mod>/manifest.json          chunk list, function count, statistics and timings
+  <mod>/folded.txt             the module's bytes the generated code took as constants: what the jump tables read at
+                               lift time, as module offsets [start, end); tools/exefs_patches.py keeps a mod's data
+                               writes off them
   patches.h                    code patch sets for the runtime (recomp/patches.py; no sets without --patches)
 
 Function discovery runs in this process, vectorised over the module's .text words. Function starts are the module
-seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets), every BL target, and code addresses
+seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets, the functions the patch table's hooks call
+through rt_call: recomp/patches.py `fn:` arguments), every BL target, and code addresses
 materialised by ADR or ADRP+ADD (except an ADR that anchors a jump table: one with a `br` in the next 16
 instructions, or one an ADD register form uses as its base right after). A function is [start, next start). A direct branch whose target lies outside its
 function makes the target a new start, until no new start appears.
@@ -45,7 +49,7 @@ import patches  # noqa: E402
 import regs  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 from layout import layout, write as write_layout  # noqa: E402
-from lifter import hx  # noqa: E402
+from lifter import Insn, hx  # noqa: E402
 from module import Module  # noqa: E402
 
 TERMINATORS = ('b', 'br', 'ret', 'trap')
@@ -77,15 +81,16 @@ def _sext(v, n):
     return np.where(v & (1 << (n - 1)), v - (1 << n), v)
 
 
-def discover(mod):
-    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics."""
+def discover(mod, extra=()):
+    """Function starts of mod as a sorted int64 array of word indices into mod.words, plus discovery statistics. extra:
+    more absolute function starts (the patch table's hook arguments)."""
     w = mod.words
     n = len(w)
 
     def idx(mask):
         return np.flatnonzero(mask).astype(np.int64)
 
-    seeds = (np.asarray(mod.seeds(), dtype=np.int64) - mod.lo) >> 2
+    seeds = (np.asarray(sorted(set(mod.seeds()) | set(extra)), dtype=np.int64) - mod.lo) >> 2
 
     # B and BL: imm26. BL targets are function starts; B targets join the fixpoint below.
     b_all = idx((w & 0x7C000000) == 0x14000000)
@@ -216,6 +221,7 @@ class Emitter:
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
         self.uses_patches = False
+        self.uses_hooks = False
         self.stats = Counter()
         self.unsupported = Counter()
 
@@ -260,10 +266,14 @@ class Emitter:
 
     def replacements(self, a):
         """The lifted words of each alternative of the patched site a, in set order. Only the last word of an
-        alternative may branch (bl, b, b.cond / cbz / tbz, ret)."""
+        alternative may branch (bl, b, b.cond / cbz / tbz, ret). A host hook (('hook', index), recomp/patches.py) is an
+        rt_hook call with the site's address, which regs.ESCAPE syncs every register around and which leaves the
+        flags alone."""
         out = []
         for _, words in self.patched[a]:
-            lifted = [self.mod.lifter.lift(w, a) for w in words]
+            lifted = [Insn('op', f'rt_hook(c, {w[1]}, {hx(a)});') if isinstance(w, tuple)
+                      else self.mod.lifter.lift(w, a) for w in words]
+            self.uses_hooks |= any(isinstance(w, tuple) for w in words)
             for j, r in enumerate(lifted):
                 last = j == len(lifted) - 1
                 if r.kind != 'op' and not (last and r.kind in ('bl', 'b', 'bcond', 'ret')):
@@ -509,7 +519,7 @@ class Emitter:
 def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
-    emitter.uses_patches = False
+    emitter.uses_patches = emitter.uses_hooks = False
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
@@ -518,6 +528,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
+    if emitter.uses_hooks:
+        protos += 'void rt_hook(Cpu *c, int hook, uint64_t site);\n'   # runtime/patches.c
     return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
             + '\n\n'.join(body) + '\n')
 
@@ -555,7 +567,8 @@ def _retry(fn, *args):
 
 # ------------------------------------------------------------------------------------------------ workers
 
-_W = {}  # worker state: 'mods' {name: (path, base)}, 'starts' {name: sorted array}, 'emitters' {name: Emitter}
+_W = {}  # worker state: 'mods' {name: (path, base)}, 'starts' {name: sorted array}, 'emitters' {name: Emitter},
+         # 'reads' {name: [(start, end)]} module bytes read since the last chunk
 
 
 def _worker_init(mods, starts, table, opts, jobs):
@@ -565,6 +578,7 @@ def _worker_init(mods, starts, table, opts, jobs):
     _W['patches'] = table
     _W['opts'] = opts   # Emitter keyword arguments
     _W['emitters'] = {}
+    _W['reads'] = {}
 
 
 def _emitter(name):
@@ -572,10 +586,29 @@ def _emitter(name):
     if e is None:
         path, base = _W['mods'][name]
         mod = Module(name, path, base, 'c')
+        # Module.read is how the jump tables (recomp/jumptables.py _eval) read .text and .rodata at lift time: the
+        # bytes it returns become part of the generated code, so <mod>/folded.txt lists them
+        read, reads = mod.read, _W['reads'].setdefault(name, [])
+
+        def recorded(a, n, signed=False):
+            reads.append((a - base, a - base + n))
+            return read(a, n, signed=signed)
+        mod.read = recorded
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
                                            spins=_W['patches'].spins_for(name, base), **_W['opts'])
     return e
+
+
+def merge_ranges(ranges):
+    """Sorted [start, end) ranges with overlapping and touching ones joined."""
+    out = []
+    for s, e in sorted(ranges):
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
 
 
 def _emit_chunk(task):
@@ -595,9 +628,12 @@ def _emit_chunk(task):
         written = write_if_changed(Path(path), text)
     except OSError as ex:
         written, error = False, f'{path}: {ex}'
+    reads = _W['reads'].get(name, [])
+    folded = merge_ranges(reads)
+    reads.clear()
     return {'module': name, 'number': number, 'file': Path(path).name, 'functions': len(fns), 'bytes': len(text),
             'written': written, 'error': error, 'seconds': time.perf_counter() - t0, 'stats': dict(e.stats),
-            'unsupported': dict(e.unsupported)}
+            'unsupported': dict(e.unsupported), 'folded': folded}
 
 
 # ------------------------------------------------------------------------------------------------ driver
@@ -611,6 +647,14 @@ def table_text(name, addrs):
     lines.append(',\n'.join(fname(a) for a in addrs))
     lines.append(f'\n}};\nconst uint64_t {name}_fn_count = {len(addrs)};\n')
     return ''.join(lines)
+
+
+def folded_text(name, ranges):
+    """<mod>/folded.txt: the module offsets [start, end) of the bytes the jump tables read at lift time, in hex."""
+    lines = [f'# {GENERATED_MARKER}: {name} bytes the generated code took as constants (jump tables), module offsets '
+             f'[start, end), generated by recomp/gen.py from game code. Do not edit or commit.']
+    lines += [f'{s:x} {e:x}' for s, e in ranges]
+    return '\n'.join(lines) + '\n'
 
 
 def remove_stale(moddir, name, nchunks, errors):
@@ -691,7 +735,7 @@ def main():
         path = args.exefs / name
         mod = Module(name, path, base, 'c')
         patches.check(table, mod, name)
-        starts, dstats = discover(mod)
+        starts, dstats = discover(mod, table.entries_for(name, base))
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
         n = len(starts) if not args.limit else min(args.limit, len(starts))
@@ -714,6 +758,7 @@ def main():
     # Largest chunks first, so the pool does not end on a long tail.
     tasks.sort(key=lambda t: -t[0])
     results = {name: [] for name in info}
+    folded = {name: [] for name in info}
     done_at, errors = {}, []
     t_emit = time.perf_counter()
     ctx = mp.get_context('spawn')
@@ -724,9 +769,11 @@ def main():
         print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
         try:
             # Chunk writes are atomic and idempotent, so a chunk lost with a failed pool is simply emitted again.
+            # Its folded bytes come with its result: a chunk emitted again reads them again in its new worker.
             with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts, jobs)) as pool:
                 for r in pool.imap_unordered(_emit_chunk, pending, chunksize=1):
                     results[r['module']].append(r)
+                    folded[r['module']] += r['folded']
                     if r['error']:
                         errors.append(r['error'])
                     done_at[r['module']] = time.perf_counter() - t_emit
@@ -753,6 +800,7 @@ def main():
             unsupported.update(r['unsupported'])
         t = time.perf_counter()
         table_written = write_if_changed(moddir / f'{name}_table.c', table_text(name, d['emitted']))
+        write_if_changed(moddir / 'folded.txt', folded_text(name, merge_ranges(folded[name])))
         removed = remove_stale(moddir, name, d['chunks'], errors)
         manifest = {
             'module': name,

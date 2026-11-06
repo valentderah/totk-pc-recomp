@@ -443,8 +443,8 @@ static void plain_name(char *s) {
 // ---- rebuild: code cheats and ExeFS patches the build lacks
 // The setup writes build-cache\rebuild.txt (installer/steps.py write_rebuild_command), the command that starts its
 // window in rebuild mode on this install folder, one argument per line. When an enabled mod has code cheats this build
-// lacks (CHEAT_REBUILD) or ExeFS patch files it lacks (mods_exefs_pending), the game runs it and exits; the setup lifts
-// and compiles them in and starts the game again.
+// lacks (CHEAT_REBUILD) or ExeFS files it lacks (mods_exefs_pending: patch files, the code modules of plugins the port
+// runs as its own code), the game runs it and exits; the setup lifts and compiles them in and starts the game again.
 // build-cache\rebuild.skip holds the key of the cheats a rebuild was started for: a rebuild that failed or was
 // cancelled leaves them unbuilt, and the same set does not start it again. TOTK_MODS_REBUILD=off never starts it.
 // Scripted runs (--seconds, --boot) never start it.
@@ -474,7 +474,7 @@ static void rebuild_if_needed(const char *dir) {
     char *cmd = why ? NULL : read_text(cmd_path);
     if (!why && !cmd) why = "no build-cache/rebuild.txt (a build without the setup)";
     if (why) {
-        rt_log("cheats: %d code cheats and %d ExeFS patch files are not built into the game; no rebuild: %s", need,
+        rt_log("cheats: %d code cheats and %d ExeFS files are not built into the game; no rebuild: %s", need,
                patches, why);
         free(cmd);
         return;
@@ -491,12 +491,12 @@ static void rebuild_if_needed(const char *dir) {
     }
     argv[argc] = NULL;
     if (argc < 2 || !plat_file_write(skip_path, want, strlen(want))) {
-        rt_log("cheats: %d code cheats and %d ExeFS patch files are not built into the game; cannot start the "
+        rt_log("cheats: %d code cheats and %d ExeFS files are not built into the game; cannot start the "
                "rebuild (%s)", need, patches, cmd_path);
         free(cmd);
         return;
     }
-    rt_log("cheats: %d code cheats and %d ExeFS patch files are not built into the game; starting the rebuild: %s",
+    rt_log("cheats: %d code cheats and %d ExeFS files are not built into the game; starting the rebuild: %s",
            need, patches, argv[0]);
     int ok = plat_spawn(argv, dir);
     free(cmd);

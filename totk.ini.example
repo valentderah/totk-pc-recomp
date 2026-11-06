@@ -362,9 +362,10 @@
 # mods_order =
 # Mods switched off, names separated by |.
 # mods_disabled =
-# auto: when an enabled mod has cheats that change the game's code and the game was built without them, the game starts
-# the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
-# A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
+# auto: when an enabled mod has cheats, ExeFS patches or a plugin's hooks that change the game's code and the game was
+# built without them, the game starts the setup's rebuild at start (a few minutes) and starts again after it. off: the
+# game starts with the code it has. A rebuild that failed or was cancelled is not started again for the same files.
+# Default: auto.
 # mods_rebuild = auto
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
@@ -374,6 +375,11 @@
 # Read at start. Default: 0. Such a pack also needs much more video memory: astc_bc = 1 ([performance]) keeps its
 # textures at a quarter of it.
 # tex_heap_extra_mb = 0
+# 1: a mod that brings its own game code (exefs/subsdk*, a replaced exefs/main) that the port cannot run is used
+# without that code: its RomFS files, cheats and ExeFS patch files load. Its files may expect the missing code. 0: such
+# a mod stays off as a whole. The plugin builds the port runs as its own code (tools/plugins.py: MSFix of The Second
+# Quest) run either way. Default: 0.
+# mods_without_code = 0
 
 [files]
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put

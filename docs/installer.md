@@ -58,9 +58,12 @@ loads the saves 1.4.3 wrote.
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
 3. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
 4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
-   to the installer. The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
-   (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
-   tools refuse costs those cheats or patches, not the install.
+   to the installer. The code cheats of the mods' cheat files, the mods' ExeFS patch files and the hooks of the code
+   modules the port runs as its own code (`tools/plugins.py`) become patch sets first (`tools/cheats.py`,
+   `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
+   tools refuse costs those cheats or patches, not the install. The patch files' writes into main's data go to
+   `build-cache/exefs.data`, which the game stores into main at start; after the lift they are checked against the
+   bytes the lifted code read as constants (`<gen>/main/folded.txt`, its jump tables).
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
