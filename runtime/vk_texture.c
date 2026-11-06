@@ -941,6 +941,7 @@ static void upload(Tex *e) {
     e->wt_n = 0;
     e->uploaded = 1;
     e->n_up++;
+    e->pub.cgen++;
     perf_end(PERF_TEX, p0);
 }
 
@@ -1111,6 +1112,7 @@ static Tex *entry_of(const tex_t *t) {
         if (tex_alias) {
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
+                e->pub.cgen++;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
                     e->uploaded = 1;
@@ -1193,6 +1195,7 @@ void vk_texture_gpu_written(const tex_t *t) {
     if (e) {
         make_fresh(e);   // a partial render keeps what the storage held before
         e->pub.gpu_owned = 1;
+        e->pub.cgen++;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
         if (e->pub.mirrored) {
@@ -1731,11 +1734,12 @@ static int owned_dirty(uint64_t addr, uint64_t size, Tex **hit) {
 }
 
 // A storage image may be written by the shaders of the submission being recorded (texture lock held, vk_exec_draw.c
-// tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels.
+// tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels and the content generation.
 void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
     uint64_t f = vk_exec_recording_fence();
     if (f > e->wr_fence) e->wr_fence = f;
+    e->pub.cgen++;   // its content after the dispatch is new to the cube twins
 }
 
 uint64_t vk_texture_last_write(const tex_t *t) {

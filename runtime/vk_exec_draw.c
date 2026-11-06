@@ -426,13 +426,15 @@ static void dummies_init(void) {
 }
 
 static void twins_release(VkCtx *c);
+static void ctwins_release(VkCtx *c);
 
-// Releases the stand-ins and the depth twins. The device must be idle; the game path leaves them to process exit like
+// Releases the stand-ins and the depth and cube twins. The device must be idle; the game path leaves them to process exit like
 // the pipelines.
 void vk_exec_draw_shutdown(void) {
     if (!Z.ready) return;
     VkCtx *c = vk_ctx();
     twins_release(c);
+    ctwins_release(c);
     for (int i = 0; i < DV_COUNT; i++) {
         if (Z.img[i].sview != Z.img[i].view) vkDestroyImageView(c->device, Z.img[i].sview, NULL);
         vkDestroyImageView(c->device, Z.img[i].view, NULL);
@@ -622,9 +624,12 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
     return view;
 }
 
+static void ctwins_source_gone(VkImage image);
+
 void vk_exec_image_gone(VkImage image) {
     vk_exec_bc_gone(image);
     vk_hdr_image_gone(image);
+    ctwins_source_gone(image);
     if (!views_by_image.klen) return;
     for (ViewNode *n = nvn_hm_del(&views_by_image, &image), *next; n; n = next) {
         next = n->next;
@@ -1460,14 +1465,149 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     return t;
 }
 
+// ---- cube twins: square 2D arrays sampled as cubes
+// NVN lets a shader sample a square 2D array texture of 6k layers through a cube or cube-array sampler, the layers
+// being the faces. A Vulkan cube view needs CUBE_COMPATIBLE on the image, which vk_texture.c gives cube targets only:
+// on every square array it changed how AMD's Windows driver lays the image out (vk_texture.c create_tex). get_view has
+// no cube view of such an array, and the draw would read the black stand-in. The array gets a cube twin instead: a
+// CUBE_COMPATIBLE image of the same format, size, levels and layers, copied from the array on its first cube sampling
+// and again whenever the array's content generation (VkTexImage.cgen) moved. The array itself stays as it was created.
+// A copy cannot go inside a render pass: in an open pass the copy ends it and opens it again, which happens only when
+// the array changed. TOTK_CUBE_TWIN=0: off (the stand-in, as before).
+#define CTWINS 16
+typedef struct {
+    VkImage src;
+    uint32_t cgen;          // the source's content generation at the last copy
+    VmaAllocation mem;
+    VkTexImage pub;         // the source's description with the twin's image: get_view makes and keeps its views
+} CubeTwin;
+static CubeTwin ctwins[CTWINS];
+static unsigned ctwin_next;
+
+typedef struct { VkImage img; VmaAllocation mem; } CubeTwinGone;
+static void ctwin_free(void *arg) {   // completion thread, after the last submission that may sample it
+    CubeTwinGone *g = arg;
+    vmaDestroyImage(vk_ctx()->vma, g->img, g->mem);
+    free(g);
+}
+
+// Drops twin t: its views go now (deferred by vk_exec_image_gone), its image after the submission being recorded.
+// Texture lock held.
+static void ctwin_drop(CubeTwin *t) {
+    if (!t->pub.image) return;
+    vk_exec_image_gone(t->pub.image);
+    CubeTwinGone *g = malloc(sizeof *g);
+    if (!g) rt_fatal("vk: out of memory (cube twin)");
+    *g = (CubeTwinGone){t->pub.image, t->mem};
+    vk_completion_add(vk_sync_issued() + 1, ctwin_free, g);
+    *t = (CubeTwin){0};
+}
+
+// vk_exec_image_gone: the twins of a destroyed image go with it (a new image may reuse the handle).
+static void ctwins_source_gone(VkImage image) {
+    for (int i = 0; i < CTWINS; i++)
+        if (ctwins[i].src == image) ctwin_drop(&ctwins[i]);
+}
+
+static void ctwins_release(VkCtx *c) {   // shutdown, device idle
+    for (int i = 0; i < CTWINS; i++)
+        if (ctwins[i].pub.image) vmaDestroyImage(c->vma, ctwins[i].pub.image, ctwins[i].mem);
+    memset(ctwins, 0, sizeof ctwins);
+}
+
+// Whether img is an array that needs a cube twin for a cube view (get_view gives none of it).
+static int ctwin_wanted(const VkTexImage *img) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("CUBE_TWIN", "1");
+    return on && img->type == VK_IMAGE_TYPE_2D && img->view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY &&
+           img->width == img->height && img->layers >= 6 && img->samples == 1 && img->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+// The twin of img holding img's current texels, the copy recorded into ex->cb when needed; NULL when it cannot be
+// made. Texture lock held.
+static CubeTwin *ctwin_update(VkExec *ex, const VkTexImage *img) {
+    VkCtx *c = vk_ctx();
+    CubeTwin *t = NULL;
+    for (int i = 0; i < CTWINS && !t; i++)
+        if (ctwins[i].src == img->image && ctwins[i].pub.format == img->format && ctwins[i].pub.width == img->width &&
+            ctwins[i].pub.levels == img->levels && ctwins[i].pub.layers == img->layers)
+            t = &ctwins[i];
+    int fresh = !t;
+    if (!t) {
+        t = &ctwins[ctwin_next++ % CTWINS];
+        ctwin_drop(t);
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+                                .imageType = VK_IMAGE_TYPE_2D, .format = img->format,
+                                .extent = {img->width, img->height, 1}, .mipLevels = img->levels,
+                                .arrayLayers = img->layers, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage im;
+        if (vmaCreateImage(c->vma, &ci, &ai, &im, &t->mem, NULL) != VK_SUCCESS) {
+            *t = (CubeTwin){0};
+            return NULL;
+        }
+        t->src = img->image;
+        t->pub = *img;
+        t->pub.image = im;
+        t->pub.view_type = img->layers > 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
+        t->pub.usage = ci.usage;
+        t->pub.block_views = 0, t->pub.fb_usage = 0, t->pub.fb_learned = 0, t->pub.bound = 0;
+        static int nlog;
+        if (nlog++ < 8)
+            rt_log("vk_exec: cube twin %ux%u, %u levels, %u layers, format %d, for a 2D array sampled as a cube",
+                   img->width, img->height, img->levels, img->layers, (int)img->format);
+    }
+    if (!fresh && t->cgen == img->cgen) return t;
+    t->cgen = img->cgen;
+    int reopen = ex->in_pass;
+    vk_exec_barrier(ex);   // ends the pass; the array's earlier writes and the twin's earlier readers come first
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .image = t->pub.image,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, img->levels, 0, img->layers}};
+    VkDependencyInfo d0 = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                           .pImageMemoryBarriers = &ib};
+    vkCmdPipelineBarrier2(ex->cb, &d0);   // every texel is copied: the old ones are dropped
+    VkImageCopy rg[16];
+    uint32_t n = img->levels < 16 ? img->levels : 16;
+    for (uint32_t l = 0; l < n; l++) {
+        uint32_t w = img->width >> l ? img->width >> l : 1, h = img->height >> l ? img->height >> l : 1;
+        rg[l] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, img->layers},
+                              .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, img->layers},
+                              .extent = {w, h, 1}};
+    }
+    vkCmdCopyImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, t->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
+    ex->recorded += 2;
+    vk_exec_barrier(ex);   // the copy before the draws that sample the twin and the array's next writers
+    if (reopen) vk_exec_pass_begin(ex);
+    return t;
+}
+
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin; in a pass larger than it, the scene's light target, once DLSS scaled it this frame, for DLSS's
-// output (vk_dlaa.c).
+// output (vk_dlaa.c); a 2D array sampled as a cube for its cube twin.
 static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out) {
     tex_info_lookup(ex, r, h, storage, separate, out);
     if (h && !storage && vk_dlaa_swap_img && ex->in_pass && ex->pass_w > vk_dlaa_swap_img->width + 1 &&
         vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == vk_dlaa_swap_img)
         out->imageView = vk_dlaa_swap_view, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    if (h && !storage) {   // a 2D array sampled as a cube reads its cube twin
+        VkImageViewType vt = res_view_type(r->type);
+        if (vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+            view_t v;
+            int hv;
+            const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+            CubeTwin *t = img && ctwin_wanted(img) ? ctwin_update(ex, img) : NULL;
+            VkImageView tv = t ? get_view(ex, &t->pub, &v, hv, r->type, 0) : VK_NULL_HANDLE;
+            if (tv) out->imageView = tv, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            return;
+        }
+    }
     if (!twin_dispatch || storage || separate || !h || !(r->type & 0x400)) return;
     VkImageViewType vt = res_view_type(r->type);
     if (vt != VK_IMAGE_VIEW_TYPE_2D && vt != VK_IMAGE_VIEW_TYPE_2D_ARRAY) return;

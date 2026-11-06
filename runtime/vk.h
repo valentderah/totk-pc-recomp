@@ -374,6 +374,8 @@ typedef struct {
     uint8_t alpha_one;             // X format: sample alpha as 1 through the view swizzle
     uint8_t chan[4];               // TexVkFormat.chan: component order of a stand-in format, applied by the view swizzle
     uint8_t mirrored, gpu_owned;
+    uint32_t cgen;                 // content generation: bumped by each upload, GPU write and storage binding (the
+                                   // replay's cube twins, vk_exec_draw.c, copy again when it moved)
     uint8_t bound;                 // aliases physical-pool memory (physical and virtual pools)
     uint8_t block_views;           // BC image that renders through uncompressed views of its blocks (BLOCK_TEXEL_VIEW_
                                    // COMPATIBLE + EXTENDED_USAGE: only those views may use COLOR_ATTACHMENT)
