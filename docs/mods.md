@@ -87,6 +87,21 @@ The port keys a mod by its folder name. A renamed folder counts as a new mod:
 
 Rename mod folders before you set them up in the menu, not after.
 
+## HD texture packs
+
+Texture packs made for the emulators replace the game's textures with larger ones, so the heap the world's textures
+stream into must grow. Such a pack grows it in its own `System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs`, sized for
+the emulators' 8 GB memory option. The port reads that file at start: the texture heap and the game's memory pool grow
+by the pack's amount, and the game gets the port's own heap table with that growth (the log says
+`resolution: mod <name> ships a HeapDef with TextureHeap ...`). Nothing needs to be set. For a pack without such a file
+that still loops the panic Blood Moon, set `tex_heap_extra_mb` under `[mods]` in `totk.ini` (0 to 4096 MiB).
+
+Tested: **HDPacks.com Tears of the Kingdom 4K Texture Pack v1.0** (`4kTextures`, 10,407 textures, 6.5 GB) on game 1.4.3
+and 1.2.1, RTX 4080 SUPER: it loads into the game from a save and runs at the same frame rate, with about 3.3 GB more of
+textures in memory (4.5 GB of game memory pools against 1.2 GB without it). Other packs are not tested and come with no
+guarantee. Such a pack needs a lot of video memory; on a GPU with less than 8 GB, `astc_bc = 1` under `[performance]`
+keeps its textures at a quarter of the size.
+
 ## What does not work
 
 | On the Mods tab | Why | What to do |

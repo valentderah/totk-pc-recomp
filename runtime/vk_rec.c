@@ -19,10 +19,20 @@
 
 #define RING_WORDS (1u << 21)   // 16 MiB: a part of a submission is ~1-2 MiB of packets in the town
 static uint64_t ring[RING_WORDS];
-static volatile uint64_t head, tail;   // words published by the producer / consumed by the recorder
-static volatile int32_t sleeping;         // the recorder waits for wake_ev
+// The queue state, a cache line per writer. The recorder spins on head while it waits for packets, so a line the
+// producer writes on every packet and the recorder reads or writes goes back and forth between their cores each time:
+// with tail, Q.put_h, head and the producer's statistics in one line (the linker's order of these statics), handing
+// packets over took 6% of the replay thread in the fort, more than building the descriptors.
+static struct {
+    _Alignas(64) volatile uint64_t head;      // words published by the producer; the recorder reads it
+    _Alignas(64) volatile uint64_t tail;      // words consumed by the recorder; the producer reads it when it seems full
+    _Alignas(64) volatile int32_t sleeping;   // the recorder waits for wake_ev; written only around a sleep
+    _Alignas(64) uint64_t put_h;              // producer only: words written
+    uint64_t pub_h;                           // the last head published
+    uint64_t tail_seen;                       // tail as last read, at most the real one: the room it leaves is there
+    uint64_t pub_words;                       // TOTK_REC_PUB: publish head once this many words wait (pub)
+} Q;
 static PlatEvent wake_ev;              // auto-reset
-static uint64_t put_h;                 // producer: words written (published up to head)
 static VkCommandBuffer rec_cb;         // producer: the part being recorded, whose vkCmd* become packets
 static VkCommandBuffer r_cb;           // recorder: the command buffer its packets go into (set by a BeginCb packet)
 static int rec_live;                   // producer: rec_begin started the recorder for rec_cb
@@ -33,11 +43,11 @@ static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 static int rec_chk;                    // TOTK_REC_CHECK (rec_check_handle)
 static uint64_t rec_delay_ns;          // TOTK_REC_DELAY_US (rec_main)
-static volatile uint64_t part_h0;      // put_h at rec_begin: where the packets of the part being recorded start
+static volatile uint64_t part_h0;      // Q.put_h at rec_begin: where the packets of the part being recorded start
 static volatile uint64_t part_fence;   // the value of the part being recorded (rec_begin)
 
 // Producer statistics, logged by rec_stats_log.
-static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on, submits; } RS_;
+static struct { _Alignas(64) uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on, submits; } RS_;
 
 enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
@@ -63,14 +73,14 @@ static void rec_main(void *arg) {
     plat_thread_priority(rec_prio);
     uint64_t t = 0;
     for (;;) {
-        uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+        uint64_t h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
         if (t == h) {
-            for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+            for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
             if (t == h) {
-                __atomic_store_n(&sleeping, 1, __ATOMIC_SEQ_CST);
-                h = __atomic_load_n(&head, __ATOMIC_SEQ_CST);
+                __atomic_store_n(&Q.sleeping, 1, __ATOMIC_SEQ_CST);
+                h = __atomic_load_n(&Q.head, __ATOMIC_SEQ_CST);
                 if (t == h) plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
-                __atomic_store_n(&sleeping, 0, __ATOMIC_RELAXED);
+                __atomic_store_n(&Q.sleeping, 0, __ATOMIC_RELAXED);
                 continue;
             }
         }
@@ -82,9 +92,9 @@ static void rec_main(void *arg) {
             uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);
             if (op != R_PAD) exec_packet(op, &ring[t % RING_WORDS + 1]);
             t += n;
-            if ((k & 63) == 63) __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
+            if ((k & 63) == 63) __atomic_store_n(&Q.tail, t, __ATOMIC_RELEASE);
         }
-        __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
+        __atomic_store_n(&Q.tail, t, __ATOMIC_RELEASE);
     }
     return;
 }
@@ -93,48 +103,63 @@ static void rec_main(void *arg) {
 
 static void wake(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
+    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
 }
 
+// Room for need words: the tail read last leaves it in all but about one packet in 16 MiB of them.
 static void wait_space(uint64_t need) {
-    if (put_h + need - __atomic_load_n(&tail, __ATOMIC_ACQUIRE) <= RING_WORDS) return;
+    if (Q.put_h + need - Q.tail_seen <= RING_WORDS) return;
+    Q.tail_seen = __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE);
+    if (Q.put_h + need - Q.tail_seen <= RING_WORDS) return;
     RS_.full_waits++;
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
+    Q.pub_h = Q.put_h;
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
     wake();
-    while (put_h + need - __atomic_load_n(&tail, __ATOMIC_ACQUIRE) > RING_WORDS) _mm_pause();
+    while (Q.put_h + need - (Q.tail_seen = __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE)) > RING_WORDS) _mm_pause();
 }
 
 // Room for a packet of bytes of arguments; the caller fills it and calls pub().
 static void *put(uint32_t op, size_t bytes) {
-    uint64_t n = 1 + (bytes + 7) / 8, pos = put_h % RING_WORDS;
+    uint64_t n = 1 + (bytes + 7) / 8, pos = Q.put_h % RING_WORDS;
     if (n > RING_WORDS / 4) rt_fatal("vk_rec: a packet of %llu bytes", (unsigned long long)bytes);
     if (pos + n > RING_WORDS) {
         uint64_t pad = RING_WORDS - pos;
         wait_space(pad);
         ring[pos] = (uint64_t)R_PAD | pad << 32;
-        put_h += pad, pos = 0;
+        Q.put_h += pad, pos = 0;
     }
     wait_space(n);
     ring[pos] = (uint64_t)op | n << 32;
     // Packers reserve room for optional arrays they may leave unwritten (BeginRendering's depth and stencil); with
     // TOTK_REC_CHECK those words would still hold handles from the ring's previous lap.
     if (rec_chk) memset(&ring[pos + 1], 0, (n - 1) * 8);
-    put_h += n;
+    Q.put_h += n;
     RS_.packets++, RS_.words += n;
     return &ring[pos + 1];
 }
 
+// After a packet: head moves once Q.pub_words words wait, so the recorder reads a line the producer is still filling
+// once per batch instead of once per packet. Whatever the producer waits for publishes everything first (wait_space,
+// rec_drain), and the packets that begin and end a part go out at once (pub_now), so the recorder begins and ends
+// command buffers as early as before; TOTK_REC_CHECK publishes every packet, since rec_check_handle searches the ring
+// up to head.
+static void pub_now(void) {
+    Q.pub_h = Q.put_h;
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
+}
+
 static void pub(void) {
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
-    if (__atomic_load_n(&sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
+    if (Q.put_h - Q.pub_h >= Q.pub_words) pub_now();
 }
 
 void rec_drain(void) {
-    if (!rec_thread || __atomic_load_n(&tail, __ATOMIC_ACQUIRE) == put_h) return;
+    if (!rec_thread || __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) == Q.put_h) return;
     uint64_t t0 = now_ns();
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
+    Q.pub_h = Q.put_h;
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
     wake();
-    for (int i = 0; __atomic_load_n(&tail, __ATOMIC_ACQUIRE) != put_h; i++)
+    for (int i = 0; __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) != Q.put_h; i++)
         if (i < 20000) _mm_pause();
         else plat_yield();
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
@@ -175,6 +200,9 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
             rec_chk = rt_knob("REC_CHECK", "0");   // debug switches, read before the recorder starts
             const char *d = cfg_get("TOTK_REC_DELAY_US");
             rec_delay_ns = d && *d && atoi(d) > 0 ? (uint64_t)atoi(d) * 1000 : 0;
+            const char *pw = cfg_get("TOTK_REC_PUB");   // words per publish (pub); 0: every packet
+            Q.pub_words = rec_chk ? 0 : pw && *pw ? (uint64_t)atoi(pw) : 64;
+            if (Q.pub_words > RING_WORDS / 8) Q.pub_words = RING_WORDS / 8;
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
             if (!rec_thread) {
                 rt_log("vk_rec: no recorder thread: the replay makes its Vulkan calls itself");
@@ -183,6 +211,8 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
                        mode == 2 ? " in the B blocks (TOTK_AB)" : "");
                 if (rec_chk) rt_log("vk_rec: TOTK_REC_CHECK: deferred and destroyed objects are searched in the ring");
+                if (Q.pub_words != 64) rt_log("vk_rec: TOTK_REC_PUB: head published every %llu words",
+                                              (unsigned long long)Q.pub_words);
                 if (rec_delay_ns) rt_log("vk_rec: TOTK_REC_DELAY_US: the recorder waits %llu us before each batch",
                                          (unsigned long long)(rec_delay_ns / 1000));
             }
@@ -198,11 +228,11 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
         if (!on) return;
     }
     RS_.parts_on++;
-    __atomic_store_n(&part_h0, put_h, __ATOMIC_RELEASE);
+    __atomic_store_n(&part_h0, Q.put_h, __ATOMIC_RELEASE);
     __atomic_store_n(&part_fence, fence, __ATOMIC_RELEASE);
     A_BeginCb *a = put(R_BeginCb, sizeof *a);
     *a = (A_BeginCb){cb, own, crumb, n};
-    pub();
+    pub_now();
     rec_cb = cb;
     rec_live = 1;
 }
@@ -241,7 +271,7 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     }
     A_EndCb *a = put(R_EndCb, sizeof *a);
     *a = (A_EndCb){crumb, n};
-    pub();
+    pub_now();
     rec_live = 0;
     sub_pending = 1;
     return 1;
@@ -306,7 +336,7 @@ static const char *const kind_name[REC_KINDS] = {"image", "view", "buffer"};
 static volatile int32_t chk_seen[2], chk_named, chk_logged, chk_hz[2][2][REC_KINDS][64];   // [destroy][made][kind][op]
 void rec_check_handle(int kind, uint64_t handle, int destroy, uint64_t tl, uint64_t gpu) {
     if (!rec_chk || !handle || kind < 0 || kind >= REC_KINDS || !__atomic_load_n(&rec_live, __ATOMIC_RELAXED)) return;
-    uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE), p = __atomic_load_n(&part_h0, __ATOMIC_ACQUIRE);
+    uint64_t h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE), p = __atomic_load_n(&part_h0, __ATOMIC_ACQUIRE);
     uint64_t fence = __atomic_load_n(&part_fence, __ATOMIC_ACQUIRE);
     if (p > h || h - p > RING_WORDS / 2) return;   // a part this large is not searched
     plat_inc32(&chk_seen[destroy != 0]);
@@ -317,7 +347,7 @@ void rec_check_handle(int kind, uint64_t handle, int destroy, uint64_t tl, uint6
         if (op != R_PAD)
             for (uint32_t i = 1; i < n; i++) {
                 if (ring[(p + i) % RING_WORDS] != handle) continue;
-                int made = p < __atomic_load_n(&tail, __ATOMIC_ACQUIRE);
+                int made = p < __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE);
                 if (!destroy && tl >= fence) { plat_inc32(&chk_named); return; }
                 plat_inc32(&chk_hz[destroy][made][kind][op & 63]);
                 if (plat_inc32(&chk_logged) <= 64)

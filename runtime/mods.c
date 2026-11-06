@@ -338,22 +338,49 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     return 1;
 }
 
+// The mods folder into out: TOTK_MODS_DIR, else <dir of totk.exe>/mods. 0 when the exe's path is unknown.
+static int mods_folder(char *out, size_t cap) {
+    const char *d = cfg_get("TOTK_MODS_DIR");
+    if (d && *d) return snprintf(out, cap, "%s", d) < (int)cap;
+    char exe[2048];
+    if (!plat_exe_path(exe, sizeof exe)) return 0;
+    char *cut = strrchr(exe, '/'), *back = strrchr(exe, '\\');
+    if (back > cut) cut = back;
+    if (!cut) return 0;
+    *cut = 0;
+    return snprintf(out, cap, "%s/mods", exe) < (int)cap;
+}
+
+typedef struct {
+    const char *folder, *disabled;
+    void (*cb)(const char *name, const char *romfs, void *ctx);
+    void *ctx;
+} Peek;
+
+static int peek_cb(const char *name, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    const Peek *pk = ctx;
+    if (kind != PLAT_FS_DIR || listed(pk->disabled, name)) return 1;
+    char path[2100], romfs[2048];
+    if (snprintf(path, sizeof path, "%s/%s", pk->folder, name) >= (int)sizeof path) return 1;
+    find_root(path, "romfs", romfs, sizeof romfs);
+    if (!romfs[0]) find_root(path, "romfslite", romfs, sizeof romfs);
+    if (romfs[0]) pk->cb(name, romfs, pk->ctx);
+    return 1;
+}
+
+void mods_peek_romfs(void (*cb)(const char *name, const char *romfs, void *ctx), void *ctx) {
+    char folder[2048];
+    if (!mods_folder(folder, sizeof folder) || !plat_dir_exists(folder)) return;
+    Peek pk = {folder, cfg_get("TOTK_MODS_DISABLED"), cb, ctx};
+    plat_fs_list(folder, peek_cb, &pk);
+}
+
 void mods_scan(void) {
     static int done;
     if (done) return;
     done = 1;
-    const char *d = cfg_get("TOTK_MODS_DIR");
-    if (d && *d) {
-        snprintf(dir, sizeof dir, "%s", d);
-    } else {
-        char exe[2048];
-        if (!plat_exe_path(exe, sizeof exe)) return;
-        char *cut = strrchr(exe, '/'), *back = strrchr(exe, '\\');
-        if (back > cut) cut = back;
-        if (!cut) return;
-        *cut = 0;
-        snprintf(dir, sizeof dir, "%s/mods", exe);
-    }
+    if (!mods_folder(dir, sizeof dir)) return;
     if (!plat_dir_exists(dir)) {
         rt_log("mods: no folder %s", dir);
         return;

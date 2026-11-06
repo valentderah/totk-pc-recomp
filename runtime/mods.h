@@ -40,6 +40,9 @@ typedef struct {
 } ModInfo;
 
 void mods_scan(void);              // once; later calls return at once
+// Every switched-on mod folder's RomFS root, without the rest of the scan (no ExeFS checks, no order): for mem_init,
+// which runs before the paths mods_scan needs are set (resolution.c mod_tex_heap_kib). cb gets the name and root.
+void mods_peek_romfs(void (*cb)(const char *name, const char *romfs, void *ctx), void *ctx);
 const char *mods_dir(void);        // the folder scanned (default: <dir of totk.exe>/mods)
 int mods_count(void);
 ModInfo *mods_at(int i);           // 0 = top of the order; NULL out of range
