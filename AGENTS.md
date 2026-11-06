@@ -1,6 +1,6 @@
 # TotK Recomp
 
-Static recompilation of *Tears of the Kingdom* (Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. Design: [docs/architecture.md](docs/architecture.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md).
+Static recompilation of *Tears of the Kingdom* (Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. Design: [docs/architecture.md](docs/architecture.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md). Working loop for agents (branch builds, headless runs, A/B checks, issue triage, pull requests): [docs/skills/totk-dev/SKILL.md](docs/skills/totk-dev/SKILL.md).
 
 ## Game content boundary
 
