@@ -1578,6 +1578,9 @@ static uint64_t guest_cpu_mask(void) {
     return mask;
 }
 
+// 1 when the guest's threads were put in an affinity group of their own, the host's in another.
+int kern_affinity_split(void) { return guest_cpu_mask() != 0; }
+
 void kern_run_on_guest_main(void (*fn)(Cpu *c)) {
     PlatThread *h = plat_thread_new_ex(guest_main, (void *)fn, "guest main", HOST_STACK);
     if (!h) rt_fatal("kernel: cannot start the guest main thread");
