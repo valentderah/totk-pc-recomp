@@ -307,6 +307,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     fflush(stderr);
     fs_save_flush();
     vk_pipeline_save();   // no-op without the Vulkan back end
+    playtime_save();
     prof_write();
     fflush(stderr);
     plat_exit(0);

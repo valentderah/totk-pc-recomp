@@ -31,3 +31,20 @@ uint32_t restbl_estimate(const char *key, uint64_t size);
 // times the type's factor, never lowered. scaled: the sizes are compressed ones (a mesh codec .mc file), whose entry
 // grows in proportion.
 uint32_t restbl_grow(const char *key, uint32_t entry, uint64_t old, uint64_t new_size, int scaled);
+
+// The members of the SARC archive p[0..n): each(name, data, size, ctx) for every named member, in the archive's order.
+// 0 when p is not a SARC archive or a member lies outside it.
+typedef void RestblMember(const char *name, const uint8_t *data, size_t size, void *ctx);
+int restbl_sarc_each(const uint8_t *p, size_t n, RestblMember *each, void *ctx);
+
+// A pack (Pack/**/*.pack.zs, decompressed: a SARC archive) whose members the game loads as resources of their own, each
+// sized by its own entry. The entries of a mod's pack `mod` raised in t against the game's table `base` and the game's
+// copy of the pack `orig` (NULL for a pack the game lacks): a member that grew by restbl_grow, a member the game's copy
+// lacks by restbl_estimate, the others left as they are. note(key, entry before, entry after, ctx) for each raised
+// entry. The number raised; -1 when either pack is not a SARC archive.
+typedef void RestblNote(const char *key, uint32_t was, uint32_t now, void *ctx);
+int restbl_pack_raise(Restbl *t, const Restbl *base, const uint8_t *mod, size_t mod_n, const uint8_t *orig,
+                      size_t orig_n, RestblNote *note, void *ctx);
+
+// restbl_probe.c, part of --probe-mods: the number of failed checks.
+int restbl_probe(void);

@@ -328,6 +328,7 @@ static int claim_slot(VkCtx *c, uint64_t fence) {
             slots[i].fence = fence;
             return i;
         }
+    rec_drain();   // the part pool is the recorder's while it has packets (vk_rec.h): it is idle for the allocation
     CmdSlot *n = realloc(slots, sizeof *n * (size_t)(nslots + 1));
     if (!n) rt_fatal("vk: out of memory (command buffers)");
     slots = n;
@@ -353,13 +354,11 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    vkBeginCommandBuffer(cb, &bi);
+    rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     int pair = ts_open(cb);
     vk_mem_mirror_prologue(cb);
     ts_close(cb, pair, fence);
-    vkEndCommandBuffer(cb);
+    if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
     return cb;
 }
 
@@ -375,21 +374,15 @@ VkCommandBuffer vk_sync_split(void) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
     ts_submitted();
-    vk_queue_lock();
-    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vk_queue_unlock();
+    VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
     }
     vk_mem_note_submit(cur_fence);   // objects destroyed from here on may be in use by the part just submitted
     CmdSlot *s = take_slot(c, cur_fence);   // the submitted part keeps its slot until the value is reached
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    vkBeginCommandBuffer(s->cb, &bi);
-    vk_crumb(s->cb, VK_CRUMB_SUBMIT, cur_fence);
+    rec_begin(s->cb, cur_fence, VK_CRUMB_SUBMIT, cur_fence);
     ts_begin(s->cb);
-    rec_begin(s->cb, cur_fence);
     return s->cb;
 }
 
@@ -412,13 +405,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
     CmdSlot *s = take_slot(c, fence);
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     uint64_t t0 = perf_begin();
-    vkBeginCommandBuffer(s->cb, &bi);
-    vk_crumb(s->cb, VK_CRUMB_SUBMIT, fence);
+    rec_begin(s->cb, fence, VK_CRUMB_SUBMIT, fence);   // begun by the recorder when it records the part
     ts_begin(s->cb);
-    rec_begin(s->cb, fence);
     int recorded = vk_exec_record(s->cb, handles, n, fence);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
     if (recorded) ts_end(s->cb, fence);
@@ -439,9 +428,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
-    vk_queue_lock();
-    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vk_queue_unlock();
+    VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);

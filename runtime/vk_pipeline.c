@@ -3113,8 +3113,8 @@ int vk_pipeline_warm_shaders(void) {
 
 // ---- dynamic state
 
-void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
-    if (!ensure_init()) return;
+uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
+    if (!ensure_init()) return VK_PIPE_ALL_BINDINGS;
     const poly_st *pl = &s->poly;
     const ds_st *d = &s->ds;
     // The front face maps unchanged: TOTK sets the upper-left window origin, and the y-flipped viewport (y_flip) puts
@@ -3137,16 +3137,21 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) != 0);
     vkCmdSetRasterizerDiscardEnable(cb, s->raster_discard != 0);
     vkCmdSetPrimitiveRestartEnable(cb, s->prim_restart != 0);
-    if (P.dyn_vi && s->vs) {
+    // The vertex bindings the draw reads: those of its vertex input, set here or made into the pipeline from the same
+    // state by the same vertex_input.
+    uint32_t streams = VK_PIPE_ALL_BINDINGS;
+    if (s->vs) {
         VtxInput v;
         vertex_input(s, &v);
-        rec_vertex_input(P.set_vi, cb, v.n_bind, v.b, v.n_attr, v.a);
+        if (P.dyn_vi) rec_vertex_input(P.set_vi, cb, v.n_bind, v.b, v.n_attr, v.a);
+        streams = 0;
+        for (uint32_t i = 0; i < v.n_bind; i++) streams |= 1u << v.b[i].binding;
     }
     if (P.dyn_clamp) rec_bool(P.set_clamp, cb, s->depth_clamp != 0);
     if (P.dyn_poly) rec_polygon_mode(P.set_poly, cb, polygon_mode(pl->mode));
     if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, s->ms.a2c != 0);   // the same signature
     int n = target_count(s);
-    if (!n) return;
+    if (!n) return streams;
     VkBool32 en[8];
     VkColorBlendEquationEXT eq[8];
     VkColorComponentFlags wm[8];
@@ -3160,6 +3165,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (P.dyn_blend_en) rec_blend_enable(P.set_blend_en, cb, 0, (uint32_t)n, en);
     if (P.dyn_blend_eq) rec_blend_equation(P.set_blend_eq, cb, 0, (uint32_t)n, eq);
     if (P.dyn_wmask) rec_write_mask(P.set_wmask, cb, 0, (uint32_t)n, wm);
+    return streams;
 }
 
 // ---- statistics, persistence, teardown

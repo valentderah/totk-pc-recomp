@@ -240,6 +240,7 @@ typedef struct {
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
+int plat_screen_size(int *w, int *h);                    // the primary display's current mode in pixels; 0 unknown
 int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
 void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
 void plat_aligned_free(void *p);

@@ -33,6 +33,13 @@ MARKER_ROOT = {
     'AttentionLockOn_00': ('N_Offset_00',),                       # N_PosRoot_00 moves; N_Offset_00 animates y
     'EnemyInfo_00': ('Pa_EnemyLife_00', 'Pa_EnemyNotice_00'),     # the parts move; N_EnemyLifeArea_* stay screen-sized
     'BalloonMessage_00': (),   # the speech balloon part is pooled: its scale goes inside, see BALLOON_PART
+    # The ability reticle (seen with Recall): N_App_00 moves to the target (a pane's own scale doesn't scale its
+    # position); its children's scales are animated. The bow and throw pointers stay centred.
+    'Pointer_00': ('N_App_00', 'N_Arrow_00', 'N_WeaponThrow_00'),
+    # The Recall gauge ring: N_Trans_00 moves to the object and the code sets its scale by distance, so the scale goes
+    # on the ring's pictures (mirrored, -1 as shipped; turned 0 or 180 degrees, so a scale on x stays undistorted).
+    'ModorecoGauge_00': ('P_Smoke_00', 'P_Sh_00') + tuple(f'P_{p}{s}_00' for p in ('Base', 'Glow', 'Main', 'MainLight',
+                                                                                 'BandLight') for s in 'LR'),
 }
 
 # Speech balloons are pooled: the game clones Pa_BalloonMessage_00 into Pa_BalloonMessage_%02d at run time, and the clones
@@ -260,8 +267,8 @@ def apply(blarc, members, width, height, hud_corner=True):
             for pane in ('RootPane',) + MARKER_ROOT[layout]:
                 at = pane_offset(layout, pane) + FIELD[root_scale]
                 have = struct.unpack_from('<f', blarc, at)[0]
-                if abs(have - 1.0) > 1e-3: raise SystemExit(f'{layout} {pane} {root_scale}: {have}, expected 1.0')
-                if pane != 'RootPane': struct.pack_into('<f', blarc, at, k)
+                if abs(abs(have) - 1.0) > 1e-3: raise SystemExit(f'{layout} {pane} {root_scale}: {have}, expected ±1.0')
+                if pane != 'RootPane': struct.pack_into('<f', blarc, at, k * have)   # mirrored panes stay mirrored
             continue
         at = pane_offset(member[5:-6], 'RootPane') + FIELD[root_scale]
         have = struct.unpack_from('<f', blarc, at)[0]

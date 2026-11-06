@@ -234,3 +234,102 @@ uint32_t restbl_grow(const char *key, uint32_t entry, uint64_t old, uint64_t new
     uint64_t e = entry + ((new_size - old) * f + 999) / 1000;
     return clamp32((e + 31) & ~(uint64_t)31);
 }
+
+// ---- packs
+// SARC: "SARC", u16 header size, u16 byte order mark 0xfeff, u32 archive size, u32 data offset, u16 version, u16 pad;
+// SFAT: "SFAT", u16 header size, u16 node count, u32 hash key, then per node {u32 name hash, u32 attributes (bit 24: it
+// has a name, bits 0-23: the name's offset in SFNT / 4), u32 data start, u32 data end} with the data offsets relative
+// to the archive's data offset; SFNT: "SFNT", u16 header size, u16 pad, then the NUL-terminated names.
+static uint32_t rd16(const uint8_t *p) { return p[0] | p[1] << 8; }
+
+int restbl_sarc_each(const uint8_t *p, size_t n, RestblMember *each, void *ctx) {
+    if (n < 0x14 || memcmp(p, "SARC", 4) || rd16(p + 6) != 0xfeff) return 0;
+    size_t head = rd16(p + 4), data = rd32(p + 12);
+    if (head + 12 > n || memcmp(p + head, "SFAT", 4) || data > n) return 0;
+    size_t count = rd16(p + head + 6), nodes = head + rd16(p + head + 4), names = nodes + count * 16;
+    if (names + 8 > n || memcmp(p + names, "SFNT", 4) || rd16(p + names + 4) < 8) return 0;
+    names += rd16(p + names + 4);
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *e = p + nodes + i * 16;
+        uint32_t attr = rd32(e + 4), lo = rd32(e + 8), hi = rd32(e + 12);
+        if (!(attr >> 24)) continue;   // without a name: nothing the game looks up by path
+        size_t s = names + (size_t)(attr & 0xffffff) * 4;
+        if (s >= n || !memchr(p + s, 0, n - s) || lo > hi || hi > n - data) return 0;
+        each((const char *)p + s, p + data + lo, hi - lo, ctx);
+    }
+    return 1;
+}
+
+// The decompressed size a zstd frame p[0..n) records (Frame_Content_Size), or 4 times n when it records none, as
+// romfs.c content_size takes a loose file's.
+static uint64_t frame_content_size(const uint8_t *p, size_t n) {
+    static const uint8_t did_bytes[4] = {0, 1, 2, 4};
+    if (n < 6 || rd32(p) != 0xFD2FB528u) return n;
+    uint8_t fhd = p[4];
+    int single = fhd >> 5 & 1, fcs = fhd >> 6;
+    size_t at = 5 + !single + did_bytes[fhd & 3], len = fcs ? 1u << fcs : single;
+    if (!len || at + len > n) return (uint64_t)n * 4;
+    uint64_t v = 0;
+    for (size_t i = 0; i < len; i++) v |= (uint64_t)p[at + i] << 8 * i;
+    return len == 2 ? v + 256 : v;
+}
+
+typedef struct { const char *name; uint64_t size; } Member;
+typedef struct { Member *m; size_t n, cap; int full; } Members;
+
+static int ends_with(const char *s, const char *tail) {
+    size_t n = strlen(s), k = strlen(tail);
+    return n >= k && !strcmp(s + n - k, tail);
+}
+
+// A member's size as the game unpacks it: a .zs member's content size, else its bytes (a .mc member's compressed ones).
+static void member_add(const char *name, const uint8_t *data, size_t size, void *ctx) {
+    Members *ms = ctx;
+    if (ms->n == ms->cap) {
+        size_t cap = ms->cap ? ms->cap * 2 : 64;
+        Member *grown = realloc(ms->m, cap * sizeof *grown);
+        if (!grown) {
+            ms->full = 1;
+            return;
+        }
+        ms->m = grown, ms->cap = cap;
+    }
+    ms->m[ms->n++] = (Member){name, ends_with(name, ".zs") ? frame_content_size(data, size) : size};
+}
+
+static int by_name(const void *a, const void *b) {
+    return strcmp(((const Member *)a)->name, ((const Member *)b)->name);
+}
+
+int restbl_pack_raise(Restbl *t, const Restbl *base, const uint8_t *mod, size_t mod_n, const uint8_t *orig,
+                      size_t orig_n, RestblNote *note, void *ctx) {
+    Members m = {0}, o = {0};
+    int raised = -1;
+    if (!restbl_sarc_each(mod, mod_n, member_add, &m) || m.full ||
+        (orig && (!restbl_sarc_each(orig, orig_n, member_add, &o) || o.full)))
+        goto done;
+    if (o.n) qsort(o.m, o.n, sizeof *o.m, by_name);
+    raised = 0;
+    for (size_t i = 0; i < m.n; i++) {
+        char key[1024];
+        uint32_t entry, before = 0, want;
+        restbl_key(m.m[i].name, key, sizeof key);
+        int mc = ends_with(m.m[i].name, ".mc");
+        const Member *was = o.n ? bsearch(&m.m[i], o.m, o.n, sizeof *o.m, by_name) : NULL;
+        if (was) {
+            if (!restbl_get(base, key, &entry)) continue;   // the game sizes it without the table (streamed)
+            want = restbl_grow(key, entry, was->size, m.m[i].size, mc);
+        } else {   // new to this pack: no copy of the game's to grow from
+            want = restbl_estimate(key, mc ? m.m[i].size * 8 : m.m[i].size);
+        }
+        restbl_get(t, key, &before);
+        if (want && restbl_raise(t, key, want)) {
+            raised++;
+            if (note) note(key, before, want, ctx);
+        }
+    }
+done:
+    free(m.m);
+    free(o.m);
+    return raised;
+}

@@ -35,7 +35,7 @@ typedef struct {
     const char *name;
     GuestFn fn;
     uint64_t original;   // observers: the guest definition rt_original calls
-    uint64_t calls;
+    uint64_t calls;      // with TOTK_TRACE=host only (hostfn_report)
     int blocking;        // runs with the virtual core given up (hostfn_blocking)
 } Slot;
 static Slot slots[MAX_HOSTFN];
@@ -43,6 +43,21 @@ static int nslots;
 static RtHostEntry added[MAX_ADDED];
 static int nadded;
 static int sealed;
+
+// The call count (hostfn_calls): one counter per calling thread, each on its own cache line, written only by that
+// thread. A locked add on a per-function counter beside the read-mostly slot fields made the game threads share and
+// bounce those lines on every host call (1.4.3 town: about 1% of the game threads' time in hostfn_entry).
+#define MAX_COUNTERS 4096
+typedef struct { _Alignas(64) uint64_t n; } Counter;
+static Counter counters[MAX_COUNTERS];
+static uint32_t ncounters;
+static uint64_t shared_calls;   // the threads past MAX_COUNTERS, counted with an atomic add
+static __thread uint64_t *thread_calls;
+
+__attribute__((noinline)) static uint64_t *counter_new(void) {
+    uint32_t i = __atomic_fetch_add(&ncounters, 1, __ATOMIC_RELAXED);
+    return thread_calls = i < MAX_COUNTERS ? &counters[i].n : &shared_calls;
+}
 
 static GuestFn table_find(const RtHostEntry *start, const RtHostEntry *stop, const char *name) {
     __asm__("" : "+r"(start), "+r"(stop));   // separate objects: keep the compiler from reasoning about them
@@ -146,8 +161,11 @@ static void hostfn_entry(Cpu *c) {
     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
     Slot *s = &slots[i];
-    uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
-    if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
+    uint64_t *k = thread_calls;
+    if (__builtin_expect(!k, 0)) k = counter_new();
+    if (__builtin_expect(k == &shared_calls, 0)) __atomic_fetch_add(k, 1, __ATOMIC_RELAXED);
+    else __atomic_store_n(k, *k + 1, __ATOMIC_RELAXED);
+    if (__builtin_expect(rt_trace & RT_TRACE_HOSTCALL, 0) && !__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) {
         char lr[96];
         rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
     }
@@ -178,8 +196,9 @@ void hostfn_seal(void) {
 }
 
 uint64_t hostfn_calls(void) {
-    uint64_t n = 0;
-    for (int i = 0; i < nslots; i++) n += __atomic_load_n(&slots[i].calls, __ATOMIC_RELAXED);
+    uint32_t m = __atomic_load_n(&ncounters, __ATOMIC_RELAXED);
+    uint64_t n = __atomic_load_n(&shared_calls, __ATOMIC_RELAXED);
+    for (uint32_t i = 0; i < m && i < MAX_COUNTERS; i++) n += __atomic_load_n(&counters[i].n, __ATOMIC_RELAXED);
     return n;
 }
 

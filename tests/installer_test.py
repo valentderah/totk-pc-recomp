@@ -315,6 +315,75 @@ class LiftKeyTest(unittest.TestCase):
         self.assertEqual(self.key(), before)
 
 
+class LiftRunTest(unittest.TestCase):
+    """Lift.run with fake tools: the ExeFS patch stage writes the status and data files, the lift lists the bytes it
+    read, and the data writes are checked against that list after it; a failed lift or check drops both files."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        self.dest, temp = base / 'install', base / 'temp'
+        self.dest.mkdir()
+        temp.mkdir()
+        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools',
+                                 patches=lambda version: base / 'patches-v143.txt')
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, layout=layout, keys={'lift': 'k'},
+                                   state={'version': '1.4.3'}, reporter=Reporter(out=io.StringIO()))
+        self.addCleanup(self.ctx.reporter.close)
+        mod = self.dest / 'mods' / 'SQ' / 'exefs'
+        mod.mkdir(parents=True)
+        (mod / '277178B7DBA1B6D4.ips').write_bytes(b'IPS32EEOF')
+        self.calls, self.fail = [], set()
+        saved = steps.run_tool
+        self.addCleanup(lambda: setattr(steps, 'run_tool', saved))
+        steps.run_tool = self.run_tool
+
+    def run_tool(self, ctx, step, script, args, parse=None, cwd=None):
+        args = [str(a) for a in args]
+        name = Path(script).name + (' --folded' if '--folded' in args else '')
+        self.calls.append((name, args))
+        log = ctx.temp / 'tool.log'
+        log.write_text('')
+        if name in self.fail:
+            return 1, log
+        if name == 'exefs_patches.py':
+            for flag in ('--status', '--data', '--out'):
+                p = Path(args[args.index(flag) + 1])
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(flag)
+        elif name == 'gen.py':
+            out = Path(args[args.index('--out') + 1]) / 'main'
+            out.mkdir(parents=True, exist_ok=True)
+            (out / 'folded.txt').write_text('# test\n')
+        return 0, log
+
+    def outputs(self):
+        return [p.is_file() for p in (steps.exefs_status(self.ctx), steps.exefs_data(self.ctx))]
+
+    def test_data_file_and_the_check_after_the_lift(self):
+        steps.Lift().run(self.ctx)
+        self.assertEqual([c[0] for c in self.calls], ['exefs_patches.py', 'gen.py', 'exefs_patches.py --folded'])
+        build = self.calls[0][1]
+        self.assertEqual(build[build.index('--data') + 1], str(steps.exefs_data(self.ctx)))
+        check = self.calls[2][1]
+        self.assertEqual(check[check.index('--folded') + 1], str(self.ctx.temp / 'gen' / 'main' / 'folded.txt'))
+        self.assertEqual(check[check.index('--status') + 1], str(steps.exefs_status(self.ctx)))
+        self.assertEqual(self.outputs(), [True, True])
+
+    def test_failed_lift_drops_the_data_file(self):
+        self.fail = {'gen.py'}
+        with self.assertRaises(steps.InstallError):
+            steps.Lift().run(self.ctx)
+        self.assertEqual(self.outputs(), [False, False])
+
+    def test_failed_check_drops_both_files(self):
+        self.fail = {'exefs_patches.py --folded'}
+        steps.Lift().run(self.ctx)
+        self.assertEqual(self.outputs(), [False, False])
+        self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 

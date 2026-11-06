@@ -164,6 +164,8 @@ class Main:
     def __init__(self, path):
         n = Nso(str(path))
         self.image = bytes(n.image)
+        n.image = self.image   # one copy of the image; tools/exefs_patches.py reads nso's dynamic info
+        self.nso = n
         self.text = n.text   # (offset, size)
         self.code_end = n.rodata[0]   # .text and its padding up to .rodata, where code caves go
         self.lifter = Lifter(BASE, 'c')

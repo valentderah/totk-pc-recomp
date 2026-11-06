@@ -1,5 +1,6 @@
 // --probe-mods: the mods folder scan, its order and switches (mods.c). Builds a mods folder of its own next to totk.exe,
-// scans it and removes it. Needs no game files.
+// scans it and removes it. Also the resource size table's entries of the members of the mods' packs (restbl_probe.c).
+// Needs no game files.
 #include <stdio.h>
 #include <string.h>
 
@@ -7,6 +8,7 @@
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "restbl.h"
 
 static int fails;
 #define CHECK(c, what) do { if (!(c)) { fails++; fprintf(stderr, "FAIL mods: %s\n", what); } } while (0)
@@ -35,6 +37,93 @@ static int remove_cb(const char *name, int kind, uint64_t size, void *ctx) {
     if (kind == PLAT_FS_DIR) remove_tree(sub);
     else plat_fs_unlink(sub);
     return 1;
+}
+
+static uint32_t fnv(const char *p, size_t n) {
+    uint32_t h = 0x811C9DC5u;
+    for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)p[i]) * 0x01000193u;
+    return h;
+}
+
+static ModInfo *by_name(const char *name) {
+    for (int i = 0; mods_at(i); i++)
+        if (!strcmp(mods_at(i)->name, name)) return mods_at(i);
+    return NULL;
+}
+
+// mods_exefs_data's store into a buffer standing in for main
+static int store_buffer(uint64_t a, const uint8_t *p, int n) {
+    memcpy((void *)(uintptr_t)a, p, (size_t)n);
+    return 1;
+}
+
+// A second scan of a folder of its own: data writes of ExeFS patch files (build-cache/exefs.data, given as text).
+static void probe_data(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
+    char n_ips[160], p_ips[160], q_ips[160], x_ips[160], y_ips[160];
+    snprintf(n_ips, sizeof n_ips, "N/exefs/%s.ips", bid);
+    snprintf(p_ips, sizeof p_ips, "P/exefs/%s.ips", bid);
+    snprintf(q_ips, sizeof q_ips, "Q/exefs/%s.ips", bid);
+    snprintf(x_ips, sizeof x_ips, "X/exefs/%s.ips", bid);
+    snprintf(y_ips, sizeof y_ips, "Y/exefs/%s.ips", bid);
+    const char *files[] = {n_ips, p_ips, q_ips, x_ips, y_ips};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    uint32_t kn = fnv(n_ips, strlen(n_ips)), kp = fnv(p_ips, strlen(p_ips)), kq = fnv(q_ips, strlen(q_ips));
+    uint32_t kx = fnv(x_ips, strlen(x_ips)), ky = fnv(y_ips, strlen(y_ips));
+    uint32_t c = fnv("probe", 5);
+    char status[512], data[768];
+    snprintf(status, sizeof status,
+             "%08X\t%08X\tdata\t-\tdata 11\n%08X\t%08X\tdata\t-\tdata 1\n%08X\t%08X\tdata\t-\tdata 4\n"
+             "%08X\t%08X\tdata\t-\tdata 1\n%08X\t%08X\tdata\t-\tdata 1\n",
+             kn, c, kp, c, kq, c, kx, c, ky, c);
+    snprintf(data, sizeof data,
+             "# file hash, content hash, offset in main, bytes[, base]\n"
+             "%08X\t%08X\t10\t414243\n"                   // N: three bytes of data
+             "%08X\t%08X\t18\t0800000000000000\tbase\r\n"  // N: a DT_RELR word, 8 plus main's base (a CRLF line)
+             "DEADBEEF\t%08X\t20\t99\n"                   // another file's: not N's
+             "%08X\t%08X\t4\t77\n"                         // P: below main's data
+             "%08X\t%08X\t30\t66\n"                        // Q: 1 of the 4 bytes its status counts
+             "%08X\t%08X\t28\tBB\n"                        // X: the byte Y writes too
+             "%08X\t%08X\t28\tAA\n",                       // Y, above X in the order: its byte stays
+             kn, c, kn, c, c, kp, c, kq, c, kx, c, ky, c);
+    mods_probe_cache(status, data);
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "Y");   // Y on top, the rest by name: Y N P Q X
+    cfg_set("TOTK_MODS_DISABLED", "");
+    mods_rescan();
+    mods_scan();
+    ModInfo *n = by_name("N"), *p = by_name("P"), *q = by_name("Q");
+    CHECK(n && p && q && by_name("X") && by_name("Y"), "second scan: five mods");
+    if (n && p && q) {
+        CHECK(n->kind == MOD_EXEFS && n->problem == MOD_OK && n->ndata == 1 && !n->nsets,
+              "an ExeFS patch file with data writes only makes a usable mod");
+        uint8_t img[0x40];
+        memset(img, 0, sizeof img);
+        uint64_t base = (uint64_t)(uintptr_t)img, word;
+        long stored = mods_exefs_data(n, base, sizeof img, 8, store_buffer);
+        memcpy(&word, img + 0x18, 8);
+        CHECK(stored == 11 && !memcmp(img + 0x10, "ABC", 3) && word == base + 8 && !img[0x20],
+              "data writes: bytes as they are, a DT_RELR word rebased, other files' lines left");
+        memset(img, 0x5A, sizeof img);
+        int untouched = 1;
+        CHECK(mods_exefs_data(p, base, sizeof img, 8, store_buffer) == -1, "a line below main's data keeps all out");
+        CHECK(n->data_bytes == 11 && q->data_bytes == 4, "the status lines count the data bytes");
+        CHECK(mods_exefs_data(q, base, sizeof img, 8, store_buffer) == -1,
+              "a data file holding fewer bytes than the status counts keeps all out");
+        for (size_t i = 0; i < sizeof img; i++) untouched &= img[i] == 0x5A;
+        CHECK(untouched, "nothing stored when a line does not fit or bytes are missing");
+        // every enabled mod as at start: X and Y write the same byte, and Y, the higher one, wins as its RomFS files
+        // would; P and Q stay out as above
+        memset(img, 0, sizeof img);
+        CHECK(EQ(mods_at(0)->name, "Y") && EQ(mods_at(4)->name, "X"), "mods_order puts Y on top and X at the bottom");
+        mods_exefs_apply(base, sizeof img, 8, store_buffer);
+        CHECK(img[0x28] == 0xAA, "two mods write the same byte: the top mod's byte stays");
+        CHECK(!memcmp(img + 0x10, "ABC", 3) && !img[0x30], "the other mods' data as each one stores it alone");
+    }
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
 }
 
 // s ends in tail, either path separator matching either.
@@ -124,7 +213,8 @@ int probe_mods(void) {
         CHECK(EQ(cfg_get("TOTK_MODS_DISABLED"), "A"), "switching A off writes it");
         CHECK(mods_changed(), "changes seen");
     }
-    remove_tree(root);
+    probe_data(root);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
-    return fails ? 1 : 0;
+    int table = restbl_probe();
+    return fails || table ? 1 : 0;
 }

@@ -3,7 +3,10 @@
    No console window. The two message strings come from the catalog (installer/text/<lang>.json, ids launcher.title and
    launcher.python_missing); tools/make_release.py writes them into launcher_text.h before it compiles this file.
    Build: llvm/bin/llvm-windres -I runtime -O coff launcher.rc -o launcher_rc.o, then
-   llvm/bin/clang -O2 -mwindows launcher.c launcher_rc.o -o TotK-Setup.exe */
+   llvm/bin/clang -O2 -mwindows launcher.c launcher_rc.o -o TotK-Setup.exe
+
+   System DPI aware, like the window's Python process (installer/dpi.py): Windows draws the error box of fail() at the
+   display's scale instead of stretching it, which it would at 125% and above. */
 #include <windows.h>
 #include <wchar.h>
 
@@ -38,6 +41,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     STARTUPINFOW si = { sizeof si };
     PROCESS_INFORMATION pi;
     (void)instance; (void)previous; (void)command_line; (void)show;
+    SetProcessDPIAware();   /* before the message box exists; the call fails harmlessly when a manifest set it */
     if (n == 0 || n >= PATH_CHARS) { fail(); return 1; }
     while (n > 0 && folder[n - 1] != L'\\') n--;
     folder[n > 0 ? n - 1 : 0] = 0;
