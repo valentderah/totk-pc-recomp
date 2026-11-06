@@ -31,12 +31,22 @@ void plat_thread_detach(PlatThread *t);   // frees t; the thread runs on
 // Restricts t (NULL: the calling thread) to the logical processors in mask (bit n = processor n of the first group).
 // Returns the previous mask, 0 on failure.
 uint64_t plat_thread_affinity(PlatThread *t, uint64_t mask);
+void plat_thread_pin(uint64_t mask);      // the calling thread to the processors in mask; ignored when mask is 0
 uint32_t plat_cpu_count(void);            // logical processors of the machine (system info)
 uint32_t plat_cpu_usable(void);           // the ones this process may run on (its affinity mask): size thread pools by it
 uint64_t plat_thread_cpu_ns(uint32_t tid);  // CPU time of the thread with id tid (plat_thread_id) so far; 0 unknown
 // The logical processors the process may use (bit n = processor n, the first 64), into *all, and the lowest of each
 // physical core among them into *first; returns the number of physical cores, 0 when unknown.
 int plat_cpu_cores(uint64_t *all, uint64_t *first);
+// The machine's CPU affinity groups. A processor whose cores share one L3 is one group holding every usable processor;
+// a chiplet CPU (the BC-250's two CCX, a Zen 2/3 desktop part, a Threadripper with four to twelve CCDs) has one group
+// per L3 instance. The runtime splits the guest's threads and the host's across two groups, so at most two are reported:
+// of more than two, the two largest, which keeps the placement on one cache each instead of spreading it thin.
+// Returns the number of groups written to masks (1 or 2), or 0 when the usable processors cannot be read.
+int plat_cpu_groups(uint64_t masks[2]);
+// The affinity every thread the platform layer starts from now on begins with, so the host's threads land in the host's
+// group whatever thread started them; 0 clears it. A thread that wants another group moves itself (plat_thread_pin).
+void plat_thread_set_default_affinity(uint64_t mask);
 int plat_process_affinity(uint64_t mask);   // every thread of the process to the processors in mask; 1 on success
 
 // Interrupting a thread (kernel.c's asynchronous preemption). A thread makes its own handle; another thread stops it
