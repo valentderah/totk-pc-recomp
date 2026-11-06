@@ -1109,8 +1109,8 @@ static void tab_mods(float scale) {
         char code[512] = "", problem[512] = "";
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
-        else if (m->nsets)
-            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        else if (m->nsets || m->ndata)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
         case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
