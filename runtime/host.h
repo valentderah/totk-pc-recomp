@@ -260,6 +260,9 @@ void cam_pack_served(void);                                // romfs.c serves the
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
+uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTRA_MB: added to the application pool and
+                                                           // the heap cap (mem_init), 2 MiB steps; 0 = none
+int res_tex_heap_from_mod(void);                           // a switched-on mod's HeapDef grows the texture heap
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table

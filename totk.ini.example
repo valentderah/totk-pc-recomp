@@ -366,6 +366,14 @@
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
+# emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
+# the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
+# needs nothing here. Set it for a pack that ships textures without a HeapDef. Without the room the game keeps starting
+# its panic Blood Moon. The memory pool grows by the same amount; the larger of this and a mod's growth counts.
+# Read at start. Default: 0. Such a pack also needs much more video memory: astc_bc = 1 ([performance]) keeps its
+# textures at a quarter of it.
+# tex_heap_extra_mb = 0
 
 [files]
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put
