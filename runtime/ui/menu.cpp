@@ -33,6 +33,7 @@ static int g_font_bad;
 #include "ui/amiibo_page.h"
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "ui/rtl_imgui.h"
 
 extern "C" {
 #include "amiibo.h"
@@ -64,6 +65,11 @@ bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into th
 #pragma clang diagnostic ignored "-Wc23-extensions"   // #embed in C++
 static const unsigned char roboto_ttf[] = {
 #embed "fonts/Roboto-Medium.ttf"
+};
+// Vazirmatn Medium (SIL OFL 1.1, ui/fonts/LICENSE-Vazirmatn.txt) cut to the Arabic block and the Arabic presentation
+// forms that shaped Persian text uses (rtl_text.c), with Roboto Medium's line metrics so it merges at the same size.
+static const unsigned char vazirmatn_fa_ttf[] = {
+#embed "fonts/Vazirmatn-Medium-fa.ttf"
 };
 #pragma clang diagnostic pop
 
@@ -227,6 +233,7 @@ static void make_context(void) {
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     io.BackendPlatformName = "totk_menu";
+    rtl_imgui_install();   // Persian lines right to left
     style_init(g_base_style);
     ImGui::GetStyle() = g_base_style;
     g_ctx_ok = 1;
@@ -271,8 +278,9 @@ static int vk_up(const MenuTarget *t) {
 // Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
 // and Chinese language names merged in from a system font when there is one (each language is named in its own script).
 // A catalog row also holds menu text (Simplified Chinese), so every string of the row goes into the builder: the merged
-// font must cover the whole menu of that language, not only its name. Made again when the window height changes; the old
-// texture goes after the queue is idle (CreateFontsTexture).
+// font must cover the whole menu of that language, not only its name. The glyphs of the Persian row (shaped) and of its
+// name come from the embedded Vazirmatn cut. Made again when the window height changes; the old texture goes after the
+// queue is idle (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
@@ -357,6 +365,23 @@ static int fonts_up(float scale) {
         mc.MergeMode = true;
         mc.FontDataOwnedByAtlas = false;
         fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, ranges[i].Data);
+    }
+    // Persian: the shaped Persian row (its name in the language lists among it), and mod and cheat names written in the
+    // Arabic script, which come unshaped from disk and use the base letters
+    ImVector<ImWchar> fa_ranges;
+    {
+        ImFontGlyphRangesBuilder b;
+        ui_text_visit("fa", add_row_glyphs, &b);
+        for (int k = 0; k < cheats_count(); k++)
+            if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
+        for (int k = 0; k < mods_count(); k++)
+            if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
+        b.BuildRanges(&fa_ranges);
+        ImFontConfig pc;
+        pc.MergeMode = true;
+        pc.FontDataOwnedByAtlas = false;
+        fa->AddFontFromMemoryTTF((void *)vazirmatn_fa_ttf, (int)sizeof vazirmatn_fa_ttf, 26.0f * scale, &pc,
+                                 fa_ranges.Data);
     }
     vk_queue_lock();   // the upload submits on the queue and waits for it
     int ok = ImGui_ImplVulkan_CreateFontsTexture();
@@ -872,7 +897,7 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
-                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
+                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_FA};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
     opt_end();
