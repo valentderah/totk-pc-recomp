@@ -93,13 +93,14 @@
 # fix_zero = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
-# skip push constants that did not change.
+# skip push constants that did not change, bind only the vertex buffers a draw reads.
 # bind_skip = 1
 # shader_memo = 1
 # pipe_memo = 1
 # tex_memo = 1
 # desc_template = 1
 # push_skip = 1
+# vb_used = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
