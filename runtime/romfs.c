@@ -533,6 +533,22 @@ static void added_init(void) {
     rt_log("RomFS overlay: %zu files added to the RomFS", nadded);
 }
 
+// RomFS file `rel` as the image holds it, whatever overlays replace it. malloc'd; NULL when it is missing, unreadable
+// or 16 MiB or more (logged with `keeps`, what the game does without it).
+static void *read_original(const char *rel, size_t *n, const char *keeps) {
+    uint64_t i = lower(rel);
+    if (i >= file_count || strcmp(entry_name(entry(i)), rel)) return NULL;
+    uint64_t size = entry(i).size;
+    void *in = size && size < (16u << 20) ? malloc((size_t)size) : NULL;
+    if (!in || read_at(image, in, (uint32_t)size, entry(i).offset) != (int64_t)size) {
+        free(in);
+        rt_log("RomFS: cannot read %s; %s", rel, keeps);
+        return NULL;
+    }
+    *n = (size_t)size;
+    return in;
+}
+
 // RomFS file `rel` as the game would read it: from an overlay that replaces it (*base), else from the image. malloc'd;
 // NULL when it is missing, unreadable or 16 MiB or more (logged with `keeps`, what the game does without it).
 static void *read_served(const char *rel, Overlay **base, size_t *n, const char *keeps) {
@@ -829,17 +845,27 @@ static void restbl_overlay(void) {
                members, packs, (now_s() - t0) * 1000);
 }
 
-// The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
-// base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS original; the grown table is
-// written to <profile>/resolution/ and served in the base's place.
+// The HeapDef table a bigger game resolution or TOTK_TEX_HEAP_EXTRA_MB needs (resolution.c): its texture heaps and
+// their parents grow. The base is an overlay that replaces the table (a mod's heap sizes stay), else the RomFS
+// original; the grown table is written to <profile>/resolution/ and served in the base's place. A served mod table
+// whose own TextureHeap is grown (an HD texture pack's, resolution.c res_heapdef_tex_grown) is not the base: its
+// growth is already in the amount (resolution.c mod_tex_heap_kib), so the RomFS original grows by it and is served in
+// the mod's place. A mod table that changes other heaps only stays the base.
 #define HEAPDEF "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs"
 static void heapdef_overlay(void) {
-    if (!res_heap_extra_kib()) return;
+    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes()) return;
     static const char keeps[] = "the game keeps its own resolution";
     Overlay *base;
     size_t n;
     void *in = read_served(HEAPDEF, &base, &n, keeps), *out = NULL;
     size_t out_n = 0;
+    if (in && base && base->mod && res_heapdef_tex_grown(in, n)) {
+        free(in);
+        in = read_original(HEAPDEF, &n, keeps);
+        if (in)
+            rt_log("RomFS: %s: the game's own HeapDef with the mod's texture heap growth in place of the mod's table",
+                   mods_at(base->mod - 1)->name);
+    }
     int ok = in && res_heapdef_build(in, n, &out, &out_n);
     free(in);
     if (ok && serve_generated(HEAPDEF, base, out, out_n, "resolution", "grown heaps", keeps)) res_heapdef_served();
