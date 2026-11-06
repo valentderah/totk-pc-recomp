@@ -16,9 +16,10 @@ logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only 
 in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
 it touches, not a full compile.
 
-Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
-its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
-when an enabled mod has code cheats the build lacks (runtime/cheats.c).
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
+rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
+one argument per line; totk.exe runs it at start when an enabled mod has code cheats the build lacks
+(runtime/cheats.c).
 """
 import hashlib
 import http.client
@@ -855,6 +856,12 @@ def exefs_status(ctx):
     return ctx.dest / 'build-cache' / 'exefs.status'
 
 
+def exefs_data(ctx):
+    """The data writes of the mods' ExeFS patch files (tools/exefs_patches.py --data), which runtime/mods.c stores into
+    main before the game runs."""
+    return ctx.dest / 'build-cache' / 'exefs.data'
+
+
 def cheats_status(ctx):
     """The build's cheat status file (tools/cheats.py --status), which runtime/cheats.c reads: in build-cache, not in a
     mod's own cheats folder, which the player (or TKMM's merge) may empty."""
@@ -869,7 +876,7 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         files = cheat_files(ctx) + exefs_files(ctx)
-        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+        return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
                            ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
@@ -890,36 +897,54 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
-        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
-        # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
-        # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
-        # without them and the setup warns.
+        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets and data writes
+        # (tools/cheats.py, tools/exefs_patches.py); their status files tell the runtime what the build has. Both are
+        # the player's downloads, so files the tools refuse cost those cheats or patches, not the install: the game is
+        # built without them and the setup warns.
         plain = layout.patches(game_version(ctx))
-        stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
-                  ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
+        # (tool, patch file it writes, its outputs for the runtime: the status first, then the data file, the files it
+        # reads, the warning when it fails)
+        stages = [('cheats.py', 'patches-cheats.txt', [cheats_status(ctx)], cheat_files(ctx), 'warn.cheats_skipped'),
+                  ('exefs_patches.py', 'patches-exefs.txt', [exefs_status(ctx), exefs_data(ctx)], exefs_files(ctx),
+                   'warn.exefs_skipped')]
         patches, skipped = plain, {}
-        for tool, out, status, inputs, warn in stages:
-            status.unlink(missing_ok=True)   # no status: the runtime treats every such file as not built
+
+        def drop(outputs):   # no status: the runtime treats every such file as not built
+            for f in outputs:
+                f.unlink(missing_ok=True)
+
+        for tool, out, outputs, inputs, warn in stages:
+            drop(outputs)
             if not inputs:
                 continue
             code, log = run_tool(ctx, 'lift', layout.tools / tool,
                                  ['--exefs', ctx.dest / 'exefs', '--mods', ctx.dest / 'mods', '--patches', patches,
-                                  '--out', ctx.temp / out, '--status', status])
+                                  '--out', ctx.temp / out, '--status', outputs[0],
+                                  *(['--data', outputs[1]] if len(outputs) > 1 else [])])
             if code:
-                status.unlink(missing_ok=True)
+                drop(outputs)
                 skipped[warn] = log
             else:
                 patches = ctx.temp / out
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
         if code and patches != plain:
-            for tool, out, status, inputs, warn in stages:
+            for tool, out, outputs, inputs, warn in stages:
                 if inputs and warn not in skipped:
-                    status.unlink(missing_ok=True)
+                    drop(outputs)
                     skipped[warn] = log
             code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
+        # The mods' data writes must stay off the bytes the lifted code reads as constants (its jump tables), which only
+        # the lift knows: gen.py lists them in folded.txt, and a file that writes them becomes unsupported
+        if exefs_data(ctx).is_file():
+            code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_patches.py',
+                                 ['--exefs', ctx.dest / 'exefs', '--status', exefs_status(ctx), '--data',
+                                  exefs_data(ctx), '--folded', gen / 'main' / 'folded.txt'])
+            if code:
+                drop([exefs_status(ctx), exefs_data(ctx)])
+                skipped.setdefault('warn.exefs_skipped', log)
         for warn, log in skipped.items():
             rep.warning(warn, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')
