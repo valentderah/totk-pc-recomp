@@ -145,12 +145,12 @@
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
 # prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
-# (3:2). Any other size
-# gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
-# shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
-# a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
-# the only shape the setup builds those prompts for.
+# (3:2). For any other size, or a source build that has not made the layout, the game draws the largest 16:9 size that
+# fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
+# tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
+# display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it
+# stays 1920x1080, the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.

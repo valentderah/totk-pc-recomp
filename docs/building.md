@@ -118,6 +118,13 @@ of them.
    button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
 
+   A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
+   draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a
+   stretched HUD (`runtime/resolution.c`, `shape_fallback`). For the full shape make `romfs-patches-<w>x<h>` once per
+   size: `make_romfs_patches.py --version <ver> --aspect <w>x<h> --out build\<ver>\romfs-patches-<w>x<h>` (the sizes
+   the installer makes are `ASPECT_SIZES` in `installer/steps.py`); `build_game.py` copies every `romfs-patches*`
+   folder next to `totk.exe`.
+
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:
 

@@ -1052,6 +1052,19 @@ static void index_path(char *out, size_t cap) {
     strcpy(out + k, "romfs-index.bin");
 }
 
+// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h> next to romfs-index.bin with a
+// manifest, the folder overlay_init looks for. Works before fs_init: index_dir is not set that early (res_init and
+// resolution.c decide run first), so the index path is worked out again here.
+int romfs_shaped_ready(unsigned w, unsigned h) {
+    char dir[2100], path[2200];
+    index_path(dir, sizeof dir);
+    char *sep = plat_last_sep(dir);
+    if (sep) *sep = 0;
+    else strcpy(dir, ".");
+    return snprintf(path, sizeof path, "%s/romfs-patches-%ux%u/manifest.tsv", dir, w, h) < (int)sizeof path &&
+           plat_file_exists(path);
+}
+
 static void load_index(void) {
     char path[2100];
     index_path(path, sizeof path);

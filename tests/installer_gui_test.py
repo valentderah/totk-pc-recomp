@@ -377,13 +377,19 @@ class DpiTest(unittest.TestCase):
         code = ('import tkinter\n'
                 'from installer import dpi, gui\n'
                 'root = tkinter.Tk()\n'
-                'print(dpi.awareness(), dpi.scale(), root.tk.call("tk", "scaling"), gui.PAD, gui.WRAP)\n'
+                'print(dpi.awareness(), dpi.scale(), root.tk.call("tk", "scaling"), gui.PAD, gui.WRAP, '
+                'root.winfo_screenwidth())\n'
                 'root.destroy()\n')
         r = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
-        awareness, scale, scaling, pad, wrap = r.stdout.split()
+        awareness, scale, scaling, pad, wrap, width = r.stdout.split()
         self.assertGreaterEqual(int(awareness), 1)   # 1 system aware, 2 per-monitor aware
-        self.assertAlmostEqual(float(scaling), float(scale) * 96 / 72, places=6)
+        # Tk's win/tkWinX.c TkWinDisplayChanged rounds the nominal screen width to whole millimetres.
+        # Its generic/tkCmds.c ScalingCmd converts that width back to pixels per point, so a 120 DPI display
+        # can report 120.118 DPI. Keep the exact comparison, accounting for that round trip.
+        width_mm = int(25.4 * int(width) / (float(scale) * 96) + 0.5)
+        expected_scaling = 25.4 * int(width) / (72 * width_mm)
+        self.assertAlmostEqual(float(scaling), expected_scaling, places=6)
         self.assertEqual((int(pad), int(wrap)), (round(14 * float(scale)), round(620 * float(scale))))
 
 
