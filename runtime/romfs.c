@@ -921,7 +921,7 @@ static void camera_overlay(void) {
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
 // romfs-patches-pc keeps that name, but at a game resolution of another shape than 16:9 its files come from pc_dir,
 // romfs-patches-pc-<w>x<h> (overlay_init).
-static struct { const char *name; int ready; } prompts_folders[3];
+static struct { const char *name; int ready; } prompts_folders[5];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
 static char pc_dir[64];
@@ -929,7 +929,7 @@ static char pc_dir[64];
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 5; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -963,13 +963,14 @@ static void overlay_init(void) {
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
     // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
     // the layout goes with (res_wants_wide_overlay).
-    // With prompts = xbox, the Xbox prompts' folder for the pad layout in its place (input_prompts_folder): the same
-    // patches with Xbox button icons (make_romfs_patches.py --prompts). The game reads the archives once at boot, so
-    // the prompts stay until restart even though the layout itself changes live. Each folder replaces romfs-patches as
-    // a whole and the setup builds no folder of another shape with Xbox prompts, so a game resolution that is not 16:9
-    // keeps the Switch prompts. So does a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of
-    // the prompts' fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made
-    // for the game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
+    // With prompts = xbox or playstation, that controller's prompts' folder for the pad layout in its place
+    // (input_prompts_folder): the same patches with Xbox or PlayStation button icons (make_romfs_patches.py
+    // --prompts). The game reads the archives once at boot, so the prompts stay until restart even though the layout
+    // itself changes live. Each folder replaces romfs-patches as a whole and the setup builds no folder of another
+    // shape with those prompts, so a game resolution that is not 16:9 keeps the Switch prompts. So does a RomFS mod
+    // (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of the prompts' fonts: romfs-patches loads in
+    // their place, so the mod's file is not served beside prompts files made for the game's own. A mod's resource size
+    // table is no clash: restbl_overlay merges it with the prompts' one.
     // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
     // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
     // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
@@ -988,11 +989,13 @@ static void overlay_init(void) {
                    "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
         }
     }
-    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
-    for (int i = 0; i < 3; i++) {
-        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
+    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox and PlayStation folder, then the PC one
+    for (int i = 0; i < 5; i++) {
+        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i])
+                          : i < 4 ? input_prompts_folder(PROMPTS_PLAYSTATION, layouts[i - 2])
+                                  : input_prompts_folder(PROMPTS_PC, 0);
         const char *dir = name;
-        if (i == 2) {
+        if (i == 4) {
             if (wide) snprintf(pc_dir, sizeof pc_dir, "%s-%ux%u", name, out[0], out[1]);
             else snprintf(pc_dir, sizeof pc_dir, "%s", name);
             dir = pc_dir;
@@ -1003,7 +1006,9 @@ static void overlay_init(void) {
     }
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
     int pick = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), shaped = wide && pick == PROMPTS_PC;
-    const char *style = pick == PROMPTS_PC ? "keyboard and mouse" : "Xbox";
+    const char *style = pick == PROMPTS_PC            ? "keyboard and mouse"
+                        : pick == PROMPTS_PLAYSTATION ? "PlayStation"
+                                                      : "Xbox";
     prompts_wanted = input_prompts_folder(pick, layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
                   : wide && !shaped                       ? ROMFS_PROMPTS_SHAPE
@@ -1024,7 +1029,8 @@ static void overlay_init(void) {
             rt_log("RomFS overlay: %s failed its check (run the setup again); romfs-patches loads instead", path);
         }
     } else if (prompts_wanted) {
-        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay", pick == PROMPTS_PC ? "pc" : "xbox",
+        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay",
+               pick == PROMPTS_PC ? "pc" : pick == PROMPTS_PLAYSTATION ? "playstation" : "xbox",
                prompts_off == ROMFS_PROMPTS_SHAPE     ? (shaped ? "the game resolution has no romfs-patches-pc-<w>x<h> "
                                                                   "(tools/make_romfs_patches.py --prompts pc --aspect)"
                                                              : "the game resolution takes its own UI layout")

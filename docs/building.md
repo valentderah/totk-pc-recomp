@@ -113,10 +113,14 @@ of them.
    ```
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
-   For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
-   they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
-   `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
+   For Xbox and PlayStation button prompts, run `make_romfs_patches.py` twice more for each, with `--prompts xbox`,
+   `--prompts xbox-label`, `--prompts playstation` and `--prompts playstation-xbox`: they write
+   `build\<ver>\romfs-patches-xbox`, `-xbox-label`, `-playstation` and `-playstation-xbox`
+   ([controls.md](controls.md), "Xbox and PlayStation button prompts"), which `build_game.py` copies next to `totk.exe`
+   like `romfs-patches`. `--prompts pc` writes `romfs-patches-pc`, the keyboard and mouse prompts
+   ([controls.md](controls.md), "PC button prompts"). Add `--lang <code>` (es, en-US, zh-Hant, ...) to write only the
+   installed language's font archive and Mals (about 14 MB instead of 70 MB; 20 to 28 MB for Chinese or Korean); the
+   setup passes the installed language. Without `--lang` every language is written.
 
    A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
    draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a

@@ -103,7 +103,7 @@
  "warn.cheats_skipped": "Não foi possível compilar os cheats da pasta de mods que alteram o código do jogo; o jogo é instalado sem eles. Detalhes: {log}",
  "warn.exefs_skipped": "Não foi possível compilar os patches ExeFS dos mods (.ips, .pchtxt); o jogo é instalado sem eles. Detalhes: {log}",
  "warn.npdm_differs": "O main.npdm difere do dump de referência da versão {version}; só os módulos de código são usados.",
- "warn.xbox_prompts_failed": "Não foi possível preparar os ícones de botão do Xbox ou do PC (código de saída {code}); o jogo mantém os ícones do Switch. Detalhes: {log}",
+ "warn.xbox_prompts_failed": "Não foi possível preparar os ícones de botão do Xbox, do PlayStation ou do PC (código de saída {code}); o jogo mantém os ícones do Switch. Detalhes: {log}",
  "warn.shaders_skipped": "O driver gráfico travou ao compilar alguns shaders, então {count} ficaram fora da preparação. O jogo os compila quando precisar deles pela primeira vez, e o driver pode travar ali também; uma atualização do driver pode resolver. Detalhes: {log}",
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
  "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",

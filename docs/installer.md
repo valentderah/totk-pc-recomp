@@ -72,10 +72,14 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written six times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The three prompt folders are
-   optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), `romfs-patches-playstation` and `romfs-patches-playstation-xbox` (PlayStation prompts, the same split),
+   and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The five prompt folders are optional: when
+   one cannot be made, the setup warns and finishes. Each prompt folder carries only the installed game language's
+   files (`make_romfs_patches.py --lang`): the default font plus the CJK font of that language, and that language's
+   `Mals`. A Western pack is about 14 MB instead of 70 MB, a CJK one 20 to 28 MB. The prepare step's key includes the
+   language, so a setup run after changing `lang` rebuilds them.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.

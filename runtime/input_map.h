@@ -89,18 +89,21 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
 // Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
-// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). PC: the key or
+// button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). PlayStation: the
+// face buttons as ○ × △ □, L1 R1 L2 R2, Options and Share, likewise on the button the pad layout presses. PC: the key or
 // mouse button the keyboard defaults press each button with, the mouse for the right stick.
-enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_PC };
-// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox" or "pc", any case). Unset or empty: Xbox while the pad
-// layout setting is "xbox_prompts", else Nintendo.
+enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_PLAYSTATION, PROMPTS_PC };
+// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox", "playstation" or "pc", any case). Unset or empty: Xbox
+// while the pad layout setting is "xbox_prompts", else Nintendo.
 int input_prompts_pick(const char *prompts, const char *pad_layout);
 // The folder next to romfs-index.bin that holds those prompts for a TOTK_PAD_LAYOUT value, NULL for the game's own. The
 // Nintendo layout plays an Xbox pad by position, so its folder names the face buttons the other way round
 // (romfs-patches-xbox: the right button does A and is labelled B); xbox and auto put every Switch button on the button
-// labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label. The PC
-// prompts follow no pad: romfs-patches-pc whatever the layout (romfs.c overlay_init serves romfs-patches-pc-<w>x<h>
-// under that name at a game resolution of another shape).
+// labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label. The
+// PlayStation prompts have the same two folders: romfs-patches-playstation (Nintendo layout, A on the right button is
+// circle) and romfs-patches-playstation-xbox (xbox and auto, A on the bottom button is cross). The PC prompts follow no
+// pad: romfs-patches-pc whatever the layout (romfs.c overlay_init serves romfs-patches-pc-<w>x<h> under that name at a
+// game resolution of another shape).
 const char *input_prompts_folder(int prompts, const char *pad_layout);
 // down[pad] != 0 for the gamepad inputs held. Returns the Switch button bits (0..15) the layout's pad table presses.
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout);
