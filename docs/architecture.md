@@ -55,8 +55,8 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
-  Simplified Chinese). The Chinese glyphs come from a system font (Microsoft YaHei, `plat_font_path`) merged into the
-  font atlas.
+  Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean). The Chinese, Japanese and Korean
+  glyphs come from a system font (`plat_font_path`) merged into the font atlas.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores
