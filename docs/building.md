@@ -243,6 +243,11 @@ when a setting is described neither in `totk.ini.example` nor in [settings.md](s
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
 table (no game files), and `totk.exe --probe-mods`.
 
+`python tests/amiibo_check.py` builds the synthetic tag/IPC and Dear ImGui gamepad checks with Clang and clang++.
+No game files, amiibo dumps or keys are needed; all test files are made under `build/`. Use `--cc` and `--cxx` to
+select compiler paths. The Windows C++ test links its runtime statically so it runs without extra DLLs.
+`totk.exe --probe-services` additionally checks the real SDK's NFC event auto-clear and destroy/reattach behaviour.
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
 

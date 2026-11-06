@@ -31,6 +31,16 @@ The log names the layout in effect (`input: gamepad layout ...`); the menu shows
 
 Esc is unbound in the game; it opens the settings menu and releases the mouse cursor (see Mouse camera). Z and X duplicate ZL and ZR so menu pages turn with two neighbouring keys; the menu tabs (L, R) are Q and R. The mouse wheel zooms the Purah Pad's map and is unbound elsewhere. The bindings are the tables of `input_map` in `runtime/input_map.c`: the keys (platform-neutral key ids) and one gamepad table per layout (gamepad inputs by position); `runtime/input_win.c` translates Win32 virtual keys and SDL buttons.
 
+## Amiibo
+
+Choose a folder on the settings menu's Amiibo tab, then use the game's amiibo ability. The picker opens with the
+first file focused: navigate with the D-pad or left stick and confirm to scan; B or Escape closes it. Subfolders
+can be browsed without changing the saved folder. Invalid files show a load error and keep the picker open.
+
+The folder is `amiibo_dir` in `totk.ini` (`TOTK_AMIIBO_DIR` in the environment), default `./amiibo`. Supported files
+are 532-, 540- and 572-byte NTAG215 binary dumps and Flipper `.nfc` exports, including both E1 and F1 header variants.
+The game handles compatibility and daily scan limits; the reader does not change the tag's identity or bypass them.
+
 ## Xbox button prompts
 
 `TOTK_PROMPTS` (`prompts`, the *Button prompts* row on the Controls tab, read at start) picks the controller whose buttons the game's prompts show: `nintendo` (default) keeps the game's own, `xbox` shows an Xbox controller's, `pc` the keyboard and mouse (PC button prompts, below).

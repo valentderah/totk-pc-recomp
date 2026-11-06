@@ -269,6 +269,10 @@
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 
+[amiibo]
+# Folder used by the in-game amiibo picker; also selectable on the Amiibo settings tab.
+# amiibo_dir = ./amiibo
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default
