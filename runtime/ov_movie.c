@@ -23,7 +23,9 @@
 // periods late is dropped if the next one is due too, so the picture keeps time with the movie's sound.
 // TOTK_MOVIE_PACE=0 hands every decoded frame over at the next present; TOTK_MOVIE_HOST=0 leaves every decoder to the
 // library (which aborts at the first movie).
+#if defined(__x86_64__)
 #include <emmintrin.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -196,11 +198,13 @@ static void to_nv12(const vpx_image_t *img, uint8_t *dst, int w, int h) {
         const uint8_t *v = img->planes[VPX_PLANE_V] + (size_t)y * img->stride[VPX_PLANE_V];
         uint8_t *o = uv + (size_t)y * w;
         int x = 0;
+#if defined(__x86_64__)   // shortcut: other hosts take the scalar loop below, add NEON (vzip) if movies show up in profiles
         for (; x + 16 <= cw; x += 16) {
             __m128i a = _mm_loadu_si128((const __m128i *)(u + x)), b = _mm_loadu_si128((const __m128i *)(v + x));
             _mm_storeu_si128((__m128i *)(o + 2 * x), _mm_unpacklo_epi8(a, b));
             _mm_storeu_si128((__m128i *)(o + 2 * x + 16), _mm_unpackhi_epi8(a, b));
         }
+#endif
         for (; x < cw; x++) {
             o[2 * x] = u[x];
             o[2 * x + 1] = v[x];

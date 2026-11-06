@@ -231,7 +231,11 @@ SI VTU FN(vsel)(VTS m, VTU x, VTU y) { return (x & (VTU)m) | (y & ~(VTU)m); }
 
 SI VT FN(vflush)(VT a) {
     VTU u = (VTU)a;
+#if defined(__aarch64__)
+    __asm__("" : "+w"(u));   // a vector register, like "x" on x86
+#else
     __asm__("" : "+x"(u));
+#endif
     VTU mag = u & ~((VTU){} + SGN);
     VTS den = (mag != 0) & ((u & EXPM) == 0);
     return (VT)FN(vsel)(den, u & SGN, u);
