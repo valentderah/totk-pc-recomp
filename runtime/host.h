@@ -264,6 +264,8 @@ uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTR
                                                            // the heap cap (mem_init), 2 MiB steps; 0 = none
 int res_heapdef_tex_grown(const void *in, size_t n);       // the HeapDef table (.byml.zs) grows TextureHeap over the
                                                            // shipped size (an HD texture pack's)
+int res_heapdef_plain(const void *in, size_t n);           // a readable HeapDef table whose TextureHeap is not
+                                                           // grown (a content mod's)
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
