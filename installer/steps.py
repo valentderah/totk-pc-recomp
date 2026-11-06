@@ -197,16 +197,21 @@ def expected_update(ctx):
 
 
 # Releases before 0.3.1 recorded the 0x20000 update as 1.1.1 (pull request #220); it is 1.1.0 (#371), with the same
-# files, hashes and patch sites under new names.
+# files, hashes and patch sites under new names. The real 1.1.1 (0x30000) records its own name.
 RENAMED_VERSIONS = {'1.1.1': '1.1.0'}
 
 
 def migrate_state(ctx):
     """Read a recorded update by its current name. The extraction it recorded stays: its record gets the key of the
     renamed expected file, and Extract.current and the full check of output another release kept
-    (runner.Context.verify_kept) still test the files against the expected hashes."""
+    (runner.Context.verify_kept) still test the files against the expected hashes. An install whose main is not the
+    renamed update's (a real 1.1.1 one) keeps its name."""
     old = ctx.state.get('version')
     if old not in RENAMED_VERSIONS:
+        return
+    renamed = extract.load_expected()[RENAMED_VERSIONS[old]]
+    main = ctx.dest / 'exefs' / 'main'
+    if main.is_file() and extract.sha256(main) != renamed['exefs_sha256']['main']:
         return
     ctx.state['version'] = RENAMED_VERSIONS[old]
     record = ctx.state['steps'].get('extract')

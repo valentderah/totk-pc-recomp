@@ -184,9 +184,12 @@ static uint64_t read_ptr(uint64_t a) {
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
 // TOTK_GAME_V121/V143). The 1.1.0 slot was measured from its own dereference chain: 181 scene accesses in that build
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
-// compare) instruction for instruction.
+// compare) instruction for instruction. The 1.1.1 slot ([main+0x4732b78]) was mapped from 1.4.3's: of the 760 places
+// that load 1.4.3's slot through the GOT, the 35 whose instruction window matches exactly one place in 1.1.1 (offsets
+// and branch targets masked) all load this one.
 static int player_pos(float xyz[3]) {
-    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V110 ? 0x4630a68 : 0x4728538)),
+    uint64_t slot = RT_V143 ? 0x3add238 : RT_V111 ? 0x4732b78 : RT_V110 ? 0x4630a68 : 0x4728538;
+    uint64_t module = read_ptr(MOD_MAIN_BASE + slot),
              scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;
     if (!scene || !read_guest(scene + 0x50, &count, 4) || count < 14 || count > 256) return 0;

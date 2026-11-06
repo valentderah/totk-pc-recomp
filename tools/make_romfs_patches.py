@@ -58,7 +58,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--version', choices=('v110', 'v121', 'v143'), default='v121')
+ap.add_argument('--version', choices=('v110', 'v111', 'v121', 'v143'), default='v121')
 ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/romfs')
 ap.add_argument('--out', type=Path,
                 help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
@@ -215,7 +215,7 @@ def sarc_replace(data, new):
     return bytes(out)
 
 
-COMMON = {'v110': '110', 'v121': '110', 'v143': '140'}   # the version in the name of each game's Common archive
+COMMON = {'v110': '110', 'v111': '110', 'v121': '110', 'v143': '140'}   # the version in the name of each game's Common archive
 ARCHIVE = f'UI/LayoutArchive/Common.Product.{COMMON[args.version]}.Nin_NX_NVN.blarc.zs'
 MEMBERS = {
     'anim/ShortCutBG_00_In.bflan': ('C_CaptureBG_00', 'C_CaptureClearBG_00', 'P_CaptureClearBG_00'),
