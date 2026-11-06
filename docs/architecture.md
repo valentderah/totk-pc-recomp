@@ -128,7 +128,8 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   reads an object's own uniform blocks (bones c5, place c7, c6) are drawn a second time with a vertex shader variant
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
-  vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+  vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. DLSS no longer sharpens (its programming guide, section 3.11, points to the Image
+  Scaling SDK), so `dlaa_sharpness` runs NVIDIA's NVSharpen on its result. `fxaa` switches the game's own FXAA pass.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

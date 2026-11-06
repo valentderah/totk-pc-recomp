@@ -162,6 +162,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                           "they replace the 3D render scale. Takes effect at once.",
     [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
+    [UI_MENU_DLAA_SHARPNESS] = "DLSS sharpness",
+    [UI_MENU_DLAA_SHARPNESS_DESC] = "Sharpens the DLSS picture with NVIDIA Image Scaling, the filter NVIDIA recommends for DLSS, "
+                                    "which has no sharpening of its own; 0 turns it off. Applies at once.",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
 
@@ -637,6 +640,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                           "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
     [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
+    [UI_MENU_DLAA_SHARPNESS] = "Резкость DLSS",
+    [UI_MENU_DLAA_SHARPNESS_DESC] = "Повышает резкость картинки DLSS фильтром NVIDIA Image Scaling: его NVIDIA рекомендует для DLSS, "
+                                    "у которого своей резкости больше нет. 0 выключает его. Применяется сразу.",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
 
@@ -1454,6 +1460,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                 "bordas um pouco menos suaves. Vale na hora.",
     [UI_MENU_DLSS_CHARS_OFF] = "Desligado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Médio",
     [UI_MENU_DLSS_CHARS_FULL] = "Total",
+    [UI_MENU_DLAA_SHARPNESS] = "Nitidez do DLSS",
+    [UI_MENU_DLAA_SHARPNESS_DESC] = "Aumenta a nitidez da imagem do DLSS com o NVIDIA Image Scaling, o filtro que a NVIDIA "
+                                    "recomenda para o DLSS, que não tem nitidez própria; 0 desliga. Vale na hora.",
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
@@ -2053,6 +2062,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                 "这些边缘也略欠平滑。立即生效。",
     [UI_MENU_DLSS_CHARS_OFF] = "关", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
     [UI_MENU_DLSS_CHARS_FULL] = "强",
+    [UI_MENU_DLAA_SHARPNESS] = "DLSS 锐度",
+    [UI_MENU_DLAA_SHARPNESS_DESC] = "用 NVIDIA Image Scaling 锐化 DLSS 画面。这是 NVIDIA 为 DLSS 推荐的滤镜，DLSS 本身已不再提供锐化；"
+                                    "0 为关闭。立即生效。",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
     [UI_MENU_TAB_CHEATS] = "金手指",

@@ -28,12 +28,14 @@
 #include "vk_exec.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
+#include "nis_sharpen_spv.h"
 
 typedef int NgxResult;   // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
 #define NGX_OK(r) (((unsigned)(r) & 0xFFF00000u) != 0xBAD00000u)
 #define NGX_VERSION_API 0x15
 #define NGX_FEATURE_SUPERSAMPLING 1
 #define NGX_PERFQ_DLAA 5   // NVSDK_NGX_PerfQuality_Value: 0 performance, 1 balanced, 2 quality, 3 ultra performance
+#define NIS_BLOCK 32       // shaders/nis_sharpen.comp: output pixels per workgroup side
 typedef struct NgxParam NgxParam;
 typedef struct NgxHandle NgxHandle;
 typedef struct { void *slot[17]; } NgxParamVtbl;
@@ -292,9 +294,9 @@ static struct {
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
     struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
         uint32_t w, h, ow, oh;   // render size, output size
-        VkImage out, mv;
-        VmaAllocation out_mem, mv_mem;
-        VkImageView out_view, mv_view;
+        VkImage out, mv, sharp;  // sharp: NVSharpen's output (dlaa_sharpness), made when it first runs
+        VmaAllocation out_mem, mv_mem, sharp_mem;
+        VkImageView out_view, mv_view, sharp_view;
         VkImage mask, chars[2];  // the bias mask DLSS reads, the character class mask of this and last frame (R8)
         VmaAllocation mask_mem, chars_mem[2];
         VkImageView mask_view, chars_view[2];
@@ -328,6 +330,12 @@ static struct {
     VkPipeline mv_pipe;
     VkSampler mv_samp;
     int mv_ok;                   // -1 not built, 0 failed, 1 ready
+    // sharpening (nis_record)
+    VkDescriptorSetLayout nis_dsl;
+    VkPipelineLayout nis_layout;
+    VkPipeline nis_pipe;
+    VkSampler nis_samp;
+    int nis_ok;                  // -1 not built, 0 failed, 1 ready
     uint64_t mv_frames, mv_none, masked;   // masked: frames with the characters' bias mask
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
@@ -336,7 +344,7 @@ static struct {
     int ids_ok;
     unsigned cfg_seen;           // cfg_version when preset was read
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
-} D = {.mv_ok = -1, .cfg_seen = ~0u};
+} D = {.mv_ok = -1, .nis_ok = -1, .cfg_seen = ~0u};
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
@@ -368,6 +376,8 @@ static void free_size(struct Size *e) {
     vkDeviceWaitIdle(c->device);   // a third scene size: the evicted images may still be in flight
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
+    if (e->sharp_view) vkDestroyImageView(c->device, e->sharp_view, NULL);
+    if (e->sharp) vmaDestroyImage(c->vma, e->sharp, e->sharp_mem);
     if (e->out) vmaDestroyImage(c->vma, e->out, e->out_mem);
     if (e->mv) vmaDestroyImage(c->vma, e->mv, e->mv_mem);
     if (e->mask_view) vkDestroyImageView(c->device, e->mask_view, NULL);
@@ -865,6 +875,102 @@ static struct Snap *mask_pass(VkCommandBuffer cb, VkImageView cv, uint32_t w, ui
     return s;
 }
 
+// ---------------------------------------------------------------- sharpening
+// DLSS no longer sharpens: its Sharpness parameter and DoSharpening flag are deprecated, and section 3.11 of its
+// programming guide points to the NVIDIA Image Scaling SDK instead. dlaa_sharpness (percent, 0 = off) therefore runs
+// NVSharpen (shaders/nis_sharpen.comp, NIS_Scaler.h unmodified) on DLSS's output before it is blitted into the target.
+static int nis_init(void) {
+    if (D.nis_ok >= 0) return D.nis_ok;
+    D.nis_ok = 0;
+    const VkCtx *c = vk_ctx();
+    VkDescriptorSetLayoutBinding b[3] = {
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+    VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+                                           .bindingCount = 3, .pBindings = b};
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 14 * sizeof(float)};
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
+                              .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof nis_sharpen_spv,
+                                   .pCode = nis_sharpen_spv};
+    VkShaderModule m = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(c->device, &dci, NULL, &D.nis_dsl) != VK_SUCCESS) goto fail;
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &D.nis_dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
+    if (vkCreatePipelineLayout(c->device, &li, NULL, &D.nis_layout) != VK_SUCCESS ||
+        vkCreateSampler(c->device, &si, NULL, &D.nis_samp) != VK_SUCCESS ||
+        vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS)
+        goto fail;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"},
+                                      .layout = D.nis_layout};
+    VkResult r = vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &D.nis_pipe);
+    vkDestroyShaderModule(c->device, m, NULL);
+    if (r != VK_SUCCESS) goto fail;
+    rt_log("dlaa: dlaa_sharpness sharpens with NVIDIA Image Scaling");
+    return D.nis_ok = 1;
+fail:
+    rt_log("dlaa: the sharpening pass could not be set up: dlaa_sharpness does nothing");
+    return 0;
+}
+
+// NVSharpen of e->out into e->sharp, sharpness 1..100. 0: not recorded (the caller blits e->out). The constants are
+// those of NVScalerUpdateConfig (NIS_Config.h, NVIDIA Image Scaling SDK 1.0.3, MIT, Copyright (c) 2022 NVIDIA
+// CORPORATION & AFFILIATES) for NISHDRMode::Linear, as DLSS's output is scene linear, and an input the size of the output.
+static int nis_record(VkCommandBuffer cb, struct Size *e, int sharpness) {
+    if (!nis_init()) return 0;
+    if (!e->sharp) {
+        if (!image2d(e->ow, e->oh, VK_FORMAT_R16G16B16A16_SFLOAT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &e->sharp,
+                     &e->sharp_mem, &e->sharp_view)) {
+            rt_log("dlaa: the sharpening image could not be created: dlaa_sharpness does nothing");
+            return D.nis_ok = 0;
+        }
+        VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                    .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                    .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = e->sharp,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                               .pImageMemoryBarriers = &ib};
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+    float slider = sharpness / 100.0f - 0.5f;
+    float max_scale = slider >= 0 ? 1.25f : 1.75f, min_scale = slider >= 0 ? 1.25f : 1.0f, limit_scale = min_scale;
+    float strength_min = fmaxf(0.0f, 0.4f + slider * min_scale * 1.1f), strength_max = 2.2f + slider * max_scale * 1.8f;
+    float limit_min = fmaxf(0.06f, 0.10f + slider * limit_scale * 0.28f), limit_max = 0.6f + slider * limit_scale * 0.6f;
+    const float min_contrast = 1.5f, max_contrast = 5.0f, start_y = 0.3f, end_y = 0.5f;
+    const float pc[14] = {2 * 1127.f / 1024.f, 32.0f / 1024.0f, min_contrast, 1.0f / (max_contrast - min_contrast),
+                          1.0f, 1.0f / 255.0f, start_y, 1.0f / (end_y - start_y),
+                          strength_min, strength_max - strength_min, limit_min, limit_max - limit_min,
+                          1.0f / (float)e->ow, 1.0f / (float)e->oh};
+    VkDescriptorImageInfo si = {D.nis_samp, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo ii = {VK_NULL_HANDLE, e->out_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo oi = {VK_NULL_HANDLE, e->sharp_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet wr[3] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &si},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &ii},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.nis_pipe);
+    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.nis_layout, 0, 3, wr);
+    vkCmdPushConstants(cb, D.nis_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(cb, (e->ow + NIS_BLOCK - 1) / NIS_BLOCK, (e->oh + NIS_BLOCK - 1) / NIS_BLOCK, 1);
+    full_barrier(cb);
+    return 1;
+}
+
 // ---------------------------------------------------------------- jitter
 // The scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
 // sub-pixel Halton(2,3) offset, which shifts what they rasterise as a jittered projection would; full-screen passes
@@ -1074,6 +1180,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     D.last = e, e->used = D.evals + 1;
     full_barrier(cb);
     vk_mvcheck_output(cb, e->out, ow, oh);   // TOTK_MV_CHECK (test)
+    int sharpness = cfg_int("TOTK_DLAA_SHARPNESS");
+    VkImage result = sharpness > 0 && nis_record(cb, e, sharpness > 100 ? 100 : sharpness) ? e->sharp : e->out;
     // the result into the scene target (DLAA: the bloom, the post passes and the HUD read it and draw over it) or into
     // the scaling pass's target (the HUD draws over it)
     VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -1087,10 +1195,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     static int maskdebug = -1;
     if (maskdebug < 0) maskdebug = rt_knob("DLAA_MASKDEBUG", "0");
     if (mvdebug || (maskdebug && mk)) b.srcOffsets[1] = (VkOffset3D){(int32_t)w, (int32_t)h, 1};
-    vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+    vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : result, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                    VK_FILTER_NEAREST);
     full_barrier(cb);
-    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
+    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = result == e->sharp ? e->sharp_view : e->out_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
