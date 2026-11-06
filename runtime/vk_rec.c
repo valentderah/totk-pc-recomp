@@ -3,7 +3,8 @@
 // call's arguments; its pointers point into the packet itself, so the recorder passes the payload to the driver as
 // it is. A packet never wraps: one that does not fit before the end is preceded by a pad. The producer publishes head
 // after each packet; the recorder makes the calls and advances tail, which the producer waits on when the ring is
-// full and in rec_drain. While a part is recorded the recorder spins on head; idle, it sleeps on an event.
+// full and in rec_drain. While a part is recorded the recorder spins on head; idle, it sleeps on an event. Packets also
+// begin, end and submit the parts (rec_begin, rec_end_cb, rec_submit), so each part stays on the recorder throughout.
 // Design: Savage Wind Recomp #189 and LAS Recomp runtime/nvn/vulkan/record.c (https://github.com/peiikai/LASRecomp
 // @ a4b53a3, MIT, Copyright (c) 2026 Peiikai); the code is ours.
 #define VK_REC_IMPL
@@ -22,8 +23,12 @@ static volatile uint64_t head, tail;   // words published by the producer / cons
 static volatile int32_t sleeping;         // the recorder waits for wake_ev
 static PlatEvent wake_ev;              // auto-reset
 static uint64_t put_h;                 // producer: words written (published up to head)
-static VkCommandBuffer rec_cb;         // the part being recorded (set while the recorder is idle)
+static VkCommandBuffer rec_cb;         // producer: the part being recorded, whose vkCmd* become packets
+static VkCommandBuffer r_cb;           // recorder: the command buffer its packets go into (set by a BeginCb packet)
 static int rec_live;                   // producer: rec_begin started the recorder for rec_cb
+static int end_mode = -1;              // TOTK_REC_END (rec_own)
+static int sub_pending;                // producer: the recorder ended a part that rec_submit has not handed over yet
+static volatile VkResult r_sub_res;    // recorder: the result of its last vkQueueSubmit2, read after the drain
 static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 static int rec_chk;                    // TOTK_REC_CHECK (rec_check_handle)
@@ -32,7 +37,7 @@ static volatile uint64_t part_h0;      // put_h at rec_begin: where the packets 
 static volatile uint64_t part_fence;   // the value of the part being recorded (rec_begin)
 
 // Producer statistics, logged by rec_stats_log.
-static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
+static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on, submits; } RS_;
 
 enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
@@ -44,7 +49,7 @@ enum {
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
     R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
-    R_PassMark,
+    R_PassMark, R_BeginCb, R_Submit,
 };
 
 static uint64_t now_ns(void) { return plat_now_ns(); }
@@ -135,7 +140,23 @@ void rec_drain(void) {
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
 }
 
-void rec_begin(VkCommandBuffer cb, uint64_t fence) {
+static int rec_own(void) {
+    if (end_mode < 0) end_mode = rt_knob("REC_END", "1");
+    return end_mode;
+}
+
+// vkBeginCommandBuffer (one submission) and the breadcrumb, on the thread that records cb.
+static void begin_now(VkCommandBuffer cb, int crumb, uint64_t n) {
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(cb, &bi);
+    if (crumb) vk_crumb(cb, crumb, n);
+}
+
+// The command buffer the following packets go into; begin: the recorder begins it (TOTK_REC_END=1).
+typedef struct { VkCommandBuffer cb; int begin, crumb; uint64_t n; } A_BeginCb;
+
+void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
     static int mode = -1;
     if (mode < 0) {
         // Default off on AMD GPUs. With the recorder those drivers lost the device or hung the GPU at startup on
@@ -168,11 +189,21 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence) {
         }
     }
     RS_.parts++;
-    if (!RT_KNOB_ON(mode)) return;
+    int on = RT_KNOB_ON(mode), own = on && rec_own();
+    if (!own) {
+        // The submitting thread begins cb. The part pool is the recorder's while it has packets (an A/B switch
+        // between parts): it finishes them first.
+        rec_drain();
+        begin_now(cb, crumb, n);
+        if (!on) return;
+    }
     RS_.parts_on++;
-    rec_cb = cb;   // the recorder is idle: rec_end drained it
     __atomic_store_n(&part_h0, put_h, __ATOMIC_RELEASE);
     __atomic_store_n(&part_fence, fence, __ATOMIC_RELEASE);
+    A_BeginCb *a = put(R_BeginCb, sizeof *a);
+    *a = (A_BeginCb){cb, own, crumb, n};
+    pub();
+    rec_cb = cb;
     rec_live = 1;
 }
 
@@ -182,23 +213,28 @@ void rec_end(void) {
     rec_live = 0;
 }
 
-// TOTK_REC_END (default 1): the thread that recorded the part also ends it, after the breadcrumb crumb (kind 0: none)
-// that vk_sync.c writes at the end of a submission. On an RX 6700 XT (driver 26.10.1, issue #5) parts the recorder
-// recorded and the submitting thread ended broke when a submission was split (vk_sync.c vk_sync_split): the GPU hung
-// or the scene turned green, then white. The handoff in rec_drain orders the two threads, so Vulkan allows the old
-// split; the driver did not cope with it. TOTK_REC_END=0 brings the old split back.
+// TOTK_REC_END (default 1): a part the recorder records is the recorder's from its begin to its submission: it begins
+// it, makes every command, ends it after the breadcrumb crumb (kind 0: none) that vk_sync.c writes at the end of a
+// submission, and submits it. The submitting thread touches the part pool only while the recorder is idle. That is
+// LAS Recomp's and Savage Wind Recomp's model (runtime/nvn/vulkan/record.h: command buffers allocated once, then only
+// the recorder begins, records, ends and submits them). Before, the submitting thread began and submitted parts the
+// recorder recorded and, before that, also ended them. The handoff in rec_drain orders the two threads, so Vulkan
+// allows that split, but on an RX 6700 XT (driver 26.10.1, issue #5) parts ended by the other thread broke when a
+// submission was split (vk_sync.c vk_sync_split): the GPU hung or the scene turned green, then white. Moving the end
+// fixed that; begin and submit followed. TOTK_REC_END=0 brings the old split back: the submitting thread begins,
+// ends and submits every part.
 // The line is written only when a part was recorded by the recorder: with the recorder off (the default on AMD) the
 // switch changes nothing, and reports read an unconditional line as proof that the recorder was running (#315).
 typedef struct { int kind; uint64_t n; } A_EndCb;
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
-    static int mode = -1, said;
-    if (mode < 0) mode = rt_knob("REC_END", "1");
+    static int said;
+    int own = rec_own();
     if (rec_live && cb == rec_cb && !said) {
         said = 1;
-        rt_log("vk_rec: a part the recorder records is ended by %s (TOTK_REC_END=%d)",
-               mode ? "the recorder" : "the submitting thread", mode);
+        rt_log("vk_rec: a part the recorder records is begun, ended and submitted by %s (TOTK_REC_END=%d)",
+               own ? "the recorder" : "the submitting thread", own);
     }
-    if (!rec_live || cb != rec_cb || !mode) {
+    if (!rec_live || cb != rec_cb || !own) {
         rec_end();
         if (crumb) vk_crumb(cb, crumb, n);
         return 0;
@@ -206,18 +242,53 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     A_EndCb *a = put(R_EndCb, sizeof *a);
     *a = (A_EndCb){crumb, n};
     pub();
-    rec_drain();
     rec_live = 0;
+    sub_pending = 1;
     return 1;
+}
+
+// At most two command buffers and one signal: the shape vk_sync.c submits.
+typedef struct { uint32_t ncb, nsig; VkCommandBufferSubmitInfo cbi[2]; VkSemaphoreSubmitInfo sig; } A_Submit;
+VkResult rec_submit(const VkSubmitInfo2 *si) {
+    if (!sub_pending) {
+        vk_queue_lock();
+        VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
+        vk_queue_unlock();
+        return r;
+    }
+    sub_pending = 0;
+    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount || si->pNext)
+        rt_fatal("vk_rec: a submission of %u command buffers, %u waits and %u signals the recorder cannot carry",
+                 si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
+    A_Submit *a = put(R_Submit, sizeof *a);
+    memset(a, 0, sizeof *a);
+    a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
+    for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
+    if (a->nsig) a->sig = si->pSignalSemaphoreInfos[0];
+    pub();
+    // Waited for here, so the queue holds every earlier submission when the caller goes on, as with the recorder off:
+    // the present, uploads, readbacks and device waits on other threads rely on that order.
+    rec_drain();
+    RS_.submits++;
+    return r_sub_res;
+}
+
+static void submit_run(const A_Submit *a) {
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb,
+                        .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
+                        .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
+    vk_queue_lock();
+    r_sub_res = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock();
 }
 
 void rec_stats_log(void) {
     if (!(rt_trace & RT_TRACE_PERF) || !RS_.parts) return;
     rt_log("vk_rec: %llu of %llu parts recorded by the recorder: %llu packets (%.1f MiB), %llu drains (%llu for a call "
-           "without a packet) waited %.2f ms in all, ring full %llu times",
+           "without a packet) waited %.2f ms in all, ring full %llu times, %llu submissions made by the recorder",
            (unsigned long long)RS_.parts_on, (unsigned long long)RS_.parts, (unsigned long long)RS_.packets,
            RS_.words * 8 / 1048576.0, (unsigned long long)RS_.drains, (unsigned long long)RS_.fallbacks,
-           RS_.drain_ns / 1e6, (unsigned long long)RS_.full_waits);
+           RS_.drain_ns / 1e6, (unsigned long long)RS_.full_waits, (unsigned long long)RS_.submits);
     memset(&RS_, 0, sizeof RS_);
 }
 
@@ -642,7 +713,14 @@ TARGET_CMD(rec_write_mask, R_WriteMask, PFN_vkCmdSetColorWriteMaskEXT, VkColorCo
 // ---- the recorder's side
 
 static void exec_packet(uint32_t op, void *p) {
-    VkCommandBuffer cb = rec_cb;
+    if (op == R_BeginCb) {
+        A_BeginCb *a = p;
+        r_cb = a->cb;
+        if (a->begin) begin_now(r_cb, a->crumb, a->n);
+        return;
+    }
+    if (op == R_Submit) { submit_run(p); return; }
+    VkCommandBuffer cb = r_cb;
     switch (op) {
 #define F(name, ...) case R_##name: { A_##name *a = p; vkCmd##name(cb, __VA_ARGS__); break; }
     F(BeginQuery, a->p, a->q, a->f)

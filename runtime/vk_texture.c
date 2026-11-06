@@ -61,6 +61,10 @@ typedef struct Tex {
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
+    uint64_t rel_ms;              // while released: when (coarse_ms)
+    uint64_t use_seq;             // order of the last creation or take-back among all entries
+    uint64_t rel_seq;             // while released: use_seq of the newest entry placed before this release; an entry
+                                  // with a later use_seq on overlapping storage replaced this one's bytes
 } Tex;
 
 // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
@@ -540,6 +544,46 @@ static void rel_unlink(Tex *e) {
     e->rel_prev = e->rel_next = NULL;
 }
 
+// A clock read per submit, for stamps on paths that run many times a frame.
+static uint64_t coarse_ms;
+static uint64_t use_counter;
+
+// How long released entries wait until the game takes them back, split into those holding GPU-written content and the
+// others (TOTK_TRACE=perf, vk_texture_released_log): where transient textures end and the tail that can go begins.
+enum { AGE_1S, AGE_5S, AGE_30S, AGE_120S, AGE_LONG, AGE_N };
+static const char *const age_name[AGE_N] = {"<1s", "<5s", "<30s", "<120s", ">=120s"};
+static uint64_t takeback_n[2][AGE_N];
+static int age_bucket(uint64_t ms) {
+    return ms < 1000 ? AGE_1S : ms < 5000 ? AGE_5S : ms < 30000 ? AGE_30S : ms < 120000 ? AGE_120S : AGE_LONG;
+}
+
+// Keys of entries the pressure path dropped, to count the ones the game asks for again soon after: a drop that buys
+// nothing and, for GPU-written content, loses it. Direct-mapped, a lost record only undercounts.
+#define DROPPED_SLOTS 4096u
+static struct { uint64_t hash, ms; } dropped[DROPPED_SLOTS];
+static uint64_t n_recreated[2], n_recreated_written[2];   // index: within 10 s, later
+static uint64_t key_hash(const TexKey *k) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    const uint8_t *b = (const uint8_t *)k;
+    for (size_t i = 0; i < sizeof *k; i++) h = (h ^ b[i]) * 0x100000001b3ull;
+    return h | 1;
+}
+static void dropped_note(const Tex *e) {
+    uint64_t h = key_hash(&e->key);
+    dropped[h >> 3 & (DROPPED_SLOTS - 1)].hash = h ^ (uint64_t)(e->pub.gpu_owned != 0) << 1;
+    dropped[h >> 3 & (DROPPED_SLOTS - 1)].ms = coarse_ms;
+}
+static void dropped_check(const TexKey *k) {
+    uint64_t h = key_hash(k);
+    unsigned i = h >> 3 & (DROPPED_SLOTS - 1);
+    uint64_t was = dropped[i].hash;
+    if (!was || (was & ~2ull) != (h & ~2ull)) return;
+    int later = coarse_ms - dropped[i].ms >= 10000;
+    n_recreated[later]++;
+    if (was != h) n_recreated_written[later]++;
+    dropped[i].hash = 0;
+}
+
 static void destroy_tex(Tex *e) {
     own_remove(e);
     tex_gen_bump(e->key.addr);
@@ -569,15 +613,112 @@ static void sweep_released(void) {
     while (nreleased > RELEASED_MAX && rel_head) destroy_tex(rel_head);
 }
 
-// TOTK_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each submit drops up to
-// PRESSURE_STEP of the oldest released entries, so a 4 GiB card does not keep RELEASED_MAX released images (each ASTC
-// one decoded to RGBA8) while the heap spills into system memory. A few per submit, for the reason above. Only entries
-// that come back intact are dropped: mirrored ones the GPU never wrote, re-uploaded from their storage. A render target
-// lives only in its image; dropping it brought the texture back empty (black flashes in a Depths boss fight, ~170
+// TOTK_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each budget query drops up
+// to PRESSURE_STEP released entries, oldest first, until the use is back under the line; a few at a time, for the reason
+// above. Two kinds come back without loss:
+//
+// Overwritten: the game placed another texture on the entry's storage after releasing it, so on the Switch its bytes are
+// gone too, and it has waited DEAD_AGE_MS. Transient render targets are taken back within a second or two (a stand-still
+// field window: about 19000 take-backs under 1 s, 2 later than that, none after 30 s), while their leftovers at
+// addresses the game's allocator moved on from stay released for good: 1.9 GiB of 2.0 GiB, nearly all of it render targets
+// no storage can refill. Not bound through a finalized slot for DEAD_QUIET_SUBMITS either: such a slot still samples the
+// entry (slot_resolve).
+//
+// Clean: mirrored ones the GPU never wrote, re-uploaded from their storage, at the cost of the upload, so after
+// CLEAN_AGE_MS: without the wait a fight re-created about 500 of them per 10 s. Any other render target lives only in its
+// image: dropping one that was merely old brought the texture back empty (black flashes in a Depths boss fight, ~170
 // "left uninitialised" aliases a minute).
 #define PRESSURE_STEP 32
+#define CLEAN_AGE_MS 5000u
+#define DEAD_AGE_MS 30000u
+#define DEAD_QUIET_SUBMITS 600u
+#define DEAD_RETRY_QUERIES 8   // budget queries to skip after a search that found nothing
 static int vram_pressure = -1;
-static uint64_t n_pressure_drops;
+static uint64_t n_pressure_drops, n_pressure_overwritten;
+
+static int tex_by_addr(const void *a, const void *b) {
+    const Tex *x = *(Tex *const *)a, *y = *(Tex *const *)b;
+    return x->pub.addr < y->pub.addr ? -1 : x->pub.addr > y->pub.addr;
+}
+
+// All entries sorted by storage address, with the highest storage end up to each one: the input of storage_taken.
+typedef struct { Tex **e; uint64_t *end; int n; } AddrIndex;
+
+static int addr_index(AddrIndex *x) {
+    x->n = 0;
+    x->e = malloc(sizeof *x->e * (size_t)(by_key.n + 1));
+    x->end = malloc(sizeof *x->end * (size_t)(by_key.n + 1));
+    if (!x->e || !x->end) { free(x->e), free(x->end); return 0; }
+    for (uint32_t i = 0; i < by_key.cap; i++)
+        if (by_key.vals[i]) x->e[x->n++] = by_key.vals[i];
+    qsort(x->e, (size_t)x->n, sizeof *x->e, tex_by_addr);
+    uint64_t top = 0;
+    for (int i = 0; i < x->n; i++) {
+        uint64_t end = x->e[i]->pub.addr + x->e[i]->t.L.size;
+        x->end[i] = top = end > top ? end : top;
+    }
+    return 1;
+}
+
+static void addr_index_free(AddrIndex *x) { free(x->e), free(x->end); }
+
+// A texture placed after the release of x->e[i] overlaps its storage.
+static int storage_taken(const AddrIndex *x, int i) {
+    const Tex *e = x->e[i];
+    for (int j = i; --j >= 0 && x->end[j] > e->pub.addr;)
+        if (x->e[j]->pub.addr + x->e[j]->t.L.size > e->pub.addr && x->e[j]->use_seq > e->rel_seq) return 1;
+    for (int j = i; ++j < x->n && x->e[j]->pub.addr < e->pub.addr + e->t.L.size;)
+        if (x->e[j]->use_seq > e->rel_seq) return 1;
+    return 0;
+}
+
+static uint64_t own_bytes(const Tex *e) {
+    VkCtx *c = vk_ctx();
+    if (!e->alloc || !c) return 0;
+    VmaAllocationInfo ai;
+    vmaGetAllocationInfo(c->vma, e->alloc, &ai);
+    return ai.size;
+}
+
+static int dead_candidate(const Tex *e) {
+    return e->alloc && (!e->checked || submit_epoch - e->checked >= DEAD_QUIET_SUBMITS);
+}
+
+// Drops overwritten entries until `need` bytes are free or the step is used up. The sort runs only under pressure, while
+// an old enough entry exists, and rests for a while when it finds nothing to drop. Returns the bytes freed.
+static uint64_t pressure_search_ns;   // longest search since the last mem: released line
+static uint64_t drop_overwritten(uint64_t need, int *dropped) {
+    static int rest;
+    if (rest > 0) { rest--; return 0; }
+    if (!rel_head || coarse_ms - rel_head->rel_ms < DEAD_AGE_MS) return 0;
+    uint64_t t0 = plat_now_ns(), freed = 0;
+    AddrIndex x;
+    if (!addr_index(&x)) return 0;
+    Tex *cand[PRESSURE_STEP];
+    int nc = 0;
+    for (Tex *e = rel_head; e && nc < PRESSURE_STEP && coarse_ms - e->rel_ms >= DEAD_AGE_MS; e = e->rel_next) {
+        if (!dead_candidate(e)) continue;
+        int lo = 0, hi = x.n;   // the first entry at e's address, then e among those
+        while (lo < hi) {
+            int m = (lo + hi) / 2;
+            if (x.e[m]->pub.addr < e->pub.addr) lo = m + 1;
+            else hi = m;
+        }
+        while (lo < x.n && x.e[lo] != e) lo++;
+        if (lo < x.n && storage_taken(&x, lo)) cand[nc++] = e;
+    }
+    addr_index_free(&x);
+    for (int i = 0; i < nc && freed < need; i++) {
+        freed += own_bytes(cand[i]);
+        dropped_note(cand[i]);
+        destroy_tex(cand[i]);
+        (*dropped)++, n_pressure_drops++, n_pressure_overwritten++;
+    }
+    if (!nc) rest = DEAD_RETRY_QUERIES;
+    uint64_t ns = plat_now_ns() - t0;
+    if (ns > pressure_search_ns) pressure_search_ns = ns;
+    return freed;
+}
 
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
@@ -589,11 +730,16 @@ static void sweep_pressure(void) {   // tex_lock held
     if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
     uint64_t used, budget;
     int exact;
-    if (!vk_mem_vram(&used, &budget, &exact) || used <= budget / 100 * (uint64_t)vram_pressure) return;
+    if (!vk_mem_vram(&used, &budget, &exact)) return;
+    uint64_t line = budget / 100 * (uint64_t)vram_pressure;
+    if (used <= line) return;
     int dropped = 0;
-    for (Tex *e = rel_head, *next; e && dropped < PRESSURE_STEP; e = next) {
+    uint64_t need = used - line, freed = drop_overwritten(need, &dropped);
+    for (Tex *e = rel_head, *next; e && freed < need && dropped < PRESSURE_STEP && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
         next = e->rel_next;
         if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
+        freed += own_bytes(e);
+        dropped_note(e);
         destroy_tex(e);
         dropped++, n_pressure_drops++;
     }
@@ -947,6 +1093,8 @@ static Tex *entry_of(const tex_t *t) {
         }
         if (!(e = create_tex(t, &k, tex_alias))) return NULL;
         perf_count(PERF_CNT_TEX_NEW);
+        dropped_check(&k);
+        e->use_seq = ++use_counter;
         // released entries of another descriptor at this address are replaced by the new one; a live one holding
         // GPU-written content is the alias source, preferring the one that differs only in swizzle (same_but_swizzle)
         int alias = 0;
@@ -982,7 +1130,11 @@ static Tex *entry_of(const tex_t *t) {
         nvn_hm_put(&by_key, &k, e);
         tex_gen_bump(k.addr);
     }
-    if (e->released) e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr);
+    if (e->released) {
+        takeback_n[e->pub.gpu_owned != 0][age_bucket(coarse_ms - e->rel_ms)]++;
+        e->use_seq = ++use_counter;
+        e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr);
+    }
     e->t = *t;
     return e;
 }
@@ -1073,6 +1225,8 @@ void vk_texture_release(const tex_t *t) {
     Tex *e = nvn_hm_get(&by_key, &k);
     if (e && !e->released) {
         e->released = 1;
+        e->rel_ms = coarse_ms;
+        e->rel_seq = use_counter;
         nreleased++;
         rel_append(e);
         tex_gen_bump(k.addr);
@@ -1236,6 +1390,7 @@ uint32_t vk_texture_epoch(void) { return __atomic_load_n(&submit_epoch, __ATOMIC
 void vk_texture_new_submit(void) {
     lock();
     if (!++submit_epoch) submit_epoch = 1;
+    coarse_ms = plat_now_ms();
     sweep_pressure();
     static uint64_t log_at;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
@@ -1255,9 +1410,10 @@ void vk_texture_new_submit(void) {
                (unsigned long long)f * 60, (unsigned long long)ck, (unsigned long long)n_checks, (unsigned long long)calls,
                (unsigned long long)untr);
         n_checks = 0;
-        rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu", (unsigned long long)f * 60,
-               nreleased, (unsigned long long)n_pressure_drops);
-        n_pressure_drops = 0;
+        rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu (%llu overwritten)",
+               (unsigned long long)f * 60, nreleased, (unsigned long long)n_pressure_drops,
+               (unsigned long long)n_pressure_overwritten);
+        n_pressure_drops = n_pressure_overwritten = 0;
     }
     unlock();
 }
@@ -1959,6 +2115,74 @@ void vk_texture_census(VkTexCensus *s) {
         }
         if (e->released) s->released++, s->own_released += e->alloc != NULL, s->bytes_released += bytes;
         else s->live++, s->own_live += e->alloc != NULL, s->bytes_live += bytes;
+    }
+    unlock();
+}
+
+// TOTK_TRACE=perf, with mem: vram: what the released entries in own memory hold and how long they waited.
+void vk_texture_released_log(uint64_t frame) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    enum { CL_CLEAN, CL_BACKED, CL_DIRTY, CL_POOLS, CL_N };
+    uint64_t cl_n[CL_N] = {0}, cl_b[CL_N] = {0}, age_b[AGE_N] = {0}, dead_n = 0, dead_b = 0, dead_dirty_b = 0;
+    uint64_t bound_n = 0, bound_b = 0, ded_n = 0, ded_b = 0;
+    typedef struct { uint32_t w, h, fmt, n; uint64_t b; } Group;
+    Group gr[256];
+    int ng = 0;
+    lock();
+    AddrIndex x = {0};
+    int indexed = addr_index(&x);
+    for (int i = 0; indexed && i < x.n; i++) {
+        Tex *e = x.e[i];
+        if (!e->released || !e->alloc) continue;
+        VmaAllocationInfo2 ai2;
+        vmaGetAllocationInfo2(c->vma, e->alloc, &ai2);
+        const VmaAllocationInfo ai = ai2.allocationInfo;
+        if (ai2.dedicatedMemory) ded_n++, ded_b += ai.size;
+        int cl = !e->pub.mirrored ? CL_POOLS : e->gpu_dirty ? CL_DIRTY : e->pub.gpu_owned ? CL_BACKED : CL_CLEAN;
+        cl_n[cl]++, cl_b[cl] += ai.size;
+        if (cl != CL_CLEAN) age_b[age_bucket(coarse_ms - e->rel_ms)] += ai.size;
+        if (e->checked && submit_epoch - e->checked < 600) bound_n++, bound_b += ai.size;
+        if (storage_taken(&x, i)) dead_n++, dead_b += ai.size, dead_dirty_b += cl != CL_CLEAN ? ai.size : 0;
+        int g = 0;
+        while (g < ng && (gr[g].w != e->t.d.width || gr[g].h != e->t.d.height || gr[g].fmt != (uint32_t)e->t.d.format)) g++;
+        if (g == ng && ng < 256) gr[ng++] = (Group){e->t.d.width, e->t.d.height, (uint32_t)e->t.d.format, 0, 0};
+        if (g < ng) gr[g].n++, gr[g].b += ai.size;
+    }
+    if (indexed) addr_index_free(&x);
+    const double M = 1048576.0;
+    rt_log("mem: released frame %llu: own memory: clean %llu %.0f MiB, GPU-written with storage current %llu %.0f MiB, "
+           "GPU-written image only %llu %.0f MiB, not mirrored %llu %.0f MiB; all but clean by age <1s %.0f <5s %.0f <30s %.0f "
+           "<120s %.0f older %.0f MiB; storage taken by a later texture %llu %.0f MiB (%.0f not clean); bound through a slot "
+           "in the last 600 submits %llu %.0f MiB; in dedicated memory, returned to the driver when dropped, %llu %.0f MiB; "
+           "longest search %.2f ms",
+           (unsigned long long)frame, (unsigned long long)cl_n[CL_CLEAN], cl_b[CL_CLEAN] / M, (unsigned long long)cl_n[CL_BACKED],
+           cl_b[CL_BACKED] / M, (unsigned long long)cl_n[CL_DIRTY], cl_b[CL_DIRTY] / M, (unsigned long long)cl_n[CL_POOLS],
+           cl_b[CL_POOLS] / M, age_b[AGE_1S] / M, age_b[AGE_5S] / M, age_b[AGE_30S] / M, age_b[AGE_120S] / M,
+           age_b[AGE_LONG] / M, (unsigned long long)dead_n, dead_b / M, dead_dirty_b / M, (unsigned long long)bound_n,
+           bound_b / M, (unsigned long long)ded_n, ded_b / M, pressure_search_ns / 1e6);
+    pressure_search_ns = 0;
+    for (int k = 0; k < 2; k++) {
+        char line[256];
+        size_t o = 0;
+        for (int a = 0; a < AGE_N; a++) {
+            o += (size_t)snprintf(line + o, sizeof line - o, " %s %llu", age_name[a], (unsigned long long)takeback_n[k][a]);
+            takeback_n[k][a] = 0;
+        }
+        rt_log("mem: released frame %llu: taken back after,%s:%s", (unsigned long long)frame, k ? " GPU-written" : " others", line);
+    }
+    rt_log("mem: released frame %llu: dropped under pressure and created again: within 10 s %llu (%llu GPU-written), later %llu (%llu)",
+           (unsigned long long)frame, (unsigned long long)n_recreated[0], (unsigned long long)n_recreated_written[0],
+           (unsigned long long)n_recreated[1], (unsigned long long)n_recreated_written[1]);
+    n_recreated[0] = n_recreated[1] = n_recreated_written[0] = n_recreated_written[1] = 0;
+    for (int top = 0; top < 4; top++) {
+        int best = -1;
+        for (int g = 0; g < ng; g++)
+            if (gr[g].n && (best < 0 || gr[g].b > gr[best].b)) best = g;
+        if (best < 0) break;
+        rt_log("mem: released frame %llu: largest %d: %ux%u fmt %#x: %u entries %.0f MiB", (unsigned long long)frame, top + 1,
+               gr[best].w, gr[best].h, gr[best].fmt, gr[best].n, gr[best].b / M);
+        gr[best].n = 0;
     }
     unlock();
 }

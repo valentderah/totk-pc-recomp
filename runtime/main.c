@@ -7,6 +7,7 @@
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
 //     --probe-discord  the Rich Presence IPC exchange; skips without a Discord client; no game files
+//     --probe-playtime  the play time file, its ticks and saves (playtime.c); needs no game files
 //     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
@@ -463,7 +464,7 @@ static int probe_crash(int null) {
 
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
-                    "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                    "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
                     "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
@@ -553,6 +554,7 @@ int main(int argc, char **argv) {
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         discord_init();   // the Rich Presence thread (discord_rpc.c); it reads totk.ini itself and idles while off
+        playtime_init();  // the play time thread (playtime.c): the Game tab's play time across runs
         rt_boot();
         return 0;
     }
@@ -566,6 +568,7 @@ int main(int argc, char **argv) {
 #endif
     if (!strcmp(mode, "--probe-mods")) return probe_mods();
     if (!strcmp(mode, "--probe-discord")) return probe_discord();
+    if (!strcmp(mode, "--probe-playtime")) return probe_playtime();
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();
     if (!strcmp(mode, "--probe-services")) return probe_services();
