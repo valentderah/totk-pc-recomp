@@ -78,5 +78,10 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         menu_event_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
         return;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        // The guide button (the DualSense's PS button) opens and closes the menu, as it did on this port's own Linux
+        // window layer before the SDL one replaced it: a pad has no F1, and Minus+Plus is easy to miss.
+        if (e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) menu_toggle();
+        return;
     }
 }
