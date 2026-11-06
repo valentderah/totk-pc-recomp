@@ -23,14 +23,18 @@
 // reads the same flags from the game's memory instead, every two seconds (live flags below). Achievements unlock
 // when the statistics reach them and stay unlocked: <profile>/achievements/unlocked.txt holds one "<id> <unix time>" line
 // each, and <profile>/achievements/goals.ini the goals, which the player may edit (achs_define).
+//
+// All of it waits for TOTK_ACHIEVEMENTS (off by default): stats_init starts nothing and writes nothing while it is
+// off, and the Achievements tab, where the player switches it on, starts it then. Switched off again, the thread
+// reads and writes nothing until it is back on.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <zstd.h>
 
+#include "cfg.h"
 #include "fs.h"
 #include "host.h"
 #include "ov.h"
@@ -64,72 +68,6 @@ static uint32_t flagf(const char *fmt, const char *actor) {
     char name[256];
     snprintf(name, sizeof name, fmt, actor);
     return mm3(name);
-}
-
-// ---- SARC and zstd with the game's dictionaries (Pack/ZsDic.pack.zs)
-static int sarc_find(const uint8_t *p, size_t n, const char *name, size_t *at, size_t *size) {
-    if (n < 0x20 || memcmp(p, "SARC", 4)) return 0;
-    uint32_t data = (uint32_t)p[12] | p[13] << 8 | p[14] << 16 | (uint32_t)p[15] << 24;
-    uint16_t count = (uint16_t)(p[0x1a] | p[0x1b] << 8);
-    size_t nodes = 0x20, names = nodes + 16u * count + 8;
-    if (names > n) return 0;
-    for (uint16_t i = 0; i < count; i++) {
-        const uint8_t *e = p + nodes + 16u * i;
-        uint32_t attr = (uint32_t)e[4] | e[5] << 8, lo, hi;
-        memcpy(&lo, e + 8, 4), memcpy(&hi, e + 12, 4);
-        size_t off = names + 4u * attr;
-        if (off >= n || data + (size_t)hi > n || lo > hi) continue;
-        if (!strncmp((const char *)p + off, name, n - off)) {
-            *at = data + lo, *size = hi - lo;
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static ZSTD_DDict *dicts[8];
-static unsigned dict_ids[8], ndicts;
-
-static void dicts_load(void) {
-    if (ndicts) return;
-    size_t n;
-    uint8_t *pack = romfs_load("Pack/ZsDic.pack.zs", &n, "no statistics");
-    unsigned long long dn = pack ? ZSTD_getFrameContentSize(pack, n) : 0;
-    uint8_t *raw = dn && dn < (64u << 20) ? malloc((size_t)dn) : NULL;
-    if (raw && ZSTD_decompress(raw, (size_t)dn, pack, n) == dn) {
-        static const char *const names[] = {"zs.zsdic", "pack.zsdic", "bcett.byml.zsdic"};
-        for (int i = 0; i < 3; i++) {
-            size_t at, size;
-            if (!sarc_find(raw, (size_t)dn, names[i], &at, &size)) continue;
-            dicts[ndicts] = ZSTD_createDDict(raw + at, size);
-            dict_ids[ndicts] = ZSTD_getDictID_fromDict(raw + at, size);
-            if (dicts[ndicts]) ndicts++;
-        }
-    }
-    free(raw);
-    free(pack);
-}
-
-static uint8_t *zs_unpack(const uint8_t *in, size_t n, size_t *out_n) {
-    unsigned long long size = ZSTD_getFrameContentSize(in, n);
-    if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN || size > (256u << 20)) return NULL;
-    unsigned id = ZSTD_getDictID_fromFrame(in, n);
-    ZSTD_DDict *d = NULL;
-    for (unsigned i = 0; i < ndicts; i++)
-        if (dict_ids[i] == id) d = dicts[i];
-    if (id && !d) return NULL;
-    uint8_t *out = malloc(size ? (size_t)size : 1);
-    ZSTD_DCtx *ctx = ZSTD_createDCtx();
-    size_t got = out && ctx ? (d ? ZSTD_decompress_usingDDict(ctx, out, (size_t)size, in, n, d)
-                                 : ZSTD_decompressDCtx(ctx, out, (size_t)size, in, n))
-                            : 0;
-    ZSTD_freeDCtx(ctx);
-    if (!out || ZSTD_isError(got) || got != size) {
-        free(out);
-        return NULL;
-    }
-    *out_n = (size_t)size;
-    return out;
 }
 
 // ---- names: <actor>_Name labels of an MSBT, as UTF-8, keyed by the actor name's hash
@@ -288,12 +226,12 @@ static void names_load(void) {
     if (!*rel) romfs_list("Mals/USen.Product.", mals_found, rel);
     size_t n, raw_n;
     uint8_t *zs = *rel ? romfs_load(rel, &n, "statistics show internal names") : NULL;
-    uint8_t *raw = zs ? zs_unpack(zs, n, &raw_n) : NULL;
+    uint8_t *raw = zs ? romfs_zs_unpack(zs, n, 256u << 20, &raw_n) : NULL;
     free(zs);
     static const char *const files[] = {"ActorMsg/PictureBook.msbt", "ActorMsg/PouchContent.msbt"};
     for (int i = 0; raw && i < 2; i++) {
         size_t at, size;
-        if (sarc_find(raw, raw_n, files[i], &at, &size)) msbt_names(raw + at, size);
+        if (romfs_sarc_member(raw, raw_n, files[i], &at, &size)) msbt_names(raw + at, size);
     }
     free(raw);
     if (nnames) qsort(names, nnames, sizeof *names, name_cmp);
@@ -382,8 +320,10 @@ static uint64_t live_slot, live_mgr;   // the main address holding the manager p
 static uint64_t live_recs[4];          // the sections' record arrays when the addresses were worked out
 
 // Host pages that can be read without a fault: a guest region mem_query calls mapped may still have pages the host
-// has not committed (an access violation at 0x18000000e8 while scanning showed it).
-static int readable(uint64_t a, uint64_t n) { return a && a + n >= a && plat_mem_readable(a, n); }
+// has not committed (an access violation at 0x18000000e8 while scanning showed it). memory.c mem_guest_readable
+// answers main's data and the committed heap, where the manager and its records live, from the layout; only other
+// ranges cost an OS query.
+static int readable(uint64_t a, uint64_t n) { return a && a + n >= a && mem_guest_readable(a, n); }
 
 static uint64_t rq(uint64_t a) { uint64_t v; memcpy(&v, (const void *)(uintptr_t)a, 8); return v; }
 static uint32_t rw(uint64_t a) { uint32_t v; memcpy(&v, (const void *)(uintptr_t)a, 4); return v; }
@@ -518,7 +458,7 @@ static int live_find(void) {
 
 // The live values in place of the save's flags (the same sorted table compute reads).
 static int live_read(void) {
-    if (!live_same()) return 0;
+    if (!live_same() || frame_step_world_us() < 0) return 0;   // the world loaded on every read the unlock rule counts
     Flag *f = malloc((nlive ? nlive : 1) * sizeof *f);
     if (!f) return 0;
     for (size_t i = 0; i < nlive; i++) {
@@ -1056,12 +996,32 @@ static void ach_save(void) {
     free(out);
 }
 
-// Holding lock.
-static int ach_update(void) {
+// The unlock rule. A value read from the game's memory can be a passing one: while the world reloads or a save loads,
+// the records the addresses point at may not hold the save's values yet (live_same only checks that the manager and
+// its record arrays did not move). So a live value unlocks an achievement only when it meets the goal on LIVE_CONFIRM
+// reads in a row (LIVE_MS apart, the world loaded on each); a read below the goal or one that is not live starts the
+// count again. A value read from progress.sav unlocks at once: the game wrote that file itself when it saved.
+enum { LIVE_CONFIRM = 3 };
+static uint8_t streak[STATS_ACH_MAX];
+
+static int unlock_due(uint32_t progress, uint32_t target, int from_save, uint8_t *count) {
+    if (progress < target) {
+        *count = 0;
+        return 0;
+    }
+    if (from_save) return 1;
+    if (*count < 255) (*count)++;
+    return *count >= LIVE_CONFIRM;
+}
+
+static void streaks_reset(void) { memset(streak, 0, sizeof streak); }
+
+// Holding lock. from_save: the statistics come from progress.sav, not from the game's memory.
+static int ach_update(int from_save) {
     int changed = 0;
     for (int i = 0; i < nachs; i++) {
         view.ach[i].progress = ach_progress(&view, &achs[i]);
-        if (!unlocked[i] && view.ach[i].progress >= achs[i].target) {
+        if (!unlocked[i] && unlock_due(view.ach[i].progress, achs[i].target, from_save, &streak[i])) {
             unlocked[i] = (uint64_t)time(NULL);
             changed = 1;
             rt_log("stats: achievement %s unlocked", achs[i].id);
@@ -1101,10 +1061,13 @@ static void stats_main(void *arg) {
     int ready = 0;
     for (;;) {
         plat_sleep_ms(LIVE_MS);
+        if (!cfg_bool("TOTK_ACHIEVEMENTS")) {   // switched off on the tab: a save commit stays pending for later
+            streaks_reset();
+            continue;
+        }
         int saved = plat_xchg32(&pending, 0);
         if (!ready) {
             if (!saved) continue;
-            dicts_load();
             romfs_list("Pack/Actor/", actor_found, NULL);
             if (!nactors) {
                 plat_xchg32(&pending, 1);   // the RomFS is not open yet
@@ -1116,6 +1079,7 @@ static void stats_main(void *arg) {
         char path[1200] = "";
         if (saved && newest_save(path, sizeof path)) foot_read(path);   // the Hero's Path changes only with a save
         int is_live = live_find() && live_read();
+        if (!is_live) streaks_reset();
         if (!is_live && (!saved || !*path || !load_save(path))) continue;
         StatsView s;
         plat_mutex_lock(&lock);
@@ -1127,7 +1091,7 @@ static void stats_main(void *arg) {
         s.when = is_live ? (uint64_t)time(NULL) : (uint64_t)plat_file_mtime(path);
         plat_mutex_lock(&lock);
         view = s;
-        int changed = ach_update();
+        int changed = ach_update(!is_live);
         plat_mutex_unlock(&lock);
         if (changed) ach_save();
         if (!is_live || s.kills != kills || s.items != items || s.weapons != weapons)
@@ -1143,7 +1107,7 @@ static void stats_main(void *arg) {
 
 void stats_init(void) {
     static int32_t started;
-    if (plat_xchg32(&started, 1)) return;
+    if (!cfg_bool("TOTK_ACHIEVEMENTS") || plat_xchg32(&started, 1)) return;
     const char *dir = rt_config()->profile;
     if (!dir || !*dir) return;
     char folder[1100];
@@ -1154,7 +1118,7 @@ void stats_init(void) {
     achs_define();
     ach_load();
     plat_mutex_lock(&lock);
-    ach_update();
+    ach_update(0);
     plat_mutex_unlock(&lock);
     if (!plat_thread_spawn(stats_main, NULL, "stats", 0)) rt_log("stats: cannot start its thread");
 }
@@ -1163,4 +1127,162 @@ void stats_view(StatsView *out) {
     plat_mutex_lock(&lock);
     *out = view;
     plat_mutex_unlock(&lock);
+}
+
+// --probe-stats: the readers and the unlock rule on files the probe writes itself, in a folder next to totk.exe; needs
+// no game files. progress.sav's flag table (a hash present, a hash missing, a table cut short by the file's end, a file
+// too short to hold one), footprint.sav's steps (a layer change, a warp, a death, a jump over FOOT_JUMP_M), goals.ini
+// (the defaults written when it is missing, a line that is not understood kept at its default, an empty line turning
+// a set off) and unlock_due (a live value counts on its LIVE_CONFIRM-th read in a row, a save's at once).
+static int probe_fails;
+#define PCHECK(c, what)                                                                                              \
+    do {                                                                                                             \
+        if (!(c)) {                                                                                                  \
+            probe_fails++;                                                                                           \
+            fprintf(stderr, "FAIL stats: %s\n", what);                                                               \
+        }                                                                                                            \
+    } while (0)
+
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24);
+}
+
+// A file of progress.sav's layout: the magic, the table's end at 8, the (hash, value) pairs from 0x20; size bytes in
+// all, zero after the pairs. *keep: the bytes, for a caller that adds more (NULL: freed).
+static int probe_save(const char *path, const uint32_t (*pairs)[2], int n, uint32_t end, size_t size, uint8_t **keep) {
+    uint8_t *d = calloc(1, size);
+    if (!d) return 0;
+    put32(d, 0x01020304u);
+    put32(d + 4, 1);
+    put32(d + 8, end);
+    for (int i = 0; i < n && 0x28u + 8u * (unsigned)i <= size; i++)
+        put32(d + 0x20 + 8 * i, pairs[i][0]), put32(d + 0x24 + 8 * i, pairs[i][1]);
+    int ok = plat_file_write_atomic(path, d, size);
+    if (keep) *keep = d;
+    else free(d);
+    return ok;
+}
+
+// A Hero's Path point: map metres x and y, the layer (0 sky, 1 surface, 2 Depths), a warp away from it, a death there.
+static uint32_t foot_point(int x, int y, int layer, int warp, int death) {
+    uint32_t w = (uint32_t)(y < 0 ? -y : y) << 20 | (uint32_t)(x < 0 ? -x : x) << 6 | (uint32_t)layer << 3;
+    if (y >= 0) w |= 1u << 19;
+    if (x < 0) w |= 1u << 5;
+    return w | (uint32_t)warp << 2 | (uint32_t)death << 1;
+}
+
+static int goals_are(const char *key, const uint32_t *want, int n) {
+    for (int s = 0; s < nsets; s++) {
+        if (strcmp(sets[s].key, key)) continue;
+        for (int g = 0; g < GOALS_MAX; g++)
+            if (sets[s].goals[g] != (g < n ? want[g] : 0)) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void goals_reload(void) {
+    nsets = 0;
+    sets_default();
+    goals_read();
+}
+
+int probe_stats(void) {
+    char dir[1024];
+    if (!plat_exe_path(dir, sizeof dir)) return 1;
+    char *cut = plat_last_sep(dir);
+    if (!cut) return 1;
+    strcpy(cut + 1, "stats-probe");
+    plat_file_mkdir_p(dir);
+    char save[1100], foot_path[1100];
+    snprintf(save, sizeof save, "%s/progress.sav", dir);
+    snprintf(foot_path, sizeof foot_path, "%s/footprint.sav", dir);
+
+    // progress.sav: three flags; then the same table with the file ending inside its third pair; then a file too short
+    uint32_t life = mm3("PlayerStatus.MaxLife"), kills = flagf("DefeatedEnemyNum.%s", "Enemy_Bokoblin_Junior"),
+             got = flagf("IsGet.%s", "Weapon_Sword_001"), missing = flagf("IsGet.%s", "Weapon_Sword_999");
+    const uint32_t pairs[3][2] = {{life, 40}, {kills, 7}, {got, 1}};
+    PCHECK(probe_save(save, pairs, 3, 0x38, 0x38, NULL) && load_save(save), "a whole save is read");
+    PCHECK(flag(life) && flag(life)->v == 40, "a hash present gives its value");
+    PCHECK(flag(kills) && flag(kills)->v == 7 && flag(got) && flag(got)->v == 1, "every pair of the table is read");
+    PCHECK(!flag(missing), "a hash missing gives none");
+    PCHECK(probe_save(save, pairs, 3, 0x38, 0x34, NULL) && load_save(save),
+           "a save whose table runs past the file's end is read");
+    PCHECK(flag(life) && flag(kills) && !flag(got), "a table cut short keeps the pairs the file holds whole");
+    PCHECK(probe_save(save, pairs, 1, 0x28, 0x20, NULL) && !load_save(save), "a file too short for one pair is no save");
+
+    // footprint.sav next to progress.sav: the point count, and the array at offset 356, its points from byte 364
+    const uint32_t pts[] = {
+        foot_point(0, 0, 1, 0, 0),
+        foot_point(300, 0, 1, 0, 0),       // 300 m on the surface
+        foot_point(300, -400, 1, 0, 0),    // 400 m more
+        foot_point(300, -400, 2, 0, 0),    // down to the Depths: a layer change, no step
+        foot_point(300, -1000, 2, 0, 0),   // 600 m: over FOOT_JUMP_M, not counted
+        foot_point(300, -1100, 2, 1, 0),   // 100 m in the Depths, then a warp away from here
+        foot_point(-2000, 50, 2, 0, 0),    // where the warp landed: not counted
+        foot_point(-2000, 100, 2, 0, 1),   // 50 m, then a death here
+        foot_point(-2050, 100, 2, 0, 0),   // after the death: not counted
+    };
+    enum { NPTS = sizeof pts / sizeof *pts };
+    const uint32_t foot_pairs[2][2] = {{149471811u, NPTS}, {636271612u, 356}};
+    uint8_t *d = NULL;
+    size_t size = 364 + 4 * NPTS;
+    int wrote = probe_save(foot_path, foot_pairs, 2, 0x30, size, &d);
+    if (wrote && d) {
+        for (int i = 0; i < NPTS; i++) put32(d + 364 + 4 * i, pts[i]);
+        wrote = plat_file_write_atomic(foot_path, d, size);
+    }
+    free(d);
+    memset(&foot, 0, sizeof foot);
+    foot_read(save);
+    PCHECK(wrote && foot.valid && foot.points == NPTS, "footprint.sav is read next to progress.sav");
+    PCHECK(foot.layer_m[1] == 700, "steps on one layer add up");
+    PCHECK(foot.layer_m[2] == 150, "a layer change, a jump over 500 m, a warp and a death add no step");
+    PCHECK(foot.layer_m[0] == 0 && foot.dist_m == 850, "the distance is the layers' sum");
+    PCHECK(foot.warps == 1 && foot.deaths == 1, "warps and deaths are counted");
+
+    // goals.ini
+    static const uint32_t kills_default[] = {1, 100, 1000, 5000}, species_default[] = {25, 50, 75},
+                          kills_edited[] = {30, 700};
+    snprintf(goals_path, sizeof goals_path, "%s/goals.ini", dir);
+    plat_file_delete(goals_path);
+    goals_reload();
+    PCHECK(plat_file_size(goals_path) > 0, "a missing goals.ini is written with the defaults");
+    PCHECK(goals_are("monsters", kills_default, 4), "the defaults stand without a goals.ini");
+    goals_reload();
+    PCHECK(goals_are("monsters", kills_default, 4) && goals_are("species", species_default, 3),
+           "the written defaults read back as the defaults");
+    static const char edited[] = "monsters = 700, 30, 30\nspecies = many\nweapons =\nnot_a_statistic = 5\n";
+    plat_file_write_atomic(goals_path, edited, sizeof edited - 1);
+    goals_reload();
+    PCHECK(goals_are("monsters", kills_edited, 2), "a line's goals are read, sorted, each once");
+    PCHECK(goals_are("species", species_default, 3), "a line that is not understood keeps its default");
+    PCHECK(goals_are("weapons", NULL, 0), "an empty line turns its set off");
+
+    // the unlock rule
+    uint8_t count = 0;
+    int due = 0;
+    for (int i = 1; i < LIVE_CONFIRM; i++) due |= unlock_due(100, 100, 0, &count);
+    PCHECK(!due, "a live value at the goal does not unlock before LIVE_CONFIRM reads");
+    PCHECK(unlock_due(120, 100, 0, &count), "a live value at the goal unlocks on its LIVE_CONFIRM-th read in a row");
+    count = 0;
+    for (int i = 1; i < LIVE_CONFIRM; i++) unlock_due(100, 100, 0, &count);
+    unlock_due(99, 100, 0, &count);
+    due = 0;
+    for (int i = 1; i < LIVE_CONFIRM; i++) due |= unlock_due(100, 100, 0, &count);
+    PCHECK(!due, "a read below the goal starts the count again");
+    streak[0] = LIVE_CONFIRM - 1;
+    streaks_reset();
+    PCHECK(!unlock_due(100, 100, 0, &streak[0]), "a read that is not live starts the count again");
+    count = 0;
+    PCHECK(unlock_due(100, 100, 1, &count), "a value from the save unlocks at once");
+    PCHECK(!unlock_due(99, 100, 1, &count), "a save's value below the goal does not unlock");
+
+    plat_file_delete(save);
+    plat_file_delete(foot_path);
+    plat_file_delete(goals_path);
+    free(flags);
+    flags = NULL, nflags = 0, nsets = 0, goals_path[0] = 0;
+    fprintf(stderr, "stats: %s (%d failures)\n", probe_fails ? "FAILED" : "ok", probe_fails);
+    return probe_fails ? 1 : 0;
 }
