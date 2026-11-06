@@ -60,7 +60,9 @@ loads the saves 1.4.3 wrote.
 4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
    to the installer. The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
    (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
-   tools refuse costs those cheats or patches, not the install.
+   tools refuse costs those cheats or patches, not the install. The patch files' writes into main's data go to
+   `build-cache/exefs.data`, which the game stores into main at start; after the lift they are checked against the
+   bytes the lifted code read as constants (`<gen>/main/folded.txt`, its jump tables).
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`

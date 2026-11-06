@@ -71,6 +71,10 @@ The rebuild needs the setup folder the game was installed from. When that folder
 A code patch over one of the port's own patches (the 60 FPS patch, the resolution patch and the other entries under
 **Built into the port**) turns that built-in patch off while the mod is on. The mod's row names it.
 
+A patch file may also change the game's data (constants and tables in its `.rodata` and `.data`). Those bytes are
+stored into the loaded game at start, before it runs. When two mods write the same bytes, the higher one wins,
+as with files.
+
 ## Cheats
 
 A cheat file is part of a mod: `mods\<mod>\cheats\<build id>.txt`, switched cheat by cheat on the Cheats tab. Cheats
