@@ -22,6 +22,9 @@ SRC = r'''
 #include <stdlib.h>
 #include "cpu.h"
 
+// cpu.h's exclusive monitor takes its store generation from here; main.c defines it in the runtime.
+uint64_t rt_excl_gen;
+
 static volatile int step;
 static uint64_t cell[4] __attribute__((aligned(64)));
 static int nthreads, iters;
