@@ -18,6 +18,7 @@
 #include "cheats.h"
 #include "fs.h"
 #include "gfx.h"
+#include "input.h"
 #include "mods.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
@@ -309,6 +310,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     vk_pipeline_save();   // no-op without the Vulkan back end
     playtime_save();
     prof_write();
+    input_haptics_stop();
     fflush(stderr);
     plat_exit(0);
 }

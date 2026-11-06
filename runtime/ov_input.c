@@ -299,9 +299,27 @@ static float light_share(float f) { return f > 160 ? (f < 320 ? log2f(f / 160) :
 // (high) motor (light_share) and add up as energy per motor (root of the summed squares); the stronger side drives each
 // motor. A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is renewed every 50 ms while
 // the game streams, so the pad stops by itself when the game stops sending (pause, freeze). Under vib_lock.
-static void rumble_update(uint64_t now) {
+static void rumble_update(uint64_t now, int side) {
     float heavy = 0, light = 0;
     rumble_cfg();
+    VibrationValue hd[2] = {vib_neutral, vib_neutral};
+    if (vib_allowed && rumble_strength > 0) {
+        float scale = rumble_strength / 1.3f;
+        for (int s = 0; s < 2; s++) {
+            if (vib_at[s] && now - vib_at[s] <= RUMBLE_STALE_NS) {
+                hd[s].amp_low = clamp01(vib_last[s].amp_low * scale);
+                hd[s].freq_low = vib_last[s].freq_low;
+                hd[s].amp_high = clamp01(vib_last[s].amp_high * scale);
+                hd[s].freq_high = vib_last[s].freq_high;
+            }
+        }
+    }
+    if (input_hd_rumble(side, hd[0].amp_low, hd[0].freq_low, hd[0].amp_high, hd[0].freq_high,
+                        hd[1].amp_low, hd[1].freq_low, hd[1].amp_high, hd[1].freq_high)) {
+        sent_low = sent_high = 0;
+        sent_at = 0;
+        return;
+    }
     for (int s = 0; s < 2 && vib_allowed; s++) {
         if (!vib_at[s] || now - vib_at[s] > RUMBLE_STALE_NS) continue;
         const VibrationValue *v = &vib_last[s];
@@ -334,7 +352,7 @@ static void play(int side, const VibrationValue *v) {
     plat_mutex_lock(&vib_lock);
     vib_last[side] = c;
     vib_at[side] = now;
-    rumble_update(now);
+    rumble_update(now, side);
     plat_mutex_unlock(&vib_lock);
 }
 
@@ -408,7 +426,7 @@ static void ov_vib_permit(Cpu *c) {
     int on = (arg_x(c, 0) & 0xff) != 0;
     plat_mutex_lock(&vib_lock);
     vib_allowed = on;
-    rumble_update(kern_now_ns());
+    rumble_update(kern_now_ns(), -1);
     plat_mutex_unlock(&vib_lock);
     ret_x(c, 0);
 }
