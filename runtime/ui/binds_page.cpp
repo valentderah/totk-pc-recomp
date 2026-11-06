@@ -12,6 +12,7 @@ extern "C" {
 #include "cfg.h"
 #include "input.h"
 #include "input_map.h"
+#include "input_actions.h"
 #include "platform/platform.h"
 #include "ui_text.h"
 // host.h pulls in cpu.h, which is C only: the one function needed from it, as declared there.
@@ -34,18 +35,23 @@ static const int kButtons[] = {B_A, B_B, B_X, B_Y, B_L, B_R, B_ZL, B_ZR, B_STICK
 static const int kMove[] = {B_SL_UP, B_SL_DOWN, B_SL_LEFT, B_SL_RIGHT};
 static const int kCamera[] = {B_SR_UP, B_SR_DOWN, B_SR_LEFT, B_SR_RIGHT};
 
+static int g_edit_context=INPUT_ACTIONS_STANDARD;
+
 static struct {
-    int action = -1, cell;   // the cell waiting for a press (0, 1 keys, 2 the controller); action -1 none
+    int action = -1, cell, context=INPUT_ACTIONS_STANDARD;   // the cell waiting for a press (0, 1 keys, 2 the controller); action -1 none
     bool reset;              // the next capture poll takes what is held as the start
     uint64_t start, done;    // plat_now_ns of the start and of the press, timeout or Esc (0 still waiting)
 } g_cap;
 static char g_note[160];     // what the last change took or swapped, after its row's description
-static int g_note_action = -1;
+static int g_note_action = -1, g_note_context = INPUT_ACTIONS_STANDARD;
 static uint64_t g_note_until;
 
-static const char *action_label(int a) { return menu_text((UiTextId)(UI_BIND_A + a)); }
+static const char *action_label(int a) {
+    return a>=ACTION_COUNT ? input_actions_context_action(g_cap.action>=ACTION_COUNT?g_cap.context:g_edit_context,a-ACTION_COUNT) : menu_text((UiTextId)(UI_BIND_A + a));
+}
 
 static UiTextId action_desc(int a) {
+    if (a>=ACTION_COUNT) return UI_BINDS_HELP;
     if (a <= B_MINUS) return (UiTextId)(UI_BIND_DESC_A + a);
     if (a <= B_DOWN) return UI_BIND_DESC_DPAD;
     if (a == B_SHAKE) return UI_BIND_DESC_SHAKE;
@@ -129,22 +135,26 @@ static void write_lines(const InputMap *m) {
 static void set_note(int action, UiTextId fmt, const char *a, const char *b) {
     snprintf(g_note, sizeof g_note, menu_text(fmt), a, b);
     g_note_action = action;
+    g_note_context = g_cap.action>=ACTION_COUNT?g_cap.context:g_edit_context;
     g_note_until = plat_now_ns() + 5000000000ull;
 }
 
 // cell 0, 1: a key (KEY_NONE clears it); 2: a gamepad button (PAD_NONE clears it).
 static void change(int action, int cell, int id) {
     InputMap m;
-    input_map_snapshot(&m);
+    bool gameplay=action>=ACTION_COUNT;
+    int index=gameplay?action-ACTION_COUNT:action;
+    int context=g_cap.action>=ACTION_COUNT?g_cap.context:g_edit_context;
+    if(gameplay) input_actions_map_for(context,&m); else input_map_snapshot(&m);
     char buf[48];
     if (cell < 2) {
-        int lost = input_map_set_key(&m, action, cell, id);
-        if (lost >= 0) set_note(action, UI_BINDS_TAKEN, key_label(id, buf, sizeof buf), action_label(lost));
+        int lost = gameplay ? input_actions_set_key(&m,index,cell,id) : input_map_set_key(&m,index,cell,id);
+        if (lost >= 0) set_note(action, UI_BINDS_TAKEN, key_label(id, buf, sizeof buf), action_label(lost+(gameplay?ACTION_COUNT:0)));
     } else {
-        int other = input_map_set_pad(&m, action, shown_layout(), id);
-        if (other >= 0) set_note(action, UI_BINDS_SWAPPED, action_label(action), action_label(other));
+        int other = gameplay ? input_actions_set_pad(&m,index,shown_layout(),id) : input_map_set_pad(&m,index,shown_layout(),id);
+        if (other >= 0) set_note(action, UI_BINDS_SWAPPED, action_label(action), action_label(other+(gameplay?ACTION_COUNT:0)));
     }
-    write_lines(&m);
+    if(gameplay){input_actions_save_for(context,&m);opt_save_soon();}else write_lines(&m);
 }
 
 static void reset_binds(void) {
@@ -155,29 +165,35 @@ static void reset_binds(void) {
         keys[a] = names[a];
     }
     int n = cfg_reset(keys, ACTION_COUNT);
+    input_actions_reset();
     opt_save_soon();
     g_note_action = -1;
     rt_log("menu: reset %d button bindings", n);
 }
 
 static void row_action(int a, const InputMap &m, int layout) {
+    bool gameplay=a>=ACTION_COUNT;
+    int index=gameplay?a-ACTION_COUNT:a;
     uint8_t k[INPUT_BINDING_MAX], p[INPUT_PAD_BINDING_MAX];
-    int nk = input_map_keys_of(&m, a, k, INPUT_BINDING_MAX);
-    int np = a < B_SL_LEFT ? input_map_pads_of(&m, a, layout, p, INPUT_PAD_BINDING_MAX) : 0;
+    int nk = input_map_keys_of(&m, index, k, INPUT_BINDING_MAX);
+    int np = gameplay || a < B_SL_LEFT ? input_map_pads_of(&m, index, layout, p, INPUT_PAD_BINDING_MAX) : 0;
     char b0[48], b1[48];
     const char *cells[3] = {nk > 0 ? key_label(k[0], b0, sizeof b0) : "", nk > 1 ? key_label(k[1], b1, sizeof b1) : "",
-                            a >= B_SL_LEFT ? menu_text(a <= B_SL_DOWN ? UI_PAD_LSTICK : UI_PAD_RSTICK)
+                            !gameplay && a >= B_SL_LEFT ? menu_text(a <= B_SL_DOWN ? UI_PAD_LSTICK : UI_PAD_RSTICK)
                             : np           ? pad_label(p[0])
                                            : ""};
-    const bool enabled[3] = {true, true, a < B_SL_LEFT};   // the sticks stay sticks (and the shake is the right stick's)
-    char key[32];
-    snprintf(key, sizeof key, "BIND_%s", input_action_name(a));
-    const char *note = g_note_action == a && plat_now_ns() < g_note_until ? g_note : nullptr;
+    char key[80],env_key[88];
+    if(gameplay){input_actions_config_key(g_edit_context,index,env_key,sizeof env_key);snprintf(key,sizeof key,"%s",env_key+5);}
+    else {snprintf(key,sizeof key,"BIND_%s",input_action_name(a));snprintf(env_key,sizeof env_key,"TOTK_%s",key);}
+    bool editable=!gameplay || (input_actions_supported() && !cfg_from_env(env_key));
+    const bool enabled[3] = {editable, editable, editable && (gameplay || a < B_SL_LEFT)};
+    const char *note = g_note_action == a && g_note_context == g_edit_context && plat_now_ns() < g_note_until ? g_note : nullptr;
     int r = opt_bind_row(key, action_label(a), action_desc(a), cells, enabled, note);
     if (g_cap.action >= 0 || r < 0) return;
     if (r < 3) {
         g_cap.action = a;
         g_cap.cell = r;
+        g_cap.context=g_edit_context;
         g_cap.reset = true;
         g_cap.start = plat_now_ns();
         g_cap.done = 0;
@@ -212,8 +228,12 @@ static void capture_window(void) {
         ImGui::TextDisabled("%s", t);
         if (g_cap.done && now - g_cap.done > kDoneNs) {
             ImGui::CloseCurrentPopup();
-            char id[48];
-            snprintf(id, sizeof id, "BIND_%s#%d", input_action_name(g_cap.action), g_cap.cell);
+            char id[96];
+            if(g_cap.action>=ACTION_COUNT) {
+                char key[80];input_actions_config_key(g_cap.context,g_cap.action-ACTION_COUNT,key,sizeof key);
+                snprintf(id,sizeof id,"%s#%d",key+5,g_cap.cell);
+            }
+            else snprintf(id, sizeof id, "BIND_%s#%d", input_action_name(g_cap.action), g_cap.cell);
             opt_focus_key(id);   // back on the cell it came from
             g_cap.action = -1;
         }
@@ -229,6 +249,50 @@ void binds_rows(float scale) {
     InputMap m;
     input_map_snapshot(&m);
     int layout = shown_layout();
+    // Let the existing bounded menu screenshot hook reach the binding rows below the analog controls.
+    static bool test_focused;
+    if(!test_focused && cfg_get("TOTK_MENU_TEST") && cfg_get("TOTK_MENU_TEST_BINDINGS")) {
+        const char *focus=cfg_get("TOTK_MENU_TEST_BINDINGS");
+        opt_focus_key(!strcmp(focus,"1") ? "ACTION_JUMP#0" : focus);
+        test_focused=true;
+    }
+    opt_group_text("Gameplay actions");
+    ImGui::BeginDisabled(!input_actions_supported() || cfg_from_env("TOTK_GAMEPLAY_ACTIONS"));
+    bool enabled=cfg_bool("TOTK_GAMEPLAY_ACTIONS")!=0;
+    if(opt_toggle_text("GAMEPLAY_ACTIONS","Independent gameplay bindings",
+        "Route supported gameplay and game-menu controls through action bindings. Unrecognized states retain native controls.",enabled)) {
+        cfg_set("TOTK_GAMEPLAY_ACTIONS",enabled?"0":"1");opt_save_soon();
+    }
+    ImGui::EndDisabled();
+    if(!input_actions_supported())opt_text_str("This executable has no supported gameplay action adapter.");
+    else opt_text_str("Jump and Interact can share an input, with prompts taking priority. Advanced Guard and Lock on can share an input to activate both. Menus and dialogue use their own binding sets.");
+    bool advanced=input_actions_advanced()!=0;
+    ImGui::BeginDisabled(!input_actions_supported() || cfg_from_env("TOTK_ACTION_MODE"));
+    if(opt_toggle_text("ACTION_MODE","Independent button mode",
+        "Standard groups related actions. Advanced reveals separate controls for distinct actions such as Climb jump and Swim dash. Movement, looking and other common bindings stay shared.",
+        advanced,advanced?"Advanced":"Standard")) {
+        if(!advanced)input_actions_initialize_advanced();
+        cfg_set("TOTK_ACTION_MODE",advanced?"standard":"advanced");opt_save_soon();advanced=!advanced;
+    }
+    ImGui::EndDisabled();
+    g_edit_context=INPUT_ACTIONS_STANDARD;
+    opt_text_str("Common controls apply everywhere. Advanced adds specific actions below; movement and camera bindings remain shared.");
+    opt_bind_header(UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD);
+    InputMap actions;input_actions_map(&actions);
+    for(int a=0;a<IA_COUNT;a++) {
+        if(a==IA_LOCKON && !advanced)continue;
+        row_action(ACTION_COUNT+a,actions,layout);
+    }
+    if(advanced)for(int c=0;c<IC_COUNT;c++) {
+        bool any=false;
+        for(int a=0;a<IA_COUNT;a++)if(input_actions_binding_context(c,a)==c)any=true;
+        if(!any)continue;
+        opt_group_text(input_actions_context_label(c));
+        opt_bind_header(UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD);
+        g_edit_context=c;input_actions_map_for(c,&actions);
+        for(int a=0;a<IA_COUNT;a++)if(input_actions_binding_context(c,a)==c)row_action(ACTION_COUNT+a,actions,layout);
+    }
+    g_edit_context=INPUT_ACTIONS_STANDARD;
     opt_group(UI_BINDS_GROUP_BUTTONS);
     opt_text(UI_BINDS_HELP);
     opt_bind_header(UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD);

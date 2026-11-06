@@ -18,6 +18,12 @@ holds only the game; the installer and its tools stay outside it.
 3. Waits for the setup, one time. The window shows each step and its progress.
 4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
 
+An installer built from this fork automatically includes the optional independent-controls adapter for the verified
+1.4.3 executable. The setup choices and game-file requirements are unchanged. Enable it in F1 → Controls: Standard
+keeps related controls grouped; Advanced reveals specific actions while movement and camera remain shared. No
+logging build or research files are needed. Unsupported versions and overlapping code patches retain native controls.
+An upstream release installer does not contain these fork changes; the installer must be built from this source.
+
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
 ```
@@ -212,9 +218,14 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 - The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
-- Building the release needs one game version extracted and lifted (`tools/extract.py`, `recomp/gen.py`, either
-  version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
-  is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
+- Packaging either installer needs no game files or keys. The generic runtime archive uses a placeholder layout
+  generated from authored layout policy and supported module names; only its main base and module count enter the
+  archive. The player's real layout is compiled at install time. `--prove` additionally needs an extracted and lifted
+  game (`generated/v121`, else `generated/v143`) for a local compile-and-probe check.
+
+For a Windows test package, `powershell -File tools/build_test_installer.ps1` builds hactool, the shader translator and
+the installer ZIP. Install the MSYS2 build packages, Git, uv, .NET SDK and Visual Studio C++ Build Tools listed in
+[building.md](building.md) first. The script downloads pinned release dependencies and runs the existing bundle checks.
 
 ## Constraints
 

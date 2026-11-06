@@ -23,9 +23,9 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
 --prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
 
-Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
-it, generated/v143, and for --prove its build/extracted/<version> (they are read, nothing is written to them). The
-runtime library reads only what both versions' layout.h share (MOD_COUNT, MOD_MAIN_BASE), so either serves.
+Packaging needs no game files or keys. The generic runtime archive uses an authored placeholder layout with the
+supported module capacity and main base; install-side sources receive the real layout on the player's machine.
+Only --prove needs an extracted and lifted game: generated/v121, else generated/v143, and build/extracted/<version>.
 
 A release also needs build/xlate built from the current sources (tools/build_xlate.py); the script stops first if not.
 
@@ -115,8 +115,8 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'button_icons.py', 'check_co
                'hostmem.py', 'make_romfs_patches.py', 'ncz.py', 'pack_shader_cache.py', 'prepare_shaders.py',
                'romfs_index.py', 'shader_census.py', 'shader_list.py', 'ultrawide_layout.py', 'cheats.py',
                'exefs_patches.py']
-TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
-RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
+TOOLS_DIRS = ['vendor/macnativegames', 'data', 'licenses']   # data/: expected hashes
+RUNTIME_SUFFIXES = {'.h', '.inc', '.def', '.ico'}   # .def: action list included by input_actions.h
 
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader']
 
@@ -384,6 +384,27 @@ def lifted_version():
              '(tools/extract.py, recomp/gen.py; docs/building.md)')
 
 
+def runtime_layout():
+    """Compile the generic archive without game files. Only main base and module capacity enter that archive.
+
+    All per-module sizes and other bases are placeholders, used by build_game's discarded module glue only.
+    The real layout and install-side sources are compiled later on the player's machine. Keep address policy in
+    recomp/layout.py, and reject a future supported version with a different module count before packaging it.
+    """
+    sys.path.insert(0, str(ROOT / 'recomp'))
+    import layout
+    versions = ('1.1.0', '1.2.1', '1.4.3')
+    orders = []
+    for version in versions:
+        hashes = json.loads((ROOT / 'tools' / 'data' / f'expected-v{version}.json').read_text())['exefs_sha256']
+        orders.append([name for name in layout.ORDER if name in hashes])
+    if any(order != orders[0] for order in orders):
+        sys.exit('supported module sets differ: generic runtime archive needs a reviewed capacity change')
+    gen = MAIN_ROOT / 'build' / 'release-runtime-layout'
+    layout.write([(name, layout.FIRST_BASE + i * layout.ALIGN, 0) for i, name in enumerate(orders[0])], gen)
+    return gen
+
+
 def profiles():
     """{version tag: .profdata} of build/pgo (tools/pgo.py merge). A profile trained on another recomp/ than the one
     shipped still works but misses the functions whose generated C changed since: warn, so the next release retrains."""
@@ -407,8 +428,8 @@ def profiles():
 def runtime_lib(out, llvm, pgo):
     """Build libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2) with the folder's llvm/, and copy them, the headers
     and the install-side sources into runtime/. pgo: profiles() of the release."""
-    version = lifted_version()
-    gen = MAIN_ROOT / 'generated' / version
+    version = 'v143'
+    gen = runtime_layout()
     rt = out / 'runtime'
     # the runtime is the same for every update: any update's profile covers it (the newest update's, as players run it)
     newest = sorted(pgo.items())[-1:]

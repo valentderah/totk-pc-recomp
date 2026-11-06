@@ -107,6 +107,29 @@ bind_X = pad:west, key:space
 bind_Y = pad:north, key:mouse_l
 ```
 
+## Independent gameplay bindings (experimental)
+
+Normal source builds and this fork's installer include *Independent gameplay bindings* and *Independent button mode* in the remake's **Controls** tab (F1 or Esc), currently for the verified game 1.4.3 executable. Enable the feature, then use the existing two key cells and controller cell to edit actions. Capture, clearing, conflict handling and *Reset all buttons* use the existing UI.
+
+| Mode | Binding behavior |
+|---|---|
+| Standard | Related actions share a binding: Jump on foot, climbing Jump and swimming Dash use the Jump group. |
+| Advanced | Expands the same scrolling list with specific actions, including Climb jump, Swim dash, Deploy paraglider, Close paraglider, Mounted jump, Spur mount, Dismount, Soothe mount, Ultrahand Grab/Attach and Scope Place pin. |
+
+Movement, looking, bow use and other common controls have one shared binding in both modes. Changing Move forward applies while walking, climbing and swimming. Advanced adds overrides only for distinct actions; it does not create a complete new control scheme for each state. There is no binding-context selector. Additional rows appear in named sections below the common controls when Advanced is enabled. The first switch initializes those specific actions from the current shared bindings; returning to Standard hides them, and their saved values return when Advanced is enabled again.
+
+Menu and dialogue operations have specific rows in Advanced, initialized from native button bindings. Confirm may differ between menus and dialogue, while movement and camera directions remain shared. The menu detector groups multiple screens; it does not distinguish every individual menu operation. Old configuration entries that attempted to override common controls per context, such as `action_climb_move_up`, are ignored.
+
+Jump and Interact may share a key or controller button. A fresh available interaction prompt takes priority; a readable empty selection permits Jump. A shared press keeps its decision until release so a disappearing pickup prompt cannot turn the held press into Jump. A dedicated Jump input remains independent near prompts. In native ability and UI states, a shared Jump/Interact input selects Confirm. Advanced Shield/guard and Lock on have separate shared bindings on foot, while using a bow and airborne; assigning them the same input activates both. Standard keeps Shield/target grouped.
+
+Other conflicts move keys or swap controller buttons. A conflict with a common control changes that shared binding everywhere; one specific action does not change another specific action's binding. Release buttons after changing settings. Compatible held movement, camera directions, bow, targeting and sprint continue across gameplay transitions without a new press. Hold-to-open ability and item wheels retain their opening input until release. Native action lockouts remain in force. Physical gamepad sticks and the mouse remain available. Game prompts still show original controller buttons.
+
+The feature defaults off. Setup generates and validates the adapter from the player’s own executable; no research plan, recording session or logging build is required. Unsupported game versions, modified executable files and overlapping code patches use native controls and disable its toggle. The upstream installer binary does not acquire fork features merely by cloning this repository; use an installer built from this fork or its normal source build. Recognized powers, scope, shield surfing, construct riding and sled riding preserve the original native action logic, using the shared controls plus the listed specific overrides. A single binding for compound operations such as shield-surf startup or directional Ultrahand rotation is not implemented. Ordinary steering-stick vehicles and individual menu screen types still need verified selectors. The availability of an action depends on game state and equipment; listing a binding does not establish complete gameplay validation.
+
+Settings save beside the executable in `totk.ini`. `gameplay_actions = 1` enables routing and `action_mode = standard|advanced` selects the mode. Shared bindings use `action_<name>`. Specific overrides use names such as `action_climb_jump`, `action_swim_jump`, `action_riding_sprint` and `action_ultrahand_hold_interact`. Menu and dialogue operations retain their separate bindings in both modes. Names and entries follow the key/controller names above; `pad:default` follows the selected layout and `pad:none` leaves a controller cell empty. Prefer the Controls tab so conflicts and mode initialization are preserved. *Reset all buttons* resets shared controls, specific actions and native button rows.
+
+The original action defaults follow the native controls, with Backspace for Put away/cancel. Controller Put away/cancel starts unbound so a paddle or spare button can be chosen separately from Sprint. Newly exposed common controls inherit native button and keyboard-direction bindings while unset. Jump and Sprint keep their gameplay meanings regardless of the game's swap setting. See [Input research tools](input-query-research.md) for isolated builds and recording.
+
 ## Mouse camera
 
 `mouse_mode = direct` (the default) turns the camera by the raw mouse motion on games 1.4.3 and 1.2.1, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt` and `recomp/patches-v121.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count

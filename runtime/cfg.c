@@ -18,7 +18,7 @@
 
 #define PREFIX "TOTK_"
 #define PREFIX_LEN 5
-#define CFG_MAX_KEYS 512
+#define CFG_MAX_KEYS 2048
 
 typedef struct { char *key, *value; int dirty, removed; } CfgEntry;   // key upper-case, without the prefix; value NULL after cfg_reset
 
@@ -32,6 +32,8 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line, and gets a
 // description in totk.ini.example or docs/settings.md (tests/settings_doc_check.py checks both).
 static const char *const known[] = {
+    "GAMEPLAY_ACTIONS", "ACTION_MODE", "ACTION_ADVANCED_INITIALIZED", "ACTION_JUMP", "ACTION_SPRINT", "ACTION_CROUCH", "ACTION_INTERACT", "ACTION_ATTACK",
+    "ACTION_BOW", "ACTION_THROW", "ACTION_GUARD", "ACTION_CANCEL",
     "AB", "AMIIBO_DIR", "ANISO", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
@@ -88,6 +90,9 @@ static const struct { const char *key, *section; } sections[] = {
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
     {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"GAMEPLAY_ACTIONS", "input"}, {"ACTION_JUMP", "input"}, {"ACTION_SPRINT", "input"},
+    {"ACTION_CROUCH", "input"}, {"ACTION_INTERACT", "input"}, {"ACTION_ATTACK", "input"},
+    {"ACTION_BOW", "input"}, {"ACTION_THROW", "input"}, {"ACTION_GUARD", "input"}, {"ACTION_CANCEL", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -113,6 +118,9 @@ static const struct { const char *key, *section; } sections[] = {
 #define LIVE 1
 #define RESTART 0
 static const CfgMeta metas[] = {
+    {"GAMEPLAY_ACTIONS", "0", "0|1", LIVE},
+    {"ACTION_MODE", "standard", "standard|advanced", LIVE},
+    {"ACTION_ADVANCED_INITIALIZED", "0", "0|1", LIVE},
     // Screen
     {"FULLSCREEN", "0", "0|1", LIVE}, {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
@@ -189,6 +197,7 @@ static const CfgMeta metas[] = {
 static int is_known(const char *key) {
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
         if (!strcmp(known[i], key)) return 1;
+    if(!strncmp(key,"ACTION_",7))return 1;
     return !strncmp(key, "CHEAT_", 6);   // cheats.c and the cheat patch sets (tools/cheats.py)
 }
 
@@ -567,6 +576,7 @@ static void put(Out *o, const char *s, size_t n) {
 static void puts_(Out *o, const char *s) { put(o, s, strlen(s)); }
 
 static const char *section_of(const char *key) {
+    if(!strncmp(key,"ACTION_",7))return "input";
     for (size_t i = 0; i < sizeof sections / sizeof *sections; i++)
         if (!strcmp(sections[i].key, key)) return sections[i].section;
     if (!strncmp(key, "CHEAT_", 6)) return "cheats";   // cheats.c: one key per cheat of the cheat file

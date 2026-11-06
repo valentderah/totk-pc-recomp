@@ -869,14 +869,15 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         files = cheat_files(ctx) + exefs_files(ctx)
-        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+        return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
                            ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
         stamp = gen / STAMP
-        return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+        return ((gen / 'layout.json').is_file() and (gen / 'input_actions_game_config.h').is_file()
+                and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift'])
 
     def run(self, ctx):
         # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller

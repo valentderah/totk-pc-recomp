@@ -23,7 +23,7 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
 
 --appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --prove compiles
 the generated C and links build/release-linux-check/totk with the folder's tools only, then runs the probes beside it.
-Like tools/make_release.py, both need one game version extracted and lifted first (generated/v121, else v143).
+Packaging needs no game files or keys. Only --prove needs an extracted and lifted game (generated/v121, else v143).
 
 The folder contains nothing derived from the game: check_content runs over it before the script finishes, then the
 folder's own python runs a check-only installer pass and the window's --selftest.
@@ -206,14 +206,15 @@ def build_bin(out, llvm, sysroot):
 
 def runtime_lib(out, llvm, sysroot):
     """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
-    version = mr.lifted_version()
+    version = 'v143'
+    gen = mr.runtime_layout()
     rt = out / 'runtime'
     for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
         build = CHECK / f'rtlib-{cpu}'
         shutil.rmtree(build, ignore_errors=True)
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
              '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
-             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
+             '--version', version, '--gen', gen, '--out', build])
         shutil.copy2(build / 'libtotkrt.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
