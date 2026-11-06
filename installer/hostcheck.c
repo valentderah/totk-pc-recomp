@@ -1,5 +1,5 @@
 // Host check of the installer's first step, compiled with the bundled clang at install time: does the CPU run
-// -march=x86-64-v3 code (or only x86-64-v2), and does a Vulkan 1.3 device exist. Prints one JSON object on stdout.
+// -march=x86-64-v3 code (or only x86-64-v2, or only AMD K10), and does a Vulkan 1.3 device exist. Prints one JSON object on stdout.
 // The Vulkan loader is opened at run time, so a machine without one gets "loader": false instead of a failed start.
 #include <cpuid.h>
 #include <stdio.h>
@@ -38,6 +38,20 @@ static int x86_64_v2(void) {
     return (c & (1u << 0)) != 0;   // LAHF/SAHF
 }
 
+// AMD K10 (Phenom II, Athlon II), what build_game.py --cpu k10 compiles for (-march=amdfam10): SSE3, CMPXCHG16B,
+// POPCNT, LAHF/SAHF, LZCNT (ABM) and SSE4a. Any CPU with x86-64-v2 and LZCNT runs it too, but the installer only
+// picks it when v2 is missing.
+static int amd_k10(void) {
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) return 0;
+    const unsigned sse3 = 1u << 0, cx16 = 1u << 13, popcnt = 1u << 23;
+    if ((c & (sse3 | cx16 | popcnt)) != (sse3 | cx16 | popcnt)) return 0;
+    if ((d & (1u << 26)) == 0) return 0;   // SSE2
+    if (!__get_cpuid(0x80000001, &a, &b, &c, &d)) return 0;
+    const unsigned lahf = 1u << 0, abm = 1u << 5, sse4a = 1u << 6;
+    return (c & (lahf | abm | sse4a)) == (lahf | abm | sse4a);
+}
+
 // The x86-64-v3 level from CPUID: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT and MOVBE, with the OS saving the YMM state.
 // Not __builtin_cpu_supports("x86-64-v3"): clang reads that from the C runtime's CPU model, and libgcc before GCC 12
 // (the Linux release's sysroot has GCC 10) has no level bits, so it answers false on every CPU.
@@ -58,8 +72,8 @@ static int x86_64_v3(void) {
 }
 
 int main(void) {
-    printf("{\"x86_64_v2\": %s, \"x86_64_v3\": %s, ", x86_64_v2() ? "true" : "false",
-           x86_64_v3() ? "true" : "false");
+    printf("{\"amd_k10\": %s, \"x86_64_v2\": %s, \"x86_64_v3\": %s, ", amd_k10() ? "true" : "false",
+           x86_64_v2() ? "true" : "false", x86_64_v3() ? "true" : "false");
     void *lib = open_lib();
     PFN_vkGetInstanceProcAddr gipa = lib ? (PFN_vkGetInstanceProcAddr)lib_sym(lib, "vkGetInstanceProcAddr") : NULL;
     if (!gipa) {

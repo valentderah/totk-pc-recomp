@@ -63,6 +63,9 @@ def main(argv=None):
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--cpu', choices=('v3', 'v2', 'k10'),
+                    help='build for this CPU level instead of the one the host check finds: lets a fast machine build '
+                         'the game for an older one (k10: AMD Phenom II / Athlon II)')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches

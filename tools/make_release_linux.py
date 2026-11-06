@@ -14,7 +14,7 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                file puts the folder, tools/ and recomp/ on sys.path
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
-    runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
+    runtime/   libtotkrt.a, libtotkrt-v2.a and libtotkrt-k10.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3, v2 and AMD K10), the
                runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), totk.png (the window icon),
                deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
@@ -208,7 +208,7 @@ def runtime_lib(out, llvm, sysroot):
     """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
     version = mr.lifted_version()
     rt = out / 'runtime'
-    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
+    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a'), ('k10', 'libtotkrt-k10.a')):
         build = CHECK / f'rtlib-{cpu}'
         shutil.rmtree(build, ignore_errors=True)
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
@@ -534,7 +534,7 @@ def prove(out, cpu='v3'):
     t0 = time.time()
     run([out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
          '--sysroot', out / 'llvm' / 'sysroot', '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-         '--runtime-lib', out / 'runtime' / ('libtotkrt-v2.a' if cpu == 'v2' else 'libtotkrt.a'),
+         '--runtime-lib', out / 'runtime' / {'v2': 'libtotkrt-v2.a', 'k10': 'libtotkrt-k10.a'}.get(cpu, 'libtotkrt.a'),
          '--ninja', out / 'bin' / 'ninja', '--version', version,
          '--gen', gen, '--out', chk, '--exefs', ext / 'exefs', '--romfs', ext / 'romfs', '--profile', chk / 'profile'],
         env=env)
@@ -562,7 +562,7 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
-    ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
+    ap.add_argument('--cpu', choices=('v2', 'v3', 'k10'), default='v3',
                     help='--prove: build and run the check for this CPU level (default v3)')
     args = ap.parse_args()
     out = args.out.resolve()
