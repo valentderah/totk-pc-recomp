@@ -379,7 +379,10 @@ void vk_deswz_release(void);            // vk_device.c, before the device goes
 // 1 when sp (from vk_mem_resolve) is an imported pool's buffer over guest memory itself, so a GPU read in a submission
 // sees every CPU write made before the submit; 0 for device memory and shadow storage (synced after the upload batch).
 int vk_mem_span_live(const VkMemSpan *sp);
-void vk_mem_note_submit(uint64_t timeline_value);  // vk_sync.c: after each submit that signals ctx->timeline with this value
+// vk_sync.c, when it starts recording the submission that will signal ctx->timeline with this value: objects destroyed
+// from then on are freed once the timeline reaches it.
+void vk_mem_note_fence(uint64_t timeline_value);
+void vk_mem_fault_log(void);   // vk_device_fault_report: the deferred-free state, lock-free
 void vk_mem_collect(void);                         // frees what has completed
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);

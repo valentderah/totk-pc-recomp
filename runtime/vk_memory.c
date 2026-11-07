@@ -511,6 +511,9 @@ static void dirty_frame(uint64_t frame);
 static void mirror_log(uint64_t frame);
 static void shadow_log(uint64_t frame);
 static int dead_pending(void);
+// Deferrals made off the recording thread while another thread recorded a submission (cmd_lock, defer), the newest
+// one's stamp: the case the stamp from the recording start covers. In the census line and the device fault report.
+static uint64_t n_cross_defer, cross_defer_tl;
 
 static void vram_log(uint64_t frame);
 
@@ -546,10 +549,11 @@ void vk_mem_census(uint64_t frame) {
     }
     plat_mutex_unlock_shared(&pool_lock);
     rt_log("mem: census at frame %llu: import %llu pools %.1f MiB (%d without a GPU buffer), physical %llu pools %.1f MiB, "
-           "virtual %llu pools %.1f MiB of address space",
+           "virtual %llu pools %.1f MiB of address space; %llu objects deferred off the recording thread during a recording",
            (unsigned long long)frame, (unsigned long long)count[POOL_IMPORT], total[POOL_IMPORT] / 1048576.0,
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
-           (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0);
+           (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0,
+           (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED));
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
@@ -2174,7 +2178,8 @@ static int nspare, cap_spare;
 static uint64_t next_seq, done_seq;   // batches handed out / completed (all batches up to done_seq)
 static Dead *dead;
 static int ndead, cap_dead;
-static uint64_t tl_noted;             // newest timeline value vk_sync.c reported submitted
+static uint64_t tl_noted;             // value of the submission being recorded, else of the last one (vk_mem_note_fence)
+static _Thread_local uint64_t tl_noted_here;   // the value this thread noted: it records that submission
 
 static void cmd_init(void *p) {
     (void)p;
@@ -2409,17 +2414,17 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
     // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
-    // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
-    // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
-    // slot_resolve hands a draw a released entry, and entry_of destroys released entries at that address later in
-    // the same submission. Stamped with the last submitted value, the object went as soon as the GPU reached it,
-    // before the submission that names it ran, and with the recorder thread (vk_rec.c) behind, before the recorder
-    // made the call that names it. LAS Recomp and Savage Wind Recomp stamp every deferral with the submission being
-    // recorded (runtime/nvn/vulkan/textures.c defer: vk_pending_seq). TOTK_DEFER_STAMP=0 brings back the old stamp.
-    static int stamp = -1;
-    if (stamp < 0) stamp = rt_knob("DEFER_STAMP", "1") != 0;
-    uint64_t tl = tl_noted, rf = stamp ? vk_exec_recording_fence() : 0;
-    if (rf > tl) tl = rf;
+    // submission that names it, including the one being recorded, which may name it and is not submitted yet:
+    // vk_texture.c slot_resolve hands a draw a released entry, and entry_of, sweep_released and the VRAM pressure drop
+    // destroy released entries. tl_noted is that submission's value from the start of its recording (vk_sync.c
+    // vk_sync_submit), whichever thread destroys the object. With the synchronous replay a game thread finalizing a
+    // texture (vk_backend.c vk_be_texture_release) destroys entries while another game thread records; stamped with
+    // the last submitted value, as the recording thread's own fence was the only one seen, the object was freed once
+    // the GPU reached that value, before the submission naming it ran: "write invalid" device faults on NVIDIA. LAS
+    // Recomp and Savage Wind Recomp stamp every deferral with the submission being recorded (runtime/nvn/vulkan/
+    // textures.c defer: vk_pending_seq).
+    uint64_t tl = tl_noted;
+    if (tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
     rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
                      vk_sync_fence_done());
@@ -2442,10 +2447,22 @@ void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
 }
 
-void vk_mem_note_submit(uint64_t timeline_value) {
+// The device fault report: no lock, since a thread that holds cmd_lock may be waiting for the report's own lock
+// (vk_upload_flush reports a failed submit with cmd_lock held).
+void vk_mem_fault_log(void) {
+    rt_log("vk: deferred frees at the fault: %d pending, stamp %llu, submitted %llu, done %llu; %llu deferred off the "
+           "recording thread during a recording (newest stamp %llu)",
+           __atomic_load_n(&ndead, __ATOMIC_RELAXED), (unsigned long long)__atomic_load_n(&tl_noted, __ATOMIC_RELAXED),
+           (unsigned long long)vk_sync_issued(), (unsigned long long)vk_sync_fence_done(),
+           (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&cross_defer_tl, __ATOMIC_RELAXED));
+}
+
+void vk_mem_note_fence(uint64_t timeline_value) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (timeline_value > tl_noted) tl_noted = timeline_value;
+    tl_noted_here = timeline_value;
     plat_rmutex_unlock(&cmd_lock);
 }
 
