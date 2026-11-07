@@ -6,7 +6,7 @@
 > The setup detects a K10 and builds the game for it (`-march=amdfam10`); newer CPUs get the usual builds.
 >
 > - Download: [TotK-Setup-x86_64-0.3.12-k10-linux.AppImage](https://github.com/deadlynch/totk-pc-recomp-k10/releases/latest)
-> - Linux only; Windows is not supported on K10.
+> - Linux only: this fork has no Windows release. On Windows, use the original project, which does not run on K10.
 > - Tested on a Phenom II X6 1100T with an RX 580: about 27-31 fps standing in the opening areas of 1.4.3, at the 30
 >   fps limit the K10 build sets by itself. The game is CPU-bound there; a lower render scale does not help.
 > - K10 installs compile the game with an execution profile trained on that machine (about 10% more frames, shorter
@@ -14,7 +14,7 @@
 > - The test machine, its BIOS, kernel and system settings: [AMD K10 reference machine](#amd-k10-reference-machine).
 > - The changes are proposed upstream as pull requests.
 
-**TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
+**TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application ([docs/architecture.md](docs/architecture.md)). The original project builds for Windows and Linux; this fork publishes Linux releases only.
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.1.0, 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
@@ -23,7 +23,7 @@
 
 ## Status
 
-Early development. The game is playable on Windows and Linux; visual bugs and crashes are still expected.
+Early development. The game is playable on Linux; visual bugs and crashes are still expected.
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -34,8 +34,6 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
-- NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
-  (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
 - HDR10 output with peak, game and HUD brightness settings
 - 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
@@ -47,7 +45,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Stereo or 5.1 surround sound output
 - Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
-- Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
+- Mods made for emulators: unpack a mod into the `mods` folder next to `totk`; switch and order them in the menu. RomFS
   mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches
   ([docs/mods.md](docs/mods.md)). HD texture packs work: the port grows the texture heap a pack asks for by itself. Tested
   with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
@@ -59,24 +57,14 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Installing
 
-### Windows
+This fork publishes a Linux setup only. For Windows, use the [original project](https://github.com/valentderah/totk-pc-recomp).
 
-Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
+Requirements: Linux 6.7 or later and glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3); an x86-64 CPU, either an AMD K10 (Phenom II, Athlon II) or one with SSE4.2 (AVX2/FMA machines get a faster build); a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`; about 36 GiB free during setup (20 GiB after). The setup detects the CPU and builds the game for it ([docs/building.md](docs/building.md), `--cpu`).
 
-1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
-2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
-3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once. With
-   an NVIDIA RTX GPU it also downloads NVIDIA DLSS, unless you untick *Download NVIDIA DLSS*; turn DLSS on in the
-   menu (F1).
-4. Play `totk.exe` from the install folder.
-
-### Linux
-
-Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3). On Linux, AMD Phenom II and Athlon II (K10), which lack SSE4.2, are also accepted: the setup picks a build for them, the slowest of the three ([docs/building.md](docs/building.md), `--cpu k10`).
-
-1. Download `TotK-Setup-x86_64.AppImage` from [Releases](../../releases/latest), or build it ([docs/installer.md](docs/installer.md), "Linux release").
-2. Make it executable (`chmod +x TotK-Setup-x86_64.AppImage`) and start it. On a Steam Deck, do this in Desktop Mode.
-3. Pick your game files, the language and an install folder, and press *Start*.
+1. Download `TotK-Setup-x86_64-<version>-linux.AppImage` from [Releases](../../releases/latest), or build it ([docs/installer.md](docs/installer.md), "Linux release").
+2. Make it executable (`chmod +x TotK-Setup-x86_64-*.AppImage`) and start it. On a Steam Deck, do this in Desktop Mode.
+3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once: about
+   2-4 hours on a Phenom II.
 4. Play `totk` from the install folder.
 
 To update, run a newer setup on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
@@ -248,6 +236,6 @@ TotK Recomp is an independent, non-commercial fan project, not affiliated with o
 
 ## Building from source
 
-[docs/building.md](docs/building.md) lists the toolchain and the steps. Everything the build writes stays under `build\` and `generated\`, which git ignores; run `tools/check_content.py` before a commit. Testers: [docs/tester-guide.md](docs/tester-guide.md).
+[docs/building.md](docs/building.md) lists the toolchain and the steps. Everything the build writes stays under `build/` and `generated/`, which git ignores; run `tools/check_content.py` before a commit. Testers: [docs/tester-guide.md](docs/tester-guide.md).
 
 Most of the code and documentation is written by AI coding agents (Claude Code) under the maintainer's direction; the maintainer plays every build and decides what is merged. [AGENTS.md](AGENTS.md) holds the rules they work under.
