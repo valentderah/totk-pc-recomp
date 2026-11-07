@@ -335,7 +335,13 @@ void vk_reflex_sleep(void) {
         .signalSemaphore = g_reflex_sem,
         .value = val
     };
-    if (g_reflex_sleep(c->device, g_sc, &si) == VK_SUCCESS) {
+    // vkLatencySleepNV uses the swapchain, which Vulkan wants externally synchronised with the acquire and the present
+    // (they run under g_pl on the present thread). The wait for the semaphore stays outside the lock.
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    plat_rmutex_lock(&g_pl);
+    if (g_sc) r = g_reflex_sleep(c->device, g_sc, &si);
+    plat_rmutex_unlock(&g_pl);
+    if (r == VK_SUCCESS) {
         VkSemaphoreWaitInfo wi = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
             .semaphoreCount = 1,
