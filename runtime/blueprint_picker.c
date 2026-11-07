@@ -72,6 +72,9 @@ static int32_t g_wheel;
 static int32_t g_back_pending;
 // A scrollbar drag: the pointer's y within the thumb when the drag began, so the thumb does not jump under the cursor.
 static int g_dragging, g_drag_grab_y;
+// A camera drag inside the preview: the pointer at the previous frame, so each frame turns the view by how far the pointer
+// moved. Kept apart from the scrollbar drag because the two live in different parts of the panel.
+static int g_cam_dragging, g_cam_last_x, g_cam_last_y;
 
 // ---- the preview of the file under the pointer or the pad cursor
 //
@@ -82,24 +85,36 @@ static int g_dragging, g_drag_grab_y;
 // is a 3D view of boxes rather than of models: every part becomes a small box at its own position, turned by its own
 // rotation, and the whole thing is projected through one fixed camera. That is honest about what the file contains and
 // still reads as the shape of the build, which a flat scatter could not.
-// One projected part: where its centre lands in the view box (0..1), how big it is there, how bright, and how far it is
-// turned from upright.
-typedef struct { float x, y, s, a, tilt; } PickPart;
+// One projected face: its four corners in the view box (0..1) and how lit it is. Faces are painted far to near, which
+// is the whole depth solution a draw list needs - it has no depth buffer.
+typedef struct {
+    float x[4], y[4];
+    float shade;
+    float depth;   // mean corner depth, for the sort only
+} PickFace;
 
 typedef struct {
     char path[PICK_PATH_MAX];      // the file the data below belongs to; "" when nothing is read yet
     int ok;                        // 1: a real blueprint; 0: refused (note says why)
     int actors;                    // parts, when ok
     char note[96];                 // the file name when ok, else the reason it cannot be imported
-    int nparts;
-    PickPart part[BPC_PICK_MAX_DOTS];   // in draw order: far first, so a nearer box covers a further one
+    int nfaces;
+    PickFace face[BPC_PICK_MAX_FACES];   // far first
+    // The camera the faces below were projected with. A drag changes the camera, and the cache is only good while they
+    // still agree, so turning the view re-projects the same file instead of needing a new path to invalidate it.
+    float cam_yaw, cam_pitch;
 } PickPreview;
 static PickPreview g_preview;
 
-// The camera: a fixed three-quarter view, looking down at the build from slightly above and to one side. A blueprint is
-// built on a plane (its bbox is wide in x/z and thin in y), so this is the angle that shows the layout - the same
-// reasoning a player would use when turning a build in the Autobuild screen. Returns the point in 0..1 of the view box
-// (x right, y down) and its depth, larger being further from the camera.
+// The camera: a three-quarter view, looking down at the build from slightly above and to one side. A blueprint is built
+// on a plane (its bbox is wide in x/z and thin in y), so this is the angle that shows the layout - the same reasoning a
+// player would use when turning a build in the Autobuild screen. The default is 35 degrees of yaw and 28 of pitch; the
+// pointer can drag it round (a picker-wide setting, kept across files so a player who turned one build keeps that view).
+static struct { float yaw, pitch; } g_cam = {0.610865f, 0.488692f};
+#define BP_CAM_DEFAULT_YAW 0.610865f
+#define BP_CAM_DEFAULT_PITCH 0.488692f
+
+// Returns the point in 0..1 of the view box (x right, y down) and its depth, larger being further from the camera.
 static void preview_project(const float p[3], const float bbox_min[3], const float bbox_max[3],
                             float *sx, float *sy, float *depth) {
     // Normalise the part's position into -1..1 across the blueprint's own box, so any build fills the view the same way.
@@ -108,8 +123,8 @@ static void preview_project(const float p[3], const float bbox_min[3], const flo
         const float span = bbox_max[i] - bbox_min[i];
         n[i] = span > 0.001f ? ((p[i] - bbox_min[i]) / span) * 2.0f - 1.0f : 0.0f;
     }
-    const float cy = 0.819152f, syn = 0.573576f;   // cos / sin of a 35 degree yaw
-    const float cp = 0.882948f, sp = 0.469472f;    // cos / sin of a 28 degree pitch
+    const float cy = cosf(g_cam.yaw), syn = sinf(g_cam.yaw);
+    const float cp = cosf(g_cam.pitch), sp = sinf(g_cam.pitch);
     const float x1 = cy * n[0] + syn * n[2];
     const float z1 = -syn * n[0] + cy * n[2];
     const float y1 = cp * n[1] - sp * z1;
@@ -119,6 +134,42 @@ static void preview_project(const float p[3], const float bbox_min[3], const flo
     *sx = 0.5f + x1 * 0.36f * k;
     *sy = 0.5f - y1 * 0.36f * k;
     *depth = z2;
+}
+
+// The six faces of a box as indices into its eight corners, each wound counter-clockwise seen from outside.
+static const int kFace[6][4] = {
+    {0, 1, 3, 2},   // -Z
+    {4, 6, 7, 5},   // +Z
+    {0, 4, 5, 1},   // -Y
+    {2, 3, 7, 6},   // +Y
+    {0, 2, 6, 4},   // -X
+    {1, 5, 7, 3},   // +X
+};
+// Each face's outward normal, in the box's own local axes, for the shading.
+static const float kFaceNormal[6][3] = {
+    {0, 0, -1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0},
+};
+
+// A box's eight corners in blueprint space: a cube of half-extent `half` around the part's position, turned by its own
+// rotation. rot[k][world axis][local axis], so corner c uses its local signs against the three LOCAL columns.
+static void preview_box_corners(const BpcBlueprint *bp, int k, float half, float out[8][3]) {
+    for (int c = 0; c < 8; c++) {
+        const float lx = (c & 1) ? half : -half;
+        const float ly = (c & 2) ? half : -half;
+        const float lz = (c & 4) ? half : -half;
+        for (int i = 0; i < 3; i++)
+            out[c][i] = bp->pos[k][i] + bp->rot[k][i][0] * lx + bp->rot[k][i][1] * ly + bp->rot[k][i][2] * lz;
+    }
+}
+
+// Twice the signed area of a projected quad: its sign is the winding, which is how a back face is recognised.
+static float preview_area2(const float q[4][2]) {
+    float a = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        const int j = (i + 1) & 3;
+        a += q[i][0] * q[j][1] - q[j][0] * q[i][1];
+    }
+    return a;
 }
 
 
@@ -249,22 +300,34 @@ static void preview_load(const char *path) {
     if (!path || !*path) {
         g_preview.path[0] = 0;
         g_preview.ok = 0;
-        g_preview.nparts = 0;
+        g_preview.nfaces = 0;
         g_preview.actors = 0;
         g_preview.note[0] = 0;
         return;
     }
-    if (!strcmp(g_preview.path, path)) return;   // already this file
+    // The cache holds one file under one camera: a different file, or the same file after the view was dragged, both
+    // need the geometry again.
+    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch) return;
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;
-    g_preview.nparts = 0;
+    g_preview.nfaces = 0;
     g_preview.actors = 0;
-    // A blueprint is at most 262144 bytes and parsing it is a few dozen float reads, so reading it here (on the present
-    // path, once per highlighted file) is nothing next to the folder walk that already happens when a folder opens.
+    // The parsed blueprint is kept across re-projections, so dragging the view re-projects what is already in memory
+    // instead of reading the file again on every frame of the drag. It is only re-read when the path changes.
     static uint8_t storage[BPF_READ_MAX];
-    BpcBlueprint bp;
-    enum BpcResult r = bp_file_read(path, storage, &bp);
+    static BpcBlueprint bp;
+    static char parsed_path[PICK_PATH_MAX];
+    enum BpcResult r;
+    if (!strcmp(parsed_path, path)) {
+        r = BPC_OK;   // the same file, already parsed: only the projection is stale
+    } else {
+        r = bp_file_read(path, storage, &bp);
+        // Only a file that parsed is remembered: caching the path of a refused file would make the next frame claim it
+        // succeeded, and the note would then be blank over an empty view.
+        if (r == BPC_OK) snprintf(parsed_path, sizeof parsed_path, "%s", path);
+        else parsed_path[0] = 0;
+    }
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     if (r != BPC_OK) {
@@ -275,47 +338,79 @@ static void preview_load(const char *path) {
     g_preview.actors = bp.actors;
     snprintf(g_preview.note, sizeof g_preview.note, "%s", base);
 
-    // Project every part, then sort far-to-near so the painter's algorithm is enough (the overlay has no depth buffer).
+    // Every part becomes a box; each box contributes only the faces that face the camera. All of those faces then go into
+    // one list sorted far to near, because a draw list has no depth buffer and the painter's order is what makes a nearer
+    // face cover a further one.
     const int n = bp.actors < BPC_PICK_MAX_DOTS ? bp.actors : BPC_PICK_MAX_DOTS;
-    float depth[BPC_PICK_MAX_DOTS];
-    const float per = 1.0f / (float)(n > 0 ? n : 1);
-    for (int k = 0; k < n; k++) {
-        float vx, vy, vz;
-        preview_project(bp.pos[k], bp.bbox_min, bp.bbox_max, &vx, &vy, &vz);
-        depth[k] = vz;
-        g_preview.part[k].x = vx;
-        g_preview.part[k].y = vy;
-        // The perspective already shrank the centre; the box shrinks with it too, and a busier build draws smaller
-        // parts so a 21-part draft does not become a solid block of colour.
-        const float k2 = 4.0f / (4.0f + vz);
-        g_preview.part[k].s = (0.10f + 0.35f * per) * k2;
-        // Shade by depth: the further a part is, the dimmer, which is the only depth cue a flat fill can give.
-        float a = 1.0f - (vz + 1.6f) / 3.2f;
-        if (a < 0.2f) a = 0.2f;
-        if (a > 1.0f) a = 1.0f;
-        g_preview.part[k].a = a;
-        // How far the part leans away from vertical, from its own rotation. rot's middle row is the part's local +y
-        // expressed in blueprint space, so its y component is 1 when the part stands upright, -1 when it hangs upside
-        // down, and 0 when it lies flat: the magnitude is what "leans", and the sign only says which way is up.
-        float lean = 1.0f - fabsf(bp.rot[k][1][1]);
-        if (lean < 0) lean = 0;
-        if (lean > 1.0f) lean = 1.0f;
-        g_preview.part[k].tilt = lean;
+    // The box's half extent: a sixth of the blueprint's longest side. CAI carries no per-part size, so this stands in for
+    // one; it was chosen by measuring coverage on real files (design 5.2), and it keeps a 10-part draft from drawing as
+    // one blob while still filling the view for a 21-part one.
+    float span = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        const float s = bp.bbox_max[i] - bp.bbox_min[i];
+        if (s > span) span = s;
     }
-    // Insertion sort by descending depth: at most 21 items, so this is both simpler and faster than a general sort.
-    for (int i = 1; i < n; i++) {
-        const PickPart p = g_preview.part[i];
-        const float d = depth[i];
+    const float half = span * 0.06f;
+    // One fixed key light from above-left, in blueprint space, so a face's brightness says which way it points.
+    const float light[3] = {0.40f, 0.82f, 0.41f};
+
+    g_preview.nfaces = 0;
+    // Estimate the perspective scale from the blueprint's centre; the per-face division below still corrects each face.
+    int guard = 0;
+    for (int k = 0; k < n; k++) {
+        float corners[8][3];
+        preview_box_corners(&bp, k, half, corners);
+        // Project all eight corners once; every face reuses them.
+        float px[8], py[8], pz[8];
+        for (int c = 0; c < 8; c++) preview_project(corners[c], bp.bbox_min, bp.bbox_max, &px[c], &py[c], &pz[c]);
+        for (int f = 0; f < 6 && g_preview.nfaces < BPC_PICK_MAX_FACES; f++) {
+            float q[4][2];
+            float depth = 0.0f;
+            for (int i = 0; i < 4; i++) {
+                const int c = kFace[f][i];
+                q[i][0] = px[c];
+                q[i][1] = py[c];
+                depth += pz[c];
+            }
+            depth *= 0.25f;
+            // A face wound the wrong way is seen from behind: skip it. Every face opposes its opposite face's winding,
+            // measured on real files, so this test is reliable.
+            if (preview_area2(q) >= 0.0f) continue;
+            // Shading: the face's outward normal in blueprint space, dotted with the light.
+            float nrm[3] = {0, 0, 0};
+            for (int i = 0; i < 3; i++)
+                nrm[i] = bp.rot[k][i][0] * kFaceNormal[f][0] + bp.rot[k][i][1] * kFaceNormal[f][1] +
+                         bp.rot[k][i][2] * kFaceNormal[f][2];
+            float lit = nrm[0] * light[0] + nrm[1] * light[1] + nrm[2] * light[2];
+            if (lit < 0.0f) lit = 0.0f;
+            // A little ambient so a face turned away is still visible as a face, and the depth dimming the earlier
+            // version used, which keeps the far side of a build reading as further away.
+            float shade = 0.30f + 0.70f * lit;
+            shade *= 0.65f + 0.35f * (1.0f - (depth + 1.6f) / 3.2f);
+            if (shade < 0.12f) shade = 0.12f;
+            if (shade > 1.0f) shade = 1.0f;
+            PickFace *dst = &g_preview.face[g_preview.nfaces++];
+            for (int i = 0; i < 4; i++) {
+                dst->x[i] = q[i][0];
+                dst->y[i] = q[i][1];
+            }
+            dst->shade = shade;
+            dst->depth = depth;
+        }
+        if (++guard > BPC_PICK_MAX_DOTS) break;
+    }
+    // Insertion sort by descending depth: at most 63 faces, so this stays simple and dependency-free.
+    for (int i = 1; i < g_preview.nfaces; i++) {
+        const PickFace p = g_preview.face[i];
         int j = i - 1;
-        while (j >= 0 && depth[j] < d) {
-            g_preview.part[j + 1] = g_preview.part[j];
-            depth[j + 1] = depth[j];
+        while (j >= 0 && g_preview.face[j].depth < p.depth) {
+            g_preview.face[j + 1] = g_preview.face[j];
             j--;
         }
-        g_preview.part[j + 1] = p;
-        depth[j + 1] = d;
+        g_preview.face[j + 1] = p;
     }
-    g_preview.nparts = n;
+    g_preview.cam_yaw = g_cam.yaw;
+    g_preview.cam_pitch = g_cam.pitch;
 }
 
 static void list_folder(void) {
@@ -419,6 +514,24 @@ void bp_picker_wheel(int notches) {
 
 void bp_picker_back(void) {
     if (g_open) __atomic_store_n(&g_back_pending, 1, __ATOMIC_RELEASE);
+}
+
+// The preview's camera (blueprint_picker.h): readable, settable, resettable, so a caller can restore the default view and
+// a test can check that a drag moves it.
+void bp_picker_camera(float *yaw, float *pitch) {
+    if (yaw) *yaw = g_cam.yaw;
+    if (pitch) *pitch = g_cam.pitch;
+}
+
+void bp_picker_camera_set(float yaw, float pitch) {
+    const float kLimit = 1.39626f;   // 80 degrees, the same clamp the drag applies
+    g_cam.yaw = yaw;
+    g_cam.pitch = pitch < -kLimit ? -kLimit : pitch > kLimit ? kLimit : pitch;
+}
+
+void bp_picker_camera_reset(void) {
+    g_cam.yaw = BP_CAM_DEFAULT_YAW;
+    g_cam.pitch = BP_CAM_DEFAULT_PITCH;
 }
 
 
@@ -667,13 +780,13 @@ static int layout_preview(BPickFrame *f, int pad, int preview_w, int px, int py)
     f->preview_w = preview_w - pad_in * 2;
     f->preview_h = box_h - text_h - pad_in * 2;
     if (f->preview_h < (int)(40 * sc)) f->preview_h = (int)(40 * sc);
-    f->preview_parts = g_preview.nparts;
-    for (int k = 0; k < g_preview.nparts; k++) {
-        f->preview_box[k].x = g_preview.part[k].x;
-        f->preview_box[k].y = g_preview.part[k].y;
-        f->preview_box[k].s = g_preview.part[k].s;
-        f->preview_box[k].a = g_preview.part[k].a;
-        f->preview_box[k].tilt = g_preview.part[k].tilt;
+    f->preview_faces = g_preview.nfaces;
+    for (int k = 0; k < g_preview.nfaces; k++) {
+        for (int i = 0; i < 4; i++) {
+            f->preview_face[k].x[i] = g_preview.face[k].x[i];
+            f->preview_face[k].y[i] = g_preview.face[k].y[i];
+        }
+        f->preview_face[k].shade = g_preview.face[k].shade;
     }
     if (g_preview.ok) {
         snprintf(f->preview_title, sizeof f->preview_title, menu_text(UI_MENU_BLUEPRINT_PARTS), g_preview.actors);
@@ -744,12 +857,50 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
         }
     }
 
-    // The pointer's left button. Its edge and its held state drive both a click and a scrollbar drag; the drag has
-    // priority so that pressing on the thumb never activates the row that happens to lie behind it.
+    // The pointer's left button. Its edge and its held state drive a click, a scrollbar drag and a camera drag; each drag
+    // has priority over the click so pressing on a thumb or in the view never also activates what lies behind it.
     static int held_l;
     const int l = ikb_down(KEY_MOUSE_L);
     const int click = l && !held_l;
     held_l = l;
+
+    // ---- camera drag: turning the preview. Checked before the scrollbar because a press inside the view must not be
+    // read as a scrollbar grab if the two ever overlap, and because the view is the thing the player is aiming at.
+    const int in_preview = f->preview && px >= f->preview_x && px < f->preview_x + f->preview_w &&
+                           py >= f->preview_y && py < f->preview_y + f->preview_h;
+    if (click && in_preview) {
+        // A second click soon after the first puts the view back: the way out of a camera the player has lost track of,
+        // without a button for it in the footer.
+        static uint64_t last_click;
+        const uint64_t now = plat_now_ns();
+        if (now - last_click < 400ull * 1000000ull) {
+            bp_picker_camera_reset();
+            last_click = 0;
+        } else {
+            last_click = now;
+        }
+        g_cam_dragging = 1;
+        g_cam_last_x = px;
+        g_cam_last_y = py;
+    }
+    if (!l) g_cam_dragging = 0;
+    if (g_cam_dragging) {
+        // Dragging across the view's width turns the build about one full circle, so the sensitivity does not depend on
+        // the window size. Pitch is clamped short of the poles: past them the build turns inside out and reads as a mess.
+        const float dx = (float)(px - g_cam_last_x), dy = (float)(py - g_cam_last_y);
+        g_cam_last_x = px;
+        g_cam_last_y = py;
+        const float per_px = f->preview_w > 0 ? 6.2832f / (float)f->preview_w : 0.01f;
+        g_cam.yaw += dx * per_px;
+        if (g_cam.yaw > 6.2832f) g_cam.yaw -= 6.2832f;
+        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.2832f;
+        g_cam.pitch += dy * per_px;
+        const float kLimit = 1.39626f;   // 80 degrees
+        if (g_cam.pitch > kLimit) g_cam.pitch = kLimit;
+        if (g_cam.pitch < -kLimit) g_cam.pitch = -kLimit;
+        acted = 1;   // the projection changed, so the caller re-lays out and the faces are rebuilt
+        return acted;
+    }
 
     // ---- scrollbar drag: clicking the grab column starts it, moving the pointer while held maps y to the first visible
     // entry through the same scroll_max the wheel uses. g_drag_grab_y keeps the thumb from jumping to the cursor.

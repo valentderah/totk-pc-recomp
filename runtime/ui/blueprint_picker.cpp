@@ -122,7 +122,8 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
 
     // ---- the preview column: a small 3D view of the highlighted blueprint, drawn before the rows so their plates never
     // sit on top of it. The CAI format stores each part's placement and nothing else, so a part is a box at its own
-    // position and angle rather than its real model; the C layer has already projected and depth-sorted them.
+    // position and angle rather than its real model; the C layer has already projected every visible face, shaded it and
+    // sorted the lot far to near. This only fills them in.
     if (f.preview) {
         const float px = (float)f.preview_x, py = (float)f.preview_y;
         const float pw = (float)f.preview_w, ph = (float)f.preview_h;
@@ -132,32 +133,26 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
             const float gy = py + ph * (float)i / 4.0f;
             dl->AddLine(ImVec2(px, gy), ImVec2(px + pw, gy), IM_COL32(255, 255, 255, 10), 1 * s);
         }
-        if (f.preview_parts > 0) {
-            // Each part is a flat quad (a box seen from above) scaled by its projected size and shaded by its depth. The
-            // order the C layer produced is far to near, which is the whole depth solution a draw list needs.
-            for (int k = 0; k < f.preview_parts; k++) {
-                const float cx = px + f.preview_box[k].x * pw;
-                const float cy = py + f.preview_box[k].y * ph;
-                const float half = f.preview_box[k].s * pw * 0.5f;
-                if (half < 0.5f) continue;
-                const float a = f.preview_box[k].a;
-                const ImU32 fill = IM_COL32((int)(236 * a), (int)(194 * a), (int)(84 * a), (int)(230 * a));
-                const ImU32 edge = IM_COL32((int)(255 * a), (int)(228 * a), (int)(140 * a), (int)(255 * a));
-                // The box is a quad; a part tipped from upright leans it sideways by its tilt, so a wheel or a lying
-                // beam does not look like an upright post. tilt is 0 for upright, 1 for lying flat, and is capped at 2.
-                const float lean = (f.preview_box[k].tilt > 1.0f ? 1.0f : f.preview_box[k].tilt) * half * 1.4f;
-                dl->AddQuadFilled(ImVec2(cx - half - lean, cy - half * 1.1f), ImVec2(cx + half - lean, cy - half * 1.1f),
-                                  ImVec2(cx + half + lean, cy + half * 1.1f), ImVec2(cx - half + lean, cy + half * 1.1f),
-                                  fill);
-                dl->AddQuad(ImVec2(cx - half - lean, cy - half * 1.1f), ImVec2(cx + half - lean, cy - half * 1.1f),
-                            ImVec2(cx + half + lean, cy + half * 1.1f), ImVec2(cx - half + lean, cy + half * 1.1f),
-                            edge, 1 * s);
+        if (f.preview_faces > 0) {
+            // Quad corners are placed analytically and can land outside the box when a build is viewed at an angle, so
+            // the draw is clipped to the view: AddQuadFilled itself does not clip.
+            dl->PushClipRect(ImVec2(px, py), ImVec2(px + pw, py + ph), true);
+            for (int k = 0; k < f.preview_faces; k++) {
+                const float sh = f.preview_face[k].shade;
+                // The gold the rest of the picker uses, darkened by the face's own brightness. One fill per face, no
+                // outline: outlines at this size turn a 21-part build into a mesh of lines.
+                const ImU32 fill = IM_COL32((int)(236 * sh), (int)(194 * sh), (int)(84 * sh), 235);
+                dl->AddQuadFilled(ImVec2(px + f.preview_face[k].x[0] * pw, py + f.preview_face[k].y[0] * ph),
+                                  ImVec2(px + f.preview_face[k].x[1] * pw, py + f.preview_face[k].y[1] * ph),
+                                  ImVec2(px + f.preview_face[k].x[2] * pw, py + f.preview_face[k].y[2] * ph),
+                                  ImVec2(px + f.preview_face[k].x[3] * pw, py + f.preview_face[k].y[3] * ph), fill);
             }
+            dl->PopClipRect();
         }
         // The headline (part count or "not a blueprint") under the box, then the file name or the reason.
         const float tx = px - 8 * s;
         float ty = py + ph + 20 * s;
-        text(dl, font, fs * 0.94f, tx, ty, f.preview_parts > 0 ? kGold : kTextDim, f.preview_title);
+        text(dl, font, fs * 0.94f, tx, ty, f.preview_faces > 0 ? kGold : kTextDim, f.preview_title);
         ty += fs * 1.15f;
         text(dl, font, fs * 0.80f, tx, ty, kTextDim, f.preview_note);
     }

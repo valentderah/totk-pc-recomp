@@ -18,6 +18,9 @@ extern "C" {
 #define BP_PICK_MAX_PARTS 16
 #define BP_PICK_MAX_ROWS 530
 #define BPC_PICK_MAX_DOTS 21   // one dot per actor of a blueprint (blueprint_cai.h BPC_MAX_ACTORS)
+// A blueprint's preview is a set of boxes: every part contributes the faces that face the camera, and a convex box shows
+// at most 3 of its 6. The array is sized for the worst case so nothing can overflow.
+#define BPC_PICK_MAX_FACES (BPC_PICK_MAX_DOTS * 3)
 
 // done gets the chosen path (UTF-8) or NULL when the player cancelled.
 typedef void (*BpPickDone)(const char *path, void *ctx);
@@ -89,17 +92,16 @@ typedef struct {
     struct { char key[8]; char label[64]; int primary; } prompt[4];   // primary: the accept key, drawn in gold
 
     // ---- the preview of the file under the pointer (or the pad cursor). Filled by the C layer so the draw layer only
-    // paints. It is a small 3D view: every part becomes a box at its own position and orientation, projected through a
-    // fixed camera. The CAI format stores placement only (no meshes), so a box stands for a part rather than its model.
+    // paints. It is a small 3D view: every part is a box at its own position and orientation, its camera-facing faces
+    // projected and sorted far to near. The CAI format stores placement only (no meshes), so a box stands in for a part
+    // rather than its model.
     int preview;               // 1 when there is a blueprint preview to draw
     int preview_x, preview_y, preview_w, preview_h;   // the box the view is drawn into
-    int preview_parts;         // how many parts follow in preview_box
+    int preview_faces;         // how many faces follow in preview_face, far first
     struct {
-        float x, y;            // the part's centre, projected into 0..1 of the box
-        float s;               // its on-screen size, in the same 0..1 units
-        float a;               // its shading, 0 (away) to 1 (facing the camera): the depth cue
-        float tilt;            // how far the part is turned from upright, -1..1: a tilted part is drawn leaning
-    } preview_box[BPC_PICK_MAX_DOTS];
+        float x[4], y[4];      // the face's four corners, in 0..1 of the view box
+        float shade;           // 0 (turned away from the light) to 1 (facing it)
+    } preview_face[BPC_PICK_MAX_FACES];
     char preview_title[160];   // the blueprint's headline: part count
     char preview_note[96];     // a second line: the file name, or why it cannot be imported
 } BPickFrame;
@@ -136,6 +138,12 @@ void bp_picker_back(void);
 int bp_picker_hover_part(void);
 int bp_picker_selected_row(void);
 int bp_picker_scroll(void);
+
+// The preview's camera, in radians. A player turns the view by dragging inside it; these let a caller read the angle
+// back and reset it (the picker's double-click does that).
+void bp_picker_camera(float *yaw, float *pitch);
+void bp_picker_camera_set(float yaw, float pitch);   // pitch is clamped short of the poles
+void bp_picker_camera_reset(void);                   // back to the three-quarter default
 
 // Paints the panel into the overlay's draw list, in a width x height image, at the menu's pixel scale, with the pointer
 // at (px, py) in the same pixels (-1, -1 when there is none). Defined in ui/blueprint_picker.cpp, the only C++ part of

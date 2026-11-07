@@ -266,32 +266,35 @@ game version and every pad layout.
 ### 6.1 The preview column
 
 While a file is highlighted the picker shows a small 3D view of it on the right: every part is a box at its own position,
-turned by its own rotation, projected through one fixed camera. `layout_preview` and `preview_load`
-(`runtime/blueprint_picker.c`) compute it; the draw layer paints what it is given.
+turned by its own rotation, its camera-facing faces projected and shaded, the lot sorted far to near.
+`layout_preview` and `preview_load` (`runtime/blueprint_picker.c`) compute it; the draw layer fills the quads it is given.
 
 **What it can and cannot show.** A CAI blob holds each part's placement — a rotation and a position — and nothing else:
 there is no mesh, so a part cannot be drawn as its real model. The preview therefore draws a box standing in for each
-part, which reads as the shape of a build (where its parts are, which way they face, how tall it is) but not as a
-picture of the thing. Anything claiming to render the real model would have to load the game's meshes, which this port
-does not do for the files it imports.
+part, which reads as the shape of a build (where its parts are, which way they face, how tall it is) but not as a picture
+of the thing. Anything claiming to render the real model would have to load the game's meshes from its archives, which
+this port does not do for the files it imports.
 
-The camera is fixed (35° yaw, 28° pitch) because a blueprint is built on a plane — its bounding box is wide in x/z and
-thin in y — so that angle is the one that shows the layout, the same reasoning a player uses when turning a build in the
-Autobuild screen. Positions are normalised across the blueprint's own bounding box, so any build fills the view the same
-way.
+Each part contributes the faces that face the camera — a convex box shows three — recognised by their projected winding,
+which every face opposes on its opposite face. A face is shaded by its own outward normal against one fixed light, with a
+little ambient so a face turned away still reads as a face. The box's half extent is a sixteenth of the blueprint's
+longest side: CAI carries no per-part size, and this value was measured over six real files to keep coverage between
+roughly a fifth and a third of the view (the adaptive rules that were tried were worse).
 
-Depth is handled without a depth buffer, which the ImGui draw list does not have: parts are projected, sorted far to
-near, and painted in that order. Two cues carry depth besides the painter's order — the perspective shrinks a part's box
-with its distance, and its fill dims with it. A part's own rotation contributes a lean: the part's local +y in blueprint
-space has y = 1 upright, -1 hanging, 0 lying flat, and `1 - |y|` is how far it leans, so a wheel and an upright pole do
-not draw the same.
+Depth needs no depth buffer, which the ImGui draw list does not have: the faces are sorted far to near and painted in
+that order.
 
-The preview is read once per file, keyed by its full path. It goes through the same reader and validator as the import
-(`bp_file_read`), so a file that previews is a file that will import; a file the parser rejects shows its reason instead
-of a picture.
+The camera is state, not a constant. Dragging inside the view turns it; a second click puts it back to the default
+35°/28°; pitch is clamped short of the poles, where the build would turn inside out. Yaw is kept across files, so a
+player who turned one build sees the next at the same angle. A turn re-projects the file that is already parsed, so a
+drag never re-reads it.
 
-`tests/preview_picture.py` renders the same projection to a text picture from a real `.cai`, which is how the camera and
-the lean were checked without running the game.
+The preview is read once per file and camera, keyed by the full path. It goes through the same reader and validator as
+the import (`bp_file_read`), so a file that previews is a file that will import; a file the parser rejects shows its
+reason instead of a picture.
+
+`tests/preview_picture.py` renders the same projection into a text picture from a real `.cai`, which is how the camera,
+the box size and the culling were checked without running the game.
 
 Log lines:
 
