@@ -22,9 +22,12 @@
 extern "C" {
 #endif
 
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+
 // ---- state, any thread
 int menu_is_open(void);
 void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad
+void menu_open_tab(int tab);              // open menu directly on a given tab
 void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
 
 // ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the

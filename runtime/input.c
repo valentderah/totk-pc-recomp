@@ -18,6 +18,7 @@
 #include "input_map.h"
 #include "input_wsys.h"
 #include "nvn_api.h"
+#include "ui/amiibo_page.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -686,10 +687,16 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
+    static int amiibo_held;    // R3+D-pad for quick amiibo actions
+    int amiibo_act = input_amiibo_gate(&amiibo_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();
+    if (amiibo_act == 1) amiibo_quick_tap();
+    else if (amiibo_act == 2) amiibo_quick_next();
+    else if (amiibo_act == 3) amiibo_quick_prev();
+    else if (amiibo_act == 4) amiibo_quick_menu();
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
     __atomic_store_n(&g_buttons_last, b, __ATOMIC_RELAXED);

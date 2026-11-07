@@ -598,7 +598,7 @@ static SteadyClockTimePoint steady_now(void) {
     return p;
 }
 
-static int64_t posix_now(void) { return (int64_t)time(NULL); }
+static int64_t posix_now(void) { return (int64_t)time(NULL) + amiibo_get_clock_offset(); }
 
 // Days since 1970-01-01 of a proleptic Gregorian date, and back (H. Hinnant's civil calendar algorithms).
 static int64_t days_from_civil(int64_t y, unsigned m, unsigned d) {
