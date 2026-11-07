@@ -323,6 +323,26 @@ def runtime_sources(skip=()):
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
+def install_stamp(out, runtime_lib):
+    """Write obj/runtime/inputs.sha256, one hash over the runtime library, the INSTALL_SIDE sources and every runtime
+    header, and return its path. The release zip dates every file 1980-01-01 (make_release.py write_zip), so a new
+    release extracted over an old Setup folder has sources and a library older than the objects and the totk.exe the
+    last install left there. Ninja compares mtimes only: it kept the old install-side objects and linked them with the
+    new library (undefined symbols), or skipped the link and kept the old totk.exe. The install-side objects and the
+    link depend on this file, which is rewritten only when the hash changes, so new contents rebuild them whatever the
+    file dates are."""
+    files = sorted((p for p in RUNTIME.rglob('*') if p.is_file() and
+                    (p.suffix in ('.h', '.inc') or (p.parent == RUNTIME and p.name in INSTALL_SIDE))),
+                   key=lambda p: p.relative_to(RUNTIME).as_posix())
+    h = hashlib.sha256()
+    for p in files:
+        h.update(f'{p.relative_to(RUNTIME).as_posix()} {file_sha256(p)}\n'.encode())
+    h.update(f'{LIB_NAME} {file_sha256(runtime_lib)}\n'.encode())
+    path = out / 'obj' / 'runtime' / 'inputs.sha256'
+    write_if_changed(path, h.hexdigest() + '\n')
+    return path
+
+
 def runtime_object(out, src):
     """obj/runtime/<path below runtime>.o, so platform/win32.c cannot collide with a top-level win32.c."""
     src = Path(src)
@@ -368,10 +388,11 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, stamp=None):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
-    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
+    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE. stamp: the
+    install_stamp file, an extra input of the runtime objects and of the link."""
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
@@ -440,7 +461,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}')
+            stamp_dep = (' | ' if not pgo_dep else ' ') + ninja_path(stamp) if stamp else ''
+            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}{stamp_dep}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
@@ -459,7 +481,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
                   f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out',
                   '  rspfile = $out.rsp', '  rspfile_content = $in_newline', '  description = LINK $out']
     lines += ['', f'build {ninja_path(exe)}: {rule} ' + ' '.join(ninja_path(o) for o in every) +
-              (f' | {ninja_path(runtime_lib)}' if runtime_lib else ''),
+              (f' | {ninja_path(runtime_lib)}' if runtime_lib else '') + (f' {ninja_path(stamp)}' if stamp else ''),
               'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
     return '\n'.join(lines), objs, exe
 
@@ -926,8 +948,9 @@ def main():
     if runtime_lib and missing:
         sys.exit(f'build_game: {", ".join(missing)} missing from {flag_path(RUNTIME)}: the release must ship every '
                  f'INSTALL_SIDE source beside {runtime_lib.name}')
+    stamp = install_stamp(out, runtime_lib) if runtime_lib else None
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+                                 args.make_runtime_lib, stamp)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
