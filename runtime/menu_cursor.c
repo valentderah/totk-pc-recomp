@@ -49,7 +49,8 @@ enum { NODE_BUTTON = 0x18, NODE_SCREEN = 0x20, BTN_LAYOUT = 0x20, BTN_FLAGS = 0x
 // nn::ui2d::DrawInfo: projection (4 x 4) and view (3 x 4); nn::ui2d::Layout: root pane, size, name
 enum { DI_PROJ = 0x10, DI_VIEW = 0x50, LYT_ROOT = 0x18, LYT_SIZE = 0x28, LYT_NAME = 0x30 };
 // nn::ui2d::Pane
-enum { PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59, PANE_BASE = 0x5b, PANE_MTX = 0x70 };
+enum { PANE_NAME = 0x08, PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59, PANE_BASE = 0x5b,
+       PANE_MTX = 0x70 };
 
 static uint64_t main_lo, main_hi;
 
@@ -353,6 +354,37 @@ int menu_cursor_screen_open(const char *want) {
         if (!strcmp(nm, want)) return 1;
     }
     return 0;
+}
+
+
+// Whether the focused node is one of the screen's three tab buttons (favourites, drafts, history).
+//
+// A screen's focusable nodes are buttons, and each button was built from a layout of its own: the Autobuild screen's tabs
+// instantiate blyt/PaAutoBuilderTabBtn_00.bflyt, while its cards instantiate blyt/PaAutoBuilderPhotoBtn_00.bflyt (both
+// are named members of the Common.Product archive, and the screen's own blyt references them as Pa_TabBtn_00..02 and
+// Pa_Photo_00). The button's layout pointer is already read for the cursor work (BTN_LAYOUT), and a layout carries its
+// name at LYT_NAME - the same field menu_cursor_screen_name reads for a whole screen. So the tabs are told apart by the
+// template they were built from, which is exact: no position threshold, and no pane-name offset this port does not have.
+int menu_cursor_focus_is_tab(const char *screen) {
+    if (!screen || !*screen) return 0;
+    main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
+    Focus f = focus_now();
+    if (!f.node) return 0;
+    char nm[48];
+    layout_name(f.screen, nm, sizeof nm);
+    if (strcmp(nm, screen)) return 0;
+    uint64_t btn = rd64(f.node + NODE_BUTTON);
+    if (!ok_at(btn, BTN_LAYOUT + 8)) return 0;
+    const uint64_t lyt = rd64(btn + BTN_LAYOUT);
+    if (!ok_at(lyt, LYT_NAME + 8)) return 0;
+    const uint64_t str = rd64(lyt + LYT_NAME);
+    if (str < 0x10000 || str >= (1ull << 47)) return 0;
+    char name[64];
+    if (!mem_guest_readable(str, sizeof name)) return 0;
+    memcpy(name, (const void *)(uintptr_t)str, sizeof name - 1);
+    name[sizeof name - 1] = 0;
+    // The three tabs are the same template, so the check is on the template's name rather than on an identity.
+    return !strncmp(name, "PaAutoBuilderTabBtn", 19);
 }
 
 void menu_cursor_poll(uint64_t *buttons) {

@@ -52,7 +52,7 @@ enum {
     BP_HINT_CENTRE_Y = 1017,
     BP_HINT_ICON_R = 26,   // the ⊕ circle's radius, about the size of the game's own footer key icons
     BP_HINT_GAP = 12,
-    BP_HINT_STILL_GONE_MS = 400,
+    BP_HINT_STILL_GONE_MS = 120,
 };
 
 // ---- written on the game thread
@@ -83,9 +83,14 @@ static int enabled(void) {
 // reads it once per pad read, which is what lets bp_hint_poll take the button before the game sees it, and the present
 // thread reads it too, because the game stops reading the pad for long stretches there. Either reading freshens the
 // latch; it lapses only after STILL_GONE_MS.
+// 1 while the Autobuild screen is up AND its selection is on one of the three tabs. The tab test is the one
+// bp_hint_poll latches on the game thread; the present thread re-runs it because the game stops reading the pad for
+// long stretches on this screen. The latch lapses only after STILL_GONE_MS, so a focus box that the game momentarily
+// clears cannot blink the row.
 static int screen_up(void) {
     if (!enabled()) return 0;
-    const int up = __atomic_load_n(&g_screen, __ATOMIC_RELAXED) || menu_cursor_screen_open(BP_HINT_SCREEN);
+    const int up = __atomic_load_n(&g_screen, __ATOMIC_RELAXED) ||
+                   (menu_cursor_screen_open(BP_HINT_SCREEN) && menu_cursor_focus_is_tab(BP_HINT_SCREEN));
     const uint64_t now = plat_now_ns();
     if (up) __atomic_store_n(&g_screen_seen_ns, now, __ATOMIC_RELAXED);
     const uint64_t seen = __atomic_load_n(&g_screen_seen_ns, __ATOMIC_RELAXED);
@@ -96,12 +101,16 @@ int bp_hint_active(void) { return screen_up(); }
 
 void bp_hint_poll(uint64_t *buttons) {
     static int logged;
-    const int up = enabled() && menu_cursor_screen_open(BP_HINT_SCREEN);
+    const int on_screen = enabled() && menu_cursor_screen_open(BP_HINT_SCREEN);
+    // The row belongs to the screen's tab row, not to its whole surface: while the selection sits in the card list the
+    // player is choosing a draft, and an import entry there would compete with that. So the screen being open is not
+    // enough - the focus has to be on one of the three tabs (favourites, drafts, history).
+    const int up = on_screen && menu_cursor_focus_is_tab(BP_HINT_SCREEN);
     __atomic_store_n(&g_screen, up, __ATOMIC_RELAXED);
     if (up) __atomic_store_n(&g_screen_seen_ns, plat_now_ns(), __ATOMIC_RELAXED);
     if (up != logged) {
         logged = up;
-        rt_log("blueprint: hint %s the Autobuild screen", up ? "is on" : "left");
+        rt_log("blueprint: hint %s", up ? "is on the Autobuild screen's tabs" : "left the Autobuild screen's tabs");
     }
     // The game's own use of this button on this screen ("Receive") needs Zelda Notes, which this port has not: taking it
     // keeps the press from doing something invisible and from reaching the game twice, once for the picker and once for
