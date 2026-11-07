@@ -561,6 +561,12 @@ VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info);
 // vk_pipeline_vertex_input_dynamic(), else from VkPipeState.vstream). Returns the vertex bindings (bit per binding) the
 // state's vertex input reads, whether set here or made into the pipeline.
 uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s);
+// The replay's variant (one thread, TOTK_DYN_DELTA): valid 1 says every graphics pipeline bound in cb since the last call
+// was one of vk_pipeline_graphics*'s, which all declare the same dynamic states, and nothing else set them, so cb still
+// holds what that call recorded (Vulkan keeps dynamic state across such binds for the life of the command buffer);
+// then only the commands whose values differ are recorded. valid 0 (a new command buffer, or one whose state another
+// recorder changed) records everything. *cmds: the commands recorded (valid 0: 1). Returns as vk_pipeline_set_dynamic.
+uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s, int valid, uint32_t *cmds);
 int vk_pipeline_vertex_input_dynamic(void);    // 1: vertex input is VK_EXT_vertex_input_dynamic_state
 // Translator answers from the bound state: attr_type from the vertex attribute formats (vs), frag_out_type from the
 // colour target formats (fs). Other fields are left as they are; either pointer may be NULL.
