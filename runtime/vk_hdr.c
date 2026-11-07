@@ -272,7 +272,7 @@ void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info) {
     }
     if (ntex == 1 && slot >= 0 && slot < 128 && ex->tex[1][slot]) {
         const VkTexImage *s = vk_texture_by_id(NVN_HANDLE_TEX(ex->tex[1][slot]), NULL, NULL);
-        if (s && is_float(s->format) && s->width == t->width && s->height == t->height && s->samples == 1)
+        if (s && !s->gone && is_float(s->format) && s->width == t->width && s->height == t->height && s->samples == 1)
             src = s->image, fmt = s->format;
     }
     plat_mutex_lock(&rec_lock);
