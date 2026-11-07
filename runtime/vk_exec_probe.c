@@ -127,8 +127,10 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     vk_upload_end();
 
     uint64_t frames = gfx_stats().frames;
-    // the exact colour check needs the bilinear blit: FSR's approximate reciprocals move a flat colour by 1/255
+    // the exact colour check needs the bilinear blit, without SMAA: FSR's approximate reciprocals move a flat colour by
+    // 1/255, and SMAA blends across edges
     plat_setenv("TOTK_UPSCALER", "bilinear");
+    plat_setenv("TOTK_ANTIALIASING", "off");
     vk_present_capture(1);
     const int crop[4] = {0, 0, TEX_W, TEX_H};
     b->present(&t, crop, 0);
