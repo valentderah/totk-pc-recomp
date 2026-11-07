@@ -57,6 +57,7 @@ extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
+int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -698,6 +699,19 @@ static void tab_screen(float scale) {
     opt_end();
 }
 
+// Play time across runs (playtime.c), read only. Hidden while it is not counted (no profile directory).
+static void row_play_time(void) {
+    uint64_t total, session;
+    if (!playtime_get(&total, &session)) return;
+    char value[64], run[64], note[96];
+    snprintf(value, sizeof value, menu_text(UI_MENU_PLAY_TIME_HM), (unsigned long long)(total / 3600),
+             (unsigned)(total / 60 % 60));
+    snprintf(run, sizeof run, menu_text(UI_MENU_PLAY_TIME_HM), (unsigned long long)(session / 3600),
+             (unsigned)(session / 60 % 60));
+    snprintf(note, sizeof note, menu_text(UI_MENU_PLAY_TIME_SESSION), run);
+    opt_text_row("##play_time", menu_text(UI_MENU_PLAY_TIME), value, note, menu_text(UI_MENU_PLAY_TIME_DESC), false);
+}
+
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
@@ -706,6 +720,7 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    row_play_time();
     opt_end();
 }
 
@@ -1094,8 +1109,8 @@ static void tab_mods(float scale) {
         char code[512] = "", problem[512] = "";
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
-        else if (m->nsets)
-            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        else if (m->nsets || m->ndata)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
         case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;

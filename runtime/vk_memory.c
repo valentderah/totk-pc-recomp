@@ -78,8 +78,9 @@ static int shadow_on;                    // shadow mode: imported pools get shad
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
 static void shadow_touch(PoolRec *r);
 static void shadow_forget(PoolRec *r);
-static void mirror_retiring(PoolRec *r);  // vk_pool_fini: kept until mirror_retire (or vk_mem_shutdown)
-static void mirror_retire(void *arg);    // completion thread: destroys a finalized mirrored pool's record
+static void pool_retiring(PoolRec *r);  // vk_pool_fini: kept until pool_retire (or vk_mem_shutdown)
+static void pool_retire(void *arg);    // completion thread: destroys a finalized pool's record
+static uint64_t retire_value(void);    // the timeline value after which a finalized pool's record may go
 static void grow(void **arr, int *cap, size_t elem);
 
 static PlatMutex pool_lock = PLAT_MUTEX_INIT;
@@ -333,10 +334,14 @@ void vk_pool_fini(pool_t *p) {
         vk_queue_unlock();
     }
     vk_mem_collect();
-    // A mirrored pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs may
-    // name them (the game frees a pool only once the GPU is done with it, but its CPU writes may still be queued).
-    if (r->mbuf) mirror_retiring(r), vk_completion_add(vk_sync_issued() + 1, mirror_retire, r);
-    else destroy_rec(c, r);
+    // The record, its buffers and its memory outlive the submission being recorded, of any pool kind. The wait above
+    // covers submitted work only. With the synchronous replay another game thread may be recording right now, and that
+    // recording may already name this pool: a mirrored pool's sync copies and write-backs, an import pool's buffer
+    // through a texture upload or a released cache entry (vk_texture.c slot_resolve), a physical pool's memory under
+    // the images vk_texture_range_gone just deferred to that submission. The game frees a pool only once its own GPU
+    // work is done, so only the port's work can name it. Freed here, the submission ran with freed memory.
+    pool_retiring(r);
+    vk_completion_add(retire_value(), pool_retire, r);
 }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
@@ -414,6 +419,10 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
         return 1;
     }
     return resolve_locked(addr, size, out);
+}
+
+int vk_mem_span_live(const VkMemSpan *sp) {
+    return sp->buffer && sp->pool && !sp->alloc && !shadow_on && ((const PoolRec *)sp->pool)->kind == POOL_IMPORT;
 }
 
 // The pool index lookup under the lock; a non-overlapped import or physical pool goes into the address's cache slot.
@@ -507,6 +516,9 @@ static void dirty_frame(uint64_t frame);
 static void mirror_log(uint64_t frame);
 static void shadow_log(uint64_t frame);
 static int dead_pending(void);
+// Deferrals made off the recording thread while another thread recorded a submission (cmd_lock, defer), the newest
+// one's stamp: the case the stamp from the recording start covers. In the census line and the device fault report.
+static uint64_t n_cross_defer, cross_defer_tl;
 
 static void vram_log(uint64_t frame);
 
@@ -542,10 +554,11 @@ void vk_mem_census(uint64_t frame) {
     }
     plat_mutex_unlock_shared(&pool_lock);
     rt_log("mem: census at frame %llu: import %llu pools %.1f MiB (%d without a GPU buffer), physical %llu pools %.1f MiB, "
-           "virtual %llu pools %.1f MiB of address space",
+           "virtual %llu pools %.1f MiB of address space; %llu objects deferred off the recording thread during a recording",
            (unsigned long long)frame, (unsigned long long)count[POOL_IMPORT], total[POOL_IMPORT] / 1048576.0,
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
-           (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0);
+           (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0,
+           (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED));
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
@@ -565,10 +578,23 @@ void vk_mem_census(uint64_t frame) {
     window_start = frame;
 }
 
+// TOTK_VRAM_LIMIT_MIB: pretend the device-local budget is at most this many MiB, so the paths that react to the budget
+// can be driven on a card larger than the one a report came from. The driver knows nothing of it.
+static uint64_t vram_limit(void) {
+    static int64_t limit = -1;
+    if (limit < 0) {
+        const char *s = cfg_get("TOTK_VRAM_LIMIT_MIB");
+        limit = s && *s ? (int64_t)strtoull(s, NULL, 10) << 20 : 0;
+        if (limit) rt_log("mem: device-local budget limited to %lld MiB (TOTK_VRAM_LIMIT_MIB)", (long long)(limit >> 20));
+    }
+    return (uint64_t)limit;
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
     if (!c) return 0;
+    uint64_t limit = vram_limit();
     const VkPhysicalDeviceMemoryProperties *mp = &c->mem_props;
     if (c->has_memory_budget) {
         VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
@@ -578,6 +604,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
             if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
+        if (limit && *budget > limit) *budget = limit;
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -585,6 +612,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     for (uint32_t h = 0; h < mp->memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
+    if (limit && *budget > limit) *budget = limit;
     return *budget != 0;
 }
 
@@ -633,6 +661,17 @@ static uint32_t reg_tried[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep o
 static uint32_t *fcand;                       // gen_lock: regions to try at the next freeze pass
 static int nfcand, cfcand;
 static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze refused
+// Regions the GPU writes. Storage-buffer stores, buffer copies and fills land in imported guest memory, directly (import
+// mode) or through a pool's mirror that vk_mem_mirror_end copies or merges into the imported buffer. They are not CPU
+// writes: no fault thaws the region and no write-watch bit is set, so a region only the GPU writes looked idle, was
+// frozen, and the GPU went on writing pages the CPU side had made read-only. LAS Recomp never changes the protection of
+// imported memory: on NVIDIA, VirtualProtect on pages imported with VK_EXT_external_memory_host left the GPU reading
+// wrong data (runtime/nvn/vulkan/exec.c, the comment on its write watch); a GPU write there is the likely cause of the
+// device faults "write invalid" at a page of guest memory on NVIDIA (#788, #802). reg_gpu holds the timeline value of
+// the newest submission that writes into the region (gpu_writes): freeze_pass leaves the region alone until the GPU is
+// past that value, and a frozen region is thawed when a write into it is recorded.
+static uint64_t reg_gpu[RT_ADDRESS_LIMIT >> REG_SHIFT];   // replay thread
+static volatile int64_t n_frz_gpu, n_thaw_gpu;   // freeze candidates kept for a GPU write; thaws for one (mirror_log)
 
 static uint32_t *gen_slot(uint64_t page_addr, int create) {
     uint64_t ci = page_addr >> GEN_CHUNK_SHIFT;
@@ -1364,19 +1403,19 @@ static void mirror_forget(PoolRec *r) {
         }
 }
 
-// Finalized mirrored pools waiting for mirror_retire; vk_mem_shutdown destroys those whose callback never ran.
+// Finalized pools waiting for pool_retire; vk_mem_shutdown destroys those whose callback never ran.
 static PoolRec **retiring;
 static int nretiring, cretiring;
 static PlatMutex retire_lock = PLAT_MUTEX_INIT;
 
-static void mirror_retiring(PoolRec *r) {
+static void pool_retiring(PoolRec *r) {
     plat_mutex_lock(&retire_lock);
     if (nretiring == cretiring) grow((void **)&retiring, &cretiring, sizeof *retiring);
     retiring[nretiring++] = r;
     plat_mutex_unlock(&retire_lock);
 }
 
-static void mirror_retire(void *arg) {
+static void pool_retire(void *arg) {
     plat_mutex_lock(&retire_lock);
     for (int i = 0; i < nretiring; i++)
         if (retiring[i] == arg) { retiring[i] = retiring[--nretiring]; break; }
@@ -1693,8 +1732,26 @@ static void snap_free(void *arg) {   // completion thread: the submission is don
     free(f);
 }
 
+// Record time: the submission being recorded writes [off, off+size) of r's guest range, directly into the imported
+// buffer or into the mirror whose bytes go back at its end. Keeps the regions unfrozen until the GPU is past it
+// (reg_gpu). Shadow storage needs nothing: the GPU writes the shadow and the CPU copies it back, thawing as it goes.
+static void gpu_writes(const PoolRec *r, uint64_t off, uint64_t size) {
+    if (!freeze_idle || r->smap) return;
+    uint64_t a = r->import_lo + off, b = a + size;
+    if (b <= a || b > RT_ADDRESS_LIMIT) return;
+    uint64_t f = vk_exec_recording_fence();
+    if (!f) f = vk_sync_issued() + 1;
+    int frozen = 0;
+    for (uint64_t j = a >> REG_SHIFT; j <= (b - 1) >> REG_SHIFT; j++) {
+        if (__atomic_load_n(&reg_gpu[j], __ATOMIC_RELAXED) < f) __atomic_store_n(&reg_gpu[j], f, __ATOMIC_RELAXED);
+        frozen |= mem_frozen(j << REG_SHIFT);
+    }
+    if (frozen) mem_thaw(a, b - a), plat_inc64(&n_thaw_gpu);
+}
+
 static void gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
     PoolRec *r = sp->pool;
+    if (r && size) gpu_writes(r, sp->offset, size);
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
     // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies.
     if (shader && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size))
@@ -1778,9 +1835,11 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
 // gen_lock exclusive: freezes up to FREEZE_PER_SUB candidate regions still idle. The query after the
 // protection collects the writes made before it took effect.
 static void freeze_pass(void) {
+    uint64_t gpu_done = vk_sync_fence_done();
     for (int done = 0; nfcand && done < FREEZE_PER_SUB;) {
         uint64_t j = fcand[--nfcand], a = j << REG_SHIFT;
         if (ww_ep - reg_last[j] < (uint32_t)freeze_idle || mem_frozen(a)) continue;
+        if (__atomic_load_n(&reg_gpu[j], __ATOMIC_RELAXED) > gpu_done) { plat_inc64(&n_frz_gpu); continue; }   // gpu_writes
         done++;
         if (!mem_freeze(a)) { n_frz_refused++; continue; }
         query_stamp(a, a + (1ull << REG_SHIFT), ++gen_now);
@@ -1998,6 +2057,10 @@ static void mirror_log(uint64_t frame) {
                "or mapping change %llu, refused %llu",
                (unsigned long long)frame, wc / wf, wb / wf / 1048576.0, qpc_ms(wt) / wf, dc / wf, wp / wf, qpc_ms(dt) / wf,
                fz * 2.0, (unsigned long long)ff, (unsigned long long)ft, (unsigned long long)fo, (unsigned long long)nr);
+    int64_t kg = plat_xchg64(&n_frz_gpu, 0), tg = plat_xchg64(&n_thaw_gpu, 0);
+    if (kg || tg)   // gpu_writes: before this, every count here was a region frozen under a GPU write
+        rt_log("mem: frame %llu: regions the GPU writes, since the last line: %lld kept from freezing, %lld frozen ones "
+               "thawed", (unsigned long long)frame, (long long)kg, (long long)tg);
     if (!vk_mirror_on) return;
     plat_mutex_lock(&mirror_stat_lock);
     MirrorAcc a = macc;
@@ -2050,6 +2113,7 @@ static void vram_log(uint64_t frame) {
            alloc_bytes / M, (unsigned long long)t.live, (unsigned long long)t.own_live, t.bytes_live / M,
            (unsigned long long)t.released, (unsigned long long)t.own_released, t.bytes_released / M, (long long)m_live_n,
            m_live_bytes / M, dead_pending());
+    vk_texture_released_log(frame);
 }
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
@@ -2101,9 +2165,10 @@ typedef struct {
     uint64_t seq;
     Staging *stg;
     int nstg, cap;
+    VkDeviceSize held;   // staging and scratch bytes freed when the batch completes (vk_upload_held)
 } Batch;
 
-enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA };
+enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST };   // DEAD_HOST: free(handle)
 typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl; } Dead;
 
 static PlatRMutex cmd_lock;
@@ -2118,7 +2183,8 @@ static int nspare, cap_spare;
 static uint64_t next_seq, done_seq;   // batches handed out / completed (all batches up to done_seq)
 static Dead *dead;
 static int ndead, cap_dead;
-static uint64_t tl_noted;             // newest timeline value vk_sync.c reported submitted
+static uint64_t tl_noted;             // value of the submission being recorded, else of the last one (vk_mem_note_fence)
+static _Thread_local uint64_t tl_noted_here;   // the value this thread noted: it records that submission
 
 static void cmd_init(void *p) {
     (void)p;
@@ -2161,6 +2227,10 @@ static void collect_locked(VkCtx *c) {
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
         if (d->seq > done_seq || d->tl > tl) { dead[k++] = *d; continue; }
+        if (d->kind == DEAD_HOST) {
+            free((void *)(uintptr_t)d->handle);
+            continue;
+        }
         rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
                          d->tl, tl);
         switch (d->kind) {
@@ -2254,8 +2324,66 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     else {
         if (open_b.nstg == open_b.cap) grow((void **)&open_b.stg, &open_b.cap, sizeof *open_b.stg);
         open_b.stg[open_b.nstg++] = (Staging){b, a};
+        open_b.held += bi.size;
     }
     return info.pMappedData;
+}
+
+// Device-local scratch of the upload batch (the GPU deswizzle's linear copies, the ASTC decoder's blocks and texels):
+// a pool of its own, like staging, so the replay thread neither waits on the default pool's lock while another thread
+// makes a block there (the headroom thread: about 8 ms for 256 MiB) nor makes one itself for a few MiB. One block
+// of SCR_BLOCK is kept from the first use; larger buffers than half a block go to the default pool.
+#define SCR_BLOCK (64ull << 20)
+static VmaPool scr_pool;
+static int scr_pool_tried;
+
+VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
+    VkCtx *c = vk_ctx();
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (!__atomic_load_n(&scr_pool_tried, __ATOMIC_ACQUIRE)) {
+        plat_once(&cmd_once, cmd_init, NULL);
+        plat_rmutex_lock(&cmd_lock);
+        if (!scr_pool_tried) {
+            // two blocks with 8 GiB or more of device-local memory: fight2's first world frame deswizzles about
+            // 280 MiB, more than the GPU finishes while the replay records, and the pool grew by four blocks there
+            VkDeviceSize vram = 0;
+            for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+                if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT && c->mem_props.memoryHeaps[h].size > vram)
+                    vram = c->mem_props.memoryHeaps[h].size;
+            uint32_t type;
+            VmaPoolCreateInfo pi = {.blockSize = SCR_BLOCK, .minBlockCount = vram >= (8ull << 30) ? 2 : 1};
+            if (vmaFindMemoryTypeIndexForBufferInfo(c->vma, &bi, &aci, &type) == VK_SUCCESS) {
+                pi.memoryTypeIndex = type;
+                if (vmaCreatePool(c->vma, &pi, &scr_pool) != VK_SUCCESS) scr_pool = NULL;
+            }
+            rt_log("vk: upload scratch pool %s (%u blocks of %llu MiB kept)", scr_pool ? "created" : "unavailable: default pool",
+                   (unsigned)pi.minBlockCount, (unsigned long long)(SCR_BLOCK >> 20));
+            __atomic_store_n(&scr_pool_tried, 1, __ATOMIC_RELEASE);
+        }
+        plat_rmutex_unlock(&cmd_lock);
+    }
+    if (scr_pool && bi.size <= SCR_BLOCK / 2) aci.pool = scr_pool;
+    VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, buf, alloc, NULL);
+    if (r == VK_SUCCESS && open_active) open_b.held += bi.size;   // the caller defers its free to the open batch
+    return r;
+}
+
+VkDeviceSize vk_upload_held(void) { return open_active ? open_b.held : 0; }
+
+// At device creation: the staging and scratch pools with their kept blocks, made through a first small buffer each
+// (freed at once), so the first world frame does not allocate them (staging was first used there once the GPU took
+// the early texture uploads).
+void vk_upload_pools_init(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    VkBuffer b;
+    VmaAllocation a;
+    vk_staging(16, &b, &a);
+    vmaDestroyBuffer(c->vma, b, a);
+    if (vk_scratch_buffer(16, &b, &a) == VK_SUCCESS) vmaDestroyBuffer(c->vma, b, a);
 }
 
 uint64_t vk_upload_flush(int wait) {
@@ -2295,20 +2423,21 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
     // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
-    // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
-    // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
-    // slot_resolve hands a draw a released entry, and entry_of destroys released entries at that address later in
-    // the same submission. Stamped with the last submitted value, the object went as soon as the GPU reached it,
-    // before the submission that names it ran, and with the recorder thread (vk_rec.c) behind, before the recorder
-    // made the call that names it. LAS Recomp and Savage Wind Recomp stamp every deferral with the submission being
-    // recorded (runtime/nvn/vulkan/textures.c defer: vk_pending_seq). TOTK_DEFER_STAMP=0 brings back the old stamp.
-    static int stamp = -1;
-    if (stamp < 0) stamp = rt_knob("DEFER_STAMP", "1") != 0;
-    uint64_t tl = tl_noted, rf = stamp ? vk_exec_recording_fence() : 0;
-    if (rf > tl) tl = rf;
+    // submission that names it, including the one being recorded, which may name it and is not submitted yet:
+    // vk_texture.c slot_resolve hands a draw a released entry, and entry_of, sweep_released and the VRAM pressure drop
+    // destroy released entries. tl_noted is that submission's value from the start of its recording (vk_sync.c
+    // vk_sync_submit), whichever thread destroys the object. With the synchronous replay a game thread finalizing a
+    // texture (vk_backend.c vk_be_texture_release) destroys entries while another game thread records; stamped with
+    // the last submitted value, as the recording thread's own fence was the only one seen, the object was freed once
+    // the GPU reached that value, before the submission naming it ran: "write invalid" device faults on NVIDIA. LAS
+    // Recomp and Savage Wind Recomp stamp every deferral with the submission being recorded (runtime/nvn/vulkan/
+    // textures.c defer: vk_pending_seq).
+    uint64_t tl = tl_noted;
+    if (kind != DEAD_HOST && tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
-    rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
-                     vk_sync_fence_done());
+    if (kind != DEAD_HOST)
+        rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
+                         vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
 }
 
@@ -2327,12 +2456,36 @@ void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uin
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
 }
+void vk_defer_free(void *p) { if (p) defer(DEAD_HOST, (uint64_t)(uintptr_t)p, NULL); }
 
-void vk_mem_note_submit(uint64_t timeline_value) {
+// The device fault report: no lock, since a thread that holds cmd_lock may be waiting for the report's own lock
+// (vk_upload_flush reports a failed submit with cmd_lock held).
+void vk_mem_fault_log(void) {
+    rt_log("vk: deferred frees at the fault: %d pending, stamp %llu, submitted %llu, done %llu; %llu deferred off the "
+           "recording thread during a recording (newest stamp %llu)",
+           __atomic_load_n(&ndead, __ATOMIC_RELAXED), (unsigned long long)__atomic_load_n(&tl_noted, __ATOMIC_RELAXED),
+           (unsigned long long)vk_sync_issued(), (unsigned long long)vk_sync_fence_done(),
+           (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&cross_defer_tl, __ATOMIC_RELAXED));
+}
+
+void vk_mem_note_fence(uint64_t timeline_value) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (timeline_value > tl_noted) tl_noted = timeline_value;
+    tl_noted_here = timeline_value;
     plat_rmutex_unlock(&cmd_lock);
+}
+
+// The later of the submission being recorded (tl_noted, noted from its start: vk_sync.c vk_sync_submit) and the next
+// one to be submitted.
+static uint64_t retire_value(void) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    uint64_t v = vk_sync_issued() + 1;
+    if (tl_noted > v) v = tl_noted;
+    plat_rmutex_unlock(&cmd_lock);
+    return v;
 }
 
 void vk_mem_collect(void) {
@@ -2383,6 +2536,9 @@ void vk_mem_shutdown(void) {
     if (stg_pool) vmaDestroyPool(c->vma, stg_pool);   // after retire: no staging buffer is left in it
     stg_pool = NULL;
     stg_pool_tried = 0;
+    if (scr_pool) vmaDestroyPool(c->vma, scr_pool);   // deferred scratch buffers went with collect_locked above
+    scr_pool = NULL;
+    scr_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);

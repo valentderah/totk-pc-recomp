@@ -93,13 +93,14 @@
 # fix_zero = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
-# skip push constants that did not change.
+# skip push constants that did not change, bind only the vertex buffers a draw reads.
 # bind_skip = 1
 # shader_memo = 1
 # pipe_memo = 1
 # tex_memo = 1
 # desc_template = 1
 # push_skip = 1
+# vb_used = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
@@ -145,12 +146,12 @@
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
 # prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
-# (3:2). Any other size
-# gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start. Default: 1920x1080, or on a primary display of one of those
-# shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on
-# a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it stays 1920x1080,
-# the only shape the setup builds those prompts for.
+# (3:2). For any other size, or a source build that has not made the layout, the game draws the largest 16:9 size that
+# fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
+# tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
+# display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it
+# stays 1920x1080, the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
@@ -366,6 +367,14 @@
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
+# emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
+# the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
+# needs nothing here. Set it for a pack that ships textures without a HeapDef. Without the room the game keeps starting
+# its panic Blood Moon. The memory pool grows by the same amount; the larger of this and a mod's growth counts.
+# Read at start. Default: 0. Such a pack also needs much more video memory: astc_bc = 1 ([performance]) keeps its
+# textures at a quarter of it.
+# tex_heap_extra_mb = 0
 
 [files]
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put

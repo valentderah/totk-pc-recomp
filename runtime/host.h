@@ -260,6 +260,12 @@ void cam_pack_served(void);                                // romfs.c serves the
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
+uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTRA_MB: added to the application pool and
+                                                           // the heap cap (mem_init), 2 MiB steps; 0 = none
+int res_heapdef_tex_grown(const void *in, size_t n);       // the HeapDef table (.byml.zs) grows TextureHeap over the
+                                                           // shipped size (an HD texture pack's)
+int res_heapdef_plain(const void *in, size_t n);           // a readable HeapDef table whose TextureHeap is not
+                                                           // grown (a content mod's)
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   // the HeapDef table (.byml.zs) with
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
@@ -272,6 +278,8 @@ void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene
                                                            // until res_init switched the sets on)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
+int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x<h> has a manifest (romfs.c; works
+                                                           // before fs_init)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
@@ -316,6 +324,10 @@ int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
 void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
+void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
+void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
+int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 without a profile
+int probe_playtime(void);                                  // playtime.c: the file, the ticks and the save
 int probe_discord(void);                                   // discord_rpc.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c

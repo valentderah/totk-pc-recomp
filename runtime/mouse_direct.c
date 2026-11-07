@@ -119,6 +119,7 @@ void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMo
 #define HOST_MOUSE_ORBIT_BEGIN (RT_PATCH_PAGE + 0xfb0)
 #define HOST_MOUSE_ORBIT_ANGLES (RT_PATCH_PAGE + 0xfa0)
 #define HOST_MOUSE_HAND (RT_PATCH_PAGE + 0xf90)
+#define HOST_MOUSE_ORBIT_STATE (RT_PATCH_PAGE + 0xf70)
 static _Thread_local uint64_t mouse_input_object;
 
 // Where a game version keeps what the hooks read and write (recomp/patches-v143.txt, patches-v121.txt). The camera
@@ -162,8 +163,8 @@ static void sample_mark_taken(uint64_t generation) {
 static _Thread_local struct { uint64_t object; MouseSample mouse; } orbit;
 typedef struct {
     uint64_t object, generation, input, seen;
-    float pitch, original_target;
-    int hold_pitch, target_saved, resume;
+    float pitch;
+    int hold_pitch, resume;
 } OrbitTrack;
 static OrbitTrack orbit_seen[16];
 
@@ -268,19 +269,17 @@ static uint32_t player_state_logged(void) {
     return f;
 }
 
-// main+0x191d78 builds the pitch target from +0x15c and +0x11c; the orbit update filters +0x108 toward it and adds
-// (1 - +0x88) * +0x10c at output. Updating only +0x108 makes the camera spring back to the unchanged target.
+// The orbit output adds (1 - +0x88) * +0x10c to its filtered pitch at +0x108.
+// Hold the final angle in orbit_angles. Do not overwrite the configured target
+// at +0x15c: main+0x191534 also uses it as the reference for camera distance.
+// Replacing that reference with the held pitch changes the native return from
+// aiming and collision close-ups, even though no distance field is written.
 static float orbit_pitch_offset(uint64_t object) {
     return (1 - guest_float(object + 0x88)) * guest_float(object + 0x10c);
 }
 
-static void orbit_pitch_target(uint64_t object, float pitch) {
-    guest_float_store(object + 0x15c, pitch - orbit_pitch_offset(object) - guest_float(object + 0x11c));
-}
-
 static void orbit_pitch_release(OrbitTrack *track) {
-    if (track->target_saved) guest_float_store(track->object + 0x15c, track->original_target);
-    track->hold_pitch = track->target_saved = track->resume = 0;
+    track->hold_pitch = track->resume = 0;
 }
 
 // The pitch the camera has now (the filtered pitch plus its vertical offset), as orbit_angles leaves it
@@ -288,8 +287,8 @@ static float orbit_pitch_now(uint64_t object) {
     return wrap_degrees(guest_float(object + 0x108) + orbit_pitch_offset(object));
 }
 
-// The camera stays where it is now: the mouse holds the pitch the camera has (orbit_begin writes its target), so
-// neither the game's default target nor the mouse's target from before an aim or a lock-on pulls it back.
+// Resume from the pitch the camera reached during the handoff. orbit_angles
+// holds this final angle without replacing the native configuration reference.
 static void orbit_pitch_settle(OrbitTrack *track) {
     track->pitch = orbit_pitch_now(track->object);
     track->hold_pitch = 1, track->resume = 0;
@@ -471,7 +470,7 @@ static void orbit_begin(Cpu *c) {
             memcpy(&override, (void *)(uintptr_t)(input + 0x15c), 1);
             plat_mutex_lock(&sample_lock);
             OrbitTrack *track = orbit_track(object);
-            if (track->input != input) track->hold_pitch = track->target_saved = track->resume = 0;
+            if (track->input != input) track->hold_pitch = track->resume = 0;
             uint64_t now = plat_now_ns();
             // A gamepad's vertical input gives the pitch back to the game's own target. The game's lock-on or override
             // (aiming) drives the camera itself: the mouse lets go without restoring the target it had before, and
@@ -484,7 +483,6 @@ static void orbit_begin(Cpu *c) {
             track->seen = now;
             take = moved || track->hold_pitch;
             if (take) track->input = input;
-            if (track->hold_pitch) orbit_pitch_target(object, track->pitch);
             plat_mutex_unlock(&sample_lock);
             if (moved) {   // the mouse's part of this step's stick goes to the final angles instead
                 guest_float_store(input + 0x420, m.pad[0]);
@@ -498,6 +496,42 @@ static void orbit_begin(Cpu *c) {
         plat_mutex_unlock(&sample_lock);
     }
     c->x[8] = guest_pointer(object + 8);   // displaced ldr x8, [x0, #8]
+}
+
+// The native manual-orbit state (4) integrates both pitch and distance from
+// the stick. Direct mouse orbit bypasses those integrators, so entering that
+// state during an aim return can latch the close-up's radius indefinitely.
+// Select the native automatic-distance state (3) at the existing state decision
+// point, before its transition initializer runs (main+0x18ea34, 1.4.3).
+// This retains the game's own radius curve, transition easing and collision.
+static void orbit_state(Cpu *c) {
+    uint64_t object = c->x[20];
+    uint32_t override;
+    memcpy(&override, (void *)(uintptr_t)(object + 0x188), sizeof override);
+    if (rt_game_version == 143 && direct_mode() && (uint32_t)c->x[10] == 4 && !override) {
+        MouseSample m = sample_read();
+        uint64_t input = guest_pointer(object + 0x20);
+        if (m.object == input && m.camera_enabled && plat_now_ns() - m.when < 150000000ull &&
+            m.pad[0] == 0 && m.pad[1] == 0 &&
+            !(input_buttons_last() & ((1ull << B_ZR) | (1ull << B_R)))) {
+            uint64_t held = guest_pointer(input + 0x148);
+            uint8_t flags;
+            memcpy(&flags, (void *)(uintptr_t)(input + 0x15c), 1);
+            plat_mutex_lock(&sample_lock);
+            OrbitTrack *track = orbit_track(object);
+            int owned = track->input == input && track->hold_pitch;
+            plat_mutex_unlock(&sample_lock);
+            if (owned && !(held & 0x20) && !(flags & 0x40)) {
+                c->x[10] = 3;
+                static int logged;
+                if (!logged) {
+                    logged = 1;
+                    rt_log("mouse: native distance transition retained for direct orbit");
+                }
+            }
+        }
+    }
+    c->x[8] = override; // displaced ldr w8, [x20, #0x188]
 }
 
 // The final pitch and yaw are on the stack (1.4.3 sp + 0x44 / 0x48, 1.2.1 sp + 0x3c / 0x40)
@@ -526,9 +560,7 @@ static void orbit_angles(Cpu *c) {
             guest_float_store(yaw_at, wrap_degrees(yaw + yaw_delta));
             guest_float_store(object + 0x108, wrap_degrees(new_pitch - orbit_pitch_offset(object)));
             guest_float_store(object + 0x120, wrap_degrees(guest_float(object + 0x120) + yaw_delta));
-            if (!track->target_saved) track->original_target = guest_float(object + 0x15c), track->target_saved = 1;
             track->pitch = new_pitch; track->input = orbit.mouse.object; track->hold_pitch = 1;
-            orbit_pitch_target(object, new_pitch);
             static int logged;
             if (!logged) {
                 logged = 1;
@@ -1062,6 +1094,7 @@ __attribute__((constructor)) static void mouse_direct_register(void) {
     rt_register_host(HOST_MOUSE_DIRECT, camera_input);
     rt_register_host(HOST_MOUSE_ACTIVITY, camera_activity);
     rt_register_host(HOST_MOUSE_ORBIT_BEGIN, orbit_begin);
+    if (rt_game_version == 143) rt_register_host(HOST_MOUSE_ORBIT_STATE, orbit_state);
     rt_register_host(HOST_MOUSE_ORBIT_ANGLES, orbit_angles);
     rt_register_host(HOST_MOUSE_HAND, hand_input);
     rt_register_host(HOST_MOUSE_LOAD, camera_load);

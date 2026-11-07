@@ -20,11 +20,11 @@
 #define PAGE 0x1000ull
 #define GiB (1ull << 30)
 #define LOW_SEARCH_FROM 0x100000000ull
-#define LOW_SIZE (6 * GiB)
+#define LOW_BASE (6 * GiB)    // the stack and heap block without a texture heap extra
 #define STACK_OFF 0x10000000ull
 #define STACK_SIZE 0x10000000ull
 #define HEAP_OFF (STACK_OFF + STACK_SIZE + 0x10000000ull)
-#define HEAP_CAP (4 * GiB)
+#define HEAP_CAP (4 * GiB)    // without TOTK_TEX_HEAP_EXTRA_MB, which raises it by its own size (mem_init)
 #define ALIAS_SIZE (64 * GiB)
 #define ALIAS_ALIGN (4 * GiB)
 #define ALIAS_PAGES (ALIAS_SIZE / PAGE)
@@ -48,6 +48,9 @@ enum { ATTR_PERMISSION_LOCKED = 16 };
 
 static RtGuestLayout L;
 static uint64_t mods_lo, mods_hi;   // fixed module window
+// The stack and heap block: LOW_BASE, plus the texture heap extra (tex_heap_extra_mb or a mod's HeapDef,
+// res_tex_heap_extra_bytes) rounded up to a GiB, so only a player who grows the texture heap reserves more (mem_init).
+static uint64_t low_size = LOW_BASE;
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t heap_size, alias_bytes;
 static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias region
@@ -78,7 +81,7 @@ static volatile int64_t frz_count[4];   // freezes; thaws by a write fault, by m
 
 static int watched(uint64_t addr, uint64_t size) {
     const RtGuestLayout *g = &L;
-    return (addr >= g->aslr.base && size <= LOW_SIZE && addr - g->aslr.base <= LOW_SIZE - size) ||
+    return (addr >= g->aslr.base && size <= low_size && addr - g->aslr.base <= low_size - size) ||
            (addr >= g->alias.base && size <= ALIAS_SIZE && addr - g->alias.base <= ALIAS_SIZE - size);
 }
 
@@ -221,10 +224,15 @@ void mem_init(void) {
 
     // Stack and heap block, then the alias region above it, both searched below the module window.
     uint64_t low = 0, alias = 0;
-    for (uint64_t at = LOW_SEARCH_FROM; at + LOW_SIZE <= mods_lo && !low; at += GiB)
-        if (reserve_at(at, LOW_SIZE, 1)) low = at;
-    if (!low) reexec_or_fail("a 6 GiB stack and heap block below 2^39");
-    for (uint64_t at = align_up(low + LOW_SIZE, ALIAS_ALIGN); at + ALIAS_SIZE <= mods_lo && !alias; at += ALIAS_ALIGN)
+    low_size = LOW_BASE + align_up(res_tex_heap_extra_bytes(), GiB);
+    for (uint64_t at = LOW_SEARCH_FROM; at + low_size <= mods_lo && !low; at += GiB)
+        if (reserve_at(at, low_size, 1)) low = at;
+    if (!low) {
+        char what[64];
+        snprintf(what, sizeof what, "a %llu GiB stack and heap block below 2^39", (unsigned long long)(low_size / GiB));
+        reexec_or_fail(what);
+    }
+    for (uint64_t at = align_up(low + low_size, ALIAS_ALIGN); at + ALIAS_SIZE <= mods_lo && !alias; at += ALIAS_ALIGN)
         if (reserve_at(at, ALIAS_SIZE, 1)) alias = at;
     if (!alias) reexec_or_fail("a 64 GiB alias region below 2^39");
 
@@ -238,11 +246,11 @@ void mem_init(void) {
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
         .stack = {low + STACK_OFF, STACK_SIZE},
-        .heap = {low + HEAP_OFF, HEAP_CAP},
+        .heap = {low + HEAP_OFF, HEAP_CAP + res_tex_heap_extra_bytes()},
         .alias = {alias, ALIAS_SIZE},
         .kernel = {RT_KERNEL_BASE, RT_KERNEL_SIZE},
         .hostfn = {RT_HOSTFN_BASE, RT_HOSTFN_SIZE},
-        .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
+        .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes() + res_tex_heap_extra_bytes(),
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
 }
@@ -276,7 +284,7 @@ static int inside(uint64_t a, uint64_t n, RtRange r) { return a >= r.base && n <
 // ---- 0x01 SetHeapSize
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     plat_mutex_lock(&lock);
-    if (size > HEAP_CAP || size % 0x200000 || size + image_bytes() > L.pool) {
+    if (size > L.heap.size || size % 0x200000 || size + image_bytes() > L.pool) {
         plat_mutex_unlock(&lock);
         return R_INVALID_STATE;
     }
@@ -506,7 +514,7 @@ static void taken_gap(uint64_t a, uint64_t *base, uint64_t *size) {
     uint64_t lo = 0, hi = RT_ADDRESS_LIMIT;
     RtRange known[3 + MOD_COUNT + 2];
     int n = 0;
-    known[n++] = (RtRange){L.aslr.base, LOW_SIZE};
+    known[n++] = (RtRange){L.aslr.base, low_size};
     known[n++] = L.alias;
     known[n++] = L.kernel;
     known[n++] = L.hostfn;
@@ -549,14 +557,14 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         r.base = 0;
         r.size = low;
         r.state = ST_FREE;
-    } else if (a < low + LOW_SIZE) {
+    } else if (a < low + low_size) {
         uint64_t heap = L.heap.base;
         if (a >= heap && a < heap + heap_size) {
             r = (RtMemoryInfo){.base = heap, .size = heap_size, .state = ST_NORMAL, .perm = PERM_RW};
         } else if (a < heap) {
             r = (RtMemoryInfo){.base = low, .size = heap - low, .state = ST_FREE};
         } else {
-            r = (RtMemoryInfo){.base = heap + heap_size, .size = low + LOW_SIZE - heap - heap_size, .state = ST_FREE};
+            r = (RtMemoryInfo){.base = heap + heap_size, .size = low + low_size - heap - heap_size, .state = ST_FREE};
         }
     } else if (a - L.alias.base < L.alias.size) {
         uint64_t p = (a - L.alias.base) / PAGE;

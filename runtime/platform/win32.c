@@ -674,16 +674,20 @@ static const char *image_name(const char *base) {
     return base + ((const IMAGE_EXPORT_DIRECTORY *)(base + d->VirtualAddress))->Name;
 }
 
-// The return addresses in [lo, lo + size) on the crashed thread's stack, innermost first: unwinds the faulting context
+// The return addresses on the crashed thread's stack, innermost first, with their modules: unwinds the faulting context
 // with the x64 unwind tables; a function without a table entry (a leaf, or address 0 after a call through a null
 // pointer) has its return address on top of the stack. The walk stops at return address 0 (the thread's first frame)
-// and when the stack pointer leaves the thread's stack, so a damaged stack ends it instead of faulting.
-static int frames_in(const CONTEXT *at, uintptr_t lo, uintptr_t size, uintptr_t *out, int max) {
+// and when the stack pointer leaves the thread's stack, so a damaged stack ends it instead of faulting. A driver can
+// nest deeper than the report holds, so frames in other modules stop being kept after the first 12 (counted in
+// frames_left_out) and the frames in this executable, which name the host call that ran into the driver, still fit.
+static void frames_of(const CONTEXT *at, PlatCrash *x) {
+    enum { MAX = sizeof x->frames / sizeof *x->frames, OTHER_MAX = 12 };
     CONTEXT c = *at;
     ULONG_PTR low, high;
     GetCurrentThreadStackLimits(&low, &high);
-    int n = 0;
-    for (int i = 0; i < 256 && n < max && (c.Rip || !i) && c.Rsp >= low && c.Rsp + 8 <= high; i++) {
+    void *exe = GetModuleHandleW(NULL);
+    int other = 0;
+    for (int i = 0; i < 256 && x->nframes < MAX && (c.Rip || !i) && c.Rsp >= low && c.Rsp + 8 <= high; i++) {
         DWORD64 img;
         RUNTIME_FUNCTION *fe = RtlLookupFunctionEntry(c.Rip, &img, NULL);
         if (fe) {
@@ -694,9 +698,64 @@ static int frames_in(const CONTEXT *at, uintptr_t lo, uintptr_t size, uintptr_t 
             c.Rip = *(const DWORD64 *)c.Rsp;
             c.Rsp += 8;
         }
-        if (c.Rip - lo < size) out[n++] = (uintptr_t)c.Rip;
+        if (!c.Rip) break;
+        void *base = NULL;
+        RtlPcToFileHeader((void *)(uintptr_t)c.Rip, &base);
+        if (base != exe && other++ >= OTHER_MAX) {
+            x->frames_left_out++;
+            continue;
+        }
+        int n = x->nframes++;
+        x->frames[n] = (uintptr_t)c.Rip;
+        x->frame_module[n] = base == exe ? NULL : base ? image_name(base) : "";
+        x->frame_offset[n] = (uintptr_t)c.Rip - (uintptr_t)base;
     }
-    return n;
+}
+
+// MSVC's C++ throw (0xe06d7363) passes the thrown object in ExceptionInformation[1], its ThrowInfo in [2] and the image
+// base the ThrowInfo's 32-bit offsets are relative to in [3] (magic 0x19930520..0x19930522 in [0]). The ThrowInfo lists
+// the types a catch may match, the thrown type first; each type descriptor holds a vtable pointer, a spare pointer and
+// the decorated name. A std::exception keeps its what() text in the pointer right after its vtable pointer (MSVC's
+// __std_exception_data). Every read is checked: the exception may come from a damaged heap.
+typedef struct { uint32_t attributes; int32_t unwind, forward_compat, catchable_types; } CxxThrowInfo;
+typedef struct { uint32_t properties; int32_t type, this_mdisp, this_pdisp, this_vdisp, size, copy; } CxxCatchableType;
+
+// Copies the string at p into buf (cut to n - 1 characters), checking each page before reading it; NULL when the first
+// byte cannot be read.
+static const char *copy_cstr(uintptr_t p, char *buf, size_t n) {
+    size_t i = 0;
+    for (; p && i + 1 < n; i++) {
+        if ((!i || !((p + i) & 4095)) && !plat_mem_readable(p + i, 1)) break;
+        if (!(buf[i] = ((const char *)p)[i])) return buf;
+    }
+    buf[i] = 0;
+    return i ? buf : NULL;
+}
+
+static void cxx_info(const EXCEPTION_RECORD *er, PlatCrash *x) {
+    if (er->NumberParameters < 4 || er->ExceptionInformation[0] - 0x19930520u > 2) return;
+    uintptr_t obj = er->ExceptionInformation[1], info = er->ExceptionInformation[2],
+              base = er->ExceptionInformation[3];
+    if (!info || !plat_mem_readable(info, sizeof(CxxThrowInfo))) return;
+    const CxxThrowInfo *ti = (const void *)info;
+    uintptr_t arr = base + (uintptr_t)(intptr_t)ti->catchable_types;
+    if (!ti->catchable_types || !plat_mem_readable(arr, 4)) return;
+    int32_t n = *(const int32_t *)arr;
+    if (n <= 0 || n > 64 || !plat_mem_readable(arr + 4, 4u * (uint64_t)n)) return;
+    static char type[128], what[256];   // the crash report runs once: crash_fn ends the process
+    int exception = 0;
+    for (int32_t i = 0; i < n; i++) {
+        uintptr_t ct = base + (uintptr_t)(intptr_t)((const int32_t *)(arr + 4))[i];
+        if (!plat_mem_readable(ct, sizeof(CxxCatchableType))) continue;
+        uintptr_t td = base + (uintptr_t)(intptr_t)((const CxxCatchableType *)ct)->type;
+        char name[64];
+        if (!copy_cstr(td + 16, i ? name : type, i ? sizeof name : sizeof type))   // past vtable and spare pointers
+            continue;
+        if (!i) x->cxx_type = type;
+        if (!strcmp(i ? name : type, ".?AVexception@std@@")) exception = 1;
+    }
+    if (exception && obj && plat_mem_readable(obj + 8, 8))
+        x->cxx_what = copy_cstr(*(const uintptr_t *)(obj + 8), what, sizeof what);
 }
 
 // The last-chance filter: an exception no handler took, in any module. crash_veh reports faults in this executable as
@@ -723,14 +782,12 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
         c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
     void *base = NULL;
     RtlPcToFileHeader((void *)rip, &base);
-    MODULEINFO mi;
     uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
     c.offset = rip - (uintptr_t)base;
     if (!base) c.module = "";
     else if ((uintptr_t)base != exe) c.module = image_name(base);
-    if (c.module && GetModuleInformation(GetCurrentProcess(), (HMODULE)exe, &mi, sizeof mi))
-        c.nframes = frames_in(ep->ContextRecord, exe, mi.SizeOfImage, c.frames,
-                              (int)(sizeof c.frames / sizeof *c.frames));
+    if (c.module) frames_of(ep->ContextRecord, &c);
+    if (code == 0xe06d7363u) cxx_info(er, &c);
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -1388,6 +1445,27 @@ void *plat_lib_open(const char *name) {
 }
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
+
+void plat_lib_error(char *out, size_t cap) { snprintf(out, cap, "error %lu", GetLastError()); }
+
+int plat_ngx_core_path(char *out, size_t cap) {
+    wchar_t dir[WPATH];
+    DWORD n = sizeof dir;
+    char d[PLAT_PATH_MAX];
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", L"FullPath", RRF_RT_REG_SZ,
+                     NULL, dir, &n) != ERROR_SUCCESS ||
+        !WideCharToMultiByte(CP_UTF8, 0, dir, -1, d, (int)sizeof d, NULL, NULL))
+        return 0;
+    return snprintf(out, cap, "%s\\_nvngx.dll", d) < (int)cap;
+}
+
+int plat_exe_dir_wide(wchar_t *out, size_t cap) {
+    DWORD len = GetModuleFileNameW(NULL, out, (DWORD)cap);
+    if (!len || len >= cap) return 0;
+    while (len && out[len - 1] != L'\\' && out[len - 1] != L'/') len--;
+    out[len] = 0;
+    return len != 0;
+}
 
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.

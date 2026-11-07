@@ -11,9 +11,6 @@
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
-#ifdef _WIN32
-#include <windows.h>
-#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,31 +112,19 @@ int vk_dlaa_wanted(void) {
 static int core_load(void) {
     if (N.tried) return N.loaded;
     N.tried = 1;
-#ifdef _WIN32
-    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
-    DWORD n = sizeof dir;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
-                     NULL, dir, &n) != ERROR_SUCCESS) {
+    char path[PLAT_PATH_MAX];
+    if (!plat_ngx_core_path(path, sizeof path)) {
         rt_log("dlaa: the driver has no NGX core (registry NGXCore missing): DLAA off");
         return 0;
     }
-    snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
-    N.core = LoadLibraryA(path);
-    if (!N.core) {
-        rt_log("dlaa: cannot load %s (error %lu): DLAA off", path, GetLastError());
-        return 0;
-    }
-#define FN(f, name) N.f = (void *)GetProcAddress((HMODULE)N.core, name)
-#else
-    // The driver's NGX core; the dynamic loader finds it where the driver put it (/usr/lib, /usr/lib/x86_64-linux-gnu).
-    const char *path = "libnvidia-ngx.so.1";
     N.core = plat_lib_open(path);
     if (!N.core) {
-        rt_log("dlaa: cannot load %s (not an NVIDIA driver, or one without NGX): DLAA off", path);
+        char why[256];
+        plat_lib_error(why, sizeof why);
+        rt_log("dlaa: cannot load %s (%s; not an NVIDIA driver, or one without NGX): DLAA off", path, why);
         return 0;
     }
 #define FN(f, name) N.f = plat_lib_sym(N.core, name)
-#endif
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
@@ -203,46 +188,14 @@ static int vtable_ok(void) {
     return ok;
 }
 
-#ifndef _WIN32
-// UTF-8 to UTF-32 wchar_t, without the C library's locale (the runtime never sets one, so mbstowcs would stop at the
-// first non-ASCII byte). Returns 0 on malformed input or when out has no room.
-static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
-    const unsigned char *u = (const unsigned char *)in;
-    size_t n = 0;
-    while (*u) {
-        unsigned c = *u++, more = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 4;
-        if (more == 4) return 0;
-        if (more) c &= 0x3F >> more;
-        for (unsigned k = 0; k < more; k++, u++) {
-            if ((*u & 0xC0) != 0x80) return 0;
-            c = c << 6 | (*u & 0x3F);
-        }
-        if (n + 1 >= cap) return 0;
-        out[n++] = (wchar_t)c;
-    }
-    out[n] = 0;
-    return 1;
-}
-#endif
-
 void vk_dlaa_init(void) {
     if (!vk_dlaa_wanted() || !core_load()) return;
-#ifdef _WIN32
-    wchar_t wdir[MAX_PATH];
-    DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
-    while (len && wdir[len - 1] != L'\\') len--;
-    wdir[len] = 0;
-#else
-    // The executable's folder, where NGX looks for libnvidia-ngx-dlss.so and writes its logs, as a wchar_t string:
-    // 32-bit code points here, as the Linux core expects.
-    char dir[PLAT_PATH_MAX];
+    // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
-    char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
-    if (!cut || !utf8_to_wide((cut[1] = 0, dir), wdir, PLAT_PATH_MAX)) {
+    if (!plat_exe_dir_wide(wdir, PLAT_PATH_MAX)) {
         rt_log("dlaa: cannot name the executable's folder for NGX: DLAA off");
         return;
     }
-#endif
     // 231313132: the application id NVIDIA's DLSS samples use for builds without an NVIDIA-issued id
     const VkCtx *c = vk_ctx();
     NgxResult r = N.init(231313132ull, wdir, c->instance, c->phys, c->device, vkGetInstanceProcAddr,
