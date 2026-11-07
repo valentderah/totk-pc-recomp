@@ -46,7 +46,7 @@ Esc is unbound in the game; it opens the settings menu and releases the mouse cu
 | Plus, Minus | Menu, View | Menu, View |
 | D-pad | cross | cross |
 
-The action prompt (`DoCommand_00`) shows its button in a diamond whose shape gives the face buttons' positions as on a Switch, with the other three letters around it. With `nintendo` its letters are swapped with the rest and every one names the button in that place. With `xbox` and `auto` the letters are right but the diamond keeps the Switch positions: A shows on its right, while the button labelled A is at the bottom. The sticks keep the Switch icons, and so do prompts drawn as fixed images (some tutorial animations).
+The action prompt (`DoCommand_00`) shows its button in a diamond whose shape gives the face buttons' positions as on a Switch, with the other three letters around it. With `nintendo` its letters are swapped with the rest and every one names the button in that place. With `xbox` and `auto` the letters stay and the diamond is laid out as an Xbox pad: A at the bottom, B on the right, X on the left and Y at the top, the button the prompt names lit in its place, its bar reaching left from X and right from the others (`tools/make_romfs_patches.py`, `bflyt_xbox_diamond`: the panes of `blyt/DoCommand_00.bflyt` take their partner's place, A's of B and X's of Y). The sticks keep the Switch icons, and so do prompts drawn as fixed images (some tutorial animations).
 
 The prompts are part of the game's fonts, textures and messages, so they follow the layout and not the bindings. A button remapped with a `bind_` line or on the Controls tab keeps the prompt the game draws for it, which then names the wrong button. Use the Xbox prompts with the default bindings.
 
