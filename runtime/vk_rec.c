@@ -52,7 +52,7 @@ static struct { _Alignas(64) uint64_t packets, words, drains, fallbacks, drain_n
 enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
     R_BlitImage, R_ClearAttachments, R_ClearColorImage, R_ClearDepthStencilImage, R_CopyBuffer, R_CopyBufferToImage,
-    R_CopyImage, R_CopyImageToBuffer, R_Dispatch, R_DispatchIndirect, R_Draw, R_DrawIndexed, R_DrawIndexedIndirect,
+    R_CopyImage, R_CopyImageToBuffer, R_Dispatch, R_DispatchIndirect, R_Draw, R_DrawIndirect, R_DrawIndexed, R_DrawIndexedIndirect,
     R_EndQuery, R_EndRendering, R_ExecuteCommands, R_FillBuffer, R_PipelineBarrier2, R_PushConstants, R_ResetQueryPool, R_ResolveImage,
     R_SetBlendConstants, R_SetCullMode, R_SetDepthBias, R_SetDepthBiasEnable, R_SetDepthCompareOp, R_SetDepthTestEnable,
     R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
@@ -420,6 +420,9 @@ FIXED(Dispatch, (VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z), (cb, x
 FIXED(DispatchIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o), (cb, b, o), VkBuffer b; VkDeviceSize o)
 #define PACK_Draw *a = (A_Draw){n, i, f, fi}
 FIXED(Draw, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, uint32_t fi), (cb, n, i, f, fi), uint32_t n, i, f, fi)
+#define PACK_DrawIndirect *a = (A_DrawIndirect){b, o, n, s}
+FIXED(DrawIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), (cb, b, o, n, s),
+      VkBuffer b; VkDeviceSize o; uint32_t n, s)
 #define PACK_DrawIndexed *a = (A_DrawIndexed){n, i, f, v, fi}
 FIXED(DrawIndexed, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, int32_t v, uint32_t fi), (cb, n, i, f, v, fi),
       uint32_t n, i, f; int32_t v; uint32_t fi)
@@ -759,6 +762,7 @@ static void exec_packet(uint32_t op, void *p) {
     F(Dispatch, a->x, a->y, a->z)
     F(DispatchIndirect, a->b, a->o)
     F(Draw, a->n, a->i, a->f, a->fi)
+    F(DrawIndirect, a->b, a->o, a->n, a->s)
     F(DrawIndexed, a->n, a->i, a->f, a->v, a->fi)
     F(DrawIndexedIndirect, a->b, a->o, a->n, a->s)
     F(EndQuery, a->p, a->q)

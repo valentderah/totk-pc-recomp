@@ -3159,6 +3159,21 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
 }
 
+// DrawArraysIndirect: the arguments are read by the GPU from the pool buffer
+static void op_draw_ind(VkExec *ex, const p_draw_ind *d) {
+    c0_binst = 0;
+    VkMemSpan ip;
+    if (!vk_mem_resolve(d->ind, sizeof(VkDrawIndirectCommand), &ip) || ip.offset % 4)
+        return warn_once(W_INDIRECT, "indirect draw arguments at %#llx are not backed or not aligned: draws skipped", (unsigned long long)d->ind);
+    if (!prepare_draw(ex, d->prim, 0x7fffffff, 0)) return;
+    vk_exec_frame.draws++;
+    VK_MEM_USE(ip);
+    vkCmdDrawIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndirectCommand));
+    ex->recorded++;
+    vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndirectCommand));
+    VK_MEM_BOUND(ip);
+}
+
 // DrawElementsIndirect: the arguments are read by the GPU from the pool buffer (they are often written by an earlier
 // dispatch), as nxnative nvn_mtl.m does. The base instance stays out of c0 (0x644): c0 cannot be patched by a transfer
 // inside a pass; gl_BaseInstance of the Vulkan draw is the argument's. Byte indices need the count to be widened: skipped.
@@ -3553,6 +3568,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     case OP_DRAW: op_draw(ex, payload); break;
     case OP_DRAW_IDX: op_draw_idx(ex, payload); break;
     case OP_DISPATCH: op_dispatch(ex, payload); break;
+    case OP_DRAW_IND: op_draw_ind(ex, payload); break;
     case OP_DRAW_IDX_IND: op_draw_idx_ind(ex, payload); break;
     case OP_DISPATCH_IND: op_dispatch_ind(ex, payload); break;
     default: rt_fatal("vk: op %s is not a draw op", nvn_op_name(op));

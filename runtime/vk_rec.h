@@ -80,6 +80,7 @@ void rec_pass_mark(VkCommandBuffer cb, uint32_t id, int end);
     X(Dispatch, (VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z), (cb, x, y, z))                                 \
     X(DispatchIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o), (cb, b, o))                                    \
     X(Draw, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, uint32_t fi), (cb, n, i, f, fi))                    \
+    X(DrawIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), (cb, b, o, n, s))         \
     X(DrawIndexed, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, int32_t v, uint32_t fi), (cb, n, i, f, v, fi)) \
     X(DrawIndexedIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), (cb, b, o, n, s))   \
     X(EndQuery, (VkCommandBuffer cb, VkQueryPool p, uint32_t q), (cb, p, q))                                             \
@@ -137,6 +138,7 @@ REC_CMDS(REC_DECL)
 #define vkCmdDispatch rc_vkCmdDispatch
 #define vkCmdDispatchIndirect rc_vkCmdDispatchIndirect
 #define vkCmdDraw rc_vkCmdDraw
+#define vkCmdDrawIndirect rc_vkCmdDrawIndirect
 #define vkCmdDrawIndexed rc_vkCmdDrawIndexed
 #define vkCmdDrawIndexedIndirect rc_vkCmdDrawIndexedIndirect
 #define vkCmdEndQuery rc_vkCmdEndQuery

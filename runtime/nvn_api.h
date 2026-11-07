@@ -85,6 +85,9 @@ typedef struct { uint64_t src, dst, size; } p_copy_b2b;    // OP_COPY_B2B: GPU a
 typedef struct { uint64_t dst, size; uint8_t data[]; } p_update_ub;   // OP_UPDATE_UB: size bytes written at dst
 typedef struct { int32_t bits, pad; } p_barrier;           // OP_BARRIER: NVNbarrierBits
 typedef struct { uint64_t target; } p_jump;                // OP_JUMP / OP_CALL: next record / called recording
+// OP_DRAW_IND: DrawArraysIndirect; ind = GPU address of {vertexCount, instanceCount, firstVertex, baseInstance}
+// (VkDrawIndirectCommand's layout), read by the GPU when the draw runs
+typedef struct { int32_t prim, pad; uint64_t ind; } p_draw_ind;
 // OP_DRAW_IDX_IND: DrawElementsIndirect; ind = GPU address of {count, instances, first index, base vertex, base
 // instance} (VkDrawIndexedIndirectCommand's layout), read by the GPU when the draw runs
 typedef struct { int32_t prim, itype; uint64_t ibuf, ind; } p_draw_idx_ind;
