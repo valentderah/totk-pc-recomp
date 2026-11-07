@@ -74,6 +74,7 @@ Many rows below are developer tools that only act together with another setting 
 | `menu_test_set` | `<frame>:<key>=<value>[,...][;...]` changes settings live at that frame, with or without the menu open; `SAVE=1` also writes `totk.ini`. | Settings change during play without input, and `SAVE=1` rewrites the file. | Caution |
 | `probe_movie` | Text that picks the movie for `totk.exe --probe-movie`: the first file whose path contains it. | Only used by the movie decoder probe; ignored in normal play. | Safe |
 | `probe_movie_shot` | Path of a `.ppm` file that the movie probe writes the middle frame to. | Only used by the movie decoder probe. | Safe |
+| `probe_movie_bench` | `1` makes the movie probe also time the resampler that fits a movie to a game resolution of another shape, and print the time per frame. | Only used by the movie decoder probe. | Safe |
 | `swkbd_answer` | `<text>`, `<cancel>` or `<initial>`: answers the on-screen keyboard (for example a horse name) without opening a window. | The game gets that answer every time it asks for text. | Caution |
 | `swkbd_test` | `ok` or `cancel` opens the keyboard window and presses OK or Cancel on the first timer tick. | The keyboard window closes by itself. | Caution |
 | `test_pad` | `<lx>,<ly>,<rx>,<ry>` attaches a virtual gamepad whose sticks rest at these raw SDL axis values (-32768 to 32767). | The game sees a controller with that drift or deflection; a malformed value is logged and ignored. | Caution |
