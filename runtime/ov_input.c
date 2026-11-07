@@ -17,6 +17,8 @@
 #include "ov.h"
 #include "platform/platform.h"
 
+void vk_reflex_marker(int marker);
+
 typedef struct { int64_t sampling; uint64_t buttons; int32_t lx, ly, rx, ry; uint32_t attributes, pad; } NpadState;
 typedef struct { int64_t sampling; int32_t x, y, dx, dy, wx, wy; uint32_t buttons, attributes; } MouseState;
 typedef struct { int64_t sampling; uint32_t modifiers, attributes; uint64_t keys[4]; } KeyboardState;
@@ -93,6 +95,7 @@ static void npad_states(Cpu *c, uint32_t want) {
     if (live) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
+        vk_reflex_marker(6);   // VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     }
     *out = s;
     ret_x(c, 1);
