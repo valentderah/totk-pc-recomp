@@ -207,6 +207,11 @@
 # patch 0010), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
+# The game blurs its shadows without looking at depth, which leaves a light strip on shadowed ground beside
+# anything in front of it. depth stops the blur at those edges (two small extra passes); game keeps the original look.
+# Changes apply at once.
+# shadow_blur = game
+
 # NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
 # executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
 # NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
