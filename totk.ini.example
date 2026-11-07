@@ -355,6 +355,12 @@
 # bind_X = pad:west, key:space
 # bind_Y = pad:north, key:mouse_l
 
+[game modifications]
+# Armour sets: in the inventory an armour piece gets "Register to Quickslot", which saves it to one of nine sets;
+# while a weapon, shield or bow shortcut strip is open, right stick up shows the sets and down goes back, and releasing
+# on a set puts it on. 0, the default, leaves the game as it is. Takes effect at once.
+# armor_sets = 0
+
 [mods]
 # Folder with the player's mods, one subfolder per mod (<name>/romfs, <name>/exefs, <name>/cheats). Default: mods next
 # to totk.exe.
