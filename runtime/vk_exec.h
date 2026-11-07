@@ -84,7 +84,8 @@ typedef struct VkExec {
     VkPipeState pipe;
 
     // ---- vk_exec_draw.c slots (draws, binds, dispatch): left empty by vk_exec.c
-    const prog_t *prog;                  // OP_BIND_PROGRAM
+    const prog_t *prog;                  // OP_BIND_PROGRAM (most recently bound)
+    const prog_t *progs[6];              // OP_BIND_PROGRAM per NVN stage (0:VS, 1:FS, 2:GS, 3:TCS, 4:TES, 5:CS)
     int32_t prog_stages;
     NVNbufferRange vbuf[16];             // OP_BIND_VBUF
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
