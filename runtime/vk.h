@@ -329,6 +329,9 @@ void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestro
 void vk_defer_view(VkImageView view);
 void vk_exec_image_gone(VkImage image);   // destroy_tex, texture lock held: the replay's views of image go with it
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
+// free(p) once the GPU is past the submission being recorded, like the deferrals above: host records that a recording
+// may still read through a pointer taken before another thread dropped them (vk_texture.c destroy_tex).
+void vk_defer_free(void *p);
 // Device-local scratch for the upload batch (storage, transfer src and dst), from a pool of its own (vk_memory.c).
 VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 // Staging and scratch bytes the open upload batch holds until it completes. Large texture loads submit the batch early
@@ -414,6 +417,9 @@ typedef struct {
     uint8_t scale;                 // 1, or TOTK_SHADOW_SCALE for a shadow map made larger than the game's (vk_texture.c
                                    // shadow_scale_of): width and height above are the larger ones, the game's regions
                                    // are multiplied by it
+    uint8_t gone;                  // the entry was dropped (vk_texture.c destroy_tex, under the texture lock): image and
+                                   // record live until the submission being recorded is done, and nothing may be cached
+                                   // by its image handle, which the driver can hand out again after that
 } VkTexImage;
 // The window texture the backend presents (vk_backend.c): *image and *format become the float picture the game copied
 // into it, when the last draw into it was that copy and the swapchain is HDR10.
