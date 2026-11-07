@@ -953,7 +953,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
     s_copied += b - a;
 }
 
-// TOTK_SHADOW_SNAP (default 1): a pool's sync takes its written pages from the per-submission write-watch snapshots
+// TOTK_SHADOW_SNAP (default 1 on a native host, 0 under Wine, where it has not been measured): a pool's sync takes its written pages from the per-submission write-watch snapshots
 // (snap_regions, shared with the texture checks): each 2 MiB region is queried at most once per guest submission, however
 // many pools share it and however many parts of the submission touch them. The GPU then reads a pool as of the first
 // part that syncs it, nearer the submit call, the moment the game means (vk_usnap.c). 0 queries each pool at every
@@ -967,9 +967,10 @@ static void shadow_copy_newer(PoolRec *r, uint32_t since);
 static void shadow_sync_pool(PoolRec *r) {
     uint64_t lo = r->import_lo, hi = r->import_hi;
     if (shadow_snap < 0) {
-        shadow_snap = rt_knob("SHADOW_SNAP", "1");
-        rt_log("mem: shadow sync: %s (TOTK_SHADOW_SNAP)",
-               shadow_snap ? "per-submission region snapshots" : "a query per pool at every part");
+        shadow_snap = rt_knob("SHADOW_SNAP", plat_is_wine() ? "0" : "1");
+        rt_log("mem: shadow sync: %s (TOTK_SHADOW_SNAP%s)",
+               shadow_snap ? "per-submission region snapshots" : "a query per pool at every part",
+               plat_is_wine() ? "; off by default under Wine" : "");
     }
     uint32_t epoch = shadow_snap ? vk_texture_epoch() : 0;
     uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
