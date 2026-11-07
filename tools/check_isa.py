@@ -111,7 +111,8 @@ def scan_one(path, objdump, level='v2'):
             continue
         m = re.match(r'^[0-9a-f]*\s*<(.+)>:$', line)
         if m:
-            func = m.group(1)
+            # ThinLTO renames a promoted static to <name>.llvm.<hash>; DISPATCHED names the source function
+            func = re.sub(r'\.llvm\.\d+$', '', m.group(1))
             continue
         if not line[:1].isspace():
             continue

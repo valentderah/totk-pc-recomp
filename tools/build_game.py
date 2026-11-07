@@ -147,6 +147,17 @@ def set_pgo(pgo, out):
                  '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
     GEN_FLAGS.extend(flags + PGO_NAMES)
     RT_FLAGS.extend(flags + PGO_NAMES)
+
+
+def set_lto(out):
+    """--lto: ThinLTO over the generated code. Each chunk is otherwise compiled alone, so a call into another chunk is
+    never inlined; ThinLTO imports the small hot callees (guided by --pgo) and inlines them, which also drops the guest
+    register spills and reloads around those calls. Code generation moves to the link, which runs one job per CPU and
+    keeps a cache under out/ltocache, so a relink with unchanged objects is quick. The runtime stays out of it: on a
+    Phenom II X6 it made no measurable difference."""
+    GEN_FLAGS.append('-flto=thin')
+    LINK_FLAGS.extend(['-flto=thin', f'-Wl,--thinlto-jobs={os.cpu_count() or 4}', '-Wl,--lto-O2',
+                       f'-Wl,--thinlto-cache-dir={cmd_path(out / "ltocache")}'])
 if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
@@ -816,6 +827,8 @@ def main():
                     help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
                          '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
                          '.profdata (tools/pgo.py merge)')
+    ap.add_argument('--lto', action='store_true',
+                    help='ThinLTO over the generated code: cross-chunk inlining at link time (slower, larger link)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -828,6 +841,8 @@ def main():
             sys.exit('--pgo gen: MSYS2 UCRT64 clang ships no profile runtime (clang_rt.profile); pass --toolchain with '
                      'an llvm-mingw directory')
         set_pgo(args.pgo, out)
+    if args.lto:
+        set_lto(out)
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
