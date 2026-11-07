@@ -311,6 +311,14 @@ void wsys_resize(int w, int h) {
     run_on_window(resize_window, wh);
 }
 
+void wsys_destroy(void) {
+    if (g_win) {
+        SDL_Window *w = g_win;
+        g_win = NULL;
+        SDL_DestroyWindow(w);
+    }
+}
+
 // ---- --probe-window: synthetic events through the event handler, on the window thread
 static void probe_event(void *arg) { handle(arg); }
 
