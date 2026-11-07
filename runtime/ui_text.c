@@ -164,6 +164,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Reduces system latency on NVIDIA GPUs using VK_NV_low_latency2. On + Boost keeps GPU clocks high in CPU-bound scenes.",
+    [UI_MENU_REFLEX_OFF] = "Off",
+    [UI_MENU_REFLEX_ON] = "On",
+    [UI_MENU_REFLEX_BOOST] = "On + Boost",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -639,6 +644,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Снижает задержку системы на видеокартах NVIDIA с помощью VK_NV_low_latency2. On + Boost удерживает высокие частоты GPU при упоре в процессор.",
+    [UI_MENU_REFLEX_OFF] = "Выкл",
+    [UI_MENU_REFLEX_ON] = "Вкл",
+    [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1461,6 +1471,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Reduz a latência do sistema em GPUs NVIDIA usando VK_NV_low_latency2. On + Boost mantém os clocks da GPU altos quando limitado pela CPU.",
+    [UI_MENU_REFLEX_OFF] = "Desligado",
+    [UI_MENU_REFLEX_ON] = "Ligado",
+    [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2062,6 +2077,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex 低延迟",
+    [UI_MENU_REFLEX_DESC] = "在支持 VK_NV_low_latency2 的 NVIDIA 显卡上降低系统延迟。开 + 增强 (On + Boost) 会在 CPU 瓶颈时保持 GPU 高频率。",
+    [UI_MENU_REFLEX_OFF] = "关",
+    [UI_MENU_REFLEX_ON] = "开",
+    [UI_MENU_REFLEX_BOOST] = "开 + 增强",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
