@@ -328,7 +328,7 @@ void vk_reflex_marker(int marker) {
 
 void vk_reflex_sleep(void) {
     VkCtx *c = vk_ctx();
-    if (!c || !c->has_nv_reflex || !g_reflex_sleep || !g_reflex_sem || g_reflex_mode <= 0 || !g_sc) return;
+    if (!c || !c->has_nv_reflex || !g_reflex_sleep || !g_reflex_sem || g_reflex_mode <= 0) return;
     uint64_t val = __atomic_add_fetch(&g_reflex_val, 1, __ATOMIC_RELAXED);
     VkLatencySleepInfoNV si = {
         .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,

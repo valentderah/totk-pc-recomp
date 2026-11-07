@@ -333,12 +333,14 @@ static void window_main(void *arg) {
         outer_size(g_hwnd, cw, ch, &ow, &oh);
         SetWindowPos(g_hwnd, HWND_BOTTOM, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         if (!background) {
-            // Pending before the raise: the activation it gets is the first WM_ACTIVATEAPP, which takes the fullscreen
-            // setting; set after it, fullscreen waited for the next activation and the game started in a window
             g_fs_pending = cfg_fullscreen();
             raise_window(g_hwnd);   // a frontend's player may have no way to reach a window left behind
             FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
             FlashWindowEx(&fw);
+            if (g_fs_pending) {
+                g_fs_pending = 0;
+                PostMessageW(g_hwnd, WM_APP_FULLSCREEN, 0, 0);
+            }
         }
         note_applied();
         refresh_rate_update(g_hwnd, 1);
