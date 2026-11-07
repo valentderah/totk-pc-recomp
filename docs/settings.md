@@ -178,6 +178,7 @@ Many rows below are developer tools that only act together with another setting 
 | `mvprev_grow` (default `1`) | `0` keeps only three banks in the previous-frame tables. | Object motion that depends on the other banks is no longer tracked. | Caution |
 | `mvprev_skip` | Hex bank mask of banks left out of the previous-frame copy, replacing the default. | Different banks are tracked, which changes object motion. | Caution |
 | `mvprev_trust` | Hex bank mask of banks whose found previous-frame copy is taken without the check. | A copy that does not match is used anyway, which can give wrong motion. | Caution |
+| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency; `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
 
 ## Scheduling and host
 
