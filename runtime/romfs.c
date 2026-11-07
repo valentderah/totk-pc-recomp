@@ -191,6 +191,36 @@ static size_t added_lower(const char *p) {
     return lo;
 }
 
+// Reports directory and file entries directly under dir ("folder" or "" for root).
+static char last_dir[1024];
+
+int romfs_list(const char *dir, int (*cb)(const char *, int, uint64_t, void *), void *ctx) {
+    if (!cb || !index_bytes) return 0;
+    char prefix[1024];
+    size_t n = dir && *dir ? (size_t)snprintf(prefix, sizeof prefix, "%s/", dir) : 0;
+    if (n >= sizeof prefix) return 0;
+    int added_n = 0;
+    last_dir[0] = 0;
+    for (uint64_t i = lower(prefix); i < file_count; i++) {
+        const char *name = entry_name(entry(i));
+        if (strncmp(name, prefix, n)) break;
+        const char *rest = name + n;
+        const char *slash = strchr(rest, '/');
+        size_t len = slash ? (size_t)(slash - rest) : strlen(rest);
+        if (!len || len >= sizeof last_dir) continue;
+        if (slash) {
+            if (!strncmp(last_dir, rest, len) && last_dir[len] == 0) continue;   // the same folder again
+            memcpy(last_dir, rest, len), last_dir[len] = 0;
+            added_n += cb(last_dir, PLAT_FS_DIR, 0, ctx) ? 1 : 0;
+        } else {
+            char file[1024];
+            memcpy(file, rest, len), file[len] = 0;
+            added_n += cb(file, PLAT_FS_FILE, entry(i).size, ctx) ? 1 : 0;
+        }
+    }
+    return added_n;
+}
+
 // The index of RomFS path p (an added file: file_count + k), or UINT64_MAX.
 static uint64_t file_index(const char *p) {
     uint64_t i = lower(p);
@@ -1211,6 +1241,23 @@ int romfs_owns(const char *path) {
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
 
+// The path relative to the mounted RomFS, or NULL when it is not under the mount.
+// Repeated separators ("//") are collapsed first, matching standard path lookups.
+static const char *romfs_relative_norm(const char *path) {
+    if (!path) return NULL;
+    static _Thread_local char buf[1024];
+    if (strlen(path) >= sizeof buf) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; path[i]; i++) {
+        if (path[i] == '/' && o && buf[o - 1] == '/') continue;
+        buf[o++] = path[i];
+    }
+    buf[o] = 0;
+    return romfs_path_relative(mount_name, buf);
+}
+
+const char *romfs_relative(const char *path) { return romfs_relative_norm(path); }
+
 uint32_t romfs_mount(const char *name) {
     fs_init();
     if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
@@ -1227,7 +1274,7 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = romfs_relative_norm(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -1324,7 +1371,7 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = romfs_relative_norm(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;

@@ -1060,15 +1060,21 @@ static uint32_t delete_recursive(const char *path) {
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
-    if (romfs_owns(path)) rt_fatal("fs: OpenDirectory on the RomFS (%s) is not implemented", path);
-    char p[PATH_CAP];
-    uint32_t r = host_path(path, p, sizeof p);
-    if (r) return r;
     if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    Listing l;
-    int e = list_dir(p, &l);
-    if (e) return fs_result(e);
+    Listing l = {0};
+    uint32_t r = 0;
+    if (romfs_owns(path)) {
+        const char *rel = romfs_relative(path);
+        if (!rel) return FS_R_PATH_NOT_FOUND;
+        romfs_list(rel, listing_add, &l);
+    } else {
+        char p[PATH_CAP];
+        r = host_path(path, p, sizeof p);
+        if (r) return r;
+        if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
+        int e = list_dir(p, &l);
+        if (e) return fs_result(e);
+    }
     plat_mutex_lock(&lock);
     for (int i = 0; i < NDIRS; i++)
         if (!dirs[i].used) {
@@ -1132,6 +1138,23 @@ static void ov_rename_file(Cpu *c) { ret_x(c, rename_file(arg_p(c, 0), arg_p(c, 
 static void ov_create_directory(Cpu *c) { ret_x(c, create_directory(arg_p(c, 0))); }
 static void ov_delete_recursive(Cpu *c) { ret_x(c, delete_recursive(arg_p(c, 0))); }
 static void ov_open_directory(Cpu *c) { ret_x(c, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
+// nn::Result nn::fs::GetDirectoryEntryCount(int64_t *out, DirectoryHandle h): the count of the listing taken at open,
+// which is what the SDK's ReadDirectory loop asks for before it starts.
+static void ov_directory_count(Cpu *c) {
+    int64_t *out = arg_p(c, 0);
+    uint64_t h = arg_x(c, 1);
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    Dir *d = &dirs[h - DIR_BASE];
+    if (!d->used) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    *out = d->l.n;
+    ret_x(c, 0);
+}
 static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
 static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
@@ -1204,6 +1227,7 @@ HOST_OVERRIDE(S_CREATE_DIRECTORY, ov_create_directory);
 HOST_OVERRIDE(S_DELETE_RECURSIVE, ov_delete_recursive);
 HOST_OVERRIDE(S_OPEN_DIRECTORY, ov_open_directory);
 HOST_OVERRIDE(S_READ_DIRECTORY, ov_read_directory);
+HOST_OVERRIDE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", ov_directory_count);
 HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
