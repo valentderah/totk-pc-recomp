@@ -68,11 +68,11 @@ void gfx_window_sdl_run(void (*fn)(void *arg), void *arg) { run_on_window(fn, ar
 
 // ---- settings: size and fullscreen
 static char g_applied_size[32];
-static int g_applied_fs;
+static int g_applied_mode;
 
 static void note_applied(void) {
     snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("TOTK_WINDOW_SIZE"));
-    g_applied_fs = gfx_cfg_fullscreen();
+    g_applied_mode = gfx_cfg_window_mode();
 }
 
 static int is_fullscreen(void) { return (SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN) != 0; }
@@ -90,9 +90,40 @@ static void set_pixel_size(int w, int h) {
     SDL_SetWindowSize(g_win, (int)(w / scale + 0.5f), (int)(h / scale + 0.5f));
 }
 
-static void set_fullscreen(int on) {
+static void apply_window_mode(int mode, int w, int h) {
     input_cursor_suspend(1);
-    SDL_SetWindowFullscreen(g_win, on);   // the desktop's mode: borderless over the display
+    if (mode == 1) {
+        // Borderless Window (Desktop Fullscreen): covers the screen and all desktop panels/taskbars
+        SDL_SetWindowFullscreenMode(g_win, NULL);
+        if (!is_fullscreen()) SDL_SetWindowFullscreen(g_win, true);
+        SDL_SetWindowBordered(g_win, false);
+    } else if (mode == 2) {
+        // Exclusive Fullscreen: query display modes and request exclusive mode
+        SDL_DisplayID d = SDL_GetDisplayForWindow(g_win);
+        int m_count = 0;
+        SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(d, &m_count);
+        const SDL_DisplayMode *best = NULL;
+        if (modes && m_count > 0) {
+            const SDL_DisplayMode *curr = SDL_GetCurrentDisplayMode(d);
+            for (int i = 0; i < m_count; i++) {
+                if (curr && modes[i]->w == curr->w && modes[i]->h == curr->h) {
+                    if (!best || modes[i]->refresh_rate > best->refresh_rate) {
+                        best = modes[i];
+                    }
+                }
+            }
+            if (!best) best = modes[0];
+        }
+        SDL_SetWindowFullscreenMode(g_win, best);
+        if (!is_fullscreen()) SDL_SetWindowFullscreen(g_win, true);
+        if (modes) SDL_free(modes);
+    } else {
+        // Windowed: normal bordered window
+        if (is_fullscreen()) SDL_SetWindowFullscreen(g_win, false);
+        SDL_SetWindowAlwaysOnTop(g_win, false);
+        SDL_SetWindowBordered(g_win, true);
+        set_pixel_size(w, h);
+    }
     SDL_SyncWindow(g_win);
     input_cursor_suspend(0);
 }
@@ -100,17 +131,15 @@ static void set_fullscreen(int on) {
 // Window thread: the window takes the size and fullscreen state of the settings when they changed. A window resized by
 // hand keeps its size when another setting changes.
 static void apply_settings(void) {
-    int size_changed = strcmp(cfg_value("TOTK_WINDOW_SIZE"), g_applied_size) != 0, fs = gfx_cfg_fullscreen();
-    int fs_changed = fs != g_applied_fs;
+    int size_changed = strcmp(cfg_value("TOTK_WINDOW_SIZE"), g_applied_size) != 0;
+    int mode = gfx_cfg_window_mode();
+    int mode_changed = (mode != g_applied_mode);
     note_applied();
-    if (size_changed) {
+    if (mode_changed || size_changed) {
         int w, h;
         gfx_cfg_window_size(&w, &h);
-        if (is_fullscreen()) SDL_SetWindowFullscreen(g_win, false);
-        set_pixel_size(w, h);
-        if (is_fullscreen() || (fs && !fs_changed)) SDL_SetWindowFullscreen(g_win, true);
+        apply_window_mode(mode, w, h);
     }
-    if (fs_changed && fs != is_fullscreen()) set_fullscreen(fs);
 }
 
 void gfx_window_apply_settings(void) {
@@ -163,10 +192,19 @@ static void handle(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.scancode == SDL_SCANCODE_F11 && !e->key.repeat) {
-            set_fullscreen(!is_fullscreen());
-            cfg_set("TOTK_FULLSCREEN", is_fullscreen() ? "1" : "0");   // the menu shows it; the next start keeps it
+            int cur_mode = gfx_cfg_window_mode();
+            if (cur_mode != 0) {
+                cfg_set("TOTK_WINDOW_MODE_PREV", cur_mode == 1 ? "borderless" : "fullscreen");
+                cfg_set("TOTK_WINDOW_MODE", "windowed");
+                cfg_set("TOTK_FULLSCREEN", "0");
+            } else {
+                const char *prev = cfg_get("TOTK_WINDOW_MODE_PREV");
+                const char *next = (prev && !strcmp(prev, "fullscreen")) ? "fullscreen" : "borderless";
+                cfg_set("TOTK_WINDOW_MODE", next);
+                cfg_set("TOTK_FULLSCREEN", !strcmp(next, "fullscreen") ? "1" : "0");
+            }
             cfg_save();
-            note_applied();
+            apply_settings();
         }
         break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -255,7 +293,14 @@ static void open_window(void *arg) {
     (void)arg;
     int w, h;
     gfx_cfg_window_size(&w, &h);
-    g_win = SDL_CreateWindow("TotK Recomp", w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    int mode = gfx_cfg_window_mode();
+    Uint64 flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (mode == 1 || mode == 2) {
+        flags |= SDL_WINDOW_FULLSCREEN;
+    } else {
+        flags |= SDL_WINDOW_RESIZABLE;
+    }
+    g_win = SDL_CreateWindow("TotK Recomp", w, h, flags);
     if (!g_win) {
         rt_log("gfx: SDL_CreateWindow failed (%s)", SDL_GetError());
         return;
@@ -265,7 +310,9 @@ static void open_window(void *arg) {
     note_applied();
     refresh_rate_update();
     if (cfg_get("TOTK_BACKGROUND_WINDOW")) rt_log("gfx: TOTK_BACKGROUND_WINDOW has no effect with SDL windows");
-    if (gfx_cfg_fullscreen()) SDL_SetWindowFullscreen(g_win, true);
+    if (mode == 1 || mode == 2) {
+        apply_window_mode(mode, w, h);
+    }
     SDL_SyncWindow(g_win);
     input_sdl_window(g_win);
     open_ok = 1;

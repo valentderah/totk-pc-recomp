@@ -58,6 +58,7 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
+int gfx_cfg_window_mode(void);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -651,9 +652,22 @@ static void rows_color(void) {
     }
 }
 
+static void row_window_mode(void) {
+    static const char *const vals[] = {"windowed", "borderless", "fullscreen"};
+    static const UiTextId ids[] = {UI_MENU_WINDOW_MODE_WINDOWED, UI_MENU_WINDOW_MODE_BORDERLESS, UI_MENU_WINDOW_MODE_FULLSCREEN};
+    const char *names[3];
+    for (int i = 0; i < 3; i++) names[i] = menu_text(ids[i]);
+    int cur = gfx_cfg_window_mode();
+    if (opt_choice_list("TOTK_WINDOW_MODE", UI_MENU_WINDOW_MODE, vals, names, 3, UI_MENU_WINDOW_MODE_DESC, cur)) {
+        cfg_set("TOTK_FULLSCREEN", gfx_cfg_window_mode() == 2 ? "1" : "0");
+        cfg_save();
+        gfx_window_apply_settings();
+    }
+}
+
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
-    opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+    row_window_mode();
     row_window_size();
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
     opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
