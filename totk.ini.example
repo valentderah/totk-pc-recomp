@@ -269,6 +269,13 @@
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 
+[achievements]
+# The Achievements tab of the settings menu (F1): statistics read from your save and from the game while it runs
+# (monsters defeated, items found, dishes cooked, distance travelled) and achievements on them. 1 = on; the tab
+# switches it too. Off, nothing is read and nothing is written; on, the goals and unlocks are kept in
+# <profile>/achievements/ (goals.ini, which you may edit, and unlocked.txt).
+# achievements = 0
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default

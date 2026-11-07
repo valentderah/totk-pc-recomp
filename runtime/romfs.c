@@ -899,20 +899,128 @@ static void heapdef_overlay(void) {
     if (ok && serve_generated(HEAPDEF, base, out, out_n, "resolution", "grown heaps", keeps)) res_heapdef_served();
 }
 
+// ---- SARC archives and the game's zstd dictionaries, for host code that reads game data (camera_speed.c, stats.c)
+static int sarc_u32(const uint8_t *p, size_t n, size_t off, uint32_t *v) {
+    if (off > n || n - off < 4) return 0;
+    memcpy(v, p + off, 4);
+    return 1;
+}
+
+int romfs_sarc_member(const void *archive, size_t n, const char *name, size_t *at, size_t *size) {
+    const uint8_t *p = archive;
+    uint32_t data;
+    uint16_t head, count, bom;
+    if (n < 0x14 || memcmp(p, "SARC", 4)) return 0;
+    memcpy(&head, p + 4, 2);
+    memcpy(&bom, p + 6, 2);
+    if (bom != 0xfeff || !sarc_u32(p, n, 12, &data) || head + 12u > n || memcmp(p + head, "SFAT", 4)) return 0;
+    memcpy(&count, p + head + 6, 2);
+    size_t names = head + 12 + (size_t)count * 16;
+    if (names + 8 > n || memcmp(p + names, "SFNT", 4)) return 0;
+    names += 8;
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t attr, lo, hi;
+        size_t e = head + 12 + (size_t)i * 16;
+        if (!sarc_u32(p, n, e + 4, &attr) || !sarc_u32(p, n, e + 8, &lo) || !sarc_u32(p, n, e + 12, &hi)) return 0;
+        size_t s = names + (size_t)(attr & 0xffffff) * 4, len = strlen(name);
+        if (!(attr >> 24) || s + len + 1 > n || memcmp(p + s, name, len + 1)) continue;
+        if (lo > hi || data + (size_t)hi > n) return 0;
+        *at = data + lo;
+        *size = hi - lo;
+        return 1;
+    }
+    return 0;
+}
+
+// Pack/ZsDic.pack.zs as served (a SARC compressed without a dictionary) holds the dictionaries the game's .zs files
+// are compressed with. Read once, the first time a caller needs it while the RomFS is open, and kept for the run.
+#define ZSDIC_MAX_RAW (64u << 20)
+static const char *const kZsDicts[] = {"zs.zsdic", "pack.zsdic", "bcett.byml.zsdic"};
+enum { ZSDICTS = sizeof kZsDicts / sizeof *kZsDicts };
+static struct {
+    int done;
+    uint8_t *raw;
+    size_t at[ZSDICTS], n[ZSDICTS];
+    ZSTD_DDict *dd[ZSDICTS];
+    unsigned id[ZSDICTS];
+} zsdic;
+static PlatMutex zsdic_lock = PLAT_MUTEX_INIT;
+
+static void zsdic_load(void) {
+    plat_mutex_lock(&zsdic_lock);
+    if (!zsdic.done && file_count) {
+        zsdic.done = 1;
+        Overlay *base;
+        size_t n = 0;
+        uint8_t *pack = read_served("Pack/ZsDic.pack.zs", &base, &n, "files compressed with a dictionary are not read");
+        unsigned long long dn = pack ? ZSTD_getFrameContentSize(pack, n) : ZSTD_CONTENTSIZE_ERROR;
+        uint8_t *raw = dn != ZSTD_CONTENTSIZE_ERROR && dn != ZSTD_CONTENTSIZE_UNKNOWN && dn && dn <= ZSDIC_MAX_RAW
+                           ? malloc((size_t)dn) : NULL;
+        if (raw && ZSTD_decompress(raw, (size_t)dn, pack, n) == dn) {
+            for (int i = 0; i < ZSDICTS; i++)
+                if (romfs_sarc_member(raw, (size_t)dn, kZsDicts[i], &zsdic.at[i], &zsdic.n[i])) {
+                    zsdic.dd[i] = ZSTD_createDDict(raw + zsdic.at[i], zsdic.n[i]);
+                    zsdic.id[i] = ZSTD_getDictID_fromDict(raw + zsdic.at[i], zsdic.n[i]);
+                }
+            zsdic.raw = raw;
+        } else {
+            free(raw);
+            rt_log("RomFS: Pack/ZsDic.pack.zs is not a zstd frame with a size; files compressed with a dictionary are "
+                   "not read");
+        }
+        free(pack);
+    }
+    plat_mutex_unlock(&zsdic_lock);
+}
+
+int romfs_zsdic(const char *member, const void **p, size_t *n) {
+    zsdic_load();
+    for (int i = 0; i < ZSDICTS; i++)
+        if (zsdic.raw && zsdic.n[i] && !strcmp(kZsDicts[i], member)) {
+            *p = zsdic.raw + zsdic.at[i];
+            *n = zsdic.n[i];
+            return 1;
+        }
+    return 0;
+}
+
+void *romfs_zs_unpack(const void *in, size_t n, size_t max, size_t *out_n) {
+    unsigned long long size = ZSTD_getFrameContentSize(in, n);
+    if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN || size > max) return NULL;
+    unsigned id = ZSTD_getDictID_fromFrame(in, n);
+    ZSTD_DDict *d = NULL;
+    if (id) {
+        zsdic_load();
+        for (int i = 0; i < ZSDICTS; i++)
+            if (zsdic.dd[i] && zsdic.id[i] == id) d = zsdic.dd[i];
+        if (!d) return NULL;
+    }
+    uint8_t *out = malloc(size ? (size_t)size : 1);
+    ZSTD_DCtx *ctx = ZSTD_createDCtx();
+    size_t got = out && ctx ? (d ? ZSTD_decompress_usingDDict(ctx, out, (size_t)size, in, n, d)
+                                 : ZSTD_decompressDCtx(ctx, out, (size_t)size, in, n))
+                            : 0;
+    ZSTD_freeDCtx(ctx);
+    if (!out || ZSTD_isError(got) || got != size) {
+        free(out);
+        return NULL;
+    }
+    *out_n = (size_t)size;
+    return out;
+}
+
 // The player camera's pack with its stick speeds multiplied by TOTK_STICK_SENS (camera_speed.c). The base is an
 // overlay that replaces the pack (a mod's camera stays), else the RomFS original; the dictionary is the RomFS's own.
 #define CAMPACK "Pack/Actor/PlayerCamera.pack.zs"
 static void camera_overlay(void) {
     if (cam_speed_wanted() == 1.0f) return;
     static const char keeps[] = "the camera keeps its own speed";
-    Overlay *base, *dic_base;
-    size_t n, dn;
+    Overlay *base;
+    size_t n;
     void *in = read_served(CAMPACK, &base, &n, keeps), *out = NULL;
-    void *dic = in ? read_served("Pack/ZsDic.pack.zs", &dic_base, &dn, keeps) : NULL;
     size_t out_n = 0;
-    int ok = in && dic && cam_pack_build(in, n, dic, dn, &out, &out_n);
+    int ok = in && cam_pack_build(in, n, &out, &out_n);
     free(in);
-    free(dic);
     if (ok && serve_generated(CAMPACK, base, out, out_n, "camera", "camera speed", keeps)) cam_pack_served();
 }
 
@@ -1202,6 +1310,23 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     *size = overlays[k].size;
     *is_added = overlays[k].index >= file_count;
     return overlays[k].name;
+}
+
+// RomFS file rel as the game reads it (an overlay that replaces it, else the image), for host code that reads game
+// data of its own (stats.c): malloc'd, NULL when missing, unreadable or 16 MiB or more (logged with `why`).
+void *romfs_load(const char *rel, size_t *n, const char *why) {
+    Overlay *base;
+    return file_count ? read_served(rel, &base, n, why) : NULL;
+}
+
+// Calls cb for every RomFS image path that starts with prefix, in index order (sorted). Files a mod adds are not listed.
+void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx) {
+    size_t n = strlen(prefix);
+    for (uint64_t i = lower(prefix); i < file_count; i++) {
+        const char *name = entry_name(entry(i));
+        if (strncmp(name, prefix, n)) break;
+        cb(name, ctx);
+    }
 }
 
 int romfs_owns(const char *path) {

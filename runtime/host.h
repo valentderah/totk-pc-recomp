@@ -253,7 +253,7 @@ void movie_tick(Cpu *c);                                   // at every present, 
 // ---- camera speed (camera_speed.c): TOTK_STICK_SENS
 float cam_speed_wanted(void);                              // the factor TOTK_STICK_SENS asks for, 0.1 to 3
 float cam_speed_applied(void);                             // the factor in effect: 1 until romfs.c serves the pack
-int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, void **out, size_t *out_n);
+int cam_pack_build(const void *in, size_t n, void **out, size_t *out_n);
                                                            // Pack/Actor/PlayerCamera.pack.zs with the camera speeds
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
 void cam_pack_served(void);                                // romfs.c serves the multiplied pack
@@ -328,6 +328,7 @@ void playtime_init(void);                                  // playtime.c: the pl
 void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
 int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 without a profile
 int probe_playtime(void);                                  // playtime.c: the file, the ticks and the save
+int probe_stats(void);                                     // stats.c: the save readers, goals.ini, the unlock rule
 int probe_discord(void);                                   // discord_rpc.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
