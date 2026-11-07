@@ -198,6 +198,9 @@ extern const char rt_port_version[];                       // VERSION at the bui
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;
 Cpu *kern_cpu(void);                                       // current guest thread's Cpu, NULL on host threads
+uint32_t kern_current_thread_handle(void);                 // the calling guest thread's kernel handle, 0 on host threads
+void mutex_trace_dump(void);                               // diagnostics: every mutex the runtime still sees taken (TOTK_MUTEX_TRACE=1)
+void kern_dump_waiters(void);                              // diagnostics: every thread's wait state and the syscall mix
 void kern_free_cores_note(void);                           // for crash reports: logs that free_cores = 1 lifted the
                                                            // virtual core gate, nothing when the gate is on
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
