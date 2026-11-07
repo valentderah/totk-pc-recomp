@@ -1499,6 +1499,7 @@ struct PlatLoad {
     uint64_t proc_ns;
     char gpu[256];                // /sys/class/drm/cardN/device of the GPU in use; empty when unknown
     char temp[256];               // the CPU's hwmon temp1_input; empty when unknown
+    char gpu_hwmon[256];          // /sys/class/drm/cardN/device/hwmon/hwmonX; empty when unknown
 };
 
 static int read_u64_file(const char *path, uint64_t *v) {
@@ -1533,11 +1534,12 @@ static void find_cpu_temp(char *out, size_t cap) {
     closedir(d);
 }
 
-// The DRM card with gpu_busy_percent (amdgpu) on PCI bus bus, the game's device. With bus -1 (no VK_EXT_pci_bus_info):
-// of several, the one with the most VRAM in use. None when the game's GPU has no such file (NVIDIA): the overlay then
-// takes its load and VRAM from NVML, not from an idle integrated GPU.
-static void find_gpu(char *out, size_t cap, int bus) {
+// The DRM card with gpu_busy_percent (amdgpu) or mem_info_vram_used on PCI bus bus, the game's device. With bus -1 (no
+// VK_EXT_pci_bus_info): of several, the one with the most VRAM in use. None when the game's GPU has no such file (NVIDIA):
+// the overlay then takes its load and VRAM from NVML, not from an idle integrated GPU.
+static void find_gpu(char *out, size_t cap, char *hwmon_out, size_t hwmon_cap, int bus) {
     out[0] = 0;
+    if (hwmon_out && hwmon_cap) hwmon_out[0] = 0;
     uint64_t best = 0;
     DIR *d = opendir("/sys/class/drm");
     if (!d) return;
@@ -1545,20 +1547,41 @@ static void find_gpu(char *out, size_t cap, int bus) {
         if (strncmp(e->d_name, "card", 4) || strchr(e->d_name, '-')) continue;
         char dev[256], path[300];
         snprintf(dev, sizeof dev, "/sys/class/drm/%s/device", e->d_name);
-        snprintf(path, sizeof path, "%s/gpu_busy_percent", dev);
-        uint64_t v, used = 0;
-        if (!read_u64_file(path, &v)) continue;
         if (bus >= 0) {   // device links to the PCI function, "0000:03:00.0": domain, bus, device, function
             char real[PATH_MAX];
             unsigned dom, b;
             const char *base = realpath(dev, real) ? strrchr(real, '/') : NULL;
             if (!base || sscanf(base + 1, "%x:%x:", &dom, &b) != 2 || (int)b != bus) continue;
         }
+        snprintf(path, sizeof path, "%s/gpu_busy_percent", dev);
+        uint64_t v = 0, used = 0;
+        int has_busy = read_u64_file(path, &v);
         snprintf(path, sizeof path, "%s/mem_info_vram_used", dev);
-        read_u64_file(path, &used);
-        if (!out[0] || used > best) snprintf(out, cap, "%s", dev), best = used;
+        int has_vram = read_u64_file(path, &used);
+        snprintf(path, sizeof path, "%s/vendor", dev);
+        uint64_t vendor = 0;
+        read_u64_file(path, &vendor);
+        if (!has_busy && !has_vram && vendor != 0x1002) continue;
+        if (!out[0] || used > best) {
+            snprintf(out, cap, "%s", dev);
+            best = used;
+        }
     }
     closedir(d);
+    if (out[0] && hwmon_out && hwmon_cap) {
+        char hwpath[300];
+        snprintf(hwpath, sizeof hwpath, "%s/hwmon", out);
+        DIR *hd = opendir(hwpath);
+        if (hd) {
+            for (struct dirent *he; (he = readdir(hd));) {
+                if (strncmp(he->d_name, "hwmon", 5) == 0) {
+                    snprintf(hwmon_out, hwmon_cap, "%s/%s", hwpath, he->d_name);
+                    break;
+                }
+            }
+            closedir(hd);
+        }
+    }
 }
 
 PlatLoad *plat_load_open(const uint8_t *gpu_luid, int pci_bus) {
@@ -1566,7 +1589,7 @@ PlatLoad *plat_load_open(const uint8_t *gpu_luid, int pci_bus) {
     PlatLoad *l = calloc(1, sizeof *l);
     if (!l) return NULL;
     find_cpu_temp(l->temp, sizeof l->temp);
-    find_gpu(l->gpu, sizeof l->gpu, pci_bus);
+    find_gpu(l->gpu, sizeof l->gpu, l->gpu_hwmon, sizeof l->gpu_hwmon, pci_bus);
     return l;
 }
 
@@ -1605,9 +1628,56 @@ void plat_gpu_load(PlatLoad *l, float *load_pct, float *vram_used_mb) {
     char path[300];
     uint64_t v;
     snprintf(path, sizeof path, "%s/gpu_busy_percent", l->gpu);
-    if (read_u64_file(path, &v)) *load_pct = (float)v;
+    if (read_u64_file(path, &v)) {
+        *load_pct = (float)v;
+    } else {
+        snprintf(path, sizeof path, "%s/gpu_metrics", l->gpu);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            uint8_t buf[256];
+            size_t n = fread(buf, 1, sizeof buf, f);
+            fclose(f);
+            if (n >= 4) {
+                uint8_t fmt = buf[2];
+                uint16_t act = 0xffff;
+                if (fmt == 1 && n >= 26) {
+                    act = (uint16_t)buf[24] | ((uint16_t)buf[25] << 8);
+                } else if (fmt == 2 && n >= 30) {
+                    act = (uint16_t)buf[28] | ((uint16_t)buf[29] << 8);
+                } else if (fmt == 3 && n >= 44) {
+                    act = (uint16_t)buf[42] | ((uint16_t)buf[43] << 8);
+                }
+                if (act != 0xffff) {
+                    *load_pct = act > 100 ? (float)act / 100.0f : (float)act;
+                    if (*load_pct > 100.0f) *load_pct = 100.0f;
+                }
+            }
+        }
+    }
     snprintf(path, sizeof path, "%s/mem_info_vram_used", l->gpu);
     if (read_u64_file(path, &v)) *vram_used_mb = (float)(v >> 20);
+}
+
+void plat_gpu_sensors(PlatLoad *l, float *temp_c, float *power_w, float *clock_mhz) {
+    if (!l || !l->gpu_hwmon[0]) return;
+    char path[300];
+    uint64_t v = 0;
+    if (*temp_c < 0) {
+        snprintf(path, sizeof path, "%s/temp1_input", l->gpu_hwmon);
+        if (read_u64_file(path, &v) && v > 0) *temp_c = (float)v / 1000.0f;
+    }
+    if (*power_w < 0) {
+        snprintf(path, sizeof path, "%s/power1_average", l->gpu_hwmon);
+        if (!read_u64_file(path, &v) || !v) {
+            snprintf(path, sizeof path, "%s/power1_input", l->gpu_hwmon);
+            read_u64_file(path, &v);
+        }
+        if (v > 0) *power_w = (float)v / 1000000.0f;
+    }
+    if (*clock_mhz < 0) {
+        snprintf(path, sizeof path, "%s/freq1_input", l->gpu_hwmon);
+        if (read_u64_file(path, &v) && v > 0) *clock_mhz = (float)v / 1000000.0f;
+    }
 }
 
 void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb) {

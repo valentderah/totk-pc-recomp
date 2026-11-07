@@ -1636,6 +1636,10 @@ void plat_gpu_load(PlatLoad *l, float *load_pct, float *vram_used_mb) {
     free(it);
 }
 
+void plat_gpu_sensors(PlatLoad *l, float *temp_c, float *power_w, float *clock_mhz) {
+    (void)l; (void)temp_c; (void)power_w; (void)clock_mhz;
+}
+
 void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb) {
     *used_mb = *total_mb = *proc_mb = -1;
     MEMORYSTATUSEX ms = {.dwLength = sizeof ms};

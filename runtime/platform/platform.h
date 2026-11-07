@@ -418,6 +418,8 @@ void plat_cpu_load(PlatLoad *l, float *total_pct, float *proc_pct, float *temp_c
 // Since the previous call on l: the busiest GPU engine type in percent (as Task Manager shows it), and the adapter's
 // dedicated memory in use in MB. Any GPU vendor.
 void plat_gpu_load(PlatLoad *l, float *load_pct, float *vram_used_mb);
+// GPU hardware sensors: temperature in degrees Celsius, board/package power in watts, and core clock in MHz. -1 when unknown.
+void plat_gpu_sensors(PlatLoad *l, float *temp_c, float *power_w, float *clock_mhz);
 // Physical memory in MB: in use and installed on the machine, and this process's working set.
 void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb);
 // Commit charge in MB: this process's private bytes, the system's commit in use and its limit (RAM plus page files).
