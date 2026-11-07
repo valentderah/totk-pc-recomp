@@ -565,10 +565,23 @@ void vk_mem_census(uint64_t frame) {
     window_start = frame;
 }
 
+// TOTK_VRAM_LIMIT_MIB: pretend the device-local budget is at most this many MiB, so the paths that react to the budget
+// can be driven on a card larger than the one a report came from. The driver knows nothing of it.
+static uint64_t vram_limit(void) {
+    static int64_t limit = -1;
+    if (limit < 0) {
+        const char *s = cfg_get("TOTK_VRAM_LIMIT_MIB");
+        limit = s && *s ? (int64_t)strtoull(s, NULL, 10) << 20 : 0;
+        if (limit) rt_log("mem: device-local budget limited to %lld MiB (TOTK_VRAM_LIMIT_MIB)", (long long)(limit >> 20));
+    }
+    return (uint64_t)limit;
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
     if (!c) return 0;
+    uint64_t limit = vram_limit();
     const VkPhysicalDeviceMemoryProperties *mp = &c->mem_props;
     if (c->has_memory_budget) {
         VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
@@ -578,6 +591,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
             if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
+        if (limit && *budget > limit) *budget = limit;
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -585,6 +599,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     for (uint32_t h = 0; h < mp->memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
+    if (limit && *budget > limit) *budget = limit;
     return *budget != 0;
 }
 
@@ -633,6 +648,17 @@ static uint32_t reg_tried[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep o
 static uint32_t *fcand;                       // gen_lock: regions to try at the next freeze pass
 static int nfcand, cfcand;
 static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze refused
+// Regions the GPU writes. Storage-buffer stores, buffer copies and fills land in imported guest memory, directly (import
+// mode) or through a pool's mirror that vk_mem_mirror_end copies or merges into the imported buffer. They are not CPU
+// writes: no fault thaws the region and no write-watch bit is set, so a region only the GPU writes looked idle, was
+// frozen, and the GPU went on writing pages the CPU side had made read-only. LAS Recomp never changes the protection of
+// imported memory: on NVIDIA, VirtualProtect on pages imported with VK_EXT_external_memory_host left the GPU reading
+// wrong data (runtime/nvn/vulkan/exec.c, the comment on its write watch); a GPU write there is the likely cause of the
+// device faults "write invalid" at a page of guest memory on NVIDIA (#788, #802). reg_gpu holds the timeline value of
+// the newest submission that writes into the region (gpu_writes): freeze_pass leaves the region alone until the GPU is
+// past that value, and a frozen region is thawed when a write into it is recorded.
+static uint64_t reg_gpu[RT_ADDRESS_LIMIT >> REG_SHIFT];   // replay thread
+static volatile int64_t n_frz_gpu, n_thaw_gpu;   // freeze candidates kept for a GPU write; thaws for one (mirror_log)
 
 static uint32_t *gen_slot(uint64_t page_addr, int create) {
     uint64_t ci = page_addr >> GEN_CHUNK_SHIFT;
@@ -1693,8 +1719,26 @@ static void snap_free(void *arg) {   // completion thread: the submission is don
     free(f);
 }
 
+// Record time: the submission being recorded writes [off, off+size) of r's guest range, directly into the imported
+// buffer or into the mirror whose bytes go back at its end. Keeps the regions unfrozen until the GPU is past it
+// (reg_gpu). Shadow storage needs nothing: the GPU writes the shadow and the CPU copies it back, thawing as it goes.
+static void gpu_writes(const PoolRec *r, uint64_t off, uint64_t size) {
+    if (!freeze_idle || r->smap) return;
+    uint64_t a = r->import_lo + off, b = a + size;
+    if (b <= a || b > RT_ADDRESS_LIMIT) return;
+    uint64_t f = vk_exec_recording_fence();
+    if (!f) f = vk_sync_issued() + 1;
+    int frozen = 0;
+    for (uint64_t j = a >> REG_SHIFT; j <= (b - 1) >> REG_SHIFT; j++) {
+        if (__atomic_load_n(&reg_gpu[j], __ATOMIC_RELAXED) < f) __atomic_store_n(&reg_gpu[j], f, __ATOMIC_RELAXED);
+        frozen |= mem_frozen(j << REG_SHIFT);
+    }
+    if (frozen) mem_thaw(a, b - a), plat_inc64(&n_thaw_gpu);
+}
+
 static void gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
     PoolRec *r = sp->pool;
+    if (r && size) gpu_writes(r, sp->offset, size);
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
     // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies.
     if (shader && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size))
@@ -1778,9 +1822,11 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
 // gen_lock exclusive: freezes up to FREEZE_PER_SUB candidate regions still idle. The query after the
 // protection collects the writes made before it took effect.
 static void freeze_pass(void) {
+    uint64_t gpu_done = vk_sync_fence_done();
     for (int done = 0; nfcand && done < FREEZE_PER_SUB;) {
         uint64_t j = fcand[--nfcand], a = j << REG_SHIFT;
         if (ww_ep - reg_last[j] < (uint32_t)freeze_idle || mem_frozen(a)) continue;
+        if (__atomic_load_n(&reg_gpu[j], __ATOMIC_RELAXED) > gpu_done) { plat_inc64(&n_frz_gpu); continue; }   // gpu_writes
         done++;
         if (!mem_freeze(a)) { n_frz_refused++; continue; }
         query_stamp(a, a + (1ull << REG_SHIFT), ++gen_now);
@@ -1998,6 +2044,10 @@ static void mirror_log(uint64_t frame) {
                "or mapping change %llu, refused %llu",
                (unsigned long long)frame, wc / wf, wb / wf / 1048576.0, qpc_ms(wt) / wf, dc / wf, wp / wf, qpc_ms(dt) / wf,
                fz * 2.0, (unsigned long long)ff, (unsigned long long)ft, (unsigned long long)fo, (unsigned long long)nr);
+    int64_t kg = plat_xchg64(&n_frz_gpu, 0), tg = plat_xchg64(&n_thaw_gpu, 0);
+    if (kg || tg)   // gpu_writes: before this, every count here was a region frozen under a GPU write
+        rt_log("mem: frame %llu: regions the GPU writes, since the last line: %lld kept from freezing, %lld frozen ones "
+               "thawed", (unsigned long long)frame, (long long)kg, (long long)tg);
     if (!vk_mirror_on) return;
     plat_mutex_lock(&mirror_stat_lock);
     MirrorAcc a = macc;
@@ -2050,6 +2100,7 @@ static void vram_log(uint64_t frame) {
            alloc_bytes / M, (unsigned long long)t.live, (unsigned long long)t.own_live, t.bytes_live / M,
            (unsigned long long)t.released, (unsigned long long)t.own_released, t.bytes_released / M, (long long)m_live_n,
            m_live_bytes / M, dead_pending());
+    vk_texture_released_log(frame);
 }
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a

@@ -99,6 +99,8 @@ static struct {
     VkPipeline pipe[2];                  // bound per bind point: 0 graphics, 1 compute
     VkPipeState st;                      // the state vk_pipeline_set_dynamic last recorded
     int st_valid;
+    uint32_t vmask;                      // the vertex bindings st's vertex input reads (valid with st_valid)
+    uint32_t vres;                       // the streams whose vb entry was resolved from vin (others: the zero buffer)
     VkBuffer vb[17];                     // vertex buffers last bound
     VkDeviceSize vo[17], vsz[17], vstr[17];
     int vcls[17];                        // their pool class and pool record, for the census
@@ -157,6 +159,35 @@ static struct {
     uint32_t ckn;                        // check mode: the last build's packed descriptors (bytes in ck)
     uint8_t ck[DS_SIG_BYTES];
 } RS = {-1};
+
+// UpdateUniformBuffer overlays of the submission being replayed (op_update_ub, TOTK_UB_OVERLAY). Here because
+// bind_sig reads them (ov_at).
+#define OV_N 2048
+#define OV_FOREIGN 4096
+static struct {
+    int mode;                  // rt_knob: 0 off, 1 on, 2 ab; -1 unread
+    uint64_t fence;            // the submission the lists belong to
+    uint64_t serial;           // numbers the overlays, so bind_sig tells one from the next at the same range
+    uint64_t lo, hi;           // the span of the overlays: most bindings lie outside it
+    uint32_t n, np, nf;
+    int f_over;                // more foreign writes than f holds: no more overlays in this submission
+    struct { uint64_t lo, hi, serial; VkBuffer buf; VkDeviceSize off; } o[OV_N];   // oldest first, no two equal
+    struct { uint64_t dst; VkBuffer src; VkDeviceSize soff; VkMemSpan sp; uint64_t size; } p[OV_N];   // to copy
+    struct { uint64_t lo, hi; } f[OV_FOREIGN];   // GPU writes of other kinds
+    // since the last perf line (vk_exec_ub_perf)
+    uint64_t c_update, c_overlaid, c_flush, c_bind, c_merged, c_mixed, c_inpass, c_outside, c_early;
+} OV = {.mode = -1};
+
+// A binding without a size reaches to the end of its backing: as far as the overlays go, for ov_at.
+static uint64_t ov_rest(uint64_t addr) { return addr < OV.hi ? OV.hi - addr : 1; }
+
+// The serial of the newest overlay a binding of [addr, addr+n) reads from, 0 for none (bind_sig).
+static uint64_t ov_at(const VkExec *ex, uint64_t addr, uint64_t n) {
+    if (!OV.n || OV.fence != ex->fence || addr >= OV.hi || addr + n <= OV.lo) return 0;
+    for (uint32_t i = OV.n; i-- > 0;)
+        if (addr < OV.o[i].hi && addr + n > OV.o[i].lo) return OV.o[i].serial;
+    return 0;
+}
 
 // The bound-slot bytes of VkExec a pipeline's descriptors read, as ranges merged where they touch, built once per
 // pipeline info: c0's storage table, the uniform and storage ranges of the bound slots and the texture and image
@@ -268,6 +299,9 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
     c->used += size;
     return p;
 }
+
+static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+static void ub_written(VkExec *ex, uint64_t addr, uint64_t n);
 
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
     CbRes *r = cb_res(ex);
@@ -807,10 +841,15 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     uint64_t n = size && size < sp.avail ? size : sp.avail;
     if (n > max) n = max;
     if (!n) return 0;
+    if (!written && (use == VK_MUSE_UBO || use == VK_MUSE_SSBO) && ub_bind(ex, addr, n, align, out)) {
+        count_use(VK_MCLS_SCRATCH, use, n);
+        return 1;
+    }
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
+        if (written) ub_written(ex, addr, n);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written) vk_mem_gpu_wrote_shader(&sp, n), vk_usnap_drop(addr, n);
+        if (written) vk_mem_gpu_wrote_shader(&sp, n), vk_usnap_drop(addr, n), vk_exec_ub_foreign(ex, addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;
@@ -920,6 +959,10 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        if (b->size && ub_bind(ex, b->addr, b->size < max ? b->size : max, align, &bi)) {   // updated in this pass
+            count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
+            return bi;
+        }
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
@@ -981,6 +1024,16 @@ static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
         return 1;
     }
     return 0;
+}
+
+// Applies the updates of this submission that touch [a, a+n) onto out, oldest first (ub_bind's merged copies).
+static void upd_apply(const VkExec *ex, uint64_t a, uint8_t *out, size_t n) {
+    if (UPD.fence != ex->fence) return;
+    for (uint32_t i = UPD.n > UPD_N ? UPD.n - UPD_N : 0; i < UPD.n; i++) {
+        const typeof(UPD.u[0]) *e = &UPD.u[i % UPD_N];
+        uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
+        if (lo < hi) memcpy(out + (lo - a), e->data + (lo - e->lo), hi - lo);
+    }
 }
 
 // That address as the bound block holds it at this point of the replay; 0 when the block is unbound or too short. The
@@ -1698,6 +1751,30 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     }
     if (l->c0) PUT(c0_binst);
     for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
+    // The uniform overlays the draw's uniform and storage bindings read (op_update_ub): a draw of an updated block binds
+    // other bytes after each update, every other draw is left to skip
+    if (OV.n) {
+        uint64_t ov = 0;
+        const size_t lo = offsetof(VkExec, ubo), hi = offsetof(VkExec, ssbo) + sizeof ex->ssbo;
+        for (uint32_t i = 0; i < l->n; i++) {
+            const RsRange *r = &l->r[i];
+            if (r->off + r->len <= lo || r->off >= hi) continue;
+            for (uint32_t o = 0; o + sizeof(p_bind_buf) <= r->len; o += sizeof(p_bind_buf)) {
+                size_t at = r->off + o;
+                if (at < lo || at + sizeof(p_bind_buf) > hi) continue;
+                if ((at < offsetof(VkExec, ssbo) ? at - lo : at - offsetof(VkExec, ssbo)) % sizeof(p_bind_buf)) continue;
+                const p_bind_buf *b = (const p_bind_buf *)((const uint8_t *)ex + at);
+                if (b->addr) ov = ov * 1099511628211ull ^ ov_at(ex, b->addr, b->size ? b->size : ov_rest(b->addr));
+            }
+        }
+        for (int i = 0; i < l->np; i++) {   // storage read through an address in a uniform block: no size either
+            uint64_t a = ubo_ptr(ex, l->p[i].st, l->p[i].res);
+            if (a) ov = ov * 1099511628211ull ^ ov_at(ex, a, ov_rest(a));
+        }
+        PUT(ov);
+    } else {
+        PUT(0);
+    }
 #undef PUT
     diff |= n != RS.hn;
     RS.hn = n;
@@ -1971,21 +2048,34 @@ static void record_fixed(VkExec *ex) {
     ex->dirty = 0;
 }
 
+// TOTK_VB_USED=0: every bound stream is resolved and bound, also those the draw's vertex input does not read.
+static int vb_used_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_VB_USED");
+    return on;
+}
+
 static void bind_vertex_buffers(VkExec *ex) {
     VkBuffer vb[17];
     VkDeviceSize vo[17], vsz[17], vstr[17];
     int vcls[17] = {0};
     void *vpool[17] = {0};
     int dyn = vk_pipeline_vertex_input_dynamic();
+    // Only the streams the draw's vertex input reads (B.vmask, from vk_pipeline_set_dynamic): the game keeps about ten
+    // bound and a draw reads a few. The others get the zero buffer, never a stale one: a buffer bound but not read must
+    // still be a live handle.
+    uint32_t used = vb_used_on() && B.st_valid ? B.vmask : VK_PIPE_ALL_BINDINGS;
     // A stream whose range is the one its bound buffer was resolved from, with no pool or mirror change since
     // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
     uint64_t gen = vk_mem_gen();
     int same_gen = B.vb_valid && B.vgen == gen;
+    uint32_t res = 0;
     for (int b = 0; b < 17; b++) {
         vb[b] = Z.zbuf, vo[b] = 0, vsz[b] = ZERO_BYTES, vstr[b] = b < 16 ? ex->pipe.vstream[b].stride : 0;
-        if (b == VK_PIPE_ZERO_BINDING) continue;
+        if (b == VK_PIPE_ZERO_BINDING || !(used >> b & 1)) continue;
+        res |= 1u << b;
         const NVNbufferRange *r = &ex->vbuf[b];
-        if (same_gen && B.vin[b].address == r->address && B.vin[b].size == r->size) {
+        if (same_gen && (B.vres >> b & 1) && B.vin[b].address == r->address && B.vin[b].size == r->size) {
             vb[b] = B.vb[b], vo[b] = B.vo[b], vsz[b] = B.vsz[b], vcls[b] = B.vcls[b], vpool[b] = B.vpool[b];
             continue;
         }
@@ -1997,7 +2087,7 @@ static void bind_vertex_buffers(VkExec *ex) {
     }
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
     memcpy(B.vin, ex->vbuf, sizeof B.vin);
-    B.vgen = gen;
+    B.vgen = gen, B.vres = res;
     if (B.vb_valid && !memcmp(B.vb, vb, sizeof vb) && !memcmp(B.vo, vo, sizeof vo) && !memcmp(B.vsz, vsz, sizeof vsz) &&
         (dyn || !memcmp(B.vstr, vstr, sizeof vstr)))
         return;
@@ -2199,7 +2289,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     if (!B.st_valid || memcmp(&B.st, &s, sizeof s)) {
-        vk_pipeline_set_dynamic(ex->cb, &s);
+        B.vmask = vk_pipeline_set_dynamic(ex->cb, &s);
         ex->recorded++;
         B.st = s, B.st_valid = 1;
         if (ex->mark && vk_exec_frame.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
@@ -3159,14 +3249,208 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, &(p_dispatch){0, 0, 0, d->caller});
 }
 
+// ---- UpdateUniformBuffer inside a pass (TOTK_UB_OVERLAY)
+// nvnCommandBufferUpdateUniformBuffer writes a few hundred bytes of constants between draws: the draws recorded after
+// it read the new bytes, those before it the old ones. Replayed as a buffer copy at that point it needs a barrier
+// against the earlier draws, and a barrier ends the open pass; the terrain and the sky islands' meshes update before
+// most of their draws, about 200 updates inside passes in a field submission, each a pass end, a full barrier and a
+// pass begin. Here an update inside a pass goes into the scratch buffer as an overlay: the later bindings of a range it
+// covers bind the scratch bytes (ub_bind, from ubo_info and bind_range), and the copies into the real buffers wait for
+// the next full barrier, where the pass has ended anyway (vk_exec_ub_flush from vk_exec.c barrier_to: a pass end, a
+// dispatch, a transfer, the end of the submission), behind one barrier of their own. Each draw reads the bytes it would
+// have read with the copy in between.
+// - A GPU write of another kind (a copy, a fill, a shader's storage write) is ordered with the copies only by the
+//   command buffer. vk_exec_ub_foreign notes it and retires the overlays it touches; an update over such bytes takes
+//   the old path. A shader that writes a range with copies pending gets them first (ub_written: the pass restarts).
+// - An update that takes the old path (outside a pass, a full list) retires the overlays it covers (ov_retire).
+// - A binding an overlay covers only in part, or at an offset the binding's alignment refuses, gets a merged scratch
+//   copy: the snapshot's bytes (vk_usnap.c) or guest memory, with every update of the submission so far (UPD) on top.
+// - The descriptor build skip (bind_sig) hashes the overlay each uniform and storage binding of the draw reads
+//   (ov_at), so a draw of an updated block binds the newest bytes and the other draws still skip. The lists are per submission and keep one entry per range (ov_add), and a binding outside their span is
+//   answered in one comparison; when one is full, updates take the old path.
+
+static int ov_on(void) {
+    if (OV.mode < 0) OV.mode = rt_knob("UB_OVERLAY", "1");
+    return RT_KNOB_ON(OV.mode);
+}
+
+static void ov_sub(const VkExec *ex) {   // the submission being replayed
+    if (OV.fence == ex->fence) return;
+    if (OV.np)   // barrier_to records them at the latest at the submission's closing barrier
+        rt_log("vk: %u overlaid uniform updates of submission %llu were never copied into their buffers", OV.np,
+               (unsigned long long)OV.fence);
+    OV.fence = ex->fence, OV.n = OV.np = OV.nf = 0, OV.f_over = 0, OV.lo = UINT64_MAX, OV.hi = 0;
+}
+
+static void ov_span(void) {
+    OV.lo = UINT64_MAX, OV.hi = 0;
+    for (uint32_t i = 0; i < OV.n; i++) {
+        if (OV.o[i].lo < OV.lo) OV.lo = OV.o[i].lo;
+        if (OV.o[i].hi > OV.hi) OV.hi = OV.o[i].hi;
+    }
+}
+
+// A new overlay of [lo, hi), and its copy. An older overlay or pending copy of exactly that range is dropped: the new
+// one covers it, and the terrain rewrites one block before each draw, so the lists stay as short as the blocks.
+static void ov_add(uint64_t lo, uint64_t hi, VkBuffer b, VkDeviceSize o, const VkMemSpan *sp) {
+    for (uint32_t i = 0; i < OV.n; i++)
+        if (OV.o[i].lo == lo && OV.o[i].hi == hi) {
+            memmove(&OV.o[i], &OV.o[i + 1], sizeof OV.o[0] * (OV.n - i - 1));
+            OV.n--;
+            break;
+        }
+    for (uint32_t i = 0; i < OV.np; i++)
+        if (OV.p[i].dst == lo && OV.p[i].size == hi - lo) {
+            memmove(&OV.p[i], &OV.p[i + 1], sizeof OV.p[0] * (OV.np - i - 1));
+            OV.np--;
+            break;
+        }
+    OV.o[OV.n++] = (typeof(OV.o[0])){lo, hi, ++OV.serial, b, o};
+    OV.p[OV.np++] = (typeof(OV.p[0])){lo, b, o, *sp, hi - lo};
+    if (lo < OV.lo) OV.lo = lo;
+    if (hi > OV.hi) OV.hi = hi;
+}
+
+static int ov_foreign_hits(uint64_t lo, uint64_t hi) {
+    if (OV.f_over) return 1;
+    for (uint32_t i = 0; i < OV.nf; i++)
+        if (lo < OV.f[i].hi && hi > OV.f[i].lo) return 1;
+    return 0;
+}
+
+// The overlays over [lo, hi) no longer hold the newest bytes: the real buffer does. Their copies were recorded already
+// (the write came after a barrier, or ub_written brought them forward), so they only stop serving bindings.
+static void ov_retire(uint64_t lo, uint64_t hi) {
+    if (!OV.n || lo >= OV.hi || hi <= OV.lo) return;
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < OV.n; i++)
+        if (!(lo < OV.o[i].hi && hi > OV.o[i].lo)) OV.o[k++] = OV.o[i];
+    if (k == OV.n) return;
+    OV.n = k;
+    ov_span();
+}
+
+// A GPU write of another kind into [addr, addr+n) in this submission (vk_exec_xfer.c note_gpu_write, storage bindings).
+void vk_exec_ub_foreign(VkExec *ex, uint64_t addr, uint64_t n) {
+    if (OV.mode <= 0 || !n) return;
+    ov_sub(ex);
+    if (OV.nf == OV_FOREIGN) OV.f_over = 1;
+    else OV.f[OV.nf].lo = addr, OV.f[OV.nf].hi = addr + n, OV.nf++;
+    ov_retire(addr, addr + n);
+}
+
+// Records the copies of the updates overlaid so far, behind a barrier against the draws that read the old bytes.
+void vk_exec_ub_flush(VkExec *ex) {
+    if (!OV.np || OV.fence != ex->fence) return;
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    for (uint32_t i = 0; i < OV.np; i++) {
+        VkBufferCopy cp = {OV.p[i].soff, OV.p[i].sp.offset, OV.p[i].size};
+        vkCmdCopyBuffer(ex->cb, OV.p[i].src, OV.p[i].sp.buffer, 1, &cp);
+        ex->recorded++;
+    }
+    OV.np = 0;
+    OV.c_flush++;
+}
+
+// TOTK_TRACE=perf, every 600 submissions: per submission, the updates and how many stayed in their pass.
+void vk_exec_ub_perf(void) {
+    static unsigned subs;
+    if (OV.mode <= 0 || ++subs % 600) return;
+    const double k = 1 / 600.0;
+    rt_log("perf: uniform updates per submission %.1f: %.1f overlaid in a pass (copied in %.2f batches), %.1f copied "
+           "in a pass, %.1f outside one; bindings from an overlay %.1f (%.1f merged, %.1f over other GPU writes), %.2f "
+           "batches brought forward for a storage write",
+           OV.c_update * k, OV.c_overlaid * k, OV.c_flush * k, OV.c_inpass * k, OV.c_outside * k, OV.c_bind * k,
+           OV.c_merged * k, OV.c_mixed * k, OV.c_early * k);
+    OV.c_update = OV.c_overlaid = OV.c_flush = OV.c_bind = OV.c_merged = OV.c_mixed = 0;
+    OV.c_inpass = OV.c_outside = OV.c_early = 0;
+}
+
+// The scratch bytes of a uniform or storage binding [addr, addr+n) an overlay of this submission touches: 1 with *out
+// set, 0 when none does.
+static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
+    if (OV.mode <= 0 || OV.fence != ex->fence || !OV.n || addr >= OV.hi || addr + n <= OV.lo) return 0;
+    uint64_t hi = addr + n;
+    int newest = -1;
+    for (int i = (int)OV.n; i-- > 0;)
+        if (addr < OV.o[i].hi && hi > OV.o[i].lo) { newest = i; break; }
+    if (newest < 0) return 0;
+    OV.c_bind++;
+    if (OV.o[newest].lo <= addr && OV.o[newest].hi >= hi) {
+        VkDeviceSize off = OV.o[newest].off + (addr - OV.o[newest].lo);
+        if (off % align == 0) {
+            *out = (VkDescriptorBufferInfo){OV.o[newest].buf, off, n};
+            return 1;
+        }
+    }
+    // Merged: the bytes as of the submit call (the snapshot, else guest memory), then this submission's updates in
+    // order. A transient copy, so the descriptor build skip leaves the draw after it alone (RS.volatile_). Bytes a copy
+    // or a storage write of this submission produced are not in either source: counted.
+    VkBuffer b;
+    VkDeviceSize o;
+    uint8_t *dst = scratch(ex, n, &b, &o);
+    RS.volatile_ = 1;
+    const uint8_t *base = vk_usnap_bytes(addr, n);
+    VkMemSpan sp;
+    if (base) memcpy(dst, base, n);
+    else if (vk_mem_resolve(addr, n, &sp)) memcpy(dst, (const void *)(uintptr_t)addr, n);
+    else memset(dst, 0, n);
+    if (ov_foreign_hits(addr, hi)) OV.c_mixed++;
+    upd_apply(ex, addr, dst, n);
+    *out = (VkDescriptorBufferInfo){b, o, n};
+    OV.c_merged++;
+    return 1;
+}
+
+// Before a binding the shader writes: overlaid updates whose copies are still pending go to the buffer first, behind a
+// barrier, and the pass restarts, so the shader's writes land after them as they did when every update was copied at
+// once.
+static void ub_written(VkExec *ex, uint64_t addr, uint64_t n) {
+    if (OV.mode <= 0 || OV.fence != ex->fence || !OV.np) return;
+    for (uint32_t i = 0; i < OV.np; i++)
+        if (addr < OV.p[i].dst + OV.p[i].size && OV.p[i].dst < addr + n) {
+            int reopen = ex->in_pass;
+            vk_exec_barrier(ex);   // records the pending copies (vk_exec_ub_flush) before its barrier
+            if (reopen) vk_exec_pass_begin(ex);
+            OV.c_early++;
+            return;
+        }
+}
+
 static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     if (!u->size) return;
     VkMemSpan sp;
     if (!vk_mem_resolve(u->dst, u->size, &sp)) return warn_once(W_UB, "UpdateUniformBuffer to %#llx is not backed: dropped", (unsigned long long)u->dst);
     cb_res(ex);
-    vk_exec_barrier(ex);   // earlier draws finished with the old contents
     VkBuffer b;
     VkDeviceSize o;
+    if (ov_on()) {
+        ov_sub(ex);
+        OV.c_update++;
+        if (ex->in_pass && OV.n < OV_N && OV.np < OV_N && !ov_foreign_hits(u->dst, u->dst + u->size)) {
+            uint8_t *d = scratch(ex, u->size, &b, &o);
+            memcpy(d, u->data, u->size);
+            VK_MEM_PICK(sp);
+            ov_add(u->dst, u->dst + u->size, b, o, &sp);
+            vk_mem_gpu_wrote(&sp, u->size);
+            vk_usnap_drop(u->dst, u->size);
+            vk_mem_count(sp.cls, VK_MUSE_GPU_WRITE, u->size);
+            note_written(ex, u->dst, u->size);
+            upd_note(ex, u);
+            OV.c_overlaid++;
+            return;
+        }
+        if (ex->in_pass) OV.c_inpass++;
+        else OV.c_outside++;
+        ov_retire(u->dst, u->dst + u->size);
+    }
+    vk_exec_barrier(ex);   // earlier draws finished with the old contents; overlaid updates' copies go first
     memcpy(scratch(ex, u->size, &b, &o), u->data, u->size);
     VK_MEM_PICK(sp);
     VkBufferCopy cp = {o, sp.offset, u->size};

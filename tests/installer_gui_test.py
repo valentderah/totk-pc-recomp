@@ -1,4 +1,5 @@
-"""The installer window: event model, form, catalogs, cancel, a self-closing Tk run and one end-to-end run.
+"""The installer window: event model, form, catalogs, cancel, DPI awareness, a self-closing Tk run and one end-to-end
+run.
 
     .venv-py314\\Scripts\\python tests\\installer_gui_test.py
 
@@ -21,12 +22,19 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import layout as layouts  # noqa: E402
+from installer import dpi  # noqa: E402
+from installer import recent  # noqa: E402
+try:
+    from installer import gui  # noqa: E402
+except ImportError:   # no tkinter
+    gui = None
 from installer import state as statefile  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
@@ -339,6 +347,247 @@ class CancelTest(unittest.TestCase):
             self.assertNotEqual(code, 0)
         finally:
             p.kill()
+
+
+class DpiTest(unittest.TestCase):
+    def test_px_follows_the_display_scale(self):
+        scale = dpi.scale()
+        self.assertGreaterEqual(scale, 1.0)
+        self.assertEqual(dpi.px(0), 0)
+        self.assertEqual(dpi.px(14), round(14 * scale))
+
+    def test_px_at_the_scales_of_other_displays(self):
+        """A 96 DPI runner cannot show the scaling: give px() the scales Windows reports at 125, 150 and 200%."""
+        saved = dpi._scale
+        try:
+            for scale, pad, wrap in ((1.0, 14, 620), (1.25, 18, 775), (1.5, 21, 930), (2.0, 28, 1240)):
+                dpi._scale = scale
+                self.assertEqual((dpi.px(14), dpi.px(620)), (pad, wrap), scale)
+        finally:
+            dpi._scale = saved
+
+    @unittest.skipUnless(os.name == 'nt', 'the awareness and the DPI Tk reads are Windows settings')
+    def test_the_window_draws_at_the_display_scale(self):
+        """A fresh process imports the window (which makes itself DPI aware) and starts Tk: the fonts must be sized for
+        the display, not for 96 DPI, which is what Windows then stretched (the blurry window)."""
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            self.skipTest('no tkinter')
+        code = ('import tkinter\n'
+                'from installer import dpi, gui\n'
+                'root = tkinter.Tk()\n'
+                'print(dpi.awareness(), dpi.scale(), root.tk.call("tk", "scaling"), gui.PAD, gui.WRAP, '
+                'root.winfo_screenwidth())\n'
+                'root.destroy()\n')
+        r = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        awareness, scale, scaling, pad, wrap, width = r.stdout.split()
+        self.assertGreaterEqual(int(awareness), 1)   # 1 system aware, 2 per-monitor aware
+        # Tk's win/tkWinX.c TkWinDisplayChanged rounds the nominal screen width to whole millimetres.
+        # Its generic/tkCmds.c ScalingCmd converts that width back to pixels per point, so a 120 DPI display
+        # can report 120.118 DPI. Keep the exact comparison, accounting for that round trip.
+        width_mm = int(25.4 * int(width) / (float(scale) * 96) + 0.5)
+        expected_scaling = 25.4 * int(width) / (72 * width_mm)
+        self.assertAlmostEqual(float(scaling), expected_scaling, places=6)
+        self.assertEqual((int(pad), int(wrap)), (round(14 * float(scale)), round(620 * float(scale))))
+
+
+class RecentTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = self.tmp / 'sub' / 'setup.json'
+        old = os.environ.get(recent.ENV)
+        os.environ[recent.ENV] = str(self.file)
+        self.addCleanup(lambda: os.environ.pop(recent.ENV, None) if old is None else os.environ.update({recent.ENV: old}))
+        self.dest = self.tmp / 'TotK'
+        self.dest.mkdir()
+
+    def test_override_is_honoured(self):
+        self.assertEqual(recent.path(), self.file)
+
+    def test_missing_file(self):
+        self.assertEqual(recent.load(), {})
+
+    def installed(self):
+        (self.dest / statefile.NAME).write_text('{}', encoding='utf-8')
+
+    def files(self):
+        out = {}
+        for name in ('base', 'update', 'keys'):
+            f = self.tmp / (name + '.bin')
+            f.write_text('x', encoding='utf-8')
+            out[name] = str(f)
+        fw = self.tmp / 'fw'
+        fw.mkdir()
+        out['firmware'] = str(fw)
+        return out
+
+    def write(self, **fields):
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.write_text(json.dumps(fields), encoding='utf-8')
+
+    def test_folder_without_state(self):
+        recent.save(self.dest)
+        self.assertEqual(recent.load(), {})
+
+    def test_round_trip(self):
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        want = {name: os.path.abspath(v) for name, v in src.items()}
+        want['dest'] = os.path.abspath(self.dest)
+        self.assertEqual(json.loads(self.file.read_text(encoding='utf-8')), {'format': 1, **want})
+        self.assertEqual(recent.load(), want)
+        self.assertFalse(self.file.with_name('setup.json.tmp').exists())
+
+    def test_empty_field_keeps_saved_value(self):
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        recent.save(self.dest, {'base': '', 'update': '  ', 'keys': src['keys']})
+        self.assertEqual(recent.load()['base'], os.path.abspath(src['base']))
+        self.assertEqual(recent.load()['firmware'], os.path.abspath(src['firmware']))
+
+    def test_missing_path_not_saved(self):
+        self.installed()
+        recent.save(self.dest, {'base': str(self.tmp / 'gone.xci'), 'firmware': str(self.tmp / 'nofw')})
+        self.assertEqual(recent.load(), {'dest': os.path.abspath(self.dest)})
+        self.assertNotIn('base', json.loads(self.file.read_text(encoding='utf-8')))
+
+    def test_vanished_path_dropped_on_load(self):
+        self.installed()
+        src = self.files()
+        recent.save(self.dest, src)
+        os.remove(src['base'])
+        self.assertNotIn('base', recent.load())
+        self.assertIn('update', recent.load())
+
+    def test_directory_as_file_dropped(self):
+        self.installed()
+        self.write(format=1, dest=str(self.dest), base=str(self.tmp), update=str(self.tmp), keys=str(self.tmp))
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+
+    def test_file_as_firmware_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), firmware=src['base'])
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+
+    def test_dest_file_dropped(self):
+        f = self.tmp / 'afile'
+        f.write_text('x', encoding='utf-8')
+        self.write(format=1, dest=str(f))
+        self.assertEqual(recent.load(), {})
+
+    def test_bad_values_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), base=5, update='', keys='rel/prod.keys', firmware=['x'])
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+        self.write(format=1, dest=str(self.dest), base=src['base'] + '\0x', update=None, keys=True)
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+        self.write(format=1, dest='relative/dir')
+        self.assertEqual(recent.load(), {})
+
+    def test_stat_errors_dropped(self):
+        self.installed()
+        src = self.files()
+        self.write(format=1, dest=str(self.dest), base=src['base'])
+        for exc in (OSError('share gone'), ValueError('embedded null byte')):
+            with unittest.mock.patch.object(Path, 'is_file', side_effect=exc):
+                self.assertEqual(recent.load(), {})
+
+    def test_old_dest_only_format(self):
+        self.installed()
+        self.write(format=0, dest=str(self.dest))
+        self.assertEqual(recent.load(), {'dest': str(self.dest)})
+
+    def test_garbage_file(self):
+        self.file.parent.mkdir()
+        for text in ('not json', '[]', '{"dest": 5}', '{"format": 1}'):
+            self.file.write_text(text, encoding='utf-8')
+            self.assertEqual(recent.load(), {}, text)
+
+    @unittest.skipIf(gui is None, 'no tkinter')
+    def test_blocking_load_leaves_fields_empty(self):
+        with unittest.mock.patch.object(recent, 'load', side_effect=lambda: time.sleep(5) or {'dest': 'x'}):
+            start = time.monotonic()
+            self.assertEqual(gui.load_recent(0.3), {})
+            self.assertLess(time.monotonic() - start, 2)
+
+    @unittest.skipIf(gui is None, 'no tkinter')
+    def test_fast_load_is_returned(self):
+        with unittest.mock.patch.object(recent, 'load', return_value={'dest': 'x'}):
+            self.assertEqual(gui.load_recent(), {'dest': 'x'})
+
+
+class FakeVar:
+    def __init__(self, value=''):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+@unittest.skipIf(gui is None, 'no tkinter')
+class PrefillTest(unittest.TestCase):
+    """App.match_prefill on a stand-in object: no window needed."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.update = self.tmp / 'totk-1.4.3.nsp'
+        self.update.write_bytes(b'x' * 10)
+        self.base = self.tmp / 'totk.xci'
+        self.base.write_bytes(b'y' * 20)
+        self.app = SimpleNamespace(vars={n: FakeVar() for n in ('base', 'update')}, touched=set(),
+                                   recorded={'base': str(self.base), 'update': str(self.update)})
+        self.app.set_prefill = lambda name, value: self.app.vars[name].set(value)
+        for name, value in self.app.recorded.items():
+            self.app.vars[name].set(value)
+
+    def state(self, update_name, update_size, base_size=20):
+        return {'inputs': {'base': {'name': 'totk.xci', 'size': base_size},
+                           'update': {'name': update_name, 'size': update_size}}}
+
+    def shown(self):
+        return {n: v.get() for n, v in self.app.vars.items()}
+
+    def test_same_install_keeps(self):
+        gui.App.match_prefill(self.app, self.state('totk-1.4.3.nsp', 10))
+        self.assertEqual(self.shown(), {'base': str(self.base), 'update': str(self.update)})
+
+    def test_other_install_clears_and_restores(self):
+        gui.App.match_prefill(self.app, self.state('totk-1.2.1.nsp', 10))
+        self.assertEqual(self.shown(), {'base': str(self.base), 'update': ''})
+        gui.App.match_prefill(self.app, self.state('totk-1.4.3.nsp', 99))   # same name, other size
+        self.assertEqual(self.shown()['update'], '')
+        gui.App.match_prefill(self.app, self.state('totk-1.4.3.nsp', 10))
+        self.assertEqual(self.shown()['update'], str(self.update))
+
+    def test_install_without_recorded_inputs_clears(self):
+        gui.App.match_prefill(self.app, {'inputs': {}})
+        self.assertEqual(self.shown(), {'base': '', 'update': ''})
+
+    def test_user_picked_field_survives(self):
+        self.app.vars['update'].set('C:/mine/other.nsp')
+        self.app.touched.add('update')
+        gui.App.match_prefill(self.app, self.state('totk-1.2.1.nsp', 10, base_size=1))
+        self.assertEqual(self.shown(), {'base': '', 'update': 'C:/mine/other.nsp'})
+
+    def test_fresh_install_keeps(self):
+        gui.App.match_prefill(self.app, None)
+        self.assertEqual(self.shown(), {'base': str(self.base), 'update': str(self.update)})
+
+    def test_vanished_file_clears(self):
+        self.update.unlink()
+        gui.App.match_prefill(self.app, self.state('totk-1.4.3.nsp', 10))
+        self.assertEqual(self.shown()['update'], '')
 
 
 class SmokeTest(unittest.TestCase):

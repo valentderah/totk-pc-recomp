@@ -1078,6 +1078,12 @@ uint64_t plat_huge_text(uint64_t *code, int *how) {
     return *how = 2, huge_bytes(lo, hi);
 }
 
+// Not known before the SDL window exists; the Steam Deck has its own profile (cfg.c)
+int plat_screen_size(int *w, int *h) {
+    (void)w, (void)h;
+    return 0;
+}
+
 int plat_mem_readable(uint64_t addr, uint64_t n) {
     uint8_t b;
     uint64_t end = addr + (n ? n : 1);

@@ -778,6 +778,14 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
 // Large pages on Windows need SeLockMemoryPrivilege and cannot back an image's code: nothing to do.
 uint64_t plat_huge_text(uint64_t *code, int *how) { return *code = 0, *how = 0, 0; }
 
+// The display mode's own size: physical pixels whatever the process's DPI awareness and the display scale
+int plat_screen_size(int *w, int *h) {
+    DEVMODEW dm = {.dmSize = sizeof dm};
+    if (!EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) || !dm.dmPelsWidth || !dm.dmPelsHeight) return 0;
+    *w = (int)dm.dmPelsWidth, *h = (int)dm.dmPelsHeight;
+    return 1;
+}
+
 int plat_mem_readable(uint64_t addr, uint64_t n) {
     for (uint64_t a = addr, end = addr + n; a < end || a == addr;) {
         MEMORY_BASIC_INFORMATION mbi;
