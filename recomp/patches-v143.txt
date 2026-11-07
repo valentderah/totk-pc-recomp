@@ -1077,3 +1077,20 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+
+# The port's settings in the game's options screen (runtime/game_menu.c): the options list's count adds the port's
+# rows to the list, and the texts and values of the screen's rows go to host functions that answer for the port's rows
+# and call the game's functions for the game's own. Only calls inside the options screen and its row classes.
+set gamemenu TOTK_GAME_MENU      1
+site gamemenu main 218bba4 97fbf81c 946550d7   # builder: list count: bl 0x2089c14 -> page+0xf00
+site gamemenu main 218c5fc 97fbf586 94654e41   # row setup: list count: bl 0x2089c14 -> page+0xf00
+site gamemenu main 218d120 97fbf2bd 94654b78   # focus: list count: bl 0x2089c14 -> page+0xf00
+site gamemenu main 218d41c 97fbf1fe 94654ab9   # refresh: list count: bl 0x2089c14 -> page+0xf00
+site gamemenu main 212c720 97a9dee8 9466cdfc   # toggle row: label: bl 0xba42c0 -> page+0xf10
+site gamemenu main 212bf88 97a9e0ce 9466cfe2   # selection row: label: bl 0xba42c0 -> page+0xf10
+site gamemenu main 212c144 97a9e05f 9466cf73   # selection row: choice: bl 0xba42c0 -> page+0xf10
+site gamemenu main 218c7a8 97a85ec6 94654dda   # description: bl 0xba42c0 -> page+0xf10
+site gamemenu main 212c77c 97a309bd 9466cde9   # toggle row: get bool: bl 0x9eee70 -> page+0xf20
+site gamemenu main 212c898 979fdd22 9466cda6   # toggle row: set bool: bl 0x923d20 -> page+0xf30
+site gamemenu main 212bfe4 97a150a9 9466cfd7   # selection row: get enum: bl 0x980288 -> page+0xf40
+site gamemenu main 212c5a0 97810f1c 9466ce6c   # selection row: set enum: bl 0x170210 -> page+0xf50
