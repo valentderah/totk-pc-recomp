@@ -1,7 +1,9 @@
 // Reads a CAI blueprint file (blueprint_cai.h): the game's CombinedActorInfo, the data of one Autobuild creation. The
 // layout is the community research (TotkMods/Research, ".imhex/cai.hexpat"); this parser trusts none of it and checks
 // every field it reads, so a damaged or foreign file is rejected here instead of reaching the save data. Only the first
-// 6688 bytes are the blob: some downloads append 24 bytes of unknown meaning, which are ignored.
+// 6688 bytes are the blob. A file can be longer: a distributed one adds two camera vectors (6712 bytes), and a draft the
+// game saved mid-build adds a 1152-byte block (7840). Those tails are not the blueprint and are ignored here
+// (blueprint_cai.h lists the three sizes).
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -74,11 +76,15 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         const uint8_t *actor = blob + BPC_ACTOR_OFFSET + (size_t)k * BPC_ACTOR_BYTES;
         if (!actor_transform_finite(actor) || !actor_name(actor + BPC_ACTOR_NAME_OFFSET, &bp.names[k]))
             return BPC_BAD_ACTOR;
-        // The actor's world position is the translation of its first matrix, stored column-major: elements 3, 7 and 11
-        // (bytes 12..24 of the record). Measured against the bounding box on every community file available: all of an
-        // actor's positions fall inside bbox, and the row-major reading (elements 12, 13, 14) does not - it is always
-        // (1, 0, 0). That is what the preview scatter is drawn from.
-        for (int i = 0; i < 3; i++) bp.pos[k][i] = read_float(actor + 12 + i * 4);
+        // The actor's placement is its first matrix, row-major: the upper-left 3x3 is a rotation (orthonormal and
+        // determinant +1 on every community file checked, so it is a rotation and not a scale) and the position is
+        // elements 3, 7 and 11. Every actor's position falls inside the bounding box, which is what confirms the
+        // reading; the "column-major" alternative (elements 12, 13, 14) is always (1, 0, 0) and cannot be a position.
+        // rot[0..2] are the three basis vectors, kept as the matrix's rows: a preview draws each part oriented by them.
+        static const int pos_elem[3] = {3, 7, 11};
+        for (int i = 0; i < 3; i++) bp.pos[k][i] = read_float(actor + (size_t)pos_elem[i] * 4);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) bp.rot[k][r][c] = read_float(actor + (size_t)(r * 4 + c) * 4);
     }
     // The bounding box frames the draft in the game; an impossible number there is a damaged file as well. BpcResult has
     // no code of its own for it, so it is reported as bad actor data (both are "a number in the blob is not one").
@@ -89,7 +95,7 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         else bp.bbox_max[i - 3] = v;
     }
     bp.blob = blob;
-    bp.size = size;   // the file's own size: 6688, or 6712 with the 24-byte tail some downloads append
+    bp.size = size;   // the file's own size: 6688, or more with the tail a distributed file or a draft carries
     bp.version = version;
     bp.actors = actors;
     *out = bp;

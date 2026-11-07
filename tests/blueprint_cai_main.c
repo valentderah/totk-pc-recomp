@@ -47,11 +47,11 @@ static void make_blob(uint8_t *b, int actors) {
     b[OFF_COUNT_MINUS_1] = (uint8_t)(actors - 1);
     for (int k = 0; k < actors; k++) {
         uint8_t *a = b + OFF_ACTOR0 + k * ACTOR_BYTES;
-        // The first matrix's translation: column-major elements 3, 7 and 11, i.e. bytes 12, 16 and 20.
+        // The first matrix is row-major, so the translation sits at elements 3, 7 and 11: bytes 12, 28 and 44.
         const float x = (float)k * 0.5f, y = 0.0f, z = (float)-k * 0.25f;
         memcpy(a + 12, &x, 4);
-        memcpy(a + 16, &y, 4);
-        memcpy(a + 20, &z, 4);
+        memcpy(a + 28, &y, 4);
+        memcpy(a + 44, &z, 4);
         // A finite rotation block, so the transform check has real numbers to accept.
         const float one = 1.0f;
         memcpy(a + 0, &one, 4);

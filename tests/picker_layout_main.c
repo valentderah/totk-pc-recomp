@@ -226,17 +226,17 @@ int main(void) {
         bp_picker_layout(&f, 1920, 1080, 1.0f);
 
         if (f.preview) {            snprintf(msg, sizeof msg, "preview: the parsed blueprint has 3 parts (title '%s')", f.preview_title);
-            check(f.preview_dots == 3, msg);
+            check(f.preview_parts == 3, msg);
             snprintf(msg, sizeof msg, "preview: the scatter is normalised into 0..1");
             int ok = 1;
-            for (int k = 0; k < f.preview_dots; k++)
-                if (f.preview_pt[k][0] < 0 || f.preview_pt[k][0] > 1 ||
-                    f.preview_pt[k][1] < 0 || f.preview_pt[k][1] > 1) ok = 0;
+            for (int k = 0; k < f.preview_parts; k++)
+                if (f.preview_box[k].x < 0 || f.preview_box[k].x > 1 ||
+                    f.preview_box[k].y < 0 || f.preview_box[k].y > 1) ok = 0;
             check(ok, msg);
             snprintf(msg, sizeof msg, "preview: the box lies inside the panel");
             check(f.preview_x >= f.x && f.preview_y >= f.y &&
                   f.preview_x + f.preview_w <= f.x + f.w && f.preview_y + f.preview_h <= f.y + f.h, msg);
-            printf("preview: %d dots, title '%s', note '%s'\n", f.preview_dots, f.preview_title, f.preview_note);
+            printf("preview: %d parts, title '%s', note '%s'\n", f.preview_parts, f.preview_title, f.preview_note);
         } else {
             // Reaching the row with the D-pad depends on the list length; report rather than fail when it is a folder.
             printf("preview: the cursor did not land on the file row (row selected, no preview)\n");
@@ -295,8 +295,8 @@ int main(void) {
         if (fx >= 0) {
             // Pointing at the file must show the preview on this very frame, with no pad press in between.
             bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
-            snprintf(msg, sizeof msg, "pointer preview: appears while hovering the file (%d dots)", f.preview_dots);
-            check(f.preview && f.preview_dots == 3, msg);
+            snprintf(msg, sizeof msg, "pointer preview: appears while hovering the file (%d parts)", f.preview_parts);
+            check(f.preview && f.preview_parts == 3, msg);
         }
     }
 
