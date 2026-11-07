@@ -193,6 +193,17 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         char at[160];
         rt_log("guest Break reason %#llx result %#x at %s", (unsigned long long)x[0], result,
                ldr_describe(pc, at, sizeof at));
+        // The info block an SDK abort carries usually holds its message: show what is printable.
+        if (x[1] && x[2] && x[2] <= 4096 && readable(x[1], x[2])) {
+            char txt[97];
+            int n = 0;
+            for (uint64_t i = 0; i < x[2] && n < 96; i++) {
+                uint8_t b = *(const uint8_t *)(uintptr_t)(x[1] + i);
+                txt[n++] = (b >= 32 && b < 127) ? (char)b : '.';
+            }
+            txt[n] = 0;
+            rt_log("guest Break info: %s", txt);
+        }
         if (x[0] & 0x80000000ull) {
             x[0] = R_OK;
             return;

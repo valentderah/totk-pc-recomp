@@ -112,8 +112,35 @@ static _Thread_local RtThread *tcur;
 _Static_assert(offsetof(RtThread, preempt) == 0, "host.h kern_preempt_pending reads the first int");
 _Static_assert(offsetof(RtThread, host_depth) == sizeof(int), "host.h kern_host_depth reads the second int");
 static RtThread *g_all, *g_wait, *g_main;
+// Per-key condvar accounting: a key that is waited on and never signalled is a lost wakeup; a key that is signalled
+// with nobody waiting is a signal that arrived early. Only the first CV_TRACK keys are recorded, and only when
+// TOTK_SYNC_TRACE is set, because this is a diagnostic and not a fast path.
+enum { CV_TRACK = 96 };
+static struct { uint64_t key; uint32_t waits, sigs; } g_cv[CV_TRACK];
+static int g_cv_n;
+
+static int cv_slot(uint64_t key) {
+    for (int i = 0; i < g_cv_n; i++)
+        if (g_cv[i].key == key) return i;
+    if (g_cv_n == CV_TRACK) return -1;
+    g_cv[g_cv_n].key = key;
+    return g_cv_n++;
+}
+
+static int g_sync_trace = -1;
+static inline int sync_trace(void) {
+    if (__builtin_expect(g_sync_trace < 0, 0)) {
+        const char *v = getenv("TOTK_SYNC_TRACE");
+        g_sync_trace = v && *v == '1';
+    }
+    return g_sync_trace;
+}
+
+static uint64_t g_svc_1a, g_svc_1b, g_svc_1c, g_svc_1d, g_svc_18, g_svc_11;   // diagnostics: syscall counts
 static uint64_t g_next_id = 0x51, g_wseq, g_created;
 static uint64_t g_main_stack;
+
+uint32_t kern_current_thread_handle(void) { return tcur ? tcur->handle : 0; }
 
 static void lock(void) { plat_mutex_lock(&G); }
 static void unlock(void) { plat_mutex_unlock(&G); }
@@ -183,6 +210,8 @@ static uint32_t h_new(int type, void *obj) {
         if (!g_h[i].type) {
             g_h[i].type = type;
             g_h[i].obj = obj;
+            if (sync_trace())
+                rt_log("sync: handle %#x created, type %d, by thread %#x", 0x1000 + i, type, tcur ? tcur->handle : 0);
             return 0x1000 + i;
         }
     rt_fatal("kernel: handle table full (%d handles)", MAX_H);
@@ -1531,6 +1560,32 @@ uint32_t kern_main_thread(Cpu **cpu) {
     return t->handle;
 }
 
+// Diagnostics: every thread's wait state and the syscall mix, so a stall can be read without a debugger.
+static const char *wkind_name(int k) {
+    switch (k) {
+    case W_NONE: return "running";       case W_LOCK: return "lock";
+    case W_CONDVAR: return "condvar";    case W_ADDRESS: return "address";
+    case W_SYNC: return "sync";
+    default: return "?";
+    }
+}
+
+void kern_dump_waiters(void) {
+    // No lock: this runs from the crash handler or signal handler, which may interrupt a thread that holds the kernel lock,
+    // and a diagnostic that deadlocks the process it is inspecting is worse than a torn read.
+    for (RtThread *t = g_all; t; t = t->all)
+        rt_logf("waiters: thread %#x %-8s obj %#llx state %#x woke %d\n", t->handle, wkind_name(t->wkind),
+                (unsigned long long)t->wobj, (unsigned)t->st, t->woke);
+    for (int i = 0; i < g_cv_n; i++)
+        if (g_cv[i].waits && g_cv[i].waits > g_cv[i].sigs)
+            rt_logf("waiters: key %#llx waited %u signalled %u\n", (unsigned long long)g_cv[i].key, g_cv[i].waits,
+                    g_cv[i].sigs);
+    if (g_svc_1a || g_svc_1b || g_svc_1c || g_svc_1d || g_svc_18 || g_svc_11)
+        rt_logf("waiters: syscalls: 0x1a %llu, 0x1b %llu, 0x1c %llu, 0x1d %llu, 0x18 %llu, 0x11 %llu\n",
+                (unsigned long long)g_svc_1a, (unsigned long long)g_svc_1b, (unsigned long long)g_svc_1c,
+                (unsigned long long)g_svc_1d, (unsigned long long)g_svc_18, (unsigned long long)g_svc_11);
+}
+
 void kern_main_stack(uint64_t *base, uint64_t *size) {
     uint64_t b = __atomic_load_n(&g_main_stack, __ATOMIC_ACQUIRE);
     *base = b;
@@ -1794,6 +1849,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
     }
 
     case 0x1A: {   // ArbitrateLock(w0 owner handle, x1 address, w2 tag)
+        g_svc_1a++;
         RtThread *t = cur(imm);
         uint64_t addr = x[1];
         uint32_t r = R_OK;
@@ -1809,12 +1865,15 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
     case 0x1B:   // ArbitrateUnlock(x0 address)
+        g_svc_1b++;
         lock();
         lock_handoff(x[0]);
         unlock();
         x[0] = R_OK;
         return 1;
     case 0x1C: {   // WaitProcessWideKeyAtomic(x0 lock, x1 key, w2 tag, x3 timeout)
+        g_svc_1c++;
+        if (sync_trace()) { int i = cv_slot(x[1]); if (i >= 0) g_cv[i].waits++; }
         // The key is set before the lock is released. The SDK's Signal reads the key in user mode and skips svc 0x1D
         // when it is 0, and user mode takes the lock without G: releasing first lets another thread take the lock,
         // change the condition, read key 0 and wake nobody, after which this thread waits forever (MNG threads.c
@@ -1844,6 +1903,8 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
     case 0x1D: {   // SignalProcessWideKey(x0 key, w1 count; <= 0 all)
+        g_svc_1d++;
+        if (sync_trace()) { int i = cv_slot(x[0]); if (i >= 0) g_cv[i].sigs++; }
         uint64_t key = x[0];
         int cnt = (int)x[1], n = 0;
         lock();
@@ -1920,6 +1981,10 @@ int kern_svc(Cpu *c, uint32_t imm) {
     }
 
     case 0x45: {   // CreateEvent(-> w1 writable, w2 readable)
+        if (sync_trace()) {
+            char d[96];
+            rt_log("sync: event created by %s", ldr_describe(c->x[30], d, sizeof d));
+        }
         Event *e = calloc(1, sizeof *e);
         if (!e) rt_fatal("kernel: event allocation");
         e->refs = 2;
@@ -1932,6 +1997,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
     case 0x11: case 0x12: case 0x17: {   // SignalEvent(writable), ClearEvent(either end), ResetSignal(readable)
+        if (imm == 0x11) g_svc_11++;
         uint32_t h = (uint32_t)x[0];
         uint32_t r = R_OK;
         lock();
@@ -1942,6 +2008,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
             if (r == R_BAD_HANDLE) rt_log("kernel: event svc %#x: invalid handle %#x", imm, h);
         } else if (imm == 0x11) {
             e->signaled = 1;
+            if (sync_trace()) rt_log("sync: event handle %#x signalled", h);
             wake_sync_waiters();
         } else if (imm == 0x17 && !e->signaled) {
             r = R_BAD_STATE;
@@ -1953,6 +2020,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
     case 0x18: {   // WaitSynchronization(-> w1 index; x1 handles, w2 count, x3 timeout)
+        g_svc_18++;
         RtThread *t = cur(imm);
         const uint32_t *hs = (const uint32_t *)(uintptr_t)x[1];
         int n = (int)x[2];
@@ -2008,6 +2076,17 @@ int kern_svc(Cpu *c, uint32_t imm) {
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
             g_sync_blocks++;
+            if (sync_trace()) {
+                char d[96];
+                const char *ty = h_peek(hs[0], O_THREAD)      ? "thread"
+                                 : h_peek(hs[0], O_EVENT_W)   ? "event(write)"
+                                 : h_peek(hs[0], O_EVENT_R)   ? "event(read)"
+                                 : h_peek(hs[0], O_SESSION)   ? "session"
+                                 : h_peek(hs[0], O_TMEM)      ? "transfer-memory"
+                                                              : "unknown";
+                rt_log("sync: thread %#x blocks on handle %#x [%s] (%d handles, timeout %lld) from %s", t->handle, hs[0],
+                       ty, n, (long long)ns, ldr_describe(c->x[30], d, sizeof d));
+            }
             woke = block(t, W_SYNC, left);
             if (woke == R_TIMEOUT) {
                 r = R_TIMEOUT;
@@ -2060,6 +2139,7 @@ uint32_t kern_event_new(void) {
     lock();
     uint32_t hw = h_new(O_EVENT_W, e);
     unlock();
+    if (sync_trace()) rt_log("sync: host event %#x created (thread %#x)", hw, tcur ? tcur->handle : 0);
     return hw;
 }
 
