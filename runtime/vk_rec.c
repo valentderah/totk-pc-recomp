@@ -166,8 +166,11 @@ void rec_drain(void) {
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
 }
 
+// AMD GPUs keep the old split by default. Upstream runs the recorder only on non-AMD GPUs, and on an RX 580 under RADV
+// (Mesa 26.2.6, Phenom II X6) the recorder's own submit left the game at 1 fps: every frame waited about a second for
+// its fence. With TOTK_REC_END=0 the same build walked the open world at 41-48 fps.
 static int rec_own(void) {
-    if (end_mode < 0) end_mode = rt_knob("REC_END", "1");
+    if (end_mode < 0) end_mode = rt_knob("REC_END", vk_caps.amd ? "0" : "1");
     return end_mode;
 }
 
