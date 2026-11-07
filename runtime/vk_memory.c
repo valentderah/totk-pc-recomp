@@ -327,12 +327,7 @@ void vk_pool_fini(pool_t *p) {
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
-    if (r->used && r->kind != POOL_VIRT) {
-        vk_upload_flush(1);
-        vk_queue_lock();
-        vkQueueWaitIdle(c->gfx_queue);
-        vk_queue_unlock();
-    }
+    if (r->used && r->kind != POOL_VIRT) vk_upload_flush(1);
     vk_mem_collect();
     // The record, its buffers and its memory outlive the submission being recorded, of any pool kind. The wait above
     // covers submitted work only. With the synchronous replay another game thread may be recording right now, and that
