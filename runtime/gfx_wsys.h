@@ -21,5 +21,6 @@ void gfx_window_mark_dirty(void);          // the window changed size: the next 
 void gfx_window_focus_changed(int in);     // the window gained (1) or lost (0) the focus
 void gfx_window_closed(void);              // the player closed the window: saves, then ends the process
 void gfx_window_set_refresh(double hz);    // the refresh rate of the window's monitor, 0 unknown
-int gfx_cfg_fullscreen(void);              // TOTK_FULLSCREEN
+int gfx_cfg_window_mode(void);              // 0 = windowed, 1 = borderless (always on top), 2 = fullscreen
+int gfx_cfg_fullscreen(void);               // TOTK_FULLSCREEN (1 if fullscreen)
 void gfx_cfg_window_size(int *w, int *h);  // TOTK_WINDOW_SIZE, the default when unparsable or out of range

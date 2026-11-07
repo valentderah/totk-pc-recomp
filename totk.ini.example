@@ -129,6 +129,7 @@
 # Window client area in screen pixels (640x360 to 7680x4320), and borderless fullscreen. Windows display scaling does
 # not apply: at 150% scale, 1920x1080 covers the area 1280x720 covers at 100%. F11 switches fullscreen and saves it
 # here. Changes while the game runs take effect at once.
+# window_mode = windowed
 # window_size = 1920x1080
 # fullscreen = 0
 # 1, the default: the game keeps running while you are in another window; the keyboard stays quiet until the window is

@@ -86,9 +86,19 @@ void gfx_window_request_restart(void) {
     gfx_window_request_close();
 }
 
-// TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the
-// swapchain follows the window; the game image is scaled to it).
-int gfx_cfg_fullscreen(void) { return cfg_bool("TOTK_FULLSCREEN"); }
+// TOTK_WINDOW_MODE: windowed, borderless, fullscreen. TOTK_FULLSCREEN=1: fallback for fullscreen.
+// TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the swapchain follows the window; the game image is scaled to it).
+int gfx_cfg_window_mode(void) {
+    const char *m = cfg_get("TOTK_WINDOW_MODE");
+    if (m && *m) {
+        if (!strcmp(m, "borderless")) return 1;
+        if (!strcmp(m, "fullscreen")) return 2;
+        if (!strcmp(m, "windowed")) return 0;
+    }
+    return cfg_bool("TOTK_FULLSCREEN") ? 2 : 0;
+}
+
+int gfx_cfg_fullscreen(void) { return gfx_cfg_window_mode() == 2; }
 
 void gfx_cfg_window_size(int *w, int *h) {
     int x = 0, y = 0;
