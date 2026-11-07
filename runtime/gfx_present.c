@@ -41,6 +41,7 @@ void vk_queue_unlock(void) { plat_rmutex_unlock(&g_ql); }
 static VkSurfaceKHR g_surface;
 static volatile int32_t g_dirty;               // the window was resized; swapchain stale
 static volatile int32_t g_restart;             // gfx_window_request_restart: closing the window starts the game again
+static volatile int32_t g_closed;              // gfx_window_closed: exit or restart in progress, present drops frames
 static volatile int32_t g_focused = 1;
 static volatile int32_t g_focus_msgs;
 static PlatRMutex g_start_lock;       // gfx_window_start / vsync start
@@ -68,9 +69,12 @@ void gfx_window_focus_changed(int in) {
 // (plat_restart), and the new process waits until this one is gone (main.c) before it moves the log and opens the
 // RomFS and the saves.
 void gfx_window_closed(void) {
+    if (plat_cas32(&g_closed, 1, 0) != 0) return;
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
     fs_save_flush();
+    vk_present_drain();
+    gfx_window_release_vk();
     vk_pipeline_save();
     playtime_save();
     prof_write();   // plat_exit runs no atexit handlers
@@ -274,7 +278,7 @@ const char *gfx_window_present_mode(void) { return __atomic_load_n(&g_present_go
 // Queues the present of a blit vk_present_blit left waiting (g_pl held). A swapchain rebuild and the next blit flush it
 // first; the device release drops it.
 static void flip_locked(void) {
-    if (!g_flip_on) return;
+    if (!g_flip_on || plat_cas32(&g_closed, 0, 0)) return;
     g_flip_on = 0;
     if (!g_sc) return;
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
@@ -572,10 +576,13 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 }
 
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
+    if (plat_cas32(&g_closed, 0, 0)) return;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
+    if (plat_cas32(&g_closed, 0, 0)) return;
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
+    if (plat_cas32(&g_closed, 0, 0)) { plat_rmutex_unlock(&g_pl); return; }
     flip_locked();
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
@@ -809,7 +816,9 @@ void gfx_window_release_vk(void) {
 }
 
 void gfx_window_start(void) {
+    if (plat_cas32(&g_closed, 0, 0)) return;
     plat_rmutex_lock(&g_start_lock);
+    if (plat_cas32(&g_closed, 0, 0)) { plat_rmutex_unlock(&g_start_lock); return; }
     if (!g_started) {
         if (!vk_init()) rt_fatal("gfx: no usable Vulkan device (see the vk: lines above)");
         VkCtx *c = vk_ctx();

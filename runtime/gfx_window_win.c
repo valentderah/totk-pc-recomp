@@ -273,6 +273,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_CLOSE:
         gfx_window_closed();
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     }
