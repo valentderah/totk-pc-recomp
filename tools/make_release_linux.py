@@ -171,8 +171,9 @@ def build_deps(out, llvm, sysroot):
     (d / 'lib').mkdir(parents=True, exist_ok=True)
     vk = tar_extract('vulkan-headers-src', WORK / 'vulkan-headers', ['Vulkan-Headers-1.4.363/include',
                                                                      'Vulkan-Headers-1.4.363/LICENSE.md'], strip=1)
+    # The CI job caches runtime/deps, so this runs again on a restored tree: overwrite, do not abort.
     for sub in ('vulkan', 'vk_video'):
-        shutil.copytree(vk / 'include' / sub, d / 'include' / sub)
+        shutil.copytree(vk / 'include' / sub, d / 'include' / sub, dirs_exist_ok=True)
     shutil.copy2(mr.fetch('vma-header'), d / 'include' / 'vma' / 'vk_mem_alloc.h')
     zs = tar_extract('zstd-src', WORK / 'zstd', ['zstd-1.5.7'], strip=1)
     lib = zs / 'lib'
@@ -458,6 +459,12 @@ def write_appimage(out, path):
     env = dict(os.environ, ARCH='x86_64', APPIMAGE_EXTRACT_AND_RUN='1')
     run([tool, '--no-appstream', '--runtime-file', runtime, out, path], env=env)
     print(f'{path}: {mr.mib(path.stat().st_size)}')
+    # A .zsync beside the image makes a new release a delta download instead of another full one.
+    zsync = shutil.which('zsyncmake')
+    if zsync:
+        zpath = path.with_name(path.name + '.zsync')
+        run([zsync, '-u', path.name, '-o', str(zpath), str(path)])
+        print(f'{zpath}: {mr.mib(zpath.stat().st_size)}')
 
 
 # ---- checks -------------------------------------------------------------------------------------------------------------
@@ -489,6 +496,32 @@ def check_glibc(out):
         sys.exit(f'glibc check: {", ".join(by[:8])} need glibc {".".join(map(str, newest))}, above {floor}')
     print(f'glibc check: the folder needs glibc {".".join(map(str, newest))} (floor {floor}), set by '
           f'{", ".join(by[:6])}{" and others" if len(by) > 6 else ""}')
+
+
+# What a setup folder must hold to work on a machine that has no toolchain of its own, and what it must never hold.
+RELEASE_PAYLOAD = (
+    'AppRun', 'VERSION', 'totk.ini.example',
+    'python/bin/python3',
+    'bin/totk_xlate', 'bin/totk_xlate.id', 'bin/hactool', 'bin/libSDL3.so.0',
+    'llvm/bin/clang', 'llvm/sysroot',
+    'runtime/libtotkrt.a',
+    'tools/build_game.py', 'recomp/gen.py',
+)
+GAME_SUFFIXES = ('.nsp', '.xci', '.nsz', '.xcz', '.nca', '.tik', '.cert', '.keys')
+GAME_NAMES = ('romfs.bin', 'romfs-index.bin')
+
+
+def check_payload(out):
+    """The folder is complete, and nothing derived from the game is in it: the setup builds that on the player's
+    machine from their own files, and a release that shipped any of it would be unpublishable."""
+    missing = [p for p in RELEASE_PAYLOAD if not (out / p).exists()]
+    if missing:
+        sys.exit(f'payload check: missing {", ".join(missing)}')
+    bad = [str(p.relative_to(out)) for p in out.rglob('*')
+           if p.is_file() and (p.suffix.lower() in GAME_SUFFIXES or p.name in GAME_NAMES)]
+    if bad:
+        sys.exit(f'payload check: game-derived files in the release: {", ".join(bad[:8])}')
+    print(f'payload check: {len(RELEASE_PAYLOAD)} required files present, no game-derived files')
 
 
 def check_bundle(out):
@@ -557,14 +590,73 @@ def prove(out, cpu='v3'):
         sys.exit(f'probes failed: {failed}')
 
 
+CONTAINER_IMAGE = 'totk-linux-release:local'
+
+
+def ci_container(args):
+    """Build tools/linux/Dockerfile and run this script inside it, with the work tree and the output mounted.
+
+    The release folder has to be reachable at the same absolute path on both sides: the folder records it, and the
+    installer and the probes read it back."""
+    docker = shutil.which('docker')
+    if not docker:
+        sys.exit('--ci-container needs Docker: install it and start the daemon')
+    dockerfile = ROOT / 'tools' / 'linux' / 'Dockerfile'
+    run([docker, 'build', '--platform', 'linux/amd64', '-f', str(dockerfile), '-t', CONTAINER_IMAGE,
+         str(dockerfile.parent)])
+    out = args.out.resolve()
+    # Docker creates a missing bind target as root, and the container then cannot write its own output folder.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mounts = [f'{MAIN_ROOT}:{MAIN_ROOT}', f'{out.parent}:{out.parent}']
+    cmd = [docker, 'run', '--rm', '--init', '--platform', 'linux/amd64',
+           '-u', f'{os.getuid()}:{os.getgid()}', '-e', 'HOME=/tmp', '-e', 'TOTK_CI_CONTAINER=1']
+    for m in dict.fromkeys(mounts):
+        cmd += ['-v', m]
+    # The window selftest needs a display; Xvfb gives the container one without a session.
+    cmd += ['-w', str(ROOT), CONTAINER_IMAGE, 'xvfb-run', '-a', 'python3',
+            str(ROOT / 'tools' / 'make_release_linux.py'), '--out', str(out)]
+    if args.appimage:
+        cmd += ['--appimage', str(args.appimage)]
+    print('ci-container: ' + ' '.join(cmd))
+    run(cmd)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
+    ap.add_argument('--out', type=Path, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
+    ap.add_argument('--ci-container', action='store_true',
+                    help='build and pack inside the pinned image of tools/linux/Dockerfile')
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='--prove: build and run the check for this CPU level (default v3)')
+    ap.add_argument('--fetch-toolchain', action='store_true',
+                    help='download the pinned LLVM, extract the sniper sysroot and build runtime/deps into --out, then '
+                         'stop: everything tools/ci/compile_gate.py needs to compile the way the release does')
+    ap.add_argument('--fetch-sysroot', action='store_true',
+                    help='download and extract the sniper sysroot the release compiles against, print its path, '
+                         'and stop: for a job that only wants to compile the runtime')
     args = ap.parse_args()
+    if args.ci_container and not os.environ.get('TOTK_CI_CONTAINER'):
+        ci_container(args)
+        return
+    if args.fetch_sysroot:
+        print(full_sysroot())
+        return
+    if args.fetch_toolchain:
+        if not args.out:
+            ap.error('--fetch-toolchain needs --out')
+        out = args.out.resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        llvm = build_llvm(out) if not (out / 'llvm' / 'bin' / 'clang').is_file() else out / 'llvm'
+        sysroot = full_sysroot()
+        build_deps(out, llvm, sysroot)
+        print(f'llvm    {llvm}')
+        print(f'sysroot {sysroot}')
+        print(f'deps    {out / "runtime" / "deps"}')
+        return
+    if not args.out:
+        ap.error('--out is required unless --fetch-sysroot is given')
     out = args.out.resolve()
     if args.prove:
         prove(out, args.cpu)
@@ -583,6 +675,7 @@ def main():
     collect_licenses(out, sysroot)
     build_entry(out)
     mr.check_folder(out)
+    check_payload(out)
     check_glibc(out)
     check_bundle(out)
     mr.sizes(out)
