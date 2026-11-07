@@ -27,6 +27,7 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
 // recorder after a part it ended, waited for, else at once.
 VkResult rec_submit(const VkSubmitInfo2 *si);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
+int rec_owns(VkCommandBuffer cb);     // the recorder makes cb's calls: a direct call into cb follows rec_drain
 void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
 // TOTK_REC_CHECK=1 (debug, recorder on): vk_memory.c reports each object it defers (destroy 0, stamped tl) or destroys
 // (destroy 1) with the value the GPU reached (gpu); a packet of the part being recorded that still names it is logged
