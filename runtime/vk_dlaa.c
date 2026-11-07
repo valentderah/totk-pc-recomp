@@ -242,6 +242,8 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
     int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
+    uint32_t gbuf_w;             // the widest G-buffer's width this frame
+    VkImage nodepth;             // this frame: a G-buffer-size target drawn without depth while nothing was armed
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
     struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
         uint32_t w, h, ow, oh;   // render size, output size
@@ -1069,6 +1071,7 @@ void vk_dlaa_pass(VkExec *ex) {
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
     if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W) {
+        D.gbuf_w = D.gbuf && D.gbuf_w > z->width ? D.gbuf_w : z->width;
         D.gbuf = 1, D.armed = 0;
         // target 0 is the object-class buffer (RGBA8, the scene size): the characters' bias mask reads its green. A
         // smaller pass of the same shape (640x360, seen while loading) does not replace the scene's in the same frame.
@@ -1077,22 +1080,48 @@ void vk_dlaa_pass(VkExec *ex) {
             D.ids = *c, D.ids_ok = 1;
         return;
     }
+    // A pass into one scene colour target of the G-buffer's size or larger without depth while nothing is armed ends
+    // the scene once the bloom chain follows with still nothing armed: in the inventory (1.4.3) the preview's light
+    // target is drawn that way before the bloom, and with the scene depth only after it, while the menu is composed;
+    // DLAA ran on the finished menu picture with the previous frame's history, which left stray dark pixels around Link.
+    // Arming cancels the end, on that target too: at some camera angles the field's effects composite (a full-screen
+    // draw without depth into the light target) comes before the first pass with the scene depth, and with that target
+    // barred from arming DLSS stopped for as long as the view held (in the inventory the bloom chain always ended the
+    // scene first, in both modes, menu opening included). While the scope zooms in, a second G-buffer pass disarms the
+    // frame, the scene is copied into an output-sized target without depth, and only then is the light target drawn
+    // again with the scene depth.
+    // The G-buffer's width is the widest of the frame: the game also draws a half-size G-buffer, after which a
+    // half-size pass without depth ended the scene at some camera angles.
+    if (D.gbuf && !D.armed && !D.ended && !z->image && ex->pass_ncolor == 1 && c->image && scene_color(c->format) &&
+        c->width >= D.gbuf_w && !c->level)
+        D.nodepth = c->image;
+    if (D.nodepth && !D.armed && !D.ended && ex->pass_w && ex->pass_w * 4 <= D.gbuf_w && c->image &&
+        scene_color(c->format))
+        D.ended = 1;
     // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents.
     // A smaller pair never takes over an armed one: the camera rune draws a half-size RGBA16F target with a half-size
     // D32F depth after the lighting (852x480 under a 1704x960 scene), and DLSS ran on that and wrote its picture into
-    // the scene's own light target, which left every object black.
-    if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W &&
+    // the scene's own light target, which left every object black. Nor does a pair narrower than the frame's widest
+    // G-buffer arm at all: the game draws its particles into a half-size RGBA16F target with a half-size D32F depth, and
+    // with the scope open, where the light target is drawn with a D16 depth and never arms, that effects pass was the
+    // first pair to arm; DLSS then scaled the effects into the light target, which filled the lens with garbage in the
+    // DLAA mode.
+    if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
+        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d) {
         int first = !D.armed;
-        D.color = *c, D.depth = *z, D.armed = 1;
+        D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
         if (first) mask_snapshot(ex);   // the lit scene, before the transparents (reactive mask)
         return;
     }
     if (!D.armed) return;
     if (!D.ended) {
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width) return;
+        // The bloom chain's first pass ends the scene: a pass at most a quarter of the scene's width into a scene
+        // colour target. With the camera rune or the scope open the game draws a 160-wide depth-only pass and 160x90
+        // RG16F and RGBA8 passes right after the lighting, then more geometry and the transparents; DLSS ended the
+        // scene at those, the next G-buffer pass disarmed it and the scaling pass found nothing to evaluate.
+        if (!ex->pass_w || ex->pass_w * 4 > D.color.width || !c->image || !scene_color(c->format)) return;
         D.ended = 1;
         unsigned o[2], s[2];
         res_sizes(o, s);
@@ -1149,6 +1178,7 @@ void vk_dlaa_frame(void) {
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
+        D.nodepth = VK_NULL_HANDLE;
         D.hold = 0;
         return;
     }
@@ -1157,7 +1187,7 @@ void vk_dlaa_frame(void) {
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0;
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0, D.nodepth = VK_NULL_HANDLE;
     D.cam_addr = 0;
 }
 
