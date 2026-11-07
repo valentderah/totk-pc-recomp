@@ -17,8 +17,9 @@
 extern "C" {
 #endif
 
-// A file large enough to read whole. A .cai is 6688 or 6712 bytes; the largest .txt export of a 21-actor draft is under
-// 60 KB. Reading past this would only tell a file that is not a blueprint from another one that is not.
+// A file large enough to read whole. A .cai is 6688, 6712 or 7840 bytes (blueprint_cai.h); the largest .txt export of a
+// 21-actor draft is under 60 KB. Reading past this would only tell a file that is not a blueprint from another one that
+// is not.
 #define BPF_READ_MAX 262144
 
 // Reads the blueprint in the file at path and parses it. storage must hold BPF_READ_MAX bytes; out is filled on BPC_OK

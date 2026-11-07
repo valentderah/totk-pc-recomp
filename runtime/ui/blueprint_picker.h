@@ -80,13 +80,18 @@ typedef struct {
     struct { char key[8]; char label[64]; int primary; } prompt[4];   // primary: the accept key, drawn in gold
 
     // ---- the preview of the file under the pointer (or the pad cursor). Filled by the C layer so the draw layer only
-    // paints: the actor count and the scatter of its parts, which is what tells a player what they are about to import
-    // before they commit to it.
+    // paints. It is a small 3D view: every part becomes a box at its own position and orientation, projected through a
+    // fixed camera. The CAI format stores placement only (no meshes), so a box stands for a part rather than its model.
     int preview;               // 1 when there is a blueprint preview to draw
-    int preview_x, preview_y, preview_w, preview_h;   // the box the scatter is fitted into
-    int preview_dots;          // number of points in preview_pt
-    float preview_pt[BPC_PICK_MAX_DOTS][2];           // normalised 0..1 positions inside the box
-    char preview_title[160];   // the blueprint's headline: part count and first part names
+    int preview_x, preview_y, preview_w, preview_h;   // the box the view is drawn into
+    int preview_parts;         // how many parts follow in preview_box
+    struct {
+        float x, y;            // the part's centre, projected into 0..1 of the box
+        float s;               // its on-screen size, in the same 0..1 units
+        float a;               // its shading, 0 (away) to 1 (facing the camera): the depth cue
+        float tilt;            // how far the part is turned from upright, -1..1: a tilted part is drawn leaning
+    } preview_box[BPC_PICK_MAX_DOTS];
+    char preview_title[160];   // the blueprint's headline: part count
     char preview_note[96];     // a second line: the file name, or why it cannot be imported
 } BPickFrame;
 

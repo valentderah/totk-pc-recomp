@@ -120,27 +120,44 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
              f.error ? kGold : kTextDim, s2);
     }
 
-    // ---- the preview column: the highlighted blueprint's part scatter and what the file holds. Drawn before the rows
-    // so the rows' plates never sit on top of it.
+    // ---- the preview column: a small 3D view of the highlighted blueprint, drawn before the rows so their plates never
+    // sit on top of it. The CAI format stores each part's placement and nothing else, so a part is a box at its own
+    // position and angle rather than its real model; the C layer has already projected and depth-sorted them.
     if (f.preview) {
         const float px = (float)f.preview_x, py = (float)f.preview_y;
         const float pw = (float)f.preview_w, ph = (float)f.preview_h;
-        // A recessed panel for the scatter; a file that cannot be imported shows only the message.
-        plate(dl, px - 8 * s, py - 8 * s, pw + 16 * s, ph + 16 * s, 10 * s, IM_COL32(0, 0, 0, 60), kRowEdge, 1 * s);
-        if (f.preview_dots > 0) {
-            // Parts as dots on a top-down view. A single dot is centred by the C layer, so no guard is needed here.
-            for (int k = 0; k < f.preview_dots; k++) {
-                const float dx = px + f.preview_pt[k][0] * pw;
-                const float dy = py + f.preview_pt[k][1] * ph;
-                dl->AddCircleFilled(ImVec2(dx, dy), 3.2f * s, kGold, 10);
+        // A recessed panel for the view, with a faint grid floor so the build reads as standing on something.
+        plate(dl, px - 8 * s, py - 8 * s, pw + 16 * s, ph + 16 * s, 10 * s, IM_COL32(0, 0, 0, 70), kRowEdge, 1 * s);
+        for (int i = 1; i < 4; i++) {
+            const float gy = py + ph * (float)i / 4.0f;
+            dl->AddLine(ImVec2(px, gy), ImVec2(px + pw, gy), IM_COL32(255, 255, 255, 10), 1 * s);
+        }
+        if (f.preview_parts > 0) {
+            // Each part is a flat quad (a box seen from above) scaled by its projected size and shaded by its depth. The
+            // order the C layer produced is far to near, which is the whole depth solution a draw list needs.
+            for (int k = 0; k < f.preview_parts; k++) {
+                const float cx = px + f.preview_box[k].x * pw;
+                const float cy = py + f.preview_box[k].y * ph;
+                const float half = f.preview_box[k].s * pw * 0.5f;
+                if (half < 0.5f) continue;
+                const float a = f.preview_box[k].a;
+                const ImU32 fill = IM_COL32((int)(236 * a), (int)(194 * a), (int)(84 * a), (int)(230 * a));
+                const ImU32 edge = IM_COL32((int)(255 * a), (int)(228 * a), (int)(140 * a), (int)(255 * a));
+                // The box is a quad; a part tipped from upright leans it sideways by its tilt, so a wheel or a lying
+                // beam does not look like an upright post. tilt is 0 for upright, 1 for lying flat, and is capped at 2.
+                const float lean = (f.preview_box[k].tilt > 1.0f ? 1.0f : f.preview_box[k].tilt) * half * 1.4f;
+                dl->AddQuadFilled(ImVec2(cx - half - lean, cy - half * 1.1f), ImVec2(cx + half - lean, cy - half * 1.1f),
+                                  ImVec2(cx + half + lean, cy + half * 1.1f), ImVec2(cx - half + lean, cy + half * 1.1f),
+                                  fill);
+                dl->AddQuad(ImVec2(cx - half - lean, cy - half * 1.1f), ImVec2(cx + half - lean, cy - half * 1.1f),
+                            ImVec2(cx + half + lean, cy + half * 1.1f), ImVec2(cx - half + lean, cy + half * 1.1f),
+                            edge, 1 * s);
             }
-        } else if (f.count > 0) {
-            // No dots and no error: the file is there but refused. The note says why.
         }
         // The headline (part count or "not a blueprint") under the box, then the file name or the reason.
         const float tx = px - 8 * s;
-        float ty = py + ph + 14 * s;
-        text(dl, font, fs * 0.94f, tx, ty, f.preview_dots > 0 ? kGold : kTextDim, f.preview_title);
+        float ty = py + ph + 20 * s;
+        text(dl, font, fs * 0.94f, tx, ty, f.preview_parts > 0 ? kGold : kTextDim, f.preview_title);
         ty += fs * 1.15f;
         text(dl, font, fs * 0.80f, tx, ty, kTextDim, f.preview_note);
     }

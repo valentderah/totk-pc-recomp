@@ -73,17 +73,51 @@ static int g_dragging, g_drag_grab_y;
 // ---- the preview of the file under the pointer or the pad cursor
 //
 // Reading a blueprint means opening the file and parsing it, so it is done once per file, not per frame: the cache is
-// keyed by the file's full path and only rebuilt when the highlighted entry changes. The scatter is normalised to 0..1
-// here, so the draw layer fits it into whatever box the layout gives it without any arithmetic of its own.
+// keyed by the file's full path and only rebuilt when the highlighted entry changes.
+//
+// The CAI format stores each part's placement (a rotation and a position) and nothing else - no meshes - so the preview
+// is a 3D view of boxes rather than of models: every part becomes a small box at its own position, turned by its own
+// rotation, and the whole thing is projected through one fixed camera. That is honest about what the file contains and
+// still reads as the shape of the build, which a flat scatter could not.
+// One projected part: where its centre lands in the view box (0..1), how big it is there, how bright, and how far it is
+// turned from upright.
+typedef struct { float x, y, s, a, tilt; } PickPart;
+
 typedef struct {
     char path[PICK_PATH_MAX];      // the file the data below belongs to; "" when nothing is read yet
     int ok;                        // 1: a real blueprint; 0: refused (note says why)
     int actors;                    // parts, when ok
     char note[96];                 // the file name when ok, else the reason it cannot be imported
-    int ndots;
-    float pt[BPC_PICK_MAX_DOTS][2];
+    int nparts;
+    PickPart part[BPC_PICK_MAX_DOTS];   // in draw order: far first, so a nearer box covers a further one
 } PickPreview;
 static PickPreview g_preview;
+
+// The camera: a fixed three-quarter view, looking down at the build from slightly above and to one side. A blueprint is
+// built on a plane (its bbox is wide in x/z and thin in y), so this is the angle that shows the layout - the same
+// reasoning a player would use when turning a build in the Autobuild screen. Returns the point in 0..1 of the view box
+// (x right, y down) and its depth, larger being further from the camera.
+static void preview_project(const float p[3], const float bbox_min[3], const float bbox_max[3],
+                            float *sx, float *sy, float *depth) {
+    // Normalise the part's position into -1..1 across the blueprint's own box, so any build fills the view the same way.
+    float n[3];
+    for (int i = 0; i < 3; i++) {
+        const float span = bbox_max[i] - bbox_min[i];
+        n[i] = span > 0.001f ? ((p[i] - bbox_min[i]) / span) * 2.0f - 1.0f : 0.0f;
+    }
+    const float cy = 0.819152f, syn = 0.573576f;   // cos / sin of a 35 degree yaw
+    const float cp = 0.882948f, sp = 0.469472f;    // cos / sin of a 28 degree pitch
+    const float x1 = cy * n[0] + syn * n[2];
+    const float z1 = -syn * n[0] + cy * n[2];
+    const float y1 = cp * n[1] - sp * z1;
+    const float z2 = sp * n[1] + cp * z1;
+    const float d = 4.0f;                          // camera distance in normalised units
+    const float k = d / (d + z2);                  // perspective: near parts grow, far ones shrink
+    *sx = 0.5f + x1 * 0.36f * k;
+    *sy = 0.5f - y1 * 0.36f * k;
+    *depth = z2;
+}
+
 
 // ---- the folder
 
@@ -212,7 +246,7 @@ static void preview_load(const char *path) {
     if (!path || !*path) {
         g_preview.path[0] = 0;
         g_preview.ok = 0;
-        g_preview.ndots = 0;
+        g_preview.nparts = 0;
         g_preview.actors = 0;
         g_preview.note[0] = 0;
         return;
@@ -221,7 +255,7 @@ static void preview_load(const char *path) {
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;
-    g_preview.ndots = 0;
+    g_preview.nparts = 0;
     g_preview.actors = 0;
     // A blueprint is at most 262144 bytes and parsing it is a few dozen float reads, so reading it here (on the present
     // path, once per highlighted file) is nothing next to the folder walk that already happens when a folder opens.
@@ -238,20 +272,47 @@ static void preview_load(const char *path) {
     g_preview.actors = bp.actors;
     snprintf(g_preview.note, sizeof g_preview.note, "%s", base);
 
-    // The scatter is the top-down (X/Z) view of the parts, normalised into 0..1. A degenerate axis just centres, so a
-    // single-part draft is a dot in the middle instead of a division by zero.
-    const float x0 = bp.bbox_min[0], x1 = bp.bbox_max[0];
-    const float z0 = bp.bbox_min[2], z1 = bp.bbox_max[2];
-    const float sx = x1 - x0, sz = z1 - z0;
+    // Project every part, then sort far-to-near so the painter's algorithm is enough (the overlay has no depth buffer).
     const int n = bp.actors < BPC_PICK_MAX_DOTS ? bp.actors : BPC_PICK_MAX_DOTS;
+    float depth[BPC_PICK_MAX_DOTS];
+    const float per = 1.0f / (float)(n > 0 ? n : 1);
     for (int k = 0; k < n; k++) {
-        float u = sx > 0.001f ? (bp.pos[k][0] - x0) / sx : 0.5f;
-        // z grows away from the viewer: flip so the scatter reads like a map seen from above.
-        float v = sz > 0.001f ? 1.0f - (bp.pos[k][2] - z0) / sz : 0.5f;
-        g_preview.pt[k][0] = u < 0 ? 0 : u > 1 ? 1 : u;
-        g_preview.pt[k][1] = v < 0 ? 0 : v > 1 ? 1 : v;
+        float vx, vy, vz;
+        preview_project(bp.pos[k], bp.bbox_min, bp.bbox_max, &vx, &vy, &vz);
+        depth[k] = vz;
+        g_preview.part[k].x = vx;
+        g_preview.part[k].y = vy;
+        // The perspective already shrank the centre; the box shrinks with it too, and a busier build draws smaller
+        // parts so a 21-part draft does not become a solid block of colour.
+        const float k2 = 4.0f / (4.0f + vz);
+        g_preview.part[k].s = (0.10f + 0.35f * per) * k2;
+        // Shade by depth: the further a part is, the dimmer, which is the only depth cue a flat fill can give.
+        float a = 1.0f - (vz + 1.6f) / 3.2f;
+        if (a < 0.2f) a = 0.2f;
+        if (a > 1.0f) a = 1.0f;
+        g_preview.part[k].a = a;
+        // How far the part leans away from vertical, from its own rotation. rot's middle row is the part's local +y
+        // expressed in blueprint space, so its y component is 1 when the part stands upright, -1 when it hangs upside
+        // down, and 0 when it lies flat: the magnitude is what "leans", and the sign only says which way is up.
+        float lean = 1.0f - fabsf(bp.rot[k][1][1]);
+        if (lean < 0) lean = 0;
+        if (lean > 1.0f) lean = 1.0f;
+        g_preview.part[k].tilt = lean;
     }
-    g_preview.ndots = n;
+    // Insertion sort by descending depth: at most 21 items, so this is both simpler and faster than a general sort.
+    for (int i = 1; i < n; i++) {
+        const PickPart p = g_preview.part[i];
+        const float d = depth[i];
+        int j = i - 1;
+        while (j >= 0 && depth[j] < d) {
+            g_preview.part[j + 1] = g_preview.part[j];
+            depth[j + 1] = depth[j];
+            j--;
+        }
+        g_preview.part[j + 1] = p;
+        depth[j + 1] = d;
+    }
+    g_preview.nparts = n;
 }
 
 static void list_folder(void) {
@@ -589,19 +650,23 @@ static int layout_preview(BPickFrame *f, int pad, int preview_w, int px, int py)
     const int box_y = f->row_top;
     const int box_h = f->row_bottom - f->row_top;
 
+    (void)box_w;
     f->preview = 1;
-    // The scatter occupies the upper part of the column; the text sits under it.
+    // The 3D view occupies the upper part of the column; the text sits under it.
     const int text_h = (int)(64 * sc);
     const int pad_in = (int)(12 * sc);
     f->preview_x = box_x + pad_in;
     f->preview_y = box_y + pad_in;
-    f->preview_w = box_w - pad_in * 2;
+    f->preview_w = preview_w - pad_in * 2;
     f->preview_h = box_h - text_h - pad_in * 2;
     if (f->preview_h < (int)(40 * sc)) f->preview_h = (int)(40 * sc);
-    f->preview_dots = g_preview.ndots;
-    for (int k = 0; k < g_preview.ndots; k++) {
-        f->preview_pt[k][0] = g_preview.pt[k][0];
-        f->preview_pt[k][1] = g_preview.pt[k][1];
+    f->preview_parts = g_preview.nparts;
+    for (int k = 0; k < g_preview.nparts; k++) {
+        f->preview_box[k].x = g_preview.part[k].x;
+        f->preview_box[k].y = g_preview.part[k].y;
+        f->preview_box[k].s = g_preview.part[k].s;
+        f->preview_box[k].a = g_preview.part[k].a;
+        f->preview_box[k].tilt = g_preview.part[k].tilt;
     }
     if (g_preview.ok) {
         snprintf(f->preview_title, sizeof f->preview_title, menu_text(UI_MENU_BLUEPRINT_PARTS), g_preview.actors);

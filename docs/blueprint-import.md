@@ -77,8 +77,13 @@ opens where the last one was left.
 
 ## 3. The CAI blob (`runtime/blueprint_cai.c`)
 
-A blob is 6688 bytes and holds up to 21 actors. Community files are 6688 bytes or 6712 bytes (the blob plus 24 bytes:
-two camera vectors). Only the first 6688 bytes are the blob.
+A blob is 6688 bytes and holds up to 21 actors. A file can be longer, and only its first 6688 bytes are the blob:
+
+| size | what the tail is |
+|---|---|
+| 6688 | nothing: the blob alone, which is what the save data stores per slot |
+| 6712 | two camera vectors, 12 bytes each: the position the draft was framed from and the point it was framed at. This is the form a save editor and the community sites distribute; the game does not read it back, its cameras live in the save data under their own hashes |
+| 7840 | a 1152-byte block of a draft the game saved mid-build; this parser does not read it |
 
 ```
  0x0000  header, 12 bytes: magic "CmbAct", u8 pad[2], u8 version (=2), u8 count, u8 count-1, u8 pad
@@ -257,6 +262,36 @@ game version and every pad layout.
 * **The import.** The picker's answer is recorded and the next presented frame (`bp_hint_frame`) hands it to a thread of
   its own, because `bp_import_newest` walks the game's memory. The present path never waits.
 * **Off switch.** `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
+
+### 6.1 The preview column
+
+While a file is highlighted the picker shows a small 3D view of it on the right: every part is a box at its own position,
+turned by its own rotation, projected through one fixed camera. `layout_preview` and `preview_load`
+(`runtime/blueprint_picker.c`) compute it; the draw layer paints what it is given.
+
+**What it can and cannot show.** A CAI blob holds each part's placement — a rotation and a position — and nothing else:
+there is no mesh, so a part cannot be drawn as its real model. The preview therefore draws a box standing in for each
+part, which reads as the shape of a build (where its parts are, which way they face, how tall it is) but not as a
+picture of the thing. Anything claiming to render the real model would have to load the game's meshes, which this port
+does not do for the files it imports.
+
+The camera is fixed (35° yaw, 28° pitch) because a blueprint is built on a plane — its bounding box is wide in x/z and
+thin in y — so that angle is the one that shows the layout, the same reasoning a player uses when turning a build in the
+Autobuild screen. Positions are normalised across the blueprint's own bounding box, so any build fills the view the same
+way.
+
+Depth is handled without a depth buffer, which the ImGui draw list does not have: parts are projected, sorted far to
+near, and painted in that order. Two cues carry depth besides the painter's order — the perspective shrinks a part's box
+with its distance, and its fill dims with it. A part's own rotation contributes a lean: the part's local +y in blueprint
+space has y = 1 upright, -1 hanging, 0 lying flat, and `1 - |y|` is how far it leans, so a wheel and an upright pole do
+not draw the same.
+
+The preview is read once per file, keyed by its full path. It goes through the same reader and validator as the import
+(`bp_file_read`), so a file that previews is a file that will import; a file the parser rejects shows its reason instead
+of a picture.
+
+`tests/preview_picture.py` renders the same projection to a text picture from a real `.cai`, which is how the camera and
+the lean were checked without running the game.
 
 Log lines:
 
