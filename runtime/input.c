@@ -18,6 +18,7 @@
 #include "input_map.h"
 #include "input_wsys.h"
 #include "nvn_api.h"
+#include "renhdrum.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -396,10 +397,571 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
+// ---- RenHDrum dynamic loading, DualSense USB/Bluetooth DSP, Switch HD Rumble engine, and Xbox One Rumble
+typedef uint32_t (*pfn_renhdrum_version)(void);
+typedef int32_t (*pfn_renhdrum_settings_default)(RenHdcSettings *out_settings);
+typedef RenHdcEngine *(*pfn_renhdrum_engine_create)(bool is_bluetooth, bool is_pro_controller);
+typedef void (*pfn_renhdrum_engine_destroy)(RenHdcEngine *engine);
+typedef int32_t (*pfn_renhdrum_engine_apply_settings)(RenHdcEngine *engine, const RenHdcSettings *settings);
+typedef int32_t (*pfn_renhdrum_engine_push_sample)(
+    RenHdcEngine *engine, int64_t now_us,
+    float left_al, float left_fl, float left_ah, float left_fh,
+    float right_al, float right_fl, float right_ah, float right_fh);
+typedef int32_t (*pfn_renhdrum_engine_push_half_sample)(
+    RenHdcEngine *engine, int64_t now_us, bool is_right,
+    float al, float fl, float ah, float fh);
+typedef int32_t (*pfn_renhdrum_engine_tick)(RenHdcEngine *engine, int64_t now_us, uint8_t *out_packet10);
+typedef RenHdcDualSenseDsp *(*pfn_renhdrum_dualsense_dsp_create)(int32_t volume_percent, bool crisp_notes);
+typedef void (*pfn_renhdrum_dualsense_dsp_destroy)(RenHdcDualSenseDsp *dsp);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_set_target)(
+    RenHdcDualSenseDsp *dsp,
+    float left_al, float left_fl, float left_ah, float left_fh,
+    float right_al, float right_fl, float right_ah, float right_fh);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_set_half_target)(
+    RenHdcDualSenseDsp *dsp, bool is_right,
+    float al, float fl, float ah, float fh);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_fill_f32)(
+    RenHdcDualSenseDsp *dsp, float *out_interleaved_4ch, size_t frame_count);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_build_bt_report)(
+    RenHdcDualSenseDsp *dsp, uint8_t buffer_length, uint8_t *out_report142);
+typedef RenHdcXboxRumble *(*pfn_renhdrum_xbox_rumble_create)(bool is_bluetooth);
+typedef void (*pfn_renhdrum_xbox_rumble_destroy)(RenHdcXboxRumble *rumble);
+typedef int32_t (*pfn_renhdrum_xbox_rumble_push_half_sample)(
+    RenHdcXboxRumble *rumble, int64_t now_us, bool is_right,
+    float low_amp, float low_freq, float high_amp, float high_freq);
+typedef int32_t (*pfn_renhdrum_xbox_rumble_tick)(RenHdcXboxRumble *rumble, int64_t now_us, uint16_t *out_motors4);
+typedef int32_t (*pfn_renhdrum_xbox_rumble_resend)(RenHdcXboxRumble *rumble);
+
+typedef struct {
+    pfn_renhdrum_version version;
+    pfn_renhdrum_settings_default settings_default;
+    pfn_renhdrum_engine_create engine_create;
+    pfn_renhdrum_engine_destroy engine_destroy;
+    pfn_renhdrum_engine_apply_settings engine_apply_settings;
+    pfn_renhdrum_engine_push_sample engine_push_sample;
+    pfn_renhdrum_engine_push_half_sample engine_push_half_sample;
+    pfn_renhdrum_engine_tick engine_tick;
+    pfn_renhdrum_dualsense_dsp_create dualsense_dsp_create;
+    pfn_renhdrum_dualsense_dsp_destroy dualsense_dsp_destroy;
+    pfn_renhdrum_dualsense_dsp_set_target dualsense_dsp_set_target;
+    pfn_renhdrum_dualsense_dsp_set_half_target dualsense_dsp_set_half_target;
+    pfn_renhdrum_dualsense_dsp_fill_f32 dualsense_dsp_fill_f32;
+    pfn_renhdrum_dualsense_dsp_build_bt_report dualsense_dsp_build_bt_report;
+    pfn_renhdrum_xbox_rumble_create xbox_rumble_create;
+    pfn_renhdrum_xbox_rumble_destroy xbox_rumble_destroy;
+    pfn_renhdrum_xbox_rumble_push_half_sample xbox_rumble_push_half_sample;
+    pfn_renhdrum_xbox_rumble_tick xbox_rumble_tick;
+    pfn_renhdrum_xbox_rumble_resend xbox_rumble_resend;
+} RenHdrumApi;
+
+static RenHdrumApi rh;
+static int rh_state;                          // 0 not tried, 1 loaded, -1 unavailable
+static PlatMutex dsp_lock = PLAT_MUTEX_INIT;  // guards dualsense_dsp for real-time audio callback
+static RenHdcDualSenseDsp *dualsense_dsp;     // under dsp_lock (and lock on create/destroy)
+static SDL_AudioStream *ds_audio_stream;      // under lock: 4-channel 48 kHz f32 USB audio stream
+static int ds_init_audio;                     // 1 if we initialized SDL_INIT_AUDIO
+static int ds_is_bt;                          // 1 if DualSense is connected over Bluetooth
+static uint64_t ds_bt_last_active_ns;         // timestamp of last BT report 0x32 with non-zero signal
+static uint64_t ds_bt_next_ns;                // next scheduled BT report 0x32 timestamp
+static int ds_audio_tries;                    // USB audio open retry count (max 10)
+static uint64_t ds_audio_last_try_ns;         // timestamp of last USB audio open attempt
+static RenHdcEngine *renhdrum_engine;         // under lock: Switch Pro / Joy-Con HD rumble engine
+static RenHdcXboxRumble *xbox_rumble;         // under lock: Xbox One / Series X|S 4-motor rumble converter
+static int haptics_thread;                    // 0 not started, 1 running
+static int hd_active_signal;                  // 1 while non-zero HD rumble is playing
+static uint64_t hd_last_push_ns;              // timestamp of last non-zero HD rumble push
+// Under lock: a second HID handle on the Bluetooth DualSense for output report 0x32. SDL_SendJoystickEffect cannot carry
+// it: SDL's PS5 driver wraps whatever it is given into its own effects report (0x31 over Bluetooth, 0x02 over USB), so
+// a 0x32 report sent that way would land in the rumble, volume and LED fields of a 0x31 report instead.
+static SDL_hid_device *ds_hid;
+static volatile int32_t hd_pad_kind;          // HD_PAD_* of the open gamepad (any thread)
+static unsigned rh_cfg_seen = ~0u;
+static int rh_hd_on = 1, rh_bt_level = 3, rh_hd_crisp = 1, rh_hd_bt_crisp = 1;
+static int rh_ds_on = 1, rh_ds_vol = 100, rh_ds_crisp = 1, rh_ds_bt_crisp = 0;
+static int rh_xbox_on = 1, rh_xbox_trig = 1;
+
+static void renhdrum_read_cfg(void) {
+    rh_cfg_seen = cfg_version();
+    rh_hd_on = cfg_bool("TOTK_HD_RUMBLE") != 0;
+    const char *spd = cfg_value("TOTK_HD_RUMBLE_BT_SPEED");
+    rh_bt_level = !strcasecmp(spd, "stable") ? 1 : !strcasecmp(spd, "balanced") ? 2 : 3;
+    rh_hd_crisp = cfg_bool("TOTK_HD_RUMBLE_CRISP") != 0;
+    rh_hd_bt_crisp = cfg_bool("TOTK_HD_RUMBLE_BT_CRISP") != 0;
+    rh_ds_on = cfg_bool("TOTK_DUALSENSE_HAPTICS") != 0;
+    int vol = cfg_int("TOTK_DUALSENSE_VOLUME");
+    rh_ds_vol = vol < 10 ? 10 : vol > 100 ? 100 : vol;
+    rh_ds_crisp = cfg_bool("TOTK_DUALSENSE_CRISP") != 0;
+    rh_ds_bt_crisp = cfg_bool("TOTK_DUALSENSE_BT_CRISP") != 0;
+    rh_xbox_on = cfg_bool("TOTK_XBOX_RUMBLE") != 0;
+    rh_xbox_trig = cfg_bool("TOTK_XBOX_TRIGGERS") != 0;
+}
+
+// Construct RenHdcSettings manually in memory (do NOT call renhdrum_settings_resolve, which queries Brontide IPC/files).
+static RenHdcSettings renhdrum_make_settings(void) {
+    RenHdcSettings s;
+    memset(&s, 0, sizeof s);
+    s.enabled = rh_hd_on != 0;
+    s.usb_interval_ms = 15;
+    s.bluetooth_level = (uint8_t)rh_bt_level;
+    s.usb_auto_slow = true;
+    s.sync_to_input = false;
+    s.click_pulse = false;
+    s.sync_bluetooth = false;
+    s.usb_no_queue = false;
+    s.usb_pause_ms = 0;
+    s.envelope_5ms = true;
+    s.frequency_in_packet = true;
+    s.frequency_both_bands = true;
+    s.bt_after_input = false;
+    s.crisp_notes = rh_hd_crisp != 0;
+    s.bt_crisp_notes = rh_hd_bt_crisp != 0;
+    s.bt_fast = false;
+    return s;
+}
+
+static RenHdcDualSenseDsp *renhdrum_create_dsp(int32_t vol, bool crisp) {
+    // renhdrum_dualsense_dsp_create checks %APPDATA%/RenHDrum/renhdrum-settings.txt first; hide APPDATA briefly
+    // when that file is present so totk.ini's volume and crisp_notes always take effect.
+    char saved[PLAT_PATH_MAX], file[PLAT_PATH_MAX + 64];
+    int hide = plat_getenv("APPDATA", saved, sizeof saved) &&
+               snprintf(file, sizeof file, "%s/RenHDrum/renhdrum-settings.txt", saved) < (int)sizeof file &&
+               plat_file_exists(file);
+    if (hide) plat_setenv("APPDATA", NULL);
+    RenHdcDualSenseDsp *dsp = rh.dualsense_dsp_create(vol, crisp);
+    if (hide) plat_setenv("APPDATA", saved);
+    return dsp;
+}
+
+static void renhdrum_close_pad(SDL_Gamepad *closing_pad);
+static void renhdrum_open_pad(SDL_Gamepad *opened_pad);
+static void renhdrum_sync_cfg(void);
+
+// plat_exit runs no atexit handlers: the exit paths (gfx_window_closed, svc ExitProcess, the end of a --seconds run)
+// call this first so the controller is left silent and the DSP / engine are destroyed.
+void input_haptics_stop(void) {
+    plat_mutex_lock(&lock);
+    renhdrum_close_pad(pad);
+    plat_mutex_unlock(&lock);
+}
+
+static int renhdrum_load(void) {
+    if (rh_state) return rh_state == 1;
+    const char *const libname = sizeof PLAT_EXE_SUFFIX > 1 ? "renhdrum.dll" : "librenhdrum.so";
+    void *mod = NULL;
+    char exe_path[PLAT_PATH_MAX];
+    if (plat_exe_path(exe_path, sizeof exe_path)) {
+        for (int depth = 0; depth < 4 && !mod; depth++) {
+            char *slash = plat_last_sep(exe_path);
+            if (!slash) break;
+            *slash = '\0';
+            char candidate[PLAT_PATH_MAX + 64];
+            snprintf(candidate, sizeof candidate, "%s/%s", exe_path, libname);
+            mod = plat_lib_open(candidate);
+        }
+    }
+    if (!mod) {
+        char rel[64];
+        snprintf(rel, sizeof rel, "./%s", libname);
+        mod = plat_lib_open(rel);
+    }
+    if (!mod && sizeof PLAT_EXE_SUFFIX == 1) mod = plat_lib_open(libname);
+    if (!mod) {
+        rh_state = -1;
+        rt_log("input: %s not found, falling back to standard SDL rumble", libname);
+        return 0;
+    }
+#define RH_SYM(name) (pfn_renhdrum_##name)plat_lib_sym(mod, "renhdrum_" #name)
+    rh.version = RH_SYM(version);
+    rh.settings_default = RH_SYM(settings_default);
+    rh.engine_create = RH_SYM(engine_create);
+    rh.engine_destroy = RH_SYM(engine_destroy);
+    rh.engine_apply_settings = RH_SYM(engine_apply_settings);
+    rh.engine_push_sample = RH_SYM(engine_push_sample);
+    rh.engine_push_half_sample = RH_SYM(engine_push_half_sample);
+    rh.engine_tick = RH_SYM(engine_tick);
+    rh.dualsense_dsp_create = RH_SYM(dualsense_dsp_create);
+    rh.dualsense_dsp_destroy = RH_SYM(dualsense_dsp_destroy);
+    rh.dualsense_dsp_set_target = RH_SYM(dualsense_dsp_set_target);
+    rh.dualsense_dsp_set_half_target = RH_SYM(dualsense_dsp_set_half_target);
+    rh.dualsense_dsp_fill_f32 = RH_SYM(dualsense_dsp_fill_f32);
+    rh.dualsense_dsp_build_bt_report = RH_SYM(dualsense_dsp_build_bt_report);
+    rh.xbox_rumble_create = RH_SYM(xbox_rumble_create);
+    rh.xbox_rumble_destroy = RH_SYM(xbox_rumble_destroy);
+    rh.xbox_rumble_push_half_sample = RH_SYM(xbox_rumble_push_half_sample);
+    rh.xbox_rumble_tick = RH_SYM(xbox_rumble_tick);
+    rh.xbox_rumble_resend = RH_SYM(xbox_rumble_resend);
+#undef RH_SYM
+
+    if (!rh.version || !rh.engine_create || !rh.engine_destroy || !rh.engine_apply_settings ||
+        !rh.engine_push_sample || !rh.engine_tick || !rh.dualsense_dsp_create || !rh.dualsense_dsp_destroy ||
+        !rh.dualsense_dsp_set_target || !rh.dualsense_dsp_fill_f32 || !rh.dualsense_dsp_build_bt_report) {
+        memset(&rh, 0, sizeof rh);
+        rh_state = -1;
+        rt_log("input: %s is missing required exports, falling back to standard SDL rumble", libname);
+        return 0;
+    }
+    uint32_t ver = rh.version();
+    rh_state = 1;
+    rt_log("input: loaded %s (ABI v%u.%u.%u)", libname, ver >> 16 & 0xff, ver >> 8 & 0xff, ver & 0xff);
+    return 1;
+}
+
+static void SDLCALL dualsense_audio_cb(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
+    (void)userdata;
+    (void)total_amount;
+    if (additional_amount <= 0) return;
+    const int frame_bytes = 4 * (int)sizeof(float);
+    int frames_needed = additional_amount / frame_bytes;
+    if (frames_needed <= 0) return;
+    float buf[512 * 4];
+    while (frames_needed > 0) {
+        int chunk = frames_needed > 512 ? 512 : frames_needed;
+        plat_mutex_lock(&dsp_lock);
+        int32_t rc = dualsense_dsp && rh.dualsense_dsp_fill_f32
+                         ? rh.dualsense_dsp_fill_f32(dualsense_dsp, buf, (size_t)chunk)
+                         : RENHDRUM_ERR_NULL_PTR;
+        plat_mutex_unlock(&dsp_lock);
+        if (rc != RENHDRUM_OK) memset(buf, 0, (size_t)chunk * 4 * sizeof(float));
+        SDL_PutAudioStreamData(stream, buf, chunk * frame_bytes);
+        frames_needed -= chunk;
+    }
+}
+
+static int dualsense_try_open_audio(void) {
+    if (ds_audio_stream) return 1;
+    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO)) {
+        if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+            rt_log("input: SDL audio init for DualSense haptics failed (%s)", SDL_GetError());
+            return 0;
+        }
+        ds_init_audio = 1;
+    }
+    int count = 0;
+    SDL_AudioDeviceID *devs = SDL_GetAudioPlaybackDevices(&count);
+    if (!devs) return 0;
+    SDL_AudioDeviceID target_dev = 0;
+    for (int i = 0; i < count; i++) {
+        const char *name = SDL_GetAudioDeviceName(devs[i]);
+        if (!name) continue;
+        if (strstr(name, "DualSense") != NULL || strstr(name, "Wireless Controller") != NULL) {
+            SDL_AudioSpec spec;
+            memset(&spec, 0, sizeof spec);
+            if (SDL_GetAudioDeviceFormat(devs[i], &spec, NULL) && spec.channels >= 4) {
+                target_dev = devs[i];
+                break;
+            }
+        }
+    }
+    SDL_free(devs);
+    if (!target_dev) return 0;
+    SDL_AudioSpec desired;
+    memset(&desired, 0, sizeof desired);
+    desired.format = SDL_AUDIO_F32;
+    desired.channels = 4;
+    desired.freq = 48000;
+    ds_audio_stream = SDL_OpenAudioDeviceStream(target_dev, &desired, dualsense_audio_cb, NULL);
+    if (!ds_audio_stream) {
+        rt_log("input: failed to open DualSense 4-channel audio stream (%s)", SDL_GetError());
+        return 0;
+    }
+    SDL_ResumeAudioStreamDevice(ds_audio_stream);
+    rt_log("input: DualSense 48 kHz 4-channel USB audio haptics stream active");
+    return 1;
+}
+
+static void dualsense_maintain_audio(uint64_t now_ns) {
+    if (!dualsense_dsp || ds_is_bt || ds_audio_stream || ds_audio_tries >= 10) return;
+    if (ds_audio_last_try_ns && now_ns - ds_audio_last_try_ns < 2000000000ull) return;
+    ds_audio_last_try_ns = now_ns;
+    ds_audio_tries++;
+    if (dualsense_try_open_audio() && pad) SDL_RumbleGamepad(pad, 0, 0, 0);
+}
+
+static void dualsense_bt_tick(uint64_t now_ns) {
+    if (!dualsense_dsp || !ds_is_bt || !pad || !ds_hid) return;
+    if (now_ns < ds_bt_next_ns) return;
+    if (!ds_bt_next_ns || now_ns - ds_bt_next_ns > 100000000ull)
+        ds_bt_next_ns = now_ns + RENHDRUM_DS5_BT_PERIOD_NS;
+    else
+        ds_bt_next_ns += RENHDRUM_DS5_BT_PERIOD_NS;
+    uint8_t report142[RENHDRUM_DS5_BT_REPORT_SIZE];
+    plat_mutex_lock(&dsp_lock);
+    int32_t rc = rh.dualsense_dsp_build_bt_report(dualsense_dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT, report142);
+    plat_mutex_unlock(&dsp_lock);
+    if (rc == 1) ds_bt_last_active_ns = now_ns;
+    // Keep sending for 2.0s after any active vibration (matching Brontide DualSenseBtLoop)
+    // so the DualSense 3 kHz audio buffer does not starve and voice-coil haptics stay active.
+    if (ds_bt_last_active_ns && now_ns - ds_bt_last_active_ns < 2000000000ull) {
+        if (SDL_hid_write(ds_hid, report142, sizeof report142) < 0) {
+            static volatile int32_t warned;
+            if (!plat_xchg32(&warned, 1)) rt_log("input: DualSense report 0x32 write failed (%s)", SDL_GetError());
+        }
+    }
+}
+
+// The HID device of a Bluetooth DualSense, opened a second time for report 0x32: the joystick's own path (HIDAPI
+// driver), else the first Bluetooth device with this vendor and product.
+static SDL_hid_device *dualsense_open_hid(SDL_Joystick *joy, uint16_t vid, uint16_t pid) {
+    const char *path = SDL_GetJoystickPath(joy);
+    SDL_hid_device *d = path && *path ? SDL_hid_open_path(path) : NULL;
+    if (!d) {
+        SDL_hid_device_info *list = SDL_hid_enumerate(vid, pid);
+        for (SDL_hid_device_info *it = list; it && !d; it = it->next)
+            if (it->bus_type == SDL_HID_API_BUS_BLUETOOTH && it->path) d = SDL_hid_open_path(it->path);
+        SDL_hid_free_enumeration(list);
+    }
+    return d;
+}
+
+static void switch_hd_tick(uint64_t now_ns) {
+    if (!renhdrum_engine || !pad) return;
+    uint8_t packet10[10];
+    if (rh.engine_tick(renhdrum_engine, (int64_t)(now_ns / 1000u), packet10) == 1) {
+        SDL_Joystick *joy = SDL_GetGamepadJoystick(pad);
+        if (joy) SDL_SendJoystickEffect(joy, packet10, sizeof packet10);
+    }
+}
+
+static void xbox_hd_tick(uint64_t now_ns) {
+    if (!xbox_rumble || !pad || !rh.xbox_rumble_tick) return;
+    uint16_t motors[4];
+    if (rh.xbox_rumble_tick(xbox_rumble, (int64_t)(now_ns / 1000u), motors) == 1) {
+        if (!SDL_RumbleGamepad(pad, motors[0], motors[1], 2000) && rh.xbox_rumble_resend)
+            rh.xbox_rumble_resend(xbox_rumble);
+        uint16_t lt = rh_xbox_trig ? motors[2] : 0, rt = rh_xbox_trig ? motors[3] : 0;
+        SDL_RumbleGamepadTriggers(pad, lt, rt, 200);
+    }
+}
+
+static void haptics_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        plat_wait_ns(1000000);
+        plat_mutex_lock(&lock);
+        if (pad && SDL_GamepadConnected(pad)) {
+            renhdrum_sync_cfg();
+            if (dualsense_dsp || renhdrum_engine || xbox_rumble) {
+                uint64_t now = plat_now_ns();
+                if (hd_active_signal && now - hd_last_push_ns > 250000000ull) {
+                    hd_active_signal = 0;
+                    if (dualsense_dsp) {
+                        plat_mutex_lock(&dsp_lock);
+                        rh.dualsense_dsp_set_target(dualsense_dsp, 0.0f, 160.0f, 0.0f, 320.0f, 0.0f, 160.0f, 0.0f, 320.0f);
+                        plat_mutex_unlock(&dsp_lock);
+                    }
+                    if (renhdrum_engine)
+                        rh.engine_push_sample(renhdrum_engine, (int64_t)(now / 1000u), 0.0f, 160.0f, 0.0f, 320.0f,
+                                              0.0f, 160.0f, 0.0f, 320.0f);
+                    if (xbox_rumble && rh.xbox_rumble_push_half_sample) {
+                        int64_t now_us = (int64_t)(now / 1000u);
+                        rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, false, 0.0f, 160.0f, 0.0f, 320.0f);
+                        rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, true, 0.0f, 160.0f, 0.0f, 320.0f);
+                    }
+                }
+                if (dualsense_dsp) {
+                    if (ds_is_bt) dualsense_bt_tick(now);
+                    else dualsense_maintain_audio(now);
+                }
+                if (renhdrum_engine) switch_hd_tick(now);
+                if (xbox_rumble) xbox_hd_tick(now);
+            }
+        }
+        plat_mutex_unlock(&lock);
+    }
+}
+
+static void haptics_thread_start(void) {
+    if (haptics_thread) return;
+    if (plat_thread_spawn(haptics_main, NULL, "haptics", 0)) haptics_thread = 1;
+}
+
+static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
+    if (ds_audio_stream) {
+        SDL_AudioStream *s = ds_audio_stream;
+        ds_audio_stream = NULL;
+        SDL_PauseAudioStreamDevice(s);
+        SDL_ClearAudioStream(s);
+        SDL_DestroyAudioStream(s);
+    }
+    if (ds_init_audio) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        ds_init_audio = 0;
+    }
+    if (dualsense_dsp) {
+        if (ds_hid && closing_pad && SDL_GamepadConnected(closing_pad)) {
+            uint8_t report142[RENHDRUM_DS5_BT_REPORT_SIZE];
+            plat_mutex_lock(&dsp_lock);
+            rh.dualsense_dsp_set_target(dualsense_dsp, 0.0f, 160.0f, 0.0f, 320.0f, 0.0f, 160.0f, 0.0f, 320.0f);
+            int32_t rc = rh.dualsense_dsp_build_bt_report(dualsense_dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT, report142);
+            plat_mutex_unlock(&dsp_lock);
+            if (rc >= 0) SDL_hid_write(ds_hid, report142, sizeof report142);
+        }
+        if (ds_hid) {
+            SDL_hid_close(ds_hid);
+            ds_hid = NULL;
+        }
+        plat_mutex_lock(&dsp_lock);
+        RenHdcDualSenseDsp *d = dualsense_dsp;
+        dualsense_dsp = NULL;
+        plat_mutex_unlock(&dsp_lock);
+        rh.dualsense_dsp_destroy(d);
+    }
+    if (renhdrum_engine) {
+        if (closing_pad && SDL_GamepadConnected(closing_pad)) {
+            static const uint8_t neutral10[10] = {0x10, 0x00, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
+            SDL_Joystick *joy = SDL_GetGamepadJoystick(closing_pad);
+            if (joy) SDL_SendJoystickEffect(joy, neutral10, sizeof neutral10);
+        }
+        rh.engine_destroy(renhdrum_engine);
+        renhdrum_engine = NULL;
+    }
+    if (xbox_rumble) {
+        if (closing_pad && SDL_GamepadConnected(closing_pad)) {
+            SDL_RumbleGamepad(closing_pad, 0, 0, 0);
+            SDL_RumbleGamepadTriggers(closing_pad, 0, 0, 0);
+        }
+        if (rh.xbox_rumble_destroy) rh.xbox_rumble_destroy(xbox_rumble);
+        xbox_rumble = NULL;
+    }
+    ds_is_bt = 0;
+    ds_bt_last_active_ns = 0;
+    ds_bt_next_ns = 0;
+    ds_audio_tries = 0;
+    ds_audio_last_try_ns = 0;
+    hd_active_signal = 0;
+    hd_last_push_ns = 0;
+}
+
+static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
+    renhdrum_close_pad(NULL);
+    renhdrum_read_cfg();
+    SDL_Joystick *joy = SDL_GetGamepadJoystick(opened_pad);
+    if (!joy) {
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
+        return;
+    }
+    uint16_t vid = SDL_GetJoystickVendor(joy);
+    uint16_t pid = SDL_GetJoystickProduct(joy);
+    SDL_JoystickConnectionState conn = SDL_GetJoystickConnectionState(joy);
+    bool wireless = conn == SDL_JOYSTICK_CONNECTION_WIRELESS;
+    if (vid == 0x054C && (pid == 0x0CE6 || pid == 0x0DF2)) {
+        if (!renhdrum_load()) return;
+        plat_xchg32(&hd_pad_kind, wireless ? HD_PAD_DUALSENSE_BT : HD_PAD_DUALSENSE_USB);
+        haptics_thread_start();
+        if (!rh_ds_on) {
+            rt_log("input: DualSense haptics off (TOTK_DUALSENSE_HAPTICS=0); using standard SDL rumble");
+            return;
+        }
+        if (wireless) {
+            ds_hid = dualsense_open_hid(joy, vid, pid);
+            if (!ds_hid) {
+                rt_log("input: Bluetooth DualSense HID device not opened (%s); standard SDL rumble", SDL_GetError());
+                return;
+            }
+        }
+        bool crisp = (wireless ? rh_ds_bt_crisp : rh_ds_crisp) != 0;
+        RenHdcDualSenseDsp *dsp = renhdrum_create_dsp(rh_ds_vol, crisp);
+        if (!dsp) {
+            if (ds_hid) SDL_hid_close(ds_hid), ds_hid = NULL;
+            return;
+        }
+        plat_mutex_lock(&dsp_lock);
+        dualsense_dsp = dsp;
+        plat_mutex_unlock(&dsp_lock);
+        ds_is_bt = wireless ? 1 : 0;
+        SDL_RumbleGamepad(opened_pad, 0, 0, 0);
+        if (!ds_is_bt) dualsense_maintain_audio(plat_now_ns());
+        rt_log("input: RenHDrum DualSense HD rumble active (%s, volume %d%%, crisp %s)",
+               ds_is_bt ? "Bluetooth HID report 0x32" : "USB 48 kHz 4-channel audio VCM", rh_ds_vol, crisp ? "on" : "off");
+    } else if (vid == 0x057E && (pid == 0x2009 || pid == 0x2006 || pid == 0x2007)) {
+        if (!renhdrum_load()) return;
+        plat_xchg32(&hd_pad_kind, wireless ? HD_PAD_SWITCH_BT : HD_PAD_SWITCH_USB);
+        haptics_thread_start();
+        if (!rh_hd_on) {
+            rt_log("input: Switch HD rumble off (TOTK_HD_RUMBLE=0); using standard SDL rumble");
+            return;
+        }
+        bool is_pro = pid == 0x2009;
+        renhdrum_engine = rh.engine_create(wireless, is_pro);
+        if (!renhdrum_engine) return;
+        RenHdcSettings settings = renhdrum_make_settings();
+        rh.engine_apply_settings(renhdrum_engine, &settings);
+        rt_log("input: RenHDrum Switch HD rumble active (%s, %s)",
+               is_pro ? "Pro Controller" : "Joy-Con", wireless ? "Bluetooth" : "USB");
+    } else if (vid == 0x045E && SDL_GetGamepadType(opened_pad) == SDL_GAMEPAD_TYPE_XBOXONE) {
+        if (!renhdrum_load() || !rh.xbox_rumble_create || !rh.xbox_rumble_push_half_sample || !rh.xbox_rumble_tick) {
+            plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
+            return;
+        }
+        bool xbox_bt = conn == SDL_JOYSTICK_CONNECTION_WIRELESS ? true
+                     : conn == SDL_JOYSTICK_CONNECTION_WIRED    ? false
+                     : !(pid == 0x02D1 || pid == 0x02DD || pid == 0x02E3 || pid == 0x02EA || pid == 0x02FF ||
+                         pid == 0x0B00 || pid == 0x0B0A || pid == 0x0B12);
+        plat_xchg32(&hd_pad_kind, xbox_bt ? HD_PAD_XBOX_BT : HD_PAD_XBOX_USB);
+        haptics_thread_start();
+        if (!rh_xbox_on) {
+            rt_log("input: Xbox One Rumble off (TOTK_XBOX_RUMBLE=0); using standard SDL rumble");
+            return;
+        }
+        xbox_rumble = rh.xbox_rumble_create(xbox_bt);
+        if (!xbox_rumble) return;
+        rt_log("input: RenHDrum Xbox One Rumble active (%s, triggers %s)",
+               xbox_bt ? "Bluetooth" : "USB", rh_xbox_trig ? "on" : "off");
+    } else {
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
+    }
+}
+
+static void renhdrum_sync_cfg(void) {
+    if (cfg_version() == rh_cfg_seen) return;
+    int was_hd_on = rh_hd_on, was_bt_level = rh_bt_level, was_hd_crisp = rh_hd_crisp, was_hd_bt_crisp = rh_hd_bt_crisp;
+    int was_ds_on = rh_ds_on, was_ds_vol = rh_ds_vol, was_ds_crisp = rh_ds_crisp, was_ds_bt_crisp = rh_ds_bt_crisp;
+    int was_xbox_on = rh_xbox_on, was_xbox_trig = rh_xbox_trig;
+    renhdrum_read_cfg();
+    int kind = (int)plat_cas32(&hd_pad_kind, 0, 0);
+    if (kind == HD_PAD_DUALSENSE_USB || kind == HD_PAD_DUALSENSE_BT) {
+        if (rh_ds_on != was_ds_on) {
+            if (!rh_ds_on) renhdrum_close_pad(pad);
+            else renhdrum_open_pad(pad);
+        } else if (dualsense_dsp) {
+            int crisp = ds_is_bt ? rh_ds_bt_crisp : rh_ds_crisp;
+            int was_crisp = ds_is_bt ? was_ds_bt_crisp : was_ds_crisp;
+            if (rh_ds_vol != was_ds_vol || crisp != was_crisp) {
+                RenHdcDualSenseDsp *new_dsp = renhdrum_create_dsp(rh_ds_vol, crisp != 0);
+                if (new_dsp) {
+                    plat_mutex_lock(&dsp_lock);
+                    RenHdcDualSenseDsp *old = dualsense_dsp;
+                    dualsense_dsp = new_dsp;
+                    plat_mutex_unlock(&dsp_lock);
+                    if (old) rh.dualsense_dsp_destroy(old);
+                }
+            }
+        }
+    } else if (kind == HD_PAD_SWITCH_USB || kind == HD_PAD_SWITCH_BT) {
+        if (rh_hd_on != was_hd_on) {
+            if (!rh_hd_on) renhdrum_close_pad(pad);
+            else renhdrum_open_pad(pad);
+        } else if (renhdrum_engine &&
+                   (rh_bt_level != was_bt_level || rh_hd_crisp != was_hd_crisp || rh_hd_bt_crisp != was_hd_bt_crisp)) {
+            RenHdcSettings s = renhdrum_make_settings();
+            rh.engine_apply_settings(renhdrum_engine, &s);
+        }
+    } else if (kind == HD_PAD_XBOX_USB || kind == HD_PAD_XBOX_BT) {
+        if (rh_xbox_on != was_xbox_on) {
+            if (!rh_xbox_on) renhdrum_close_pad(pad);
+            else renhdrum_open_pad(pad);
+        } else if (was_xbox_trig && !rh_xbox_trig && pad && SDL_GamepadConnected(pad)) {
+            SDL_RumbleGamepadTriggers(pad, 0, 0, 0);
+        }
+    }
+}
+
 // Open the first gamepad when none is open or the open one went away; logs once per change.
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
+        renhdrum_close_pad(pad);
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
@@ -428,6 +990,7 @@ static void scan_pads(void) {
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     rt_log("input: gamepad \"%s\" (%s, %s, east button %s)", SDL_GetGamepadName(pad), pad_rumble ? "rumble" : "no rumble",
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
+    renhdrum_open_pad(pad);
 }
 
 // Under lock: the layout of the open gamepad, picked again when a setting or the gamepad changed; logs each change.
@@ -501,6 +1064,10 @@ static void start(void) {
     binds_refresh();
     const char *e = cfg_get("TOTK_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
+    // SDL3 on Windows defaults SDL_JOYSTICK_RAWINPUT to 0, opening Xbox controllers through XInput (which exposes only
+    // the 2 grip motors and drops SDL_RumbleGamepadTriggers). Enable RAWINPUT when Xbox 4-motor trigger rumble is on.
+    if ((cfg_bool("TOTK_XBOX_RUMBLE") && cfg_bool("TOTK_XBOX_TRIGGERS")) || cfg_bool("TOTK_RUMBLE_TRIGGERS"))
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
@@ -819,6 +1386,74 @@ int input_capture(int reset, int *id) {
 
 int input_rumble_triggers_enabled(void) {
     return cfg_bool("TOTK_RUMBLE_TRIGGERS");
+}
+
+int input_hd_pad_kind(void) {
+    return (int)plat_cas32(&hd_pad_kind, 0, 0);
+}
+
+int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
+                    float right_al, float right_fl, float right_ah, float right_fh) {
+    int handled = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1 && pad && SDL_GamepadConnected(pad)) {
+        renhdrum_sync_cfg();
+        uint64_t now = plat_now_ns();
+        int non_zero = left_al > 0.0f || left_ah > 0.0f || right_al > 0.0f || right_ah > 0.0f;
+        if (non_zero) {
+            hd_active_signal = 1;
+            hd_last_push_ns = now;
+        }
+        if (dualsense_dsp) {
+            plat_mutex_lock(&dsp_lock);
+            if (side == 0 && rh.dualsense_dsp_set_half_target) {
+                rh.dualsense_dsp_set_half_target(dualsense_dsp, false, left_al, left_fl, left_ah, left_fh);
+            } else if (side == 1 && rh.dualsense_dsp_set_half_target) {
+                rh.dualsense_dsp_set_half_target(dualsense_dsp, true, right_al, right_fl, right_ah, right_fh);
+            } else {
+                rh.dualsense_dsp_set_target(dualsense_dsp, left_al, left_fl, left_ah, left_fh,
+                                            right_al, right_fl, right_ah, right_fh);
+            }
+            plat_mutex_unlock(&dsp_lock);
+            if (ds_is_bt) {
+                if (non_zero && (!ds_bt_last_active_ns || now - ds_bt_last_active_ns >= 2000000000ull)) {
+                    ds_bt_next_ns = now;
+                }
+                handled = ds_hid != NULL;
+            } else {
+                dualsense_maintain_audio(now);
+                if (ds_audio_stream) {
+                    SDL_RumbleGamepad(pad, 0, 0, 0);
+                    handled = 1;
+                }
+            }
+        } else if (renhdrum_engine) {
+            int64_t now_us = (int64_t)(now / 1000u);
+            if (side == 0 && rh.engine_push_half_sample)
+                rh.engine_push_half_sample(renhdrum_engine, now_us, false, left_al, left_fl, left_ah, left_fh);
+            else if (side == 1 && rh.engine_push_half_sample)
+                rh.engine_push_half_sample(renhdrum_engine, now_us, true, right_al, right_fl, right_ah, right_fh);
+            else
+                rh.engine_push_sample(renhdrum_engine, now_us, left_al, left_fl, left_ah, left_fh,
+                                      right_al, right_fl, right_ah, right_fh);
+            switch_hd_tick(now);
+            handled = 1;
+        } else if (xbox_rumble && rh.xbox_rumble_push_half_sample) {
+            int64_t now_us = (int64_t)(now / 1000u);
+            if (side == 0)
+                rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, false, left_al, left_fl, left_ah, left_fh);
+            else if (side == 1)
+                rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, true, right_al, right_fl, right_ah, right_fh);
+            else {
+                rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, false, left_al, left_fl, left_ah, left_fh);
+                rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, true, right_al, right_fl, right_ah, right_fh);
+            }
+            xbox_hd_tick(now);
+            handled = 1;
+        }
+    }
+    plat_mutex_unlock(&lock);
+    return handled;
 }
 
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {

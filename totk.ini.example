@@ -289,6 +289,19 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
+# Switch Pro Controller / Joy-Con HD Rumble, PS5 DualSense voice-coil haptics, and Xbox One / Series X|S 4-motor rumble
+# (with renhdrum.dll next to totk.exe). hd_rumble = 0, dualsense_haptics = 0 or xbox_rumble = 0 falls back to standard
+# SDL rumble. hd_rumble_bt_speed: stable, balanced or fast. xbox_triggers = 1 includes the two impulse trigger motors.
+# hd_rumble = 1
+# hd_rumble_bt_speed = fast
+# hd_rumble_crisp = 1
+# hd_rumble_bt_crisp = 1
+# dualsense_haptics = 1
+# dualsense_volume = 100
+# dualsense_crisp = 1
+# dualsense_bt_crisp = 0
+# xbox_rumble = 1
+# xbox_triggers = 1
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.

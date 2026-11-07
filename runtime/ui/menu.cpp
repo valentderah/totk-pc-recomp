@@ -745,6 +745,30 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
+enum { HD_NOTE_SWITCH, HD_NOTE_DUALSENSE, HD_NOTE_XBOX };
+static const char *hd_pad_note(int group) {
+    int k = input_hd_pad_kind();
+    if (group == HD_NOTE_DUALSENSE) {
+        if (!cfg_bool("TOTK_DUALSENSE_HAPTICS")) return nullptr;
+        if (k != HD_PAD_DUALSENSE_USB && k != HD_PAD_DUALSENSE_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_DUALSENSE_BT ? "Bluetooth" : "USB");
+        return note;
+    }
+    if (group == HD_NOTE_XBOX) {
+        if (!cfg_bool("TOTK_XBOX_RUMBLE")) return nullptr;
+        if (k != HD_PAD_XBOX_USB && k != HD_PAD_XBOX_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_XBOX_BT ? "Bluetooth" : "USB");
+        return note;
+    }
+    if (!cfg_bool("TOTK_HD_RUMBLE")) return nullptr;
+    if (k != HD_PAD_SWITCH_USB && k != HD_PAD_SWITCH_BT) return nullptr;
+    static char note[64];
+    snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_SWITCH_BT ? "Bluetooth" : "USB");
+    return note;
+}
+
 // The action a key presses, or -1: the walk key is a key of its own, but Shift is B in the default bindings, and a
 // walk key that also presses something walks and does that something at the same time. The bindings come from a
 // snapshot, and every key of an action is looked at: binds_refresh rebuilds the live table on the polling thread while
@@ -863,6 +887,20 @@ static void tab_controls(float scale) {
     opt_toggle("TOTK_MENU_CURSOR", UI_MENU_MENU_CURSOR, UI_MENU_MENU_CURSOR_DESC);
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
+    opt_group(UI_MENU_GROUP_HD_SWITCH);
+    opt_toggle("TOTK_HD_RUMBLE", UI_MENU_HD_RUMBLE, UI_MENU_HD_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_SWITCH));
+    static const UiTextId bt_speed[] = {UI_MENU_HD_BT_STABLE, UI_MENU_HD_BT_BALANCED, UI_MENU_HD_BT_FAST};
+    opt_choice("TOTK_HD_RUMBLE_BT_SPEED", UI_MENU_HD_BT_SPEED, bt_speed, 3, UI_MENU_HD_BT_SPEED_DESC);
+    opt_toggle("TOTK_HD_RUMBLE_CRISP", UI_MENU_HD_CRISP, UI_MENU_HD_CRISP_DESC);
+    opt_toggle("TOTK_HD_RUMBLE_BT_CRISP", UI_MENU_HD_BT_CRISP, UI_MENU_HD_BT_CRISP_DESC);
+    opt_group(UI_MENU_GROUP_HD_DUALSENSE);
+    opt_toggle("TOTK_DUALSENSE_HAPTICS", UI_MENU_DS_HAPTICS, UI_MENU_DS_HAPTICS_DESC, false, hd_pad_note(HD_NOTE_DUALSENSE));
+    opt_slider("TOTK_DUALSENSE_VOLUME", UI_MENU_DS_VOLUME, 10, 100, UI_MENU_DS_VOLUME_DESC, 5, "%.0f %%");
+    opt_toggle("TOTK_DUALSENSE_CRISP", UI_MENU_DS_CRISP, UI_MENU_DS_CRISP_DESC);
+    opt_toggle("TOTK_DUALSENSE_BT_CRISP", UI_MENU_DS_BT_CRISP, UI_MENU_DS_BT_CRISP_DESC);
+    opt_group(UI_MENU_GROUP_HD_XBOX);
+    opt_toggle("TOTK_XBOX_RUMBLE", UI_MENU_XBOX_RUMBLE, UI_MENU_XBOX_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_XBOX));
+    opt_toggle("TOTK_XBOX_TRIGGERS", UI_MENU_XBOX_TRIGGERS, UI_MENU_XBOX_TRIGGERS_DESC);
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting
     // value, to set it above.
@@ -927,9 +965,9 @@ static bool validation_layer_present(void) {
 
 // Every setting the menu shows back to its default (the environment's keys stay), written to totk.ini.
 static void reset_all(void) {
-    const char *keys[128];
+    const char *keys[256];
     int n = 0;
-    for (const CfgMeta *m; n < 128 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
+    for (const CfgMeta *m; n < 256 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
     int done = cfg_reset(keys, n);
     opt_save_soon();
     rt_log("menu: reset %d settings to their defaults", done);
