@@ -105,3 +105,11 @@ folder's `licenses/` and in each component's own folder.
 | AppImage type-2 runtime (static; includes libfuse and squashfuse), the AppImage's first part; appimagetool packs the folder and is not distributed | https://github.com/AppImage/type2-runtime | MIT; libfuse LGPL-2.1; squashfuse BSD-2-Clause | the AppImage header |
 | MacNativeGames shader variant list | as in the installer release row above | MIT | `data/shader_list.tsv` |
 | Weeping of the Empire menu cursor: eui's focus box read through ScreenMgr, BoxCursorMgr and the screens' node lists, AnimButton's hit test, the stale-hit-pane fallback to the parts panes, the three writes of moveBoxCursor, the structure offsets (1.0.0; the ScreenMgr instance placed in 1.4.3 by us) | https://github.com/daniel-madrid-07/weeping-of-the-empire @ `df0586cdc5702ca19bbebfa59697e0b6980f6237` (`engine/runtime/totk_menu_cursor.cpp`), Copyright (c) 2026 daniel-madrid-07 | MIT | `runtime/menu_cursor.c` |
+
+## Item spawning
+
+Actor creation in `runtime/items.c` adapts the argument layout and address checks from
+[kreptiliri/lonk](https://github.com/kreptiliri/lonk/tree/d321a19c56a8806c1920b5a33823069ad7d117f4),
+`patches/lonk.patch` (MIT, Copyright (c) 2026 kreptiliri). The license is retained at
+`runtime/third_party/licenses/LICENSE-lonk.txt`. Player lookup follows the MIT-licensed
+MacNativeGames `world_survey.c` at the reference revision listed above.

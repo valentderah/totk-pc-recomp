@@ -94,6 +94,7 @@
  "prepare.xlate_in_use": "{path} is in use. Close the game, end any totk_xlate process left from an earlier run, then run the installer again.",
  "prepare.shader_list_missing": "The shader list is missing.",
  "prepare.romfs_patches_failed": "Writing the game data patches failed (exit code {code}). Details: {log}",
+ "prepare.items_failed": "Building the item list failed (exit code {code}). Details: {log}",
  "prepare.shaders_failed": "Preparing the shaders failed (exit code {code}). Details: {log}",
  "cleanup.romfs_unreadable": "The game data in {path} is missing or cannot be read after the install. Restart Windows, then run the installer again on the same folder: it extracts the game data again and keeps the rest.",
  "prepare.pack_failed": "Packing the shader cache failed (exit code {code}). Details: {log}",

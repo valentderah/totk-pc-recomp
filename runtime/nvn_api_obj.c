@@ -14,6 +14,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "items.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
@@ -622,6 +623,7 @@ NVN_API(nvnWindowInitialize) {
 // void nvnWindowFinalize(NVNwindow *w): nothing to release (MNG lists it in g_nops)
 NVN_API(nvnWindowFinalize) { (void)c; }
 NVN_API(nvnWindowSetPresentInterval) {
+    items_capture_frame(c);
     win_t *o = WN(c);
     int v = (int)arg_x(c, 1);
     if (o->interval != v) NVN_LOG("present interval %d -> %d", o->interval, v);

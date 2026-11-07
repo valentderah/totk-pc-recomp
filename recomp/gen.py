@@ -451,6 +451,9 @@ class Emitter:
             a = entry + 4 * i
             if a in labels:
                 emit(None, f'L_{a:x}:;')
+            if a == 0x700209ce1c:
+                self.uses_item_grant = True
+                emit(i, '    items_capture_grant(c);')
             k = ins.kind
             if a in self.patched:
                 emit(i, patch(i, ins, a))
@@ -513,6 +516,7 @@ def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
     emitter.uses_patches = False
+    emitter.uses_item_grant = False
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
@@ -521,6 +525,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
+    if emitter.uses_item_grant:
+        protos += 'void items_capture_grant(Cpu *c);\n'
     return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
             + '\n\n'.join(body) + '\n')
 
