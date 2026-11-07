@@ -3381,6 +3381,11 @@ void vk_exec_ub_flush(VkExec *ex) {
         ex->recorded++;
     }
     OV.np = 0;
+    // The full barrier barrier_to records next makes the copied bytes visible: later bindings read the real buffer,
+    // as after an update copied at once, and need no overlay lookups or merged copies (ov_at answers 0 for them, so
+    // the descriptor build skip rebuilds the draws that bound an overlay)
+    OV.n = 0;
+    ov_span();
     OV.c_flush++;
 }
 
