@@ -12,6 +12,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
+set stable   TOTK_STABLE_SHADOWS 0
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -1079,3 +1080,16 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+
+# Stable sun shadow cascades (TOTK_STABLE_SHADOWS, runtime/shadow_stable.c). The shadow module (main+0x5690a0, per
+# cascade) builds each cascade orthographic around a light view that turns with the camera; the view update
+# (main+0xb2fb0 -> 0xb372c) then fits each one to its casters in main+0xc31a0, which warps the cascades whose record
+# mode (+0x68) is 0 with a light-space perspective that follows the camera (cascades 1-3; cascade 0 has mode 1). The
+# texel grid moves on static surfaces every frame and shadows crawl and flicker while the camera moves. The set takes
+# the mode-1 path for every cascade (no warp, and no warp multiplied into the matrix), and both calls of main+0xc31a0
+# go through a host function at page +0xf70 that calls it and then sets the cascade on fixed axes around the bounding
+# sphere of its slice, moved in whole texels. The page is main+0x3adf000 on this verified build.
+site stable main c33ac 35005779 140002bb   # cbnz w25, +0xaec -> b +0xaec (warp block)
+site stable main c41c4 350001f9 1400000f   # cbnz w25, +0x3c  -> b +0x3c  (warp multiply)
+site stable main b3780 94003e88 94e8b1fc   # bl 0xc31a0 (cascade 0) -> bl page+0xf70
+site stable main b37cc 94003e75 94e8b1e9   # bl 0xc31a0 (cascades 1-3) -> bl page+0xf70

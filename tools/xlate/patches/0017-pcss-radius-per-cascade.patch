@@ -1,0 +1,61 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1583,7 +1583,18 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             SpvInstruction uv = context.VectorShuffle(v2, pCoords, pCoords, 0, 1);
+             SpvInstruction layerF = context.CompositeExtract(f32, pCoords, 2);
+             SpvInstruction layerI = context.ConvertFToS(s32, layerF);
+-            SpvInstruction searchV = context.CompositeConstruct(v2, searchR, searchR);
++
++            // TOTK: the radii are in UV of the map, and the cascades cover different widths, so the same radius is a
++            // different size on the ground in each (a wall where two cascades meet switches between hard and soft
++            // shadows as the camera moves). pcss_scale[layer] (runtime/vk_exec_draw.c support_fill; 1 unless the
++            // runtime knows the cascades' widths) scales the search radius and the disc's limits to the same size in
++            // metres on every cascade.
++            SpvInstruction scalePtr = context.AccessChain(context.TypePointer(StorageClass.Uniform, v4), context.ConstantBuffers[SupportBuffer.Binding],
++                                                          context.Constant(s32, (int)SupportBufferField.PcssScale));
++            SpvInstruction layerC = context.GlslSClamp(s32, layerI, context.Constant(s32, 0), context.Constant(s32, 3));
++            SpvInstruction scale = context.VectorExtractDynamic(f32, context.Load(v4, scalePtr), layerC);
++            SpvInstruction searchS = context.FMul(f32, searchR, scale);
++            SpvInstruction searchV = context.CompositeConstruct(v2, searchS, searchS);
+ 
+             SpvInstruction sum = zero, count = zero;
+             for (int i = 0; i < PcssSearch.Length; i += 2)
+@@ -1601,7 +1612,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             SpvInstruction avg = context.FDiv(f32, sum, context.GlslFMax(f32, count, one));
+             SpvInstruction penumbra = context.Select(f32, context.FOrdGreaterThan(b, count, zero),
+                                                      context.FMul(f32, context.FSub(f32, dRef, avg), lightSize), zero);
+-            SpvInstruction radius = context.GlslFClamp(f32, penumbra, minR, maxR);
++            SpvInstruction radius = context.GlslFClamp(f32, penumbra, context.FMul(f32, minR, scale), context.FMul(f32, maxR, scale));
+             SpvInstruction radiusV = context.CompositeConstruct(v2, radius, radius);
+ 
+             SpvInstruction acc = zero;
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -27,6 +27,8 @@ namespace Ryujinx.Graphics.Shader
+         PointSize,
+         Pcss,
+         ShadowSpread,
++        HostReserved,
++        PcssScale,
+     }
+ 
+     public struct SupportBuffer
+@@ -86,7 +88,9 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.S32, "tfe_vertex_count"),
+                 new StructureField(AggregateType.FP32, "point_size"),
+                 new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss"),
+-                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread")
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "host_reserved"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss_scale")
+             ]);
+         }
+ 
+@@ -104,5 +108,7 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<float> PointSize;
+         public Vector4<float> Pcss;
+         public Vector4<float> ShadowSpread;
++        public Vector4<float> HostReserved;   // TOTK: written by the runtime for its own shaders (the HDR tonemap)
++        public Vector4<float> PcssScale;
+     }
+ }

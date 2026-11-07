@@ -1,0 +1,230 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+@@ -41,6 +41,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public Dictionary<IoDefinition, Instruction> InputsPerPatch { get; } = new();
+         public Dictionary<IoDefinition, Instruction> OutputsPerPatch { get; } = new();
+ 
++        // TOTK: the view depth and the cascade split distances the lighting shader last compared (Instructions.cs
++        // CaptureCascadeSplit), read by the cascade compares that blend two cascades (GenerateCascadeBlend), and that blend's result.
++        public Instruction CascadeDepth { get; set; }
++        public Instruction CascadeSplits { get; set; }
++        public Instruction CascadeShade { get; set; }
++
+         public StructuredFunction CurrentFunction { get; set; }
+         private readonly Dictionary<AstOperand, Instruction> _locals = new();
+         private readonly Dictionary<int, Instruction> _funcArgs = new();
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1502,7 +1502,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             {
+                 if (hasLodLevel && isArray && coordsCount == 2 && operandsMask == ImageOperandsMask.Lod)
+                 {
+-                    result = GeneratePcssSample(context, declaration, image, pCoords, dRef, lod);
++                    result = GenerateCascadeBlend(context, declaration, image, pCoords, dRef, lod);
+                 }
+                 else if (hasLodLevel)
+                 {
+@@ -1631,6 +1631,165 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             return context.Phi(f32, pcss, pcssLabel, plain, plainLabel);
+         }
+ 
++        // TOTK: blending two sun cascades where one ends. The lighting shaders pick the cascade with a hard step,
++        // index = (depth > split0) + (depth > split1) + (depth > split2), the splits being element 58 .x .y .z of their
++        // lighting block (fp_c4), and shade from that cascade alone; a wall the split crosses then switches at once
++        // between the two cascades' looks, and the line moves with the camera. CaptureCascadeSplit keeps the depth and
++        // the splits of those compares in private variables; GenerateCascadeBlend, at each cascade compare, takes a
++        // second compare on the next cascade in the last part of the cascade's range and mixes the two. The second
++        // cascade's coordinates come from the first's by a scale and an offset, taken from the two cascades' lookup rows
++        // in the shader's own lighting block; that holds when the cascades share their axes (runtime/shadow_stable.c
++        // sets them up that way). cascade_blend.x is the band, as a fraction of the split distance (0: no blend, which
++        // the runtime keeps unless the cascades are its own).
++        private static bool HasCascadeArray(CodeGenContext context)
++        {
++            foreach (TextureDefinition texture in context.Properties.Textures.Values)
++            {
++                if ((texture.Type & (SamplerType.Mask | SamplerType.Array | SamplerType.Shadow)) ==
++                    (SamplerType.Texture2D | SamplerType.Array | SamplerType.Shadow))
++                {
++                    return true;
++                }
++            }
++
++            return false;
++        }
++
++        private static int CascadeSplitComponent(CodeGenContext context, IAstNode node)
++        {
++            if (node is not AstOperation load ||
++                load.Inst != Instruction.Load ||
++                load.StorageKind != StorageKind.ConstantBuffer ||
++                load.SourcesCount != 4 ||
++                load.GetSource(0) is not AstOperand { Type: OperandType.Constant } binding ||
++                load.GetSource(1) is not AstOperand { Type: OperandType.Constant, Value: 0 } ||
++                load.GetSource(2) is not AstOperand { Type: OperandType.Constant, Value: 58 } ||
++                load.GetSource(3) is not AstOperand { Type: OperandType.Constant, Value: < 3 } component ||
++                !context.Properties.ConstantBuffers.TryGetValue(binding.Value, out BufferDefinition buffer) ||
++                buffer.Name != "fp_c4")
++            {
++                return -1;
++            }
++
++            return component.Value;
++        }
++
++        private static void DeclareCascadeCapture(CodeGenContext context)
++        {
++            if (context.CascadeDepth != null)
++            {
++                return;
++            }
++
++            SpvInstruction f32 = context.TypeFP32(), v4 = context.TypeVector(f32, 4);
++            context.CascadeDepth = context.Variable(context.TypePointer(StorageClass.Private, f32), StorageClass.Private, context.Constant(f32, -1f));
++            context.CascadeSplits = context.Variable(context.TypePointer(StorageClass.Private, v4), StorageClass.Private, context.ConstantNull(v4));
++            context.CascadeShade = context.Variable(context.TypePointer(StorageClass.Private, f32), StorageClass.Private);
++            context.AddGlobalVariable(context.CascadeDepth);
++            context.AddGlobalVariable(context.CascadeSplits);
++            context.AddGlobalVariable(context.CascadeShade);
++        }
++
++        private static void CaptureCascadeSplit(CodeGenContext context, IAstNode src1, SpvInstruction a, IAstNode src2, SpvInstruction b)
++        {
++            if (context.Definitions.Stage != ShaderStage.Fragment || !HasCascadeArray(context))
++            {
++                return;
++            }
++
++            int c2 = CascadeSplitComponent(context, src2), c1 = CascadeSplitComponent(context, src1);
++            int component = c2 >= 0 ? c2 : c1;
++            if (component < 0 || (c1 >= 0 && c2 >= 0))
++            {
++                return;
++            }
++
++            DeclareCascadeCapture(context);
++            SpvInstruction f32 = context.TypeFP32();
++            context.Store(context.CascadeDepth, c2 >= 0 ? a : b);
++            SpvInstruction slot = context.AccessChain(context.TypePointer(StorageClass.Private, f32), context.CascadeSplits, context.Constant(context.TypeS32(), component));
++            context.Store(slot, c2 >= 0 ? b : a);
++        }
++
++        private static SpvInstruction SupportVec4(CodeGenContext context, SupportBufferField field)
++        {
++            SpvInstruction v4 = context.TypeVector(context.TypeFP32(), 4);
++            return context.Load(v4, context.AccessChain(context.TypePointer(StorageClass.Uniform, v4), context.ConstantBuffers[SupportBuffer.Binding],
++                                                        context.Constant(context.TypeS32(), (int)field)));
++        }
++
++        private static SpvInstruction GenerateCascadeBlend(CodeGenContext context, SamplerDeclaration declaration, SpvInstruction image,
++                                                           SpvInstruction pCoords, SpvInstruction dRef, SpvInstruction lod)
++        {
++            SpvInstruction first = GeneratePcssSample(context, declaration, image, pCoords, dRef, lod);
++            if (context.Definitions.Stage != ShaderStage.Fragment)
++            {
++                return first;
++            }
++
++            int c4Binding = -1;
++            foreach (BufferDefinition buffer in context.Properties.ConstantBuffers.Values)
++            {
++                if (buffer.Name == "fp_c4")
++                {
++                    c4Binding = buffer.Binding;
++                }
++            }
++
++            if (c4Binding < 0 || !context.ConstantBuffers.ContainsKey(c4Binding))
++            {
++                return first;
++            }
++
++            DeclareCascadeCapture(context);
++            SpvInstruction f32 = context.TypeFP32(), s32 = context.TypeS32(), b = context.TypeBool();
++            SpvInstruction v2 = context.TypeVector(f32, 2), v3 = context.TypeVector(f32, 3), v4 = context.TypeVector(f32, 4);
++            SpvInstruction zero = context.Constant(f32, 0f), one = context.Constant(f32, 1f);
++
++            SpvInstruction band = context.CompositeExtract(f32, SupportVec4(context, SupportBufferField.CascadeBlend), 0);
++            SpvInstruction depth = context.Load(f32, context.CascadeDepth);
++            SpvInstruction layerF = context.CompositeExtract(f32, pCoords, 2);
++            SpvInstruction layerI = context.ConvertFToS(s32, layerF);
++            SpvInstruction layerC = context.GlslSClamp(s32, layerI, context.Constant(s32, 0), context.Constant(s32, 2));
++            SpvInstruction split = context.VectorExtractDynamic(f32, context.Load(v4, context.CascadeSplits), layerC);
++            SpvInstruction width = context.FMul(f32, split, band);
++            SpvInstruction start = context.FSub(f32, split, width);
++            SpvInstruction w = context.GlslFClamp(f32, context.FDiv(f32, context.FSub(f32, depth, start), context.GlslFMax(f32, width, context.Constant(f32, 1e-6f))), zero, one);
++            SpvInstruction valid = context.LogicalAnd(b, context.LogicalAnd(b, context.FOrdGreaterThan(b, band, zero), context.SLessThan(b, layerI, context.Constant(s32, 3))),
++                                                      context.LogicalAnd(b, context.FOrdGreaterThan(b, depth, zero), context.FOrdGreaterThan(b, w, zero)));
++
++            SpvInstruction blendLabel = context.Label(), mergeLabel = context.Label();
++            context.Store(context.CascadeShade, first);   // (a private variable: OpVariable cannot sit mid-function)
++            context.SelectionMerge(mergeLabel, SelectionControlMask.MaskNone);
++            context.BranchConditional(valid, blendLabel, mergeLabel);
++
++            context.AddLabel(blendLabel);
++            // Cascade k's and k + 1's lookup rows (u, v, depth from view space: element 42 + 4k .. 44 + 4k of fp_c4),
++            // as this shader reads them: k + 1's are k's times a scale plus an offset when the cascades share their axes.
++            SpvInstruction c4 = context.ConstantBuffers[c4Binding];
++            SpvInstruction rowBase = context.IAdd(s32, context.Constant(s32, 42), context.IMul(s32, layerC, context.Constant(s32, 4)));
++            SpvInstruction Row(int add) => context.Load(v4, context.AccessChain(context.TypePointer(StorageClass.Uniform, v4), c4, context.Constant(s32, 0),
++                                                                                context.IAdd(s32, rowBase, context.Constant(s32, add))));
++            SpvInstruction kx = Row(0), ky = Row(1), kz = Row(2), nx = Row(4), ny = Row(5), nz = Row(6);
++            SpvInstruction Xyz(SpvInstruction r) => context.VectorShuffle(v3, r, r, 0, 1, 2);
++            SpvInstruction scale = context.FDiv(f32, context.GlslLength(f32, Xyz(nx)), context.GlslFMax(f32, context.GlslLength(f32, Xyz(kx)), context.Constant(f32, 1e-20f)));
++            SpvInstruction Offset(SpvInstruction n, SpvInstruction k) => context.FSub(f32, context.CompositeExtract(f32, n, 3), context.FMul(f32, scale, context.CompositeExtract(f32, k, 3)));
++            SpvInstruction map = context.CompositeConstruct(v4, scale, Offset(nx, kx), Offset(ny, ky), Offset(nz, kz));
++            SpvInstruction u = context.FAdd(f32, context.FMul(f32, context.CompositeExtract(f32, pCoords, 0), scale), context.CompositeExtract(f32, map, 1));
++            SpvInstruction v = context.FAdd(f32, context.FMul(f32, context.CompositeExtract(f32, pCoords, 1), scale), context.CompositeExtract(f32, map, 2));
++            SpvInstruction coords = context.CompositeConstruct(v3, u, v, context.FAdd(f32, layerF, one));
++            SpvInstruction z = context.FAdd(f32, context.FMul(f32, dRef, scale), context.CompositeExtract(f32, map, 3));
++            SpvInstruction zClamped = context.GlslFClamp(f32, z, zero, one);   // rounded to the map's 16 bits as above
++            SpvInstruction zRounded = context.FMul(f32, context.GlslFloor(f32, context.FAdd(f32, context.FMul(f32, zClamped, context.Constant(f32, 65535f)), context.Constant(f32, 0.5f))),
++                                                   context.Constant(f32, 1f / 65535f));
++            SpvInstruction second = GeneratePcssSample(context, declaration, image, coords, zRounded, lod);
++            context.Store(context.CascadeShade, context.GlslFMix(f32, first, second, w));
++            context.Branch(mergeLabel);
++
++            context.AddLabel(mergeLabel);
++            return context.Load(f32, context.CascadeShade);
++        }
++
+         private static OperationResult GenerateTextureQuerySamples(CodeGenContext context, AstOperation operation)
+         {
+             AstTextureOperation texOp = (AstTextureOperation)operation;
+@@ -1778,7 +1937,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+             else if (operation.Inst.HasFlag(Instruction.FP32))
+             {
+-                result = emitF(context.TypeBool(), context.GetFP32(src1), context.GetFP32(src2));
++                SpvInstruction a = context.GetFP32(src1), b = context.GetFP32(src2);
++                CaptureCascadeSplit(context, src1, a, src2, b);
++                result = emitF(context.TypeBool(), a, b);
+             }
+             else
+             {
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -29,6 +29,7 @@ namespace Ryujinx.Graphics.Shader
+         ShadowSpread,
+         HostReserved,
+         PcssScale,
++        CascadeBlend,
+     }
+ 
+     public struct SupportBuffer
+@@ -90,7 +91,8 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss"),
+                 new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread"),
+                 new StructureField(AggregateType.Vector4 | AggregateType.FP32, "host_reserved"),
+-                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss_scale")
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss_scale"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "cascade_blend")
+             ]);
+         }
+ 
+@@ -110,5 +112,6 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<float> ShadowSpread;
+         public Vector4<float> HostReserved;   // TOTK: written by the runtime for its own shaders (the HDR tonemap)
+         public Vector4<float> PcssScale;
++        public Vector4<float> CascadeBlend;
+     }
+ }
