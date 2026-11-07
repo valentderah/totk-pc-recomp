@@ -73,8 +73,9 @@ import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
 
-WIN = os.name == 'nt'
-if not WIN:
+HOST_WIN = os.name == 'nt'
+WIN = HOST_WIN   # target platform: True means build a Windows PE (.exe); flipped by --build-windows
+if not HOST_WIN:
     import resource
 ROOT = Path(__file__).resolve().parent.parent
 # In a git worktree (tools/worktree.py) build/ and generated/ are junctions into the main checkout, and resolve() follows
@@ -90,9 +91,9 @@ def on_path(name):
     return Path(found) if found else Path('/usr/bin') / name
 
 
-CLANG = UCRT / 'clang.exe' if WIN else on_path('clang')
-NINJA = UCRT / 'ninja.exe' if WIN else on_path('ninja')
-SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll'] if WIN else []
+CLANG = UCRT / 'clang.exe' if HOST_WIN else on_path('clang')
+NINJA = UCRT / 'ninja.exe' if HOST_WIN else on_path('ninja')
+SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll'] if HOST_WIN else []
 
 # Flags for generated code as LAS Recomp builds it (Makefile GENFLAGS, Windows), plus -march for the FP/SIMD lowering.
 # --cpu v2 replaces the level for CPUs without AVX2/FMA; runtime/fma.c then supplies the correctly rounded fma the
@@ -139,21 +140,36 @@ def set_pgo(pgo, out):
                  '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
     GEN_FLAGS.extend(flags + PGO_NAMES)
     RT_FLAGS.extend(flags + PGO_NAMES)
-if WIN:
-    # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
-    # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
-    RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
-    # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/totk.map"']   # the map feeds tools/prof_report.py
-    LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
-    VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
-else:
-    # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
-    # $ORIGIN: a libSDL3.so.0 next to totk comes before the system's (the release's portable folder).
-    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
-                  '"-Wl,-Map=$builddir/totk.map"']
-    LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
-    VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+def apply_target(windows):
+    """Configure the target-platform globals (RT_FLAGS, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE, WIN, EXE) for a Windows or
+    Linux target. Called at import with the host default and again when --build-windows is given."""
+    global WIN, EXE, LINK_FLAGS, LINK_LIBS, VMA_INCLUDE
+    EXE = 'totk.exe' if windows else 'totk'
+    WIN = windows
+    if windows:
+        for fl in (GEN_FLAGS, RT_FLAGS):
+            if '--target=x86_64-w64-mingw32' not in fl:
+                fl.insert(0, '--target=x86_64-w64-mingw32')
+        if '-D_WIN32_WINNT=0x0A00' not in RT_FLAGS:
+            RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
+        # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
+        if HOST_WIN:
+            LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/totk.map"']   # the map feeds tools/prof_report.py
+        else:
+            LINK_FLAGS = ['-fuse-ld=lld', '-Xlinker', '"--Map=$builddir/totk.map"']
+        if '--target=x86_64-w64-mingw32' not in LINK_FLAGS:
+            LINK_FLAGS.insert(0, '--target=x86_64-w64-mingw32')
+        LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
+        VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
+    else:
+        # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
+        # $ORIGIN: a libSDL3.so.0 next to totk comes before the system's (the release's portable folder).
+        LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
+                      '"-Wl,-Map=$builddir/totk.map"']
+        LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
+        VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+
+apply_target(HOST_WIN)
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
 # into toolchain/vma: one MIT header (THIRD_PARTY_NOTICES.md), checked against its hash.
 VMA_FETCH = ('https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h',
@@ -189,7 +205,7 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # functions sit on it). mouse_direct.c also registers host callbacks relative to that version's patch page.
 INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c'}
 LIB_NAME = 'libtotkrt.a'
-AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
+AR = UCRT / 'llvm-ar.exe' if HOST_WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
@@ -490,7 +506,7 @@ def main_objects(gen, main_out, rt_dir, mods):
             pairs[o] = theirs
     # Ninja runs in the main checkout: the main build.ninja is relative to it, and the worktree's runtime/ files carry newer
     # mtimes that would make every object look stale. Header equality is checked byte for byte below.
-    env = dict(os.environ, PATH=str(UCRT) + os.pathsep + os.environ.get('PATH', '')) if WIN else dict(os.environ)
+    env = dict(os.environ, PATH=str(UCRT) + os.pathsep + os.environ.get('PATH', '')) if HOST_WIN else dict(os.environ)
     targets = [ninja_path(t) for t in pairs.values()]
     for i in range(0, len(targets), 200):
         r = subprocess.run([str(NINJA), '-f', str(main_ninja), '-n', '-d', 'explain'] + targets[i:i + 200], cwd=MAIN_ROOT,
@@ -661,7 +677,7 @@ CREATE_SUSPENDED = 0x4
 def run_measured(cmd, env):
     """Run cmd in its own job object. Returns (exit code, seconds, peak bytes of one process, peak bytes of all).
     Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting)."""
-    if not WIN:
+    if not HOST_WIN:
         t0 = time.monotonic()
         code = subprocess.call(cmd, cwd=ROOT, env=env)
         peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024   # KiB on Linux
@@ -699,7 +715,7 @@ def run_measured(cmd, env):
 
 
 def total_ram():
-    if not WIN:
+    if not HOST_WIN:
         return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
 
     class MemStatus(ctypes.Structure):
@@ -752,8 +768,8 @@ def elf_sections(path):
 
 def objdump_tool():
     """The disassembler for tools/check_isa.py: llvm-objdump of --toolchain, else MSYS2's or the one on PATH."""
-    suffix = '.exe' if WIN else ''
-    for d in (TOOLCHAIN_BIN, UCRT if WIN else None):
+    suffix = '.exe' if HOST_WIN else ''
+    for d in (TOOLCHAIN_BIN, UCRT if HOST_WIN else None):
         for name in ('llvm-objdump', 'objdump'):
             if d and (d / (name + suffix)).is_file():
                 return str(d / (name + suffix))
@@ -764,8 +780,53 @@ def mib(n):
     return f'{n / (1 << 20):,.1f} MiB'
 
 
+def ensure_deps_mingw():
+    """Download the latest Windows release and extract runtime/deps into toolchain/deps-mingw."""
+    global DEPS
+    import json as _json
+    import zipfile
+    print('build_game: fetching latest release info...')
+    with urllib.request.urlopen('https://api.github.com/repos/valentderah/totk-pc-recomp/releases/latest', timeout=60) as r:
+        info = _json.loads(r.read())
+    asset = next(a for a in info['assets'] if a['name'].endswith('-windows.zip'))
+    url = asset['browser_download_url']
+    zip_path = ROOT / 'toolchain' / asset['name']
+    if not zip_path.is_file():
+        print(f'build_game: downloading {asset["name"]} ({asset["size"] // (1<<20)} MiB)...')
+        urllib.request.urlretrieve(url, zip_path)
+    print('build_game: extracting runtime/deps -> toolchain/deps-mingw')
+    DEFAULT_DEPS.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        for m in z.infolist():
+            # release layout: .../runtime/deps/<...>
+            idx = m.filename.find('runtime/deps/')
+            if idx != -1:
+                rel = m.filename[idx + len('runtime/deps/'):]
+                if not rel or m.is_dir():
+                    continue
+                dst = DEFAULT_DEPS / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(z.read(m))
+                continue
+            # also grab the runtime DLLs the exe loads (SDL3.dll, libopus-0.dll, libiconv-2.dll)
+            if Path(m.filename).name.lower() in ('sdl3.dll', 'libopus-0.dll', 'libiconv-2.dll'):
+                dst = DEFAULT_DEPS / 'bin' / Path(m.filename).name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(z.read(m))
+                continue
+            # and the shader translator the runtime shells out to
+            if Path(m.filename).name.lower() == 'totk_xlate.exe':
+                dst = DEFAULT_DEPS / 'bin' / 'totk_xlate.exe'
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(z.read(m))
+    DEPS = DEFAULT_DEPS.resolve()
+    print(f'build_game: deps ready at {DEPS}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--build-windows', action='store_true',
+                    help='build a Windows PE (.exe) even on a Linux host, using --toolchain (llvm-mingw) and --deps')
     ap.add_argument('--version', default='v121', help='game version (default v121)')
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='target CPU level: v3 (AVX2/FMA, default) or v2 (SSE4.2, for older CPUs; slower)')
@@ -810,6 +871,8 @@ def main():
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
+    if args.build_windows:
+        apply_target(True)
     set_cpu(args.cpu)
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
@@ -838,15 +901,17 @@ def main():
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:
         NINJA = args.ninja.resolve()
-    elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():
-        NINJA = ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))   # the release folder (tools/make_release.py)
+    elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if HOST_WIN else ''))).is_file():
+        NINJA = ROOT / 'bin' / ('ninja' + ('.exe' if HOST_WIN else ''))   # the release folder (tools/make_release.py)
     dlls = SDL3_DLLS
-    suffix = '.exe' if WIN else ''
+    suffix = '.exe' if HOST_WIN else ''
     if args.toolchain:
         TOOLCHAIN_BIN = (args.toolchain / 'bin').resolve()
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
-        WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+        WINDRES = TOOLCHAIN_BIN / f'llvm-windres{suffix}'
+    if args.build_windows and not args.deps and not DEFAULT_DEPS.is_dir():
+        ensure_deps_mingw()
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
@@ -931,7 +996,7 @@ def main():
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
-    if WIN or TOOLCHAIN_BIN:
+    if HOST_WIN or TOOLCHAIN_BIN:
         env['PATH'] = str(TOOLCHAIN_BIN or UCRT) + os.pathsep + os.environ.get('PATH', '')
     base = [str(NINJA), '-f', str(out / 'build.ninja'), '-j', str(jobs)]
     nfiles = sum(len(v) for v in mods.values())
@@ -966,6 +1031,9 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    xlate = DEPS / 'bin' / 'totk_xlate.exe' if DEPS else None
+    if xlate and xlate.is_file():
+        shutil.copy2(xlate, exe.parent / xlate.name)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
