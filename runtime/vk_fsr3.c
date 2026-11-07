@@ -16,7 +16,6 @@
 // pixels from this frame's position to last frame's (FSR's convention, scale 1), and the jitter the scene was drawn
 // with. FSR also wants the camera's near and far planes and vertical field of view to judge depth differences;
 // vk_dlaa.c only has the combined view-projection on the GPU, so fixed values stand in for them.
-#include <windows.h>
 #include <stdlib.h>
 #include <string.h>
 
