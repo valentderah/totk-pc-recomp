@@ -154,7 +154,8 @@ def set_lto(out):
     never inlined; ThinLTO imports the small hot callees (guided by --pgo) and inlines them, which also drops the guest
     register spills and reloads around those calls. Code generation moves to the link, which runs one job per CPU and
     keeps a cache under out/ltocache, so a relink with unchanged objects is quick. The runtime stays out of it: on a
-    Phenom II X6 it made no measurable difference."""
+    Phenom II X6 it made no measurable difference. On by default on Linux (the K10 build's platform); the link peaks
+    near 5 GB and takes about 5 minutes on 16 threads. Windows keeps it opt-in: the MinGW lld flags are untested."""
     GEN_FLAGS.append('-flto=thin')
     LINK_FLAGS.extend(['-flto=thin', f'-Wl,--thinlto-jobs={os.cpu_count() or 4}', '-Wl,--lto-O2',
                        f'-Wl,--thinlto-cache-dir={cmd_path(out / "ltocache")}'])
@@ -827,8 +828,9 @@ def main():
                     help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
                          '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
                          '.profdata (tools/pgo.py merge)')
-    ap.add_argument('--lto', action='store_true',
-                    help='ThinLTO over the generated code: cross-chunk inlining at link time (slower, larger link)')
+    ap.add_argument('--lto', action=argparse.BooleanOptionalAction, default=not WIN,
+                    help='ThinLTO over the generated code: cross-chunk inlining at link time (slower, larger link; '
+                         'default on Linux, --no-lto turns it off)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
