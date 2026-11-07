@@ -593,6 +593,10 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
     VkImageView view;
     if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (img->gone) {   // dropped since the lookup: its views were purged and a new one would outlive the image
+        vk_defer_view(view);
+        return view;
+    }
     ViewNode *n = malloc(sizeof *n);
     if (!n) rt_fatal("vk: out of memory");
     *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
@@ -619,11 +623,15 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
         if (blocks) ci.pNext = &use;   // not the BC image's sampling and transfer usages
         if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS)
             rt_fatal("vk: render target view (format %d) could not be created", (int)format);
-        ViewNode *n = malloc(sizeof *n);
-        if (!n) rt_fatal("vk: out of memory");
-        *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
-        nvn_hm_put(&views_by_image, &img->image, n);
-        nvn_hm_put(&view_of, &k, (void *)view);
+        if (img->gone) {   // dropped since resolve_target (get_view)
+            vk_defer_view(view);
+        } else {
+            ViewNode *n = malloc(sizeof *n);
+            if (!n) rt_fatal("vk: out of memory");
+            *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
+            nvn_hm_put(&views_by_image, &img->image, n);
+            nvn_hm_put(&view_of, &k, (void *)view);
+        }
     }
     vk_texture_unlock();
     return view;
