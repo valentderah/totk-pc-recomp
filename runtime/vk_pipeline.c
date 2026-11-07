@@ -3168,6 +3168,118 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     return streams;
 }
 
+// The values vk_pipeline_set_dynamic records for a state, as the commands take them.
+typedef struct {
+    VkCullModeFlags cull;
+    VkFrontFace front;
+    VkPrimitiveTopology topo;
+    VkBool32 dt, dw, st, bias, discard, restart, clamp, a2c;
+    VkCompareOp df, scmp[2];
+    VkStencilOp sop[2][3];               // fail, pass, depth fail; front, back
+    VkPolygonMode poly;
+    int n;                               // colour attachments en, eq and wm hold
+    VkBool32 en[8];
+    VkColorBlendEquationEXT eq[8];
+    VkColorComponentFlags wm[8];
+} DynVals;
+
+static void dyn_vals(const VkPipeState *s, DynVals *o) {
+    const poly_st *pl = &s->poly;
+    const ds_st *d = &s->ds;
+    memset(o, 0, sizeof *o);
+    o->cull = (VkCullModeFlags)(pl->cull & 3);
+    o->front = pl->front == NVN_FRONT_FACE_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    o->topo = vk_pipeline_topology(s->prim);
+    o->dt = d->dt, o->dw = d->dw, o->st = d->st;
+    o->df = compare_op(d->df);
+    o->sop[0][0] = stencil_op(d->fail_f), o->sop[0][1] = stencil_op(d->zpass_f), o->sop[0][2] = stencil_op(d->zfail_f);
+    o->sop[1][0] = stencil_op(d->fail_b), o->sop[1][1] = stencil_op(d->zpass_b), o->sop[1][2] = stencil_op(d->zfail_b);
+    o->scmp[0] = compare_op(d->sf_f), o->scmp[1] = compare_op(d->sf_b);
+    unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
+    o->bias = (pl->offset_en >> mode & 1) != 0;
+    o->discard = s->raster_discard != 0, o->restart = s->prim_restart != 0;
+    o->clamp = s->depth_clamp != 0, o->a2c = s->ms.a2c != 0;
+    o->poly = polygon_mode(pl->mode);
+    o->n = target_count(s);
+    for (int i = 0; i < o->n; i++) {
+        const blend_st *b = &s->blend[i];
+        o->en[i] = (s->color.blend_en >> i & 1) && blendable(target_format(s->color_fmt[i], NULL, NULL));
+        o->eq[i] = (VkColorBlendEquationEXT){blend_factor(b->src_rgb), blend_factor(b->dst_rgb), blend_op(b->eq_rgb),
+                                             blend_factor(b->src_a), blend_factor(b->dst_a), blend_op(b->eq_a)};
+        o->wm[i] = target_wmask(s, i);
+    }
+}
+
+// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it (the replay thread only):
+// the values, the inputs of the vertex input and the vertex bindings it reads. Invariant while the caller passes
+// valid 1: cb holds DC.v for every dynamic state of P.dyn, colour attachments [0, DC.v.n) included.
+static struct {
+    DynVals v;
+    const GfxShader *vs;
+    uint32_t vattr[16];
+    vs_st vstream[16];
+    uint32_t streams;
+} DC;
+
+uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s, int valid, uint32_t *cmds) {
+    *cmds = 0;
+    if (!ensure_init()) return VK_PIPE_ALL_BINDINGS;
+    if (!valid) {   // a new command buffer, or one whose dynamic state someone else set: everything, as before
+        uint32_t streams = vk_pipeline_set_dynamic(cb, s);
+        dyn_vals(s, &DC.v);
+        DC.vs = s->vs, DC.streams = streams;
+        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+        *cmds = 1;
+        return streams;
+    }
+    DynVals v;
+    dyn_vals(s, &v);
+    const DynVals *o = &DC.v;
+    uint32_t k = 0;
+    if (v.cull != o->cull) vkCmdSetCullMode(cb, v.cull), k++;
+    if (v.front != o->front) vkCmdSetFrontFace(cb, v.front), k++;
+    if (v.topo != o->topo) vkCmdSetPrimitiveTopology(cb, v.topo), k++;
+    if (v.dt != o->dt) vkCmdSetDepthTestEnable(cb, v.dt), k++;
+    if (v.dw != o->dw) vkCmdSetDepthWriteEnable(cb, v.dw), k++;
+    if (v.df != o->df) vkCmdSetDepthCompareOp(cb, v.df), k++;
+    if (v.st != o->st) vkCmdSetStencilTestEnable(cb, v.st), k++;
+    for (int f = 0; f < 2; f++)
+        if (memcmp(v.sop[f], o->sop[f], sizeof v.sop[f]) || v.scmp[f] != o->scmp[f])
+            vkCmdSetStencilOp(cb, f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT, v.sop[f][0], v.sop[f][1],
+                              v.sop[f][2], v.scmp[f]),
+                k++;
+    if (v.bias != o->bias) vkCmdSetDepthBiasEnable(cb, v.bias), k++;
+    if (v.discard != o->discard) vkCmdSetRasterizerDiscardEnable(cb, v.discard), k++;
+    if (v.restart != o->restart) vkCmdSetPrimitiveRestartEnable(cb, v.restart), k++;
+    // The vertex input is made from the vertex shader's inputs and the attribute and stream states alone
+    // (vertex_input): a draw that keeps all three keeps it, and the bindings it reads.
+    if (s->vs != DC.vs || memcmp(s->vattr, DC.vattr, sizeof DC.vattr) || memcmp(s->vstream, DC.vstream, sizeof DC.vstream)) {
+        uint32_t streams = VK_PIPE_ALL_BINDINGS;
+        if (s->vs) {
+            VtxInput vi;
+            vertex_input(s, &vi);
+            if (P.dyn_vi) rec_vertex_input(P.set_vi, cb, vi.n_bind, vi.b, vi.n_attr, vi.a), k++;
+            streams = 0;
+            for (uint32_t i = 0; i < vi.n_bind; i++) streams |= 1u << vi.b[i].binding;
+        }
+        DC.vs = s->vs, DC.streams = streams;
+        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+    }
+    if (P.dyn_clamp && v.clamp != o->clamp) rec_bool(P.set_clamp, cb, v.clamp), k++;
+    if (P.dyn_poly && v.poly != o->poly) rec_polygon_mode(P.set_poly, cb, v.poly), k++;
+    if (P.dyn_a2c && v.a2c != o->a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, v.a2c), k++;
+    // Attachments past o->n may hold nothing yet in this command buffer: a state with more targets sets all of them.
+    // One with fewer leaves the ones past its count as they were, which no draw of it reads.
+    uint32_t n = (uint32_t)v.n;
+    int all = v.n > o->n;
+    if (n && P.dyn_blend_en && (all || memcmp(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
+    if (n && P.dyn_blend_eq && (all || memcmp(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
+    if (n && P.dyn_wmask && (all || memcmp(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
+    DC.v = v;   // the invariant now covers [0, v.n) only
+    *cmds = k;
+    return DC.streams;
+}
+
 // ---- statistics, persistence, teardown
 
 void vk_pipeline_stats(VkPipeStats *s) {
