@@ -55,6 +55,14 @@ int32_t ikb_wheel_take(void) { return 0; }
 int plat_dir_exists(const char *p) { (void)p; return 1; }
 void rt_log(const char *fmt, ...) { (void)fmt; }
 
+// The picker uses this for the double-click window on the preview's camera. A monotonic counter is enough here: the
+// test never depends on the wall clock, only on the value changing between calls.
+uint64_t plat_now_ns(void) {
+    static uint64_t t;
+    t += 1000000ull;   // 1 ms per call
+    return t;
+}
+
 int plat_dir_list(const char *d, int (*cb)(const char *, void *), void *c) {
     (void)d;
     // A folder whose name begins with a dot is a real, openable folder: the listing must offer it. "." and ".." are the
@@ -91,10 +99,14 @@ static void make_blob(void) {
     const float zs[3] = {-1.0f, 1.0f, -1.0f};
     for (int k = 0; k < 3; k++) {
         uint8_t *a = g_cai_blob + 12 + k * 280;
-        const float zero = 0.0f;
-        memcpy(a + 12, &xs[k], 4);   // column-major translation: element 3 is x
-        memcpy(a + 16, &zero, 4);
-        memcpy(a + 20, &zs[k], 4);   // element 11 is z
+        // The first matrix is row-major: a rotation in the upper-left 3x3 and the position at elements 3, 7 and 11
+        // (bytes 12, 28 and 44). The rotation has to be a real one - an identity here - because the preview builds each
+        // part's box from it, and an all-zero matrix would collapse the box to a point.
+        const float ident[16] = {1, 0, 0, xs[k],
+                                 0, 1, 0, 0,
+                                 0, 0, 1, zs[k],
+                                 0, 0, 0, 1};
+        memcpy(a, ident, sizeof ident);
         snprintf((char *)a + 152, 128, "Part_%d", k);
     }
     const float bb[6] = {-3.0f, -1.0f, -2.0f, 3.0f, 1.0f, 2.0f};
@@ -226,17 +238,18 @@ int main(void) {
         bp_picker_layout(&f, 1920, 1080, 1.0f);
 
         if (f.preview) {            snprintf(msg, sizeof msg, "preview: the parsed blueprint has 3 parts (title '%s')", f.preview_title);
-            check(f.preview_parts == 3, msg);
+            check(f.preview_faces >= 3 && f.preview_faces <= 3 * 3, msg);
             snprintf(msg, sizeof msg, "preview: the scatter is normalised into 0..1");
             int ok = 1;
-            for (int k = 0; k < f.preview_parts; k++)
-                if (f.preview_box[k].x < 0 || f.preview_box[k].x > 1 ||
-                    f.preview_box[k].y < 0 || f.preview_box[k].y > 1) ok = 0;
+            for (int k = 0; k < f.preview_faces; k++)
+                for (int v = 0; v < 4; v++)
+                    if (f.preview_face[k].x[v] < -0.05f || f.preview_face[k].x[v] > 1.05f ||
+                        f.preview_face[k].y[v] < -0.05f || f.preview_face[k].y[v] > 1.05f) ok = 0;
             check(ok, msg);
             snprintf(msg, sizeof msg, "preview: the box lies inside the panel");
             check(f.preview_x >= f.x && f.preview_y >= f.y &&
                   f.preview_x + f.preview_w <= f.x + f.w && f.preview_y + f.preview_h <= f.y + f.h, msg);
-            printf("preview: %d parts, title '%s', note '%s'\n", f.preview_parts, f.preview_title, f.preview_note);
+            printf("preview: %d faces, title '%s', note '%s'\n", f.preview_faces, f.preview_title, f.preview_note);
         } else {
             // Reaching the row with the D-pad depends on the list length; report rather than fail when it is a folder.
             printf("preview: the cursor did not land on the file row (row selected, no preview)\n");
@@ -295,8 +308,8 @@ int main(void) {
         if (fx >= 0) {
             // Pointing at the file must show the preview on this very frame, with no pad press in between.
             bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
-            snprintf(msg, sizeof msg, "pointer preview: appears while hovering the file (%d parts)", f.preview_parts);
-            check(f.preview && f.preview_parts == 3, msg);
+            snprintf(msg, sizeof msg, "pointer preview: appears while hovering the file (%d faces)", f.preview_faces);
+            check(f.preview && f.preview_faces >= 3, msg);
         }
     }
 
@@ -384,6 +397,62 @@ int main(void) {
         check(!has_r, msg);
         snprintf(msg, sizeof msg, "prompts: A and B are always offered (%d prompts)", prompts);
         check(prompts >= 2 && !strcmp(f.prompt[0].key, "A") && !strcmp(f.prompt[1].key, "B"), msg);
+    }
+
+    // ---- the camera: a drag turns it, the projection follows, and it stays inside its poles.
+    {
+        char msg[192];
+        float yaw = 0, pitch = 0;
+        bp_picker_camera_reset();
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: the default view is the documented three-quarter angle (%.2f, %.2f)", yaw,
+                 pitch);
+        check(yaw > 0.60f && yaw < 0.62f && pitch > 0.48f && pitch < 0.50f, msg);
+
+        // Turning it changes the projection of the same file, which is what a drag has to achieve. The preview only
+        // exists while a file is highlighted, so point at the file row first.
+        bp_picker_camera_reset();
+        bp_picker_wheel(99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        bp_picker_wheel(-99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        int fx = -1, fy = -1, rowseen = 0;
+        for (int k = 0; k < f.nrect; k++) {
+            if (f.rect[k].kind != BP_RECT_ROW) continue;
+            if (f.scroll + rowseen == f.count - 1) {
+                fx = f.rect[k].x + f.rect[k].w / 2;
+                fy = f.rect[k].y + f.rect[k].h / 2;
+            }
+            rowseen++;
+        }
+        if (fx >= 0) bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
+        const int hadFaces = f.preview_faces;
+        const float beforeX = hadFaces > 0 ? f.preview_face[0].x[0] : 0.0f;
+        bp_picker_camera_set(yaw + 0.9f, pitch);
+        // The pointer has to stay on the file: the preview follows the pointer's row, and a layout with no pointer would
+        // fall back to the pad's row and show nothing.
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
+        snprintf(msg, sizeof msg, "camera: turning it re-projects the build (%d faces, %.4f -> %.4f)", f.preview_faces,
+                 beforeX, hadFaces > 0 ? f.preview_face[0].x[0] : 0.0f);
+        check(hadFaces > 0 && f.preview_faces > 0 && f.preview_face[0].x[0] != beforeX, msg);
+
+        // Pitch is clamped short of the poles: past them the build turns inside out.
+        bp_picker_camera_set(0.0f, 99.0f);
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: pitch is clamped (%.2f)", pitch);
+        check(pitch < 1.40f && pitch > 1.39f, msg);
+        bp_picker_camera_set(0.0f, -99.0f);
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: pitch is clamped the other way (%.2f)", pitch);
+        check(pitch > -1.40f && pitch < -1.39f, msg);
+
+        bp_picker_camera_reset();
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        snprintf(msg, sizeof msg, "camera: the reset restores the default view");
+        bp_picker_camera(&yaw, &pitch);
+        check(yaw > 0.60f && yaw < 0.62f && pitch > 0.48f && pitch < 0.50f, msg);
     }
 
     printf("picker layout: %d checks, %d failures\n", checks, failures);
