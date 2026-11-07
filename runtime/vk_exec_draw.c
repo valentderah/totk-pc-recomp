@@ -175,7 +175,8 @@ static struct {
     struct { uint64_t dst; VkBuffer src; VkDeviceSize soff; VkMemSpan sp; uint64_t size; } p[OV_N];   // to copy
     struct { uint64_t lo, hi; } f[OV_FOREIGN];   // GPU writes of other kinds
     // since the last perf line (vk_exec_ub_perf)
-    uint64_t c_update, c_overlaid, c_flush, c_bind, c_merged, c_mixed, c_inpass, c_outside, c_early;
+    uint64_t c_update, c_overlaid, c_overlaid_out, c_flush, c_bind, c_merged, c_mixed, c_inpass, c_outside, c_early,
+        c_order;
 } OV = {.mode = -1};
 
 // A binding without a size reaches to the end of its backing: as far as the overlays go, for ov_at.
@@ -3254,11 +3255,11 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
 // it read the new bytes, those before it the old ones. Replayed as a buffer copy at that point it needs a barrier
 // against the earlier draws, and a barrier ends the open pass; the terrain and the sky islands' meshes update before
 // most of their draws, about 200 updates inside passes in a field submission, each a pass end, a full barrier and a
-// pass begin. Here an update inside a pass goes into the scratch buffer as an overlay: the later bindings of a range it
-// covers bind the scratch bytes (ub_bind, from ubo_info and bind_range), and the copies into the real buffers wait for
-// the next full barrier, where the pass has ended anyway (vk_exec_ub_flush from vk_exec.c barrier_to: a pass end, a
-// dispatch, a transfer, the end of the submission), behind one barrier of their own. Each draw reads the bytes it would
-// have read with the copy in between.
+// pass begin. Here an update inside a pass, and with TOTK_UB_OVERLAY_OUT one between passes, goes into the scratch
+// buffer as an overlay: the later bindings of a range it covers bind the scratch bytes (ub_bind, from ubo_info and
+// bind_range), and the copies into the real buffers wait for the next full barrier, where the pass has ended anyway
+// (vk_exec_ub_flush from vk_exec.c barrier_to: a pass end, a dispatch, a transfer, the end of the submission), behind
+// one barrier of their own. Each draw reads the bytes it would have read with the copy in between.
 // - A GPU write of another kind (a copy, a fill, a shader's storage write) is ordered with the copies only by the
 //   command buffer. vk_exec_ub_foreign notes it and retires the overlays it touches; an update over such bytes takes
 //   the old path. A shader that writes a range with copies pending gets them first (ub_written: the pass restarts).
@@ -3272,6 +3273,16 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
 static int ov_on(void) {
     if (OV.mode < 0) OV.mode = rt_knob("UB_OVERLAY", "1");
     return RT_KNOB_ON(OV.mode);
+}
+
+// TOTK_UB_OVERLAY_OUT: updates between passes become overlays too. Copied at once, each needs a full barrier of its
+// own, and the copy it records makes the next update or pass begin need another: a run of k updates before a pass cost
+// k + 1 barriers. Every GPU reader of the real buffer after them comes behind barrier_to, which records the copies
+// first (a pass begin, a dispatch, a transfer, the end of the submission), so they cost one barrier for the run.
+static int ov_out_on(void) {
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("UB_OVERLAY_OUT", "1");
+    return RT_KNOB_ON(mode);
 }
 
 static void ov_sub(const VkExec *ex) {   // the submission being replayed
@@ -3349,12 +3360,32 @@ void vk_exec_ub_flush(VkExec *ex) {
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(ex->cb, &di);
     ex->recorded++;
+    // Copies without a barrier between them may run in any order, and ov_add only drops an older copy of exactly the
+    // same range: a copy that overlaps one recorded since the last barrier waits for it, so the newer bytes land last.
+    VkMemoryBarrier2 ww = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo wdi = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &ww};
+    uint32_t since = 0;   // the first copy recorded after the last barrier
     for (uint32_t i = 0; i < OV.np; i++) {
+        for (uint32_t k = since; k < i; k++)
+            if (OV.p[i].dst < OV.p[k].dst + OV.p[k].size && OV.p[k].dst < OV.p[i].dst + OV.p[i].size) {
+                vkCmdPipelineBarrier2(ex->cb, &wdi);
+                ex->recorded++;
+                OV.c_order++;
+                since = i;
+                break;
+            }
         VkBufferCopy cp = {OV.p[i].soff, OV.p[i].sp.offset, OV.p[i].size};
         vkCmdCopyBuffer(ex->cb, OV.p[i].src, OV.p[i].sp.buffer, 1, &cp);
         ex->recorded++;
     }
     OV.np = 0;
+    // The full barrier barrier_to records next makes the copied bytes visible: later bindings read the real buffer,
+    // as after an update copied at once, and need no overlay lookups or merged copies (ov_at answers 0 for them, so
+    // the descriptor build skip rebuilds the draws that bound an overlay)
+    OV.n = 0;
+    ov_span();
     OV.c_flush++;
 }
 
@@ -3363,13 +3394,13 @@ void vk_exec_ub_perf(void) {
     static unsigned subs;
     if (OV.mode <= 0 || ++subs % 600) return;
     const double k = 1 / 600.0;
-    rt_log("perf: uniform updates per submission %.1f: %.1f overlaid in a pass (copied in %.2f batches), %.1f copied "
-           "in a pass, %.1f outside one; bindings from an overlay %.1f (%.1f merged, %.1f over other GPU writes), %.2f "
-           "batches brought forward for a storage write",
-           OV.c_update * k, OV.c_overlaid * k, OV.c_flush * k, OV.c_inpass * k, OV.c_outside * k, OV.c_bind * k,
-           OV.c_merged * k, OV.c_mixed * k, OV.c_early * k);
-    OV.c_update = OV.c_overlaid = OV.c_flush = OV.c_bind = OV.c_merged = OV.c_mixed = 0;
-    OV.c_inpass = OV.c_outside = OV.c_early = 0;
+    rt_log("perf: uniform updates per submission %.1f: %.1f overlaid (%.1f of them between passes; copied in %.2f "
+           "batches), %.1f copied in a pass, %.1f outside one; bindings from an overlay %.1f (%.1f merged, %.1f over "
+           "other GPU writes), %.2f batches brought forward for a storage write, %.2f barriers between overlapping copies",
+           OV.c_update * k, OV.c_overlaid * k, OV.c_overlaid_out * k, OV.c_flush * k, OV.c_inpass * k, OV.c_outside * k,
+           OV.c_bind * k, OV.c_merged * k, OV.c_mixed * k, OV.c_early * k, OV.c_order * k);
+    OV.c_update = OV.c_overlaid = OV.c_overlaid_out = OV.c_flush = OV.c_bind = OV.c_merged = OV.c_mixed = 0;
+    OV.c_inpass = OV.c_outside = OV.c_early = OV.c_order = 0;
 }
 
 // The scratch bytes of a uniform or storage binding [addr, addr+n) an overlay of this submission touches: 1 with *out
@@ -3433,7 +3464,8 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     if (ov_on()) {
         ov_sub(ex);
         OV.c_update++;
-        if (ex->in_pass && OV.n < OV_N && OV.np < OV_N && !ov_foreign_hits(u->dst, u->dst + u->size)) {
+        int here = ex->in_pass || ov_out_on();
+        if (here && OV.n < OV_N && OV.np < OV_N && !ov_foreign_hits(u->dst, u->dst + u->size)) {
             uint8_t *d = scratch(ex, u->size, &b, &o);
             memcpy(d, u->data, u->size);
             VK_MEM_PICK(sp);
@@ -3444,6 +3476,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
             note_written(ex, u->dst, u->size);
             upd_note(ex, u);
             OV.c_overlaid++;
+            if (!ex->in_pass) OV.c_overlaid_out++;
             return;
         }
         if (ex->in_pass) OV.c_inpass++;
