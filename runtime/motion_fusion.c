@@ -14,12 +14,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "input.h"
 #include "platform/platform.h"
 
-enum { MOTION_RING = 64 };
+enum { MOTION_RING = 64, CALIB_SAMPLES = 250 };
 #define STALE_NS 200000000ull   // no sample for 200 ms: no motion
+#define CALIB_TIMEOUT_NS 5000000000ull   // 5 s: give up if sensor data stops arriving mid-calibration
 
 struct MotionFusion {
     PlatMutex lock;
@@ -29,6 +31,14 @@ struct MotionFusion {
     double R[3][3];   // controller -> reference; row i = reference axis i in controller coordinates
     double angle[3];
     int restart;
+    double gyro_bias[3];   // estimated resting bias (rad/s), subtracted from the gyro
+    int calibrating;       // 1: collecting resting samples for a new bias
+    double calib_sum[3];   // accumulated gyro samples during calibration
+    int calib_count;       // samples collected so far
+    uint64_t calib_start_ns;   // when calibration started (timeout check)
+    char calib_pad[128];      // controller name that was calibrated (for loading the bias on the next run)
+    int calib_result;         // 0 no attempt or one in progress, 1 the last attempt finished, -1 it timed out
+    int bias_valid;           // 1 when gyro_bias holds a real estimate (loaded or measured), so a zero is a value
 };
 
 MotionFusion *motion_new(void) {
@@ -107,11 +117,111 @@ static void integrate(double R[3][3], const double gyro[3], const double acc[3],
     orthonormalize(R);
 }
 
-void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uint64_t now) {
+// Write the calibrated bias to totk.ini. Called with m->lock released: cfg_set takes cfg.c's own lock and cfg_save
+// rewrites the file, and neither belongs inside the sensor thread's critical section.
+static void save_bias(const double bias[3], const char *pad, int samples) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%.6f", bias[0]);
+    cfg_set("TOTK_GYRO_BIAS_X", buf);
+    snprintf(buf, sizeof buf, "%.6f", bias[1]);
+    cfg_set("TOTK_GYRO_BIAS_Y", buf);
+    snprintf(buf, sizeof buf, "%.6f", bias[2]);
+    cfg_set("TOTK_GYRO_BIAS_Z", buf);
+    if (pad[0]) cfg_set("TOTK_GYRO_BIAS_PAD", pad);
+    // Saved now rather than at the menu's save tick, which may not run if the menu is closed first.
+    if (cfg_save())
+        rt_log("motion: gyro bias calibrated from %d samples: %.5f %.5f %.5f rad/s", samples, bias[0], bias[1], bias[2]);
+    else
+        rt_log("motion: gyro bias %.5f %.5f %.5f rad/s could not be written to totk.ini; it applies to this run only",
+               bias[0], bias[1], bias[2]);
+}
+
+// The one timeout decision, for the sample path and the menu's poll alike, so the two cannot drift apart. Called
+// with m->lock held; the caller logs, with the lock released.
+static int calib_check_timeout(MotionFusion *m, uint64_t now) {
+    if (!m->calibrating || now - m->calib_start_ns <= CALIB_TIMEOUT_NS) return 0;
+    m->calibrating = 0;
+    // A bias that is already in effect stays in effect, and stays reported as calibrated: the row describes the bias
+    // that is applied, and the failed attempt is in the log. A controller with no bias at all shows the failure.
+    m->calib_result = m->bias_valid ? 1 : -1;
+    return 1;
+}
+
+// Copy a name into cap bytes without splitting a UTF-8 sequence; the same as input.c's copy_name, which this file
+// cannot include from.
+static void copy_name(char *dst, size_t cap, const char *src) {
+    if (!src) src = "";
+    size_t n = strlen(src);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80) n--;   // back off to the start of the character
+    }
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
+// The bias's own switch (gyro_calibration, live, default 1): off, the fusion takes the raw gyro, an attempt in
+// progress is dropped, and the menu's calibrate entry does nothing. The saved keys stay untouched, so turning it
+// back on restores the last calibration.
+int motion_calibration_enabled(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) {
+        seen = v;
+        on = cfg_bool("TOTK_GYRO_CALIBRATION");
+    }
+    return on;
+}
+
+void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3], uint64_t now) {
+    double saved[3] = {0, 0, 0};
+    char saved_pad[sizeof m->calib_pad] = "";
+    int save = 0, samples = 0, first = 0, logged_timeout = 0;
+    uint64_t saved_start = 0;
     plat_mutex_lock(&m->lock);
     double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
     if (dt > 0.05) dt = 0.004;   // a gap (no controller, sensors were off): no integration across it
     m->last_ns = now;
+    // Calibration: collect gyro samples for CALIB_SAMPLES frames. The user holds the controller still, so the
+    // average of the raw gyro (which reads the bias at rest) is the bias estimate. No motion threshold: the bias
+    // itself can exceed any absolute threshold, which would block collection forever. calib_check_timeout decides
+    // the deadline for both this path and the menu's poll, so the two cannot drift apart. With the calibration
+    // switch off, an attempt in progress is dropped and no new one starts; the bias stops applying below.
+    if (m->calibrating && !motion_calibration_enabled()) {
+        m->calibrating = 0;
+        m->calib_result = 0;
+    }
+    if (m->calibrating) {
+        if (calib_check_timeout(m, now)) {
+            logged_timeout = 1;
+            samples = m->calib_count;
+            saved_start = m->calib_start_ns;
+        }
+        if (m->calibrating) {
+            for (int i = 0; i < 3; i++) m->calib_sum[i] += gyro_raw[i];
+            m->calib_count++;
+            first = m->calib_count == 1;
+            if (m->calib_count >= CALIB_SAMPLES) {
+                for (int i = 0; i < 3; i++) m->gyro_bias[i] = m->calib_sum[i] / m->calib_count;
+                m->calibrating = 0;
+                m->calib_result = 1;
+                m->bias_valid = 1;
+                m->restart = 1;
+                // Hand the result to save_bias below, which runs with the lock released.
+                memcpy(saved, m->gyro_bias, sizeof saved);
+                snprintf(saved_pad, sizeof saved_pad, "%s", m->calib_pad);
+                samples = m->calib_count;
+                save = 1;
+            }
+        }
+    }
+    // Subtract the bias from the gyro for integration and storage.
+    // The bias applies only while the switch is on: off, the fusion sees the raw gyro again.
+    const int calib_on = motion_calibration_enabled();
+    double gyro[3] = {gyro_raw[0] - (calib_on ? m->gyro_bias[0] : 0),
+                      gyro_raw[1] - (calib_on ? m->gyro_bias[1] : 0),
+                      gyro_raw[2] - (calib_on ? m->gyro_bias[2] : 0)};
     if (m->restart) {
         align_to(m->R, acc);
         memset(m->angle, 0, sizeof m->angle);
@@ -128,7 +238,17 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uin
         for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)m->R[j][i];   // direction i = controller axis i in the reference frame
     }
     m->produced++;
+    // The logs run with the lock released: the log back end can be slow, and the menu thread holds this lock in
+    // motion_calib_poll.
     plat_mutex_unlock(&m->lock);
+    if (first)
+        rt_log("motion: calibration started, first raw gyro: %.5f %.5f %.5f rad/s", gyro_raw[0], gyro_raw[1],
+               gyro_raw[2]);
+    if (logged_timeout) {
+        double secs = (now - saved_start) / 1e9;   // captured under the lock; another attempt may have begun since
+        rt_log("motion: gyro calibration timed out after %.1f s (%d samples): sensor data not arriving", secs, samples);
+    }
+    if (save) save_bias(saved, saved_pad, samples);
 }
 
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
@@ -151,4 +271,74 @@ void motion_restart(MotionFusion *m) {
     m->last_ns = 0;   // the first sample after the restart integrates nothing across the stop
     memset(m->angle, 0, sizeof m->angle);
     plat_mutex_unlock(&m->lock);
+}
+
+void motion_calibrate_start(MotionFusion *m, const char *pad_name) {
+    plat_mutex_lock(&m->lock);
+    m->calibrating = 1;
+    m->calib_result = 0;
+    m->calib_count = 0;
+    m->calib_sum[0] = m->calib_sum[1] = m->calib_sum[2] = 0;
+    m->calib_start_ns = kern_now_ns();
+    // The caller passes the same name it put into its own row label; copied again here so the fusion keeps the name
+    // the bias belongs to without relying on another buffer's lifetime. Same UTF-8-safe cut as input.c's copy_name:
+    // a name cut mid-sequence would reach totk.ini and the next run's comparisons.
+    copy_name(m->calib_pad, sizeof m->calib_pad, pad_name);
+    plat_mutex_unlock(&m->lock);
+}
+
+// One axis of totk.ini; a value that is not a number leaves the axis at zero and is named in the log, so a
+// hand-edited or damaged line does not silently read as a calibrated zero.
+static double bias_value(const char *key) {
+    const char *v = cfg_get(key);
+    if (!v || !*v) return 0;
+    char *end;
+    double d = strtod(v, &end);
+    if (end == v || *end || !isfinite(d)) {
+        rt_log("motion: %s = \"%s\" is not a number; that axis starts uncalibrated", key, v);
+        return 0;
+    }
+    return d;
+}
+
+void motion_bias_load(MotionFusion *m) {
+    double bias[3] = {bias_value("TOTK_GYRO_BIAS_X"), bias_value("TOTK_GYRO_BIAS_Y"),
+                      bias_value("TOTK_GYRO_BIAS_Z")};
+    plat_mutex_lock(&m->lock);
+    memcpy(m->gyro_bias, bias, sizeof bias);
+    m->bias_valid = 1;
+    m->calib_result = 1;   // 1 means "a bias is in effect", whether measured or loaded
+    plat_mutex_unlock(&m->lock);
+}
+
+void motion_bias_reset(MotionFusion *m) {
+    plat_mutex_lock(&m->lock);
+    m->gyro_bias[0] = m->gyro_bias[1] = m->gyro_bias[2] = 0;
+    // A calibration that was running belonged to the previous controller: its samples must not complete against this
+    // one, and its name must not label a bias measured from another controller.
+    m->calibrating = 0;
+    m->calib_count = 0;
+    m->calib_sum[0] = m->calib_sum[1] = m->calib_sum[2] = 0;
+    m->calib_pad[0] = 0;
+    m->calib_result = 0;
+    m->bias_valid = 0;
+    plat_mutex_unlock(&m->lock);
+}
+
+// The timeout, for the case motion_feed is not called at all (the sensor thread stalled): without this the row would
+// read "Calibrating..." forever, which is the failure the timeout exists to end. Returns the row's state: 0 none,
+// 1 collecting, 2 calibrated, 3 the last attempt timed out. Logs with the lock released: the menu thread holds this
+// lock briefly on every redraw, and the sensor thread waits for it.
+int motion_calib_poll(MotionFusion *m, uint64_t now) {
+    plat_mutex_lock(&m->lock);
+    int timed_out = calib_check_timeout(m, now);
+    int st = m->calibrating ? 1 : m->calib_result > 0 ? 2 : m->calib_result < 0 ? 3 : 0;
+    uint64_t start = m->calib_start_ns;
+    int count = m->calib_count;
+    plat_mutex_unlock(&m->lock);
+    if (timed_out) {
+        rt_log("motion: gyro calibration timed out after %.1f s (%d samples): the sensor thread stopped feeding it",
+               (now - start) / 1e9, count);
+    }
+    return st;
 }

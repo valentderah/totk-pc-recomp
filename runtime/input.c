@@ -46,6 +46,7 @@ static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
 static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static char calib_pad_name[128];     // the controller the bias belongs to; empty when there is none
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -959,6 +960,12 @@ void input_motion_axes(const float a[3], const float g[3], double acc[3], double
 static int sensors_ready(void) {
     SDL_JoystickID id = SDL_GetGamepadID(pad);
     if (id == sensor_pad) return sensor_ok;
+    // A different controller: the old one's bias estimate does not apply. Only on a change, so the first call does
+    // not drop a bias that input_motion_start loaded from totk.ini for this controller.
+    if (sensor_pad) {
+        motion_bias_reset(motion_global());
+        calib_pad_name[0] = 0;
+    }
     sensor_pad = id;
     // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
     SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
@@ -1007,10 +1014,37 @@ static void motion_main(void *arg) {
     }
 }
 
+// Copy a controller name into cap bytes without splitting a UTF-8 sequence: a name cut mid-character would show as
+// garbage in the menu and be written to totk.ini the same way.
+static void copy_name(char *dst, size_t cap, const char *src) {
+    if (!src) src = "";
+    size_t n = strlen(src);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80) n--;   // back off to the start of the character
+    }
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
 void input_motion_start(void) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (!motion_thread) {
+        // Load the calibrated bias from totk.ini when it was measured for the controller that is connected now and
+        // the switch is on; the keys stay in the file either way, so turning the switch back on restores the bias.
+        const char *name = pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadName(pad) : NULL;
+        const char *calib_pad = cfg_get("TOTK_GYRO_BIAS_PAD");
+        if (name && calib_pad && strcmp(calib_pad, name) == 0 && motion_calibration_enabled()) {
+            motion_bias_load(motion_global());
+            copy_name(calib_pad_name, sizeof calib_pad_name, name);
+            rt_log("input: gyro bias loaded from totk.ini for %s", name);
+        } else {
+            // No usable bias for this controller: drop whatever an earlier start left behind, so the row does not
+            // report another controller's calibration.
+            calib_pad_name[0] = 0;
+            motion_bias_reset(motion_global());
+        }
         if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
         if (state != 1) motion_thread = -1;
         else {
@@ -1019,4 +1053,35 @@ void input_motion_start(void) {
         }
     }
     plat_mutex_unlock(&lock);
+}
+
+void input_motion_calibrate(void) {
+    plat_mutex_lock(&lock);
+    if (!input_gyro_calibration_enabled()) {
+        rt_log("input: calibrate gyro ignored: gyro_calibration is off");
+    } else if (motion_thread != 1 || !pad) {
+        // Nothing would collect the samples; say so rather than leaving the row looking pressed.
+        rt_log("input: calibrate gyro ignored: %s", motion_thread != 1 ? "motion is off (TOTK_MOTION=0)" : "no gamepad");
+    } else {
+        const char *name = SDL_GetGamepadName(pad);
+        copy_name(calib_pad_name, sizeof calib_pad_name, name);
+        motion_calibrate_start(motion_global(), calib_pad_name);
+    }
+    plat_mutex_unlock(&lock);
+}
+
+int input_gyro_calibration_enabled(void) { return motion_calibration_enabled(); }
+
+int input_motion_calib_state(char *pad, size_t cap) {
+    plat_mutex_lock(&lock);
+    int st = 0;
+    if (motion_thread == 1) {
+        st = motion_calib_poll(motion_global(), kern_now_ns());   // also ends an attempt whose thread stalled
+        // Loaded from totk.ini at start, no attempt in this run; with the switch off the bias does not apply, so
+        // the row reads as before any calibration.
+        if (st == 0 && calib_pad_name[0] && input_gyro_calibration_enabled()) st = 2;
+    }
+    if (pad && cap) snprintf(pad, cap, "%s", calib_pad_name);
+    plat_mutex_unlock(&lock);
+    return st;
 }
