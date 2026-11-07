@@ -46,6 +46,7 @@ typedef struct Tex {
     uint32_t wgen;                // page generation of the last upload check
     uint32_t checked;             // submit_epoch of the last check from a draw binding
     int uploaded, released;
+    uint32_t rev_epoch, rev_pos;  // the state scan made it live in that submission at that op (vk_texture_revive)
     uint32_t n_up;                // uploads of this entry (vk_texture_debug)
     int last_ch;                  // last vk_mem_changed result of make_fresh: 1 written, 0 clean, -1 not tracked
     struct Tex *next_at;          // other entries at the same storage address
@@ -122,10 +123,12 @@ static uint64_t n_checks;    // draw-binding storage checks (make_fresh_snap) si
 // which emptied every cache keyed on the global generations.
 #define AGEN_N 4096
 static uint32_t agen[AGEN_N];
+static uint32_t arev[AGEN_N];   // per storage address (hashed): the submit_epoch of the state scan's last revival there
 // Per slot id, for vk_texture_slot_token without the lock: the registration serial (bits 16-47; 0: never registered)
 // and the address generation index (bits 0-15), one word so a reader gets a consistent pair. Fixed-size (slot ids are
 // 20 bits), unlike tslots, which moves when it grows.
 static uint64_t *sinfo;
+static uint32_t *sepoch;   // per slot: the submit_epoch its entry was checked in (vk_texture_slot_checked), 0 none
 static uint32_t reg_serial;
 
 static uint32_t agen_idx(uint64_t addr) { return (uint32_t)(addr * 0x9E3779B97F4A7C15ull >> 52); }
@@ -1082,6 +1085,13 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
+static void entry_live(Tex *e) {
+    if (!e->released) return;
+    takeback_n[e->pub.gpu_owned != 0][age_bucket(coarse_ms - e->rel_ms)]++;
+    e->use_seq = ++use_counter;
+    e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(e->key.addr);
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
@@ -1130,11 +1140,7 @@ static Tex *entry_of(const tex_t *t) {
         nvn_hm_put(&by_key, &k, e);
         tex_gen_bump(k.addr);
     }
-    if (e->released) {
-        takeback_n[e->pub.gpu_owned != 0][age_bucket(coarse_ms - e->rel_ms)]++;
-        e->use_seq = ++use_counter;
-        e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr);
-    }
+    entry_live(e);
     e->t = *t;
     return e;
 }
@@ -1156,6 +1162,25 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     lock();
     Tex *e = entry_of(t);
     if (e) make_fresh(e);
+    unlock();
+    return e ? &e->pub : NULL;
+}
+
+// The replay's state scan (vk_exec.c): the entry vk_texture_get would return, neither created nor made current; the
+// recording does that. It is revived here, in replay order, and remembers the op it happened at: a chunk may bind a
+// finalized target's slot before the chunk that renders it reached its SET_RT, or long after the scan went past a later
+// target at the same storage, and slot_resolve has to answer as the replay would at the chunk's own op (live_at).
+const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos) {
+    if (!t || !t->mem) return NULL;
+    TexKey k;
+    make_key(t, &k);
+    lock();
+    Tex *e = nvn_hm_get(&by_key, &k);
+    if (e && e->released) {
+        e->rev_epoch = submit_epoch, e->rev_pos = pos;
+        __atomic_store_n(&arev[agen_idx(k.addr)], submit_epoch, __ATOMIC_RELEASE);
+        entry_live(e);
+    }
     unlock();
     return e ? &e->pub : NULL;
 }
@@ -1262,7 +1287,9 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     }
     if (!sinfo) {
         uint64_t *p = calloc(1 << 20, sizeof *p);
-        if (!p) rt_fatal("vk: out of memory for texture slot tokens");
+        uint32_t *q = calloc(1 << 20, sizeof *q);
+        if (!p || !q) rt_fatal("vk: out of memory for texture slot tokens");
+        __atomic_store_n(&sepoch, q, __ATOMIC_RELEASE);
         __atomic_store_n(&sinfo, p, __ATOMIC_RELEASE);
     }
     TexSlot *s = &tslots[id];
@@ -1278,15 +1305,23 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     unlock();
 }
 
-// The entry slot s resolves to, and the view and has_view a caller gets with it (the slot's, with the descriptor's
-// swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
-static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
+// Whether e is live at op pos of a chunked replay: the state scan is ahead of the chunks, and an entry it revived at a
+// later op is still released for this one. Two 4K targets at one address, RGBA8 and R8 with memory of their own, were
+// swapped whenever the scan got past the second's SET_RT before a chunk sampling the storage got its turn, and large
+// parts of the scene flickered. UINT32_MAX: the state now.
+static int live_at(const Tex *e, uint32_t pos) {
+    return !e->released && !(e->rev_epoch == submit_epoch && e->rev_pos > pos);
+}
+
+// The entry slot s resolves to at op pos, and the view and has_view a caller gets with it (the slot's, with the
+// descriptor's swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
+static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view, uint32_t pos) {
     *view = s->v;
     *has_view = s->has_view;
     TexKey k;
     make_key(&s->t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
-    if (!e || e->released) {   // MNG hle_nvn.c: a finalized slot follows the live texture at its storage
+    if (!e || !live_at(e, pos)) {   // MNG hle_nvn.c: a finalized slot follows the live texture at its storage
         // Prefer the live entry that differs from the slot descriptor only in its swizzle: transient render targets
         // share storage, and the newest one at the address is usually another size. The map screen samples its
         // 2250x1080 map target through an (R,G,B,1) descriptor and followed a 960x60 target at the same address.
@@ -1299,7 +1334,7 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
         Tex *own = e, *any = NULL;
         e = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr); p; p = p->next_at) {
-            if (p->released || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
+            if (!live_at(p, pos) || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
             if (!any) any = p;
             if (same_but_swizzle(&p->key, &k)) { e = p; break; }
         }
@@ -1347,14 +1382,28 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view) {
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     if (id < 0 || id >= ntslots || !tslots[id].used) return NULL;
     TexSlot *s = &tslots[id];
-    uint32_t g = agen[sinfo[id] & 0xffff];
+    uint32_t idx = sinfo[id] & 0xffff, g = agen[idx];
+    uint32_t pos = arev[idx] == submit_epoch ? vk_exec_replay_pos() : UINT32_MAX;
+    if (pos != UINT32_MAX) {   // what the storage holds depends on the op: chunks at other ops share no answer in s
+        view_t v;
+        int hv;
+        Tex *f = slot_resolve(s, &v, &hv, pos);
+        if (f && (!f->uploaded || f->checked != submit_epoch)) {
+            make_fresh_snap(f);
+            f->checked = submit_epoch;
+        }
+        if (view) *view = has_view ? v : s->v;
+        if (has_view) *has_view = view ? hv : s->has_view;
+        return f ? &f->pub : NULL;
+    }
     if (!s->ce || s->cgen != g) {   // resolved again: an entry at its address was created, dropped or released, or the
         view_t v;                   // slot registered (s->ce cleared); an empty result is not kept: image creation may
         int hv;                     // succeed later
-        s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
+        s->ce = slot_resolve(s, &v, &hv, UINT32_MAX);   // entry_of may create an entry and bump g: g read before it
         s->cview = v, s->chas_view = (uint8_t)hv;
         s->cgen = g;
         s->cepoch = 0;
+        __atomic_store_n(&sepoch[id], 0, __ATOMIC_RELAXED);
     }
     Tex *e = s->ce;
     // Bindings of one submit share one check, answered from the submit's write-watch snapshot (guest writes during a
@@ -1366,6 +1415,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
             e->checked = submit_epoch;
         }
         s->cepoch = submit_epoch;
+        __atomic_store_n(&sepoch[id], submit_epoch, __ATOMIC_RELEASE);
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
@@ -1386,6 +1436,19 @@ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
 }
 
 uint32_t vk_texture_epoch(void) { return __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED); }
+
+int vk_texture_slot_moves(int id) {
+    const uint64_t *si = __atomic_load_n(&sinfo, __ATOMIC_ACQUIRE);
+    if (!si || id < 0 || id >= (1 << 20)) return 0;
+    uint64_t v = __atomic_load_n(&si[id], __ATOMIC_RELAXED);
+    return __atomic_load_n(&arev[v & 0xffff], __ATOMIC_ACQUIRE) == __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED);
+}
+
+int vk_texture_slot_checked(int id) {
+    const uint32_t *e = __atomic_load_n(&sepoch, __ATOMIC_ACQUIRE);
+    return e && id >= 0 && id < (1 << 20) &&
+           __atomic_load_n(&e[id], __ATOMIC_ACQUIRE) == __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED);
+}
 
 void vk_texture_new_submit(void) {
     lock();
@@ -2205,6 +2268,6 @@ void vk_texture_shutdown(void) {
     free(tslots), free(sslots);
     tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0;
     rel_head = rel_tail = NULL;
-    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20);   // no slot is registered: tokens 0
+    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sepoch, 0, sizeof *sepoch << 20);   // no slot is registered: tokens 0
     unlock();
 }

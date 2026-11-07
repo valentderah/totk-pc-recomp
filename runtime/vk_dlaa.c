@@ -604,7 +604,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
     VkDescriptorBufferInfo cam;
-    if (!mv_init() || !D.cam_addr || !vk_usnap_find(D.cam_addr, CAM_BLOCK, 4, &cam)) {
+    if (!mv_init() || !D.cam_addr || !vk_usnap_find(D.cam_addr, CAM_BLOCK, UINT32_MAX, 4, &cam)) {
         D.mv_none++;
         D.cam_prev_ok = 0;
         e->chars_ok = 0;
@@ -1092,7 +1092,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     full_barrier(cb);
     if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
-    vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
+    vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
@@ -1242,6 +1242,7 @@ static uint64_t spirv_hash(const GfxShader *s) {
 }
 
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
+    if (ex->chunked) return 0;   // a chunked replay runs only with fxaa = 1 and without DLSS (vk_exec.c chunked_on)
     static uint64_t frame_read = ~0ull;
     static int fxaa = 1;
     // fxaa = 0 reports once whether it found the game's FXAA draw: the first skip, or a minute of frames (3600) with
