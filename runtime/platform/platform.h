@@ -387,6 +387,16 @@ int plat_open_folder(const char *path);                   // shows the folder in
 // in the system directories only. NULL when missing.
 void *plat_lib_open(const char *name);
 void *plat_lib_sym(void *lib, const char *name);
+// Why the calling thread's last plat_lib_open failed, for a log line (the OS error code on Windows, dlerror on Linux).
+void plat_lib_error(char *out, size_t cap);
+
+// ---- NVIDIA NGX (vk_dlaa.c). The path of the driver's NGX core library into out: on Windows _nvngx.dll in the folder
+// the driver records in the registry (NGXCore FullPath), on Linux libnvidia-ngx.so.1, which the dynamic loader finds
+// where the driver put it. 0 when the driver records none.
+int plat_ngx_core_path(char *out, size_t cap);
+// The running executable's folder with a trailing separator, as the wchar_t string NGX takes for its application data
+// path (UTF-16 on Windows, UTF-32 code points on Linux). 0 on failure or when out has no room.
+int plat_exe_dir_wide(wchar_t *out, size_t cap);
 
 // ---- machine load for the performance overlay (perfmon.c's sampling thread; each call can take milliseconds). A number
 // the system does not give is -1.
