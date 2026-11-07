@@ -1,6 +1,7 @@
 // The SDL front end of folder_pick.h: SDL_ShowOpenFolderDialog (the desktop portal, else zenity), started on the window
 // thread, which runs SDL's event loop that delivers the portal's answer.
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

@@ -1,9 +1,11 @@
-// The Win32 front end of folder_pick.h: the shell's folder dialog (IFileOpenDialog with FOS_PICKFOLDERS), owned by the
-// game window, on a thread of its own so the present thread that draws the menu keeps running.
+// The Win32 front end of folder_pick.h: the shell's folder dialog (IFileOpenDialog with FOS_PICKFOLDERS) and file
+// dialog (without it, with the caller's patterns as the one file type it offers), owned by the game window, on a
+// thread of its own so the present thread that draws the menu keeps running.
 #include <windows.h>
 #include <shobjidl.h>
 #include <stdlib.h>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include "folder_pick.h"

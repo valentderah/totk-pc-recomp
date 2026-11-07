@@ -243,6 +243,23 @@ when a setting is described neither in `totk.ini.example` nor in [settings.md](s
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
 table (no game files), and `totk.exe --probe-mods`.
 
+A change to the blueprint picker passes `python tests\picker_layout_test.py`, which compiles the real
+`runtime/blueprint_picker.c` with a stubbed platform and UI surface and checks the panel geometry at several window
+sizes, that no two rectangles overlap, that the list clears the scrollbar, and that the wheel and a thumb drag move the
+list and the thumb together (no game files and no build of the game).
+
+A change to the Autobuild history rotation passes `python tests\blueprint_rotation_test.py`, which compiles the real
+`runtime/blueprint_import.c` against stubs and checks `bp_rotate_ages`: the new creation takes age 0 on the evicted
+entry, favourites keep their age, every other entry moves down exactly one, the evicted card is the oldest free one, the
+result stays a permutation of 0..29, an all-favourite history is refused, and forty successive imports keep the history
+valid.
+
+A change to the blueprint format passes `python tests\blueprint_cai_test.py`, which compiles the real
+`runtime/blueprint_cai.c` and builds its blobs byte by byte: every rejection path (too short, wrong magic, wrong
+version, a bad or disagreeing actor count, an empty name, a non-finite transform, a TOTKAuto file), the accepted shapes
+(1 to 21 actors, and the 6712-byte community form), the positions and bounding box the picker previews from, and a text
+for every result code.
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
 

@@ -789,10 +789,50 @@ int plat_file_list(const char *dir, const char *ext, int (*cb)(const char *name,
     for (struct dirent *e; (e = readdir(d));) {
         size_t n = strlen(e->d_name);
         if (n < el || strcmp(e->d_name + n - el, ext) || e->d_name[0] == '.') continue;
+        // A folder can be named "something.cai"; the picker must list it as a folder, not try to import it as a file.
+        if (e->d_type == DT_DIR) continue;
+        if (e->d_type == DT_UNKNOWN) {
+            char full[PATH_MAX];
+            struct stat st;
+            if (snprintf(full, sizeof full, "%s/%s", dir, e->d_name) < (int)sizeof full &&
+                !stat(full, &st) && S_ISDIR(st.st_mode)) continue;
+        }
         if (!cb(e->d_name, ctx)) break;
     }
     closedir(d);
     return 1;
+}
+
+// Each subdirectory of dir, for the blueprint file picker's folder browsing.
+int plat_dir_list(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    for (struct dirent *e; (e = readdir(d));) {
+        // Skip only "." and "..". A real folder whose name begins with a dot (".cai", ".config") is one the player may
+        // want to open, so a blanket "starts with a dot" test is wrong here.
+        if (e->d_name[0] == '.' && (e->d_name[1] == 0 || (e->d_name[1] == '.' && e->d_name[2] == 0))) continue;
+        if (e->d_type != DT_DIR && e->d_type != DT_UNKNOWN) continue;
+        char full[PATH_MAX];
+        snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (e->d_type == DT_UNKNOWN && (stat(full, &st) || !S_ISDIR(st.st_mode))) continue;
+        if (!cb(e->d_name, ctx)) break;
+    }
+    closedir(d);
+    return 1;
+}
+
+// The filesystem roots: "/" and the usual mount points when they exist, so a picker can leave the folder it started in.
+int plat_root_list(int (*cb)(const char *root, void *ctx), void *ctx) {
+    int n = 0;
+    static const char *const fixed[] = {"/", "/mnt", "/media", "/run/media"};
+    for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
+        struct stat st;
+        if (stat(fixed[i], &st) || !S_ISDIR(st.st_mode)) continue;
+        n++;
+        if (!cb(fixed[i], ctx)) return n;
+    }
+    return n;
 }
 
 // ---- virtual memory. Reservations are PROT_NONE MAP_NORESERVE mappings; commit is mprotect read-write, decommit

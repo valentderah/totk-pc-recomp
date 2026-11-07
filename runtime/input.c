@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "blueprint_hint.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -654,7 +655,10 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             if (selector && menu_cursor_shortcut() == 0) selector = 0;
             mouse_camera(k, selector);
             // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there,
-            // the scroll wheel zooms (map_zoom_stick). Elsewhere the wheel is unbound; its notches are dropped.
+            // the scroll wheel zooms (map_zoom_stick). Elsewhere the wheel is unbound; its notches are dropped. The
+            // notches are always drained here so raw-input accumulation cannot grow without bound. The port's own file
+            // picker scrolls from the window's wheel events (bp_picker_wheel, ui/menu.cpp), not from this accumulator,
+            // and it is only open while the game's input is blocked, so a stray zoom never reaches the game.
             int map = menu_cursor_map();
             if (map) pick(&sl[0], &sl[1], k[0], k[1]);
             else pick(&sr[0], &sr[1], k[0], k[1]);
@@ -743,7 +747,10 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    if (!g_block && !g_menu) menu_cursor_poll(buttons);
+    if (!g_block && !g_menu) {
+        menu_cursor_poll(buttons);
+        bp_hint_poll(buttons);   // the Autobuild screen's import entry owns its button while that screen is up
+    }
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
         menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);
