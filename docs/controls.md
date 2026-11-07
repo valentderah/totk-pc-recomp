@@ -109,55 +109,13 @@ bind_Y = pad:north, key:mouse_l
 
 ## Mouse camera
 
-`mouse_mode = direct` (the default) turns the camera by the raw mouse motion on games 1.4.3 and 1.2.1, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt` and `recomp/patches-v121.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
-angular increments at its final spherical-angle output: 0.08 degrees per count on both axes at sensitivity 1 (about
-14.3 cm a turn at 800 DPI), with no time multiplier, curve or carry into later frames. The controller's persistent pitch/yaw move with
-the output. Mouse input is removed from its stick path first, so the camera's later vertical signed-square curve and
-velocity filters cannot process it a second time.
-The aiming camera (bow, throwing), the Purah Pad camera, the scope, the ability camera (Ultrahand, Fuse, Ascend,
-Recall, Autobuild), the horse camera, lock-on, the bow drawn while locked on, climbing (walls and objects), the
-waterfall's turn, shield surfing, the wakeboard and the dialogue cameras take the mouse the same way, at the same
-degrees per count: each turns by
-the stick times its own speeds and the frame time and adds that to a base angle, so the load of the stick it turns by
-gets the gamepad's part only and the load of that base angle gets the mouse's degrees (`camera_load`, two sites per
-axis per camera). Their speeds, time step, slow motion (bullet time) and, for the Purah Pad camera and the abilities,
-the eased curve their pitch moves along do not touch the mouse; their own limits, collision and blends apply to the
-result. Past the pitch limit of the scope or the ability camera the stick moves the camera's distance; the mouse's
-motion past the limit keeps doing that through the stick. Recall's cursor is the ability camera's offset mode: the
-camera keeps a direction, the stick moves the cursor across the screen (ReverseRecorderCursorSpeed, within
-ReverseRecorderCursorRange) and the camera follows it by up to ReverseRecorderCameraRange (10 degrees across, 7.8 up).
-The mouse moves the cursor so that its aim, the camera's follow plus the cursor's angle from the screen's centre (the
-offset taken as the screen's half width or height at the camera's 50 degree view and aspect ratio), turns as many
-degrees a count as the camera does elsewhere. The follow range is read from the game each step (until it has been read
-once, the mouse is stick input there). The stick loads that only test for input keep the mouse in the stick. A step with mouse motion that no
-direct hook took is logged (`mouse: step N with mouse motion took the stick path`, the first 30, then one in 600, with
-the player's state), so the cameras still on stick input show in `logs/totk.log`.
-Lock-on keeps pointing the camera at the target; the stick, and so the mouse, adds an offset around that direction,
-which the game limits and lets return: the mouse's degrees are the step's turn the game adds to the offset and judges
-the return by.
-Shield surfing and the wakeboard turn their pitch by the square of the stick's y and move a second camera parameter
-with it: their stick y keeps the mouse (that parameter and the camera's state follow it as before), the pitch gets
-the degrees, and the pitch turn the game made from y is cut to the gamepad's share (p |p| / t |t|). Their stick x, and
-the dialogue camera's (which is also its test for input), give a tiny value in the mouse's direction when the
-gamepad's axis is at rest, so the camera still sees input without a stick turn.
-Two inputs stay stick input: the waterfall's vertical axis moves the camera's height, not an angle, and the horse's
-lock-on without a target (HorseLockOnEmpty) turns the stick's position into an offset that returns when the stick
-does, which a mouse has no position for.
-Those receive input after
-the radial dead zone, unit-circle clamp and stick response exponent: x is 0.0343 stick units a count over the frame
-ratio (the stick turns yaw 70 x / 30 degrees a step) and y 70 / 51 times that, linear like their pitch (51 y / 30
-degrees a step), so both axes turn by the same amount for the same motion. `stick_sens` (which scales the game's
-stick turn rates) is divided out. While the player uses an ability and the ability camera's hooks do not take the
-mouse, its part is scaled by 1 / 0.8 and 70 / (1.5 x 51), the ability camera's own stick scales.
-The player's verbs are read every 50 ms from the player actor (the player root's GOT slot main+0x3969918, the
-component array +0x228, its AS component +0x158 and the verbs of its five slots). Ultrahand has a separate hook after
-its manipulation input's power curves; it gets 0.01 stick units a count over the frame ratio, at most three full tilts
-a step.
 `mouse_aim_scale` (0.1 to 3, default 1) multiplies the mouse's motion while the bow is drawn (the verb UseBow or
 DrawnBow with ZR held). The game's camera inversion and gamepad response remain in effect. `mouse_sens` scales raw
 counts, with the same meaning as in 0.3.10 (the free camera turns 0.08 degrees a count at 1, and now every other camera
 does too); its scale differs from the stick-emulation mode.
-The Controls tab switches between *Direct* and *Stick emulation* (`mouse_mode = stick`).
+The Controls tab switches between *Direct*, *Smooth*, and *Stick emulation* (`mouse_mode = direct | smooth | stick`).
+
+`mouse_mode = smooth` builds on direct mode with exponential time-based motion filtering (`mouse_smooth_ms`, default 8 ms, range 0–30 ms, 0 to disable), configurable look speed (`mouse_look_speed`, default 0.08 deg/count), context-aware FOV scaling for bow aiming (`mouse_aim_mult`, default 0.80) and scope/Purah Pad (`mouse_scope_mult`, default 0.40), dedicated Ultrahand manipulation sensitivity (`mouse_ultrahand_mult`, default 1.50), and mouse Y inversion (`mouse_invert_y`). When Smooth mode is active, the Controls tab exposes dedicated sliders for each of these parameters.
 The orbit camera keeps its desired pitch at the final angular output, including stationary frames, so a later game
 filter cannot recenter it. The persistent filter state accounts for the camera's current vertical offset instead of
 accumulating corrections. A gamepad vertical input releases that mouse target to the game's own. The game's

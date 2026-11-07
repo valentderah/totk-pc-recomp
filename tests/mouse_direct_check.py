@@ -22,6 +22,8 @@ static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook, load_hoo
 const char *cfg_get(const char *key) { (void)key; return mode ? "direct" : "stick"; }
 const char *cfg_value(const char *key) { return cfg_get(key); }
 double cfg_double(const char *key) { (void)key; return 1; }
+int cfg_bool(const char *key) { (void)key; return 0; }
+int cfg_int(const char *key) { (void)key; return 0; }
 int rt_patch_set(const char *s) { return strcmp(s,"mouse_direct") ? -1 : 0; }   // no fov / aspect set: 16:9, 50 deg
 int rt_patch_enabled(int s) { (void)s; return patched; }
 int ikb_captured(void) { return captured; }
