@@ -513,6 +513,21 @@ static void row_output_res(void) {
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
 }
 
+// The HUD's width on a screen wider than 16:9 (hud_width, romfs.c hud_suffix): the choices that narrow the HUD at the
+// game resolution in the settings. 21:9 only on the 32:9 sizes (wider than 2.5: the installer builds no -hud21x9 folder
+// for the 21:9 ones), 16:9 on any size more than 1% wider than 16:9. The row is hidden on a screen that is not wider
+// than that, where the setting does nothing (a value left in totk.ini stays as it is).
+static void row_hud_width(void) {
+    int w = 0, h = 0;
+    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &w, &h) != 2 || h <= 0) return;
+    double aspect = (double)w / h;
+    if (aspect <= 16.0 / 9 * 1.01) return;
+    const char *vals[3] = {"full", "21:9", "16:9"}, *names[3] = {menu_text(UI_MENU_HUD_WIDTH_FULL), "21:9", "16:9"};
+    int n = aspect > 2.5 ? 3 : 2;
+    if (n == 2) vals[1] = vals[2], names[1] = names[2];
+    opt_choice_list("TOTK_HUD_WIDTH", UI_MENU_HUD_WIDTH, vals, names, n, UI_MENU_HUD_WIDTH_DESC);
+}
+
 static void row_render_scale(void) {
     static const char *const vals[] = {"game", "50", "67", "75", "100", "125", "150", "200"};
     enum { N = sizeof vals / sizeof *vals };
@@ -662,6 +677,7 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
+    row_hud_width();
     row_render_scale();
     row_shadow_res();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};

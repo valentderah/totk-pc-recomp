@@ -117,6 +117,10 @@ of them.
    they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
    button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
+   `--aspect <w>x<h>` writes the UI laid out for a game resolution of another shape; with `--hud 16:9` or `--hud 21:9`
+   (a screen wider than that) the HUD stays within the middle 16:9 or 21:9 instead of the screen's corners. The default
+   `--out` then is `build\<ver>\romfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
+   (`21:9`) in `totk.ini` ([totk.ini.example](../totk.ini.example)).
 
    A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
    draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a

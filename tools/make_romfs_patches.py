@@ -16,6 +16,9 @@ for that shape (tools/ultrawide_layout.py): menus keep their 16:9 proportions in
 cover the screen and the HUD moves to the screen's corners (wider) or its top and bottom edges (narrower). totk.exe
 loads that overlay from romfs-patches-<w>x<h> when the game resolution is that size (runtime/romfs.c overlay_init);
 the camera's side of it is the patch set aspect (recomp/patches-v121.txt, patches-v143.txt).
+--hud 21:9 | 16:9 (with --aspect, a screen wider than that; default full) keeps the HUD within the middle 21:9 or 16:9 of
+the screen instead of its corners (totk.ini hud_width). The folder is romfs-patches-<w>x<h>-hud21x9 or -hud16x9, which
+runtime/romfs.c overlay_init loads in place of romfs-patches-<w>x<h> when hud_width asks for it.
 
 --prompts xbox | xbox-label: the same overlay with Xbox button icons in the game's prompts, for prompts = xbox
 (runtime/romfs.c overlay_init loads romfs-patches-xbox or romfs-patches-xbox-label in place of romfs-patches). Drawn
@@ -45,7 +48,8 @@ guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes aro
 with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
-build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
+build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts, -<w>x<h> added with
+--aspect and -hud<a>x<b> with --hud), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
 """
 import argparse
 import compression.zstd as zstd
@@ -61,8 +65,12 @@ ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--version', choices=('v110', 'v121', 'v143'), default='v121')
 ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/romfs')
 ap.add_argument('--out', type=Path,
-                help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts)')
+                help='default build/<version>/romfs-patches (romfs-patches-<style> with --prompts, then -<w>x<h> with '
+                     '--aspect and -hud<a>x<b> with --hud)')
 ap.add_argument('--aspect', help='<w>x<h> of a game resolution of another shape than 16:9: also lay the UI out for it')
+ap.add_argument('--hud', choices=('full', '21:9', '16:9'), default='full',
+                help='with --aspect on a wider screen: the HUD stays within the middle 21:9 or 16:9 (default full: the '
+                     'screen\'s corners)')
 ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
                 help='Xbox button icons in the prompts: xbox for pad_layout = nintendo (A shown as B, X as Y), '
                      'xbox-label for pad_layout = xbox or auto (the face buttons keep their letters), '
@@ -71,7 +79,18 @@ ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
-args.out = args.out or root / 'build' / args.version / (f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches')
+HUD_CAP = {'full': None, '21:9': 21 / 9, '16:9': 16 / 9}[args.hud]
+if args.hud != 'full':
+    if not args.aspect: ap.error('--hud needs --aspect')
+    _w, _h = (int(v) for v in args.aspect.lower().split('x'))
+    if HUD_CAP >= _w / _h * 0.99: ap.error(f'--hud {args.hud} is not narrower than a {_w}x{_h} screen (that is --hud full)')
+if not args.out:
+    # The folder runtime/romfs.c overlay_init looks for: romfs-patches[-<prompts>][-<w>x<h>[-hud<a>x<b>]]. Without the
+    # size, an --aspect run would replace the 16:9 romfs-patches the game loads at 1920x1080.
+    name = f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches'
+    if args.aspect: name += '-' + args.aspect.lower()
+    if args.hud != 'full': name += '-hud' + args.hud.replace(':', 'x')
+    args.out = root / 'build' / args.version / name
 index = json.loads((args.romfs / 'index.json').read_text())
 assert index['status'] == 'pass'
 files = {f['path']: f for f in index['files']}
@@ -288,7 +307,7 @@ if args.aspect:
     spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).with_name('ultrawide_layout.py'))
     ultrawide = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ultrawide)
-    layout = ultrawide.apply(blarc, members, width, height)
+    layout = ultrawide.apply(blarc, members, width, height, HUD_CAP)
 diff = [i for i in range(len(original)) if original[i] != blarc[i]]
 touched = [members[m] for m in (*MEMBERS, *layout)]
 assert diff and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
@@ -366,5 +385,5 @@ for path, contents in outputs.items():
 (args.out / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
                                        + ''.join(line + '\n' for line in lines))
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
-                      ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None,
+                      ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None,
                       prompts=prompts)))

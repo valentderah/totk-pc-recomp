@@ -67,6 +67,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, 3:2) moves it to the top "
                                 "and bottom edges.",
+    [UI_MENU_HUD_WIDTH] = "HUD width",
+    [UI_MENU_HUD_WIDTH_DESC] = "On a screen wider than 16:9, how far apart the HUD's left and right sides are. Full puts "
+                               "them at the screen's edges; 21:9 or 16:9 keeps the HUD within the middle of the screen "
+                               "of that shape. Needs the setup's HUD layouts for the game resolution.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Full screen",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
@@ -541,6 +546,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, 3:2) переносит его к "
                                 "верхнему и нижнему краям.",
+    [UI_MENU_HUD_WIDTH] = "Ширина интерфейса",
+    [UI_MENU_HUD_WIDTH_DESC] = "На экране шире 16:9: как далеко друг от друга левая и правая части интерфейса. "
+                               "«Весь экран» ставит их у краёв экрана; 21:9 или 16:9 держит интерфейс в середине "
+                               "экрана такой формы. Нужны раскладки интерфейса из установки для этого разрешения игры.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Весь экран",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
@@ -1053,6 +1063,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                 "precisa de mais memória de vídeo e tempo de GPU. Um tamanho mais largo (21:9) amplia a "
                                 "visão da câmera e leva o HUD para os cantos da tela; um mais alto (16:10, 3:2) "
                                 "leva-o para as bordas de cima e de baixo.",
+    [UI_MENU_HUD_WIDTH] = "Largura do HUD",
+    [UI_MENU_HUD_WIDTH_DESC] = "Em uma tela mais larga que 16:9: a distância entre os lados esquerdo e direito do HUD. "
+                               "Tela cheia os coloca nas bordas da tela; 21:9 ou 16:9 mantém o HUD no meio da tela "
+                               "desse formato. Precisa dos layouts de HUD da instalação para a resolução do jogo.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Tela cheia",
     [UI_MENU_RENDER_SCALE] = "Escala da renderização 3D",
     [UI_MENU_RENDER_SCALE_DESC] = "Tamanho da cena 3D em relação à resolução do jogo; o FSR do jogo a amplia até esse "
                                   "tamanho. Acima de 100 % suaviza bordas serrilhadas (supersampling) com alto custo de "
@@ -1575,6 +1590,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                 "高于 1920 x 1080 会占用更多显存和 GPU 时间。"
                                 "更宽的尺寸（21:9）会扩大视野，并把界面移到屏幕四角；"
                                 "更高的尺寸（16:10、3:2）则移到上下边缘。",
+    [UI_MENU_HUD_WIDTH] = "界面宽度",
+    [UI_MENU_HUD_WIDTH_DESC] = "在比 16:9 更宽的屏幕上，界面左右两侧相距多远。"
+                               "“整个屏幕”把它们放在屏幕边缘；21:9 或 16:9 则把界面保持在屏幕中间该比例的区域内。"
+                               "需要安装程序为该游戏分辨率准备的界面布局。",
+    [UI_MENU_HUD_WIDTH_FULL] = "整个屏幕",
     [UI_MENU_RENDER_SCALE] = "3D 渲染比例",
     [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的尺寸；"
                                   "游戏的 FSR 会将其缩放到该尺寸。"
