@@ -78,8 +78,9 @@ static int shadow_on;                    // shadow mode: imported pools get shad
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
 static void shadow_touch(PoolRec *r);
 static void shadow_forget(PoolRec *r);
-static void mirror_retiring(PoolRec *r);  // vk_pool_fini: kept until mirror_retire (or vk_mem_shutdown)
-static void mirror_retire(void *arg);    // completion thread: destroys a finalized mirrored pool's record
+static void pool_retiring(PoolRec *r);  // vk_pool_fini: kept until pool_retire (or vk_mem_shutdown)
+static void pool_retire(void *arg);    // completion thread: destroys a finalized pool's record
+static uint64_t retire_value(void);    // the timeline value after which a finalized pool's record may go
 static void grow(void **arr, int *cap, size_t elem);
 
 static PlatMutex pool_lock = PLAT_MUTEX_INIT;
@@ -333,10 +334,14 @@ void vk_pool_fini(pool_t *p) {
         vk_queue_unlock();
     }
     vk_mem_collect();
-    // A mirrored pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs may
-    // name them (the game frees a pool only once the GPU is done with it, but its CPU writes may still be queued).
-    if (r->mbuf) mirror_retiring(r), vk_completion_add(vk_sync_issued() + 1, mirror_retire, r);
-    else destroy_rec(c, r);
+    // The record, its buffers and its memory outlive the submission being recorded, of any pool kind. The wait above
+    // covers submitted work only. With the synchronous replay another game thread may be recording right now, and that
+    // recording may already name this pool: a mirrored pool's sync copies and write-backs, an import pool's buffer
+    // through a texture upload or a released cache entry (vk_texture.c slot_resolve), a physical pool's memory under
+    // the images vk_texture_range_gone just deferred to that submission. The game frees a pool only once its own GPU
+    // work is done, so only the port's work can name it. Freed here, the submission ran with freed memory.
+    pool_retiring(r);
+    vk_completion_add(retire_value(), pool_retire, r);
 }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
@@ -1398,19 +1403,19 @@ static void mirror_forget(PoolRec *r) {
         }
 }
 
-// Finalized mirrored pools waiting for mirror_retire; vk_mem_shutdown destroys those whose callback never ran.
+// Finalized pools waiting for pool_retire; vk_mem_shutdown destroys those whose callback never ran.
 static PoolRec **retiring;
 static int nretiring, cretiring;
 static PlatMutex retire_lock = PLAT_MUTEX_INIT;
 
-static void mirror_retiring(PoolRec *r) {
+static void pool_retiring(PoolRec *r) {
     plat_mutex_lock(&retire_lock);
     if (nretiring == cretiring) grow((void **)&retiring, &cretiring, sizeof *retiring);
     retiring[nretiring++] = r;
     plat_mutex_unlock(&retire_lock);
 }
 
-static void mirror_retire(void *arg) {
+static void pool_retire(void *arg) {
     plat_mutex_lock(&retire_lock);
     for (int i = 0; i < nretiring; i++)
         if (retiring[i] == arg) { retiring[i] = retiring[--nretiring]; break; }
@@ -2163,7 +2168,7 @@ typedef struct {
     VkDeviceSize held;   // staging and scratch bytes freed when the batch completes (vk_upload_held)
 } Batch;
 
-enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA };
+enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST };   // DEAD_HOST: free(handle)
 typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl; } Dead;
 
 static PlatRMutex cmd_lock;
@@ -2222,6 +2227,10 @@ static void collect_locked(VkCtx *c) {
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
         if (d->seq > done_seq || d->tl > tl) { dead[k++] = *d; continue; }
+        if (d->kind == DEAD_HOST) {
+            free((void *)(uintptr_t)d->handle);
+            continue;
+        }
         rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
                          d->tl, tl);
         switch (d->kind) {
@@ -2424,10 +2433,11 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     // Recomp and Savage Wind Recomp stamp every deferral with the submission being recorded (runtime/nvn/vulkan/
     // textures.c defer: vk_pending_seq).
     uint64_t tl = tl_noted;
-    if (tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
+    if (kind != DEAD_HOST && tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
-    rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
-                     vk_sync_fence_done());
+    if (kind != DEAD_HOST)
+        rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
+                         vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
 }
 
@@ -2446,6 +2456,7 @@ void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uin
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
 }
+void vk_defer_free(void *p) { if (p) defer(DEAD_HOST, (uint64_t)(uintptr_t)p, NULL); }
 
 // The device fault report: no lock, since a thread that holds cmd_lock may be waiting for the report's own lock
 // (vk_upload_flush reports a failed submit with cmd_lock held).
@@ -2464,6 +2475,17 @@ void vk_mem_note_fence(uint64_t timeline_value) {
     if (timeline_value > tl_noted) tl_noted = timeline_value;
     tl_noted_here = timeline_value;
     plat_rmutex_unlock(&cmd_lock);
+}
+
+// The later of the submission being recorded (tl_noted, noted from its start: vk_sync.c vk_sync_submit) and the next
+// one to be submitted.
+static uint64_t retire_value(void) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    uint64_t v = vk_sync_issued() + 1;
+    if (tl_noted > v) v = tl_noted;
+    plat_rmutex_unlock(&cmd_lock);
+    return v;
 }
 
 void vk_mem_collect(void) {

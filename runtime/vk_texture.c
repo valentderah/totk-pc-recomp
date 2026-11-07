@@ -597,10 +597,16 @@ static void destroy_tex(Tex *e) {
             if (p->next_at == e) { p->next_at = e->next_at; break; }
     }
     if (e->released) nreleased--, rel_unlink(e);
+    // Another thread may hold &e->pub, taken under the lock and used after it (vk_texture_get, vk_texture_by_id: render
+    // targets for a whole pass, vk_exec.c resolve_target, vk_texture_storage_bound_locked writes through it). Freed
+    // here, that thread read a stale VkImage from freed memory, made views of it and cached them by that handle. The
+    // record goes with the image, once the submission being recorded is done; gone keeps views of it out of the caches.
+    e->pub.gone = 1;
     vk_exec_image_gone(e->pub.image);
     vk_defer_image(e->pub.image, e->alloc);
     free(e->snap);
-    free(e);
+    e->snap = NULL;
+    vk_defer_free(e);
 }
 
 // Released entries with another descriptor at the same address are replaced; past RELEASED_MAX released entries the
