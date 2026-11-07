@@ -416,6 +416,10 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
     return resolve_locked(addr, size, out);
 }
 
+int vk_mem_span_live(const VkMemSpan *sp) {
+    return sp->buffer && sp->pool && !sp->alloc && !shadow_on && ((const PoolRec *)sp->pool)->kind == POOL_IMPORT;
+}
+
 // The pool index lookup under the lock; a non-overlapped import or physical pool goes into the address's cache slot.
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     memset(out, 0, sizeof *out);
@@ -2152,6 +2156,7 @@ typedef struct {
     uint64_t seq;
     Staging *stg;
     int nstg, cap;
+    VkDeviceSize held;   // staging and scratch bytes freed when the batch completes (vk_upload_held)
 } Batch;
 
 enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA };
@@ -2305,8 +2310,66 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     else {
         if (open_b.nstg == open_b.cap) grow((void **)&open_b.stg, &open_b.cap, sizeof *open_b.stg);
         open_b.stg[open_b.nstg++] = (Staging){b, a};
+        open_b.held += bi.size;
     }
     return info.pMappedData;
+}
+
+// Device-local scratch of the upload batch (the GPU deswizzle's linear copies, the ASTC decoder's blocks and texels):
+// a pool of its own, like staging, so the replay thread neither waits on the default pool's lock while another thread
+// makes a block there (the headroom thread: about 8 ms for 256 MiB) nor makes one itself for a few MiB. One block
+// of SCR_BLOCK is kept from the first use; larger buffers than half a block go to the default pool.
+#define SCR_BLOCK (64ull << 20)
+static VmaPool scr_pool;
+static int scr_pool_tried;
+
+VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
+    VkCtx *c = vk_ctx();
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (!__atomic_load_n(&scr_pool_tried, __ATOMIC_ACQUIRE)) {
+        plat_once(&cmd_once, cmd_init, NULL);
+        plat_rmutex_lock(&cmd_lock);
+        if (!scr_pool_tried) {
+            // two blocks with 8 GiB or more of device-local memory: fight2's first world frame deswizzles about
+            // 280 MiB, more than the GPU finishes while the replay records, and the pool grew by four blocks there
+            VkDeviceSize vram = 0;
+            for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+                if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT && c->mem_props.memoryHeaps[h].size > vram)
+                    vram = c->mem_props.memoryHeaps[h].size;
+            uint32_t type;
+            VmaPoolCreateInfo pi = {.blockSize = SCR_BLOCK, .minBlockCount = vram >= (8ull << 30) ? 2 : 1};
+            if (vmaFindMemoryTypeIndexForBufferInfo(c->vma, &bi, &aci, &type) == VK_SUCCESS) {
+                pi.memoryTypeIndex = type;
+                if (vmaCreatePool(c->vma, &pi, &scr_pool) != VK_SUCCESS) scr_pool = NULL;
+            }
+            rt_log("vk: upload scratch pool %s (%u blocks of %llu MiB kept)", scr_pool ? "created" : "unavailable: default pool",
+                   (unsigned)pi.minBlockCount, (unsigned long long)(SCR_BLOCK >> 20));
+            __atomic_store_n(&scr_pool_tried, 1, __ATOMIC_RELEASE);
+        }
+        plat_rmutex_unlock(&cmd_lock);
+    }
+    if (scr_pool && bi.size <= SCR_BLOCK / 2) aci.pool = scr_pool;
+    VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, buf, alloc, NULL);
+    if (r == VK_SUCCESS && open_active) open_b.held += bi.size;   // the caller defers its free to the open batch
+    return r;
+}
+
+VkDeviceSize vk_upload_held(void) { return open_active ? open_b.held : 0; }
+
+// At device creation: the staging and scratch pools with their kept blocks, made through a first small buffer each
+// (freed at once), so the first world frame does not allocate them (staging was first used there once the GPU took
+// the early texture uploads).
+void vk_upload_pools_init(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    VkBuffer b;
+    VmaAllocation a;
+    vk_staging(16, &b, &a);
+    vmaDestroyBuffer(c->vma, b, a);
+    if (vk_scratch_buffer(16, &b, &a) == VK_SUCCESS) vmaDestroyBuffer(c->vma, b, a);
 }
 
 uint64_t vk_upload_flush(int wait) {
@@ -2434,6 +2497,9 @@ void vk_mem_shutdown(void) {
     if (stg_pool) vmaDestroyPool(c->vma, stg_pool);   // after retire: no staging buffer is left in it
     stg_pool = NULL;
     stg_pool_tried = 0;
+    if (scr_pool) vmaDestroyPool(c->vma, scr_pool);   // deferred scratch buffers went with collect_locked above
+    scr_pool = NULL;
+    scr_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);

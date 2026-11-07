@@ -1,0 +1,37 @@
+#version 450
+// Block-linear to linear copy of one texture level and layer on the GPU (vk_deswizzle.c), the same layout as
+// tex_deswizzle.c nvn_bl_offset: GOB = 64 bytes x 8 rows; a block is 1 GOB wide, 2^th GOBs high and 2^td deep, its
+// GOBs ordered y first, then z; blocks fill the level x first, then y, then z.
+// One invocation per 16-byte segment of the block-linear storage, in storage order, so the reads (from the pool's
+// imported buffer: guest memory, over PCIe on a discrete GPU) are contiguous; the writes go to a device-local buffer
+// with rows of pitch16 segments. Segments outside the level's rows, slices or row width are padding and skipped.
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer Src { uvec4 src[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Dst { uvec4 dst[]; };
+layout(push_constant) uniform Push {
+    uint src_base;   // first segment of the level and layer in the src binding
+    uint dst_base;   // first segment of its linear copy in the dst binding
+    uint segs;       // segments to visit: whole blocks covering the level
+    uint pitch16;    // segments per linear row (row bytes rounded up to 16)
+    uint rows, slices, th, td;
+    uint gobs_x, blocks_y;
+    uint nx;         // workgroups along x (the dispatch is 2D when one dimension is not enough)
+} pc;
+
+void main() {
+    uint s = (gl_WorkGroupID.y * pc.nx + gl_WorkGroupID.x) * 64u + gl_LocalInvocationID.x;
+    if (s >= pc.segs) return;
+    uint bh = 1u << pc.th, bd = 1u << pc.td;
+    uint per_block = 32u << (pc.th + pc.td);   // 512-byte GOBs of 32 segments each
+    uint block = s / per_block, inb = s % per_block;
+    uint gob = inb >> 5u, ing = inb & 31u;
+    uint per_layer = pc.gobs_x * pc.blocks_y;
+    uint bz = block / per_layer, rem = block % per_layer;
+    uint by = rem / pc.gobs_x, bx = rem % pc.gobs_x;
+    // Inside a GOB, segment bits: 4 = x % 64 / 32, 3..2 = y % 8 / 2, 1 = x % 32 / 16, 0 = y % 2.
+    uint xseg = bx * 4u + ((ing >> 4u) & 1u) * 2u + ((ing >> 1u) & 1u);
+    uint y = by * 8u * bh + (gob % bh) * 8u + ((ing >> 2u) & 3u) * 2u + (ing & 1u);
+    uint z = bz * bd + gob / bh;
+    if (xseg >= pc.pitch16 || y >= pc.rows || z >= pc.slices) return;
+    dst[pc.dst_base + (z * pc.rows + y) * pc.pitch16 + xseg] = src[pc.src_base + s];
+}

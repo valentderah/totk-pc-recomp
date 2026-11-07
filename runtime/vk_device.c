@@ -376,6 +376,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_astc_release();
+    if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
@@ -397,7 +398,7 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_headroom_start(), vk_dlaa_init();
+        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
         else destroy_all();
     }
     int ok = g_ready;
