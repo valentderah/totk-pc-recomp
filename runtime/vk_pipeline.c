@@ -3339,6 +3339,7 @@ static void cache_save(int wait) {
         plat_mutex_unlock(&save_lock);
         return;
     }
+    uint64_t t0 = qpc();
     if (wait) {
         plat_mutex_lock(&cache_use);
     } else {
@@ -3348,15 +3349,21 @@ static void cache_save(int wait) {
         int got = 0;
         for (int i = 0; i < 1000 && !(got = plat_mutex_trylock(&cache_use)); i++) plat_sleep_ms(2);
         if (!got) {
+            rt_log("vk_pipeline: cache save put off, pipelines were being built for %.0f ms", ms_since(t0));
             plat_mutex_unlock(&save_lock);
             return;
         }
     }
+    uint64_t t1 = qpc();
     size_t size = 0;
     void *data = NULL;
     int ok = vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
              vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS;
     plat_mutex_unlock(&cache_use);
+    // The copy time is how long a pipeline build on the drawing thread (a compute miss, under P.lock) can wait for
+    // this save; the wait is how long the save waited for builds in flight.
+    rt_log("vk_pipeline: cache %s: %.1f MB copied in %.1f ms, after %.1f ms waiting for builds", wait ? "save" : "autosave",
+           (double)size / 1e6, ms_since(t1), (double)(t1 - t0) / 1e6);
     if (ok && !plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
     free(data);
     plat_mutex_unlock(&save_lock);
