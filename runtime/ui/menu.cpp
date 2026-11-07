@@ -51,6 +51,7 @@ extern "C" {
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
+int vk_exec_replay_workers(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
@@ -905,6 +906,23 @@ static void row_threads(const char *key, UiTextId label, UiTextId desc) {
     opt_choice_list(key, label, vals, names, N, desc);
 }
 
+// The chunked replay's recording threads: Off, then the counts; the note under the value is what this run uses, which
+// a change replaces only after a restart.
+static void row_replay_workers(void) {
+    static const char *const vals[] = {"0", "2", "3", "4", "6", "8", "12", "16"};
+    enum { N = sizeof vals / sizeof *vals };
+    const char *names[N];
+    names[0] = menu_text(UI_MENU_OFF);
+    for (int i = 1; i < N; i++) names[i] = vals[i];
+    static char now[64];
+    char n[16];
+    int w = vk_exec_replay_workers();
+    snprintf(n, sizeof n, "%d", w);
+    if (w >= 0) snprintf(now, sizeof now, menu_text(UI_MENU_REPLAY_WORKERS_NOW), w ? n : menu_text(UI_MENU_OFF));
+    opt_choice_list("TOTK_REPLAY_WORKERS", UI_MENU_REPLAY_WORKERS, vals, names, N, UI_MENU_REPLAY_WORKERS_DESC, -1,
+                    w >= 0 ? now : nullptr);
+}
+
 // A free-text key shown as Off (unset) / On (value set): On writes on_value, any set value reads as On.
 static void row_set_or_not(const char *key, UiTextId label, UiTextId desc, const char *on_value) {
     const char *vals[] = {"", on_value}, *names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_ON)};
@@ -954,6 +972,7 @@ static void tab_advanced(float scale) {
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
     opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    row_replay_workers();
     opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
