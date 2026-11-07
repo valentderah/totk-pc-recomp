@@ -80,6 +80,7 @@ const char *input_pad_name(int pad);
 // skipped; when none is valid the action keeps its bindings. 1 when applied.
 int input_map_bind(const char *button, const char *list);
 // Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
+// A key a line binds leaves the defaults of the actions that have no line.
 void input_map_configure(void);
 
 // The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts", 0.1.9's name for the Nintendo
