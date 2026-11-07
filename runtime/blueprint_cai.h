@@ -40,6 +40,7 @@ typedef struct {
     int version;
     int actors;                        // 1..21
     const char *names[BPC_MAX_ACTORS]; // NUL-terminated actor names inside blob
+    float pos[BPC_MAX_ACTORS][3];      // each actor's world position: the translation of its first matrix
     float bbox_min[3];
     float bbox_max[3];
 } BpcBlueprint;

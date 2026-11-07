@@ -307,6 +307,12 @@ int plat_append_write(PlatAppend *f, const void *data, size_t n);   // 1 when al
 // Calls cb(name, ctx) for each file in dir whose name ends in ext (".in"); name has no directory part. cb returns 0 to
 // stop. Returns 0 when dir cannot be listed.
 int plat_file_list(const char *dir, const char *ext, int (*cb)(const char *name, void *ctx), void *ctx);
+// Calls cb(name, ctx) for each subdirectory of dir (name has no directory part, hidden entries and "." and ".." are
+// left out). cb returns 0 to stop. Returns 0 when dir cannot be listed. For a picker that browses folders.
+int plat_dir_list(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx);
+// Calls cb(root, ctx) for each filesystem root that can be browsed ("C:/", "D:/", on Linux "/"), so a picker can offer
+// the other drives when the player is at the end of one. cb returns 0 to stop. Returns the number of roots.
+int plat_root_list(int (*cb)(const char *root, void *ctx), void *ctx);
 // Open files for positional reads: any thread, in parallel on one handle, no file pointer.
 typedef struct PlatFile PlatFile;
 PlatFile *plat_file_open(const char *path);               // read-only; NULL when missing or unreadable

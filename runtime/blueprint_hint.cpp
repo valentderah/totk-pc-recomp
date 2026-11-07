@@ -17,9 +17,9 @@
 // the polls it is open. Taking that as "left the screen" makes the row and the overlay blink; the screen is treated as
 // gone only after it has stayed gone for STILL_GONE_MS, which is far longer than the gaps a focus box leaves.
 //
-// The file dialog runs on folder_pick's own thread, so its answer cannot be imported there: the callback records the path
-// and a counter, and the next presented frame starts the import on a thread of its own, as the Blueprints tab does, so
-// neither the present path nor the game waits for the walk of the game's memory.
+// The picker's answer cannot be imported in its callback: the callback records the path and a counter, and the next
+// presented frame starts the import on a thread of its own, so neither the present path nor the game waits for the walk
+// of the game's memory.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +33,6 @@ extern "C" {
 #include "blueprint_dir.h"
 #include "blueprint_import.h"
 #include "cfg.h"
-#include "folder_pick.h"
 #include "gfx.h"
 #include "host.h"
 #include "input.h"
@@ -41,6 +40,7 @@ extern "C" {
 #include "platform/platform.h"
 #include "ui_text.h"
 }
+#include "ui/blueprint_picker.h"
 #include "ui/menu.h"
 
 // The row's place on the game's 1920x1080 UI grid. A_Guide_00 sits at x -350, y -477 and its four Pa_Guide_0N parts sit
@@ -60,13 +60,17 @@ static volatile int32_t g_screen;   // 1 while the Autobuild screen was the focu
 
 // ---- written on the present path
 static uint64_t g_screen_seen_ns;   // when the Autobuild screen was last read, whichever thread read it
-static int g_held;                  // the button was down at the last frame, so one hold opens one dialog
+static int g_held;                  // the button was down at the last frame, so one hold opens the picker once
 static PlatMutex g_lock = PLAT_MUTEX_INIT;
 static char g_pending[PLAT_PATH_MAX];
-static unsigned g_pending_gen;      // bumped when the dialog returned a file
+static unsigned g_pending_gen;      // bumped when the picker returned a file
 static unsigned g_done_gen;         // the generation the present path has already acted on
 static int g_dialog_open;
 static int g_importing;
+// The last import's outcome, shown beside the import row for a few seconds (see import_thread).
+static char g_result_note[128];
+static int g_result_ok;
+static uint64_t g_result_until_ns;
 
 // TOTK_BLUEPRINT_HINT=0 leaves the Autobuild screen entirely as the game draws it.
 static int enabled(void) {
@@ -74,15 +78,14 @@ static int enabled(void) {
     return !(v && !strcmp(v, "0"));
 }
 
-// 1 while the Autobuild screen is up. The name is read on both threads: the game thread reads it once per pad read, which
-// is what lets bp_hint_poll take the button before the game sees it, and the present thread reads it too, because the game
-// stops reading the pad for long stretches on that screen and the game thread's last reading would then keep the row up
-// or down long after the screen changed. Either reading freshens the latch; it lapses only after STILL_GONE_MS.
+// 1 while the Autobuild screen is up. The screen is found among the open screens, not through the focus box: on that
+// screen the focus box is only on a list row or a tab, and the import row must be there on all of it. The game thread
+// reads it once per pad read, which is what lets bp_hint_poll take the button before the game sees it, and the present
+// thread reads it too, because the game stops reading the pad for long stretches there. Either reading freshens the
+// latch; it lapses only after STILL_GONE_MS.
 static int screen_up(void) {
     if (!enabled()) return 0;
-    char name[48];
-    const int up = __atomic_load_n(&g_screen, __ATOMIC_RELAXED) ||
-                   (menu_cursor_screen_name(name, (int)sizeof name) && !strcmp(name, BP_HINT_SCREEN));
+    const int up = __atomic_load_n(&g_screen, __ATOMIC_RELAXED) || menu_cursor_screen_open(BP_HINT_SCREEN);
     const uint64_t now = plat_now_ns();
     if (up) __atomic_store_n(&g_screen_seen_ns, now, __ATOMIC_RELAXED);
     const uint64_t seen = __atomic_load_n(&g_screen_seen_ns, __ATOMIC_RELAXED);
@@ -92,10 +95,8 @@ static int screen_up(void) {
 int bp_hint_active(void) { return screen_up(); }
 
 void bp_hint_poll(uint64_t *buttons) {
-    static char name[48];
     static int logged;
-    name[0] = 0;
-    const int up = enabled() && menu_cursor_screen_name(name, (int)sizeof name) && !strcmp(name, BP_HINT_SCREEN);
+    const int up = enabled() && menu_cursor_screen_open(BP_HINT_SCREEN);
     __atomic_store_n(&g_screen, up, __ATOMIC_RELAXED);
     if (up) __atomic_store_n(&g_screen_seen_ns, plat_now_ns(), __ATOMIC_RELAXED);
     if (up != logged) {
@@ -103,17 +104,16 @@ void bp_hint_poll(uint64_t *buttons) {
         rt_log("blueprint: hint %s the Autobuild screen", up ? "is on" : "left");
     }
     // The game's own use of this button on this screen ("Receive") needs Zelda Notes, which this port has not: taking it
-    // keeps the press from doing something invisible and from reaching the game twice, once for the dialog and once for
+    // keeps the press from doing something invisible and from reaching the game twice, once for the picker and once for
     // the share dialog that would never open.
     if (up) *buttons &= ~(1ull << B_PLUS);
 }
 
-// ---- the dialog, and the import of what it returned
+// ---- the picker, and the import of what it returned
 
 static void on_file(const char *path, void *ctx) {
     (void)ctx;
-    // The dialog's answer carries the folder it was browsed in, so the screen's own entry keeps the same memory as the
-    // Blueprints tab's button does (blueprint_dir.h).
+    // The chosen file's folder is remembered, so the next picker opens where this one was left (blueprint_dir.h).
     if (path && *path) bp_dir_remember(path);
     plat_mutex_lock(&g_lock);
     g_dialog_open = 0;
@@ -131,11 +131,17 @@ static void import_thread(void *arg) {
     rt_log("blueprint: hint: %s: %s", path, bp_import_text(r));
     plat_mutex_lock(&g_lock);
     g_importing = 0;
+    // The player pressed nothing else and is still looking at the screen: say what happened, next to the import row,
+    // for a few seconds. Before this the only trace of a failed import was a log line nobody sees.
+    snprintf(g_result_note, sizeof g_result_note, "%s", bp_import_text(r));
+    g_result_ok = r == BP_IMPORT_OK;
+    g_result_until_ns = plat_now_ns() + 4000ull * 1000000ull;
     plat_mutex_unlock(&g_lock);
     free(path);
 }
 
-// Present path: the dialog is up or an import runs, so the press is already in hand.
+// Present path: opens the port's own file picker, not the Windows dialog. The Windows dialog takes the focus away from
+// the game and cannot be driven by the pad, and this entry exists so the import is reachable with the pad alone.
 static void open_picker(void) {
     plat_mutex_lock(&g_lock);
     if (g_dialog_open || g_importing) {
@@ -144,9 +150,13 @@ static void open_picker(void) {
     }
     g_dialog_open = 1;
     plat_mutex_unlock(&g_lock);
-    static const char *const patterns[] = {"*.cai", "*.txt"};
     rt_log("blueprint: hint: opening the file picker");
-    file_pick("", patterns, 2, on_file, NULL);
+    if (!bp_picker_open("", on_file, NULL)) {
+        plat_mutex_lock(&g_lock);
+        g_dialog_open = 0;
+        plat_mutex_unlock(&g_lock);
+        rt_log("blueprint: hint: the file picker is already open");
+    }
 }
 
 // Present path: hands the file to a thread of its own, because bp_import_newest walks the game's memory.
@@ -171,7 +181,7 @@ static void start_import(const char *path) {
 }
 
 void bp_hint_frame(void) {
-    // A file the dialog returned is the one thing to act on here, whatever the game shows by now: the player picked it
+    // A file the picker returned is the one thing to act on here, whatever the game shows by now: the player picked it
     // while the Autobuild screen was up. Acting on it before the button read keeps a fast second press from being lost.
     char path[PLAT_PATH_MAX];
     unsigned gen;
@@ -235,4 +245,30 @@ void bp_hint_draw(int width, int height, float scale) {
     // down and right, in black at low alpha.
     dl->AddText(ImVec2(tx + 2 * sx, y0 + 2 * sx), shadow, word);
     dl->AddText(ImVec2(tx, y0), IM_COL32(255, 255, 255, 245), word);
+
+    // The last import's outcome, right of the row for a few seconds: gold when the blueprint went in, red when it did
+    // not, with the reason. Before this, a refused file left no trace the player could see.
+    char note[sizeof g_result_note];
+    int ok = 0;
+    plat_mutex_lock(&g_lock);
+    const int show = g_result_note[0] && plat_now_ns() < g_result_until_ns;
+    if (show) {
+        snprintf(note, sizeof note, "%s", g_result_note);
+        ok = g_result_ok;
+    }
+    plat_mutex_unlock(&g_lock);
+    if (show) {
+        const char *w = ui_text(ok ? UI_MENU_BLUEPRINT_IMPORTED : UI_MENU_BLUEPRINT_FAILED);
+        char line[192];
+        // On success the line is just the word: "Imported ok" reads like a stack trace, and the player can see the
+        // result in the history behind the panel anyway. A failure keeps its reason, which is the whole point of it.
+        if (ok) snprintf(line, sizeof line, "%s", w);
+        else snprintf(line, sizeof line, "%s %s", w, note);
+        const ImVec2 ls = ImGui::CalcTextSize(line);
+        const float lx = tx + ts.x + BP_HINT_GAP * 2 * sx;
+        const float ly = cy - ls.y * 0.5f;
+        const ImU32 col = ok ? IM_COL32(236, 194, 84, 250) : IM_COL32(240, 120, 110, 250);
+        dl->AddText(ImVec2(lx + 2 * sx, ly + 2 * sx), shadow, line);
+        dl->AddText(ImVec2(lx, ly), col, line);
+    }
 }

@@ -1,24 +1,30 @@
-# Importing `.cai` Autobuild blueprints into the game
+# Importing `.cai` and `.txt` Autobuild blueprints into the game
 
-Status: **works** — a `.cai` blueprint file is read, validated, and written into the game's own Autobuild history, where
-it appears as the **first card of the list** (the newest draft) and builds with the native preview, rotation and Zonai
+Status: **works** — a blueprint file is read, validated, and written into the game's own Autobuild history, where it
+appears as the **first card of the list** (the newest draft) and builds with the native preview, rotation and Zonai
 energy costs.
 
 Upstream request: issue #680, "Implement the .cai blueprint import feature" (`valentderah/totk-pc-recomp`).
-Baseline: v0.3.10 (`101132a6`).
+Baseline: v0.3.11 (`0ae47a5`).
 
 Everything below was measured on a running game, on several save files, with the list wiped clean in between.
 
 ## 1. What the feature does
 
-The port's settings menu gets one new tab, **Blueprints**:
+While the game's **Autobuild screen** is open, its bottom guide bar shows one more hint — the ⊕ (Plus) button and the
+word **Import**, right of "Back":
 
-1. **Choose a blueprint file** opens the host's file dialog. Only two extensions are offered, `.cai` and `.txt`, and
-   nothing else can be picked; the file is read and validated while the game keeps running. The dialog opens at the
-   folder it was last used in, so a second import is one click away.
-2. The page shows what the file holds: the part count, or why the file was rejected.
-3. **Import** writes the creation into the save data the game holds in memory and clears the game's cached pictures, so
-   the creation appears in the Autobuild history right away as the newest draft — no reload, no restart.
+1. Pressing Plus anywhere on that screen opens the **port's own file picker** (`runtime/blueprint_picker.c` and
+   `runtime/ui/blueprint_picker.cpp`), not a Windows or desktop file dialog. The picker lists the folder's
+   subdirectories and its `.cai` / `.txt` files, splits the current path into pressable parts (`C:` → `Users` →
+   `Administrator`), offers the other drives at a drive's root, scrolls with the mouse wheel, and scales with the
+   window. It can be driven by pointer, D-pad / A / B, or keyboard.
+2. Choosing a file writes the creation into the save data the game holds in memory and clears the game's cached
+   pictures, so it appears in the Autobuild history right away as the newest draft — no reload, no restart.
+
+While the picker is open the game receives no input (`input_menu(1)`), the pointer is released to the picker without
+being forced to the centre, and the settings menu's **Blueprints tab is gone**: the Autobuild screen is the only entry
+point. `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
 
 There is no slot to pick. An import behaves exactly like a creation made in the game: the new blueprint becomes the
 first card of the history, every older free card moves down one place, and the oldest free card is discarded. The
@@ -65,9 +71,9 @@ Python's `gzip` gives for the same member.
 ### 2.2 The remembered folder (`runtime/blueprint_dir.c`)
 
 The folder of the last chosen file is kept in `totk.ini` as `BLUEPRINT_DIR`, under `[files]`. `bp_dir_last` hands it to
-the dialog when the caller passes an empty start folder, and returns `""` when the folder no longer exists, so a deleted
-folder is not a reason for the dialog to fail. `bp_dir_remember` is called by both entry points (the tab's button and the
-Autobuild screen's row), so they share one memory.
+the picker when the caller passes an empty start folder, and returns `""` when the folder no longer exists, so a deleted
+folder is not a reason for the picker to fail. `bp_dir_remember` is called when a file is chosen, so the next picker
+opens where the last one was left.
 
 ## 3. The CAI blob (`runtime/blueprint_cai.c`)
 
@@ -180,9 +186,21 @@ that entry and its age becomes 0, so it is drawn first. The result is still a pe
 do not fit that shape is refused rather than written. The `IsFavorite` bitmask (30 bits in one `u32`, with a count word
 in front of it) is read from the same save file, so a favorite is never chosen as the victim.
 
+That rule is `bp_rotate_ages` (`runtime/blueprint_import.c`), kept free of save-memory access so it can be exercised
+without a running game: `tests/blueprint_rotation_test.py` links the real file against stubs and checks it directly.
+
+A save that does **not** carry the `IsFavorite` array is a special case: a zero bitmask then cannot be told apart from
+"no entry is a favorite", and guessing would let an import evict a card the player starred. The rotation is skipped in
+that case — the log says so, and the import falls back to replacing the newest card, which is the documented behaviour
+before the rotation existed. Nothing is dropped.
+
 Writing the rotated ages into guest memory means the open Autobuild page reorders at once, and the game writes the new
 order back to `progress.sav` with its own save. The blob is written into the evicted entry in both in-memory copies, as
 described above.
+
+The writes are ordered so the blob is in place **before** the ages are rotated. The page draws its cards sorted by
+`Index`, so publishing the new order first could make it render the imported card from the old blob and keep showing the
+old picture. The rotation is therefore the last change, the one the game notices after the content is in place.
 
 ### Clearing the cached pictures
 
@@ -197,19 +215,10 @@ The array keeps its 30 entries, the item count never changes, and the save never
 the evicted oldest free entry. The other 29 entries keep their data byte for byte, the favorites keep their age, and no
 favorite flag is changed (an imported blueprint is not made a favorite).
 
-## 6. The page (`runtime/ui/blueprint_page.cpp`)
+## 6. The entry in the Autobuild screen (`runtime/blueprint_hint.cpp`)
 
-One row: **Choose a blueprint file**, then **Import**. The chosen file's part count is shown, or the reason it was
-rejected.
-
-`bp_favorites` and `bp_import_newest` walk the game's memory, so both run on a worker thread and the page only collects
-the results. The tab opens instantly; opening it never blocks the game. There is one lookup per tab entry, not a timer.
-
-## 6.1 The entry in the Autobuild screen itself (`runtime/blueprint_hint.cpp`)
-
-The tab above is reached from the settings menu, so it needs the player to know where to look. The second entry is on
-the game's own screen: while the Autobuild page is open, its bottom guide bar shows one more hint, the ⊕ button and the
-word **Import/D导入**, and pressing ⊕ opens the same file picker.
+While the Autobuild page is open, its bottom guide bar shows one more hint, the ⊕ button and the word **Import**, and
+pressing ⊕ opens the port's own file picker. There is no settings-menu tab any more; this screen is the only entry point.
 
 That bar is the game's, not ours: `blyt/AutoBuilder_00.bflyt` holds the align pane `A_Guide_00` with four part panes of
 `PaGuideKeySimple_00`, filled from `LayoutMsg/AutoBuilder_00.msbt`. Its slots are "Select", an unused one, "Confirm",
@@ -217,62 +226,83 @@ That bar is the game's, not ours: `blyt/AutoBuilder_00.bflyt` holds the align pa
 nothing of the game's archives is edited: no mod, resolution, or language can conflict, and the entry shows on every
 game version and every pad layout.
 
-* **Which screen.** `runtime/menu_cursor.c` `menu_cursor_screen_name()` returns the layout name of the focused game
-  screen, and `AutoBuilder_00` is that name for the Autobuild page. It is read once per pad read, on the game thread,
-  through `bp_hint_poll` (`runtime/input.c` `input_poll`).
+* **Which screen.** `menu_cursor_screen_open()` (`runtime/menu_cursor.c`) enumerates `eui::ScreenMgr`'s open screens and
+  matches the layout name `AutoBuilder_00`. It tests whether the screen is open at all, not whether it has the focus box:
+  on that screen the focus is only on a list row or a tab, and the import row must be there whenever the screen is up.
+  The game thread reads it once per pad read (`bp_hint_poll`), which is what lets the port take the button before the
+  game sees it; the present thread reads it too, freshening a short latch so the row does not blink during focus gaps.
 * **Only there.** Outside that screen the row is not drawn and ⊕ is untouched, so the game behaves exactly as before.
 * **The button.** ⊕ on this screen is the game's own "Receive", which needs Zelda Notes and does nothing on this port;
   `bp_hint_poll` clears the bit from the frame's buttons so the press belongs to the import alone. Nothing else is taken.
-* **The picker and the import.** The dialog runs on `folder_pick`'s thread and only records the path; the next presented
-  frame (`bp_hint_frame`) hands it to a thread of its own, because `bp_import_newest` walks the game's memory. The
-  present path never waits.
+* **The picker.** `bp_picker_open` (`runtime/blueprint_picker.c`) shows a panel drawn by `ui/blueprint_picker.cpp`
+  through ImGui's draw list only: no ImGui widgets or layout, so it cannot trip ImGui's layout checks. All folder
+  listing, path splitting, rectangle computation, pointer/pad hit tests and wheel scrolling are in C. The window is a
+  three-band layout — title, breadcrumb, footer — around one scrolling list, designed against the Nielsen Norman Group's
+  usability heuristics: it uses the settings menu's dark-green/gold palette (consistency), keeps the current folder, the
+  item count and an empty/error message always visible (system status), replaces the old redundant path controls with a
+  single breadcrumb (minimalism, recognition over recall), distinguishes folders/files/drives with icons, and gives
+  Cancel its own labelled button. It shows a scrollbar, localised text, and scales with the window. The breadcrumb's
+  back control, the pad's B, or a right mouse click go up one folder; from a drive root that reaches a real "This PC"
+  state (the empty path) that lists every drive, where the breadcrumb is empty and the back control is dimmed. The
+  wheel scrolls the list from the window's `WM_MOUSEWHEEL` / `SDL_EVENT_MOUSE_WHEEL` events (`bp_picker_wheel`), the
+  same queue ImGui uses, rather than raw input, which stops arriving once the cursor capture is released. `input_menu(1)`
+  blocks the game's input while it is open and releases the pointer to it; `menu_cursor.c` skips the game's menu cursor
+  so the pointer is not forced to the centre. The raw-input wheel accumulator in `input_win.c` / `input_sdl.c` is still
+  drained by `input.c` for the map zoom, so it cannot grow without bound.
+* **The import.** The picker's answer is recorded and the next presented frame (`bp_hint_frame`) hands it to a thread of
+  its own, because `bp_import_newest` walks the game's memory. The present path never waits.
 * **Off switch.** `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
 
 Log lines:
 
 ```
+blueprint: hint is on the Autobuild screen
 blueprint: hint: opening the file picker
+blueprint: picker opens at C:\Users\Administrator\Downloads (14 entries)
 blueprint: hint chose <path>
 blueprint: hint: <path>: <result>
 ```
 
 ## 7. Verification
 
-Built from v0.3.10, run on Windows. Cases exercised:
+Built on the v0.3.11 baseline (`0ae47a5`), run on Windows. Cases exercised:
 
 - **Different save files.** The import lands on **card 1** in every one of the six save slots, whose `Index` arrays all
   differ (`Index[0]` was 17, 12 and 10 in the files measured).
 - **History wiped clean.** After the Autobuild history was filled with one repeated creation and then reloaded, imports
   still landed on card 1.
-- **The insert rule, successively.** Importing three different `.txt` blueprints in one run (20, 6 and 4 parts) put
-  each one first and moved the earlier ones down: the log shows the evicted free entry changing every time
-  (`17`, `20`, `24`, `8`, `26`) while the cached live `Index` address stays the same and the favorite is held. Re-importing
-  the same file again also lands first, so successive imports stack in order.
-- **Live, no reload.** The creation shows up in the already-open Autobuild page right after pressing Import; the rotated
-  ages are in guest memory, so the game's own save persists the new order with the rest of the progress.
+- **The insert rule, successively.** Importing three different blueprints in one run puts each one first and moves the
+  earlier ones down: the log shows the evicted free entry changing every time while the cached live `Index` address stays
+  the same and the favorite is held.
+- **Live, no reload.** The creation shows up in the already-open Autobuild page right after the import; the rotated ages
+  are in guest memory, so the game's own save persists the new order with the rest of the progress.
 - **Nothing else disturbed.** The other 29 entries keep their blobs; only the evicted entry changes. Favorites keep their
   age, no favorite flag is touched, and the array stays at 30 entries.
+- **The in-screen picker, end to end.** Opened the Autobuild page, pressed Plus, the port's own picker opened, chose a
+  `.cai`, and the creation became the first card — the whole path in one session, with no Windows dialog.
 - **A `.txt` file, end to end.** Three exports from HyruleWorks decoded in the reader's own harness to blobs
   byte-identical to Python's `gzip` of the same member, and a real `.txt` import in the running game landed on card 1.
-- **The remembered folder.** The log named the shell's default folder on the first dialog and the chosen file's folder
-  before the next one, and `BLUEPRINT_DIR` was written to `totk.ini`.
+- **The remembered folder.** The picker opens where the last file was chosen, and a root path offers the other drives.
 - **Damaged `.txt` files.** A file cut anywhere inside the Base64 value, a member that is not Base64, a member that is
   not a gzip stream, a non-JSON file and an object without the member are all refused with their own reason and none
   reaches the save data.
+- **Automated checks.** `tools/check_content.py --staged`, `tests/settings_doc_check.py` (0 problems),
+  `tests/blueprint_txt_test.py` (12 tests) and `totk.exe --selftest` (0 failures) all pass.
 
 Log lines that make this checkable:
 
 ```
-blueprint: scan 94 blobs in 398 ms: drafts 0x174c7a4cc, page copy 0x18508f838 (30 entries)
-blueprint: Index: cached live array at 0x184e41288, newest entry 17
-blueprint: Index: 1 favorite(s), evicted free entry 20 (age 28 -> 0), 28 free entries moved down one
-blueprint: <name> (<n> parts) is the first draft of the Autobuild history (entry 20)
-blueprint: dropped 7 cached draft picture(s), the game draws them again
+blueprint: picker opens at C:\Users\Administrator\Downloads (14 entries)
+blueprint: C:\Users\Administrator\Downloads/blueprint_1701794711541.cai, 6712 bytes: ok
+blueprint: Index: cached live array at 0x192de3288, newest entry 19
+blueprint: Index: 1 favorite(s), evicted free entry 27, 28 free entries moved down one
+blueprint: <name> (<n> parts) is the first draft of the Autobuild history (entry 27)
+blueprint: dropped 4 cached draft picture(s), the game draws them again
 ```
 
 ## 8. Files
 
-New:
+New (across the PR's commits):
 
 | file | what |
 |---|---|
@@ -280,20 +310,26 @@ New:
 | `runtime/blueprint_file.h/.c` | one entry point for a blueprint file of either form: decides the form from the content, unwraps a `.txt`, then validates |
 | `runtime/blueprint_txt.h/.c` | the `.txt` container: the JSON member, Base64, and the decompressed blob |
 | `runtime/blueprint_inflate.h/.c` | gzip/deflate decoding bounded by the caller's buffer (zlib, already linked) |
-| `runtime/blueprint_dir.h/.c` | the folder a blueprint dialog last browsed, kept in `totk.ini` |
+| `runtime/blueprint_dir.h/.c` | the folder the picker last browsed, kept in `totk.ini` |
 | `runtime/blueprint_import.h/.c` | finding the live arrays, choosing the entry, writing it, dropping the cached pictures |
-| `runtime/ui/blueprint_page.h/.cpp` | the Blueprints tab: file, checks, the import row, the worker thread |
 | `runtime/blueprint_hint.h/.cpp` | the entry in the Autobuild screen's own guide bar: its button, the picker, the import, the row |
+| `runtime/blueprint_picker.c` | the picker's C logic: folder listing, path parts, rectangles, pointer/pad/wheel hit tests |
+| `runtime/ui/blueprint_picker.h/.cpp` | the picker's bridge and its draw layer (ImGui draw list only) |
+
+The settings-menu **Blueprints tab** (`runtime/ui/blueprint_page.h/.cpp`) was added in an earlier commit and is
+**removed** here: the Autobuild screen is the only entry point.
 
 Modified:
 
 | file | change |
 |---|---|
-| `runtime/folder_pick.h`, `folder_pick_win.cpp`, `folder_pick_sdl.c` | a file dialog next to the folder dialog (`file_pick`); it opens at the folder browsed last and offers only the caller's extensions |
-| `runtime/ui/menu.cpp` | the tab in the enum, its name row and its page; the hint's frame and draw calls |
-| `runtime/ui_text.h`, `ui_text.c` | 29 text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
-| `runtime/input.c`, `input.h` | the hint's pad read, and `menu_cursor_screen_name` |
-| `runtime/menu_cursor.c` | `menu_cursor_screen_name`, the focused screen's layout name |
+| `runtime/platform/platform.h`, `platform/win32.c`, `platform/linux.c` | `plat_dir_list` and `plat_root_list`, the picker's folder and drive enumeration |
+| `runtime/ui/menu.cpp` | the hint's frame and draw calls, the picker draw call, and the overlay keeping itself alive for the picker |
+| `runtime/ui/menu_win.cpp`, `ui/menu_sdl.cpp` | events reach the overlay while the picker is open, not only the settings menu |
+| `runtime/ui_text.h`, `ui_text.c` | the picker's and hint's text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
+| `runtime/input.c`, `input.h` | the hint's pad read, `menu_cursor_screen_open`, and leaving the wheel to the picker |
+| `runtime/input_win.c` | wheel notches accumulated while the picker is open |
+| `runtime/menu_cursor.c` | `menu_cursor_screen_open` (whole-screen detection) and skipping the game's cursor for the picker |
 | `runtime/cfg.c` | `BLUEPRINT_HINT` and `BLUEPRINT_DIR` |
 | `tools/build_game.py` | `libz.a` on the link line, for the `.txt` reader |
 
@@ -309,7 +345,12 @@ Modified:
   refused rather than corrupted.
 - The cached `Draft_NNN.png` files are part of the state. An import that skips them looks broken even when the memory is
   right.
-- `IsFavorite` (one bit per entry) protects ★ slots; this implementation does not write it, so an import under the
-  history tab never touches the player's favourites.
+- `IsFavorite` (one bit per entry) protects ★ slots; this implementation only reads it, so an import never touches the
+  player's favourites. A save that carries no `IsFavorite` array at all cannot be rotated safely (a zero mask would
+  look like "nothing is a favourite"), so that save keeps the replace-the-newest-card behaviour instead.
 - The camera arrays (`CameraPos`, `CameraAt`, hash `0xc5bf2815` / `0xef74dca7`) hold the framing the template was
   captured with; a `.cai` of 6712 bytes carries both and they can be written with the draft.
+- The picker draws only rectangles and text through `ImDrawList`. Adding an ImGui widget or layout there brings back the
+  layout-assertion crash the earlier all-widget version had; keep the C/C++ split as it is.
+- The blob is written before the `Index` rotation. Reversing that order lets the page render the new card order against
+  the old blob, which shows up as a stale thumbnail on the open page.
