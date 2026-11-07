@@ -32,9 +32,25 @@
 #define TLR_SIZE 0x200
 #define THREAD_OBJ_SIZE 0x400            // "current thread object" at TLR+0x1F8 (d2r-mobile thread.c)
 #define TLS_SIZE 0x2000
-#define MAIN_STACK (1ull << 20)          // main.npdm META+0x1C
-#define MAIN_PRIO 44                     // META+0xE
-#define MAIN_CORE 0                      // META+0xF
+// The main thread's stack, priority and core come from main.npdm (META+0x1C, +0xE, +0xF): the 1.2.1 values are the
+// defaults, and boot.c sets the ones the title actually asks for before the main thread starts.
+#define MAIN_STACK_DEFAULT (1ull << 20)
+#define MAIN_PRIO_DEFAULT 44
+#define MAIN_CORE_DEFAULT 0
+static uint64_t g_main_stack_size = MAIN_STACK_DEFAULT;
+static int g_main_prio = MAIN_PRIO_DEFAULT, g_main_core = MAIN_CORE_DEFAULT;
+
+void kern_main_thread_attrs(uint64_t stack, int prio, int core) {
+    if (stack < (64ull << 10) || stack > (16ull << 20))
+        rt_fatal("kernel: main.npdm stack %#llx is implausible", (unsigned long long)stack);
+    if (prio < 0 || prio > 63)
+        rt_fatal("kernel: main.npdm priority %d is out of range", prio);
+    if (core < 0 || core >= NCORE)
+        rt_fatal("kernel: main.npdm core %d is out of range", core);
+    g_main_stack_size = stack;
+    g_main_prio = prio;
+    g_main_core = core;
+}
 #define FIBER_MAX 1024
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
@@ -1508,13 +1524,13 @@ uint32_t kern_main_thread(Cpu **cpu) {
     }
     if (g_main) rt_fatal("kern_main_thread: the main thread already runs on another host thread");
     const RtGuestLayout *L = mem_layout();
-    uint64_t stack = L->stack.base + L->stack.size - MAIN_STACK;
-    if (!plat_mem_commit(stack, MAIN_STACK))
+    uint64_t stack = L->stack.base + L->stack.size - g_main_stack_size;
+    if (!plat_mem_commit(stack, g_main_stack_size))
         rt_fatal("kernel: commit the main thread stack at %#llx failed", (unsigned long long)stack);
-    RtThread *t = thr_new(MAIN_PRIO, MAIN_CORE, 7);
+    RtThread *t = thr_new(g_main_prio, g_main_core, 7);
     t->started = 1;
     t->is_main = 1;
-    t->stack_top = stack + MAIN_STACK;
+    t->stack_top = stack + g_main_stack_size;
     t->cpu->sp = t->stack_top;
     t->tid = plat_thread_id();
     perf_main_thread();
@@ -1534,7 +1550,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
 void kern_main_stack(uint64_t *base, uint64_t *size) {
     uint64_t b = __atomic_load_n(&g_main_stack, __ATOMIC_ACQUIRE);
     *base = b;
-    *size = b ? MAIN_STACK : 0;
+    *size = b ? g_main_stack_size : 0;
 }
 
 static void guest_main(void *p) {
@@ -1645,7 +1661,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
             x[0] = R_BAD_STATE;
             return 1;
         }
-        RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : 7);
+        RtThread *t = thr_new(prio, core >= 0 ? core : g_main_core, core >= 0 ? 1ull << core : 7);
         t->entry = x[1];
         t->arg = x[2];
         t->stack_top = x[3] & ~15ull;
@@ -1757,7 +1773,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (t) {
             int core = (int)x[1];
             if (core >= 0) t->core = core;
-            else if (core == -1) t->core = MAIN_CORE;
+            else if (core == -1) t->core = g_main_core;
             if (x[2]) t->mask = x[2];
             if (t == tcur && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) {   // move off a forbidden core
                 core_put(t);
