@@ -566,6 +566,7 @@ NVN_API(nvnQueueGetError) {
 NVN_API(nvnQueueFlush) { (void)c; }
 // void nvnQueueFinish(NVNqueue *q)
 NVN_API(nvnQueueFinish) {
+    if (cfg_bool("TOTK_NO_QUEUE_FINISH")) return;
     {
         NVN_BLOCKING();
         gfx_backend()->finish();
