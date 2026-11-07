@@ -1469,7 +1469,10 @@ static PlatIntr *ap_open_self(void) {
     return h;
 }
 
+static uint64_t guest_cpu_mask(void);   // the guest's L3 group, asked once (see kern_run_on_guest_main)
+
 static void thread_main(void *p) {
+    plat_thread_pin(guest_cpu_mask());
     RtThread *t = p;
     tcur = t;
     t->tid = plat_thread_id();
@@ -1538,12 +1541,35 @@ void kern_main_stack(uint64_t *base, uint64_t *size) {
 }
 
 static void guest_main(void *p) {
+    plat_thread_pin(guest_cpu_mask());
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
     kern_main_thread(&c);
     if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);
     thread_finish(tcur);
     return;
+}
+
+// A machine with two L3 groups (a chiplet CPU: the BC-250's two CCX, a Zen 2/3 desktop part) runs the guest's threads
+// on the first and every host thread — Vulkan, the shader translator, the replay — on the second, so neither evicts the
+// other's working set from L3. The process moves to the host's group once, before the guest starts; each guest thread
+// pins itself back to the first when it starts, and host threads started later inherit the second.
+// TOTK_CCX_SPLIT=0 turns the split off.
+static uint64_t guest_cpu_mask(void) {
+    static uint64_t mask;
+    static int once;
+    if (!once) {
+        once = 1;
+        const char *env = getenv("TOTK_CCX_SPLIT");
+        if (env && !strcmp(env, "0")) return 0;
+        uint64_t a = 0, b = 0;
+        if (!plat_cpu_cache_groups(&a, &b)) return 0;
+        if (b) plat_process_affinity(b);
+        mask = a;
+        rt_log("kernel: dual-CCX L3 split: guest on CPUs %#llx, host/Vulkan on CPUs %#llx", (unsigned long long)a,
+               (unsigned long long)b);
+    }
+    return mask;
 }
 
 void kern_run_on_guest_main(void (*fn)(Cpu *c)) {

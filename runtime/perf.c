@@ -252,9 +252,15 @@ static void cpu_placement(void) {
             mode = 0;
     }
     int on = RT_KNOB_ON(mode);
-    if (on == applied) return;
+    // Nothing was applied before the first call, so the off state must not apply anything either: doing so would set the
+    // whole process to the *calling thread's* mask (plat_cpu_cores reads sched_getaffinity of the caller), which threw
+    // away an affinity the caller had set up, such as the two cache groups of a chiplet CPU.
+    if (on == applied || !on) {
+        applied = on;
+        return;
+    }
     applied = on;
-    plat_process_affinity(on ? one : all);
+    plat_process_affinity(one);
 }
 
 void perf_present(uint64_t frame) {

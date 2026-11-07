@@ -31,12 +31,17 @@ void plat_thread_detach(PlatThread *t);   // frees t; the thread runs on
 // Restricts t (NULL: the calling thread) to the logical processors in mask (bit n = processor n of the first group).
 // Returns the previous mask, 0 on failure.
 uint64_t plat_thread_affinity(PlatThread *t, uint64_t mask);
+void plat_thread_pin(uint64_t mask);      // the calling thread to the processors in mask; ignored when mask is 0
 uint32_t plat_cpu_count(void);            // logical processors of the machine (system info)
 uint32_t plat_cpu_usable(void);           // the ones this process may run on (its affinity mask): size thread pools by it
 uint64_t plat_thread_cpu_ns(uint32_t tid);  // CPU time of the thread with id tid (plat_thread_id) so far; 0 unknown
 // The logical processors the process may use (bit n = processor n, the first 64), into *all, and the lowest of each
 // physical core among them into *first; returns the number of physical cores, 0 when unknown.
 int plat_cpu_cores(uint64_t *all, uint64_t *first);
+// The CPU masks of the machine's two L3 cache groups, for the split a chiplet CPU benefits from: the guest's threads on
+// the first group, the host's (Vulkan, the shader translator, the replay) on the second, so neither evicts the other's
+// working set from L3. Returns 0 with both masks 0 when the machine has one group or the topology is unknown.
+int plat_cpu_cache_groups(uint64_t *first, uint64_t *second);
 int plat_process_affinity(uint64_t mask);   // every thread of the process to the processors in mask; 1 on success
 
 // Interrupting a thread (kernel.c's asynchronous preemption). A thread makes its own handle; another thread stops it
