@@ -4,7 +4,8 @@
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
+// thread of its own (input_motion_start); with TOTK_MOUSE_GYRO=1 the mouse feeds it instead of turning the camera.
+// Every SDL call on the gamepad is made under `lock`.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -350,10 +351,11 @@ static void mouse_camera(int32_t out[2], int selector) {
         held[0] = held[1] = out[0] = out[1] = 0; frame = ~0ull;
         return;
     }
-    if (input_direct_mouse_active()) {
+    if (input_direct_mouse_active() || input_mouse_gyro_enabled()) {
         held[0] = held[1] = out[0] = out[1] = 0;
         frame = ~0ull;
-        return;   // the camera update takes the raw counts itself, once, outside the HID stick path
+        return;   // the camera update takes the raw counts itself, once, outside the HID stick path; or the
+                  // six-axis sensor does (TOTK_MOUSE_GYRO, motion_main)
     }
     if (!ikb_captured()) {
         ikb_mouse_take(&dx, &dy);
@@ -671,7 +673,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             else if (input_direct_mouse_shake()) sr[0] = input_direct_mouse_shake() * STICK_MAX, sr[1] = 0;
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();
-            if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;
+            // Steam Input's gyro to mouse moves the mouse while the gamepad is in the hands (TOTK_MOUSE_GYRO)
+            if (travel - travel_seen >= MOUSE_USED && !input_mouse_gyro_enabled()) kbm_used = 1;
             travel_seen = travel;
         }
         // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
@@ -708,9 +711,11 @@ uint64_t input_buttons_last(void) { return __atomic_load_n(&g_buttons_last, __AT
 static volatile uint64_t g_block_closed, g_menu_closed;
 #define RELEASE_WAIT_NS 1000000000ull
 
+// The capture also serves the mouse as the six-axis sensor (TOTK_MOUSE_GYRO), with the mouse camera at 0.
 int input_cursor_allowed(void) {
     const char *in = cfg_get("TOTK_INPUT");
-    return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none")) && !menu_cursor_pointer();
+    return g_block != 1 && g_menu != 1 && (mouse_sens_get() > 0 || input_mouse_gyro_enabled()) &&
+           !(in && !strcmp(in, "none")) && !menu_cursor_pointer();
 }
 
 void input_block(int on) {
@@ -885,23 +890,229 @@ int input_motion_enabled(void) {
     return on;
 }
 
-// 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
-// sensor reads at rest.
+int input_mouse_gyro_enabled(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) {
+        seen = v;
+        on = cfg_bool("TOTK_MOUSE_GYRO");
+    }
+    return on;
+}
+
+// TOTK_MOUSE_GYRO_DOTS (mouse counts per full turn) and TOTK_MOUSE_GYRO_TEST (MOUSE_GYRO_TEST_*), live. Motion thread.
+static double mouse_gyro_dots(void) {
+    static double dots = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (dots < 0 || v != seen) {
+        seen = v;
+        double d = cfg_double("TOTK_MOUSE_GYRO_DOTS");
+        dots = d < 360 ? 360 : d > 20000 ? 20000 : d;
+    }
+    return dots;
+}
+
+static int mouse_gyro_test(void) {
+    static int mode = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (mode < 0 || v != seen) {
+        seen = v;
+        const char *t = cfg_value("TOTK_MOUSE_GYRO_TEST");
+        mode = !strcmp(t, "rate") ? MOUSE_GYRO_TEST_RATE : !strcmp(t, "pose") ? MOUSE_GYRO_TEST_POSE
+             : !strcmp(t, "calibrate") ? MOUSE_GYRO_TEST_CALIBRATE : !strcmp(t, "stream") ? MOUSE_GYRO_TEST_STREAM
+             : !strcmp(t, "trace") ? MOUSE_GYRO_TEST_TRACE : !strcmp(t, "steep") ? MOUSE_GYRO_TEST_STEEP
+             : !strcmp(t, "flick") ? MOUSE_GYRO_TEST_FLICK : MOUSE_GYRO_TEST_OFF;
+        if (mode != MOUSE_GYRO_TEST_OFF) rt_log("input: mouse gyro diagnostic %s (mouse_gyro_test)", t);
+    }
+    return mode;
+}
+
+// The game's six-axis reads, for the mouse source's window: the interval between reads at least 2 ms apart, so more
+// than one read within a frame counts once, smoothed; and every read, for the trace.
+static volatile uint64_t read_last_ns, read_gap_ns, read_count;
+
+void input_motion_read_note(uint64_t now) {
+    __atomic_add_fetch(&read_count, 1, __ATOMIC_RELAXED);
+    uint64_t last = __atomic_load_n(&read_last_ns, __ATOMIC_RELAXED);
+    if (last && now >= last && now - last < 2000000) return;
+    __atomic_store_n(&read_last_ns, now, __ATOMIC_RELAXED);
+    if (!last || now < last || now - last > 200000000) return;   // the first read, or after a pause: no interval
+    uint64_t gap = __atomic_load_n(&read_gap_ns, __ATOMIC_RELAXED), d = now - last;
+    __atomic_store_n(&read_gap_ns, gap ? (gap * 3 + d) / 4 : d, __ATOMIC_RELAXED);
+}
+
+// Ticks of the mouse source per game frame: the game time a frame steps (frame_rate.c), or the interval between the
+// game's six-axis reads when that is longer; 1 at 200 fps, 2 at 120, 7 at 30. The reads alone can come more than once
+// a frame, more than 2 ms apart (1.2.1 at a 120 fps limit: under 7.5 ms apart on average), while the snapshot the
+// aim reads is taken once a frame.
+static int frame_window(void) {
+    uint64_t gap = __atomic_load_n(&read_gap_ns, __ATOMIC_RELAXED), step = frame_step_ns();
+    if (step > gap) gap = step;
+    int w = (int)((gap + MOUSE_GYRO_TICK_NS / 2) / MOUSE_GYRO_TICK_NS);
+    return w < 1 ? 1 : w > MOUSE_GYRO_WINDOW_MAX ? MOUSE_GYRO_WINDOW_MAX : w;
+}
+
+// mouse_gyro_test = stream: once a second of mouse motion, how its counts arrived. A program that sends the motion in
+// bursts (Steam Input's gyro to mouse with a touch activator) leaves ticks without counts inside a movement, and the
+// game, which reads the newest rate once a frame, then sees the aim stop; a source that tops out shows the same largest
+// tick for every fast movement. Also the samples made up after a late wake (mouse_gyro_due).
+typedef struct { uint64_t since; int ticks, moved, gap, longest, peak, window, late; } MouseStream;
+
+static void stream_note(MouseStream *s, int32_t dx, int32_t dy, int window, uint64_t now, double dots, int late) {
+    if (window > s->window) s->window = window;
+    if (!s->since) s->since = now;
+    s->ticks++;
+    s->late += late;
+    int c = (int)lround(sqrt((double)dx * dx + (double)dy * dy));
+    if (c) {
+        s->moved++;
+        if (s->gap > s->longest) s->longest = s->gap;   // a pause counts once the motion goes on after it
+        s->gap = 0;
+        if (c > s->peak) s->peak = c;
+    } else if (s->moved) s->gap++;
+    if (now - s->since < 1000000000ull) return;
+    if (s->moved)
+        rt_log("input: mouse gyro stream: %d of %d ticks moved, longest pause %d ms, largest tick %d counts (%.0f degrees "
+               "a second), spread over up to %d ticks, %d ticks made up after a late wake", s->moved, s->ticks,
+               s->longest * 5, s->peak, s->peak * 360.0 / dots / (MOUSE_GYRO_TICK_NS / 1e9), s->window, s->late);
+    memset(s, 0, sizeof *s);
+}
+
+// mouse_gyro_test = trace: every tick of the mouse source to mouse_gyro_trace.csv next to the log (the sample's time in
+// milliseconds since the first, 1 for a sample made up after a late wake, the counts, the spread, the game's reads of
+// the sensor since the last sample and its frame step, the tilt above flat and the rotation the game gets), to see what
+// arrived around a moment the aim stopped. Motion thread.
+static void trace_note(int32_t dx, int32_t dy, int window, const MouseGyro *g, const double gyro[3], uint64_t now,
+                       int late) {
+    static FILE *f;
+    static int failed;
+    static uint64_t t0, flushed, reads;
+    if (!f && !failed) {
+        char path[1024] = "mouse_gyro_trace.csv";
+        const char *log = rt_log_path();
+        const char *a = log ? strrchr(log, '/') : NULL, *b = log ? strrchr(log, '\\') : NULL, *end = a;
+        if (b && (!end || b > end)) end = b;
+        if (end) snprintf(path, sizeof path, "%.*s/mouse_gyro_trace.csv", (int)(end - log), log);
+        f = fopen(path, "w");
+        if (!f) { failed = 1; rt_log("input: cannot write the mouse gyro trace %s", path); return; }
+        fprintf(f, "ms,late,dx,dy,window,reads,frame_ms,tilt_deg,rate_x_dps,rate_y_dps,rate_z_dps\n");
+        rt_log("input: mouse gyro trace in %s", path);
+        t0 = flushed = now;
+        reads = __atomic_load_n(&read_count, __ATOMIC_RELAXED);
+    }
+    if (!f) return;
+    const double deg = 180 / M_PI;
+    uint64_t r = __atomic_load_n(&read_count, __ATOMIC_RELAXED);
+    fprintf(f, "%.1f,%d,%d,%d,%d,%llu,%.2f,%.2f,%.1f,%.1f,%.1f\n", (double)(now - t0) / 1e6, late, dx, dy, window,
+            (unsigned long long)(r - reads), frame_step_ns() / 1e6, g->pitch * deg, gyro[0] * deg, gyro[1] * deg,
+            gyro[2] * deg);
+    reads = r;
+    if (now - flushed >= 1000000000ull) { fflush(f); flushed = now; }
+}
+
+// mouse_gyro_test = calibrate: the sideways turn of each movement, logged once the mouse has been still for a second
+// when it came to 90 degrees or more. Turn the real controller one full turn with the gyro on and stop: the log should
+// say about 360.
+typedef struct { double counts; int still; } MouseTurn;
+
+static void calibrate_note(MouseTurn *c, int32_t dx, int32_t dy, double dots) {
+    if (dx || dy) {
+        c->counts += dx;
+        c->still = 0;
+        return;
+    }
+    if (c->still >= 200 || ++c->still < 200) return;   // 200 ticks, a second, without counts end the movement
+    double deg = c->counts * 360 / dots;
+    if (fabs(deg) >= 90)
+        rt_log("input: mouse gyro turned %.1f degrees %s in one movement", fabs(deg), deg > 0 ? "right" : "left");
+    c->counts = 0;
+}
+
+// One wake of the mouse source (motion_mouse.c): the counts the window system collected while the cursor was captured
+// (none while the menu is open or the window is in the background, so the pose holds still), into the sensor as the
+// samples due on its schedule (mouse_gyro_due), shared evenly between them when a late wake makes some up. When the
+// game started the sensor again the pose starts over at rest with the sensor's angle, and the flick diagnostic at the
+// start of its cycle. 1.2.1 starts it once, at boot, so the tilt the mouse gives carries over from one aim to the next.
+static void mouse_feed(MouseGyro *g, unsigned *restarts, uint64_t *next, uint64_t now) {
+    uint64_t t;
+    int n = mouse_gyro_due(next, now, &t);
+    if (!n) return;
+    MotionFusion *m = motion_global();
+    int test = mouse_gyro_test();
+    unsigned r = motion_restarts(m);
+    static MouseFlick flick;   // the motion thread's, like the stream and the turn
+    static MouseTurn turn;
+    if (r != *restarts) {
+        mouse_gyro_init(g);
+        memset(&flick, 0, sizeof flick);
+        *restarts = r;
+    }
+    const double dt = MOUSE_GYRO_TICK_NS / 1e9;
+    int32_t dx, dy;
+    ikb_mouse_take(&dx, &dy);
+    int window = frame_window();
+    static MouseStream stream;   // the motion thread's
+    for (int i = 0; i < n; i++, t += MOUSE_GYRO_TICK_NS) {
+        int32_t sx = (int32_t)((int64_t)dx * (i + 1) / n - (int64_t)dx * i / n),
+                sy = (int32_t)((int64_t)dy * (i + 1) / n - (int64_t)dy * i / n);
+        if (test == MOUSE_GYRO_TEST_FLICK) mouse_gyro_flick(&flick, dt, mouse_gyro_dots(), &sx, &sy);
+        double acc[3], gyro[3], dir[9];
+        if (test == MOUSE_GYRO_TEST_RATE || test == MOUSE_GYRO_TEST_POSE || test == MOUSE_GYRO_TEST_STEEP)
+            mouse_gyro_test_step(g, test, dt, acc, gyro, dir);
+        else mouse_gyro_step(g, sx, sy, dt, mouse_gyro_dots(), window, acc, gyro, dir);
+        motion_feed_pose(m, acc, gyro, dir, dt, t, *restarts);   // dropped after a Start: the next wake recentres
+        int traced = test == MOUSE_GYRO_TEST_TRACE || test == MOUSE_GYRO_TEST_FLICK;
+        if (traced || test == MOUSE_GYRO_TEST_STREAM) stream_note(&stream, sx, sy, window, t, mouse_gyro_dots(), i > 0);
+        if (traced) trace_note(sx, sy, window, g, gyro, t, i > 0);
+        if (test == MOUSE_GYRO_TEST_CALIBRATE) calibrate_note(&turn, sx, sy, mouse_gyro_dots());
+    }
+}
+
+// The gamepads update (reports read, rumble expiry) on every tick whatever feeds the sensor. Its source is the
+// gamepad's sensors at 250 Hz: the newest gyro and accelerometer sample goes into the fusion; or with TOTK_MOUSE_GYRO=1
+// the mouse at 200 Hz on a fixed schedule (the thread waits for the next sample's time), a pose of its own
+// (motion_mouse.c), while the gamepad's sensors are left alone. Switching starts the sensor over, as the two sources'
+// frames differ. Without a gamepad with sensors (and the mouse source off), or with motion off (TOTK_MOTION=0, live),
+// nothing is fed and the six-axis sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
+    MouseGyro mouse;
+    mouse_gyro_init(&mouse);
+    unsigned restarts = motion_restarts(motion_global());
+    uint64_t next = 0;   // the mouse source's next sample time, 0 when its schedule starts over
+    int was_mouse = -1;
     for (;;) {
-        plat_wait_ns(4000000);
+        int from_mouse = input_mouse_gyro_enabled();
+        uint64_t wait = from_mouse ? MOUSE_GYRO_TICK_NS : 4000000, now = kern_now_ns();
+        if (from_mouse && next) wait = next > now ? next - now : 0;
+        plat_wait_ns(wait);
         float a[3], g[3];
         int have = 0;
         plat_mutex_lock(&lock);
-        if (pad && SDL_GamepadConnected(pad)) {
+        if (state == 1 && pad && SDL_GamepadConnected(pad)) {
             SDL_UpdateGamepads();
-            have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
+            have = !from_mouse && sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
-        if (!have || !input_motion_enabled()) continue;
+        if (from_mouse != was_mouse) {
+            if (was_mouse >= 0) motion_restart(motion_global());
+            rt_log("input: six-axis sensor fed by %s",
+                   from_mouse ? "the mouse (mouse_gyro = 1)" : "the gamepad's gyro and accelerometer");
+            was_mouse = from_mouse;
+        }
+        if (!input_motion_enabled()) {
+            int32_t dx, dy;
+            if (from_mouse) ikb_mouse_take(&dx, &dy);   // the mouse camera is off as well: nothing else takes them
+            next = 0;
+            continue;
+        }
+        if (from_mouse) { mouse_feed(&mouse, &restarts, &next, kern_now_ns()); continue; }
+        next = 0;
+        if (!have) continue;
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
         motion_feed(motion_global(), acc, gyro, kern_now_ns());
@@ -913,8 +1124,8 @@ void input_motion_start(void) {
     if (!state) start();
     if (!motion_thread) {
         if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
-        if (state != 1) motion_thread = -1;
-        else {
+        if (state < 0) motion_thread = -1;   // TOTK_INPUT=none
+        else {   // also keyboard only (no SDL): the mouse can still be the sensor
             if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
             motion_thread = 1;
         }

@@ -622,6 +622,144 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
            vh[0], vh[1], sh[0], quarter);
 }
 
+// What the game takes for no sensor (main+0x2ae6dc4): no acceleration, or the identity direction.
+static int reads_as_none(const MotionState *s) {
+    return near3(s->acc, 0, 0, 0, 0) || (near3(s->dir, 1, 0, 0, 0) && near3(s->dir + 3, 0, 1, 0, 0) &&
+                                         near3(s->dir + 6, 0, 0, 1, 0));
+}
+
+// The mouse as the six-axis sensor (motion_mouse.c), on its own and through a private sensor instance, 5 ms ticks.
+static void probe_mouse_gyro(void) {
+    const double tick = 0.005, rest = MOUSE_GYRO_REST_PITCH;
+    double acc[3], gyro[3], dir[9];
+    MouseGyro g;
+    MotionState ms[16];
+    // A full turn: 7200 counts at 7200 per turn, 36 a tick for 1 s, mouse right: the angle about the tilted controller's
+    // z is cos(rest) turns clockwise, the rest of the turn shows about its y, and the direction never turns sideways
+    MotionFusion *m = motion_new();
+    uint64_t t = 1000000000ull;
+    mouse_gyro_init(&g);
+    for (int i = 0; i < 200; i++) {
+        mouse_gyro_step(&g, 36, 0, tick, 7200, 1, acc, gyro, dir);
+        CHECK(motion_feed_pose(m, acc, gyro, dir, tick, t += 5000000, 0), "mouse gyro: a state is dropped with no Start");
+    }
+    int n = motion_read(m, ms, 16, t + 1000000);
+    CHECK(n == 16 && fabs(g.yaw + 2 * M_PI) < 1e-9 && near3(ms[0].dir, 1, 0, 0, 1e-4) &&
+          fabs(ms[0].angle[2] + cos(rest)) < 1e-3 && fabs(ms[0].angle[1] + sin(rest)) < 1e-3 &&
+          fabs(ms[0].gyro[2] + cos(rest)) < 1e-4 && fabs(ms[0].angle[0]) < 1e-6,
+          "mouse gyro: a full turn right (yaw %.4f, angle %.4f %.4f %.4f rev, x axis %.4f %.4f %.4f)", g.yaw,
+          (double)ms[0].angle[0], (double)ms[0].angle[1], (double)ms[0].angle[2], (double)ms[0].dir[0],
+          (double)ms[0].dir[1], (double)ms[0].dir[2]);
+    // A burst spread over a window of 4: a quarter each tick, the sum kept, the rate a quarter of the burst's
+    mouse_gyro_init(&g);
+    double peak = 0, first = 0;
+    for (int i = 0; i < 10; i++) {
+        double before = g.yaw;
+        mouse_gyro_step(&g, i ? 0 : 400, 0, tick, 7200, 4, acc, gyro, dir);
+        if (!i) first = g.yaw - before;
+        peak = fmax(peak, fabs(gyro[2]) / cos(rest));
+    }
+    double total = -400 * 2 * M_PI / 7200;
+    CHECK(fabs(g.yaw - total) < 1e-12 && fabs(first - total / 4) < 1e-12 && fabs(peak - fabs(total) / 4 / tick) < 1e-9,
+          "mouse gyro: a burst over 4 ticks (yaw %.6f of %.6f, first tick %.6f, peak %.3f rad/s)", g.yaw, total, first,
+          peak);
+    // The spread is the window it is given, whatever the pauses: counts every 4th tick under a window of 1 move only
+    // their own ticks, the sum kept; a window below 1 is 1, one above MOUSE_GYRO_WINDOW_MAX is that
+    const double count = 2 * M_PI / 7200;
+    mouse_gyro_init(&g);
+    int moved = 0;
+    for (int i = 0; i < 40; i++) {
+        double before = g.yaw;
+        mouse_gyro_step(&g, i % 4 ? 0 : 8, 0, tick, 7200, 1, acc, gyro, dir);
+        moved += g.yaw != before;
+    }
+    double sum = g.yaw;
+    mouse_gyro_init(&g);
+    mouse_gyro_step(&g, 100, 0, tick, 7200, 0, acc, gyro, dir);
+    double low = g.yaw;
+    mouse_gyro_init(&g);
+    mouse_gyro_step(&g, 100 * MOUSE_GYRO_WINDOW_MAX, 0, tick, 7200, 50, acc, gyro, dir);
+    double high = g.yaw;
+    CHECK(moved == 10 && fabs(sum + 80 * count) < 1e-12 && fabs(low + 100 * count) < 1e-12 &&
+              fabs(high + 100 * count) < 1e-12,
+          "mouse gyro: spread (%d of 40 ticks moved, yaw %.6f; window 0 gives %.6f, window 50 %.6f in the first tick)",
+          moved, sum, low, high);
+    // Up and down tilt the controller: the direction, gravity and pitch rate follow, the tilt stops at its limit and
+    // turns back at once. Left and right never turn the direction: a yaw rate split over y and z by the tilt
+    mouse_gyro_init(&g);
+    mouse_gyro_step(&g, 0, -1000, tick, 7200, 1, acc, gyro, dir);
+    int tilt = fabs(g.pitch - (rest + 1000 * 2 * M_PI / 7200)) < 1e-12 && fabs(dir[5] - sin(g.pitch)) < 1e-12 &&
+               fabs(acc[1] + sin(g.pitch)) < 1e-12 && fabs(gyro[0] - 1000 * 2 * M_PI / 7200 / tick) < 1e-9;
+    mouse_gyro_step(&g, 0, -100000, tick, 7200, 1, acc, gyro, dir);
+    double top = g.pitch;
+    mouse_gyro_step(&g, 0, -1000, tick, 7200, 1, acc, gyro, dir);
+    int held = g.pitch == top && gyro[0] == 0;
+    mouse_gyro_step(&g, 0, 20, tick, 7200, 1, acc, gyro, dir);
+    int back = g.pitch < top && gyro[0] < 0;
+    double before[9];
+    memcpy(before, dir, sizeof before);
+    mouse_gyro_step(&g, 500, 0, tick, 7200, 1, acc, gyro, dir);
+    int side = !memcmp(dir, before, sizeof before) && gyro[2] < 0 && fabs(gyro[1] / gyro[2] - tan(g.pitch)) < 1e-9;
+    CHECK(tilt && fabs(top - MOUSE_GYRO_PITCH_MAX) < 1e-12 && held && back && side,
+          "mouse gyro: tilt %d, limit %.4f held %d back %d, sideways keeps the direction %d", tilt, top, held, back, side);
+    mouse_gyro_init(&g);
+    CHECK(g.yaw == 0 && g.pitch == rest, "mouse gyro: back at rest");
+    // Idle through a Start: every state is live, the stale count is refused, none reads as no sensor
+    motion_restart(m);
+    unsigned r = motion_restarts(m);
+    CHECK(!motion_feed_pose(m, acc, gyro, dir, tick, t += 5000000, r - 1), "mouse gyro: a state from before the Start");
+    mouse_gyro_init(&g);
+    int none = 0;
+    for (int i = 0; i < 400; i++) {
+        mouse_gyro_step(&g, 0, 0, tick, 7200, 4, acc, gyro, dir);
+        motion_feed_pose(m, acc, gyro, dir, tick, t += 5000000, r);
+        if (i == 10 || i == 399) {
+            n = motion_read(m, ms, 16, t + 1000000);
+            for (int k = 0; k < n; k++) none += reads_as_none(&ms[k]);
+            CHECK(n == (i == 10 ? 11 : 16) && fabs(ms[0].angle[0]) < 1e-9 && fabs(ms[0].angle[2]) < 1e-9,
+                  "mouse gyro: idle after a Start (%d states)", n);
+        }
+    }
+    CHECK(!none, "mouse gyro: %d idle states read as no sensor", none);
+    // Diagnostics: the rate alone with the pose held, the pose alone with no rate
+    mouse_gyro_init(&g);
+    mouse_gyro_test_step(&g, MOUSE_GYRO_TEST_RATE, tick, acc, gyro, dir);
+    int rate_only = g.yaw == 0 && fabs(gyro[2] - cos(rest) * M_PI / 6) < 1e-12 && dir[0] == 1;
+    mouse_gyro_test_step(&g, MOUSE_GYRO_TEST_POSE, tick, acc, gyro, dir);
+    int pose_only = g.yaw > 0 && !gyro[0] && !gyro[1] && !gyro[2] && dir[1] > 0;
+    mouse_gyro_init(&g);
+    mouse_gyro_test_step(&g, MOUSE_GYRO_TEST_STEEP, tick, acc, gyro, dir);
+    int steep = fabs(gyro[2] - 0.5 * M_PI / 6) < 1e-12 && fabs(gyro[1] - sin(M_PI / 3) * M_PI / 6) < 1e-12 &&
+                fabs(dir[5] - sin(M_PI / 3)) < 1e-12 && g.pitch == rest;
+    // The flicks: a cycle comes back to where it started, 45 degrees right at the widest and 20 up at the highest
+    MouseFlick f = {0};
+    int32_t fx, fy;
+    long sx = 0, sy = 0, right = 0, up = 0;
+    for (int i = 0; i < 480; i++) {
+        mouse_gyro_flick(&f, tick, 7200, &fx, &fy);
+        sx += fx, sy += fy;
+        if (sx > right) right = sx;
+        if (-sy > up) up = -sy;
+    }
+    int flick = sx == 0 && sy == 0 && right == 900 && up == 400;
+    CHECK(rate_only && pose_only && steep && flick, "mouse gyro diagnostics (rate only %d, pose only %d, steep %d, "
+          "flick %d: right %ld, up %ld, back %ld %ld)", rate_only, pose_only, steep, flick, right, up, sx, sy);
+    // The schedule: the first wake starts it, a wake on time has one sample due and an early one none, a wake 12 ms
+    // late makes up the two it missed from the time the first was due, and a longer stall than the catch-up starts over
+    const uint64_t T = MOUSE_GYRO_TICK_NS, t0 = 1000000000ull;
+    uint64_t next = 0, at = 0, late_at = 0, stall_at = 0;
+    int start = mouse_gyro_due(&next, t0, &at) == 1 && at == t0 && next == t0 + T;
+    int on_time = mouse_gyro_due(&next, t0 + T + 400000, &at) == 1 && at == t0 + T && next == t0 + 2 * T;
+    int early = mouse_gyro_due(&next, t0 + 2 * T - 1, &at) == 0 && next == t0 + 2 * T;
+    int late = mouse_gyro_due(&next, t0 + 2 * T + 12000000, &late_at) == 3 && late_at == t0 + 2 * T &&
+               next == t0 + 5 * T;
+    uint64_t stall = next + MOUSE_GYRO_CATCHUP * T;
+    int restart = mouse_gyro_due(&next, stall, &stall_at) == 1 && stall_at == stall && next == stall + T;
+    CHECK(start && on_time && early && late && restart, "mouse gyro schedule (start %d, on time %d, early %d, late %d, "
+          "stall %d)", start, on_time, early, late, restart);
+    printf("mouse gyro: full turn, burst window, spread, tilt and limit, idle after a Start, schedule\n");
+}
+
 static void probe_input(void) {
     uint32_t pid = ov_handheld() ? 0x20 : 0, other = ov_handheld() ? 0 : 0x20, ids[2] = {0, 0x20};
     uint32_t style = ov_handheld() ? 2 : 1;
@@ -657,6 +795,7 @@ static void probe_input(void) {
     CHECK((int32_t)CALL("hid.GetMouseStates", U(mouse), 1) == 1, "mouse states");
     CALL("hid.GetKeyboardState", U(kb));
     probe_feedback(pid, style);
+    probe_mouse_gyro();
     CALL("hid.DisconnectNpad", U(&pid));
     CHECK((uint32_t)CALL("hid.GetNpadStyleSet", U(&pid)) == 0, "a disconnected controller keeps its style set");
     printf("hid: one connected %s controller (id %#x), no buttons, no mouse/keyboard input\n",

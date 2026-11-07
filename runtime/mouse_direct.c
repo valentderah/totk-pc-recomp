@@ -51,8 +51,10 @@
 #define HAND_MAX 3.0f
 
 static int direct_mode(void) {
-    // cfg_value: unset is the settings table's default (direct), as the menu shows it
-    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
+    // cfg_value: unset is the settings table's default (direct), as the menu shows it. Off while the mouse is the
+    // six-axis sensor (TOTK_MOUSE_GYRO): the camera keeps the game's input and the counts go to the sensor
+    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct")) &&
+           !input_mouse_gyro_enabled();
 }
 
 static uint64_t last_update;
