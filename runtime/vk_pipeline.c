@@ -3223,10 +3223,11 @@ static void dyn_vals(const VkPipeState *s, DynVals *o) {
     }
 }
 
-// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it (the replay thread only):
-// the values, the inputs of the vertex input and the vertex bindings it reads. Invariant while the caller passes
-// valid 1: cb holds DC.v for every dynamic state of P.dyn, colour attachments [0, DC.v.n) included.
-static struct {
+// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it: the values, the inputs of
+// the vertex input and the vertex bindings it reads. Invariant while the caller passes valid 1: cb holds DC.v for every
+// dynamic state of P.dyn, colour attachments [0, DC.v.n) included. Per thread: the threads of a chunked replay
+// (vk_exec.c) each record their own command buffers, and a new one starts with valid 0.
+static _Thread_local struct {
     DynVals v;
     const GfxShader *vs;
     uint32_t vattr[16];
