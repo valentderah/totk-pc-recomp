@@ -68,15 +68,14 @@ static struct {
 // next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
 // without that file DLSS never runs, and a DLSS mode would leave the game's plain scaling at 50..67 % of the output.
 // With dlaa_backend = fsr the modes scale through AMD's FSR instead (vk_ffx.c), which needs its loader and upscaler
-// DLLs next to totk.exe; on Linux FSR does not run.
+// DLLs next to totk.exe; on Linux the setting is ignored and DLSS is checked (vk_dlaa.c fsr_backend).
 static int dlss_dll(void) {
-    int fsr = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
 #ifdef _WIN32
     char exe[1024], path[1024 + 48];
     if (!plat_exe_path(exe, sizeof exe)) return 1;
     char *last = plat_last_sep(exe);
     if (!last) return 1;
-    if (fsr) {
+    if (!strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr")) {
         snprintf(path, sizeof path, "%.*s/amd_fidelityfx_loader_vk.dll", (int)(last - exe), exe);
         if (!plat_file_exists(path)) return 0;
         snprintf(path, sizeof path, "%.*s/amd_fidelityfx_upscaler_vk.dll", (int)(last - exe), exe);
@@ -85,7 +84,6 @@ static int dlss_dll(void) {
     snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
     return plat_file_exists(path);
 #else
-    if (fsr) return 0;
     char exe[1024];
     if (!plat_exe_path(exe, sizeof exe)) return 1;
     char *last = plat_last_sep(exe);

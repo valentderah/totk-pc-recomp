@@ -118,10 +118,18 @@ int vk_dlaa_wanted(void) {
 }
 
 // FSR instead of DLSS (TOTK_DLAA_BACKEND=fsr), fixed for the run like dlaa: the backend's extensions are chosen at
-// device creation. On Linux FSR is not available, and this choice leaves DLAA off rather than falling back to DLSS.
+// device creation. AMD ships FSR's Vulkan libraries for Windows only, so on Linux the setting is ignored (the menu has
+// no row for it) and DLAA stays with DLSS.
 static int fsr_backend(void) {
     static int fsr = -1;
-    if (fsr < 0) fsr = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
+    if (fsr < 0) {
+        fsr = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
+#ifndef _WIN32
+        if (fsr && vk_dlaa_wanted())
+            rt_log("dlaa: dlaa_backend = fsr runs on Windows only (AMD's FSR SDK has no Linux libraries): using DLSS");
+        fsr = 0;
+#endif
+    }
     return fsr;
 }
 
