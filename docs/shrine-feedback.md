@@ -80,6 +80,13 @@ This branch now also merges upstream 0.3.11 at `0ae47a5`. The configuration conf
 documented in `docs/settings.md`, whose runtime-setting check passes. A full 0.3.11 runtime build and gameplay run
 have not yet been performed.
 
+This branch now also merges upstream 0.3.13 at `ae30a61`. The `runtime/cfg.c` conflict keeps both sides' settings,
+`DESWIZZLE` and `DYN_DELTA` from upstream and `FEEDBACK_R32_COPY` and `FEEDBACK_DEBUG` from this branch, and
+upstream's newer `probe_movie_bench` row replaces this branch's. `python tests/settings_doc_check.py` reports one
+problem on the merged tree, `DESWIZZLE`: upstream lists that setting in `known[]` without a description in
+`totk.ini.example` or `docs/settings.md`. The same check reports the same problem on 0.3.13 without this branch. A
+0.3.13 runtime build and gameplay run have not been performed.
+
 The original cutout workaround and this integration were prepared with Codex. The expanded material conditions,
 reuse heuristic and diagnostics were supplied by the user's DeepSeek-assisted update. Only source and
 documentation are included here; no game data, translated game code, shader dumps, saves or local installers.
