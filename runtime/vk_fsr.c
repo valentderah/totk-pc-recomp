@@ -15,9 +15,12 @@
 // frame's reads (one queue, so the barrier covers earlier submissions).
 #include "vk.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
+#include "anime4k_thin_spv.h"
+#include "anime4k_upscale_spv.h"
 #include "fsr_easu_spv.h"
 #include "fsr_rcas_spv.h"
 #include "host.h"
@@ -29,7 +32,7 @@ static struct {
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
-    VkPipeline easu, rcas;
+    VkPipeline easu, rcas, a4k_upscale, a4k_thin;
     VkSampler sampler;
     VkImage img[2];                // EASU output, RCAS output
     VmaAllocation alloc[2];
@@ -80,11 +83,13 @@ static int init(VkCtx *c) {
         vkCreatePipelineLayout(c->device, &li, NULL, &F.layout) != VK_SUCCESS ||
         vkCreateSampler(c->device, &si, NULL, &F.sampler) != VK_SUCCESS ||
         !(F.easu = make_pipeline(c, fsr_easu_spv, sizeof fsr_easu_spv)) ||
-        !(F.rcas = make_pipeline(c, fsr_rcas_spv, sizeof fsr_rcas_spv))) {
+        !(F.rcas = make_pipeline(c, fsr_rcas_spv, sizeof fsr_rcas_spv)) ||
+        !(F.a4k_upscale = make_pipeline(c, anime4k_upscale_spv, sizeof anime4k_upscale_spv)) ||
+        !(F.a4k_thin = make_pipeline(c, anime4k_thin_spv, sizeof anime4k_thin_spv))) {
         rt_log("vk: FSR off: its pipelines could not be created; the present scales bilinearly");
         return 0;
     }
-    rt_log("vk: FSR 1 (EASU + RCAS) ready for the present");
+    rt_log("vk: upscalers (FSR 1 and Anime4K) ready for the present");
     return F.ok = 1;
 }
 
@@ -160,7 +165,9 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, const int out[4]) {
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
-    if (strcmp(cfg_value("TOTK_UPSCALER"), "fsr") || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+    const char *mode = cfg_value("TOTK_UPSCALER");
+    int is_fsr = !strcmp(mode, "fsr"), is_a4k = !strcmp(mode, "anime4k");
+    if ((!is_fsr && !is_a4k) || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;
@@ -178,9 +185,10 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     int sharp = cfg_int("TOTK_SHARPNESS");
     if (sharp < 0) sharp = 0;
     if (sharp > 100) sharp = 100;
-    if (!F.logged) {
-        F.logged = 1;
-        rt_log("vk: FSR upscales %dx%d to %ux%u (sharpness %d)", cw, ch, dw, dh, sharp);
+    static char last_mode[16];
+    if (strcmp(last_mode, mode)) {
+        snprintf(last_mode, sizeof last_mode, "%s", mode);
+        rt_log("vk: %s upscales %dx%d to %ux%u (sharpness %d)", is_a4k ? "Anime4K" : "FSR 1", cw, ch, dw, dh, sharp);
     }
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, XF = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     // the game's writes to the source become visible to the compute read; the earlier frame's reads of the
@@ -191,15 +199,16 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
         barrier(cb, F.img[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, CS | XF, 0, CS,
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     uint32_t gx = (dw + 15) / 16, gy = (dh + 15) / 16;
-    float easu[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
-    bind_pass(cb, F.easu, F.src_view[slot], F.view[0], easu);
+    float up[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
+    bind_pass(cb, is_a4k ? F.a4k_upscale : F.easu, F.src_view[slot], F.view[0], up);
     vkCmdDispatch(cb, gx, gy, 1);
     int last = 0;
     if (sharp > 0) {
         barrier(cb, F.img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        float rcas[8] = {(float)dw, (float)dh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
-        bind_pass(cb, F.rcas, F.view[0], F.view[1], rcas);
+        // Anime4K's second pass thins the lines it found, at its own strength; RCAS sharpens FSR's output.
+        float second[8] = {(float)dw, (float)dh, is_a4k ? (float)sharp / 100.0f : (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
+        bind_pass(cb, is_a4k ? F.a4k_thin : F.rcas, F.view[0], F.view[1], second);
         vkCmdDispatch(cb, gx, gy, 1);
         last = 1;
     }
@@ -224,6 +233,8 @@ void vk_fsr_release(void) {
         if (F.src_view[i]) vkDestroyImageView(c->device, F.src_view[i], NULL);
     if (F.easu) vkDestroyPipeline(c->device, F.easu, NULL);
     if (F.rcas) vkDestroyPipeline(c->device, F.rcas, NULL);
+    if (F.a4k_upscale) vkDestroyPipeline(c->device, F.a4k_upscale, NULL);
+    if (F.a4k_thin) vkDestroyPipeline(c->device, F.a4k_thin, NULL);
     if (F.sampler) vkDestroySampler(c->device, F.sampler, NULL);
     if (F.layout) vkDestroyPipelineLayout(c->device, F.layout, NULL);
     if (F.dsl) vkDestroyDescriptorSetLayout(c->device, F.dsl, NULL);
