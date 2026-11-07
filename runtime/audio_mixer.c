@@ -613,6 +613,23 @@ static void accumulate(Mixer *m, int buffer, const float *src, float vol, int fr
 }
 static int mix_valid(AudioRenderer *r, int32_t id) { return id >= 0 && id <= r->param.submix_count && r->mixes[id].in_use; }
 static int mix_depth(AudioRenderer *r, int id) {
+    if (!mix_valid(r, id)) return 0;
+    Mixer *m = r->mixer;
+    const AudrenMixIn *x = &r->mixes[id];
+    if (m && x->dest_splitter_id != SPLITTER_UNUSED && x->dest_splitter_id < (uint32_t)m->nsplit) {
+        const SplitInfo *s = &m->split[x->dest_splitter_id];
+        int max_d = 0;
+        for (int k = 0; k < s->ndest; k++) {
+            if (s->ids[k] >= 0 && s->ids[k] < m->ndest) {
+                SplitDest *d = &m->dest[s->ids[k]];
+                if (d->used && mix_valid(r, d->dest) && d->dest != id) {
+                    int sub_d = mix_depth(r, d->dest);
+                    if (sub_d > max_d) max_d = sub_d;
+                }
+            }
+        }
+        return max_d + 1;
+    }
     int d = 0;
     for (int guard = 0; id > 0 && guard < 64; guard++, d++) {
         if (!mix_valid(r, r->mixes[id].dest_mix_id)) return d + 1;
@@ -621,30 +638,97 @@ static int mix_depth(AudioRenderer *r, int id) {
     return d;
 }
 
+static int32_t effect_integer(float value) {
+    double x = trunc((double)value * 32768);
+    return !isfinite(x) ? 0 : x > INT32_MAX ? INT32_MAX : x < INT32_MIN ? INT32_MIN : (int32_t)x;
+}
+static void prepare_ring_write(uint8_t *base, uint32_t size, uint32_t at, uint64_t bytes) {
+    if (bytes >= size) { dm_guest_write_prepare(base, size); return; }
+    uint32_t first = (uint32_t)bytes;
+    if (first > size - at) first = size - at;
+    dm_guest_write_prepare(base + at, first);
+    if (bytes > first) dm_guest_write_prepare(base, (size_t)bytes - first);
+}
+/* SDK SampleCounter::Add advances the producer counter itself, not the
+   producer-consumer difference or the ring cursor. Saturate on diff overflow. */
+static void effect_counter_add(uint32_t cpu, uint32_t *dsp, uint32_t count) {
+    uint32_t previous = *dsp - cpu, next = *dsp + count;
+    *dsp = next - cpu < previous ? cpu - 1 : next;
+}
+
 /* Guest custom effects exchange int32 samples in two rings. Each ring has CPU and DSP
    0x40-byte headers followed by samples; only the DSP header's owned cursor is advanced. */
 static void mix_aux(AudioRenderer *r, int mix, const AudrenEffectIn *e) {
-    Mixer *m=r->mixer; AudrenAuxParam p; memcpy(&p,e->specific,sizeof p);
-    if(!p.send_info || !p.return_info || !p.capacity || !p.channels) return;
-    if(p.channels>24 || p.capacity>16*1024*1024)rt_fatal("auxiliary effect dimensions");
-    uint8_t *send=ipc_guest(p.send_info,128+(uint64_t)p.capacity*4), *ret=ipc_guest(p.return_info,128+(uint64_t)p.capacity*4);
-    uint32_t *sh=(uint32_t *)(send+64),*rh=(uint32_t *)(ret+64); int32_t *sd=(int32_t *)(send+128),*rd=(int32_t *)(ret+128);
-    uint32_t wr=sh[1],read=rh[0],total=p.channels*(uint32_t)m->frame;
-    if(e->enabled) report_once(m,6,"auxiliary effect in use, channels",(int)p.channels);
-    for(unsigned c=0;c<p.channels;c++) {
-        if(p.input[c]>=r->mixes[mix].buffer_count || p.output[c]>=r->mixes[mix].buffer_count)rt_fatal("auxiliary effect mix buffer");
-        float *input=mixbuf(m,m->offset[mix]+p.input[c]),*output=mixbuf(m,m->offset[mix]+p.output[c]);
-        if(!e->enabled) { if(input!=output)memmove(output,input,m->frame*sizeof(float)); continue; }
-        uint64_t w=(uint64_t)wr+c*m->frame,at=(uint64_t)read+c*m->frame;
-        for(int k=0;k<m->frame;k++) {
-            double scaled=trunc((double)input[k]*32768); int32_t value=scaled>INT32_MAX?INT32_MAX:scaled<INT32_MIN?INT32_MIN:!isfinite(scaled)?0:(int32_t)scaled;
-            input[k]=value/32768.f;
-            if(w<=p.capacity)sd[(w+(unsigned)k)%p.capacity]=value;
+    Mixer *m = r->mixer;
+    AudrenAuxParam p;
+    memcpy(&p, e->specific, sizeof p);
+    if (!p.send_info || !p.return_info || !p.capacity || !p.channels) return;
+    if (p.channels > 24 || p.capacity > 16 * 1024 * 1024) rt_fatal("auxiliary effect dimensions");
+    uint8_t *send = ipc_guest(p.send_info, 128 + (uint64_t)p.capacity * 4);
+    uint8_t *ret = ipc_guest(p.return_info, 128 + (uint64_t)p.capacity * 4);
+    uint32_t *scpu = (uint32_t *)send, *sh = (uint32_t *)(send + 64);
+    uint32_t *rcpu = (uint32_t *)ret, *rh = (uint32_t *)(ret + 64);
+    int32_t *sd = (int32_t *)(send + 128), *rd = (int32_t *)(ret + 128);
+    dm_guest_write_prepare(send + 64, 64);
+    dm_guest_write_prepare(ret + 64, 64);
+    if (e->enabled) report_once(m, 6, "auxiliary effect in use, channels", (int)p.channels);
+
+    if (!e->enabled) {
+        for (unsigned c = 0; c < p.channels; c++) {
+            if (p.input[c] >= r->mixes[mix].buffer_count || p.output[c] >= r->mixes[mix].buffer_count)
+                rt_fatal("auxiliary effect mix buffer");
+            float *input = mixbuf(m, m->offset[mix] + p.input[c]);
+            float *output = mixbuf(m, m->offset[mix] + p.output[c]);
+            if (input != output) memmove(output, input, (size_t)m->frame * sizeof(float));
         }
-        for(int k=0;k<m->frame;k++)output[k]=at<=p.capacity?rd[(at+(unsigned)k)%p.capacity]/32768.f:0;
-        if(c==p.channels-1) { if(w<=p.capacity)sh[1]=(wr+total)%p.capacity; if(at<=p.capacity)rh[0]=(read+total)%p.capacity; }
+        sh[0] = sh[1] = sh[3] = 0;
+        rh[0] = rh[1] = rh[3] = 0;
+        return;
     }
-    if(!e->enabled) { sh[0]=sh[1]=sh[3]=0; rh[0]=rh[1]=rh[3]=0; }
+
+    uint32_t wr = sh[1], total = p.channels * (uint32_t)m->frame;
+    for (unsigned c = 0; c < p.channels; c++) {
+        if (p.input[c] >= r->mixes[mix].buffer_count) rt_fatal("auxiliary effect input buffer");
+        float *input = mixbuf(m, m->offset[mix] + p.input[c]);
+        uint64_t w = (uint64_t)wr + c * m->frame;
+        if (w <= p.capacity) prepare_ring_write((uint8_t *)sd, p.capacity * 4, (uint32_t)(w % p.capacity) * 4, (uint64_t)m->frame * 4);
+        for (int k = 0; k < m->frame; k++) {
+            if (w <= p.capacity) sd[(w + (unsigned)k) % p.capacity] = effect_integer(input[k]);
+        }
+    }
+    if ((uint64_t)wr + (p.channels - 1) * (uint32_t)m->frame <= p.capacity) {
+        uint32_t diff = sh[3] - scpu[3];
+        if (diff >= p.capacity) effect_counter_add(scpu[2], &sh[2], total);
+        sh[1] = (wr + total) % p.capacity;
+        effect_counter_add(scpu[3], &sh[3], total);
+    }
+
+    uint32_t read = rh[0];
+    uint32_t avail = rcpu[3] - rh[3];
+    int has_return = (avail >= total);
+    if (has_return) {
+        for (unsigned c = 0; c < p.channels; c++) {
+            if (p.output[c] >= r->mixes[mix].buffer_count) rt_fatal("auxiliary effect output buffer");
+            float *output = mixbuf(m, m->offset[mix] + p.output[c]);
+            uint64_t at = (uint64_t)read + c * m->frame;
+            for (int k = 0; k < m->frame; k++) {
+                output[k] = at <= p.capacity ? rd[(at + (unsigned)k) % p.capacity] / 32768.f : 0;
+            }
+        }
+        if ((uint64_t)read + (p.channels - 1) * (uint32_t)m->frame <= p.capacity) {
+            if (avail >= p.capacity) effect_counter_add(rcpu[2], &rh[2], total);
+            rh[0] = (read + total) % p.capacity;
+            effect_counter_add(rcpu[3], &rh[3], total);
+        }
+    } else {
+        for (unsigned c = 0; c < p.channels; c++) {
+            if (p.input[c] >= r->mixes[mix].buffer_count || p.output[c] >= r->mixes[mix].buffer_count)
+                rt_fatal("auxiliary effect mix buffer");
+            float *input = mixbuf(m, m->offset[mix] + p.input[c]);
+            float *output = mixbuf(m, m->offset[mix] + p.output[c]);
+            if (input != output) memmove(output, input, (size_t)m->frame * sizeof(float));
+        }
+    }
 }
 
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size) {
@@ -673,20 +757,6 @@ static void mix_limiter(AudioRenderer *r, int mix, int id) {
     }
 }
 
-static int32_t effect_integer(float value) {
-    double x=trunc((double)value*32768);return !isfinite(x)?0:x>INT32_MAX?INT32_MAX:x<INT32_MIN?INT32_MIN:(int32_t)x;
-}
-static void prepare_ring_write(uint8_t *base,uint32_t size,uint32_t at,uint64_t bytes) {
-    if(bytes>=size){dm_guest_write_prepare(base,size);return;}
-    uint32_t first=(uint32_t)bytes;if(first>size-at)first=size-at;
-    dm_guest_write_prepare(base+at,first);if(bytes>first)dm_guest_write_prepare(base,(size_t)bytes-first);
-}
-/* SDK SampleCounter::Add advances the producer counter itself, not the
-   producer-consumer difference or the ring cursor. Saturate on diff overflow. */
-static void effect_counter_add(uint32_t cpu,uint32_t *dsp,uint32_t count) {
-    uint32_t previous=*dsp-cpu,next=*dsp+count;
-    *dsp=next-cpu<previous?cpu-1:next;
-}
 static void mix_capture(AudioRenderer *r,int mix,const AudrenEffectIn *e) {
     Mixer *m=r->mixer;AudrenAuxParam p;memcpy(&p,e->specific,sizeof p);
     if(!p.send_info || !p.capacity || !p.channels)return;

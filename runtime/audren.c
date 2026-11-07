@@ -88,24 +88,29 @@ static void voice_reset(ServerVoice *v) {
     memset(v->biquad_state, 0, sizeof v->biquad_state);
 }
 
-static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
-    need(in->id < (uint32_t)r->param.voice_count, "voice id out of range");
-    ServerVoice *v = &r->voices[in->id];
+static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in, int i) {
+    need(i >= 0 && i < r->param.voice_count, "voice index out of range");
+    ServerVoice *v = &r->voices[i];
     if (in->is_new || !in->in_use) voice_reset(v);
     v->in = *in;
+    v->in.id = (uint32_t)i;
     v->use_float_biquads = 0;
     if (!in->in_use) return;
     need(in->wave_buffer_index < 4, "wave buffer index");
     // The play state as the DSP keeps it (Ryujinx VoiceInfo.UpdatePlayState): Stop on a voice that is not stopped
     // becomes Stopping, which the next render frame turns into Stopped after giving back every queued buffer.
-    if (in->play_state == PLAY_STARTED) v->state = SV_STARTED;
+    if (in->play_state == PLAY_STARTED) {
+        v->state = SV_STARTED;
+    }
     else if (in->play_state == PLAY_PAUSED) v->state = SV_PAUSED;
-    else if (v->state != SV_STOPPED) v->state = SV_STOPPING;
-    for (unsigned i = 0; i < 4; i++) {   // a new buffer waits until a render frame finds the voice playing
-        const AudrenWaveBuffer *w = &in->wave_buffers[i];
+    else if (v->state != SV_STOPPED) {
+        v->state = SV_STOPPING;
+    }
+    for (unsigned b = 0; b < 4; b++) {   // a new buffer waits until a render frame finds the voice playing
+        const AudrenWaveBuffer *w = &in->wave_buffers[b];
         if (!w->sent) {
-            v->buffers[i] = *w;
-            v->pending[i] = 1;
+            v->buffers[b] = *w;
+            v->pending[b] = 1;
         }
     }
     v->flush += in->flush_wave_buffer_count;
@@ -232,8 +237,12 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     need(in.p == in.end, "unconsumed update input");
 
     for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
-        need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
-        r->channels[chans[i].id] = chans[i];
+        if (!chans[i].in_use) {
+            r->channels[i] = chans[i];
+            continue;
+        }
+        uint32_t dst = chans[i].id < (uint32_t)vc * 6 ? chans[i].id : i;
+        r->channels[dst] = chans[i];
     }
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
@@ -252,8 +261,8 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
             }
         } else
             memcpy(&v, voices + i * voice_stride, sizeof v);
-        update_voice(r, &v);
-        ServerVoice *server = &r->voices[v.id];
+        update_voice(r, &v, i);
+        ServerVoice *server = &r->voices[i];
         server->use_float_biquads = (uint8_t)float_voices;
         if (float_voices) memcpy(server->float_biquads, v2.biquads, sizeof v2.biquads);
     }
