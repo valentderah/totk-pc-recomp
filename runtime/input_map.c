@@ -16,7 +16,7 @@
 #define DEFAULT_KEYS \
     {KEY_W, B_SL_UP}, {KEY_A, B_SL_LEFT}, {KEY_S, B_SL_DOWN}, {KEY_D, B_SL_RIGHT},                  /* move */ \
     {KEY_UP, B_SR_UP}, {KEY_LEFT, B_SR_LEFT}, {KEY_DOWN, B_SR_DOWN}, {KEY_RIGHT, B_SR_RIGHT},       /* camera, second source */ \
-    {KEY_MOUSE_L, B_Y}, {KEY_MOUSE_R, B_ZL}, {KEY_Z, B_ZL}, {KEY_F, B_ZR}, {KEY_X, B_ZR}, \
+    {KEY_MOUSE_L, B_Y}, {KEY_T, B_Y}, {KEY_MOUSE_R, B_ZL}, {KEY_Z, B_ZL}, {KEY_F, B_ZR}, {KEY_X, B_ZR}, \
     {KEY_SPACE, B_X}, {KEY_LSHIFT, B_B}, {KEY_E, B_A}, {KEY_Q, B_L}, {KEY_R, B_R}, \
     {KEY_LCTRL, B_STICK_L}, {KEY_C, B_STICK_R}, \
     {KEY_1, B_LEFT}, {KEY_2, B_UP}, {KEY_3, B_RIGHT}, {KEY_4, B_DOWN}, \
@@ -31,7 +31,7 @@
     {PAD_ZR, B_ZR}
 #define NINTENDO_PADS DEFAULT_PADS(B_B, B_A, B_Y, B_X)
 #define XBOX_PADS DEFAULT_PADS(B_A, B_B, B_X, B_Y)
-enum { DEFAULT_KEY_COUNT = 27, DEFAULT_PAD_COUNT = 16 };
+enum { DEFAULT_KEY_COUNT = 28, DEFAULT_PAD_COUNT = 16 };
 _Static_assert(sizeof (Binding[]){DEFAULT_KEYS} / sizeof (Binding) == DEFAULT_KEY_COUNT, "DEFAULT_KEY_COUNT");
 
 static const InputMap defaults = {{DEFAULT_KEYS}, DEFAULT_KEY_COUNT, {{NINTENDO_PADS}, {XBOX_PADS}},
@@ -166,11 +166,27 @@ int input_map_bind(const char *button, const char *list) {
 
 void input_map_configure(void) {
     input_map_reset();
+    uint8_t lined[ACTION_COUNT] = {0};
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
         snprintf(var, sizeof var, "TOTK_BIND_%s", action_names[a]);
         const char *v = cfg_get(var);
-        if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + 5, v);
+        if (v && *v && input_map_bind(action_names[a], v)) lined[a] = 1, rt_log("input: %s = %s", var + 5, v);
+    }
+    // A key a line binds leaves the defaults of the actions without a line, as the remapping rows move a key: with
+    // bind_X = key:t, T presses X only, not also Y, whose defaults hold it.
+    uint8_t bound[KEY_COUNT] = {0}, list[INPUT_BINDING_MAX];
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        if (!lined[a]) continue;
+        int n = input_map_keys_of(&input_map, a, list, INPUT_BINDING_MAX);
+        for (int i = 0; i < n; i++) bound[list[i]] = 1;
+    }
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        if (lined[a]) continue;
+        int n = input_map_keys_of(&input_map, a, list, INPUT_BINDING_MAX), w = 0;
+        for (int i = 0; i < n; i++)
+            if (!bound[list[i]]) list[w++] = list[i];
+        if (w < n) keys_put(&input_map, a, list, w);
     }
 }
 
