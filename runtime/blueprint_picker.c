@@ -54,10 +54,13 @@ static BpPickDone g_done;
 static void *g_ctx;
 static int g_at_root;
 static int g_scroll;
-static int g_hover_row;      // the entry index under the pointer, -1 none
-static int g_hover_part;     // the path part index under the pointer, -1 none
+// ONE focus, whichever device moved it. The pointer and the pad both write this, and every action reads it, so a player
+// who moves the mouse and then presses A acts on the row the mouse is on - the same row a click would take. Two
+// separate "current" values (a hover row and a pad row) made the two devices disagree about what was selected, which is
+// exactly the kind of mismatch a player notices.
+static int g_focus_row;      // the entry index that is focused, -1 when none
+static int g_focus_part;     // the path part index that is focused, -1 when none
 static int g_pressed_part;   // a path part pressed this frame, -1 none
-static int g_selected_row;   // the entry the pad cursor is on
 static uint64_t g_pad_prev;  // pad buttons at the previous poll, for the edge
 static int g_part_count;
 static char g_part[PICK_MAX_PARTS][256];
@@ -319,7 +322,7 @@ static void list_folder(void) {
     g_count = 0;
     g_error[0] = 0;
     g_scroll = 0;
-    g_selected_row = 0;
+    g_focus_row = 0;
     g_at_root = at_drive_root(g_dir);
     // "This PC" (g_dir == "") is not a folder on disk: it is the list of every drive. Otherwise list the folder's own
     // subdirectories and blueprint files, plus the other drives when the current folder is a drive root.
@@ -390,7 +393,7 @@ int bp_picker_open(const char *start, BpPickDone done, void *ctx) {
     if (g_open) return 0;
     g_done = done;
     g_ctx = ctx;
-    g_hover_row = g_hover_part = g_pressed_part = -1;
+    g_focus_row = g_focus_part = g_pressed_part = -1;
     g_pad_prev = 0;
     g_dragging = 0;
     __atomic_store_n(&g_wheel, 0, __ATOMIC_RELEASE);
@@ -477,6 +480,10 @@ static void layout_header(BPickFrame *f) {
     snprintf(f->crumb, sizeof f->crumb, "%s", menu_text(UI_MENU_BLUEPRINT_THIS_PC));
     // The footer's button prompts: the pad keys the picker answers to, each as a key cap plus its word, the way the
     // game's own guide bar presents them. A is the accept key, so it is the one drawn in gold.
+    //
+    // Only keys that exist on a Switch pad are named. There is no "R" button to go up a folder: the pad goes up with B,
+    // which also cancels, so the prompt says "B Cancel" and the breadcrumb's back arrow is the visible way up - naming a
+    // button the player cannot find on the controller is worse than saying less.
     f->nprompt = 0;
     snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "A");
     snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s", menu_text(UI_MENU_BLUEPRINT_KEY_OPEN));
@@ -486,19 +493,19 @@ static void layout_header(BPickFrame *f) {
     snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s", menu_text(UI_MENU_BLUEPRINT_KEY_CANCEL));
     f->prompt[f->nprompt].primary = 0;
     f->nprompt++;
-    if (!f->at_pc) {
-        snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "R");
-        snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s",
-                 menu_text(UI_MENU_BLUEPRINT_KEY_BACK));
-        f->prompt[f->nprompt].primary = 0;
-        f->nprompt++;
-    }
     if (g_count > visible_rows(f)) {
         snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "\xe2\x87\x95");
         snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s",
                  menu_text(UI_MENU_BLUEPRINT_KEY_SCROLL));
         f->prompt[f->nprompt].primary = 0;
         f->nprompt++;
+        if (f->nprompt < 4) {
+            snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "L/R");
+            snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s",
+                     menu_text(UI_MENU_BLUEPRINT_KEY_PAGE));
+            f->prompt[f->nprompt].primary = 0;
+            f->nprompt++;
+        }
     }
     if (g_error[0]) snprintf(f->status, sizeof f->status, "%s", g_error);
     else if (g_count == 0) snprintf(f->status, sizeof f->status, "%s", menu_text(UI_MENU_BLUEPRINT_EMPTY));
@@ -635,7 +642,7 @@ static int row_at(const BPickFrame *f, int px, int py) {
 // the mouse across the list sees each file's parts before they click, without having to move the pad first.
 static int layout_preview(BPickFrame *f, int pad, int preview_w, int px, int py) {
     int idx = row_at(f, px, py);
-    if (idx < 0) idx = g_selected_row;
+    if (idx < 0) idx = g_focus_row;
     if (idx < 0 || idx >= g_count) return 0;
     if (g_entries[idx].dir || g_entries[idx].root) return 0;   // a folder has no blueprint to preview
 
@@ -703,7 +710,6 @@ void bp_picker_layout(BPickFrame *f, int screen_w, int screen_h, float scale) {
 // picker handled a press this frame (the draw layer then refreshes what it needs).
 int bp_picker_input(BPickFrame *f, int px, int py) {
     int acted = 0;
-    g_hover_row = g_hover_part = -1;
 
     // A right click (bp_picker_back) is only flagged by the window thread; the folder walk happens here, on the present
     // thread that owns the picker's state, and the caller re-lays out from the new folder.
@@ -715,25 +721,27 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     for (int i = 0; i < f->nrect; i++) {
         BPickRect *r = &f->rect[i];
         if (!inside(r, px, py)) continue;
-        if (r->kind == BP_RECT_ROW) {
-            // The row index is the position within the visible ones.
-        }
         r->hovered = 1;
     }
-    // The pointer's row, in entry indices: the rows start at g_scroll.
-    int rowseen = 0;
-    for (int i = 0; i < f->nrect; i++) {
-        BPickRect *r = &f->rect[i];
-        if (r->kind != BP_RECT_ROW) continue;
-        if (r->hovered) g_hover_row = g_scroll + rowseen;
-        rowseen++;
-    }
-    int partseen = 0;
-    for (int i = 0; i < f->nrect; i++) {
-        BPickRect *r = &f->rect[i];
-        if (r->kind != BP_RECT_PART) continue;
-        if (r->hovered) g_hover_part = partseen;
-        partseen++;
+    // The focus follows the pointer only while the pointer is on something. When it drifts off the rows (over the
+    // preview, the title, outside the panel) the focus stays where it was, so the pad can carry on from there instead of
+    // having its selection silently cleared by a pointer that is not pointing at anything.
+    const int under_row = row_at(f, px, py) >= 0;
+    if (under_row) {
+        g_focus_row = row_at(f, px, py);
+        g_focus_part = -1;
+    } else {
+        int partseen = 0, hit = -1;
+        for (int i = 0; i < f->nrect; i++) {
+            const BPickRect *r = &f->rect[i];
+            if (r->kind != BP_RECT_PART) continue;
+            if (r->hovered) hit = partseen;
+            partseen++;
+        }
+        if (hit >= 0) {
+            g_focus_part = hit;
+        } else {
+        }
     }
 
     // The pointer's left button. Its edge and its held state drive both a click and a scrollbar drag; the drag has
@@ -770,9 +778,9 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
         // A pressed thumb is not a click on anything else. Consume the press edge and skip the row/button handling.
         if (click) return acted;
     } else if (click) {
-        if (g_hover_part >= 0) g_pressed_part = g_hover_part;
-        else if (g_hover_row >= 0) {
-            activate(g_hover_row);
+        if (g_focus_part >= 0) g_pressed_part = g_focus_part;
+        else if (g_focus_row >= 0) {
+            activate(g_focus_row);
             return 1;
         }
         // The buttons are found by their text-free position: up is the first BP_RECT_BUTTON, cancel the last.
@@ -810,41 +818,69 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
         acted = 1;
     }
 
-    // The pad: the D-pad moves the entry cursor, A activates, B cancels.
+    // ---- the pad. It drives the SAME focus the pointer does, so the two never disagree: a mouse that leaves a row
+    // focused and a D-pad press continue from there, and A acts on whatever the pointer last pointed at.
     uint64_t pad = 0;
     int32_t lx, ly;
     if (input_pad_read(&pad, &lx, &ly)) {
         const uint64_t down = pad & ~g_pad_prev;
         g_pad_prev = pad;
-        if (g_count > 0) {
-            // Only a D-pad press moves the cursor and pulls the view to it. Without this guard every frame re-snapped
-            // the list back to the cursor's row, which undid a wheel scroll the moment the pad was read.
-            const int moved = (down & ((1ull << B_DOWN) | (1ull << B_UP))) != 0;
-            if (down & (1ull << B_DOWN)) g_selected_row = (g_selected_row + 1) % g_count;
-            if (down & (1ull << B_UP)) g_selected_row = (g_selected_row + g_count - 1) % g_count;
-            // Keep the cursor's row inside the visible window.
+        // Once the pad moves, it owns the focus: the pointer is no longer what the player is driving.
+        const int moved = (down & ((1ull << B_DOWN) | (1ull << B_UP))) != 0;
+        if (g_count > 0 && moved) {
+            // Step from wherever the focus is, which may be where the mouse left it. Wrapping keeps a long list usable
+            // with one direction held.
+            const int from = g_focus_row < 0 ? 0 : g_focus_row;
+            g_focus_row = (down & (1ull << B_DOWN)) ? (from + 1) % g_count : (from + g_count - 1) % g_count;
+            // Only a move scrolls: without this guard every frame re-snapped the list to the cursor, which undid a
+            // wheel scroll the moment the pad was read.
             const int visible = visible_rows(f);
-            if (moved && visible > 0) {
-                if (g_selected_row < g_scroll) g_scroll = g_selected_row;
-                if (g_selected_row >= g_scroll + visible) g_scroll = g_selected_row - visible + 1;
+            if (visible > 0) {
+                if (g_focus_row < g_scroll) g_scroll = g_focus_row;
+                if (g_focus_row >= g_scroll + visible) g_scroll = g_focus_row - visible + 1;
                 if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
                 if (g_scroll < 0) g_scroll = 0;
                 f->scroll = g_scroll;
             }
         }
         if (down & (1ull << B_A)) {
-            activate(g_selected_row);
-            return 1;
+            // A on the breadcrumb goes to that folder, on a row opens it: the same rule a click follows, so the two
+            // devices cannot mean different things by "confirm".
+            if (g_focus_part >= 0) g_pressed_part = g_focus_part;
+            else if (g_focus_row >= 0 && g_count > 0) {
+                activate(g_focus_row);
+                return 1;
+            }
         }
         if (down & (1ull << B_B)) {
+            // B does exactly what a right click does: up one folder, and cancelled once there is no folder above.
+            // Doing both in that order everywhere would mean B could never cancel from inside a folder, which is the
+            // opposite of what the mouse can do from the same screen - so the two stay in step.
+            if (g_dir[0] && go_up()) return 1;
             bp_picker_cancel();
             return 1;
+        }
+        // L / R scroll a page, the pad's counterpart of the mouse wheel: without them the only way to reach a row far
+        // down a long folder was to hold the D-pad, which is a much slower way to do what the wheel does in a flick.
+        if (down & (1ull << B_L)) {
+            const int page = visible_rows(f) > 1 ? visible_rows(f) - 1 : 1;
+            g_scroll -= page;
+            if (g_scroll < 0) g_scroll = 0;
+            f->scroll = g_scroll;
+            acted = 1;
+        }
+        if (down & (1ull << B_R)) {
+            const int page = visible_rows(f) > 1 ? visible_rows(f) - 1 : 1;
+            g_scroll += page;
+            if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
+            f->scroll = g_scroll;
+            acted = 1;
         }
     }
     return acted;
 }
 
 // The results of the last input pass, for the draw layer's colours.
-int bp_picker_hover_part(void) { return g_hover_part; }
-int bp_picker_selected_row(void) { return g_selected_row; }
+int bp_picker_hover_part(void) { return g_focus_part; }
+int bp_picker_selected_row(void) { return g_focus_row; }
 int bp_picker_scroll(void) { return g_scroll; }

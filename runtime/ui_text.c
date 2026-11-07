@@ -516,7 +516,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Cannot import:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Choose",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Cancel",
-    [UI_MENU_BLUEPRINT_KEY_BACK] = "Back",
+    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Page",
     [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Scroll",
 };
 
@@ -1006,7 +1006,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Не удалось:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Выбрать",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Отмена",
-    [UI_MENU_BLUEPRINT_KEY_BACK] = "Назад",
+    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Страница",
     [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Прокрутка",
 };
 
@@ -1524,7 +1524,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Falha ao importar:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Escolher",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Cancelar",
-    [UI_MENU_BLUEPRINT_KEY_BACK] = "Voltar",
+    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Página",
     [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Rolar",
 };
 
@@ -2127,7 +2127,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "导入失败：",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "确认",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "取消",
-    [UI_MENU_BLUEPRINT_KEY_BACK] = "返回",
+    [UI_MENU_BLUEPRINT_KEY_PAGE] = "翻页",
     [UI_MENU_BLUEPRINT_KEY_SCROLL] = "滚动",
 };
 
