@@ -33,6 +33,10 @@ int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
+// 1 when the game's focus box is on one of this screen's tab buttons rather than on its content: the tabs sit in a row
+// near the top of the screen and a feature that belongs to them (the Autobuild import row) has to tell them apart from
+// the card list below. Any thread.
+int menu_cursor_focus_is_tab(const char *screen);
 int menu_cursor_pointer(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // The layout name of the screen the game shows now ("AutoBuilder_00"), "" when no menu is up or the name cannot be read:

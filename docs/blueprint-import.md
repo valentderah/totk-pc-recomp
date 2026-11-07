@@ -227,11 +227,16 @@ nothing of the game's archives is edited: no mod, resolution, or language can co
 game version and every pad layout.
 
 * **Which screen.** `menu_cursor_screen_open()` (`runtime/menu_cursor.c`) enumerates `eui::ScreenMgr`'s open screens and
-  matches the layout name `AutoBuilder_00`. It tests whether the screen is open at all, not whether it has the focus box:
-  on that screen the focus is only on a list row or a tab, and the import row must be there whenever the screen is up.
-  The game thread reads it once per pad read (`bp_hint_poll`), which is what lets the port take the button before the
-  game sees it; the present thread reads it too, freshening a short latch so the row does not blink during focus gaps.
-* **Only there.** Outside that screen the row is not drawn and ⊕ is untouched, so the game behaves exactly as before.
+  matches the layout name `AutoBuilder_00`. The game thread reads it once per pad read (`bp_hint_poll`), which is what
+  lets the port take the button before the game sees it; the present thread reads it too, freshening a short latch so
+  the row does not blink during focus gaps.
+* **Which control.** Being on that screen is not enough: the row belongs to its three tabs (favourites, drafts, history),
+  and while the selection sits in the card list below the player is choosing a draft. `menu_cursor_focus_is_tab()` tells
+  them apart by the layout each focusable button was built from: the tabs instantiate `PaAutoBuilderTabBtn_00`, the cards
+  instantiate `PaAutoBuilderPhotoBtn_00`, and a button carries its template (`BTN_LAYOUT` -> `LYT_NAME`, the same field
+  `menu_cursor_screen_name` reads for a whole screen). No position threshold and no pane-name offset is involved.
+* **Only there.** Outside that screen, and on it while the focus is in the card list, the row is not drawn and ⊕ is
+  untouched, so the game behaves exactly as before.
 * **The button.** ⊕ on this screen is the game's own "Receive", which needs Zelda Notes and does nothing on this port;
   `bp_hint_poll` clears the bit from the frame's buttons so the press belongs to the import alone. Nothing else is taken.
 * **The picker.** `bp_picker_open` (`runtime/blueprint_picker.c`) shows a panel drawn by `ui/blueprint_picker.cpp`
@@ -327,9 +332,9 @@ Modified:
 | `runtime/ui/menu.cpp` | the hint's frame and draw calls, the picker draw call, and the overlay keeping itself alive for the picker |
 | `runtime/ui/menu_win.cpp`, `ui/menu_sdl.cpp` | events reach the overlay while the picker is open, not only the settings menu |
 | `runtime/ui_text.h`, `ui_text.c` | the picker's and hint's text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
-| `runtime/input.c`, `input.h` | the hint's pad read, `menu_cursor_screen_open`, and leaving the wheel to the picker |
+| `runtime/input.c`, `input.h` | the hint's pad read, `menu_cursor_screen_open` / `menu_cursor_focus_is_tab`, and leaving the wheel to the picker |
 | `runtime/input_win.c` | wheel notches accumulated while the picker is open |
-| `runtime/menu_cursor.c` | `menu_cursor_screen_open` (whole-screen detection) and skipping the game's cursor for the picker |
+| `runtime/menu_cursor.c` | `menu_cursor_screen_open` (whole-screen detection), `menu_cursor_focus_is_tab` (which control has the focus), and skipping the game's cursor for the picker |
 | `runtime/cfg.c` | `BLUEPRINT_HINT` and `BLUEPRINT_DIR` |
 | `tools/build_game.py` | `libz.a` on the link line, for the `.txt` reader |
 
