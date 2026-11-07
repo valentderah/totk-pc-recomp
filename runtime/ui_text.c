@@ -1472,6 +1472,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_AA_ENGINE] = "Motor do DLSS / DLAA",
+    [UI_MENU_AA_ENGINE_DESC] = "O que roda no ponto do DLSS / DLAA. O NVIDIA DLSS precisa de uma GPU RTX e do "
+                               "nvngx_dlss.dll; o AMD FSR 3.1 roda em qualquer GPU. Automático usa o DLSS quando ele está "
+                               "disponível e, senão, o FSR 3.1.",
+    [UI_MENU_AA_ENGINE_AUTO] = "Automático", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2073,6 +2079,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_AA_ENGINE] = "DLSS / DLAA 引擎",
+    [UI_MENU_AA_ENGINE_DESC] = "在 DLSS / DLAA 处运行哪一种。NVIDIA DLSS 需要 RTX 显卡和 nvngx_dlss.dll；AMD FSR 3.1 "
+                               "可在任何显卡上运行。“自动”在 DLSS 可用时使用 DLSS，否则使用 FSR 3.1。",
+    [UI_MENU_AA_ENGINE_AUTO] = "自动", [UI_MENU_AA_ENGINE_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_AA_ENGINE_FSR3] = "AMD FSR 3.1",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
