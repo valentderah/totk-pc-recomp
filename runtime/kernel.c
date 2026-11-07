@@ -1558,6 +1558,10 @@ void kern_run_on_guest_main(void (*fn)(Cpu *c)) {
 #define SLEEP_SPIN_NS (2 * PLAT_WAIT_LATE_NS)
 static void sleep_ns(RtThread *t, int64_t ns) {
     (void)t;
+    if (ns <= 1000) {
+        plat_yield();
+        return;
+    }
     if (ns <= SLEEP_SPIN_NS) {
         uint64_t end = kern_now_ns() + (uint64_t)ns;
         while (kern_now_ns() < end) plat_pause();
