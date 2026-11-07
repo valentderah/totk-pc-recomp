@@ -775,6 +775,14 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
     return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)addr, out, n, &got) && got == n;
 }
 
+// The display mode's own size: physical pixels whatever the process's DPI awareness and the display scale
+int plat_screen_size(int *w, int *h) {
+    DEVMODEW dm = {.dmSize = sizeof dm};
+    if (!EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) || !dm.dmPelsWidth || !dm.dmPelsHeight) return 0;
+    *w = (int)dm.dmPelsWidth, *h = (int)dm.dmPelsHeight;
+    return 1;
+}
+
 int plat_mem_readable(uint64_t addr, uint64_t n) {
     for (uint64_t a = addr, end = addr + n; a < end || a == addr;) {
         MEMORY_BASIC_INFORMATION mbi;
