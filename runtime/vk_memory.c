@@ -953,9 +953,40 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
     s_copied += b - a;
 }
 
+// TOTK_SHADOW_SNAP (default 1): a pool's sync takes its written pages from the per-submission write-watch snapshots
+// (snap_regions, shared with the texture checks): each 2 MiB region is queried at most once per guest submission, however
+// many pools share it and however many parts of the submission touch them. The GPU then reads a pool as of the first
+// part that syncs it, nearer the submit call, the moment the game means (vk_usnap.c). 0 queries each pool at every
+// sync, as before. Measured on a Steam Deck at Lookout Landing: 716 pool syncs and 729 queries a frame took 4.8 ms of
+// the replay thread to copy 2.3 MiB, the query walk costing about 4 us per MiB there; with the snapshots, about 58
+// queries and 1.7 ms for the same bytes.
+static int shadow_snap = -1;
+static void shadow_copy_newer(PoolRec *r, uint32_t since);
+
 // shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow.
 static void shadow_sync_pool(PoolRec *r) {
     uint64_t lo = r->import_lo, hi = r->import_hi;
+    if (shadow_snap < 0) {
+        shadow_snap = rt_knob("SHADOW_SNAP", "1");
+        rt_log("mem: shadow sync: %s (TOTK_SHADOW_SNAP)",
+               shadow_snap ? "per-submission region snapshots" : "a query per pool at every part");
+    }
+    uint32_t epoch = shadow_snap ? vk_texture_epoch() : 0;
+    uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
+    if (epoch && r1 < SNAP_REGIONS) {
+        s_queries += snap_regions(r0, r1, epoch);   // stamps what the snapshot found, if the region was not seen yet
+        int untracked = 0;
+        for (uint64_t k = r0; k <= r1; k++) untracked |= snap_untracked[k];
+        uint32_t since = r->sgen;
+        r->sgen = gen_now;
+        if (untracked) {   // nothing tells which pages changed: all of them
+            s_untracked++;
+            shadow_copy(r, lo, hi, 0);
+            return;
+        }
+        shadow_copy_newer(r, since);
+        return;
+    }
     uint32_t g = ++gen_now;
     int tracked = 1;
     for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
@@ -974,6 +1005,12 @@ static void shadow_sync_pool(PoolRec *r) {
         shadow_copy(r, lo, hi, 0);
         return;
     }
+    shadow_copy_newer(r, since);
+}
+
+// shadow_lock and gen_lock held: copies the pool's pages stamped after since into its shadow, in runs.
+static void shadow_copy_newer(PoolRec *r, uint32_t since) {
+    uint64_t lo = r->import_lo, hi = r->import_hi;
     uint64_t run = 0;
     for (uint64_t k = lo >> REG_SHIFT; k <= (hi - 1) >> REG_SHIFT; k++) {
         uint64_t a = k << REG_SHIFT, b = a + (1ull << REG_SHIFT);
