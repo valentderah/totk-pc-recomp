@@ -82,6 +82,13 @@ site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
 
+# Fixed scene size (MacNativeGames game_patches_v143.c patch_fixed_res; runtime/resolution.c res_dynres_live switches
+# the set on unless TOTK_DYNAMIC_RES=1). The dynamic resolution controller (main+0x584300, 1.2.1 0xcc26f4) steps the
+# scene through tiers of 100, 90 and 80 % by a cost model that grows with the scene width squared; at its one epilogue the tier's scale moves into
+# the result, and 1.0 there makes every tier 100 %. The original word is MacNativeGames' check against 1.4.3.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main 5848a8 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
 # Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
 # aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
 # switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
