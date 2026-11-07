@@ -119,6 +119,39 @@ static void ov_desired_language(Cpu *c) {
     ret_x(c, v);
 }
 
+// nn::Result nn::settings::detail::MakeLanguageCode(LanguageCode *out, Language language): maps Language enum
+// to the 8-byte LanguageCode representation.
+static void ov_make_language_code(Cpu *c) {
+    static const char *const codes[] = {
+        "ja",       // 0: nn::settings::Language_Japanese
+        "en-US",    // 1: nn::settings::Language_AmericanEnglish
+        "fr",       // 2: nn::settings::Language_French
+        "de",       // 3: nn::settings::Language_German
+        "it",       // 4: nn::settings::Language_Italian
+        "es",       // 5: nn::settings::Language_Spanish
+        "zh-CN",    // 6: nn::settings::Language_Chinese
+        "ko",       // 7: nn::settings::Language_Korean
+        "nl",       // 8: nn::settings::Language_Dutch
+        "pt",       // 9: nn::settings::Language_Portuguese
+        "ru",       // 10: nn::settings::Language_Russian
+        "zh-TW",    // 11: nn::settings::Language_Taiwanese
+        "en-GB",    // 12: nn::settings::Language_BritishEnglish
+        "fr-CA",    // 13: nn::settings::Language_CanadianFrench
+        "es-419",   // 14: nn::settings::Language_LatinAmericanSpanish
+        "zh-Hans",  // 15: nn::settings::Language_SimplifiedChinese
+        "zh-Hant",  // 16: nn::settings::Language_TraditionalChinese
+        "pt-BR",    // 17: nn::settings::Language_BrazilianPortuguese
+    };
+    uint64_t out = arg_x(c, 0);
+    int lang = (int32_t)arg_x(c, 1);
+    const char *code = (lang >= 0 && lang < (int)(sizeof codes / sizeof *codes)) ? codes[lang] : "en-US";
+    if (out) {
+        memset((void *)(uintptr_t)out, 0, 8);
+        memcpy((void *)(uintptr_t)out, code, strlen(code));
+    }
+    ret_x(c, 0);
+}
+
 static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
 
 // void SetPerformanceConfiguration(PerformanceMode mode, int config)
@@ -860,6 +893,7 @@ static void ov_font_size(Cpu *c) {
 }
 
 // ==== registration
+HOST_OVERRIDE("_ZN2nn8settings6detail16MakeLanguageCodeEPNS0_12LanguageCodeENS0_8LanguageE", ov_make_language_code);
 HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
