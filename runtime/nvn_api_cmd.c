@@ -777,9 +777,14 @@ NVN_API(nvnCommandBufferEndRecording) {
     o->recording = 0;
     uint8_t *copy = flatten_recording(o->seg, (size_t)(o->cur - o->seg));
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
-    uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
-    uintptr_t hi = o->ctl ? lo + 1 : 0;
-    o->ctl_used += CTL_PER_RECORDING;
+    uintptr_t lo = 0, hi = 0;
+    if (o->ctl && o->ctl_size) {
+        if (o->ctl_used + CTL_PER_RECORDING > o->ctl_size) o->ctl_used = 0;
+        lo = (uintptr_t)o->ctl + o->ctl_used;
+        hi = lo + CTL_PER_RECORDING;
+        release_copies(lo, hi);
+        o->ctl_used += CTL_PER_RECORDING;
+    }
     copy_add(lo, hi, copy);
     ret_x(c, (uintptr_t)copy);
 }
