@@ -94,6 +94,7 @@
  "prepare.xlate_in_use": "{path} 正在被占用。请关闭游戏，结束上次残留的 totk_xlate 进程，再重新运行安装程序。",
  "prepare.shader_list_missing": "缺少着色器列表。",
  "prepare.romfs_patches_failed": "写入游戏数据补丁失败（退出代码 {code}）。详情：{log}",
+ "prepare.items_failed": "无法生成物品列表（退出代码 {code}）。详情：{log}",
  "prepare.shaders_failed": "准备着色器失败（退出代码 {code}）。详情：{log}",
  "cleanup.romfs_unreadable": "安装完成后，{path} 中的游戏数据缺失或无法读取。请重启 Windows，然后对同一文件夹再次运行安装程序：它会重新提取游戏数据，其余内容保留。",
  "prepare.pack_failed": "打包着色器缓存失败（退出代码 {code}）。详情：{log}",

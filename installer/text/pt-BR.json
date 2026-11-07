@@ -94,6 +94,7 @@
  "prepare.xlate_in_use": "{path} está em uso. Feche o jogo, encerre qualquer processo totk_xlate que tenha sobrado de uma execução anterior e execute o instalador de novo.",
  "prepare.shader_list_missing": "A lista de shaders está faltando.",
  "prepare.romfs_patches_failed": "Falha ao gravar os patches nos dados do jogo (código de saída {code}). Detalhes: {log}",
+ "prepare.items_failed": "Falha ao criar a lista de itens (código de saída {code}). Detalhes: {log}",
  "prepare.shaders_failed": "Falha ao preparar os shaders (código de saída {code}). Detalhes: {log}",
  "cleanup.romfs_unreadable": "Os dados do jogo em {path} estão faltando ou não podem ser lidos depois da instalação. Reinicie o Windows e execute o instalador de novo na mesma pasta: ele extrai os dados do jogo outra vez e mantém o resto.",
  "prepare.pack_failed": "Falha ao juntar o cache de shaders (código de saída {code}). Detalhes: {log}",

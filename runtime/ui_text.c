@@ -476,6 +476,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (FSR only enlarges)",
     [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_TAB_ITEMS] = "Items",
     [UI_MENU_CHEATS_NONE] = "No cheats for this game version. A mod's cheats are an Atmosphere cheat file in its "
                             "cheats folder, named after the game's build: mods\\<mod>\\cheats\\%s. Restart the game to "
                             "read them. For cheats that change the game's code, the game rebuilds itself at start (a "
@@ -954,6 +955,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
     [UI_MENU_OV_SCALE_DOWN] = "билинейное (FSR только увеличивает)",
     [UI_MENU_TAB_CHEATS] = "Читы",
+    [UI_MENU_TAB_ITEMS] = "Предметы",
     [UI_MENU_CHEATS_NONE] = "Для этой версии игры читов нет. Читы мода — это файл читов Atmosphere в его папке cheats "
                             "с именем по сборке игры: mods\\<мод>\\cheats\\%s. Перезапустите игру, чтобы они "
                             "прочитались. Для читов, меняющих код игры, игра пересоберётся сама при запуске (несколько "
@@ -1462,6 +1464,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_TAB_ITEMS] = "Items",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
                             "Reinicie o jogo para lê-los. Para cheats que alteram o código do jogo, o jogo se recompila "
@@ -2063,6 +2066,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
     [UI_MENU_TAB_CHEATS] = "金手指",
+    [UI_MENU_TAB_ITEMS] = "物品",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
                             "游戏会在启动时自行重新构建（几分钟）。",
