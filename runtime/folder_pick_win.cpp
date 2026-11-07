@@ -8,7 +8,6 @@
 #include <vector>
 
 extern "C" {
-#include "blueprint_dir.h"
 #include "folder_pick.h"
 #include "host.h"
 #include "input_win.h"
@@ -81,70 +80,6 @@ extern "C" void folder_pick(const char *start, FolderPickDone done, void *ctx) {
     PickReq *r = new PickReq{start ? start : "", done, ctx};
     if (!plat_thread_spawn(pick_main, r, "folder dialog", 0)) {
         rt_log("folder_pick: cannot start the dialog thread");
-        done(NULL, ctx);
-        delete r;
-    }
-}
-
-// ---- one file, with the patterns the caller offers
-
-struct FileReq {
-    std::string start;
-    std::vector<std::string> patterns;
-    FilePickDone done;
-    void *ctx;
-};
-
-static void file_main(void *arg) {
-    FileReq *r = (FileReq *)arg;
-    std::string chosen;
-    HRESULT co = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    IFileOpenDialog *d = NULL;
-    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d));
-    if (SUCCEEDED(hr)) {
-        FILEOPENDIALOGOPTIONS opt = 0;
-        d->GetOptions(&opt);
-        d->SetOptions((opt & ~FOS_PICKFOLDERS) | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST);
-        std::wstring joined;   // one filter for every pattern, as the shell takes them: "*.txt;*.cai"
-        for (size_t i = 0; i < r->patterns.size(); i++) {
-            if (i) joined += L";";
-            joined += wide(r->patterns[i]);
-        }
-        // One file type only: the listed extensions are the only ones the player can choose, so there is no "All files"
-        // entry beside it.
-        if (!joined.empty()) {
-            COMDLG_FILTERSPEC spec[1] = {{L"Supported files", joined.c_str()}};
-            d->SetFileTypes(1, spec);
-            d->SetFileTypeIndex(1);
-        }
-        set_start(d, r->start);
-        hr = d->Show(gfx_window_handle());
-        IShellItem *item = NULL;
-        if (SUCCEEDED(hr) && SUCCEEDED(hr = d->GetResult(&item))) {
-            PWSTR path = NULL;
-            if (SUCCEEDED(hr = item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                chosen = utf8(path);
-                CoTaskMemFree(path);
-            }
-            item->Release();
-        }
-        d->Release();
-    }
-    if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) rt_log("file_pick: the file dialog failed (0x%08lx)", (unsigned long)hr);
-    r->done(chosen.empty() ? NULL : chosen.c_str(), r->ctx);
-    if (SUCCEEDED(co)) CoUninitialize();
-    delete r;
-}
-
-extern "C" void file_pick(const char *start, const char *const *patterns, int count, FilePickDone done, void *ctx) {
-    // An empty start asks for the folder the last file dialog browsed, so the player picks the next file where the
-    // previous one was. The string is copied now: bp_dir_last hands out the runtime's own cache.
-    std::string at = start ? start : "";
-    if (at.empty()) at = bp_dir_last();
-    FileReq *r = new FileReq{at, {}, done, ctx};
-    for (int i = 0; i < count && patterns && patterns[i]; i++) r->patterns.push_back(patterns[i]);
-    if (!plat_thread_spawn(file_main, r, "file dialog", 0)) {
-        rt_log("file_pick: cannot start the dialog thread");
         done(NULL, ctx);
         delete r;
     }

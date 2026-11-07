@@ -33,6 +33,7 @@
 #include "input_wsys.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "ui/blueprint_picker.h"
 
 #define SCREEN_MGR_V143 0x3acf960ull   // eui::ScreenMgr::sInstance
 #define MAIN_SIZE 0x3adf000ull         // main's image (code, data, bss) in 1.4.3
@@ -286,6 +287,9 @@ int menu_cursor_map(void) { return __atomic_load_n(&g_map, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
+    // The port's own file picker has the pointer for itself: it is a panel in the overlay, not one of the game's menus.
+    // Leaving the game's menu cursor on would move the pointer to the middle of the screen and let it hover game items.
+    if (bp_picker_is_open()) return 0;
     const char *v = cfg_get("TOTK_MENU_CURSOR"), *in = cfg_get("TOTK_INPUT");
     return !(v && !strcmp(v, "0")) && !(in && !strcmp(in, "none"));
 }
@@ -327,6 +331,28 @@ int menu_cursor_screen_name(char *out, int n) {
     if (!f.screen) return 0;
     layout_name(f.screen, out, (size_t)n);
     return out[0] != 0;
+}
+
+// 1 when a screen with this layout name is open, whatever has the game's focus box. An Autobuild screen is not focused
+// on its tabs and list all the time, and the import row must be there whenever the screen is up, not only while the
+// player happens to have the cursor on a list row. Enumerates eui::ScreenMgr's open screens, the same array map_open
+// walks. Any thread, like menu_cursor_screen_name.
+int menu_cursor_screen_open(const char *want) {
+    if (!want || !*want) return 0;
+    main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
+    uint64_t sm = screen_mgr();
+    if (!sm) return 0;
+    int32_t cnt = (int32_t)rd32(sm + SM_COUNT);
+    uint64_t arr = rd64(sm + SM_SCREENS);
+    if (cnt <= 0 || cnt > 1024 || !ok_at(arr, 8ull * (uint64_t)cnt)) return 0;
+    for (int32_t i = 0; i < cnt; i++) {
+        uint64_t scr = rd64(arr + 8ull * (uint64_t)i);
+        if (!game_object(scr, SCR_REQUEST + 1) || rd8(scr + SCR_STATE) != SCR_OPENED) continue;
+        char nm[48];
+        layout_name(scr, nm, sizeof nm);
+        if (!strcmp(nm, want)) return 1;
+    }
+    return 0;
 }
 
 void menu_cursor_poll(uint64_t *buttons) {

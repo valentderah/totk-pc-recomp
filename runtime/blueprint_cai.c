@@ -74,6 +74,11 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         const uint8_t *actor = blob + BPC_ACTOR_OFFSET + (size_t)k * BPC_ACTOR_BYTES;
         if (!actor_transform_finite(actor) || !actor_name(actor + BPC_ACTOR_NAME_OFFSET, &bp.names[k]))
             return BPC_BAD_ACTOR;
+        // The actor's world position is the translation of its first matrix, stored column-major: elements 3, 7 and 11
+        // (bytes 12..24 of the record). Measured against the bounding box on every community file available: all of an
+        // actor's positions fall inside bbox, and the row-major reading (elements 12, 13, 14) does not - it is always
+        // (1, 0, 0). That is what the preview scatter is drawn from.
+        for (int i = 0; i < 3; i++) bp.pos[k][i] = read_float(actor + 12 + i * 4);
     }
     // The bounding box frames the draft in the game; an impossible number there is a damaged file as well. BpcResult has
     // no code of its own for it, so it is reported as bad actor data (both are "a number in the blob is not one").

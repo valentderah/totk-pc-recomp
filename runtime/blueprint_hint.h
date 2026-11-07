@@ -1,6 +1,6 @@
 // The blueprint import entry on the game's own Autobuild screen (runtime/blueprint_hint.cpp): the ⊕ button and the word
-// "Import" in the screen's bottom guide bar, that button opening the host's file picker, and the chosen .cai going into
-// the Autobuild history.
+// "Import" in the screen's bottom guide bar, that button opening the port's own file picker, and the chosen .cai or .txt
+// going into the Autobuild history.
 //
 // The screen is recognised by its layout name, which runtime/menu_cursor.c reads for its cursor work: the Autobuild
 // screen is AutoBuilder_00. The row is drawn by the present path's ImGui overlay, over the game image, so no archive of

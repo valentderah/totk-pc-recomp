@@ -38,6 +38,9 @@ int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick i
 // The layout name of the screen the game shows now ("AutoBuilder_00"), "" when no menu is up or the name cannot be read:
 // what a feature that belongs to one screen of the game (runtime/blueprint_hint.cpp) tests. Any thread.
 int menu_cursor_screen_name(char *out, int n);
+// 1 when a screen with this layout name is open, whatever has the game's focus box: the Autobuild screen is not focused
+// on a list row all the time, and a feature that belongs to the screen must work whenever it is up. Any thread.
+int menu_cursor_screen_open(const char *want);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

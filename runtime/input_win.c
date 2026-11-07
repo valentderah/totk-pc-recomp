@@ -148,8 +148,11 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
                 InterlockedAdd(&mouse_dy, y);
             }
         }
-        // The wheel comes in the same message (usButtonData, signed, + away from the player)
-        if (cur_captured && ri.header.dwType == RIM_TYPEMOUSE && (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL))
+        // The wheel comes in the same message (usButtonData, signed, + away from the player). It is taken while the
+        // mouse is captured for the camera. The port's own file picker scrolls from the window's wheel events instead
+        // (ui/menu.cpp bp_picker_wheel), which keep arriving after the capture is released for its pointer.
+        if (cur_captured && ri.header.dwType == RIM_TYPEMOUSE &&
+            (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL))
             InterlockedAdd(&mouse_wheel, (SHORT)ri.data.mouse.usButtonData);
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
