@@ -300,6 +300,92 @@ int main(void) {
         }
     }
 
+    // ---- one focus for both devices: a row the pointer left focused is where the pad continues from, so A acts on the
+    // row the mouse was on rather than on something the pad picked independently.
+    {
+        bp_picker_wheel(99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        char msg[192];
+
+        // Point at the third visible row, then move the pointer off the list entirely.
+        int rx = 0, ry = 0, seen = 0;
+        for (int k = 0; k < f.nrect; k++) {
+            if (f.rect[k].kind != BP_RECT_ROW) continue;
+            if (seen == 2) {
+                rx = f.rect[k].x + f.rect[k].w / 2;
+                ry = f.rect[k].y + f.rect[k].h / 2;
+            }
+            seen++;
+        }
+        snprintf(msg, sizeof msg, "focus: found a third row (%d,%d)", rx, ry);
+        check(rx > 0, msg);
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, rx, ry);
+        bp_picker_input(&f, rx, ry);
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, rx, ry);
+        const int pointed = bp_picker_selected_row();
+        snprintf(msg, sizeof msg, "focus: the pointer sets it (row %d)", pointed);
+        check(pointed == f.scroll + 2, msg);
+
+        // The pointer leaves the list (the title band): the focus must stay where the pointer left it, not clear.
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        snprintf(msg, sizeof msg, "focus: survives the pointer leaving the list (%d)", bp_picker_selected_row());
+        check(bp_picker_selected_row() == pointed, msg);
+
+        // And a D-pad press continues from there, one row on.
+        g_pad_buttons = 1ull << 15;   // B_DOWN
+        bp_picker_input(&f, -1, -1);
+        g_pad_buttons = 0;
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        snprintf(msg, sizeof msg, "focus: the pad continues from the mouse's row (%d -> %d)", pointed,
+                 bp_picker_selected_row());
+        check(bp_picker_selected_row() == pointed + 1, msg);
+    }
+
+    // ---- the pad can scroll a page, the counterpart of the wheel, and it clamps like the wheel does.
+    {
+        bp_picker_wheel(99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        const int before = bp_picker_scroll();
+        char msg[192];
+        g_pad_buttons = 1ull << 7;   // B_R
+        bp_picker_input(&f, -1, -1);
+        g_pad_buttons = 0;
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        snprintf(msg, sizeof msg, "pad paging: R scrolls forward (%d -> %d)", before, bp_picker_scroll());
+        check(bp_picker_scroll() > before, msg);
+
+        // Hold it well past the end: it stops at the last page rather than running off.
+        for (int i = 0; i < 10; i++) {
+            g_pad_buttons = 1ull << 7;
+            bp_picker_input(&f, -1, -1);
+            g_pad_buttons = 0;
+            bp_picker_input(&f, -1, -1);
+            bp_picker_layout(&f, 1920, 1080, 1.0f);
+        }
+        snprintf(msg, sizeof msg, "pad paging: clamps at the end (%d of %d)", bp_picker_scroll(), f.scroll_max);
+        check(bp_picker_scroll() == f.scroll_max, msg);
+    }
+
+    // ---- the footer names only keys that exist on a Switch pad: no "R" prompt (the pad has no such button).
+    {
+        bp_picker_wheel(99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        int has_r = 0, prompts = f.nprompt;
+        for (int i = 0; i < f.nprompt; i++)
+            if (!strcmp(f.prompt[i].key, "R")) has_r = 1;
+        char msg[192];
+        snprintf(msg, sizeof msg, "prompts: no \"R\" key cap among the %d prompts", prompts);
+        check(!has_r, msg);
+        snprintf(msg, sizeof msg, "prompts: A and B are always offered (%d prompts)", prompts);
+        check(prompts >= 2 && !strcmp(f.prompt[0].key, "A") && !strcmp(f.prompt[1].key, "B"), msg);
+    }
+
     printf("picker layout: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

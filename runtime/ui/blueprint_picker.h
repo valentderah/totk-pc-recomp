@@ -35,11 +35,20 @@ enum {
 enum {
     BP_RECT_ROW,      // one listed folder, file or drive
     BP_RECT_PART,     // one part of the breadcrumb path
-    BP_RECT_BUTTON,   // the breadcrumb "back" arrow and the footer Cancel button
+    BP_RECT_BUTTON,   // a button: the breadcrumb back arrow, or Cancel in the footer
+};
+
+// What a BP_RECT_BUTTON does when it is activated. The picker's own code decides, so a click and a pad press run the
+// same action instead of each looking for its own; matching on a button's text was how the two could drift apart.
+enum {
+    BP_ACT_NONE,
+    BP_ACT_UP,        // the breadcrumb's back arrow: up one folder
+    BP_ACT_CANCEL,    // the footer's Cancel: close the picker
 };
 
 typedef struct {
     int kind;
+    int action;       // BP_ACT_*, for BP_RECT_BUTTON
     int x, y, w, h;   // UI pixels, from the swapchain's top left
     int hovered, pressed, selected;
     int icon;         // BP_ICON_*, for BP_RECT_ROW
