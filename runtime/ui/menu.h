@@ -53,7 +53,7 @@ typedef struct {
 } MenuTarget;
 // Lays out this frame's overlay; 1 when there is something to draw. frame: the presented frame (0 unknown). *shot: a
 // path when the test hook wants this frame's swapchain image saved, else NULL. The first open starts ImGui's Vulkan
-// back end and uploads the font. With the menu closed it costs two loads and a compare.
+// back end and uploads the font. Closing the menu skips its layout; auxiliary-panel lifecycle checks still run.
 int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot);
 // Records the frame menu_overlay_frame laid out into cb, which is inside dynamic rendering on the image.
 void menu_overlay_draw(VkCommandBuffer cb);
