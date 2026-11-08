@@ -43,6 +43,9 @@ void plat_file_close(void *f) { (void)f; }
 
 const char *menu_text(int id) { (void)id; return "x"; }
 const char *cfg_get(const char *k) { (void)k; return NULL; }
+void cfg_set(const char *k, const char *v) { (void)k; (void)v; }
+void cfg_save(void) {}
+unsigned cfg_version(void) { return 0; }
 const char *bp_dir_last(void) { return ""; }
 void input_menu(int open) { (void)open; }
 // ---- the RomFS the shape resolver reads. In this test no RomFS is mounted, so every open fails and each part falls
@@ -65,6 +68,14 @@ int input_pad_read(uint64_t *b, int32_t *lx, int32_t *ly) {
     *lx = *ly = 0;
     return 1;
 }
+
+// The picker reads both sticks; the test drives the buttons and leaves the sticks at rest.
+int input_pad_sticks(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    const int ok = input_pad_read(b, lx, ly);
+    *rx = 0;
+    *ry = 0;
+    return ok;
+}
 int ikb_down(int key) { (void)key; return g_mouse_left; }
 int ikb_pointer(float *nx, float *ny) { (void)nx; (void)ny; return 0; }
 int32_t ikb_wheel_take(void) { return 0; }
@@ -75,6 +86,7 @@ void rt_log(const char *fmt, ...) { (void)fmt; }
 // bridge, so every part falls through to the collision-shape fallback and then the box. These stubs only have to link.
 const BfresModel *model_romfs_resolve(const char *actor) { (void)actor; return NULL; }
 const BfresModel *model_romfs_resolve_model(const char *model_name) { (void)model_name; return NULL; }
+const BfresModel *model_romfs_resolve_inside(const char *actor) { (void)actor; return NULL; }
 int bfres_shape_triangles(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
 int bfres_shape_name(const BfresModel *m, int index, char *name, size_t cap) {
     (void)m; (void)index;
@@ -519,32 +531,16 @@ drag_done:
         check(bp_picker_selected_row() == parked, msg);
     }
 
-    // ---- the pad can scroll a page, the counterpart of the wheel, and it clamps like the wheel does.
-    {
-        bp_picker_wheel(99999);
-        bp_picker_input(&f, -1, -1);
-        bp_picker_layout(&f, 1920, 1080, 1.0f);
-        const int before = bp_picker_scroll();
-        char msg[192];
-        g_pad_buttons = 1ull << 7;   // B_R
-        bp_picker_input(&f, -1, -1);
-        g_pad_buttons = 0;
-        bp_picker_input(&f, -1, -1);
-        bp_picker_layout(&f, 1920, 1080, 1.0f);
-        snprintf(msg, sizeof msg, "pad paging: R scrolls forward (%d -> %d)", before, bp_picker_scroll());
-        check(bp_picker_scroll() > before, msg);
-
-        // Hold it well past the end: it stops at the last page rather than running off.
-        for (int i = 0; i < 10; i++) {
-            g_pad_buttons = 1ull << 7;
-            bp_picker_input(&f, -1, -1);
-            g_pad_buttons = 0;
-            bp_picker_input(&f, -1, -1);
-            bp_picker_layout(&f, 1920, 1080, 1.0f);
-        }
-        snprintf(msg, sizeof msg, "pad paging: clamps at the end (%d of %d)", bp_picker_scroll(), f.scroll_max);
-        check(bp_picker_scroll() == f.scroll_max, msg);
-    }
+    // ---- the footer names only the actions the screen has. The scroll and page-turn prompts are gone: the wheel scrolls a
+      // list without needing to be introduced, and "turn a page" is not something a file list does.
+      {
+          bp_picker_wheel(0);
+          bp_picker_input(&f, -1, -1);
+          bp_picker_layout(&f, 1920, 1080, 1.0f);
+          char msg[192];
+          snprintf(msg, sizeof msg, "the footer carries the two actions the screen has, not four (%d prompts)", f.nprompt);
+          check(f.nprompt == 2, msg);
+      }
 
     // ---- the footer names only keys that exist on a Switch pad: no "R" prompt (the pad has no such button).
     {

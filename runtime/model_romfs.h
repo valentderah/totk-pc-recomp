@@ -13,5 +13,10 @@ const BfresModel *model_romfs_resolve(const char *actor);
 // ModelInfo from, so they take this path instead of model_romfs_resolve.
 const BfresModel *model_romfs_resolve_model(const char *model_name);
 
+// The interior model an actor composes with its own, or NULL when it has none. Some actors are two models: the part, and an
+// `..._Inside_Reduction_...` model whose shapes sit small inside it. It is drawn at the part's own transform, which is what
+// fills a spring's housing or a Zonai pile's inside.
+const BfresModel *model_romfs_resolve_inside(const char *actor);
+
 // The largest side of a decoded model's geometry in metres, or 0 when it is not known.
 float model_romfs_extent(const BfresModel *m);

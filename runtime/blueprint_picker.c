@@ -448,18 +448,24 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
     // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
     // shape's vertices and indices, which are then projected like any other mesh.
     const BfresModel *model = model_romfs_resolve(nm);
+    // An actor can be two models: its own and the `_Inside_Reduction_` one that fills it. Both belong to this part at the same
+    // transform, exactly as the GPU path draws them.
+    const BfresModel *inside = model ? model_romfs_resolve_inside(nm) : NULL;
+    const BfresModel *models[2] = {model, inside};
+    const int nmodel = inside ? 2 : 1;
     if (model) {
         g_view.modelled++;
-        rt_log("blueprint: %s from runtime decode (%d shapes)", nm, model->count);
-        for (int s = 0; s < model->count && g_preview.nfaces < limit; s++) {
-            if (replaces && shape_hidden_when_fused(model, s)) continue;
-            const int ntris = bfres_shape_triangles(model, s);
-            const int nverts = bfres_shape_vertices(model, s);
+        rt_log("blueprint: %s from runtime decode (%d shapes%s)", nm, model->count, inside ? " + interior" : "");
+        for (int mi = 0; mi < nmodel; mi++)
+        for (int s = 0; s < models[mi]->count && g_preview.nfaces < limit; s++) {
+            if (replaces && shape_hidden_when_fused(models[mi], s)) continue;
+            const int ntris = bfres_shape_triangles(models[mi], s);
+            const int nverts = bfres_shape_vertices(models[mi], s);
             if (ntris <= 0 || nverts <= 0) continue;
             float *verts = malloc((size_t)nverts * 3 * sizeof(float));
             uint16_t *tris = malloc((size_t)ntris * 3 * sizeof(uint16_t));
             if (!verts || !tris) { free(verts); free(tris); continue; }
-            const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
+            const int vc = bfres_shape_geometry(models[mi], s, verts, nverts, tris, ntris);
             if (vc > 0) {
                 // one diagnostic per shape: the bone transform should make a stick's Y extent the tall one
                 if (!strcmp(nm, "SpObj_ControlStick_A_01")) {

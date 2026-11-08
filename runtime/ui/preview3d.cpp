@@ -357,13 +357,20 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
     // and indices with its bone transform already applied (bfres_shape_geometry). Fall back to the offline pack and the
     // collision shapes only when the runtime source is unavailable.
     const BfresModel *model = as_model_name ? model_romfs_resolve_model(name) : model_romfs_resolve(name);
+    // Some actors are two models: their own, and an `_Inside_Reduction_` one that fills the inside (a spring's housing, a
+    // Zonai pile's interior). Both belong to this part at the same transform, so they are uploaded into one GpuPart and
+    // every later rule - contact, glue, framing - treats them as the one object the actor is.
+    const BfresModel *inside = (!as_model_name && model) ? model_romfs_resolve_inside(name) : NULL;
+    const BfresModel *models[2] = {model, inside};
+    const int nmodel = inside ? 2 : 1;
     if (model) {
         int total_verts = 0, total_tris = 0;
-        for (int s = 0; s < model->count; s++) {
-            if (hide_blade && shape_is_hidden_blade(model, s)) continue;
-            total_verts += bfres_shape_vertices(model, s);
-            total_tris += bfres_shape_triangles(model, s);
-        }
+        for (int mi = 0; mi < nmodel; mi++)
+            for (int s = 0; s < models[mi]->count; s++) {
+                if (hide_blade && shape_is_hidden_blade(models[mi], s)) continue;
+                total_verts += bfres_shape_vertices(models[mi], s);
+                total_tris += bfres_shape_triangles(models[mi], s);
+            }
         if (total_verts < 3 || total_tris < 1) return -1;
         const uint32_t vtx_bytes = (uint32_t)total_verts * 12u;
         const uint32_t idx_bytes = (uint32_t)total_tris * 6u;
@@ -377,14 +384,15 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
         float box_lo[3] = {1e30f, 1e30f, 1e30f}, box_hi[3] = {-1e30f, -1e30f, -1e30f};
 
         int vbase = 0, tbase = 0;
-        for (int s = 0; s < model->count; s++) {
-            if (hide_blade && shape_is_hidden_blade(model, s)) continue;
-            const int nverts = bfres_shape_vertices(model, s);
-            const int ntris = bfres_shape_triangles(model, s);
+        for (int mi = 0; mi < nmodel; mi++)
+            for (int s = 0; s < models[mi]->count; s++) {
+                if (hide_blade && shape_is_hidden_blade(models[mi], s)) continue;
+                const int nverts = bfres_shape_vertices(models[mi], s);
+                const int ntris = bfres_shape_triangles(models[mi], s);
             if (nverts <= 0 || ntris <= 0) continue;
             float *verts = (float *)alloca((size_t)nverts * 3 * sizeof(float));
             uint16_t *tris = (uint16_t *)alloca((size_t)ntris * 3 * sizeof(uint16_t));
-            const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
+            const int vc = bfres_shape_geometry(models[mi], s, verts, nverts, tris, ntris);
             if (vc <= 0) continue;
             if (S.frame < 3)   // diagnostic: the first vertices, to see whether the decode/bone produced sane numbers
                 rt_log("preview3d: %s shape%d v0=(%.2f,%.2f,%.2f) v1=(%.2f,%.2f,%.2f) tris0=(%u,%u,%u)",
