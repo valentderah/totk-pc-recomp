@@ -18,6 +18,13 @@
 
 #include "platform.h"
 
+// Hybrid laptops: the drivers read these exports of the executable when it starts and run it on the dedicated GPU.
+// NVIDIA Optimus can otherwise hide its GPU from a program it put on the integrated one, whatever the Windows and NVIDIA
+// settings say; AMD switchable graphics read the second one. TOTK_GPU_INDEX still picks another GPU. Savage Wind Recomp
+// exports the same two (runtime/platform/windows.c).
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 _Static_assert(sizeof(PlatMutex) == sizeof(SRWLOCK), "PlatMutex holds an SRWLOCK");
 _Static_assert(sizeof(PlatCond) == sizeof(CONDITION_VARIABLE), "PlatCond holds a CONDITION_VARIABLE");
 
@@ -318,6 +325,17 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
 
 // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
 void plat_timer_1ms(void) { timeBeginPeriod(1); }
+
+// Windows 11 runs the threads of a process it deems in the background at EcoQoS (on the E-cores of a hybrid Intel CPU,
+// at a low clock) and ignores its timer resolution while its window is hidden. The game is always latency-bound, so it
+// opts out of both. Windows before 10 1709 does not know the class: 0.
+int plat_power_full(void) {
+    PROCESS_POWER_THROTTLING_STATE s = {
+        .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        .StateMask = 0};
+    return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) ? 1 : 0;
+}
 
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
 
