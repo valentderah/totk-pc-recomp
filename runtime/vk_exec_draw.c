@@ -163,11 +163,11 @@ typedef struct {
 } RsState;
 
 // UpdateUniformBuffer overlays of the submission being replayed (op_update_ub, TOTK_UB_OVERLAY). Here because
-// bind_sig reads them (ov_at).
+// bind_sig reads them (ov_at). The lists belong to one recording context: OV.l to the sequential replay, a chunk's to
+// its context's VkExecDraw (TOTK_CHUNK_LEAN), where each chunk starts with empty ones (ovl).
 #define OV_N 2048
 #define OV_FOREIGN 4096
-static struct {
-    int mode;                  // rt_knob: 0 off, 1 on, 2 ab; -1 unread
+typedef struct {
     uint64_t fence;            // the submission the lists belong to
     uint64_t serial;           // numbers the overlays, so bind_sig tells one from the next at the same range
     uint64_t lo, hi;           // the span of the overlays: most bindings lie outside it
@@ -176,21 +176,17 @@ static struct {
     struct { uint64_t lo, hi, serial; VkBuffer buf; VkDeviceSize off; } o[OV_N];   // oldest first, no two equal
     struct { uint64_t dst; VkBuffer src; VkDeviceSize soff; VkMemSpan sp; uint64_t size; } p[OV_N];   // to copy
     struct { uint64_t lo, hi; } f[OV_FOREIGN];   // GPU writes of other kinds
+} OvLists;
+static struct {
+    int mode;                  // rt_knob: 0 off, 1 on, 2 ab; -1 unread
+    OvLists l;
     // since the last perf line (vk_exec_ub_perf)
     uint64_t c_update, c_overlaid, c_overlaid_out, c_flush, c_bind, c_merged, c_mixed, c_inpass, c_outside, c_early,
         c_order;
 } OV = {.mode = -1};
-
-// A binding without a size reaches to the end of its backing: as far as the overlays go, for ov_at.
-static uint64_t ov_rest(uint64_t addr) { return addr < OV.hi ? OV.hi - addr : 1; }
-
-// The serial of the newest overlay a binding of [addr, addr+n) reads from, 0 for none (bind_sig).
-static uint64_t ov_at(const VkExec *ex, uint64_t addr, uint64_t n) {
-    if (!OV.n || OV.fence != ex->fence || addr >= OV.hi || addr + n <= OV.lo) return 0;
-    for (uint32_t i = OV.n; i-- > 0;)
-        if (addr < OV.o[i].hi && addr + n > OV.o[i].lo) return OV.o[i].serial;
-    return 0;
-}
+// TOTK_CHUNK_LEAN, TOTK_TRACE=perf (atomic: the recording threads count): per chunked submission, the updates a chunk
+// overlaid, those inside a pass, the batches that copied them, and the dynamic state calls and commands
+static struct { uint64_t upd, inpass, batches, dyn_calls, dyn_cmds; } LC;
 
 // The bound-slot bytes of VkExec a pipeline's descriptors read, as ranges merged where they touch, built once per
 // pipeline info: c0's storage table, the uniform and storage ranges of the bound slots and the texture and image
@@ -294,6 +290,7 @@ typedef struct VkExecDraw {
     PipeMemo PM;
     PipeCache PC[PC_N];
     UpdRing UPD;
+    OvLists OVL;                         // the overlays of a chunk (TOTK_CHUNK_LEAN)
     VkWriteDescriptorSet w[MAX_BINDINGS];   // bind_resources' scratch
     VkDescSlot d[MAX_DESC];
     VkBufferView bv[MAX_DESC];
@@ -305,6 +302,30 @@ static VkExecDraw *draw_new(VkExec *ex) {
     if (!D) rt_fatal("vk: out of memory (replay context)");
     D->bind_gen = 1;
     return ex->draw = D;
+}
+
+// The overlay lists of the context that is recording: its own in a chunk, else the sequential replay's. A chunk's
+// stay empty unless the chunk took the overlays (lean_on); they are reset when it starts (vk_exec_draw_chunk_begin).
+static OvLists *ovl(const VkExec *ex) { return ex->chunked ? &ex->draw->OVL : &OV.l; }
+
+// TOTK_CHUNK_LEAN: this chunk overlays its uniform updates like the sequential replay.
+static int lean_on(const VkExec *ex) { return ex->chunked && vk_exec_chunk_lean(); }
+
+// A binding without a size reaches to the end of its backing: as far as the overlays go, for ov_at.
+static uint64_t ov_rest(const OvLists *L, uint64_t addr) { return addr < L->hi ? L->hi - addr : 1; }
+
+// The serial of the newest overlay a binding of [addr, addr+n) reads from, 0 for none (bind_sig).
+static uint64_t ov_at(const VkExec *ex, uint64_t addr, uint64_t n) {
+    const OvLists *L = ovl(ex);
+    if (!L->n || L->fence != ex->fence || addr >= L->hi || addr + n <= L->lo) return 0;
+    for (uint32_t i = L->n; i-- > 0;)
+        if (addr < L->o[i].hi && addr + n > L->o[i].lo) return L->o[i].serial;
+    return 0;
+}
+
+// A chunk's recording starts: the lists of an earlier chunk of this context are no longer its.
+void vk_exec_draw_chunk_begin(VkExec *ex) {
+    if (ex->draw) ex->draw->OVL.fence = 0;
 }
 
 static void cb_done(void *arg) {   // completion thread
@@ -1228,9 +1249,13 @@ static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
 // Applies the updates of this submission that touch [a, a+n) onto out, oldest first (ub_bind's merged copies).
 static void upd_apply(const VkExec *ex, uint64_t a, uint8_t *out, size_t n) {
     const UpdRing *U = &ex->draw->UPD;
-    if (U->fence != ex->fence) return;
-    for (uint32_t i = U->n > UPD_N ? U->n - UPD_N : 0; i < U->n; i++) {
-        const VkExecUpd *e = &U->u[i % UPD_N];
+    const VkExecUpd *u = U->u;   // a chunk: the scan's list, of which upd_n precede this op
+    uint32_t cnt = U->n, mask = UINT32_MAX;
+    if (ex->chunked) cnt = ex->upd_n, u = ex->upd;
+    else if (U->fence != ex->fence) return;
+    else mask = UPD_N - 1;
+    for (uint32_t i = cnt > UPD_N ? cnt - UPD_N : 0; i < cnt; i++) {
+        const VkExecUpd *e = &u[i & mask];
         uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
         if (lo < hi) memcpy(out + (lo - a), e->data + (lo - e->lo), hi - lo);
     }
@@ -2006,7 +2031,8 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
     // The uniform overlays the draw's uniform and storage bindings read (op_update_ub): a draw of an updated block binds
     // other bytes after each update, every other draw is left to skip
-    if (OV.n) {
+    const OvLists *L = ovl(ex);
+    if (L->n) {
         uint64_t ov = 0;
         const size_t lo = offsetof(VkExec, ubo), hi = offsetof(VkExec, ssbo) + sizeof ex->ssbo;
         for (uint32_t i = 0; i < l->n; i++) {
@@ -2017,12 +2043,12 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
                 if (at < lo || at + sizeof(p_bind_buf) > hi) continue;
                 if ((at < offsetof(VkExec, ssbo) ? at - lo : at - offsetof(VkExec, ssbo)) % sizeof(p_bind_buf)) continue;
                 const p_bind_buf *b = (const p_bind_buf *)((const uint8_t *)ex + at);
-                if (b->addr) ov = ov * 1099511628211ull ^ ov_at(ex, b->addr, b->size ? b->size : ov_rest(b->addr));
+                if (b->addr) ov = ov * 1099511628211ull ^ ov_at(ex, b->addr, b->size ? b->size : ov_rest(L, b->addr));
             }
         }
         for (int i = 0; i < l->np; i++) {   // storage read through an address in a uniform block: no size either
             uint64_t a = ubo_ptr(ex, l->p[i].st, l->p[i].res);
-            if (a) ov = ov * 1099511628211ull ^ ov_at(ex, a, ov_rest(a));
+            if (a) ov = ov * 1099511628211ull ^ ov_at(ex, a, ov_rest(L, a));
         }
         PUT(ov);
     } else {
@@ -2556,10 +2582,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         // TOTK_DYN_DELTA: only the dynamic states whose values changed since the last call in this command buffer. A
         // pipeline bind clears st_valid but not dyn_valid: every pipeline here declares the same dynamic states, which
         // the bind leaves as they were (the viewport, scissor and stencil values of record_fixed rely on that too).
-        // The delta's record (vk_pipeline.c DC) is one for the replay thread: a chunk sets the full state.
+        // The delta's record (vk_pipeline.c DC) is one per thread, and a chunk's thread starts it with a full set
+        // (the chunk's command buffer is new): chunks take the delta with TOTK_CHUNK_LEAN, else they set the full state.
         if (DD.mode < 0) DD.mode = rt_knob("DYN_DELTA", "1");
         uint32_t cmds = 1;
-        if (RT_KNOB_ON(DD.mode) && !ex->chunked) {
+        if (RT_KNOB_ON(DD.mode) && (!ex->chunked || lean_on(ex))) {
             D->B.vmask = vk_pipeline_set_dynamic_delta(ex->cb, &s, D->B.dyn_valid, &cmds);
             D->B.dyn_valid = 1;
         } else {
@@ -2567,6 +2594,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
             D->B.dyn_valid = 0;   // the delta's record is stale from here on
         }
         if (!ex->chunked) DD.calls++, DD.cmds += cmds, DD.empty += !cmds;
+        else if (lean_on(ex)) {
+            __atomic_fetch_add(&LC.dyn_calls, 1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&LC.dyn_cmds, cmds, __ATOMIC_RELAXED);
+        }
         ex->recorded += cmds != 0;
         D->B.st = s, D->B.st_valid = 1;
         if (ex->mark && ex->fr.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
@@ -3557,9 +3588,13 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
 // - The descriptor build skip (bind_sig) hashes the overlay each uniform and storage binding of the draw reads
 //   (ov_at), so a draw of an updated block binds the newest bytes and the other draws still skip. The lists are per submission and keep one entry per range (ov_add), and a binding outside their span is
 //   answered in one comparison; when one is full, updates take the old path.
-// - A chunked replay (vk_exec.c) takes the old path for every update: OV is one list in replay order, which the chunks
-//   recording on several threads at once neither share nor could fill in order. Its fence never matches OV.fence, so
-//   ub_bind, ub_written, ov_at and vk_exec_ub_flush leave its chunks alone.
+// - A chunked replay (vk_exec.c) takes the old path for every update: OV.l is one list in replay order, which the
+//   chunks recording on several threads at once neither share nor could fill in order. Its fence never matches the
+//   fence of a chunk's lists, so ub_bind, ub_written, ov_at and vk_exec_ub_flush leave its chunks alone. With
+//   TOTK_CHUNK_LEAN a chunk keeps lists of its own (VkExecDraw.OVL), empty where it starts and copied out by the full
+//   barrier that ends it: the buffers hold every earlier chunk's updates by then (queue order), so the draws of a chunk
+//   only need the overlays of the chunk itself. Merged copies take the updates of the whole submission from the scan's
+//   list (upd_apply).
 
 static int ov_on(void) {
     if (OV.mode < 0) OV.mode = rt_knob("UB_OVERLAY", "1");
@@ -3577,73 +3612,78 @@ static int ov_out_on(void) {
 }
 
 static void ov_sub(const VkExec *ex) {   // the submission being replayed
-    if (OV.fence == ex->fence) return;
-    if (OV.np)   // barrier_to records them at the latest at the submission's closing barrier
-        rt_log("vk: %u overlaid uniform updates of submission %llu were never copied into their buffers", OV.np,
-               (unsigned long long)OV.fence);
-    OV.fence = ex->fence, OV.n = OV.np = OV.nf = 0, OV.f_over = 0, OV.lo = UINT64_MAX, OV.hi = 0;
+    OvLists *L = ovl(ex);
+    if (L->fence == ex->fence) return;
+    if (L->np)   // barrier_to records them at the latest at the submission's closing barrier
+        rt_log("vk: %u overlaid uniform updates of submission %llu were never copied into their buffers", L->np,
+               (unsigned long long)L->fence);
+    L->fence = ex->fence, L->n = L->np = L->nf = 0, L->f_over = 0, L->lo = UINT64_MAX, L->hi = 0;
 }
 
-static void ov_span(void) {
-    OV.lo = UINT64_MAX, OV.hi = 0;
-    for (uint32_t i = 0; i < OV.n; i++) {
-        if (OV.o[i].lo < OV.lo) OV.lo = OV.o[i].lo;
-        if (OV.o[i].hi > OV.hi) OV.hi = OV.o[i].hi;
+static void ov_span(OvLists *L) {
+    L->lo = UINT64_MAX, L->hi = 0;
+    for (uint32_t i = 0; i < L->n; i++) {
+        if (L->o[i].lo < L->lo) L->lo = L->o[i].lo;
+        if (L->o[i].hi > L->hi) L->hi = L->o[i].hi;
     }
 }
 
 // A new overlay of [lo, hi), and its copy. An older overlay or pending copy of exactly that range is dropped: the new
 // one covers it, and the terrain rewrites one block before each draw, so the lists stay as short as the blocks.
-static void ov_add(uint64_t lo, uint64_t hi, VkBuffer b, VkDeviceSize o, const VkMemSpan *sp) {
-    for (uint32_t i = 0; i < OV.n; i++)
-        if (OV.o[i].lo == lo && OV.o[i].hi == hi) {
-            memmove(&OV.o[i], &OV.o[i + 1], sizeof OV.o[0] * (OV.n - i - 1));
-            OV.n--;
+static void ov_add(OvLists *L, uint64_t lo, uint64_t hi, VkBuffer b, VkDeviceSize o, const VkMemSpan *sp) {
+    for (uint32_t i = 0; i < L->n; i++)
+        if (L->o[i].lo == lo && L->o[i].hi == hi) {
+            memmove(&L->o[i], &L->o[i + 1], sizeof L->o[0] * (L->n - i - 1));
+            L->n--;
             break;
         }
-    for (uint32_t i = 0; i < OV.np; i++)
-        if (OV.p[i].dst == lo && OV.p[i].size == hi - lo) {
-            memmove(&OV.p[i], &OV.p[i + 1], sizeof OV.p[0] * (OV.np - i - 1));
-            OV.np--;
+    for (uint32_t i = 0; i < L->np; i++)
+        if (L->p[i].dst == lo && L->p[i].size == hi - lo) {
+            memmove(&L->p[i], &L->p[i + 1], sizeof L->p[0] * (L->np - i - 1));
+            L->np--;
             break;
         }
-    OV.o[OV.n++] = (typeof(OV.o[0])){lo, hi, ++OV.serial, b, o};
-    OV.p[OV.np++] = (typeof(OV.p[0])){lo, b, o, *sp, hi - lo};
-    if (lo < OV.lo) OV.lo = lo;
-    if (hi > OV.hi) OV.hi = hi;
+    L->o[L->n++] = (typeof(L->o[0])){lo, hi, ++L->serial, b, o};
+    L->p[L->np++] = (typeof(L->p[0])){lo, b, o, *sp, hi - lo};
+    if (lo < L->lo) L->lo = lo;
+    if (hi > L->hi) L->hi = hi;
 }
 
-static int ov_foreign_hits(uint64_t lo, uint64_t hi) {
-    if (OV.f_over) return 1;
-    for (uint32_t i = 0; i < OV.nf; i++)
-        if (lo < OV.f[i].hi && hi > OV.f[i].lo) return 1;
+static int ov_foreign_hits(const OvLists *L, uint64_t lo, uint64_t hi) {
+    if (L->f_over) return 1;
+    for (uint32_t i = 0; i < L->nf; i++)
+        if (lo < L->f[i].hi && hi > L->f[i].lo) return 1;
     return 0;
 }
 
 // The overlays over [lo, hi) no longer hold the newest bytes: the real buffer does. Their copies were recorded already
 // (the write came after a barrier, or ub_written brought them forward), so they only stop serving bindings.
-static void ov_retire(uint64_t lo, uint64_t hi) {
-    if (!OV.n || lo >= OV.hi || hi <= OV.lo) return;
+static void ov_retire(OvLists *L, uint64_t lo, uint64_t hi) {
+    if (!L->n || lo >= L->hi || hi <= L->lo) return;
     uint32_t k = 0;
-    for (uint32_t i = 0; i < OV.n; i++)
-        if (!(lo < OV.o[i].hi && hi > OV.o[i].lo)) OV.o[k++] = OV.o[i];
-    if (k == OV.n) return;
-    OV.n = k;
-    ov_span();
+    for (uint32_t i = 0; i < L->n; i++)
+        if (!(lo < L->o[i].hi && hi > L->o[i].lo)) L->o[k++] = L->o[i];
+    if (k == L->n) return;
+    L->n = k;
+    ov_span(L);
 }
 
 // A GPU write of another kind into [addr, addr+n) in this submission (vk_exec_xfer.c note_gpu_write, storage bindings).
 void vk_exec_ub_foreign(VkExec *ex, uint64_t addr, uint64_t n) {
-    if (OV.mode <= 0 || !n || ex->chunked) return;
+    if (OV.mode <= 0 || !n || (ex->chunked && !lean_on(ex))) return;
+    if (!ex->draw) draw_new(ex);   // a chunk's first op may be a copy
     ov_sub(ex);
-    if (OV.nf == OV_FOREIGN) OV.f_over = 1;
-    else OV.f[OV.nf].lo = addr, OV.f[OV.nf].hi = addr + n, OV.nf++;
-    ov_retire(addr, addr + n);
+    OvLists *L = ovl(ex);
+    if (L->nf == OV_FOREIGN) L->f_over = 1;
+    else L->f[L->nf].lo = addr, L->f[L->nf].hi = addr + n, L->nf++;
+    ov_retire(L, addr, addr + n);
 }
 
 // Records the copies of the updates overlaid so far, behind a barrier against the draws that read the old bytes.
 void vk_exec_ub_flush(VkExec *ex) {
-    if (!OV.np || OV.fence != ex->fence) return;
+    if (ex->chunked && !ex->draw) return;
+    OvLists *L = ovl(ex);
+    if (!L->np || L->fence != ex->fence) return;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -3658,31 +3698,41 @@ void vk_exec_ub_flush(VkExec *ex) {
                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
     VkDependencyInfo wdi = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &ww};
     uint32_t since = 0;   // the first copy recorded after the last barrier
-    for (uint32_t i = 0; i < OV.np; i++) {
+    for (uint32_t i = 0; i < L->np; i++) {
         for (uint32_t k = since; k < i; k++)
-            if (OV.p[i].dst < OV.p[k].dst + OV.p[k].size && OV.p[k].dst < OV.p[i].dst + OV.p[i].size) {
+            if (L->p[i].dst < L->p[k].dst + L->p[k].size && L->p[k].dst < L->p[i].dst + L->p[i].size) {
                 vkCmdPipelineBarrier2(ex->cb, &wdi);
                 ex->recorded++;
-                OV.c_order++;
+                if (!ex->chunked) OV.c_order++;
                 since = i;
                 break;
             }
-        VkBufferCopy cp = {OV.p[i].soff, OV.p[i].sp.offset, OV.p[i].size};
-        vkCmdCopyBuffer(ex->cb, OV.p[i].src, OV.p[i].sp.buffer, 1, &cp);
+        VkBufferCopy cp = {L->p[i].soff, L->p[i].sp.offset, L->p[i].size};
+        vkCmdCopyBuffer(ex->cb, L->p[i].src, L->p[i].sp.buffer, 1, &cp);
         ex->recorded++;
     }
-    OV.np = 0;
+    L->np = 0;
     // The full barrier barrier_to records next makes the copied bytes visible: later bindings read the real buffer,
     // as after an update copied at once, and need no overlay lookups or merged copies (ov_at answers 0 for them, so
     // the descriptor build skip rebuilds the draws that bound an overlay)
-    OV.n = 0;
-    ov_span();
-    OV.c_flush++;
+    L->n = 0;
+    ov_span(L);
+    if (ex->chunked) __atomic_fetch_add(&LC.batches, 1, __ATOMIC_RELAXED);
+    else OV.c_flush++;
 }
 
 // TOTK_TRACE=perf, every 600 submissions: per submission, the updates and how many stayed in their pass.
 void vk_exec_ub_perf(void) {
-    static unsigned subs, dsubs;
+    static unsigned subs, dsubs, lsubs;
+    if (++lsubs % 600 == 0 && LC.upd) {   // TOTK_CHUNK_LEAN: what the chunks of a submission no longer pay for
+        const double k = 1 / 600.0;
+        uint64_t upd = LC.upd, inpass = LC.inpass, batches = LC.batches;
+        rt_log("perf: chunk lean per submission: %.1f uniform updates overlaid in chunks (%.1f inside a pass: as many pass "
+               "ends, full barriers and pass restarts not paid), copied in %.1f batches (about %.1f full barriers not "
+               "paid); dynamic state %.1f calls, %.1f commands (a full set counts 1)",
+               upd * k, inpass * k, batches * k, (upd > batches ? upd - batches : 0) * k, LC.dyn_calls * k, LC.dyn_cmds * k);
+        memset(&LC, 0, sizeof LC);
+    }
     if (DD.mode >= 0 && ++dsubs % 600 == 0 && DD.calls) {
         rt_log("perf: dynamic state per submission: %.1f calls, %.1f commands (a full set counts 1), %.1f calls with "
                "nothing changed%s", DD.calls / 600.0, DD.cmds / 600.0, DD.empty / 600.0,
@@ -3703,17 +3753,18 @@ void vk_exec_ub_perf(void) {
 // The scratch bytes of a uniform or storage binding [addr, addr+n) an overlay of this submission touches: 1 with *out
 // set, 0 when none does.
 static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
-    if (OV.mode <= 0 || OV.fence != ex->fence || !OV.n || addr >= OV.hi || addr + n <= OV.lo) return 0;
+    const OvLists *L = ovl(ex);
+    if (OV.mode <= 0 || L->fence != ex->fence || !L->n || addr >= L->hi || addr + n <= L->lo) return 0;
     uint64_t hi = addr + n;
     int newest = -1;
-    for (int i = (int)OV.n; i-- > 0;)
-        if (addr < OV.o[i].hi && hi > OV.o[i].lo) { newest = i; break; }
+    for (int i = (int)L->n; i-- > 0;)
+        if (addr < L->o[i].hi && hi > L->o[i].lo) { newest = i; break; }
     if (newest < 0) return 0;
-    OV.c_bind++;
-    if (OV.o[newest].lo <= addr && OV.o[newest].hi >= hi) {
-        VkDeviceSize off = OV.o[newest].off + (addr - OV.o[newest].lo);
+    if (!ex->chunked) OV.c_bind++;   // the counters are the replay thread's
+    if (L->o[newest].lo <= addr && L->o[newest].hi >= hi) {
+        VkDeviceSize off = L->o[newest].off + (addr - L->o[newest].lo);
         if (off % align == 0) {
-            *out = (VkDescriptorBufferInfo){OV.o[newest].buf, off, n};
+            *out = (VkDescriptorBufferInfo){L->o[newest].buf, off, n};
             return 1;
         }
     }
@@ -3729,10 +3780,10 @@ static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDesc
     if (base) memcpy(dst, base, n);
     else if (vk_mem_resolve(addr, n, &sp)) memcpy(dst, (const void *)(uintptr_t)addr, n);
     else memset(dst, 0, n);
-    if (ov_foreign_hits(addr, hi)) OV.c_mixed++;
+    if (ov_foreign_hits(L, addr, hi) && !ex->chunked) OV.c_mixed++;
     upd_apply(ex, addr, dst, n);
     *out = (VkDescriptorBufferInfo){b, o, n};
-    OV.c_merged++;
+    if (!ex->chunked) OV.c_merged++;
     return 1;
 }
 
@@ -3740,13 +3791,14 @@ static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDesc
 // barrier, and the pass restarts, so the shader's writes land after them as they did when every update was copied at
 // once.
 static void ub_written(VkExec *ex, uint64_t addr, uint64_t n) {
-    if (OV.mode <= 0 || OV.fence != ex->fence || !OV.np) return;
-    for (uint32_t i = 0; i < OV.np; i++)
-        if (addr < OV.p[i].dst + OV.p[i].size && OV.p[i].dst < addr + n) {
+    const OvLists *L = ovl(ex);
+    if (OV.mode <= 0 || L->fence != ex->fence || !L->np) return;
+    for (uint32_t i = 0; i < L->np; i++)
+        if (addr < L->p[i].dst + L->p[i].size && L->p[i].dst < addr + n) {
             int reopen = ex->in_pass;
             vk_exec_barrier(ex);   // records the pending copies (vk_exec_ub_flush) before its barrier
             if (reopen) vk_exec_pass_begin(ex);
-            OV.c_early++;
+            if (!ex->chunked) OV.c_early++;
             return;
         }
 }
@@ -3758,27 +3810,35 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     cb_res(ex);
     VkBuffer b;
     VkDeviceSize o;
-    if (!ex->chunked && ov_on()) {
+    if ((!ex->chunked || lean_on(ex)) && ov_on()) {
         ov_sub(ex);
-        OV.c_update++;
+        OvLists *L = ovl(ex);
+        if (!ex->chunked) OV.c_update++;
         int here = ex->in_pass || ov_out_on();
-        if (here && OV.n < OV_N && OV.np < OV_N && !ov_foreign_hits(u->dst, u->dst + u->size)) {
+        if (here && L->n < OV_N && L->np < OV_N && !ov_foreign_hits(L, u->dst, u->dst + u->size)) {
             uint8_t *d = scratch(ex, u->size, &b, &o);
             memcpy(d, u->data, u->size);
             VK_MEM_PICK(sp);
-            ov_add(u->dst, u->dst + u->size, b, o, &sp);
+            ov_add(L, u->dst, u->dst + u->size, b, o, &sp);
             vk_mem_gpu_wrote(&sp, u->size);
-            vk_usnap_drop(u->dst, u->size);
+            if (!ex->chunked) vk_usnap_drop(u->dst, u->size);   // a chunk: the scan dropped it in its place
             vk_mem_count(sp.cls, VK_MUSE_GPU_WRITE, u->size);
             note_written(ex, u->dst, u->size);
             upd_note(ex, u);
+            if (ex->chunked) {
+                __atomic_fetch_add(&LC.upd, 1, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&LC.inpass, ex->in_pass != 0, __ATOMIC_RELAXED);
+                return;
+            }
             OV.c_overlaid++;
             if (!ex->in_pass) OV.c_overlaid_out++;
             return;
         }
-        if (ex->in_pass) OV.c_inpass++;
-        else OV.c_outside++;
-        ov_retire(u->dst, u->dst + u->size);
+        if (!ex->chunked) {
+            if (ex->in_pass) OV.c_inpass++;
+            else OV.c_outside++;
+        }
+        ov_retire(L, u->dst, u->dst + u->size);
     }
     vk_exec_barrier(ex);   // earlier draws finished with the old contents; overlaid updates' copies go first
     memcpy(scratch(ex, u->size, &b, &o), u->data, u->size);

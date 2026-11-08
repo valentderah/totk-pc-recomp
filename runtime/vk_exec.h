@@ -186,6 +186,10 @@ void vk_exec_barrier(VkExec *ex);
 void vk_exec_ub_flush(VkExec *ex);
 void vk_exec_ub_foreign(VkExec *ex, uint64_t addr, uint64_t n);
 void vk_exec_ub_perf(void);
+// TOTK_CHUNK_LEAN for the chunked submission being recorded (1: its chunks overlay uniform updates and set dynamic state
+// by delta, as the sequential replay does), and vk_exec_draw.c's hook at the start of a chunk's recording.
+int vk_exec_chunk_lean(void);
+void vk_exec_draw_chunk_begin(VkExec *ex);
 // vk_texture.c (TOTK_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.
