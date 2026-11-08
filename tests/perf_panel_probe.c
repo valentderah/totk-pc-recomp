@@ -166,6 +166,12 @@ static void snapshot(HWND hwnd, const char *path) {
     if(bitmap) DeleteObject(bitmap); if(dc) DeleteDC(dc); ReleaseDC(hwnd,source);
 }
 int main(int argc, char **argv) {
+    CHECK(UI_MENU_LAST_ID >= UI_MENU_PERF_WINDOW_DESC,"catalog probe includes the performance window text");
+    static const char *const langs[] = {"en","ru","pt-BR","zh-Hans"};
+    for (size_t i=0;i<sizeof langs/sizeof *langs;i++)
+        for (int id=UI_MENU_PERF_WINDOW;id<=UI_MENU_PERF_WINDOW_DESC;id++)
+            CHECK(ui_text_defined(langs[i],(UiTextId)id) && *ui_text_in(langs[i],(UiTextId)id) &&
+                  strlen(ui_text_in(langs[i],(UiTextId)id))+256<UI_DESC_BYTES,"performance text is defined and fits");
     perf_panel_tick(); CHECK(!panel() && !perf_panel_active(),"default off");
     setting=1; perf_panel_tick(); pump(100); CHECK(panel() && perf_panel_active(),"panel opens and samples full");
     for(int mode=0;mode<3;mode++) CHECK(perf_sampling_mode(mode,perf_panel_active())==2,"window raises sampling only");
