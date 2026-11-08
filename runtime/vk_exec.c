@@ -86,6 +86,10 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
     nfw = 0;
 }
 
+WEAK void vk_exec_ub_flush(VkExec *ex) { (void)ex; }
+WEAK void vk_exec_ub_foreign(VkExec *ex, uint64_t addr, uint64_t n) { (void)ex, (void)addr, (void)n; }
+WEAK void vk_exec_ub_perf(void) {}
+
 WEAK void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     (void)ex, (void)payload;
     rt_fatal("vk: op %s is not replayed yet", nvn_op_name(op));
@@ -179,6 +183,7 @@ static void memory_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAcce
 // be made (logged). Replay thread.
 static int bc_standin(const VkTexImage *img, uint32_t level, VkFormat fmt, BcStandIn *out) {
     static int warned;
+    if (img->gone) return 0;   // dropped since the lookup: a stand-in kept by its handle would outlive it
     plat_mutex_lock(&bcs_lock);
     int full = nbcs == BC_STANDINS;
     for (int i = 0; i < nbcs; i++)
@@ -557,6 +562,7 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
     vk_exec_pass_end(ex);
+    vk_exec_ub_flush(ex);   // uniform updates overlaid in the pass reach their buffers before the barrier below
     VkImageMemoryBarrier2 ib[18];
     uint32_t n = 0;
     for (int i = 0; i < ex->nfbl; i++)
@@ -967,6 +973,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     }
     ex->cb = VK_NULL_HANDLE;
     if (n) n_subs++;
+    if (n && (rt_trace & RT_TRACE_PERF)) vk_exec_ub_perf();
     if ((rt_trace & RT_TRACE_PERF) && n_subs >= 240) {
         rt_log("perf: replay command buffer parts per submission %.2f", (double)(n_subs + n_parts) / (double)n_subs);
         n_subs = n_parts = 0;

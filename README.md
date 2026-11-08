@@ -26,6 +26,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
+- Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
 - Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
@@ -34,7 +35,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Shaders prepared at install instead of during play
 - Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
   mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches
-  ([docs/mods.md](docs/mods.md))
+  ([docs/mods.md](docs/mods.md)). HD texture packs work: the port grows the texture heap a pack asks for by itself. Tested
+  with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
 - Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
 
 ## Planned
