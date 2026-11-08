@@ -1080,18 +1080,25 @@ static void index_path(char *out, size_t cap) {
     strcpy(out + k, "romfs-index.bin");
 }
 
-// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h> next to romfs-index.bin with a
-// manifest, the folder overlay_init looks for. Works before fs_init: index_dir is not set that early (res_init and
-// resolution.c decide run first), so the index path is worked out again here.
-int romfs_shaped_ready(unsigned w, unsigned h) {
+// 1 when <prefix>-<w>x<h> has a manifest next to romfs-index.bin. Works before fs_init: index_dir is not set that early
+// (cfg_init, res_init and resolution.c decide run first), so the index path is worked out again here.
+static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h) {
     char dir[2100], path[2200];
     index_path(dir, sizeof dir);
     char *sep = plat_last_sep(dir);
     if (sep) *sep = 0;
     else strcpy(dir, ".");
-    return snprintf(path, sizeof path, "%s/romfs-patches-%ux%u/manifest.tsv", dir, w, h) < (int)sizeof path &&
+    return snprintf(path, sizeof path, "%s/%s-%ux%u/manifest.tsv", dir, prefix, w, h) < (int)sizeof path &&
            plat_file_exists(path);
 }
+
+// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h>, the folder overlay_init
+// looks for.
+int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h); }
+
+// 1 when it has the PC prompts with that layout too: romfs-patches-pc-<w>x<h>, which overlay_init loads in its place
+// with prompts = pc.
+int romfs_shaped_pc_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches-pc", w, h); }
 
 static void load_index(void) {
     char path[2100];
