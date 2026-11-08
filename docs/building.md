@@ -100,6 +100,16 @@ of them.
    objects before it links: any AVX, BMI or other instruction above x86-64-v2 outside a function listed there as
    dispatched by a runtime CPU check stops the build.
 
+   `--cpu k10` goes one level lower, for AMD family 10h (Phenom II X4/X6, Athlon II): `-march=amdfam10`, that is SSE3,
+   SSE4a, POPCNT and LZCNT without SSSE3, SSE4.1 or SSE4.2. Clang lowers the vector builtins of `runtime/simd.h` to
+   SSE2/SSE3 sequences and libm calls, so it is the slowest build. It links `runtime/fma.c` as v2 does, and runs
+   `tools/check_isa.py --level k10`, which also refuses SSSE3 and SSE4 mnemonics (pshufb, pmulld, roundps, ptest...).
+   The setup picks it when the host check finds neither v3 nor v2 but K10's SSE3/SSE4a/ABM. What the setup runs besides
+   the game has to start on K10 too, so the bundled numpy is held at 2.3.x (`tools/requirements-installer.txt`): 2.4 and
+   later are built for x86-64-v2 and stop with an illegal instruction on import. To try the release's tools on a K10
+   without one, run them under `qemu-x86_64 -cpu phenom -L <root>`, where `<root>` holds a glibc, libstdc++, libgcc_s and
+   zlib built for plain x86-64: a host whose own libraries target x86-64-v3 (CachyOS) fails in them first.
+
    `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.

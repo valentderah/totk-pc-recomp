@@ -22,6 +22,7 @@
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
 // rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (a vectored exception handler that
 // names the lifted function, the guest registers and the guest frame-pointer chain).
+#include <cpuid.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,7 +281,8 @@ static double now_s(void) { return (double)plat_now_ns() / 1e9; }
 static volatile int host_probe_hits;
 static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
 
-// The instruction set build_game.py --cpu compiled for: v3 (AVX2/FMA/BMI2, the default) or v2 (SSE4.2/POPCNT).
+// The instruction set build_game.py --cpu compiled for: v3 (AVX2/FMA/BMI2, the default), v2 (SSE4.2/POPCNT) or
+// 1 for k10 (AMD family 10h: SSE3, SSE4a, POPCNT, LZCNT).
 #ifndef RT_CPU_LEVEL
 #define RT_CPU_LEVEL 3
 #endif
@@ -291,10 +293,18 @@ static void check_cpu(void) {
     int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
     printf("cpu: x86-64-v3 (AVX2, FMA, BMI2) %s\n", ok ? "present" : "MISSING");
     CHECK(ok, "the lifted code is built for x86-64-v3");
-#else
+#elif RT_CPU_LEVEL == 2
     int ok = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
     printf("cpu: x86-64-v2 (SSE4.2, POPCNT) %s\n", ok ? "present" : "MISSING");
     CHECK(ok, "the lifted code is built for x86-64-v2");
+#else
+    // -march=amdfam10 may emit LZCNT and SSE4a; LZCNT decodes as BSR on CPUs without ABM and gives other results,
+    // so it is read from CPUID 0x80000001 ECX bit 5 rather than assumed.
+    unsigned a, b, cx, d;
+    int abm = __get_cpuid(0x80000001, &a, &b, &cx, &d) && (cx & (1u << 5)) && (cx & (1u << 6));
+    int ok = __builtin_cpu_supports("sse3") && __builtin_cpu_supports("popcnt") && abm;
+    printf("cpu: AMD K10 (SSE3, SSE4a, POPCNT, LZCNT) %s\n", ok ? "present" : "MISSING");
+    CHECK(ok, "the lifted code is built for AMD K10 (-march=amdfam10)");
 #endif
 }
 
