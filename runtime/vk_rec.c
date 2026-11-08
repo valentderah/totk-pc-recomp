@@ -74,6 +74,7 @@ static void exec_packet(uint32_t op, void *p);
 static void rec_main(void *arg) {
     (void)arg;
     plat_thread_priority(rec_prio);
+    perf_core_thread(PCORE_RECORDER);
     uint64_t t = 0;
     for (;;) {
         uint64_t h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
