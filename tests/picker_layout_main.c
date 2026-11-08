@@ -86,7 +86,6 @@ void rt_log(const char *fmt, ...) { (void)fmt; }
 // bridge, so every part falls through to the collision-shape fallback and then the box. These stubs only have to link.
 const BfresModel *model_romfs_resolve(const char *actor) { (void)actor; return NULL; }
 const BfresModel *model_romfs_resolve_model(const char *model_name) { (void)model_name; return NULL; }
-const BfresModel *model_romfs_resolve_inside(const char *actor) { (void)actor; return NULL; }
 int bfres_shape_triangles(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
 int bfres_shape_name(const BfresModel *m, int index, char *name, size_t cap) {
     (void)m; (void)index;

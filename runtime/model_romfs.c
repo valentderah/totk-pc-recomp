@@ -318,27 +318,6 @@ float model_romfs_extent(const BfresModel *m) {
 
 // The decoded model for a model name, for callers that already have one: a fused material's SubModel points at a model
 // file, and those names are not actors, so they never pass through a ModelInfo.
-const BfresModel *model_romfs_resolve_inside(const char *actor) {
-    if (!actor || !*actor) return NULL;
-    char fmdb[128];
-    if (!find_fmdb(actor, fmdb, sizeof fmdb)) return NULL;
-    // The interior model is the part name with `_Inside_Reduction` inserted before the trailing two tokens:
-    //   SpObj_SpringPiston_A_01 -> SpObj_SpringPiston_Inside_Reduction_A_01
-    //   SpObj_Pile_A_01         -> SpObj_Pile_Inside_Reduction_A_01
-    // A name without that trailing pair (`_X_NN`) has no interior model to look for.
-    const char *last = strrchr(fmdb, '_');            // the "_01"
-    if (!last || last == fmdb) return NULL;
-    const char *mark = last - 1;                       // walk back over the token before it ("A")
-    while (mark > fmdb && mark[0] != '_') mark--;
-    if (mark == fmdb || mark[0] != '_') return NULL;   // no `_A` to insert before
-    char inside[192];
-    const int written = snprintf(inside, sizeof inside, "%.*s_Inside_Reduction%s", (int)(mark - fmdb), fmdb, mark);
-    if (written <= 0 || (size_t)written >= sizeof inside) return NULL;
-    ModelEntry *e = model_entry_named(inside, inside);
-    if (e) rt_log("model: %s composes the interior model %s", actor, inside);
-    return e ? &e->model : NULL;
-}
-
 const BfresModel *model_romfs_resolve_model(const char *model_name) {
     if (!model_name || !*model_name) return NULL;
     ModelEntry *e = model_entry_named(model_name, model_name);
