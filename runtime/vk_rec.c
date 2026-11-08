@@ -454,6 +454,8 @@ void rec_check_log(void) {
 }
 
 #define OWNED(cb) (rec_live && (cb) == rec_cb)
+
+int rec_owns(VkCommandBuffer cb) { return OWNED(cb); }
 // A call the ring takes no packet for: everything queued first, then the call here.
 #define FALLBACK() (rec_drain(), RS_.fallbacks++)
 

@@ -157,10 +157,10 @@ void vk_mvsurvey_draw(VkExec *ex) {
         k->size = (uint32_t)u->size;
         uint32_t want = u->size < SNAP ? (uint32_t)u->size : SNAP;
         VkDescriptorBufferInfo bi;
-        const uint8_t *src = vk_usnap_find(u->addr, want, 1, &bi) ? vk_usnap_map() + bi.offset : NULL;
+        const uint8_t *src = vk_usnap_find(u->addr, want, UINT32_MAX, 1, &bi) ? vk_usnap_map() + bi.offset : NULL;
         k->have = src ? want : 0;
         if (src) memcpy(k->bytes, src, want);
-        const uint8_t *all = vk_usnap_find(u->addr, u->size, 1, &bi) ? vk_usnap_map() + bi.offset : NULL;
+        const uint8_t *all = vk_usnap_find(u->addr, u->size, UINT32_MAX, 1, &bi) ? vk_usnap_map() + bi.offset : NULL;
         k->mats = all ? lead_mats((const float *)all, (uint32_t)(u->size / 4)) : 0;
         if (all) {
             Stat *s = &S.st[b];

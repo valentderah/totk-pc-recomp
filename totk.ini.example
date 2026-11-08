@@ -38,6 +38,11 @@
 # Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
 # game waits for the GPU; adds up to a frame of latency.
 # replay_async = 0
+# Record each large submission in chunks on this many threads (0 to 16; 0 = one thread, the default). The chunks go to
+# the GPU in order. In the town at 4K on an RTX 5070, 4 cut the replay from 8.2 to 4.5 ms a frame (71 to 79 fps); more
+# threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
+# Read at start.
+# replay_workers = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
