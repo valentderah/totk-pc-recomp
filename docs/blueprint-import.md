@@ -410,9 +410,11 @@ New (across the PR's commits):
 | `runtime/ui/blueprint_picker.h/.cpp` | the picker's bridge and its draw layer (ImGui draw list only) |
 | `runtime/ui/preview3d.h/.cpp` | the offscreen Vulkan pass: one draw per part, real depth buffer, shown as one textured quad |
 | `runtime/shaders/preview_vs.vert`, `preview_fs.frag` | the preview's two shaders, and the generated `preview_*_spv.h` beside them |
-| `runtime/model_romfs.h/.c` | the actor → ModelInfo → `.bfres.mc` path, the decoded-model cache, and the scene-group size guard |
+| `runtime/model_romfs.h/.c` | the actor → ModelInfo → `.bfres.mc` path, the decoded-model cache, the scene-group size guard, and the model-name entry a fused material's SubModel needs |
 | `runtime/model_meshcodec.h/.c` | the C door over the MeshCodec decoder (`libmeshcodec.a`) |
-| `runtime/bfres.h/.c` | the BFRES container reader: shapes, per-model vertex stride, bone rotation type, rigid skinning |
+| `runtime/bfres.h/.c` | the BFRES container reader: shapes, per-model vertex stride, bone rotation type, rigid skinning, and the named bone and its world transform that a fused material hangs on |
+| `runtime/blueprint_attach.h/.c` | where a fused material goes and how big it is, read from the material's `AttachmentParam` per weapon class |
+| `tests/blueprint_attach_main.c`, `tests/blueprint_attach_test.py` | that rule against the game's own attachment data for a horn on a spear and a long sword, and a statue on a shield |
 | `runtime/blueprint_shape.h/.c` | the collision-body fallback: a part's pack → ShapeParam BYML → tessellated mesh |
 | `runtime/byml.h/.c` | the BYML reader the shape fallback and the ModelInfo resolution both use |
 | `runtime/hull.h/.c` | the convex hull the collision fallback takes over its point cloud |
@@ -458,3 +460,91 @@ Modified:
   layout-assertion crash the earlier all-widget version had; keep the C/C++ split as it is.
 - The blob is written before the `Index` rotation. Reversing that order lets the page render the new card order against
   the old blob, which shows up as a stale thumbnail on the open page.
+
+## 10. How a fused part is drawn (余料建造)
+
+A part can be a weapon or shield that had a material fused onto it before it went into the blueprint. Drawing that part means
+two objects, not one, and the second one is not stored in the CAI. This section is the rule set that produces the pair; every
+line of it comes from the game's own files, and none of it is special-cased for a particular item.
+
+### 10.1 The CAI names the material but does not place it
+
+The record's `SubName` at offset 216 holds the material's actor name (`Item_Enemy_151` for a Lynel horn,
+`Obj_GerudoHoleCover_A_03` for the Gerudo statue that covers a hole). `runtime/blueprint_cai.c` exposes it as
+`BpcBlueprint.sub_names`.
+
+For every record whose `SubName` is set the Sub matrix (offset 48) is the identity, while every record with an empty `SubName`
+- GolemHead, CookSetOnFire, SwitchWheel - carries a real Sub matrix. So the Sub matrix belongs to the actor's own collision
+sub-shapes and says nothing about the material. The 32 bytes before the names hold seven floats: four unused, a constant 1.0,
+a zero, and `fuseInfo`; `runtime/blueprint_cai.c` reads `fuseInfo` from there.
+
+### 10.2 The placement is in the material's AttachmentParam, under a key per weapon class
+
+`Component/AttachmentParam/<Material>.game__component__AttachmentParam.bgyml`, inside its actor pack, has one entry per weapon
+class: `AttachParamSpear_`, `AttachParamSword_`, `AttachParamLSword_` and `AttachParamShield`. `runtime/blueprint_attach.c`
+picks the key from the part's own actor name (`Weapon_Spear_*` reads the spear entry, and so on), then walks the record's
+`$parent` chain - the template is another member of the same pack - reading from the root down so a derived record overrides
+only the fields it names. A survey of forty `Item_*` materials finds these fields, each per class:
+
+| field | meaning |
+|---|---|
+| `BoneName` | the weapon model's socket, e.g. `Bind_A`, `Bind_W`, `Bind_Z` |
+| `TransOffset` | metres along the weapon's own axes |
+| `RotateOffset` | degrees about X, Y and Z |
+| `Scale` | a per-axis scale |
+| `ExScale` (+ `UseExScale`) | a uniform scale |
+| `BoundBoxLength` | the length the material's bounding box is fitted to |
+| `SubModel` | a material-specific model to draw instead of the material's own |
+| `IsValid` | whether this class accepts the material at all |
+
+The two records that describe one attachment are on opposite sides and both are read: the weapon's names the socket and its
+rotation (a shield's is `Bind_C`, turned 180 degrees about X), the material's gives its own offset and size. The material's
+orientation is its own: a class entry that names no rotation leaves the material in the weapon's orientation, which is what a
+fused object looks like when it sits flat on the weapon.
+
+### 10.3 The sizes, and what is deliberately not a size
+
+`fuseInfo` is **not** a visual scale. Every fused part in the blueprints measured carries it above 1 (a shield 1.40, spears
+1.50) while every unfused part carries 1.0, and in game a fused weapon does not grow - the material is attached to it. Using
+it as a scale made a fused shield and everything fused onto it look oversized against the parts around it; the preview draws
+each part at its own size instead.
+
+A material's size comes from its record, and when the record gives none for that class the material is fitted to the weapon
+it hangs on:
+
+1. `BoundBoxLength` names a length: the material is scaled so its own largest side is that length.
+2. Otherwise `Scale` and `ExScale` multiply.
+3. Otherwise the material is fitted to the weapon, scaling its largest side to the weapon model's largest side.
+
+Step 3 is what keeps a world object readable: the Gerudo statue is 5.01 m across in its own right, it names no size at all
+for a shield, and it is drawn at the shield's size. A material that names a size is never touched by that step, so a Lynel
+horn's 0.8 x 0.55 stays exactly what the data says.
+
+### 10.4 What the fused part hides
+
+A fused weapon keeps its handle and loses its blade, and the model says which shapes those are: an FSHP's name carries its
+material after `__` (`Weapon_Lsword_147_Blade__Mt_Blade_Hide`), and a shape drawn with one of the model's `_Hide` materials is
+the part a fusion replaces. `shape_is_hidden_blade` in `runtime/ui/preview3d.cpp` tests exactly that, so it works for any
+weapon without a list of items. The material is then drawn in its place.
+
+### 10.5 It sits on the weapon, not near it
+
+The socket and the record's offset place the material close to the weapon, which is not the same as in contact: a spear and
+its horn came out with a visible gap. Both boxes are therefore measured in the weapon's model space, and when they are apart
+the material slides along the axis with the smallest gap until it touches. The shift is zero when the data already brings the
+two together, so nothing that was correct moves.
+
+### 10.6 Which combination the game actually defines
+
+`ActorParam` carries a second, harder tag: `AttachmentBindBoneSpear`, `AttachmentBindBoneSword`, `AttachmentBindBoneLargeSword`
+and `AttachmentBindBoneShield`. A material that has no `AttachmentBindBoneShield` cannot be fused to a shield at all, and the
+Gerudo statue is one of those - it names bind bones for the three weapon kinds only, and its shield entry carries nothing but
+a `TransOffset`. A blueprint holding such a part is a combination the game does not define; the preview draws it with the
+rules above rather than refusing it.
+
+### 10.7 What is not established
+
+Whether the game applies the last of step 3 in 10.3 exactly as written, and by what factor, is not readable from the data:
+the fields are empty for exactly the materials that would need it. What the preview does is the rule above, applied to every
+material alike, and its result on a shield-fused statue is a statue about the shield's size. Anyone finding a factor in the
+game's code should put it here.
