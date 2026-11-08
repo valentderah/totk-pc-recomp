@@ -7,6 +7,7 @@
 // white text, and selection shown by a border rather than a different plate. The window is deliberately three bands —
 // title, breadcrumb, footer — around one scrolling file list, so its purpose and the current location are always visible
 // (Nielsen Norman Group: visibility of system status, recognition rather than recall, minimalist design).
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -192,12 +193,16 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
             }
             dl->PopClipRect();
         }
-        // The headline (part count or "not a blueprint") under the box, then the file name or the reason.
+        // The headline (part count or "not a blueprint") under the box, then the file name or the reason. Both are clipped
+        // to the column: a long file name used to run out of the panel and across the 3D view, which reads as the picture
+        // being broken rather than as a long name.
         const float tx = px - 8 * s;
         float ty = py + ph + 20 * s;
+        dl->PushClipRect(ImVec2(tx - 2 * s, ty - fs * 0.3f), ImVec2(px + pw, ty + fs * 2.1f), true);
         text(dl, font, fs * 0.94f, tx, ty, f.preview_faces > 0 ? kGold : kTextDim, f.preview_title);
         ty += fs * 1.15f;
         text(dl, font, fs * 0.80f, tx, ty, kTextDim, f.preview_note);
+        dl->PopClipRect();
     }
 
     // ---- the rectangles from the C layer: breadcrumbs, buttons, list rows
@@ -252,7 +257,28 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
                   active ? kGold : kRowEdge, active ? 2 * s : 1 * s);
             const ImU32 fg = r.icon == BP_ICON_FILE ? kFile : kFolder;
             icon(dl, r.icon, rx + 14 * s, ry + rh * 0.5f, s, fg);
-            text(dl, font, fs * 0.96f, rx + 34 * s, ry + (rh - fs * 0.96f) * 0.5f, fg, r.text);
+            // A name that does not fit scrolls, the way every file manager does it: the text slides left while the row is
+            // hovered or selected and wraps round after a gap, instead of being cut or running across the preview column.
+            // The clip keeps it inside its own row, which the C layer already narrowed for the preview column.
+            const float text_left = (float)rx + 34 * s;
+            const float avail = (float)rw - 34 * s - 8 * s;
+            const float tw = ImGui::CalcTextSize(r.text).x;
+            const float text_y = ry + (rh - fs * 0.96f) * 0.5f;
+            dl->PushClipRect(ImVec2((float)rx + 2 * s, (float)ry),
+                             ImVec2((float)rx + (float)rw - 6 * s, (float)ry + (float)rh), true);
+            if (tw <= avail) {
+                text(dl, font, fs * 0.96f, text_left, text_y, fg, r.text);
+            } else {
+                // Scrolling only on the row the player is looking at, so a list at rest stays still and readable.
+                const float speed = 34 * s;   // pixels per second
+                const float gap = 60 * s;     // between the end of the name and its own start again
+                const float span = tw + gap;
+                float off = 0.0f;
+                if (active) off = fmodf((float)ImGui::GetTime() * speed, span);
+                text(dl, font, fs * 0.96f, text_left - off, text_y, fg, r.text);
+                if (active) text(dl, font, fs * 0.96f, text_left - off + span, text_y, fg, r.text);
+            }
+            dl->PopClipRect();
             row_seen++;
             break;
         }

@@ -229,7 +229,9 @@ static void plus_icon(ImDrawList *dl, ImVec2 c, float r, ImU32 col) {
 
 void bp_hint_draw(int width, int height, float scale) {
     float r[4];
-    if (!bp_hint_active() || menu_is_open() || width <= 0 || height <= 0) return;
+    // While the port's own file picker is open the game receives no input, so this row would be a prompt that cannot
+    // be pressed - and it sits under the picker's own band. It is hidden with the menu for the same reason.
+    if (!bp_hint_active() || menu_is_open() || bp_picker_is_open() || width <= 0 || height <= 0) return;
     if (!gfx_picture_rect(r) || r[2] <= 0 || r[3] <= 0) return;   // the picture inside letterbox bars
 
     const float px = r[2] * width, py = r[3] * height;

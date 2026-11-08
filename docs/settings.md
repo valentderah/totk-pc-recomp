@@ -199,3 +199,4 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `mouse_direct_patch` (default `1`) | Patch set of the hooks in the game's camera code behind `mouse_mode = direct` on game 1.4.3. | `0` stops `mouse_mode = direct` from taking effect; other mouse modes are unaffected. | Safe |
 | `patch_output` (default `0`) | Patch set that makes the game use the configured output size for its swapchain and display configuration. | The resolution code switches this set whenever the output differs from the base size; a manual value is replaced. | Unknown |
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
+- `BLUEPRINT_ZOOM` - the zoom the blueprint preview was last left at; the next preview opens at it.

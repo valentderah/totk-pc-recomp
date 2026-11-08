@@ -767,7 +767,7 @@ void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int
     poll_merged(buttons, lx, ly, rx, ry);
 }
 
-int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
+int input_pad_sticks(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
@@ -778,7 +778,13 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     *buttons = b;
     *lx = sl[0];
     *ly = sl[1];
+    if (rx) *rx = sr[0];
+    if (ry) *ry = sr[1];
     return ok;
+}
+
+int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
+    return input_pad_sticks(buttons, lx, ly, NULL, NULL);
 }
 
 uint16_t rumble_motor(float a, float curve, float strength) {

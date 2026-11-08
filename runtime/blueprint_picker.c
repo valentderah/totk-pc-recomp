@@ -113,6 +113,7 @@ typedef struct {
 
 typedef struct {
     char path[PICK_PATH_MAX];      // the file the data below belongs to; "" when nothing is read yet
+    char good[PICK_PATH_MAX];      // the last file that actually loaded: a refused file must not blank the view
     int ok;                        // 1: a real blueprint; 0: refused (note says why)
     int actors;                    // parts, when ok
     char note[96];                 // the file name when ok, else the reason it cannot be imported
@@ -301,8 +302,13 @@ static void preview_project(const float p[3], float *sx, float *sy, float *depth
 // A part vertex in blueprint space: fuseInfo scales the whole part, the rotation (row-major) turns it, the position moves it.
 // `placement_only` leaves fuseInfo out, for the material fused onto the part (fuseInfo is the weapon's own scale).
 static void part_point_ex(const BpcBlueprint *bp, int k, const float v[3], int placement_only, float out[3]) {
-    (void)placement_only;
-    const float s = 1.0f;   // fuseInfo is not a visual scale: see part_matrix_ex in ui/preview3d.cpp
+    // A part joined by Ultrahand glue is scaled by its fuseInfo (see part_matrix_ex in ui/preview3d.cpp); a Fuse-made part
+    // and a fused material are not.
+    int bonded = 0;
+    if (!placement_only)
+        for (int b = 0; b < bp->bonds; b++)
+            if (bp->bond[b].src == k || bp->bond[b].tgt == k) { bonded = 1; break; }
+    const float s = bonded ? bp->scale[k] : 1.0f;
     const float p[3] = {v[0] * s, v[1] * s, v[2] * s};
     for (int i = 0; i < 3; i++)
         out[i] = bp->pos[k][i] + bp->rot[k][i][0] * p[0] + bp->rot[k][i][1] * p[1] + bp->rot[k][i][2] * p[2];
@@ -431,6 +437,13 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
     if (!nm || !*nm) return;
     const int limit = g_preview.nfaces + budget;
     const int fused = bp->sub_names[k] && *bp->sub_names[k];
+    // The weapon keeps its covered shapes unless the material brings a replacement model for this class (see
+    // shape_hidden_when_fused and blueprint_attach.h).
+    int replaces = 0;
+    if (fused) {
+        BpAttach probe;
+        if (bp_attach_resolve(nm, bp->sub_names[k], &probe)) replaces = probe.has_sub_model;
+    }
 
     // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
     // shape's vertices and indices, which are then projected like any other mesh.
@@ -439,7 +452,7 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
         g_view.modelled++;
         rt_log("blueprint: %s from runtime decode (%d shapes)", nm, model->count);
         for (int s = 0; s < model->count && g_preview.nfaces < limit; s++) {
-            if (fused && shape_hidden_when_fused(model, s)) continue;
+            if (replaces && shape_hidden_when_fused(model, s)) continue;
             const int ntris = bfres_shape_triangles(model, s);
             const int nverts = bfres_shape_vertices(model, s);
             if (ntris <= 0 || nverts <= 0) continue;
@@ -659,12 +672,22 @@ static void preview_load(const char *path) {
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     if (r != BPC_OK) {
+        // Say why once, then put the last good file back: the column keeps its picture and its drag target instead of
+        // showing a note over an empty view (which read as "the preview is broken" while the picture was still there).
+        rt_log("blueprint: preview: %s refused (%s); keeping the last file that loaded", path, bpc_result_text(r));
+        if (g_preview.good[0] && strcmp(g_preview.good, path)) {
+            preview_load(g_preview.good);
+            return;
+        }
         snprintf(g_preview.note, sizeof g_preview.note, "%s", bpc_result_text(r));
         return;
     }
     g_preview.ok = 1;
     g_preview.actors = bp.actors;
+    snprintf(g_preview.good, sizeof g_preview.good, "%s", path);
     snprintf(g_preview.note, sizeof g_preview.note, "%s", base);
+    rt_log("blueprint: preview: %s loaded (%d parts, %d faces%s)", path, bp.actors, g_preview.nfaces,
+           g_gpu_preview ? ", GPU" : "");
     g_view.actors = bp.actors;
     g_view.shown = 1;
     if (strcmp(g_view.path, path)) {
@@ -769,6 +792,13 @@ static void finish(const char *path) {
     // The game gets its input back the way the settings menu gives it back: nothing reaches it until every button and
     // stick is released, so the press that closed the picker cannot act in the game.
     input_menu(0);
+    // Remember the zoom for the next visit, and to totk.ini so it survives a restart.
+    {
+        char buf[32];
+        snprintf(buf, sizeof buf, "%.4f", (double)g_cam.zoom);
+        cfg_set("BLUEPRINT_ZOOM", buf);
+        cfg_save();
+    }
     if (done) done(path, ctx);
 }
 
@@ -829,6 +859,14 @@ int bp_picker_open(const char *start, BpPickDone done, void *ctx) {
     list_folder();
     g_open = 1;
     input_menu(1);
+    // The zoom the player left it at, from totk.ini: one zoom is enough, not one per visit.
+    {
+        const char *z = cfg_get("BLUEPRINT_ZOOM");
+        if (z && *z) {
+            const double v = atof(z);
+            if (v > 0.001 && v < 100.0) g_cam.zoom = (float)v;
+        }
+    }
     rt_log("blueprint: picker opens at %s (%d entries)", g_dir, g_count);
     return 1;
 }
@@ -952,20 +990,8 @@ static void layout_header(BPickFrame *f) {
     snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s", menu_text(UI_MENU_BLUEPRINT_KEY_CANCEL));
     f->prompt[f->nprompt].primary = 0;
     f->nprompt++;
-    if (g_count > visible_rows(f)) {
-        snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "\xe2\x87\x95");
-        snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s",
-                 menu_text(UI_MENU_BLUEPRINT_KEY_SCROLL));
-        f->prompt[f->nprompt].primary = 0;
-        f->nprompt++;
-        if (f->nprompt < 4) {
-            snprintf(f->prompt[f->nprompt].key, sizeof f->prompt[0].key, "L/R");
-            snprintf(f->prompt[f->nprompt].label, sizeof f->prompt[0].label, "%s",
-                     menu_text(UI_MENU_BLUEPRINT_KEY_PAGE));
-            f->prompt[f->nprompt].primary = 0;
-            f->nprompt++;
-        }
-    }
+    // No scroll or page-turn prompts: the wheel scrolls the list and needs no introduction, and "turn a page" is not
+    // something a file list does. The two prompts above are the only actions this screen has.
     if (g_error[0]) snprintf(f->status, sizeof f->status, "%s", g_error);
     else if (g_count == 0) snprintf(f->status, sizeof f->status, "%s", menu_text(UI_MENU_BLUEPRINT_EMPTY));
     else snprintf(f->status, sizeof f->status, menu_text(UI_MENU_BLUEPRINT_COUNT), g_count);
@@ -1108,14 +1134,26 @@ static int layout_preview(BPickFrame *f, int pad, int preview_w, int px, int py)
     int idx = (px >= column_x || !g_pointer_moved) ? -1 : row_at(f, px, py);
     if (idx < 0) idx = g_focus_row;
     if (idx < 0 || idx >= g_count) return 0;
-    if (g_entries[idx].dir || g_entries[idx].root) return 0;   // a folder has no blueprint to preview
 
     char path[PICK_PATH_MAX];
+    if (g_entries[idx].dir || g_entries[idx].root) {
+        // A folder is not a blueprint, but passing over one on the way back into the column must not take the view away:
+        // that left the column blank and un-draggable, and the panel claiming there was nothing to show. Keep the file that
+        // is already up; the column then stays the same size and the same drag target.
+        if (!g_preview.ok || !g_preview.path[0]) return 0;
+        snprintf(path, sizeof path, "%s", g_preview.path);
+        preview_load(path);
+        /* falls through to the layout below, which draws whatever the preview holds */
+        goto have_preview_path;
+    }
     // Join without doubling a separator, as activate does: a drive root already ends in one.
-    const char *sep = "";
-    const size_t dl = strlen(g_dir);
-    if (dl > 0 && g_dir[dl - 1] != '/' && g_dir[dl - 1] != '\\') sep = "/";
-    snprintf(path, sizeof path, "%s%s%s", g_dir, sep, g_entries[idx].name);
+    {
+        const char *sep = "";
+        const size_t dl = strlen(g_dir);
+        if (dl > 0 && g_dir[dl - 1] != '/' && g_dir[dl - 1] != '\\') sep = "/";
+        snprintf(path, sizeof path, "%s%s%s", g_dir, sep, g_entries[idx].name);
+    }
+have_preview_path: ;
 
     // The view's aspect ratio, so the projection can keep a round part round. It must be set BEFORE the projection runs.
     const float sc = f->scale;
@@ -1369,10 +1407,69 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     // ---- the pad. It drives the SAME focus the pointer does, so the two never disagree: a mouse that leaves a row
     // focused and a D-pad press continue from there, and A acts on whatever the pointer last pointed at.
     uint64_t pad = 0;
-    int32_t lx, ly;
-    if (input_pad_read(&pad, &lx, &ly)) {
+    int32_t lx = 0, ly = 0, rx = 0, ry = 0;
+    if (input_pad_sticks(&pad, &lx, &ly, &rx, &ry)) {
         const uint64_t down = pad & ~g_pad_prev;
         g_pad_prev = pad;
+        // ---- the two sticks.
+        // The left one walks the list exactly as the D-pad does, from a threshold with a repeat delay so a held stick steps
+        // at a readable rate instead of flying through the files. The right one turns the preview the way a drag does: a
+        // rate applied every frame while it is held, so the build keeps turning for as long as the stick stays over.
+        {
+            static uint64_t stick_repeat_ns;
+            const int32_t kStickOn = 16000;      // ~half deflection: far enough that a resting stick does nothing
+            const uint64_t kRepeat = 90000000u;   // one step per 90 ms while the stick is held
+            if (g_count > 0 && (ly > kStickOn || ly < -kStickOn)) {
+                const uint64_t now = plat_now_ns();
+                if (stick_repeat_ns == 0 || now - stick_repeat_ns > kRepeat) {
+                    stick_repeat_ns = now;
+                    const int from = g_focus_row < 0 ? 0 : g_focus_row;
+                    g_focus_row = ly < 0 ? (from + 1) % g_count : (from + g_count - 1) % g_count;
+                    const int visible = visible_rows(f);
+                    if (visible > 0) {
+                        if (g_focus_row < g_scroll) g_scroll = g_focus_row;
+                        if (g_focus_row >= g_scroll + visible) g_scroll = g_focus_row - visible + 1;
+                        if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
+                        if (g_scroll < 0) g_scroll = 0;
+                        f->scroll = g_scroll;
+                    }
+                    acted = 1;
+                }
+            } else {
+                stick_repeat_ns = 0;
+            }
+            // L2 / R2 zoom the preview, as a rate while held: the wheel's own field, with its floor against zero intact.
+            if (pad & ((1ull << B_ZL) | (1ull << B_ZR))) {
+                const float step = 0.02f;
+                if (pad & (1ull << B_ZR)) g_cam.zoom *= 1.0f + step;
+                if (pad & (1ull << B_ZL)) g_cam.zoom /= 1.0f + step;
+                if (g_cam.zoom < 0.001f) g_cam.zoom = 0.001f;
+                g_view.stamp++;   // the zoom changed: any rendered image is stale
+                acted = 1;
+            }
+            // The folder walk is a pair of shoulders, not the stick: a stick nudged while the player is lining up a row fired
+            // the step again and again. A shoulder is one press, so one press is one action. L1 up a folder, R1 into the row's
+            // folder (R2 belongs to the zoom).
+            if (down & (1ull << B_L)) {
+                if (go_up()) return 1;
+                acted = 1;
+            }
+            if (down & (1ull << B_R)) {
+                if (g_focus_row >= 0 && g_focus_row < g_count &&
+                    (g_entries[g_focus_row].dir || g_entries[g_focus_row].root)) {
+                    activate(g_focus_row);
+                    return 1;
+                }
+                acted = 1;
+            }
+            if (f->preview && (rx > kStickOn || rx < -kStickOn || ry > kStickOn || ry < -kStickOn)) {
+                // A rate, in the same units the drag uses: a full deflection turns the build about 130 degrees a second.
+                const int span = f->preview_h > 0 ? f->preview_h : 1;
+                const float per_frame = 6.28318531f / (float)span * 2.2f;
+                rotate_build((float)rx / 32767.0f, -(float)ry / 32767.0f, per_frame);
+                acted = 1;
+            }
+        }
         // Once the pad moves, it owns the focus: the pointer is no longer what the player is driving.
         const int moved = (down & ((1ull << B_DOWN) | (1ull << B_UP))) != 0;
         if (g_count > 0 && moved) {
