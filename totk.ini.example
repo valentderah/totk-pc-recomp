@@ -67,6 +67,11 @@
 # memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
 # reading instead, which costs part of the gain.
 # shadow_defer = 1
+# Shadow storage: take the pages the CPU wrote from the write-watch snapshots of the submission (the mirror's and the
+# texture checks') instead of a query of each pool before each submit, 0 or 1 (ab = on in the ab blocks of TOTK_AB
+# only). Default: 0. Fewer GetWriteWatch calls on the replay thread; needs shadow storage. TOTK_TRACE=perf shows the
+# sync's queries in the mem: shadow line.
+# shadow_snap = 0
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.

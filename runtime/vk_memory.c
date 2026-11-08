@@ -913,6 +913,15 @@ static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks; 
 // belong to. Replay thread (sub_lock): the queue.
 typedef struct { PoolRec *r; uint64_t addr, len; } DRange;
 static int defer_on;
+// TOTK_SHADOW_SNAP: the sync stamps the pool's pages from the 2 MiB write-watch snapshots of the submission's epoch
+// (snap_regions: the mirror's pre-snap, the texture checks) instead of a query of its own. shadow_snap: the knob
+// (0 off, 1 on, 2 ab). ssnap_ep: the epoch vk_mem_mirror_begin started for the submission whose value is ssnap_fence
+// (0 none); only the syncs of that submission use it, since a sync outside a guest submission (a blit, a probe) may
+// follow CPU writes made after the epoch's snapshots.
+static int shadow_snap;
+static uint32_t ssnap_ep;
+static uint64_t ssnap_fence;
+static uint64_t noted_fence(void);
 static int sdefer_now;
 static uint64_t sdefer_fence;
 static DRange *dq;                                // guest ranges to copy into their pools' shadows
@@ -989,18 +998,28 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
 }
 
 // shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow.
-static void shadow_sync_pool(PoolRec *r) {
+// epoch (TOTK_SHADOW_SNAP, else 0): the regions the epoch's snapshots did not cover are snapped now, and no query is
+// repeated: the snapshots stamp every page written before them, and a page written after one keeps its OS bit and gets
+// a newer generation than r->sgen at the next query, so the next sync copies it.
+static void shadow_sync_pool(PoolRec *r, uint32_t epoch) {
     uint64_t lo = r->import_lo, hi = r->import_hi;
-    uint32_t g = ++gen_now;
+    uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
     int tracked = 1;
-    for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
-        uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
-        if (b > hi) b = hi;
-        if (mem_frozen(a)) { a = b; continue; }
-        while (b < hi && !mem_frozen(b)) b = b + (1ull << REG_SHIFT) < hi ? b + (1ull << REG_SHIFT) : hi;
-        s_queries++;
-        if (!query_stamp(a, b, g)) tracked = 0;
-        a = b;
+    if (epoch && r1 < SNAP_REGIONS) {
+        s_queries += snap_regions(r0, r1, epoch);
+        for (uint64_t k = r0; k <= r1; k++)
+            if (snap_untracked[k]) tracked = 0;
+    } else {
+        uint32_t g = ++gen_now;
+        for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
+            uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
+            if (b > hi) b = hi;
+            if (mem_frozen(a)) { a = b; continue; }
+            while (b < hi && !mem_frozen(b)) b = b + (1ull << REG_SHIFT) < hi ? b + (1ull << REG_SHIFT) : hi;
+            s_queries++;
+            if (!query_stamp(a, b, g)) tracked = 0;
+            a = b;
+        }
     }
     uint32_t since = r->sgen;
     r->sgen = gen_now;
@@ -1087,13 +1106,16 @@ void vk_mem_shadow_sync(uint64_t fence) {
     if (!defer_on && nstouch) shadow_wait_guard(fence, &g, &done);
     uint64_t t0 = qpc();
     if (nstouch) {
+        uint32_t epoch = 0;
+        if (fence && fence == __atomic_load_n(&ssnap_fence, __ATOMIC_ACQUIRE) && RT_KNOB_ON(shadow_snap))
+            epoch = __atomic_load_n(&ssnap_ep, __ATOMIC_RELAXED);
         plat_mutex_lock(&gen_lock);
         for (int i = 0; i < nstouch; i++) {
             PoolRec *r = stouch[i];
             sdefer_now = defer_on && fence && shadow_defers(r, g, done);
             sdefer_fence = fence;
             int before = ndq;
-            shadow_sync_pool(r), r->stouched = 0;
+            shadow_sync_pool(r, epoch), r->stouched = 0;
             if (ndq > before) s_defer_pools++;
             sdefer_now = 0;
             if (fence > r->suse) r->suse = fence;
@@ -1363,6 +1385,9 @@ static void mirror_mode(int discrete) {
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
     defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && cfg_bool("TOTK_SHADOW_DEFER");
+    shadow_snap = shadow_on ? rt_knob("SHADOW_SNAP", "0") : 0;
+    if (shadow_snap) rt_log("mem: TOTK_SHADOW_SNAP: the shadow sync reuses the submission's write-watch snapshots%s",
+                            shadow_snap == 2 ? " (ab)" : "");
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (TOTK_SHADOW)" : "");
@@ -1983,6 +2008,10 @@ static void freeze_pass(void) {
 }
 
 void vk_mem_mirror_begin(void) {
+    if (shadow_snap) {   // the sync of this submission's parts may use the snapshots of its epoch (shadow_sync_pool)
+        __atomic_store_n(&ssnap_ep, vk_texture_epoch(), __ATOMIC_RELAXED);
+        __atomic_store_n(&ssnap_fence, noted_fence(), __ATOMIC_RELEASE);
+    }
     if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
         if (!freeze_idle) return;
         plat_mutex_lock(&gen_lock);
@@ -2727,6 +2756,15 @@ void vk_mem_note_fence(uint64_t timeline_value) {
     if (timeline_value > tl_noted) tl_noted = timeline_value;
     tl_noted_here = timeline_value;
     plat_rmutex_unlock(&cmd_lock);
+}
+
+// The value of the submission being recorded (vk_mem_note_fence runs at the start of its recording).
+static uint64_t noted_fence(void) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    uint64_t v = tl_noted;
+    plat_rmutex_unlock(&cmd_lock);
+    return v;
 }
 
 // The later of the submission being recorded (tl_noted, noted from its start: vk_sync.c vk_sync_submit) and the next
