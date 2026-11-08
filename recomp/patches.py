@@ -49,7 +49,8 @@ def adrp(pc, target, rd):
 
 class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg)], original)]}} (the
-    alternatives of a site in file order); page."""
+    alternatives of a site in file order); page. What the generated C takes from here (for_module, spins_for) is in
+    the lift cache's key (recomp/gen.py chunk_key); a new kind of line the Emitter reads must go there too."""
 
     def __init__(self, sets=(), sites=None, page=0, spins=None):
         self.sets = list(sets)

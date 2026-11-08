@@ -13,9 +13,10 @@ totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
-logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
-in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
-it touches, not a full compile.
+logs/: the next run lifts into the same gen/, where recomp/gen.py lifts again only the chunks whose inputs changed (its
+lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, and Ninja in build/ recompiles only
+those. A change of the mods' code cheats then costs a few seconds of lift and the chunks holding its sites, not a full
+lift or compile.
 
 Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
 rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
@@ -888,8 +889,9 @@ class Lift(Step):
         return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
 
     def run(self, ctx):
-        # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
-        # partition no longer has), so Ninja recompiles only those
+        # gen/ of the last run stays: gen.py lifts again only the chunks whose inputs changed
+        # (gen/<mod>/lift_cache.json; TOTK_LIFT_CACHE=0 lifts all), rewrites only those whose C changed (and removes
+        # the ones a smaller partition no longer has), so Ninja recompiles only those
         layout, rep, gen = ctx.layout, ctx.reporter, ctx.temp / 'gen'
         (gen / STAMP).unlink(missing_ok=True)
         rep.progress('lift', 'discover', force=True)
