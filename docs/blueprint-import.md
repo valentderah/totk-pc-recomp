@@ -265,36 +265,76 @@ game version and every pad layout.
 
 ### 6.1 The preview column
 
-While a file is highlighted the picker shows a small 3D view of it on the right: every part is a box at its own position,
-turned by its own rotation, its camera-facing faces projected and shaded, the lot sorted far to near.
-`layout_preview` and `preview_load` (`runtime/blueprint_picker.c`) compute it; the draw layer fills the quads it is given.
+While a file is highlighted the picker shows a small 3D view of it on the right. Every part is drawn as **its real model**,
+read from the player's own RomFS and decoded at runtime, placed by the CAI's rotation, `fuseInfo` scale and position. The
+render is one offscreen Vulkan pass with a real depth buffer (`runtime/ui/preview3d.cpp`), shown as a single textured quad
+inside the panel; `layout_preview` and the CPU projection in `runtime/blueprint_picker.c` remain as the fallback for a
+machine where the offscreen target cannot be created.
 
-**What it can and cannot show.** A CAI blob holds each part's placement — a rotation and a position — and nothing else:
-there is no mesh, so a part cannot be drawn as its real model. The preview therefore draws a box standing in for each
-part, which reads as the shape of a build (where its parts are, which way they face, how tall it is) but not as a picture
-of the thing. Anything claiming to render the real model would have to load the game's meshes from its archives, which
-this port does not do for the files it imports.
+**Why the CAI alone is not enough.** A CAI blob holds each part's *placement* — a rotation, a position and a scale — and
+the actor's name, and nothing else: no mesh. The actor name is what makes a real model possible: the game ships one model
+per actor, so the preview resolves the name to a model file and decodes it. This is the same information the reference
+viewer (Blehditor) uses, and the same one the game itself uses when it rebuilds a draft.
 
-Each part contributes the faces that face the camera — a convex box shows three — recognised by their projected winding,
-which every face opposes on its opposite face. A face is shaded by its own outward normal against one fixed light, with a
-little ambient so a face turned away still reads as a face. The box's half extent is a sixteenth of the blueprint's
-longest side: CAI carries no per-part size, and this value was measured over six real files to keep coverage between
-roughly a fifth and a third of the view (the adaptive rules that were tried were worse).
+**The model path** (`runtime/model_romfs.c`):
 
-Depth needs no depth buffer, which the ImGui draw list does not have: the faces are sorted far to near and painted in
-that order.
+1. `Pack/Actor/<actor>.pack.zs` from the RomFS — a SARC with the game's zstd dictionary — is unpacked and its ModelInfo
+   BYML walked for `FmdbName`. The ModelInfo member is *not* always named after the actor (a propeller's pack carries
+   `DgnObj_SkyIsland_Propeller_A_01`), so every ModelInfo member is tried rather than guessing the file name.
+2. `Model/<project>.<FmdbName>.bfres.mc` is located. The project prefix is not derivable from the actor, so an exact-name
+   attempt is followed by a scan of the RomFS index for any `Model/*` path ending in `.<FmdbName>.bfres.mc`.
+3. That file is decoded by `runtime/model_meshcodec.c`, the C door over the MeshCodec reference decoder, and the result is
+   walked by `runtime/bfres.c`.
 
-The camera is state, not a constant. Dragging inside the view turns it; a second click puts it back to the default
-35°/28°; pitch is clamped short of the poles, where the build would turn inside out. Yaw is kept across files, so a
-player who turned one build sees the next at the same angle. A turn re-projects the file that is already parsed, so a
-drag never re-reads it.
+**The `.bfres.mc` container** (`runtime/bfres.c`, and the MeshCodec bridge). A 12-byte `MCPK` header, then a zstd stream
+**without** the 4-byte zstd magic and **without** a frame content size, then an `FMSH` geometry section compressed by
+Nintendo's MeshCodec. Three details cost real time to get right and are worth knowing before touching this code:
 
-The preview is read once per file and camera, keyed by the full path. It goes through the same reader and validator as
-the import (`bp_file_read`), so a file that previews is a file that will import; a file the parser rejects shows its
-reason instead of a picture.
+- The stream is magicless *and* sizeless, so `ZSTD_decompressDCtx` fails with "Src size is incorrect". The decode must be
+  `ZSTD_decompressStream` in a loop until it returns 0, after `ZSTD_DCtx_setParameter(dctx, ZSTD_d_format,
+  ZSTD_f_zstd1_magicless)`.
+- MeshCodec calls zstd's **internal** block API (`ZSTD_decompressBlock`, `ZSTD_insertBlock`, `dctx->entropy.rep`), which is
+  not in the public `zstd.h`. It is built from zstd source beside the game rather than against the system library.
+- The byte-order field in the `FRES` header reads `0xFEFF`, not `0xFFFE`: the file stores `FF FE`, which little-endian
+  reading turns into `0xFEFF`.
 
-`tests/preview_picture.py` renders the same projection into a text picture from a real `.cai`, which is how the camera,
-the box size and the culling were checked without running the game.
+**Shape geometry.** `bfres_open` walks `FMDL` → `FSHP` → `FVTX`/`Mesh`. Two properties are per-shape and must be read, not
+assumed:
+
+- **The vertex stride is per model.** It is the position buffer's byte size divided by the vertex count: a wheel is 6, a
+  cart 8. Reading every model at a stride of 6 scrambles a stride-8 model into a ball of spikes.
+- **The rotation of a bone is either a quaternion or Euler angles**, decided by bit 12 of the bone's flags. Reading an
+  Euler bone as a quaternion normalises `(0, 0, π/2, 1)` into a 115° turn instead of 90°, which tilts every part on that
+  rig by the same 25° — the "all parts lean the same way" symptom.
+
+**Rigid skinning** (`runtime/bfres.c`). A shape with one bone per vertex carries, per vertex, a blend index in its `_i0`
+attribute. That index is a slot in the skeleton's **Node_Array** (`FSKL` +0x18, `mtx_to_bone_list`), which maps to the
+real bone: `bone = Node_Array[slot]`. The vertex is then transformed by that bone's world matrix, accumulated down the
+parent chain. A shape with two or more bones per vertex is a *deformation* — a pile's telescoping chain, a fan's wing —
+whose rest pose is its extended state, so it keeps its raw vertices. That is also what the reference implementation
+(Switch-Toolbox's BFRES reader) does, and the distinction is what finally made the fan, the wheel tread and the control
+stick come out right.
+
+**A guard worth keeping.** A ModelInfo can point at a scene group instead of a part: `HiddenKorok_SilhouettePazzle_006`
+resolves to `CaveEntrance_02197d15.Group00`, a terrain sheet 126 km across, which drawn as a part puts one enormous face
+over the whole preview. The decoded geometry is therefore measured, and a model far beyond any real part (40 m) is
+refused so the preview falls back to the part's collision body, which is always the right size.
+
+**The collision-shape fallback** (`runtime/blueprint_shape.c`, `runtime/byml.c`, `runtime/hull.c`). A part with no model
+still gets a body: its pack's `Phive/ShapeParam` BYML is walked for box/sphere/cylinder/capsule/polytope primitives, the
+points are tessellated into a mesh and a convex hull is taken. This is the same fallback the reference viewer uses.
+
+**Camera.** Dragging inside the view orbits it, one full turn per view **height** on both axes — the convention three.js'
+`OrbitControls` uses (its source divides both deltas by `clientHeight`), which is what makes a drag feel the size it looks.
+A release carries the turn on and decays it, so the view settles instead of stopping dead. Pitch is free past the poles so
+the build can be read from underneath, and the camera's right vector follows yaw directly rather than a fixed world up,
+so there is no gimbal lock at the poles. A second click puts the camera back to 35°/28°. The wheel zooms without a limit
+except against zero. Yaw is kept across files, so a player who turned one build sees the next at the same angle.
+
+**Shading.** One grey-clay material, two-sided (several models are single-sided sheets — sails, flags, nets), lit by one
+fixed key light with a little ambient, with the per-part colour coming from the game's own 21-colour palette indexed by a
+part's place in the draft. The face normal is taken from the fragment stage's screen-space derivatives, so no normal
+attribute is read. This is what the reference viewer does, and it is why the preview reads like the game's own.
 
 Log lines:
 
@@ -304,6 +344,9 @@ blueprint: hint: opening the file picker
 blueprint: picker opens at C:\Users\Administrator\Downloads (14 entries)
 blueprint: hint chose <path>
 blueprint: hint: <path>: <result>
+model: SpObj_ControlStick_A_01 decoded at runtime (6 shapes, 94208 bytes)
+model: <actor> resolves to a 126 km scene group, not a part; using its collision body
+preview3d: 21 parts in 21 draws (426x828)
 ```
 
 ## 7. Verification
@@ -358,6 +401,16 @@ New (across the PR's commits):
 | `runtime/blueprint_hint.h/.cpp` | the entry in the Autobuild screen's own guide bar: its button, the picker, the import, the row |
 | `runtime/blueprint_picker.c` | the picker's C logic: folder listing, path parts, rectangles, pointer/pad/wheel hit tests |
 | `runtime/ui/blueprint_picker.h/.cpp` | the picker's bridge and its draw layer (ImGui draw list only) |
+| `runtime/ui/preview3d.h/.cpp` | the offscreen Vulkan pass: one draw per part, real depth buffer, shown as one textured quad |
+| `runtime/shaders/preview_vs.vert`, `preview_fs.frag` | the preview's two shaders, and the generated `preview_*_spv.h` beside them |
+| `runtime/model_romfs.h/.c` | the actor → ModelInfo → `.bfres.mc` path, the decoded-model cache, and the scene-group size guard |
+| `runtime/model_meshcodec.h/.c` | the C door over the MeshCodec decoder (`libmeshcodec.a`) |
+| `runtime/bfres.h/.c` | the BFRES container reader: shapes, per-model vertex stride, bone rotation type, rigid skinning |
+| `runtime/blueprint_shape.h/.c` | the collision-body fallback: a part's pack → ShapeParam BYML → tessellated mesh |
+| `runtime/byml.h/.c` | the BYML reader the shape fallback and the ModelInfo resolution both use |
+| `runtime/hull.h/.c` | the convex hull the collision fallback takes over its point cloud |
+| `tests/byml_main.c`, `tests/byml_test.py` | the BYML reader over real and truncated documents |
+| `tests/hull_main.c`, `tests/hull_test.py` | the convex hull over random, deduplicated and coplanar point sets |
 
 The settings-menu **Blueprints tab** (`runtime/ui/blueprint_page.h/.cpp`) was added in an earlier commit and is
 **removed** here: the Autobuild screen is the only entry point.
@@ -367,14 +420,15 @@ Modified:
 | file | change |
 |---|---|
 | `runtime/platform/platform.h`, `platform/win32.c`, `platform/linux.c` | `plat_dir_list` and `plat_root_list`, the picker's folder and drive enumeration |
-| `runtime/ui/menu.cpp` | the hint's frame and draw calls, the picker draw call, and the overlay keeping itself alive for the picker |
+| `runtime/ui/menu.cpp` | the hint's frame and draw calls, the picker draw call, the preview's offscreen pass, and the overlay keeping itself alive for the picker |
 | `runtime/ui/menu_win.cpp`, `ui/menu_sdl.cpp` | events reach the overlay while the picker is open, not only the settings menu |
 | `runtime/ui_text.h`, `ui_text.c` | the picker's and hint's text ids in English, Russian, Brazilian Portuguese and Simplified Chinese |
 | `runtime/input.c`, `input.h` | the hint's pad read, `menu_cursor_screen_open` / `menu_cursor_focus_is_tab`, and leaving the wheel to the picker |
 | `runtime/input_win.c` | wheel notches accumulated while the picker is open |
 | `runtime/menu_cursor.c` | `menu_cursor_screen_open` (whole-screen detection), `menu_cursor_focus_is_tab` (which control has the focus), and skipping the game's cursor for the picker |
 | `runtime/cfg.c` | `BLUEPRINT_HINT` and `BLUEPRINT_DIR` |
-| `tools/build_game.py` | `libz.a` on the link line, for the `.txt` reader |
+| `runtime/gfx_present.c`, `runtime/vk.h`, `runtime/vk_device.c` | `vk_queue_lock` / `vk_queue_unlock` (the preview creates its targets with no frame in flight) |
+| `tools/build_game.py` | `libz.a` on the link line (the `.txt` reader) and `libmeshcodec.a` beside the executable (the model decoder) |
 
 ## 9. Notes for whoever picks this up
 
