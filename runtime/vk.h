@@ -266,7 +266,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 // at: the copies dropped at or before it are not found (vk_usnap_drop_at); UINT32_MAX outside a chunked replay.
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t at, uint64_t align, VkDescriptorBufferInfo *out);
-const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
+const uint8_t *vk_usnap_host(const VkDescriptorBufferInfo *bi);   // the bytes a vk_usnap_find result names, for the CPU
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy of [addr, addr+n) as of the submit, NULL: none
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 // The state scan of a chunked replay (vk_exec.c): the op that writes [addr, addr+n) is the at-th that may; the chunks

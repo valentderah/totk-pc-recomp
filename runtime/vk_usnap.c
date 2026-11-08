@@ -18,6 +18,10 @@
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
 // with TOTK_REPLAY_ASYNC; a chunked replay takes it on a recording thread while its scan runs. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
+// TOTK_USNAP_FAST=1 (same bytes for the GPU and the CPU readers, less work): ranges collected twice are kept once, a
+// lookup remembers the region of its address (vk_usnap_find), and with DLSS only the ranges the per-object motion
+// code reads on the CPU go through the host copy (a "hot" range: the vertex stage's banks and their neighbours); the
+// rest is copied from guest memory to the arena once. A CPU read outside them takes its bytes from the arena (host_span).
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,23 +47,32 @@ typedef struct Arena {
     uint64_t size;
 } Arena;
 
-typedef struct { uint64_t lo, hi; } Rng;
+typedef struct { uint64_t lo, hi; } Rng;   // collected: bit 0 of lo (below ALIGN) marks a hot range
+#define HOT 1u
+#define KEY(r) ((r).lo & ~(uint64_t)HOT)
 typedef struct { uint64_t lo, hi, off, drop_at; } Reg;   // drop_at: dropped from this position on; UINT64_MAX not
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 static struct {
-    int mode;                   // rt_knob: 0 off, 1 on, 2 ab
+    int mode, fmode;            // rt_knob UBO_SNAPSHOT, USNAP_FAST: 0 off, 1 on, 2 ab (stored +1: 0 is "not read yet")
     int on;                     // this submission has a snapshot
-    uint64_t fence, gen;
+    uint64_t fence, gen, seq;   // seq: submissions with USNAP_FAST so far
     Arena *arena;
     Rng *col;                   // collected ranges
     int ncol, ccol;
+    int fast;                   // TOTK_USNAP_FAST on for this submission
+    int sparse;                 // the host copy holds only the hot spans (offsets in the arena, sorted, disjoint)
+    Rng *hot;
+    int nhot, chot;
     Reg *reg;                   // merged, sorted by lo, disjoint
     int nreg, creg;
     Wrote *wr;                  // GPU writes of submissions not known to be complete
     int nwr, cwr;
     // since the last summary
     uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
+    // TOTK_TRACE=perf, TOTK_USNAP_FAST: collected ranges kept out as duplicates, bytes in hot spans, finds and finds
+    // that took the remembered region, CPU reads outside the hot spans and their bytes
+    uint64_t fsubs, dups, hot_bytes, finds, find_memo, fb_n, fb_bytes;
 } U;
 
 static Arena *free_arenas;
@@ -114,6 +127,26 @@ static void arena_done(void *arg) {   // completion thread: the GPU has read it
     plat_mutex_unlock(&free_lock);
 }
 
+// Pushes a range to collect. With USNAP_FAST a range already pushed since the submission began (same lo, length and
+// hot mark) is dropped: the merge below sees the union of the ranges, so duplicates change nothing. The table is
+// direct-mapped, a collision only lets a duplicate through. The check word holds the range's length and the
+// submission's number.
+#define SEEN (1u << 13)
+static void push(uint64_t lo, uint64_t hi, int hot) {
+    static struct { uint64_t lo, len_seq; } seen[SEEN];
+    if (U.fast) {
+        uint64_t w = lo | (hot ? HOT : 0), v = (hi - lo) | U.seq << 17;   // hi - lo <= MAX_RANGE + ALIGN - 1 < 1 << 17
+        uint32_t i = (uint32_t)((lo >> 8 ^ (hi - lo) << 40) * 0x9E3779B97F4A7C15ull >> (64 - 13));
+        if (seen[i].lo == w && seen[i].len_seq == v) {
+            U.dups++;
+            return;
+        }
+        seen[i].lo = w, seen[i].len_seq = v;
+    }
+    if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+    U.col[U.ncol++] = (Rng){lo | (hot ? HOT : 0), hi};
+}
+
 static void collect(const op_hdr *h, int depth) {
     for (;;) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
@@ -153,8 +186,7 @@ static void collect(const op_hdr *h, int depth) {
                             continue;
                         ok |= 1 << (k + 1);
                     }
-                    if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
-                    U.col[U.ncol++] = (Rng){at & ~(uint64_t)(ALIGN - 1), at + n};
+                    push(at & ~(uint64_t)(ALIGN - 1), at + n, U.fast && step);
                 }
                 if (step && !known) nc[ci].addr = b->addr, nc[ci].size = n, nc[ci].gen = gen, nc[ci].ok = ok;
             }
@@ -164,7 +196,7 @@ static void collect(const op_hdr *h, int depth) {
 }
 
 static int by_lo(const void *a, const void *b) {
-    uint64_t x = ((const Rng *)a)->lo, y = ((const Rng *)b)->lo;
+    uint64_t x = KEY(*(const Rng *)a), y = KEY(*(const Rng *)b);
     return x < y ? -1 : x > y;
 }
 static int wr_by_lo(const void *a, const void *b) {
@@ -183,8 +215,8 @@ static void sort_col(void) {
     if (n < 2) return;
     uint64_t lo = UINT64_MAX, hi = 0;
     for (int i = 0; i < n; i++) {
-        if (U.col[i].lo < lo) lo = U.col[i].lo;
-        if (U.col[i].lo > hi) hi = U.col[i].lo;
+        if (KEY(U.col[i]) < lo) lo = KEY(U.col[i]);
+        if (KEY(U.col[i]) > hi) hi = KEY(U.col[i]);
     }
     if ((hi - lo) / ALIGN >> (3 * RADIX_BITS)) {
         qsort(U.col, (size_t)n, sizeof *U.col, by_lo);
@@ -198,12 +230,12 @@ static void sort_col(void) {
     Rng *src = U.col, *dst = tmp;
     for (int pass = 0; pass < 3; pass++) {
         int shift = pass * RADIX_BITS, count[1 << RADIX_BITS] = {0};
-        for (int i = 0; i < n; i++) count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
+        for (int i = 0; i < n; i++) count[(KEY(src[i]) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
         for (int k = 0, sum = 0; k < 1 << RADIX_BITS; k++) {
             int c = count[k];
             count[k] = sum, sum += c;
         }
-        for (int i = 0; i < n; i++) dst[count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
+        for (int i = 0; i < n; i++) dst[count[(KEY(src[i]) - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++] = src[i];
         Rng *t = src;
         src = dst, dst = t;
     }
@@ -247,11 +279,40 @@ static void summary(void) {
            "flight), %.1f refused (not an imported pool)",
            (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
            U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s);
+    if ((rt_trace & RT_TRACE_PERF) && U.fsubs) {
+        double f = (double)U.fsubs;
+        rt_log("vk_usnap: fast (TOTK_USNAP_FAST), %llu submissions; per submission %.0f duplicate ranges left out, %.1f KiB "
+               "in hot spans of %.1f KiB, %.0f lookups of which %.0f%% took the remembered region, %.1f CPU reads "
+               "outside the hot spans (%.1f KiB)",
+               (unsigned long long)U.fsubs, U.dups / f, U.hot_bytes / f / 1024.0, U.bytes / s / 1024.0, U.finds / f,
+               U.finds ? 100.0 * U.find_memo / U.finds : 0.0, U.fb_n / f, U.fb_bytes / f / 1024.0);
+    }
+    U.fsubs = U.dups = U.hot_bytes = U.finds = U.find_memo = U.fb_n = U.fb_bytes = 0;
     U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
 }
 
+// The hot ranges among col[i0, i1), a merged region from lo whose copy starts at offset off, as spans of the arena:
+// col is sorted by lo, so a span grows while the next hot range touches it.
+static void hot_spans(int i0, int i1, uint64_t lo, uint64_t off) {
+    uint64_t a = 0, b = 0;
+    for (int j = i0; j <= i1; j++) {
+        int hot = j < i1 && U.col[j].lo & HOT;
+        if (j < i1 && !hot) continue;
+        if (hot && b && KEY(U.col[j]) <= b) {
+            if (U.col[j].hi > b) b = U.col[j].hi;
+            continue;
+        }
+        if (b) {
+            if (U.nhot == U.chot) U.hot = grow(U.hot, &U.chot, sizeof *U.hot);
+            U.hot[U.nhot++] = (Rng){off + (a - lo), off + (b - lo)};
+            U.hot_bytes += b - a;
+        }
+        a = hot ? KEY(U.col[j]) : 0, b = hot ? U.col[j].hi : 0;
+    }
+}
+
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
-    if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1;   // stored +1: 0 is "not read yet"
+    if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1, U.fmode = rt_knob("USNAP_FAST", "0") + 1;
     U.on = 0, U.fence = fence, U.gen++;
     summary();
     if (!RT_KNOB_ON(U.mode - 1)) {
@@ -259,17 +320,20 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         return;
     }
     uint64_t t0 = kern_now_ns();
+    U.fast = RT_KNOB_ON(U.fmode - 1);
+    U.seq += U.fast;
     U.ncol = 0;
     for (int i = 0; i < n; i++)
         if (handles[i]) collect(nvn_op_first(handles[i]), 0);
     sort_col();
     wr_prune();
     // merge, keeping only what lies wholly in one imported pool and no GPU write in flight touches
-    U.nreg = 0;
+    U.nreg = U.nhot = 0;
     uint64_t total = 0;
     for (int i = 0; i < U.ncol;) {
-        uint64_t lo = U.col[i].lo, hi = U.col[i].hi;
-        for (i++; i < U.ncol && U.col[i].lo <= hi; i++)
+        int i0 = i;
+        uint64_t lo = KEY(U.col[i]), hi = U.col[i].hi;
+        for (i++; i < U.ncol && KEY(U.col[i]) <= hi; i++)
             if (U.col[i].hi > hi) hi = U.col[i].hi;
         VkMemSpan sp;
         if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
@@ -283,18 +347,39 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         }
         if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
         U.reg[U.nreg++] = (Reg){lo, hi, total, UINT64_MAX};
+        if (U.fast) hot_spans(i0, i, lo, total);
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
     uint8_t *dst = U.arena->map;
-    if (vk_dlaa_available()) {
+    int dlaa = vk_dlaa_available();
+    if (dlaa) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
-    for (int i = 0; i < U.nreg; i++)
-        memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
-    if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
+    U.sparse = U.fast && dlaa;
+    if (U.sparse) {
+        // the hot spans through the host copy, the rest straight from guest memory into the arena
+        uint8_t *map = U.arena->map, *cpu = U.arena->cpu;
+        for (int i = 0, k = 0; i < U.nreg; i++) {
+            const Reg *r = &U.reg[i];
+            uint64_t pos = r->off, end = r->off + (r->hi - r->lo), g = r->lo - r->off;   // g + offset: guest address
+            for (; k < U.nhot && U.hot[k].lo < end; k++) {
+                uint64_t a = U.hot[k].lo, n = U.hot[k].hi - a;
+                if (pos < a) memcpy(map + pos, (const void *)(uintptr_t)(g + pos), a - pos);
+                memcpy(cpu + a, (const void *)(uintptr_t)(g + a), n);
+                memcpy(map + a, cpu + a, n);
+                pos = U.hot[k].hi;
+            }
+            if (pos < end) memcpy(map + pos, (const void *)(uintptr_t)(g + pos), end - pos);
+        }
+        U.fsubs++;
+    } else {
+        for (int i = 0; i < U.nreg; i++)
+            memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+        if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
+    }
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
@@ -318,7 +403,22 @@ static int first_above(uint64_t a) {
 
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t at, uint64_t align, VkDescriptorBufferInfo *out) {
     if (!U.on || !n) return 0;
-    int i = first_above(addr);
+    int i;
+    if (U.fast) {
+        // The region this thread last found for the 4 KiB around addr, checked against the table of this submission:
+        // an addr inside reg[i] has no region before it that ends above, so i is what first_above gives.
+        static _Thread_local int memo[256];
+        uint32_t k = (uint32_t)((addr >> 12) * 0x9E3779B97F4A7C15ull >> 56);
+        i = memo[k];
+        int hit = (unsigned)i < (unsigned)U.nreg && U.reg[i].lo <= addr && addr < U.reg[i].hi;
+        if (!hit) i = first_above(addr), memo[k] = i;
+        if (rt_trace & RT_TRACE_PERF) {
+            __atomic_fetch_add(&U.finds, 1, __ATOMIC_RELAXED);
+            if (hit) __atomic_fetch_add(&U.find_memo, 1, __ATOMIC_RELAXED);
+        }
+    } else {
+        i = first_above(addr);
+    }
     if (i >= U.nreg) return 0;
     const Reg *r = &U.reg[i];
     if (__atomic_load_n(&r->drop_at, __ATOMIC_RELAXED) <= at || addr < r->lo || addr + n > r->hi) return 0;
@@ -349,14 +449,39 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy where there is one (DLSS), else the device copy
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+// [off, off+n) of the arena for the CPU. The host copy where there is one (DLSS), else the device copy. With a sparse
+// host copy (USNAP_FAST), only a span inside a hot span is there; any other read takes the bytes from the arena, which
+// holds the same ones, into one of a thread's few buffers (a caller holds at most a few pointers at once).
+static const uint8_t *host_span(uint64_t off, uint64_t n) {
+    const Arena *a = U.arena;
+    if (!U.sparse) return (a->cpu ? a->cpu : a->map) + off;
+    int lo = 0, hi = U.nhot;
+    while (lo < hi) {
+        int m = (lo + hi) / 2;
+        if (U.hot[m].hi <= off) lo = m + 1;
+        else hi = m;
+    }
+    if (lo < U.nhot && U.hot[lo].lo <= off && off + n <= U.hot[lo].hi) return a->cpu + off;
+    static _Thread_local struct { uint8_t *p; size_t cap; } ring[8];
+    static _Thread_local unsigned next;
+    typeof(ring[0]) *r = &ring[next++ % 8];
+    if (r->cap < n) {
+        free(r->p);
+        if (!(r->p = malloc(r->cap = (size_t)n))) rt_fatal("vk_usnap: out of memory");
+    }
+    memcpy(r->p, a->map + off, n);
+    if (rt_trace & RT_TRACE_PERF) {
+        __atomic_fetch_add(&U.fb_n, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&U.fb_bytes, n, __ATOMIC_RELAXED);
+    }
+    return r->p;
+}
 
-const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
+const uint8_t *vk_usnap_host(const VkDescriptorBufferInfo *bi) { return host_span(bi->offset, bi->range); }
 
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     VkDescriptorBufferInfo bi;
-    return vk_usnap_find(addr, n, UINT32_MAX, 1, &bi) ? host_copy() + bi.offset : NULL;
+    return vk_usnap_find(addr, n, UINT32_MAX, 1, &bi) ? host_span(bi.offset, n) : NULL;
 }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).

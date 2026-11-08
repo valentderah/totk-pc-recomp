@@ -415,3 +415,8 @@
 # names each dirty target that stays on the GPU ("fence write-back skipped-drawn-every-frame") and each one over 65536
 # bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
 # wb_fence_limit = 65536
+# Cheaper uniform snapshot with the same bytes for the GPU and the CPU readers (duplicate ranges left out, a remembered
+# region for lookups, with DLSS only the per-object motion ranges through a host copy, the c0 bank compared on its
+# storage bindings alone), 0, 1 or ab (alternates with the A/B blocks). Default: 0. With trace = perf the log shows
+# the ranges left out and the reads outside the host copy.
+# usnap_fast = 0
