@@ -146,9 +146,14 @@ static _Alignas(16) uint8_t scratch[0x80];   // guest addresses are host address
 static void sets_load(void) {
     if (loaded) return;
     loaded = 1;
-    snprintf(sets_path, sizeof sets_path, "%s/armor-sets.txt", rt_default_profile);
+    // The profile the run uses (portable folder, --profile), not the build's default: a moved or copied install
+    // would otherwise read and write a file that is not there.
+    snprintf(sets_path, sizeof sets_path, "%s/armor-sets.txt", rt_config()->profile);
     FILE *f = fopen(sets_path, "r");
-    if (!f) return;
+    if (!f) {
+        rt_log("armor sets: no sets yet (%s)", sets_path);
+        return;
+    }
     char slot[16], p[3][NAME_LEN];
     while (fscanf(f, "%15s %63s %63s %63s", slot, p[0], p[1], p[2]) == 4) {
         int d = atoi(slot) - 1;
@@ -158,6 +163,9 @@ static void sets_load(void) {
         for (int s = 0; s < 3; s++) snprintf(sets[d][s], NAME_LEN, "%s", strcmp(p[s], ".") ? p[s] : "");
     }
     fclose(f);
+    int n = 0;
+    for (int d = 0; d < SLOTS; d++) n += sets[d][0][0] || sets[d][1][0] || sets[d][2][0];
+    rt_log("armor sets: %d sets read from %s", n, sets_path);
 }
 
 static void sets_store(void) {
