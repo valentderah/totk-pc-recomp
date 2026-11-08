@@ -2243,6 +2243,22 @@ static void collect_locked(VkCtx *c) {
     ndead = k;
 }
 
+// Fences a thread waits on outside cmd_lock (vk_upload_wait): a batch that completes and retires meanwhile keeps its
+// fence out of reuse (vkResetFences) until the waiter is done.
+enum { FENCE_PINS = 8 };
+static VkFence pinned[FENCE_PINS];
+static int npinned;
+
+// The spare batch vk_upload_begin reuses: the newest whose fence nobody waits on; -1: none.
+static int spare_pick(void) {
+    for (int i = nspare - 1; i >= 0; i--) {
+        int held = 0;
+        for (int k = 0; k < npinned; k++) held |= pinned[k] == spare[i].fence;
+        if (!held) return i;
+    }
+    return -1;
+}
+
 VkCommandBuffer vk_upload_begin(void) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
@@ -2257,8 +2273,11 @@ VkCommandBuffer vk_upload_begin(void) {
     }
     retire(c, 0);
     memset(&open_b, 0, sizeof open_b);
-    if (nspare) {
-        Batch s = spare[--nspare];
+    int sp = spare_pick();
+    if (sp >= 0) {
+        Batch s = spare[sp];
+        memmove(spare + sp, spare + sp + 1, (size_t)(nspare - sp - 1) * sizeof *spare);
+        nspare--;
         open_b.cb = s.cb, open_b.fence = s.fence, open_b.stg = s.stg, open_b.cap = s.cap;
         vkResetCommandBuffer(open_b.cb, 0);
         vkResetFences(c->device, 1, &open_b.fence);
@@ -2416,6 +2435,38 @@ uint64_t vk_upload_flush(int wait) {
     if (c) collect_locked(c);
     plat_rmutex_unlock(&cmd_lock);
     return seq;
+}
+
+// vk_upload_flush(1) for a batch already submitted by vk_upload_flush(0), which returned seq: waits for it to complete
+// without holding cmd_lock, so the replay thread's own flushes and the uploads of other threads go on meanwhile. The
+// fence of the first batch that reaches seq is pinned while waited on, so retiring it (any thread) cannot recycle and
+// reset it under the wait. With every pin taken the wait runs under the lock, as vk_upload_flush(1) does.
+void vk_upload_wait(uint64_t seq) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    VkCtx *c = vk_ctx();
+    while (c) {
+        retire(c, 0);
+        int b = 0;
+        while (b < ninflight && inflight[b].seq < seq) b++;
+        if (done_seq >= seq || b == ninflight) break;
+        VkFence f = inflight[b].fence;
+        if (npinned == FENCE_PINS) {
+            vkWaitForFences(c->device, 1, &f, VK_TRUE, UINT64_MAX);
+            continue;
+        }
+        pinned[npinned++] = f;
+        plat_rmutex_unlock(&cmd_lock);
+        VkResult r = vkWaitForFences(c->device, 1, &f, VK_TRUE, UINT64_MAX);
+        plat_rmutex_lock(&cmd_lock);
+        for (int k = 0; k < npinned; k++)
+            if (pinned[k] == f) {
+                pinned[k] = pinned[--npinned];
+                break;
+            }
+        if (r != VK_SUCCESS) break;   // device lost: the fault is reported elsewhere
+    }
+    plat_rmutex_unlock(&cmd_lock);
 }
 
 static void defer(int kind, uint64_t handle, VmaAllocation alloc) {

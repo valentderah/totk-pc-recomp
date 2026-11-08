@@ -145,8 +145,10 @@ Many rows below are developer tools that only act together with another setting 
 | `vk_subgroup` (default `32`) | Subgroup size to pin where the driver allows it. | A value other than 32 changes what the translator is told about the GPU, and shaders are translated again. | Caution |
 | `vram_headroom` (default `1`) | `0` turns off the spare half-block of video memory that a background thread keeps per memory type. | Texture allocations on the render thread can wait for a new block again. | Caution |
 | `vs_outs` | `all` declares all 32 vertex shader output locations; otherwise only the union of the paired fragment inputs. | Larger vertex shaders and new pipelines; unwritten outputs read the same as before. | Caution |
+| `wb_core_away` (default `0`) | `1` lets a game thread give up its virtual core while it waits for the GPU copy of a texture write-back; `ab` alternates with the `ab` blocks. Only acts with `wb_nolock`. | Other game threads can use the core during the wait; the thread has to wait for a core again afterwards. `TOTK_TRACE=perf` prints the write-back waits per frame. | Caution |
 | `wb_exact` (default `1`) | `0` decides write-back of GPU-written textures by page only. | A target that shares a page with data the CPU writes can go unwritten, so a name label next to the reticle can blink. | Caution |
 | `wb_merge` (default `1`) | `0` copies GPU-written ranges back as plain copies instead of writing word by word the words that changed. | In mirror memory mode the GPU's copy can overwrite words the CPU wrote, which breaks effects such as falling rain and waterfall splashes. | Caution |
+| `wb_nolock` (default `0`) | `1` waits for the GPU copy of a texture write-back (after a fence wait, a memcpy or a pool invalidate) without holding the texture lock and the upload lock, so the replay does not stall behind the wait; a copy of a texture that changed meanwhile is dropped or kept out of its storage; `ab` alternates with the `ab` blocks. | The render thread stalls less when the game reads GPU-written textures; `TOTK_TRACE=perf` prints the write-back waits per frame. | Caution |
 
 ## Motion vectors and DLSS
 

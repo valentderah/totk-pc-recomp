@@ -408,3 +408,9 @@
 # names each dirty target that stays on the GPU ("fence write-back skipped-drawn-every-frame") and each one over 65536
 # bytes that went back ("over-default"). Raising it costs a copy per such target and wait.
 # wb_fence_limit = 65536
+# Wait for the GPU copy of a render target write-back (after a fence wait, a memcpy or a pool invalidate) without holding
+# the texture lock and the upload lock, so the render thread does not stall behind it, 0 or 1. Default: 0. With trace =
+# perf the log shows the write-back waits per frame.
+# wb_nolock = 0
+# With wb_nolock: the game thread gives up its virtual core during that wait, 0 or 1. Default: 0.
+# wb_core_away = 0
