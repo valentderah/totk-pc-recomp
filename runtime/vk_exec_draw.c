@@ -1095,6 +1095,13 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
     // vk_c0_fill reads the storage slots, and the uniform slots and dispatch size for compute or the base instance for
     // graphics: equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
+    // TOTK_USNAP_FAST: a vertex or fragment bank's inputs are its storage bindings and the base instance (the rest of
+    // c0_in stays zero), so those are all that are compared, without building the 1 KiB record first
+    static int fast = -1;
+    if (fast < 0) fast = rt_knob("USNAP_FAST", "0");
+    if (k < 2 && RT_KNOB_ON(fast) && D->B.c0_valid[k] && D->B.c0_in[k].binst == D->c0_binst &&
+        !memcmp(ex->ssbo[st], D->B.c0_in[k].ssbo, sizeof D->B.c0_in[k].ssbo))
+        return (VkDescriptorBufferInfo){D->B.c0_buf[k], D->B.c0_off[k], VK_C0_BYTES};
     typeof(D->B.c0_in[0]) in;
     memset(&in, 0, sizeof in);
     memcpy(in.ssbo, ex->ssbo[st], sizeof in.ssbo);
@@ -2983,11 +2990,11 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
     if (index >= 0 && index < 14) MO.lk[index][found ? how : MVPREV_NONE]++;
     if (!found || !vk_usnap_find(pa, n, UINT32_MAX, LIM.ubo_align, out)) return 0;
     if (how == MVPREV_SELF) return 1;   // bound at the same address last frame: not written again
-    const uint8_t *map = vk_usnap_map(), *cur = vk_usnap_bytes(u->addr, n);
+    const uint8_t *cur = vk_usnap_bytes(u->addr, n);
     uint64_t c2 = __builtin_ia32_rdtsc();
     MO.cyc[1] += c2 - c1;
     if (!cur) return 0;
-    const uint8_t *old = map + out->offset;
+    const uint8_t *old = vk_usnap_host(out);
     static long trust = -2;   // TOTK_MVPREV_TRUST=<hex bank mask> (test): the copy found is taken without the check
     if (trust == -2) {
         const char *e = cfg_get("TOTK_MVPREV_TRUST");
