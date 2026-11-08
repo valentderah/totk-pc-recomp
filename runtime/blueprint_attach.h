@@ -17,6 +17,10 @@ typedef struct {
     // 1 when the record gave this class a scale of its own (Scale, ExScale or BoundBoxLength). A material with no scale of
     // its own is fitted to the weapon it is fused to; a material with one is drawn at exactly what the data says.
     int has_own_scale;
+    // 1 when the entry names a SubModel for this class, i.e. the material brings a model of its own and replaces the part of
+    // the weapon it covers. Only then are the weapon's `_Hide` shapes dropped; otherwise the weapon keeps its shape and the
+    // material is added to it.
+    int has_sub_model;
     char model[96];            // the model to draw: a material-specific SubModel, else the material's own actor name
 } BpAttach;
 

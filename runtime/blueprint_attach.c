@@ -140,7 +140,10 @@ static int attach_member(const char *name, const uint8_t *data, size_t size, voi
         const uint32_t sub = byml_key(&doc, at, "SubModel");
         if (sub) {
             const char *s = byml_string(&doc, sub);
-            if (s && *s) snprintf(c->sub_path, sizeof c->sub_path, "%s", s);
+            if (s && *s) {
+                snprintf(c->sub_path, sizeof c->sub_path, "%s", s);
+                r->has_sub_model = 1;   // the material brings its own model: the weapon's covered shapes make way for it
+            }
         }
     }
     return 1;
