@@ -1673,6 +1673,14 @@ void vk_texture_new_submit(void) {
                (unsigned long long)f * 60, (unsigned long long)ru_n, ru_bytes / 1048576.0, ru_ns / 1e6,
                (unsigned long long)ru_wt_n, ru_wt_bytes / 1048576.0, ru_wt_ns / 1e6);
         ru_n = ru_bytes = ru_ns = ru_wt_n = ru_wt_bytes = ru_wt_ns = 0;
+        if (wb_waits) {
+            rt_log("perf: frame %llu: write-back waits %llu (%llu copies, %llu dropped as changed), %.2f ms waited, longest %.2f ms; "
+                   "%.2f waits and %.3f ms per frame; wb_nolock %d wb_core_away %d",
+                   (unsigned long long)f * 60, (unsigned long long)wb_waits, (unsigned long long)wb_copies,
+                   (unsigned long long)wb_dropped, wb_wait_ns / 1e6, wb_wait_max / 1e6, wb_waits / 60.0, wb_wait_ns / 60e6,
+                   wb_nolock_mode ? wb_nolock_mode - 1 : 0, wb_away_mode ? wb_away_mode - 1 : 0);
+            wb_waits = wb_copies = wb_wait_ns = wb_wait_max = wb_dropped = 0;
+        }
         char ub[512];
         size_t uo = 0;
         for (int i = 0; i < UP_WHY; i++)
@@ -1956,7 +1964,90 @@ typedef struct {
     Region g;
     NVNcopyRegion r;
     TexRead t;
+    uint64_t addr, use_seq, gpu_seq;   // e->pub.addr, use_seq and gpu_seq when the copy was recorded (write_back_nolock)
+    uint32_t gpu_gen;                  // and gpu_gen
+    int live;                 // write_back_nolock: the copy still belongs to its texture and goes to storage
 } WbPart;
+
+// TOTK_WB_NOLOCK (default 0; 1 on, ab: alternates with the A/B blocks): the GPU wait of a write-back runs without the
+// texture lock and the upload lock, which the replay needs at every texture lookup and every split (write_back_nolock).
+// TOTK_WB_CORE_AWAY (default 0, ab too, with WB_NOLOCK only): the guest thread gives its virtual core up for that wait,
+// as around nvnSyncWait. Stored +1: 0 is "not read yet".
+static int wb_nolock_mode, wb_away_mode;
+static int wb_knob(int *mode, const char *name) {
+    if (!*mode) *mode = rt_knob(name, "0") + 1;
+    return RT_KNOB_ON(*mode - 1);
+}
+// TOTK_TRACE=perf, tex_lock: write-back waits since the last perf line (vk_texture_new_submit), the copies they
+// carried, their time in the GPU wait (the longest one apart) and the copies dropped because the texture changed.
+static uint64_t wb_waits, wb_copies, wb_wait_ns, wb_wait_max, wb_dropped;
+static void wb_note_wait(int copies, uint64_t ns) {
+    wb_waits++, wb_copies += (uint64_t)copies, wb_wait_ns += ns;
+    if (ns > wb_wait_max) wb_wait_max = ns;
+}
+
+static void texels_drop(const TexRead *t) { vmaDestroyBuffer(vk_ctx()->vma, t->sb, t->sa); }
+
+// Whether the texture of a recorded copy is still the one it was taken from and still waits for its write-back: listed
+// (not destroyed; q->e is only compared, never read, until it is found, since the memory may be another entry's now),
+// not released and taken back or re-created since (use_seq), and not written back by another thread (gpu_dirty).
+static int wb_still_owned(const WbPart *q) {
+    for (int i = owned_lower(q->addr); i < nowned && owned[i]->pub.addr == q->addr; i++)
+        if (owned[i] == q->e) return owned[i]->gpu_dirty && owned[i]->use_seq == q->use_seq;
+    return 0;
+}
+
+// write_back_n with the GPU wait outside the locks. The copies are recorded (tex_lock held) and the batch is submitted
+// without waiting; tex_lock is then dropped for the wait, so the replay's texture lookups and flushes go on, and taken
+// again for the CPU side. Meanwhile any thread may have rendered into, written, released or destroyed a texture, so
+// every copy is checked again: a texture that is gone, taken back into use or written back by another thread (no
+// longer dirty) is left alone, and one whose storage was rewritten since the render the copy follows keeps the CPU's
+// bytes, as in vk_texture_write_back. A texture the GPU rendered into again meanwhile gets the copy, which is the
+// content the reader asked for, but stays dirty for the newer render. Entered and left with tex_lock held, taken once
+// (both callers are back-end entries without it). Frees nothing of p.
+static void write_back_nolock(Tex **v, int n, WbPart *p, int np) {
+    for (int i = 0; i < n; i++) {   // a hit that recorded no copy has nothing to wait for
+        int has = 0;
+        for (int j = 0; j < np; j++) has |= p[j].e == v[i];
+        if (!has) v[i]->gpu_dirty = 0;
+    }
+    uint64_t t0 = kern_now_ns(), seq = vk_upload_flush(0);
+    unlock();
+    int away = wb_knob(&wb_away_mode, "WB_CORE_AWAY") ? kern_core_away() : 0;
+    vk_upload_wait(seq);
+    kern_core_back(&away);   // taking a core back may wait for another thread: not under the texture lock
+    uint64_t dt = kern_now_ns() - t0;
+    lock();
+    int dropped = 0;
+    for (int j = 0, k; j < np; j = k) {   // every copy is checked before any is written back (vk_texture_write_back)
+        Tex *e = p[j].e;
+        for (k = j; k < np && p[k].e == e; k++) {}
+        int live = wb_still_owned(&p[j]);
+        uint32_t now;
+        if (live && storage_rewritten(e, p[j].gpu_gen, &now) == 1) {
+            if (e->gpu_seq == p[j].gpu_seq) e->gpu_dirty = 0;
+            live = 0;
+        }
+        for (int m = j; m < k; m++) p[m].live = live;
+        if (!live) dropped += k - j;
+    }
+    for (int i = 0; i < np; i++) {
+        WbPart *q = &p[i];
+        if (!q->live) {
+            texels_drop(&q->t);
+            continue;
+        }
+        uint8_t *buf = malloc(q->g.img * (size_t)q->g.nz);
+        if (!buf) rt_fatal("vk: out of memory for a texture write-back");
+        texels_read_take(q->e, &q->g, &q->t, buf);
+        storage_texels(&q->e->t, &q->g, &q->r, buf, 1);
+        free(buf);
+    }
+    for (int i = 0; i < np; i++)
+        if (p[i].live && p[i].e->gpu_seq == p[i].gpu_seq) p[i].e->gpu_dirty = 0;
+    wb_note_wait(np, dt);
+    wb_dropped += (uint64_t)dropped;
+}
 
 static void write_back_n(Tex **v, int n) {
     int np = 0, cap = 0;
@@ -1978,10 +2069,20 @@ static void write_back_n(Tex **v, int n) {
                 q->r = (NVNcopyRegion){.width = (int)mip(d->width, lv),
                                        .height = d->target == 0 || d->target == 3 ? 1 : (int)mip(d->height, lv),
                                        .depth = is3d ? (int)mip(d->depth, lv) : 1};
+                q->addr = e->pub.addr, q->use_seq = e->use_seq, q->gpu_seq = e->gpu_seq, q->gpu_gen = e->gpu_gen;
                 if (region_of(&e->t, &vw, &q->r, 0, 0, &q->g) && texels_read_record(e, &q->g, &q->r, &q->t)) np++;
             }
     }
-    if (np) vk_upload_flush(1);
+    if (np && wb_knob(&wb_nolock_mode, "WB_NOLOCK")) {
+        write_back_nolock(v, n, p, np);
+        free(p);
+        return;
+    }
+    if (np) {
+        uint64_t t0 = rt_trace & RT_TRACE_PERF ? kern_now_ns() : 0;
+        vk_upload_flush(1);
+        if (t0) wb_note_wait(np, kern_now_ns() - t0);
+    }
     for (int i = 0; i < np; i++) {
         WbPart *q = &p[i];
         uint8_t *buf = malloc(q->g.img * (size_t)q->g.nz);
