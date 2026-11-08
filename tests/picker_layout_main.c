@@ -10,6 +10,7 @@
 
 #include "ui/blueprint_picker.h"
 #include "bfres.h"
+#include "blueprint_attach.h"
 #include "model_romfs.h"
 
 #define FAKE_ENTRIES 40
@@ -73,10 +74,33 @@ void rt_log(const char *fmt, ...) { (void)fmt; }
 // The runtime model source (model_romfs.c + bfres.c) is not linked into this test: there is no RomFS and no MeshCodec
 // bridge, so every part falls through to the collision-shape fallback and then the box. These stubs only have to link.
 const BfresModel *model_romfs_resolve(const char *actor) { (void)actor; return NULL; }
+const BfresModel *model_romfs_resolve_model(const char *model_name) { (void)model_name; return NULL; }
 int bfres_shape_triangles(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
+int bfres_shape_name(const BfresModel *m, int index, char *name, size_t cap) {
+    (void)m; (void)index;
+    if (name && cap) name[0] = 0;
+    return 0;
+}
 int bfres_shape_vertices(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
 int bfres_shape_geometry(const BfresModel *m, int index, float *verts, int max_verts, uint16_t *tris, int max_tris) {
     (void)m; (void)index; (void)verts; (void)max_verts; (void)tris; (void)max_tris; return 0;
+}
+// The fused-material path needs the game's attachment data and the weapon's skeleton, neither of which this test has. A
+// part with no model never reaches them anyway, so these only have to link.
+int bp_attach_resolve(const char *weapon, const char *material, BpAttach *out) {
+    (void)weapon; (void)material;
+    if (out) memset(out, 0, sizeof *out);
+    return 0;
+}
+void bp_attach_matrix(const BpAttach *a, const float bone_world[16], float fit_scale, float out[16]) {
+    (void)a; (void)bone_world; (void)fit_scale;
+    memset(out, 0, sizeof(float) * 16);
+    out[0] = out[5] = out[10] = out[15] = 1.0f;
+}
+float model_romfs_extent(const BfresModel *m) { (void)m; return 0.0f; }
+int bfres_bone_find(const BfresModel *m, const char *name) { (void)m; (void)name; return -1; }
+int bfres_bone_world(const BfresModel *m, int index, float out[16]) {
+    (void)m; (void)index; (void)out; return 0;
 }
 
 // The picker uses this for the double-click window on the preview's camera. A monotonic counter is enough here: the

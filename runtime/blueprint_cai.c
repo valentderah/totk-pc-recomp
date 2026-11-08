@@ -17,7 +17,8 @@ enum {
     BPC_ACTOR_OFFSET = 12,       // after the header: magic, 2 pad bytes, version, count, count - 1, pad
     BPC_ACTOR_BYTES = 280,
     BPC_ACTOR_FLOATS = 38,       // (64 + 64 + 24) / 4: the matrices, only read to reject NaN and infinity
-    BPC_ACTOR_NAME_OFFSET = 152, // after the matrices
+    BPC_ACTOR_NAME_OFFSET = 152, // after the matrices: the actor's own name, 64 bytes
+    BPC_ACTOR_SUB_NAME_OFFSET = 216, // the name of the actor it was fused with, 64 bytes more
     BPC_BBOX_OFFSET = 6144,      // the six floats the game frames the draft with: min x, y, z, max x, y, z
     BPC_BBOX_FLOATS = 6,
     BPC_MAGIC_BYTES = 6,
@@ -89,6 +90,11 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         if (!(bp.scale[k] > 0.01f && bp.scale[k] < 100.0f)) bp.scale[k] = 1.0f;
         for (int r = 0; r < 3; r++)
             for (int c = 0; c < 3; c++) bp.rot[k][r][c] = read_float(actor + (size_t)(r * 4 + c) * 4);
+        // The record's 128-byte name area holds two names: the actor's, and the actor it was fused with. The second is how a
+        // fused weapon or shield says which material went onto it. It is optional - most parts have none - so a record whose
+        // second name is empty is not damaged.
+        const char *sub = NULL;
+        if (actor_name(actor + BPC_ACTOR_SUB_NAME_OFFSET, &sub) && sub && *sub) bp.sub_names[k] = sub;
     }
     // The bounding box frames the draft in the game; an impossible number there is a damaged file as well. BpcResult has
     // no code of its own for it, so it is reported as bad actor data (both are "a number in the blob is not one").

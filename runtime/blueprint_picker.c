@@ -15,6 +15,7 @@
 #include "ui/blueprint_picker.h"
 
 #include "bfres.h"
+#include "blueprint_attach.h"
 #include "blueprint_dir.h"
 #include "blueprint_file.h"
 #include "blueprint_shape.h"
@@ -298,11 +299,17 @@ static void preview_project(const float p[3], float *sx, float *sy, float *depth
 }
 
 // A part vertex in blueprint space: fuseInfo scales the whole part, the rotation (row-major) turns it, the position moves it.
-static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]) {
-    const float s = bp->scale[k];
+// `placement_only` leaves fuseInfo out, for the material fused onto the part (fuseInfo is the weapon's own scale).
+static void part_point_ex(const BpcBlueprint *bp, int k, const float v[3], int placement_only, float out[3]) {
+    (void)placement_only;
+    const float s = 1.0f;   // fuseInfo is not a visual scale: see part_matrix_ex in ui/preview3d.cpp
     const float p[3] = {v[0] * s, v[1] * s, v[2] * s};
     for (int i = 0; i < 3; i++)
         out[i] = bp->pos[k][i] + bp->rot[k][i][0] * p[0] + bp->rot[k][i][1] * p[1] + bp->rot[k][i][2] * p[2];
+}
+
+static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]) {
+    part_point_ex(bp, k, v, 0, out);
 }
 
 // One triangle, projected and emitted into the face list, with the actor's own colour and a face normal lit by the key
@@ -345,12 +352,85 @@ static void emit_triangle(const BpcBlueprint *bp, int k, const float *a, const f
     dst->color = k % 21;
 }
 
+// A fused material, drawn on the socket the game names for it. Same source of truth as the GPU path
+// (runtime/blueprint_attach.c), so the two previews agree: the socket is a bone of the weapon model, and the material's
+// own rotation, scale and offset go under it.
+static void emit_fused_material(const BpcBlueprint *bp, int k, const BfresModel *weapon, int budget) {
+    const char *sub = bp->sub_names[k];
+    if (!sub || !*sub || !weapon) return;
+    BpAttach at;
+    if (!bp_attach_resolve(bp->names[k], sub, &at)) return;
+    const BfresModel *mat = model_romfs_resolve_model(at.model);
+    if (!mat) return;
+
+    float bone[16], place[16];
+    float fit = 1.0f;
+    {
+        const float mat_extent = model_romfs_extent(mat);
+        if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
+            fit = at.bound_box_length / mat_extent;
+        } else if (!at.has_own_scale && mat_extent > 0.0005f) {
+            const float weapon_extent = model_romfs_extent(weapon);
+            if (weapon_extent > 0.0005f) fit = weapon_extent / mat_extent;
+        }
+    }
+    const int bi = bfres_bone_find(weapon, at.bone);
+    if (bi < 0 || !bfres_bone_world(weapon, bi, bone)) {
+        // No socket found: the material still gets drawn at the part's own origin, which is visibly wrong rather than
+        // silently missing - a missing material is the bug this whole path exists to fix.
+        memset(bone, 0, sizeof bone);
+        bone[0] = bone[5] = bone[10] = bone[15] = 1.0f;
+    }
+    bp_attach_matrix(&at, bone, fit, place);
+
+    const int limit = g_preview.nfaces + budget;
+    for (int s = 0; s < mat->count && g_preview.nfaces < limit; s++) {
+        const int ntris = bfres_shape_triangles(mat, s);
+        const int nverts = bfres_shape_vertices(mat, s);
+        if (ntris <= 0 || nverts <= 0) continue;
+        float *verts = malloc((size_t)nverts * 3 * sizeof(float));
+        uint16_t *tris = malloc((size_t)ntris * 3 * sizeof(uint16_t));
+        if (!verts || !tris) { free(verts); free(tris); continue; }
+        const int vc = bfres_shape_geometry(mat, s, verts, nverts, tris, ntris);
+        if (vc > 0) {
+            // Into the weapon's model space: the material's vertices go through the socket once, then the part's own
+            // blueprint placement applies to all of them as usual. The part's fuseInfo is the WEAPON's scale, so it is
+            // divided back out here: a fuse joins two objects that each keep their own size.
+            const float inv_scale = 1.0f;   // parts are drawn at their own size, so nothing has to be divided out
+            for (int v = 0; v < vc; v++) {
+                const float p[3] = {verts[3 * v], verts[3 * v + 1], verts[3 * v + 2]};
+                for (int a = 0; a < 3; a++)
+                    verts[3 * v + a] = (place[a * 4 + 0] * p[0] + place[a * 4 + 1] * p[1] + place[a * 4 + 2] * p[2] +
+                                        place[a * 4 + 3]) * inv_scale;
+            }
+            for (int t = 0; t < ntris && g_preview.nfaces < limit; t++) {
+                const uint16_t *idx = tris + (size_t)t * 3;
+                emit_triangle(bp, k, verts + (size_t)idx[0] * 3, verts + (size_t)idx[1] * 3, verts + (size_t)idx[2] * 3,
+                              0);
+            }
+        }
+        free(verts);
+        free(tris);
+    }
+}
+
 // One part's whole mesh, or its collision shapes when the pack has no model for it. The part may spend at most `budget`
 // triangles, so a build of several detailed parts cannot starve the ones after it.
+// A shape whose material is one of the model's `_Hide` materials: the blade of a weapon, which the game stops drawing once
+// a material is fused onto it. The shape name carries its material after "__" (Weapon_Lsword_147_Blade__Mt_Blade_Hide), so
+// the test is on the model's own naming and works for any weapon without a list of items.
+static int shape_hidden_when_fused(const BfresModel *m, int index) {
+    char name[128];
+    if (!bfres_shape_name(m, index, name, sizeof name)) return 0;
+    const char *mat = strstr(name, "__");
+    return mat && strstr(mat, "_Hide") != NULL;
+}
+
 static void emit_part(const BpcBlueprint *bp, int k, int budget) {
     const char *nm = bp->names[k];
     if (!nm || !*nm) return;
     const int limit = g_preview.nfaces + budget;
+    const int fused = bp->sub_names[k] && *bp->sub_names[k];
 
     // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
     // shape's vertices and indices, which are then projected like any other mesh.
@@ -359,6 +439,7 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
         g_view.modelled++;
         rt_log("blueprint: %s from runtime decode (%d shapes)", nm, model->count);
         for (int s = 0; s < model->count && g_preview.nfaces < limit; s++) {
+            if (fused && shape_hidden_when_fused(model, s)) continue;
             const int ntris = bfres_shape_triangles(model, s);
             const int nverts = bfres_shape_vertices(model, s);
             if (ntris <= 0 || nverts <= 0) continue;
@@ -386,6 +467,9 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
             free(verts);
             free(tris);
         }
+        // The material fused onto this part, drawn under the same part colour: without it a fused weapon or shield is a
+        // bare one, which is the wrong object.
+        emit_fused_material(bp, k, model, budget);
         return;
     }
 

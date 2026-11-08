@@ -1,4 +1,4 @@
-﻿// The collision shapes of a blueprint's parts (blueprint_shape.h): resolve an actor name to a triangle mesh by reading
+// The collision shapes of a blueprint's parts (blueprint_shape.h): resolve an actor name to a triangle mesh by reading
 // its pack from the RomFS, unpacking it, and walking the ShapeParam BYML files.
 #include <math.h>
 #include <stdio.h>
@@ -351,15 +351,51 @@ static int dict_ready(void) {
     return g_dict != NULL;
 }
 
+// The decompressed Pack/Actor/<actor>.pack.zs, with the game's own zstd dictionary applied. malloc'd, the caller frees it.
+// Shared with runtime/blueprint_attach.c, which reads a material's AttachmentParam out of the same kind of pack. Returns
+// NULL for a missing pack, an unreadable frame or a pack larger than PACK_MAX.
+uint8_t *bp_actor_pack(const char *actor, size_t *out_n) {
+    if (out_n) *out_n = 0;
+    if (!actor || !*actor) return NULL;
+    char rel[160];
+    snprintf(rel, sizeof rel, "Pack/Actor/%s.pack.zs", actor);
+    size_t zn = 0;
+    uint8_t *z = bp_romfs_file(rel, &zn);
+    if (!z) return NULL;
+    if (!dict_ready()) {
+        free(z);
+        return NULL;
+    }
+    uint8_t *raw = NULL;
+    const unsigned long long rn = ZSTD_getFrameContentSize(z, zn);
+    const unsigned id = ZSTD_getDictID_fromFrame(z, zn);
+    ZSTD_DDict *dd = ZSTD_createDDict(g_dict, g_dict_n);
+    ZSTD_DCtx *dctx = ZSTD_createDCtx();
+    if (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= PACK_MAX && (!id || dd)) {
+        raw = malloc((size_t)rn);
+        size_t got = raw && dctx ? ZSTD_decompress_usingDDict(dctx, raw, (size_t)rn, z, zn, dd) : 0;
+        if (!raw || !dctx || ZSTD_isError(got) || got != rn) {
+            free(raw);
+            raw = NULL;
+        } else if (out_n) {
+            *out_n = (size_t)rn;
+        }
+    }
+    ZSTD_freeDCtx(dctx);
+    ZSTD_freeDDict(dd);
+    free(z);
+    return raw;
+}
+
 const BpShapeMesh *bp_shape_resolve(const char *name) {
     if (!name || !*name) return NULL;
-    // A cached mesh for this name is returned as-is: re-reading and re-triangulating on every camera drag would hitch
-    // the drag, and a part name means the same geometry everywhere in a build.
+    // A cached mesh for this name is returned as-is: re-reading and re-triangulating on every camera drag would hitch the
+    // drag, and a part name means the same geometry everywhere in a build.
     for (int i = 0; i < CACHE_MAX; i++)
         if (g_cache[i].valid && !strcmp(g_cache[i].name, name)) return &g_cache[i].mesh;
 
-    // A slot: the first empty one, or the oldest when full (a simple ring). Re-resolving a part the ring evicted is
-    // still correct, just not free; a 21-part blueprint never evicts anything.
+    // A slot: the first empty one, or the oldest when full (a simple ring). Re-resolving a part the ring evicted is still
+    // correct, just not free; a 21-part blueprint never evicts anything.
     ShapeEntry *slot = NULL;
     for (int i = 0; i < CACHE_MAX; i++)
         if (!g_cache[i].valid) { slot = &g_cache[i]; break; }
@@ -370,43 +406,13 @@ const BpShapeMesh *bp_shape_resolve(const char *name) {
     }
     slot->valid = 0;
 
-    char rel[160];
-    snprintf(rel, sizeof rel, "Pack/Actor/%s.pack.zs", name);
-    size_t zn = 0;
-    uint8_t *z = bp_romfs_file(rel, &zn);
-    if (!z) {
-        // Logged once per name: a silent fallback to a box is what made this look like it did nothing at all.
-        rt_log("blueprint: no pack for %s (%s); its preview stays a box", name, rel);
-        return NULL;
-    }
-
-    if (!dict_ready()) {
-        free(z);
-        return NULL;
-    }
-
-    uint8_t *raw = NULL;
     size_t raw_n = 0;
-    {
-        unsigned long long rn = ZSTD_getFrameContentSize(z, zn);
-        unsigned id = ZSTD_getDictID_fromFrame(z, zn);
-        ZSTD_DDict *dd = ZSTD_createDDict(g_dict, g_dict_n);
-        ZSTD_DCtx *dctx = ZSTD_createDCtx();
-        if (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= PACK_MAX && (!id || dd)) {
-            raw = malloc((size_t)rn);
-            size_t out = raw && dctx ? ZSTD_decompress_usingDDict(dctx, raw, (size_t)rn, z, zn, dd) : 0;
-            if (!raw || !dctx || ZSTD_isError(out) || out != rn) {
-                free(raw);
-                raw = NULL;
-            } else {
-                raw_n = (size_t)rn;
-            }
-        }
-        ZSTD_freeDCtx(dctx);
-        ZSTD_freeDDict(dd);
+    uint8_t *raw = bp_actor_pack(name, &raw_n);
+    if (!raw) {
+        // Logged once per name: a silent fallback to a box is what made this look like it did nothing at all.
+        rt_log("blueprint: no pack for %s; its preview stays a box", name);
+        return NULL;
     }
-    free(z);
-    if (!raw) return NULL;
 
     float cloud[BP_SHAPE_MAX_VERTS * 3];
     CloudCtx cc = {cloud, 0};

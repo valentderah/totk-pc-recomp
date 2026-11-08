@@ -43,3 +43,8 @@ int sarc_each_matching(const uint8_t *p, size_t n, const char *prefix, const cha
 // The whole file at RomFS path rel (no mount prefix), malloc'd; NULL when it is not in the archive. The caller frees.
 // Shared with model_romfs.c so it reads the model archive the same way the shape reader does.
 uint8_t *bp_romfs_file(const char *rel, size_t *out_n);
+
+// The decompressed Pack/Actor/<actor>.pack.zs, with the game's own zstd dictionary applied; malloc'd, the caller frees.
+// NULL when the pack is missing or unreadable. Shared with blueprint_attach.c, which reads a material's AttachmentParam
+// out of the same kind of pack.
+uint8_t *bp_actor_pack(const char *actor, size_t *out_n);

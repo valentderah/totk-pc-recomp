@@ -25,11 +25,12 @@
 #define MODEL_MAX (1u << 20)
 
 typedef struct {
-    char name[96];              // the actor name
+    char name[96];              // the actor name or model name this entry is cached under
     int valid;
     uint8_t *buf;               // the decoded BFRES buffer: body, then the geometry pool (bfres.h expects this)
     size_t buf_n;
     BfresModel model;
+    float extent;               // the largest side of the decoded geometry; a fused material is scaled to fit by it
 } ModelEntry;
 
 #define CACHE_MAX 24
@@ -176,21 +177,16 @@ static int find_fmdb(const char *actor, char *out, size_t cap) {
     return 1;
 }
 
-// The full decoded model for an actor, cached.
-static ModelEntry *model_entry(const char *actor) {
+// The full decoded model for a model name, cached under `key`. The name is the Fmdb name the game's data uses; an actor
+// reaches this through its ModelInfo, and a fused material names a model directly (its SubModel), so both paths share it.
+static ModelEntry *model_entry_named(const char *key, const char *fmdb) {
     for (int i = 0; i < CACHE_MAX; i++)
-        if (g_cache[i].valid && !strcmp(g_cache[i].name, actor)) return &g_cache[i];
+        if (g_cache[i].valid && !strcmp(g_cache[i].name, key)) return &g_cache[i];
     ModelEntry *slot = NULL;
     for (int i = 0; i < CACHE_MAX; i++)
         if (!g_cache[i].valid) { slot = &g_cache[i]; break; }
     if (!slot) { static int cur; slot = &g_cache[cur]; cur = (cur + 1) % CACHE_MAX; }
     slot->valid = 0;
-
-    char fmdb[128];
-    if (!find_fmdb(actor, fmdb, sizeof fmdb)) {
-        rt_log("model: no ModelInfo for %s", actor);
-        return NULL;
-    }
 
     // The model file is Model/<project>.<FmdbName>.bfres.mc. The project is usually the FmdbName's own family prefix;
     // for the prototype try the exact "Model/<fmdb>.<fmdb>.bfres.mc" form first, then a scan of the RomFS index for any
@@ -218,7 +214,7 @@ static ModelEntry *model_entry(const char *actor) {
         }
     }
     if (!mc) {
-        rt_log("model: no model for %s (FmdbName %s)", actor, fmdb);
+        rt_log("model: no model for %s (FmdbName %s)", key, fmdb);
         return NULL;
     }
 
@@ -235,7 +231,7 @@ static ModelEntry *model_entry(const char *actor) {
 #endif
     free(mc);
     if (!ok || !bfres_open(&slot->model, buf, out_n)) {
-        rt_log("model: decode failed for %s (meshcodec %d, body %zu)", actor, ok, out_n);
+        rt_log("model: decode failed for %s (meshcodec %d, body %zu)", key, ok, out_n);
         free(buf);
         return NULL;
     }
@@ -272,8 +268,9 @@ static ModelEntry *model_entry(const char *actor) {
                 const float e = hi[a] - lo[a];
                 if (e > extent) extent = e;
             }
+            slot->extent = extent;   // kept even when the guard passes: a fused material is scaled to fit by it
             if (extent > kMaxPartExtent) {
-                rt_log("model: %s resolves to a %.0f m scene group, not a part; using its collision body", actor, extent);
+                rt_log("model: %s resolves to a %.0f m scene group, not a part; using its collision body", key, extent);
                 free(buf);
                 return NULL;
             }
@@ -282,17 +279,40 @@ static ModelEntry *model_entry(const char *actor) {
     // The resolved model name is logged next to the actor because that pairing is what a wrong-looking part is diagnosed
 // from: an actor whose ModelInfo lists several models can be drawn from the wrong one, and the shape count alone does not
     // say which.
-    rt_log("model: %s <- %s decoded at runtime (%d shapes, %zu bytes)", actor, fmdb, slot->model.count, out_n);
-    snprintf(slot->name, sizeof slot->name, "%s", actor);
+    rt_log("model: %s <- %s decoded at runtime (%d shapes, %zu bytes)", key, fmdb, slot->model.count, out_n);
+    snprintf(slot->name, sizeof slot->name, "%s", key);
     slot->buf = buf;
     slot->buf_n = out_n;
     slot->valid = 1;
     return slot;
 }
 
-// The decoded model of actor, or NULL (no pack, no ModelInfo, no model, or the MeshCodec bridge is missing).
+// The decoded model of actor, or NULL (no pack, no ModelInfo, no model, or the MeshCodec bridge is missing). The model the
+// actor's ModelInfo names is what is drawn, so the actor path is: pack -> ModelInfo -> model name -> this loader.
 const BfresModel *model_romfs_resolve(const char *actor) {
     if (!actor || !*actor) return NULL;
-    ModelEntry *e = model_entry(actor);
+    char fmdb[128];
+    if (!find_fmdb(actor, fmdb, sizeof fmdb)) {
+        rt_log("model: no ModelInfo for %s", actor);
+        return NULL;
+    }
+    ModelEntry *e = model_entry_named(actor, fmdb);
+    return e ? &e->model : NULL;
+}
+
+// The largest side of a decoded model's geometry, in metres; 0 when it is not known. A fused material whose record carries
+// BoundBoxLength is scaled to that length.
+float model_romfs_extent(const BfresModel *m) {
+    if (!m) return 0.0f;
+    for (int i = 0; i < CACHE_MAX; i++)
+        if (g_cache[i].valid && &g_cache[i].model == m) return g_cache[i].extent;
+    return 0.0f;
+}
+
+// The decoded model for a model name, for callers that already have one: a fused material's SubModel points at a model
+// file, and those names are not actors, so they never pass through a ModelInfo.
+const BfresModel *model_romfs_resolve_model(const char *model_name) {
+    if (!model_name || !*model_name) return NULL;
+    ModelEntry *e = model_entry_named(model_name, model_name);
     return e ? &e->model : NULL;
 }

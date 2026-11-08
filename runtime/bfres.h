@@ -46,3 +46,11 @@ int bfres_shape_triangles(const BfresModel *m, int index);   // the shape's inde
 // when the shape cannot be read (out of range, more vertices or indices than the buffers hold, uint32 indices, or a
 // primitive that is not a triangle list). Indices are absolute within the shape's own vertex array.
 int bfres_shape_geometry(const BfresModel *m, int index, float *verts, int max_verts, uint16_t *tris, int max_tris);
+
+// The skeleton's bones, for hanging something on a named socket: a fused material attaches to a `Bind_*` bone, and the
+// game names that bone in the material's own data. bfres_bone_find returns the bone index of `name` or -1; the index a
+// vertex's blend slot maps to is a different thing (the Node_Array), so a socket lookup uses these, not the Node_Array.
+int bfres_bone_find(const BfresModel *m, const char *name);
+// The bone's world transform (its position, rotation and scale composed up the parent chain) as a row-major 4x4, the
+// same convention as bone_world. Returns 0 when there is no skeleton or the index is out of range.
+int bfres_bone_world(const BfresModel *m, int index, float out[16]);

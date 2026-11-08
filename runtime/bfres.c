@@ -378,3 +378,43 @@ int bfres_shape_geometry(const BfresModel *m, int index, float *verts, int max_v
     }
     return (int)vcount;
 }
+
+// A bone's name is a length-prefixed string in the model's own string pool: {u16 length, bytes}.
+static void bone_name(const uint8_t *p, size_t n, uint32_t bone_off, char *out, size_t cap) {
+    out[0] = 0;
+    if (bone_off + 8 > n) return;
+    uint64_t at;
+    memcpy(&at, p + bone_off, 8);
+    if (!at || at + 2 > (uint64_t)n) return;
+    uint16_t len;
+    memcpy(&len, p + at, 2);
+    if (at + 2 + len > (uint64_t)n) return;
+    const size_t take = len < cap - 1 ? len : cap - 1;
+    memcpy(out, p + at + 2, take);
+    out[take] = 0;
+}
+
+int bfres_bone_find(const BfresModel *m, const char *name) {
+    if (!m || !name || !*name) return -1;
+    uint32_t bones = 0;
+    int count = 0;
+    if (!skeleton_bones(m, &bones, &count)) return -1;
+    for (int i = 0; i < count; i++) {
+        char got[64];
+        bone_name(m->p, m->n, bones + (uint32_t)i * 0x58u, got, sizeof got);
+        if (!strcmp(got, name)) return i;
+    }
+    return -1;
+}
+
+int bfres_bone_world(const BfresModel *m, int index, float out[16]) {
+    if (!m || !out) return 0;
+    uint32_t bones = 0;
+    int count = 0;
+    if (!skeleton_bones(m, &bones, &count) || index < 0 || index >= count) return 0;
+    float w[4][4];
+    bone_world(m->p, bones, count, index, w);
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) out[r * 4 + c] = w[r][c];
+    return 1;
+}
