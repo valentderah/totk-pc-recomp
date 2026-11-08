@@ -57,7 +57,7 @@ struct GpuPart {
     uint32_t vtx_bytes;     // byte offset into the vertex buffer
     uint32_t idx_bytes;     // byte offset into the index buffer
     uint32_t count;         // indices to draw
-    float lo[3], hi[3];     // its box in model space, for the contact test between a part and its fused material
+    float lo[3], hi[3];     // its box in model space
 };
 
 constexpr int kMaxParts = 2048;
@@ -301,12 +301,12 @@ int make_streams(void) {
     return S.vtx_map && S.idx_map;
 }
 
-// The smallest shift that makes box A touch box B along one axis: 0 when they already overlap there, else the gap between
-// them, signed towards the other box. The axis with the smallest such gap is the one a fused material slides along.
-static float contact_shift(float a_lo, float a_hi, float b_lo, float b_hi) {
-    if (a_hi < b_lo) return b_lo - a_hi;   // A is below B: move up to meet it
-    if (b_hi < a_lo) return b_hi - a_lo;   // A is above B: move down
-    return 0.0f;                            // they overlap on this axis
+// The gap between two spans, signed towards the other box: 0 when they overlap. A fused material slides along the axis whose
+// gap is smallest, which is the shortest way to satisfy Fuse's rule that the two are in contact.
+static float gap_between(float a_lo, float a_hi, float b_lo, float b_hi) {
+    if (a_hi < b_lo) return b_lo - a_hi;
+    if (b_hi < a_lo) return b_hi - a_lo;
+    return 0.0f;
 }
 
 // The world box of a part: its model box turned and moved by the part matrix.
@@ -372,7 +372,7 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
 
         int vbase = 0, tbase = 0;
         for (int s = 0; s < model->count; s++) {
-            if (hide_blade && shape_is_hidden_blade(model, s)) continue;
+            const int hidden = hide_blade && shape_is_hidden_blade(model, s);
             const int nverts = bfres_shape_vertices(model, s);
             const int ntris = bfres_shape_triangles(model, s);
             if (nverts <= 0 || ntris <= 0) continue;
@@ -380,6 +380,7 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
             uint16_t *tris = (uint16_t *)alloca((size_t)ntris * 3 * sizeof(uint16_t));
             const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
             if (vc <= 0) continue;
+            if (hidden) continue;
             if (S.frame < 3)   // diagnostic: the first vertices, to see whether the decode/bone produced sane numbers
                 rt_log("preview3d: %s shape%d v0=(%.2f,%.2f,%.2f) v1=(%.2f,%.2f,%.2f) tris0=(%u,%u,%u)",
                        name, s, verts[0], verts[1], verts[2], verts[3], verts[4], verts[5], tris[0], tris[1], tris[2]);
@@ -771,42 +772,32 @@ extern "C" void preview3d_record(void *command_buffer) {
                     // fuseInfo is the WEAPON's scale, so it is left out here: a fuse joins two objects that keep their own size.
                     part_matrix_ex(bp, k, 1, material_part);
                     mat_mul(material_part, attach_col, placed);   // the material sits in the weapon's model space
-                    // A fused object sits ON its weapon: the socket and the record's offset put it near, and this slides it
-                    // along the one axis where the gap is smallest, so a blade and its horn meet instead of floating apart.
-                    // Both boxes are measured in the weapon's model space, which is where `placed` lives.
+                    // Fuse is direct contact, so the material is brought against the weapon: both boxes are measured in the
+                    // weapon's model space and the material moves along the axis with the smallest gap, by exactly that gap.
+                    // Translation only - scaling one box onto another is what stretched the material.
                     {
                         const GpuPart &w = S.parts[slot];
                         const GpuPart &m = S.parts[sub_slot];
                         if (w.lo[0] <= w.hi[0] && m.lo[0] <= m.hi[0]) {
-                            float mlo[3], mhi[3], wlo[3], whi[3];
+                            float mlo[3] = {1e30f, 1e30f, 1e30f}, mhi[3] = {-1e30f, -1e30f, -1e30f};
                             for (int c = 0; c < 8; c++) {
-                                const float pm[3] = {(c & 1) ? m.hi[0] : m.lo[0], (c & 2) ? m.hi[1] : m.lo[1],
-                                                     (c & 4) ? m.hi[2] : m.lo[2]};
-                                const float pw[3] = {(c & 1) ? w.hi[0] : w.lo[0], (c & 2) ? w.hi[1] : w.lo[1],
-                                                     (c & 4) ? w.hi[2] : w.lo[2]};
+                                const float q[3] = {(c & 1) ? m.hi[0] : m.lo[0], (c & 2) ? m.hi[1] : m.lo[1],
+                                                    (c & 4) ? m.hi[2] : m.lo[2]};
                                 for (int r = 0; r < 3; r++) {
-                                    const float vm = attach_row[r * 4 + 0] * pm[0] + attach_row[r * 4 + 1] * pm[1] +
-                                                     attach_row[r * 4 + 2] * pm[2] + attach_row[r * 4 + 3];
-                                    if (c == 0 || vm < mlo[r]) mlo[r] = vm;
-                                    if (c == 0 || vm > mhi[r]) mhi[r] = vm;
-                                    if (c == 0 || pw[r] < wlo[r]) wlo[r] = pw[r];
-                                    if (c == 0 || pw[r] > whi[r]) whi[r] = pw[r];
+                                    const float v = placed[r * 4 + 0] * q[0] + placed[r * 4 + 1] * q[1] +
+                                                    placed[r * 4 + 2] * q[2] + placed[r * 4 + 3];
+                                    if (v < mlo[r]) mlo[r] = v;
+                                    if (v > mhi[r]) mhi[r] = v;
                                 }
                             }
                             int axis = -1;
                             float best = 0.0f;
-                            for (int a = 0; a < 3; a++) {
-                                const float gap = contact_shift(mlo[a], mhi[a], wlo[a], whi[a]);
-                                if (gap == 0.0f) continue;   // touching on this axis
-                                if (axis < 0 || fabsf(gap) < fabsf(best)) { best = gap; axis = a; }
+                            for (int r = 0; r < 3; r++) {
+                                const float g = gap_between(mlo[r], mhi[r], w.lo[r], w.hi[r]);
+                                if (g == 0.0f) continue;
+                                if (axis < 0 || fabsf(g) < fabsf(best)) { best = g; axis = r; }
                             }
-                            if (axis >= 0) {
-                                float move[16], shifted[16];
-                                mat_identity(move);
-                                move[axis * 4 + 3] = best;   // column-major translation
-                                mat_mul(placed, move, shifted);
-                                memcpy(placed, shifted, sizeof placed);
-                            }
+                            if (axis >= 0) placed[axis * 4 + 3] += best;
                         }
                     }
                     mat_mul(camrot, placed, sub_mvp);

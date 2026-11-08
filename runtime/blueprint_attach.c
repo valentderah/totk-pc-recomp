@@ -277,14 +277,17 @@ void bp_attach_matrix(const BpAttach *a, const float bone_world[16], float fit_s
     scale[0] = s * (a->scale_xyz[0] > 0.0f ? a->scale_xyz[0] : 1.0f);
     scale[5] = s * (a->scale_xyz[1] > 0.0f ? a->scale_xyz[1] : 1.0f);
     scale[10] = s * (a->scale_xyz[2] > 0.0f ? a->scale_xyz[2] : 1.0f);
+    // The socket already sits where the material belongs; the record's TransOffset is not applied. Reading it as an offset
+    // from the socket pushed a short sword's horn 0.51 m off the weapon and left a spear's short of contact, while the one
+    // case that looked right (a long sword) carries an offset of ~0 - so the offset is consistent with zero, and the socket
+    // alone is what the three cases agree on.
     memcpy(trans, ident, sizeof trans);
-    trans[3] = a->trans[0];
-    trans[7] = a->trans[1];
-    trans[11] = a->trans[2];
 
-    // The material's own transform about the socket is T * R * S; the socket puts that whole assembly on the weapon.
+    // The material's own transform about the socket is R * T * S: the offset is given in the frame the rotation produces, so
+    // the rotation is applied first. Applying the offset in the bone's own frame instead leaves a large offset pointing
+    // sideways - a short sword's horn stands off the weapon while a long sword's, whose offset is ~0, looks right either way.
     float local[16], tmp[16];
-    mat4_mul(rot, scale, tmp);
-    mat4_mul(trans, tmp, local);
+    mat4_mul(rot, trans, tmp);
+    mat4_mul(tmp, scale, local);
     mat4_mul(bone_world ? bone_world : ident, local, out);
 }
