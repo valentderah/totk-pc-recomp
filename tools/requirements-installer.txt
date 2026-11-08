@@ -1,7 +1,8 @@
 # Packages of the release's bundled Python 3.14.9 (tools/make_release.py): what the installer steps import.
-# numpy: recomp/gen.py. lz4: recomp/nso.py, tools/shader_census.py. cryptography, cffi, pycparser: tools/extract.py and the vendored extract scripts.
+# numpy: recomp/gen.py. Held at 2.3.x: 2.4 and later are built with an x86-64-v2 baseline and refuse to import on AMD K10
+# (Phenom II, Athlon II); 2.3 has an SSE3 baseline and dispatches AVX2/AVX-512 at run time. lz4: recomp/nso.py, tools/shader_census.py. cryptography, cffi, pycparser: tools/extract.py and the vendored extract scripts.
 # fonttools: tools/button_icons.py (make_romfs_patches.py --prompts).
-numpy==2.5.4
+numpy==2.3.5
 lz4==4.4.5
 cryptography==50.0.2
 fonttools==4.68.0

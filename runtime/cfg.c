@@ -16,6 +16,11 @@
 #include "host.h"
 #include "platform/platform.h"
 
+// The instruction set the runtime was compiled for (tools/build_game.py set_cpu): 1 is the AMD K10 build.
+#ifndef RT_CPU_LEVEL
+#define RT_CPU_LEVEL 3
+#endif
+
 #define PREFIX "TOTK_"
 #define PREFIX_LEN 5
 #define CFG_MAX_KEYS 512
@@ -53,7 +58,7 @@ static const char *const known[] = {
     "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
-    "RENDER_SCALE", "REPLAY_ASYNC",
+    "RENDER_SCALE", "REPLAY_ASYNC", "HUGE_TEXT", "CORE_SPLIT",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
     "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
@@ -96,7 +101,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"}, {"BIND_SHAKE", "input"},
     {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"},
-    {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+    {"TIMER_1MS", "performance"}, {"HUGE_TEXT", "performance"}, {"CORE_SPLIT", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
@@ -132,7 +137,7 @@ static const CfgMeta metas[] = {
     // HDR output (vk_hdr.c): on at start (the tonemap shader is swapped as shaders load); the nits apply at once
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE}, {"HDR_HUE", "80", "0..100", LIVE},
-    {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
+    {"DEVICE_PROFILE", "auto", "auto|desktop|deck|k10", RESTART},
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
     {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
@@ -164,6 +169,10 @@ static const CfgMeta metas[] = {
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
+    // the code on 2 MiB pages (platform linux.c plat_huge_text); no gain measured on a Phenom II X6
+    {"HUGE_TEXT", "0", "0|1", RESTART},
+    // game threads on three cores, the host's busy threads on the others (perf.c rt_core_split); 6+ cores, no SMT
+    {"CORE_SPLIT", "0", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
     {"LIB_PREBUILD", "1", "0|1", RESTART}, {"LIB_PREBUILD_THREADS", "", "1..64", RESTART},
@@ -276,7 +285,7 @@ int cfg_load(const char *path) {
 
 // ---- device profiles: defaults for a known machine, below the environment and totk.ini and above the table, so any
 // key the player sets wins and resetting a key in the menu returns to the profile's value. TOTK_DEVICE_PROFILE = auto
-// (default: the Steam Deck when the firmware says so), desktop (none) or deck.
+// (default: the Steam Deck when the firmware says so, k10 in the K10 build), desktop (none), deck or k10.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
 // at the screen's 1280x800 with its own 5/6 scene (the aspect patch gives the camera its 16:10, resolution.c, and the
@@ -287,7 +296,16 @@ static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
     {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
 };
-static int profile = -1;   // 0 none, 1 Steam Deck
+// AMD K10 (Phenom II X4/X6, Athlon II; the build of tools/build_game.py --cpu k10, RT_CPU_LEVEL 1): no SSSE3, SSE4 or
+// AVX, so the game code runs well below 60 fps. 30 fps is the console's own rate and keeps the frames even where 60
+// would alternate between hitting and missing the limit. The game holds three virtual cores (kernel.c) and these
+// CPUs have four to six, so the NVN replay runs on a core of its own (replay_async). Measured on a Phenom II X6 1100T
+// with an RX 580, standing in the first save's cave (1.4.3): replay_async 1 gives 27.1 fps, 1% low 21.5 against 26.3
+// and 20.0 with 0; huge_text and core_split did not help (26.5 and 23.0 fps), so they stay off here.
+static const struct { const char *key, *value; } K10[] = {
+    {"FPS_LIMIT", "30"}, {"REPLAY_ASYNC", "1"},
+};
+static int profile = -1;   // 0 none, 1 Steam Deck, 2 AMD K10
 
 static int read_line(const char *path, char *out, size_t n) {
     FILE *f = fopen(path, "r");
@@ -315,13 +333,18 @@ static int profile_of(void) {
     if (p >= 0) return p;
     const char *set = raw_get(PREFIX "DEVICE_PROFILE");
     if (set && !strcmp(set, "deck")) p = 1;
+    else if (set && !strcmp(set, "k10")) p = 2;
     else if (set && *set && strcmp(set, "auto")) p = 0;
-    else p = on_steam_deck();
+    else if (on_steam_deck()) p = 1;
+    else p = RT_CPU_LEVEL == 1 ? 2 : 0;
     __atomic_store_n(&profile, p, __ATOMIC_RELEASE);
     return p;
 }
 
-const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
+const char *cfg_device_profile(void) {
+    static const char *const name[] = {"desktop", "deck", "k10"};
+    return name[profile_of()];
+}
 
 static const char *raw_get(const char *name) {
     const char *e = getenv(name);
@@ -375,11 +398,15 @@ static void screen_default(void) {
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
-    if (!profile_of())
-        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && switch_prompts() ? screen_res : NULL;
-    for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
-        if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
-    return NULL;
+    int p = profile_of();
+    if (p == 1)
+        for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
+            if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+    if (p == 1) return NULL;   // the Steam Deck sets its own output resolution
+    if (p == 2)
+        for (size_t i = 0; i < sizeof K10 / sizeof *K10; i++)
+            if (!strcasecmp(K10[i].key, name + PREFIX_LEN)) return K10[i].value;
+    return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && switch_prompts() ? screen_res : NULL;
 }
 
 // Whether name's value comes from the player (the environment or totk.ini), not a profile or the table.
@@ -751,8 +778,9 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
-    if (!profile_of()) screen_default();
-    if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
-               "turns it off)");
+    int p = profile_of();
+    if (p != 1) screen_default();   // the Steam Deck profile sets its own output resolution
+    if (p)
+        rt_log("cfg: device profile %s: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop turns "
+               "it off)", p == 1 ? "Steam Deck" : "AMD K10");
 }

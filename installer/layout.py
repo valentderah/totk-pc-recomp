@@ -12,8 +12,9 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    totk_xlate.exe (+ totk_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
-    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py; Windows only);
-                            without one the game is built at -O1
+    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py); a
+    data/pgo-<v>-<cpu>.profdata  profile trained on one CPU level's build (the Linux K10 one) comes first for that
+                            level; without either the game is built at -O1
     totk.ini.example
     VERSION                 the release version, one line
     temp/                   the default temp folder (created)
@@ -24,7 +25,7 @@ against), runtime/deps/ with include/ and the static Opus, libvpx and zstd, bin/
 
 Dev mode, root = a repository checkout (no python/python.exe): build/py314-embed/py/python.exe (the embeddable
 Python the release ships, with the same packages), else this Python; toolchain/llvm-mingw-*/ and toolchain/deps-mingw;
-runtime/ as the sources with build/install-rtlib/libtotkrt.a and libtotkrt-v2.a (tools/build_game.py --make-runtime-lib
+runtime/ as the sources with build/install-rtlib/libtotkrt.a, libtotkrt-v2.a and libtotkrt-k10.a (tools/build_game.py --make-runtime-lib
 --out build/install-rtlib, once per --cpu); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/totk_xlate.exe; the shader list from
 refs/MacNativeGames; build/pgo/pgo-<v>.profdata when there is one; build/install-temp. The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
 dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
@@ -68,6 +69,7 @@ class Layout:
     temp: Path | None = None
     sysroot: Path | None = None       # Linux release: what the game links against, instead of the host's
     runtime_lib_v2: Path | None = None   # libtotkrt-v2.a: the runtime for CPUs without AVX2 (build_game.py --cpu v2)
+    runtime_lib_k10: Path | None = None  # libtotkrt-k10.a: the runtime for AMD K10 (build_game.py --cpu k10)
     pgo_dir: Path | None = None       # pgo-<v>.profdata (tools/pgo.py); None: no profiles (Linux)
 
     @property
@@ -75,18 +77,24 @@ class Layout:
         return self.llvm / 'bin' / ('clang' + EXE)
 
     def runtime_lib_for(self, cpu):
-        """The prebuilt runtime library for cpu (v2 or v3). None in dev mode when it was not built: the runtime is
-        then compiled from the sources in runtime/ instead."""
-        lib = self.runtime_lib_v2 if cpu == 'v2' else self.runtime_lib
+        """The prebuilt runtime library for cpu (v2, v3 or k10). None in dev mode when it was not built, and for k10
+        when the release ships its runtime sources instead of libtotkrt-k10.a: the runtime is then compiled from the
+        sources in runtime/ at install time, against the layout.h of the game being installed."""
+        lib = {'v2': self.runtime_lib_v2, 'k10': self.runtime_lib_k10}.get(cpu, self.runtime_lib)
         if lib and lib.is_file():
             return lib
+        if cpu == 'k10' and (self.runtime / 'main.c').is_file():
+            return None
         return None if self.dev else lib
 
-    def pgo(self, version):
+    def pgo(self, version, cpu=None):
         """The execution profile build_game.py --pgo compiles the update's code with, None without one (the game is
-        then built at -O1)."""
-        p = self.pgo_dir / f'pgo-{version_tag(version)}.profdata' if self.pgo_dir else None
-        return p if p and p.is_file() else None
+        then built at -O1). A profile trained on the build of the CPU level cpu (pgo-<v>-<cpu>.profdata: the K10
+        build's, played on a Phenom II) comes before the update's general one."""
+        if not self.pgo_dir:
+            return None
+        names = ([f'pgo-{version_tag(version)}-{cpu}.profdata'] if cpu else []) + [f'pgo-{version_tag(version)}.profdata']
+        return next((self.pgo_dir / n for n in names if (self.pgo_dir / n).is_file()), None)
 
     def patches(self, version):
         """The code patch table for recomp/gen.py."""
@@ -134,11 +142,12 @@ def release_layout(root):
         llvm=root / 'llvm', deps=root / 'runtime' / 'deps', runtime=root / 'runtime',
         runtime_lib=root / 'runtime' / 'libtotkrt.a',
         runtime_lib_v2=root / 'runtime' / 'libtotkrt-v2.a',
+        runtime_lib_k10=root / 'runtime' / 'libtotkrt-k10.a',
         ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
         shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
-        pgo_dir=root / 'data' if WIN else None,
+        pgo_dir=root / 'data',
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
         # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
         temp=root / 'temp' if WIN else None,
@@ -161,6 +170,7 @@ def dev_layout(root):
         llvm=trees[-1] if trees else root / 'toolchain' / 'llvm-mingw-missing', deps=deps,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libtotkrt.a',
         runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
+        runtime_lib_k10=root / 'build' / 'install-rtlib' / 'libtotkrt-k10.a',
         ninja=UCRT / ('ninja' + EXE), hactool=root / 'toolchain' / 'hactool' / ('hactool' + EXE),
         xlate=root / 'build' / 'xlate' / ('totk_xlate' + EXE),
         dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
@@ -182,6 +192,7 @@ def dev_layout_posix(root):
         llvm=Path(clang).parent.parent if clang else root / 'toolchain' / 'clang-missing', deps=None,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libtotkrt.a',
         runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
+        runtime_lib_k10=root / 'build' / 'install-rtlib' / 'libtotkrt-k10.a',
         ninja=Path(ninja) if ninja else root / 'toolchain' / 'ninja-missing',
         hactool=root / 'toolchain' / 'hactool' / 'hactool', xlate=root / 'build' / 'xlate' / 'totk_xlate',
         shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp')

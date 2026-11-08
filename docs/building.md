@@ -100,6 +100,16 @@ of them.
    objects before it links: any AVX, BMI or other instruction above x86-64-v2 outside a function listed there as
    dispatched by a runtime CPU check stops the build.
 
+   `--cpu k10` goes one level lower, for AMD family 10h (Phenom II X4/X6, Athlon II): `-march=amdfam10`, that is SSE3,
+   SSE4a, POPCNT and LZCNT without SSSE3, SSE4.1 or SSE4.2. Clang lowers the vector builtins of `runtime/simd.h` to
+   SSE2/SSE3 sequences and libm calls, so it is the slowest build. It links `runtime/fma.c` as v2 does, and runs
+   `tools/check_isa.py --level k10`, which also refuses SSSE3 and SSE4 mnemonics (pshufb, pmulld, roundps, ptest...).
+   The setup picks it when the host check finds neither v3 nor v2 but K10's SSE3/SSE4a/ABM. What the setup runs besides
+   the game has to start on K10 too, so the bundled numpy is held at 2.3.x (`tools/requirements-installer.txt`): 2.4 and
+   later are built for x86-64-v2 and stop with an illegal instruction on import. To try the release's tools on a K10
+   without one, run them under `qemu-x86_64 -cpu phenom -L <root>`, where `<root>` holds a glibc, libstdc++, libgcc_s and
+   zlib built for plain x86-64: a host whose own libraries target x86-64-v3 (CachyOS) fails in them first.
+
    `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
@@ -164,6 +174,23 @@ folder. The folder holds code and data derived from your game: for your own mach
 with it too: hot paths laid out straight, hot calls inlined, code that never ran compiled for size. On 1.4.3 the fight
 bench ran 12-15% faster per frame and a fight outside the training about 6%. The installer builds with
 `data/pgo-<ver>.profdata` of the release when the update has one, else at -O1.
+
+A profile can also belong to one CPU level's build: `data/pgo-<ver>-<cpu>.profdata` comes first for installs of that
+level (installer/layout.py `pgo`), and the Linux release (tools/make_release_linux.py `cpu_profiles`) ships every
+`build/pgo/pgo-<ver>-<cpu>.profdata` and builds that level's runtime library with it. The K10 one was trained on a
+Phenom II X6 1100T: `build_game.py --cpu k10 --pgo gen` (the release LLVM needs `libclang_rt.profile.a` from the LLVM
+tarball for it), played with `LLVM_PROFILE_FILE` pointing at a folder of the player's, then
+`tools/pgo.py merge <build> --version v143 --out build/pgo/pgo-v143-k10.profdata`. Standing in one scene it gave 31.2
+fps against 28.4 without it (frame limit 60), 1% low 26.3 against 22-23, and loads about a third shorter. The -O2
+compile takes about half as long again as the -O1 one. Three runs of `tools/input/walk.txt` through an open-world save
+(the save restored before each, `TOTK_INPUT_SCRIPT`, `--seconds 210`) were merged in later: walking there, 2.8-3.5%
+more frames and 15% fewer frames over 50 ms than with the first profile alone, the first scene unchanged.
+
+On Linux `build_game.py` also links the generated code with ThinLTO by default (`--no-lto` turns it off), so calls
+between chunks can be inlined at link time. The link moves code generation to the end, peaks near 5 GB and takes about 5
+minutes on 16 threads, longer on a 6-core Phenom. On the Phenom walk it measured the same as the build without it
+(10,658 frames per run against 10,677, noise 2-5%), and hot/cold layout, larger import limits and a higher inline
+threshold each stayed within 1%. The players of the K10 build found it smoother, so it stays on.
 
 A profile only fits the generated C it was trained on: functions are matched by name and control-flow hash, so a
 function whose C changes loses its counts without a warning. Retrain after a lifter or generator change, from a clean

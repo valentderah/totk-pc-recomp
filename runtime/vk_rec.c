@@ -70,6 +70,7 @@ static void exec_packet(uint32_t op, void *p);
 
 static void rec_main(void *arg) {
     (void)arg;
+    rt_core_split(0);
     plat_thread_priority(rec_prio);
     uint64_t t = 0;
     for (;;) {
@@ -165,8 +166,11 @@ void rec_drain(void) {
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
 }
 
+// AMD GPUs keep the old split by default. Upstream runs the recorder only on non-AMD GPUs, and on an RX 580 under RADV
+// (Mesa 26.2.6, Phenom II X6) the recorder's own submit left the game at 1 fps: every frame waited about a second for
+// its fence. With TOTK_REC_END=0 the same build walked the open world at 41-48 fps.
 static int rec_own(void) {
-    if (end_mode < 0) end_mode = rt_knob("REC_END", "1");
+    if (end_mode < 0) end_mode = rt_knob("REC_END", vk_caps.amd ? "0" : "1");
     return end_mode;
 }
 
@@ -190,10 +194,14 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
         // past it). Keeping objects until their submission completed and ending a part from the recorder
         // (rec_end_cb) fixed the white scene on an RX 6700 XT, but not this: 0.2.8 turned the recorder on for every
         // GPU and the AMD reports came back the same day. TOTK_VK_RECORDER=1 turns it on for an A/B run.
+        // GCN under RADV keeps it on: on an RX 580 (Polaris 10, Mesa 26.2) with a Phenom II X6 the recorder ran four
+        // sessions without a fault and raised one 1.4.3 scene from 28.2 to 34.6 fps (1% low 23.3 to 28.2), where the
+        // replay thread alone had filled a host core, half of it inside the driver.
         const char *set = cfg_get("TOTK_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
-        if (!mode && vk_caps.amd && !(set && *set))
-            rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
+        int amd_off = vk_caps.amd && !vk_caps.radv_gcn;
+        mode = rt_knob("VK_RECORDER", amd_off ? "0" : "1");
+        if (!mode && amd_off && !(set && *set))
+            rt_log("vk_rec: no recorder thread on AMD RDNA GPUs or AMD's driver (TOTK_VK_RECORDER=1 turns it on)");
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();

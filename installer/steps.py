@@ -429,10 +429,19 @@ class Check(Step):
         except ValueError:
             raise InstallError('check.host_probe_failed', code=r.returncode) from None
         ctx.reporter.log(f'host: {r.stdout.strip()}')
-        if not host['x86_64_v2']:
+        # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add);
+        # k10 runs on AMD Phenom II / Athlon II, which lack SSSE3 and SSE4.1/4.2 as well.
+        forced = getattr(ctx.options, 'cpu', None)
+        if forced:
+            ctx.cpu = forced   # python -m installer --cpu: built here, played on another machine
+        elif host['x86_64_v3']:
+            ctx.cpu = 'v3'
+        elif host['x86_64_v2']:
+            ctx.cpu = 'v2'
+        elif host.get('amd_k10') and os.name != 'nt':
+            ctx.cpu = 'k10'   # Linux only: the Windows release ships no libtotkrt-k10.a (tools/make_release.py)
+        else:
             raise InstallError('check.cpu_too_old')
-        # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
-        ctx.cpu = 'v3' if host['x86_64_v3'] else 'v2'
         if not host['loader']:
             raise InstallError('check.vulkan_missing')
         devices = host['devices']
@@ -971,7 +980,7 @@ class Compile(Step):
 
     def key(self, ctx):
         return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx),
-                           ctx.layout.pgo(game_version(ctx)) or 'no profile')
+                           ctx.layout.pgo(game_version(ctx), getattr(ctx, 'cpu', 'v3')) or 'no profile')
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -997,7 +1006,7 @@ class Compile(Step):
         rep.progress('compile', 'compile', force=True)
         cpu = getattr(ctx, 'cpu', 'v3')
         lib = layout.runtime_lib_for(cpu)
-        pgo = layout.pgo(game_version(ctx))
+        pgo = layout.pgo(game_version(ctx), cpu)
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),

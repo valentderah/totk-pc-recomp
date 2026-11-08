@@ -223,7 +223,10 @@ def build_harness(work, bodies, jobs, cflags):
     if any(p.wait() for p in procs):
         raise SystemExit('compile failed')
     exe = work / ('harness.exe' if os.name == 'nt' else 'harness')
-    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs], env=env)
+    # Below SSE4.1 (--cflags=-march=amdfam10) clang lowers floor/ceil/trunc/round/rint to libm calls; the game links
+    # -lm on Linux (tools/build_game.py LINK_LIBS), so the harness does too.
+    libm = [] if os.name == 'nt' else ['-lm']
+    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs] + libm, env=env)
     return exe
 
 

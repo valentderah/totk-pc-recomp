@@ -149,10 +149,10 @@ typedef struct {
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
-       DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_N };
+       DR_WRITE_DIRECT, DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_N };
 static const char *const dr_name[DR_N] = {
     "pool_fini", "map_virtual", "texture_release (queued)", "program_release", "finish", "read_texels (writer fence)",
-    "write_texels", "guest_read (writer fence)", "frame bound", "queue full", "check drain"};
+    "write_texels", "write_texels (pool bytes, no drain)", "guest_read (writer fence)", "frame bound", "queue full", "check drain"};
 
 static PlatMutex rl = PLAT_MUTEX_INIT;
 static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
@@ -200,6 +200,7 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
 
 static void replay_main(void *arg) {
     (void)arg;
+    rt_core_split(0);
     perf_replay_thread();
     plat_mutex_lock(&rl);
     for (;;) {
@@ -468,9 +469,23 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
     plat_mutex_unlock(&rl);
     free(again);
 }
+// WriteTexels with the replay queued. A texture that is mirrored and was never rendered into gets the texels in its pool
+// bytes only (vk_texture.c vk_write_texels), at once, without waiting for the queue: queued submissions that sample it
+// take it from those bytes when replayed and see the new texels, as on hardware when the GPU has not reached them yet.
+// The game waits on a sync first where it needs the old ones, and every sync value covers the replay (the rule of
+// ReadTexels, vk_be_read_texels). Every other texture still drains first. In 1.4.3 every WriteTexels was of the first
+// kind; walking an open-world save on a Phenom II X6 the drain had cost 0.5-1.4 s a run in frames of 50-180 ms.
 static void vk_be_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row,
                                uint64_t img) {
     vk_sync_start();
+    if (gfx_replay_async() && t && vk_texture_pool_bytes_only(t)) {
+        plat_mutex_lock(&rl);
+        dr_calls[DR_WRITE_DIRECT]++, dr_tcalls[DR_WRITE_DIRECT]++;
+        plat_mutex_unlock(&rl);
+        vk_present_drain();
+        vk_write_texels(t, v, r, src, row, img);
+        return;
+    }
     replay_drain(DR_WRITE_TEXELS);
     vk_present_drain();
     vk_write_texels(t, v, r, src, row, img);

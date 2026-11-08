@@ -96,6 +96,48 @@ vsync and a 40 fps limit. These are starting points, not measurements. What help
 `device_profile = desktop` in `totk.ini` turns the profile off; `deck` turns it on elsewhere, to try the Deck's
 settings on a PC.
 
+## AMD K10 (Phenom II, Athlon II)
+
+The setup builds the K10 game on these CPUs ([building.md](building.md), `--cpu k10`), and the K10 game uses the `k10`
+device profile for every setting `totk.ini` does not set: a 30 fps limit, the NVN replay on a thread of its own
+(`replay_async = 1`). Measured on a Phenom II X6 1100T with an RX 580, standing in one scene of 1.4.3: 27.1 fps
+(1% low 21.5) with these, 26.3 (20.0) with `replay_async = 0`; `huge_text = 1` (the code on 2 MiB pages) gave 26.5
+and `core_split = 1` 23.0, so both stay off. The game is CPU-bound there, and perf showed the replay thread filling one
+core, half of it inside RADV: with the recorder thread (`vk_recorder`, on by default for GCN cards under RADV) the same
+scene at a 60 fps limit went from 28.2 to 34.6 fps (1% low 23.3 to 28.2). The spin handoff (`TOTK_SPIN_HANDOFF_US`
+25, 100 and 200 against 50) and the time read through the TSC instead of `clock_gettime` made no difference. Walking
+an open-world save (`tools/input/walk.txt`), WriteTexels without a replay drain (vk_backend.c `vk_be_write_texels`)
+took 0.5-1.4 s of waits a run off the game threads. A lower `render_scale` does not raise the frame rate. What helps most,
+on Linux:
+
+1. The performance overlay (F10) in full mode: the frame rate, mean and longest frame time over a minute in Lookout
+   Landing, in the Depths and in the Sky, with the CPU model, the GPU and the settings named.
+2. The same with `replay_async = 0`, with `huge_text = 1`, with `core_split = 1` (the game's threads on three cores,
+   the busy host threads on the other three; six cores only) and with `vk_recorder = 0` (on by default for GCN cards
+   under RADV, off on other AMD GPUs, as it hung RDNA 2 to 4). One change per run.
+3. Where the time goes, with `perf` (package `perf` or `linux-tools`) while standing in Lookout Landing:
+
+   ```sh
+   sudo sysctl kernel.perf_event_paranoid=1
+   perf record -F 999 -g --call-graph=fp -p "$(pidof totk)" -- sleep 30
+   perf report --no-children --sort symbol --stdio | head -80 > perf-k10.txt
+   ```
+
+   Lifted game functions show as `f_<guest address>`; host functions under their own names. A libm, `fma` or
+   `memcpy` entry near the top is what the K10 build still lacks an instruction for. Profile with `huge_text` off
+   (the default): the code on huge pages is an anonymous copy unless the kernel has `CONFIG_READ_ONLY_THP_FOR_FS`, and
+   perf then shows addresses there instead of names. `perf stat -e iTLB-load-misses,L1-icache-load-misses -p "$(pidof totk)"
+   -- sleep 30` with `huge_text` 0 and 1 measures what the huge pages save.
+4. `cpupower frequency-info`: these CPUs ramp their clock slowly, and the `performance` governor
+   (`sudo cpupower frequency-set -g performance`) is worth a run of its own.
+5. On a machine kept for games, the kernel's Spectre and Meltdown mitigations (`mitigations=off` on the kernel
+   command line) cost these CPUs much on every system call and thread switch, which the game makes many of. A run
+   with and without tells how much; it lowers the machine's protection against those attacks.
+6. Transparent huge pages must be on for `huge_text`: `/sys/kernel/mm/transparent_hugepage/enabled` reads
+   `[always]` or `[madvise]`.
+
+`device_profile = desktop` turns the profile off; `k10` turns it on elsewhere.
+
 ## Switches for the developer's questions
 
 Only set these when asked; each forces a fallback the build picks by itself on GPUs that need it.

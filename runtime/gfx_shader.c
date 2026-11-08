@@ -1468,6 +1468,7 @@ static XWait **wait_slot(const uint8_t key[32]) {
 
 static void xlate_worker(void *arg) {
     (void)arg;
+    rt_core_split(0);
     for (;;) {
         plat_mutex_lock(&X.lock);
         while (!X.head) plat_cond_wait(&X.work, &X.lock);

@@ -57,6 +57,7 @@ static void claim_rows(void) {
 
 static void worker(void *arg) {
     (void)arg;
+    rt_core_split(0);
     uint64_t seen = 0;
     plat_mutex_lock(&P.lock);
     for (;;) {

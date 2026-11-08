@@ -257,6 +257,40 @@ static void cpu_placement(void) {
     plat_process_affinity(on ? one : all);
 }
 
+// TOTK_CORE_SPLIT=1: the game holds three virtual cores (kernel.c) and its threads take turns on them; the host's busy
+// threads (NVN replay, Vulkan recorder, pipeline and shader workers, ASTC decoding, audio) then compete with them for
+// the same processors. With six or more physical cores this keeps every guest thread on the first three cores and the
+// host's busy threads on the rest, so a core holder is never descheduled for host work (AMD K10 X6: three and three).
+// Each thread places itself as it starts (rt_core_split). Off: on a Phenom II X6 1100T it cost 13% (23.0 fps against
+// 26.5 standing in one scene), the guest's threads crowding three cores while the other three idled.
+static uint64_t split_mask[2];   // [0] host threads, [1] guest threads; 0 until decided or when off
+static PlatOnce split_once = PLAT_ONCE_INIT;
+
+static void split_init(void *arg) {
+    (void)arg;
+    if (!rt_knob("CORE_SPLIT", "0")) return;
+    uint64_t all = 0, first = 0;
+    int cores = plat_cpu_cores(&all, &first);
+    // Without SMT only (one logical processor per core): the API names a core's first processor, not its siblings.
+    if (cores < 6 || !first || first != all) {
+        rt_log("cpu: core_split needs 6 physical cores without SMT (%d cores, %d logical processors): off", cores,
+               __builtin_popcountll(all));
+        return;
+    }
+    uint64_t guest = 0, f = first;
+    for (int i = 0; i < 3; i++) guest |= f & -f, f &= f - 1;
+    uint64_t host = all & ~guest;
+    split_mask[1] = guest, split_mask[0] = host;
+    rt_log("cpu: core_split: game threads on processors %#llx, host threads on %#llx", (unsigned long long)guest,
+           (unsigned long long)host);
+}
+
+void rt_core_split(int guest) {
+    plat_once(&split_once, split_init, NULL);
+    uint64_t m = split_mask[guest ? 1 : 0];
+    if (m) plat_thread_affinity(NULL, m);
+}
+
 void perf_present(uint64_t frame) {
     static uint64_t last, sum, max, n, win_start, ab_b;
     static int64_t win_prev[PERF_CNT_N];

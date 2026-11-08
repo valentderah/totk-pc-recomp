@@ -832,6 +832,9 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
     return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)addr, out, n, &got) && got == n;
 }
 
+// Large pages on Windows need SeLockMemoryPrivilege and cannot back an image's code: nothing to do.
+uint64_t plat_huge_text(uint64_t *code, int *how) { return *code = 0, *how = 0, 0; }
+
 // The display mode's own size: physical pixels whatever the process's DPI awareness and the display scale
 int plat_screen_size(int *w, int *h) {
     DEVMODEW dm = {.dmSize = sizeof dm};

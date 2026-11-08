@@ -306,6 +306,10 @@ uint64_t frame_step_ticks(void);                           // game time since th
 // compares the windows that are wholly A or wholly B).
 int rt_ab(void);
 int rt_knob(const char *name, const char *def);
+// TOTK_CORE_SPLIT (perf.c): with 6 or more physical cores, the calling thread is kept on the guest's three cores
+// (guest = 1: the game's threads) or off them (0: the busy host threads: replay, recorder, pipeline, shader and ASTC
+// workers, audio). Off by default; does nothing when off.
+void rt_core_split(int guest);
 #define RT_KNOB_ON(mode) ((mode) == 2 ? rt_ab() : (mode))
 void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
                                                            // present interval (60 Hz ticks)
