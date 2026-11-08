@@ -201,6 +201,9 @@ int fsr3_dispatch(Fsr3 *f, VkCommandBuffer cb, const Fsr3Frame *in) {
         .cameraFar = knob_float("TOTK_FSR3_FAR", 10000.0f),
         .cameraVerticalFovRadians = knob_float("TOTK_FSR3_FOV", 50.0f) * 3.14159265f / 180.0f,
         .viewSpaceToMeters = 1.0f, .flags = 0, .frameId = in->frame};
+    // The barriers, the blit and the copies above go through the recorder thread (vk.h includes vk_rec.h), while the
+    // bridge records into the same command buffer from this thread: the recorder makes them all first.
+    rec_drain();
     FfxVkFsr3_3_1_5Result res = ffxVkFsr3_3_1_5UpscalerContextRecordDispatch(f->ctx, &d);
     if (res == FFX_VK_FSR3_3_1_5_OK) return 1;
     static int errors;
