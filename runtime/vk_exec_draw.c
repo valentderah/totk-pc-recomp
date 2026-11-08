@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
@@ -569,30 +570,52 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     }
     if (storage && cube) vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     uint32_t aspect = vk_exec_view_aspect(img, v, hv);
+    VkFormat view_fmt = img->format;
+    uint8_t alpha_one = img->alpha_one;
+    const uint8_t *chan = img->chan;
+    if (!storage && hv && v->set_format && v->format != 0 &&
+        !(img->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+        TexVkFormat vf;
+        if (tex_vk_format(v->format, &vf) && vf.vk != VK_FORMAT_UNDEFINED) {
+            view_fmt = vf.vk;
+            alpha_one = vf.alpha_one;
+            if (vf.chan[0]) chan = vf.chan;
+        }
+    }
     uint8_t sw[4] = {NVN_TEXTURE_SWIZZLE_R, NVN_TEXTURE_SWIZZLE_G, NVN_TEXTURE_SWIZZLE_B, NVN_TEXTURE_SWIZZLE_A};
     if (!storage) {   // MNG nvn_mtl.m tex_swizzle_sel: view selectors replace the texture's, then the format remap
         memcpy(sw, hv && v->set_swizzle ? v->swz : img->swz, 4);
-        if (img->alpha_one || img->chan[0])
+        if (alpha_one || chan[0])
             for (int i = 0; i < 4; i++) {
-                if (img->alpha_one && sw[i] == NVN_TEXTURE_SWIZZLE_A) sw[i] = NVN_TEXTURE_SWIZZLE_ONE;
-                else if (img->chan[0] && sw[i] >= NVN_TEXTURE_SWIZZLE_R && sw[i] <= NVN_TEXTURE_SWIZZLE_A)
-                    sw[i] = img->chan[sw[i] - NVN_TEXTURE_SWIZZLE_R];
+                if (alpha_one && sw[i] == NVN_TEXTURE_SWIZZLE_A) sw[i] = NVN_TEXTURE_SWIZZLE_ONE;
+                else if (chan[0] && sw[i] >= NVN_TEXTURE_SWIZZLE_R && sw[i] <= NVN_TEXTURE_SWIZZLE_A)
+                    sw[i] = chan[sw[i] - NVN_TEXTURE_SWIZZLE_R];
             }
     }
     uint32_t swz = (uint32_t)sw[0] | (uint32_t)sw[1] << 8 | (uint32_t)sw[2] << 16 | (uint32_t)sw[3] << 24;
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    ViewKey k = {img->image, view_fmt, vt, aspect, l0, nl, y0, ny, swz};
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
     if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
-                                .format = img->format,
+                                .format = view_fmt,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                       .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
     if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
     VkImageView view;
-    if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) {
+        if (view_fmt != img->format) {
+            k.format = img->format;
+            found = (VkImageView)nvn_hm_get(&view_of, &k);
+            if (found) return found;
+            ci.format = img->format;
+            if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+        } else {
+            return VK_NULL_HANDLE;
+        }
+    }
     if (img->gone) {   // dropped since the lookup: its views were purged and a new one would outlive the image
         vk_defer_view(view);
         return view;
