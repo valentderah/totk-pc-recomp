@@ -19,6 +19,7 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `perf_window` (default `0`) | `1` opens a separate, non-activating performance window on Windows. | Live toggle; requests full hardware sampling and the existing GPU timestamp queries independently of `perf_overlay`. Closing the window disables this setting unless an environment override keeps it enabled. Other platforms do not open a window or request additional sampling. | Caution |
+| `input_window` (default `0`) | `1` opens a separate, non-activating controller input window on Windows. | Live toggle; shows mapped gamepad actions, physical trigger axes, stick dead zones and available sensor readings without consuming keyboard, mouse, script or recording input. Closing the window disables this setting unless an environment override keeps it enabled. Other platforms do not open a window. | Safe |
 
 ## Diagnostics and logging
 
