@@ -54,6 +54,9 @@ typedef struct {
     // what lets a preview show which way a part faces rather than only where it sits.
     float pos[BPC_MAX_ACTORS][3];      // the actor's position, in blueprint space
     float rot[BPC_MAX_ACTORS][3][3];   // its orientation: rot[k] is three basis vectors, each (x, y, z)
+    // The record's fuseInfo float, which the game's own viewer uses as a UNIFORM SCALE of the part (measured in real
+    // files: a sail is 4.0, a sword and a shield 1.4, everything else 1.0). 1.0 when the field is not a usable scale.
+    float scale[BPC_MAX_ACTORS];
     float bbox_min[3];
     float bbox_max[3];
 } BpcBlueprint;

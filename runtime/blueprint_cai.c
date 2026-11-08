@@ -83,6 +83,10 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         // rot[0..2] are the three basis vectors, kept as the matrix's rows: a preview draws each part oriented by them.
         static const int pos_elem[3] = {3, 7, 11};
         for (int i = 0; i < 3; i++) bp.pos[k][i] = read_float(actor + (size_t)pos_elem[i] * 4);
+        // fuseInfo sits right after the three 4x3 matrices (144) and before the name (152). The game's own viewer
+        // multiplies the whole part by it; a value that is not a usable positive scale is treated as 1.
+        bp.scale[k] = read_float(actor + 144);
+        if (!(bp.scale[k] > 0.01f && bp.scale[k] < 100.0f)) bp.scale[k] = 1.0f;
         for (int r = 0; r < 3; r++)
             for (int c = 0; c < 3; c++) bp.rot[k][r][c] = read_float(actor + (size_t)(r * 4 + c) * 4);
     }

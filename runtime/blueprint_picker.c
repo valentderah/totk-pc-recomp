@@ -1,4 +1,4 @@
-// The blueprint file picker's state and logic, in C: the folder it shows, the entries it lists, the path parts a player
+﻿// The blueprint file picker's state and logic, in C: the folder it shows, the entries it lists, the path parts a player
 // can press, and the hit tests that turn a pointer position or a pad button into an action. Drawing is the only part in
 // C++ (ui/blueprint_picker_draw.cpp), through a small bridge that hands the rectangles and the text to ImGui's draw list
 // without using ImGui's widget or layout system at all.
@@ -14,10 +14,14 @@
 
 #include "ui/blueprint_picker.h"
 
+#include "bfres.h"
+#include "blueprint_dir.h"
 #include "blueprint_file.h"
+#include "blueprint_shape.h"
 #include "cfg.h"
 #include "host.h"
 #include "input.h"
+#include "model_romfs.h"
 #include "input_map.h"
 #include "input_wsys.h"
 #include "platform/platform.h"
@@ -75,6 +79,10 @@ static int g_dragging, g_drag_grab_y;
 // A camera drag inside the preview: the pointer at the previous frame, so each frame turns the view by how far the pointer
 // moved. Kept apart from the scrollbar drag because the two live in different parts of the panel.
 static int g_cam_dragging, g_cam_last_x, g_cam_last_y;
+// 1 once the pointer has moved this session: a pointer parked on a row must not keep pulling the focus back to that row
+// while the pad walks the list, and it must not swap the preview when it rests in the preview column.
+static int g_pointer_moved;
+static int g_pointer_x, g_pointer_y;
 
 // ---- the preview of the file under the pointer or the pad cursor
 //
@@ -86,23 +94,35 @@ static int g_cam_dragging, g_cam_last_x, g_cam_last_y;
 // rotation, and the whole thing is projected through one fixed camera. That is honest about what the file contains and
 // still reads as the shape of the build, which a flat scatter could not.
 // One projected face: its four corners in the view box (0..1) and how lit it is. Faces are painted far to near, which
-// is the whole depth solution a draw list needs - it has no depth buffer.
+// is the whole depth solution a draw list needs - it has no depth buffer. A triangle folds its fourth corner onto the
+// third, so one quad fill paints both.
 typedef struct {
     float x[4], y[4];
     float shade;
     float depth;   // mean corner depth, for the sort only
+    int approx;    // 1 when the face came from a collision shape rather than the part's own model
+    int color;     // the actor's palette index, as the game's own viewer colours a build (0..20)
 } PickFace;
+
+// One distinct part name and how often the blueprint uses it.
+typedef struct {
+    char name[96];
+    int count;
+} PickKind;
 
 typedef struct {
     char path[PICK_PATH_MAX];      // the file the data below belongs to; "" when nothing is read yet
     int ok;                        // 1: a real blueprint; 0: refused (note says why)
     int actors;                    // parts, when ok
     char note[96];                 // the file name when ok, else the reason it cannot be imported
+    int kinds;                     // distinct part names, most used first
+    PickKind kind[BPC_PICK_MAX_KINDS];
     int nfaces;
     PickFace face[BPC_PICK_MAX_FACES];   // far first
     // The camera the faces below were projected with. A drag changes the camera, and the cache is only good while they
     // still agree, so turning the view re-projects the same file instead of needing a new path to invalidate it.
-    float cam_yaw, cam_pitch;
+    float cam_yaw, cam_pitch, cam_zoom;
+    float aspect;                  // the view's width/height, so a window resize also re-projects
 } PickPreview;
 static PickPreview g_preview;
 
@@ -110,19 +130,61 @@ static PickPreview g_preview;
 // on a plane (its bbox is wide in x/z and thin in y), so this is the angle that shows the layout - the same reasoning a
 // player would use when turning a build in the Autobuild screen. The default is 35 degrees of yaw and 28 of pitch; the
 // pointer can drag it round (a picker-wide setting, kept across files so a player who turned one build keeps that view).
-static struct { float yaw, pitch; } g_cam = {0.610865f, 0.488692f};
+static struct { float yaw, pitch, zoom; } g_cam = {0.610865f, 0.488692f, 2.4f};
+// The orbit's leftover momentum, in radians, replayed and decayed after the button is released. three.js' OrbitControls
+// calls this damping and it is what gives a drag weight: the build keeps turning for a fraction of a second and settles,
+// instead of stopping dead the instant the pointer stops. Releasing fast therefore carries the view a little further,
+// which is the behaviour people expect from every 3D viewer they have used.
+static float g_cam_vel_yaw, g_cam_vel_pitch;
+#define BP_CAM_DAMPING 0.12f   // the fraction of the leftover turn applied per step; OrbitControls' default is 0.05
+// The 3D view's aspect ratio (width / height). A square view is 1; a tall view shrinks the x scale so a round part stays
+// round instead of being stretched to the window. Set by layout_preview before the projection runs.
+static float g_preview_aspect = 1.0f;
 #define BP_CAM_DEFAULT_YAW 0.610865f
 #define BP_CAM_DEFAULT_PITCH 0.488692f
+// The default framing fills the panel: 0.36 * 2.4 is about 0.86 of the normalised half-extent, so a build is readable
+// on open instead of needing a wheel first. The wheel zooms freely in both directions; only a floor against zero and
+// negative values remains, because a zero or negative zoom would flip the projection inside out.
+#define BP_CAM_DEFAULT_ZOOM 2.4f
+
+// The preview's camera and what it shows are the picker's own state, not a frame's: a frame is a throwaway copy for the
+// draw layer, so keeping the camera there meant a pad move or a drag changed data that was then discarded, and the
+// renderer never learned its image was stale.
+static struct {
+    int shown;                 // 1 when the preview is up
+    unsigned stamp;            // rises when the file or the camera changes; the renderer invalidates on it
+    char path[PICK_PATH_MAX];  // the file on show
+    int actors, modelled, approximated, hidden;
+} g_view;
+
+// 1 when the draw layer renders the preview on the GPU (ui/preview3d.cpp). The CPU projection and face list then have no
+// consumer, and doing them anyway cost more than the whole preview.
+static int g_gpu_preview;
+
+void bp_picker_use_gpu(int on) { g_gpu_preview = on != 0; }
+int bp_picker_gpu_in_use(void) { return g_gpu_preview; }
+unsigned bp_picker_preview_stamp(void) { return g_view.stamp; }
+// The blueprint on show, for the GPU renderer (ui/preview3d.cpp). Its storage is preview_load's own static, so the
+// pointer is only valid until another file is loaded.
+static const BpcBlueprint *g_shown;
+const BpcBlueprint *bp_picker_blueprint(void) { return g_preview.ok ? g_shown : NULL; }
 
 // Returns the point in 0..1 of the view box (x right, y down) and its depth, larger being further from the camera.
 static void preview_project(const float p[3], const float bbox_min[3], const float bbox_max[3],
                             float *sx, float *sy, float *depth) {
-    // Normalise the part's position into -1..1 across the blueprint's own box, so any build fills the view the same way.
-    float n[3];
+    // Centre on the box's middle and scale all three axes by ONE factor, the box's largest side. Normalising each axis by
+    // its own span stretched the build: a round wheel came out oval. One factor keeps the proportions; only the overall
+    // size is normalised.
+    float centre[3], half = 0.0f;
     for (int i = 0; i < 3; i++) {
+        centre[i] = 0.5f * (bbox_min[i] + bbox_max[i]);
         const float span = bbox_max[i] - bbox_min[i];
-        n[i] = span > 0.001f ? ((p[i] - bbox_min[i]) / span) * 2.0f - 1.0f : 0.0f;
+        if (span > half) half = span;
     }
+    half *= 0.5f;
+    if (half < 0.0005f) half = 0.0005f;
+    float n[3];
+    for (int i = 0; i < 3; i++) n[i] = (p[i] - centre[i]) / half;
     const float cy = cosf(g_cam.yaw), syn = sinf(g_cam.yaw);
     const float cp = cosf(g_cam.pitch), sp = sinf(g_cam.pitch);
     const float x1 = cy * n[0] + syn * n[2];
@@ -131,47 +193,120 @@ static void preview_project(const float p[3], const float bbox_min[3], const flo
     const float z2 = sp * n[1] + cp * z1;
     const float d = 4.0f;                          // camera distance in normalised units
     const float k = d / (d + z2);                  // perspective: near parts grow, far ones shrink
-    *sx = 0.5f + x1 * 0.36f * k;
-    *sy = 0.5f - y1 * 0.36f * k;
+    // The x scale is divided by the aspect ratio, so a round part stays round in a window that is not square: the view
+    // box is normalised to -1..1 in x and y, but it is drawn over width x height pixels, so one unit of y covers more
+    // pixels than one unit of x in a tall window.
+    const float scale = 0.36f * g_cam.zoom;
+    const float sxscale = scale / (g_preview_aspect > 0.01f ? g_preview_aspect : 1.0f);
+    *sx = 0.5f + x1 * sxscale * k;
+    *sy = 0.5f - y1 * scale * k;
     *depth = z2;
 }
 
-// The six faces of a box as indices into its eight corners, each wound counter-clockwise seen from outside.
-static const int kFace[6][4] = {
-    {0, 1, 3, 2},   // -Z
-    {4, 6, 7, 5},   // +Z
-    {0, 4, 5, 1},   // -Y
-    {2, 3, 7, 6},   // +Y
-    {0, 2, 6, 4},   // -X
-    {1, 5, 7, 3},   // +X
-};
-// Each face's outward normal, in the box's own local axes, for the shading.
-static const float kFaceNormal[6][3] = {
-    {0, 0, -1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0},
-};
-
-// A box's eight corners in blueprint space: a cube of half-extent `half` around the part's position, turned by its own
-// rotation. rot[k][world axis][local axis], so corner c uses its local signs against the three LOCAL columns.
-static void preview_box_corners(const BpcBlueprint *bp, int k, float half, float out[8][3]) {
-    for (int c = 0; c < 8; c++) {
-        const float lx = (c & 1) ? half : -half;
-        const float ly = (c & 2) ? half : -half;
-        const float lz = (c & 4) ? half : -half;
-        for (int i = 0; i < 3; i++)
-            out[c][i] = bp->pos[k][i] + bp->rot[k][i][0] * lx + bp->rot[k][i][1] * ly + bp->rot[k][i][2] * lz;
-    }
+// A part vertex in blueprint space: fuseInfo scales the whole part, the rotation (row-major) turns it, the position moves it.
+static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]) {
+    const float s = bp->scale[k];
+    const float p[3] = {v[0] * s, v[1] * s, v[2] * s};
+    for (int i = 0; i < 3; i++)
+        out[i] = bp->pos[k][i] + bp->rot[k][i][0] * p[0] + bp->rot[k][i][1] * p[1] + bp->rot[k][i][2] * p[2];
 }
 
-// Twice the signed area of a projected quad: its sign is the winding, which is how a back face is recognised.
-static float preview_area2(const float q[4][2]) {
-    float a = 0.0f;
-    for (int i = 0; i < 4; i++) {
-        const int j = (i + 1) & 3;
-        a += q[i][0] * q[j][1] - q[j][0] * q[i][1];
+// One triangle, projected and emitted into the face list, with the actor's own colour and a face normal lit by the key
+// light. No back-face culling: several of these models are single-sided sheets (sails, flags, nets) that must show from
+// both sides, and the painter's order still hides the far side behind the near one.
+static void emit_triangle(const BpcBlueprint *bp, int k, const float *a, const float *b, const float *c, int approx) {
+    if (g_preview.nfaces >= BPC_PICK_MAX_FACES) return;
+    float wa[3], wb[3], wc[3];
+    part_point(bp, k, a, wa);
+    part_point(bp, k, b, wb);
+    part_point(bp, k, c, wc);
+    float q[4][2];
+    float depth = 0.0f;
+    preview_project(wa, bp->bbox_min, bp->bbox_max, &q[0][0], &q[0][1], &depth);
+    float d2 = 0.0f, d3 = 0.0f;
+    preview_project(wb, bp->bbox_min, bp->bbox_max, &q[1][0], &q[1][1], &d2);
+    preview_project(wc, bp->bbox_min, bp->bbox_max, &q[2][0], &q[2][1], &d3);
+    depth = (depth + d2 + d3) / 3.0f;
+    // The face's normal from the world-space cross product, lit by a fixed key light.
+    float u[3] = {wb[0] - wa[0], wb[1] - wa[1], wb[2] - wa[2]};
+    float v[3] = {wc[0] - wa[0], wc[1] - wa[1], wc[2] - wa[2]};
+    float nrm[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    const float nl = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+    const float light[3] = {0.40f, 0.82f, 0.41f};
+    float lit = nl > 1e-6f ? (nrm[0] * light[0] + nrm[1] * light[1] + nrm[2] * light[2]) / nl : 1.0f;
+    if (lit < 0.0f) lit = -lit;   // two-sided: a face turned away is lit as brightly as one turned toward the light
+    float shade = 0.30f + 0.70f * lit;
+    if (shade < 0.12f) shade = 0.12f;
+    if (shade > 1.0f) shade = 1.0f;
+    PickFace *dst = &g_preview.face[g_preview.nfaces++];
+    for (int i = 0; i < 3; i++) {
+        dst->x[i] = q[i][0];
+        dst->y[i] = q[i][1];
     }
-    return a;
+    dst->x[3] = q[2][0];   // fold the fourth corner on the third: one quad fill paints a triangle
+    dst->y[3] = q[2][1];
+    dst->shade = shade;
+    dst->depth = depth;
+    dst->approx = approx;
+    dst->color = k % 21;
 }
 
+// One part's whole mesh, or its collision shapes when the pack has no model for it. The part may spend at most `budget`
+// triangles, so a build of several detailed parts cannot starve the ones after it.
+static void emit_part(const BpcBlueprint *bp, int k, int budget) {
+    const char *nm = bp->names[k];
+    if (!nm || !*nm) return;
+    const int limit = g_preview.nfaces + budget;
+
+    // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
+    // shape's vertices and indices, which are then projected like any other mesh.
+    const BfresModel *model = model_romfs_resolve(nm);
+    if (model) {
+        g_view.modelled++;
+        rt_log("blueprint: %s from runtime decode (%d shapes)", nm, model->count);
+        for (int s = 0; s < model->count && g_preview.nfaces < limit; s++) {
+            const int ntris = bfres_shape_triangles(model, s);
+            const int nverts = bfres_shape_vertices(model, s);
+            if (ntris <= 0 || nverts <= 0) continue;
+            float *verts = malloc((size_t)nverts * 3 * sizeof(float));
+            uint16_t *tris = malloc((size_t)ntris * 3 * sizeof(uint16_t));
+            if (!verts || !tris) { free(verts); free(tris); continue; }
+            const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
+            if (vc > 0) {
+                // one diagnostic per shape: the bone transform should make a stick's Y extent the tall one
+                if (!strcmp(nm, "SpObj_ControlStick_A_01")) {
+                    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+                    for (int v = 0; v < vc; v++)
+                        for (int a = 0; a < 3; a++) {
+                            if (verts[3 * v + a] < lo[a]) lo[a] = verts[3 * v + a];
+                            if (verts[3 * v + a] > hi[a]) hi[a] = verts[3 * v + a];
+                        }
+                    rt_log("blueprint: stick shape%d Y %.2f..%.2f X %.2f..%.2f", s, lo[1], hi[1], lo[0], hi[0]);
+                }
+                for (int t = 0; t < ntris && g_preview.nfaces < limit; t++) {
+                    const uint16_t *idx = tris + (size_t)t * 3;
+                    emit_triangle(bp, k, verts + (size_t)idx[0] * 3, verts + (size_t)idx[1] * 3,
+                                  verts + (size_t)idx[2] * 3, 0);
+                }
+            }
+            free(verts);
+            free(tris);
+        }
+        return;
+    }
+
+    const BpShapeMesh *body = bp_shape_resolve(nm);
+    if (body) {
+        g_view.approximated++;
+        for (int t = 0; t < body->ntris && g_preview.nfaces < limit && g_preview.nfaces < BPC_PICK_MAX_FACES; t++) {
+            const uint16_t *idx = body->tris + (size_t)t * 3;
+            emit_triangle(bp, k, body->verts + (size_t)idx[0] * 3, body->verts + (size_t)idx[1] * 3,
+                          body->verts + (size_t)idx[2] * 3, 1);
+        }
+        return;
+    }
+    g_view.hidden++;
+}
 
 // ---- the folder
 
@@ -307,7 +442,8 @@ static void preview_load(const char *path) {
     }
     // The cache holds one file under one camera: a different file, or the same file after the view was dragged, both
     // need the geometry again.
-    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch) return;
+    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch &&
+        g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect) return;
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;
@@ -325,8 +461,13 @@ static void preview_load(const char *path) {
         r = bp_file_read(path, storage, &bp);
         // Only a file that parsed is remembered: caching the path of a refused file would make the next frame claim it
         // succeeded, and the note would then be blank over an empty view.
-        if (r == BPC_OK) snprintf(parsed_path, sizeof parsed_path, "%s", path);
-        else parsed_path[0] = 0;
+        if (r == BPC_OK) {
+            snprintf(parsed_path, sizeof parsed_path, "%s", path);
+            g_shown = &bp;
+        } else {
+            parsed_path[0] = 0;
+            g_shown = NULL;
+        }
     }
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
@@ -337,69 +478,62 @@ static void preview_load(const char *path) {
     g_preview.ok = 1;
     g_preview.actors = bp.actors;
     snprintf(g_preview.note, sizeof g_preview.note, "%s", base);
-
-    // Every part becomes a box; each box contributes only the faces that face the camera. All of those faces then go into
-    // one list sorted far to near, because a draw list has no depth buffer and the painter's order is what makes a nearer
-    // face cover a further one.
-    const int n = bp.actors < BPC_PICK_MAX_DOTS ? bp.actors : BPC_PICK_MAX_DOTS;
-    // The box's half extent: a sixth of the blueprint's longest side. CAI carries no per-part size, so this stands in for
-    // one; it was chosen by measuring coverage on real files (design 5.2), and it keeps a 10-part draft from drawing as
-    // one blob while still filling the view for a 21-part one.
-    float span = 0.0f;
-    for (int i = 0; i < 3; i++) {
-        const float s = bp.bbox_max[i] - bp.bbox_min[i];
-        if (s > span) span = s;
+    g_view.actors = bp.actors;
+    g_view.shown = 1;
+    if (strcmp(g_view.path, path)) {
+        snprintf(g_view.path, sizeof g_view.path, "%s", path);
+        g_view.stamp++;   // a different build is on show
     }
-    const float half = span * 0.06f;
-    // One fixed key light from above-left, in blueprint space, so a face's brightness says which way it points.
-    const float light[3] = {0.40f, 0.82f, 0.41f};
 
-    g_preview.nfaces = 0;
-    // Estimate the perspective scale from the blueprint's centre; the per-face division below still corrects each face.
-    int guard = 0;
-    for (int k = 0; k < n; k++) {
-        float corners[8][3];
-        preview_box_corners(&bp, k, half, corners);
-        // Project all eight corners once; every face reuses them.
-        float px[8], py[8], pz[8];
-        for (int c = 0; c < 8; c++) preview_project(corners[c], bp.bbox_min, bp.bbox_max, &px[c], &py[c], &pz[c]);
-        for (int f = 0; f < 6 && g_preview.nfaces < BPC_PICK_MAX_FACES; f++) {
-            float q[4][2];
-            float depth = 0.0f;
-            for (int i = 0; i < 4; i++) {
-                const int c = kFace[f][i];
-                q[i][0] = px[c];
-                q[i][1] = py[c];
-                depth += pz[c];
-            }
-            depth *= 0.25f;
-            // A face wound the wrong way is seen from behind: skip it. Every face opposes its opposite face's winding,
-            // measured on real files, so this test is reliable.
-            if (preview_area2(q) >= 0.0f) continue;
-            // Shading: the face's outward normal in blueprint space, dotted with the light.
-            float nrm[3] = {0, 0, 0};
-            for (int i = 0; i < 3; i++)
-                nrm[i] = bp.rot[k][i][0] * kFaceNormal[f][0] + bp.rot[k][i][1] * kFaceNormal[f][1] +
-                         bp.rot[k][i][2] * kFaceNormal[f][2];
-            float lit = nrm[0] * light[0] + nrm[1] * light[1] + nrm[2] * light[2];
-            if (lit < 0.0f) lit = 0.0f;
-            // A little ambient so a face turned away is still visible as a face, and the depth dimming the earlier
-            // version used, which keeps the far side of a build reading as further away.
-            float shade = 0.30f + 0.70f * lit;
-            shade *= 0.65f + 0.35f * (1.0f - (depth + 1.6f) / 3.2f);
-            if (shade < 0.12f) shade = 0.12f;
-            if (shade > 1.0f) shade = 1.0f;
-            PickFace *dst = &g_preview.face[g_preview.nfaces++];
-            for (int i = 0; i < 4; i++) {
-                dst->x[i] = q[i][0];
-                dst->y[i] = q[i][1];
-            }
-            dst->shade = shade;
-            dst->depth = depth;
+    // The part list: distinct names grouped by how often the build uses them, most used first. This is what the text
+    // under the view shows; it comes from the file itself and is true of any CAI, model or not.
+    g_preview.kinds = 0;
+    for (int k = 0; k < bp.actors; k++) {
+        const char *nm = bp.names[k];
+        if (!nm || !*nm) continue;
+        int at = -1;
+        for (int m = 0; m < g_preview.kinds; m++)
+            if (!strcmp(g_preview.kind[m].name, nm)) { at = m; break; }
+        if (at < 0) {
+            if (g_preview.kinds >= BPC_PICK_MAX_KINDS) continue;
+            at = g_preview.kinds++;
+            snprintf(g_preview.kind[at].name, sizeof g_preview.kind[at].name, "%s", nm);
+            g_preview.kind[at].count = 0;
         }
-        if (++guard > BPC_PICK_MAX_DOTS) break;
+        g_preview.kind[at].count++;
     }
-    // Insertion sort by descending depth: at most 63 faces, so this stays simple and dependency-free.
+    // Most used first, stable for equal counts.
+    for (int a = 1; a < g_preview.kinds; a++) {
+        const PickKind k = g_preview.kind[a];
+        int b = a - 1;
+        while (b >= 0 && g_preview.kind[b].count < k.count) { g_preview.kind[b + 1] = g_preview.kind[b]; b--; }
+        g_preview.kind[b + 1] = k;
+    }
+
+    // With the GPU preview on, nothing reads the projected faces: the renderer reads the blueprint straight from
+    // bp_picker_blueprint() and rasterises with a depth buffer. The whole projection pass below is skipped.
+    if (g_gpu_preview) {
+        g_preview.nfaces = 0;
+        g_preview.cam_yaw = g_cam.yaw;
+        g_preview.cam_pitch = g_cam.pitch;
+        g_preview.cam_zoom = g_cam.zoom;
+        g_preview.aspect = g_preview_aspect;
+        return;
+    }
+
+    // Every part draws its own model, or its collision shapes when the pack has no model for it. Each part gets an equal
+    // share of the remaining budget, so a build of several detailed parts cannot starve the ones after it - the earlier
+    // first-come-first-served code hid a hanging board and four wheels because three carts and a cannon spent the whole
+    // 24000-face budget first. A part that needs less than its share leaves the rest for the ones that follow.
+    g_preview.nfaces = 0;
+    g_view.modelled = g_view.approximated = g_view.hidden = 0;
+    for (int k = 0; k < bp.actors; k++) {
+        const int left = bp.actors - k;
+        int share = (BPC_PICK_MAX_FACES - g_preview.nfaces) / (left > 0 ? left : 1);
+        if (share < 128) share = 128;   // never below a visible sliver, even near the end of a large build
+        emit_part(&bp, k, share);
+    }
+    // Insertion sort by descending depth.
     for (int i = 1; i < g_preview.nfaces; i++) {
         const PickFace p = g_preview.face[i];
         int j = i - 1;
@@ -411,6 +545,8 @@ static void preview_load(const char *path) {
     }
     g_preview.cam_yaw = g_cam.yaw;
     g_preview.cam_pitch = g_cam.pitch;
+    g_preview.cam_zoom = g_cam.zoom;
+    g_preview.aspect = g_preview_aspect;
 }
 
 static void list_folder(void) {
@@ -469,15 +605,20 @@ static int go_up(void) {
 static void activate(int i) {
     if (i < 0 || i >= g_count) return;
     char path[PICK_PATH_MAX];
+    // A drive root ("C:/") already ends in a separator, so joining it with "/" would make "C://name", which Windows
+    // then cannot list. One separator is inserted only when the current folder does not already end in one.
+    const char *sep = "";
+    const size_t dl = strlen(g_dir);
+    if (dl > 0 && g_dir[dl - 1] != '/' && g_dir[dl - 1] != '\\') sep = "/";
     if (g_entries[i].root) {
         // A drive row carries the root path itself ("C:/"), not a name below the current folder.
         snprintf(path, sizeof path, "%s", g_entries[i].name);
         open_folder(path);
     } else if (g_entries[i].dir) {
-        snprintf(path, sizeof path, "%s/%s", g_dir, g_entries[i].name);
+        snprintf(path, sizeof path, "%s%s%s", g_dir, sep, g_entries[i].name);
         open_folder(path);
     } else {
-        snprintf(path, sizeof path, "%s/%s", g_dir, g_entries[i].name);
+        snprintf(path, sizeof path, "%s%s%s", g_dir, sep, g_entries[i].name);
         finish(path);
     }
 }
@@ -493,7 +634,10 @@ int bp_picker_open(const char *start, BpPickDone done, void *ctx) {
     g_dragging = 0;
     __atomic_store_n(&g_wheel, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&g_back_pending, 0, __ATOMIC_RELEASE);
-    const char *from = start && *start ? start : cfg_get("TOTK_BLUEPRINT_DIR");
+    // The folder to open at: the caller's own path, or the folder last browsed. bp_dir_last() is used, not cfg_get,
+    // because it checks the folder still exists and returns "" when it does not - opening a deleted folder shows an
+    // empty list with no way to tell why, and a bad path ("C://" from a hand-edited ini) fails to list at all.
+    const char *from = start && *start ? start : bp_dir_last();
     snprintf(g_dir, sizeof g_dir, "%s", from && *from ? from : ".");
     list_folder();
     g_open = 1;
@@ -524,14 +668,23 @@ void bp_picker_camera(float *yaw, float *pitch) {
 }
 
 void bp_picker_camera_set(float yaw, float pitch) {
-    const float kLimit = 1.39626f;   // 80 degrees, the same clamp the drag applies
     g_cam.yaw = yaw;
-    g_cam.pitch = pitch < -kLimit ? -kLimit : pitch > kLimit ? kLimit : pitch;
+    g_cam.pitch = pitch;   // no clamp: the view can tip past the poles and read the build from the other side
+    g_view.stamp++;   // the camera changed: any rendered image is stale
 }
 
 void bp_picker_camera_reset(void) {
     g_cam.yaw = BP_CAM_DEFAULT_YAW;
     g_cam.pitch = BP_CAM_DEFAULT_PITCH;
+    g_cam.zoom = BP_CAM_DEFAULT_ZOOM;
+    g_view.stamp++;
+}
+
+float bp_picker_zoom(void) { return g_cam.zoom; }
+
+void bp_picker_zoom_set(float zoom) {
+    g_cam.zoom = zoom < 0.001f ? 0.001f : zoom;   // only a floor against zero/negative, no upper or lower limit
+    g_view.stamp++;
 }
 
 
@@ -754,40 +907,61 @@ static int row_at(const BPickFrame *f, int px, int py) {
 // holds. Follows the row under the pointer, or the pad cursor's row when the pointer is over nothing: a player moving
 // the mouse across the list sees each file's parts before they click, without having to move the pad first.
 static int layout_preview(BPickFrame *f, int pad, int preview_w, int px, int py) {
-    int idx = row_at(f, px, py);
+    // The pointer chooses the file only when it is left of the preview column and actually moving. In this layout pass
+    // the rows are still full width - layout_scroll narrows them after the preview is placed - so a point inside the
+    // column would otherwise land on whichever row lies at that height, and the preview would jump from file to file
+    // there. A pointer parked on a row while the pad walks the list must not keep pulling the preview back either.
+    const int column_x = f->x + f->w - pad - preview_w;
+    int idx = (px >= column_x || !g_pointer_moved) ? -1 : row_at(f, px, py);
     if (idx < 0) idx = g_focus_row;
     if (idx < 0 || idx >= g_count) return 0;
     if (g_entries[idx].dir || g_entries[idx].root) return 0;   // a folder has no blueprint to preview
 
     char path[PICK_PATH_MAX];
-    snprintf(path, sizeof path, "%s/%s", g_dir, g_entries[idx].name);
-    preview_load(path);
+    // Join without doubling a separator, as activate does: a drive root already ends in one.
+    const char *sep = "";
+    const size_t dl = strlen(g_dir);
+    if (dl > 0 && g_dir[dl - 1] != '/' && g_dir[dl - 1] != '\\') sep = "/";
+    snprintf(path, sizeof path, "%s%s%s", g_dir, sep, g_entries[idx].name);
 
+    // The view's aspect ratio, so the projection can keep a round part round. It must be set BEFORE the projection runs.
     const float sc = f->scale;
-    const int right = f->x + f->w - pad;
-    const int box_w = preview_w;
-    const int box_x = right - box_w;
-    const int box_y = f->row_top;
-    const int box_h = f->row_bottom - f->row_top;
-
-    (void)box_w;
-    f->preview = 1;
-    // The 3D view occupies the upper part of the column; the text sits under it.
     const int text_h = (int)(64 * sc);
     const int pad_in = (int)(12 * sc);
+    const int vw = preview_w - pad_in * 2;
+    const int vh = (f->row_bottom - f->row_top) - text_h - pad_in * 2;
+    if (vw > 0 && vh > 0) g_preview_aspect = (float)vw / (float)vh;
+    preview_load(path);
+
+    const int right = f->x + f->w - pad;
+    const int box_x = right - preview_w;
+    const int box_y = f->row_top;
+
+    f->preview = 1;
+    // The 3D view occupies the upper part of the column; the text sits under it.
     f->preview_x = box_x + pad_in;
     f->preview_y = box_y + pad_in;
-    f->preview_w = preview_w - pad_in * 2;
-    f->preview_h = box_h - text_h - pad_in * 2;
+    f->preview_w = vw;
+    f->preview_h = vh;
     if (f->preview_h < (int)(40 * sc)) f->preview_h = (int)(40 * sc);
     f->preview_faces = g_preview.nfaces;
+    f->preview_kinds = g_preview.kinds;
+    for (int k = 0; k < g_preview.kinds; k++) {
+        snprintf(f->preview_kind[k].name, sizeof f->preview_kind[k].name, "%s", g_preview.kind[k].name);
+        f->preview_kind[k].count = g_preview.kind[k].count;
+    }
     for (int k = 0; k < g_preview.nfaces; k++) {
         for (int i = 0; i < 4; i++) {
             f->preview_face[k].x[i] = g_preview.face[k].x[i];
             f->preview_face[k].y[i] = g_preview.face[k].y[i];
         }
         f->preview_face[k].shade = g_preview.face[k].shade;
+        f->preview_face[k].approx = g_preview.face[k].approx;
+        f->preview_face[k].color = g_preview.face[k].color;
     }
+    f->preview_modelled = g_view.modelled;
+    f->preview_approx = g_view.approximated;
+    f->preview_hidden = g_view.hidden;
     if (g_preview.ok) {
         snprintf(f->preview_title, sizeof f->preview_title, menu_text(UI_MENU_BLUEPRINT_PARTS), g_preview.actors);
     } else {
@@ -824,6 +998,27 @@ void bp_picker_layout(BPickFrame *f, int screen_w, int screen_h, float scale) {
 int bp_picker_input(BPickFrame *f, int px, int py) {
     int acted = 0;
 
+    // The orbit's leftover momentum from the previous drag step. It decays geometrically and stops once it is too small
+    // to see, so a fast release glides to a halt and a slow one barely moves - the damping behaviour of the orbit
+    // controls every 3D viewer ships. While the button is still down the drag path below overwrites it, so this only
+    // takes effect after a release.
+    if (!g_cam_dragging && (g_cam_vel_yaw != 0.0f || g_cam_vel_pitch != 0.0f)) {
+        g_cam.yaw += g_cam_vel_yaw * BP_CAM_DAMPING;
+        if (g_cam.yaw > 6.28318531f) g_cam.yaw -= 6.28318531f;
+        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.28318531f;
+        g_cam.pitch += g_cam_vel_pitch * BP_CAM_DAMPING;
+        if (g_cam.pitch > 3.14159265f) g_cam.pitch -= 6.28318531f;
+        if (g_cam.pitch < -3.14159265f) g_cam.pitch += 6.28318531f;
+        g_cam_vel_yaw *= 1.0f - BP_CAM_DAMPING;
+        g_cam_vel_pitch *= 1.0f - BP_CAM_DAMPING;
+        // Below a thousandth of a degree per step the glide is invisible: stop it, so the view settles and the renderer
+        // can go idle instead of redrawing for a turn nobody can see.
+        if (fabsf(g_cam_vel_yaw) < 1e-5f) g_cam_vel_yaw = 0.0f;
+        if (fabsf(g_cam_vel_pitch) < 1e-5f) g_cam_vel_pitch = 0.0f;
+        g_view.stamp++;
+        acted = 1;
+    }
+
     // A right click (bp_picker_back) is only flagged by the window thread; the folder walk happens here, on the present
     // thread that owns the picker's state, and the caller re-lays out from the new folder.
     if (__atomic_exchange_n(&g_back_pending, 0, __ATOMIC_SEQ_CST)) {
@@ -836,11 +1031,16 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
         if (!inside(r, px, py)) continue;
         r->hovered = 1;
     }
+    // The pointer only takes the focus on a frame where it actually moved: a mouse parked on a row does not fight the
+    // pad's own cursor. Once the pad steps, the pointer stays parked, so this stays 0 and the focus remains the pad's.
+    g_pointer_moved = (px != g_pointer_x || py != g_pointer_y);
+    g_pointer_x = px;
+    g_pointer_y = py;
     // The focus follows the pointer only while the pointer is on something. When it drifts off the rows (over the
     // preview, the title, outside the panel) the focus stays where it was, so the pad can carry on from there instead of
     // having its selection silently cleared by a pointer that is not pointing at anything.
     const int under_row = row_at(f, px, py) >= 0;
-    if (under_row) {
+    if (under_row && g_pointer_moved) {
         g_focus_row = row_at(f, px, py);
         g_focus_part = -1;
     } else {
@@ -885,19 +1085,28 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     }
     if (!l) g_cam_dragging = 0;
     if (g_cam_dragging) {
-        // Dragging across the view's width turns the build about one full circle, so the sensitivity does not depend on
-        // the window size. Pitch is clamped short of the poles: past them the build turns inside out and reads as a mess.
+        // The orbit convention three.js' OrbitControls uses, and the one people already know from Blender: a drag across
+        // the view's HEIGHT turns the build one full circle, on both axes. Dividing by the height instead of the width is
+        // what fixes the "dizzy" feel here - this panel is tall and narrow (426x828), so the old width divisor made the
+        // same pixel of movement turn the build ~1.9x as far as it should.
         const float dx = (float)(px - g_cam_last_x), dy = (float)(py - g_cam_last_y);
         g_cam_last_x = px;
         g_cam_last_y = py;
-        const float per_px = f->preview_w > 0 ? 6.2832f / (float)f->preview_w : 0.01f;
-        g_cam.yaw += dx * per_px;
-        if (g_cam.yaw > 6.2832f) g_cam.yaw -= 6.2832f;
-        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.2832f;
-        g_cam.pitch += dy * per_px;
-        const float kLimit = 1.39626f;   // 80 degrees
-        if (g_cam.pitch > kLimit) g_cam.pitch = kLimit;
-        if (g_cam.pitch < -kLimit) g_cam.pitch = -kLimit;
+        const int span = f->preview_h > 0 ? f->preview_h : (f->preview_w > 0 ? f->preview_w : 1);
+        const float per_px = 6.28318531f / (float)span;
+        g_cam.yaw -= dx * per_px;   // dragging right turns the build the way the pointer goes (orbit controls convention)
+        if (g_cam.yaw > 6.28318531f) g_cam.yaw -= 6.28318531f;
+        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.28318531f;
+        g_cam.pitch -= dy * per_px;   // dragging down looks down (orbit controls convention): the build appears to tip up
+        // Remember this step as momentum, so a release carries the turn a little further instead of stopping dead.
+        g_cam_vel_yaw = -dx * per_px;
+        g_cam_vel_pitch = -dy * per_px;
+        // Wrap pitch to [-pi, pi] so the view can tip past the poles and come around the far side, but never runs away:
+        // an unwrapped pitch would keep growing and sin(pitch) would make the direction loop back on itself mid-drag,
+        // which reads as the view "resetting". The same wrap yaw already has.
+        if (g_cam.pitch > 3.14159265f) g_cam.pitch -= 6.28318531f;
+        if (g_cam.pitch < -3.14159265f) g_cam.pitch += 6.28318531f;
+        g_view.stamp++;   // the drag turned the view: any rendered image is stale
         acted = 1;   // the projection changed, so the caller re-lays out and the faces are rebuilt
         return acted;
     }
@@ -962,10 +1171,16 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     // visible row count decides how far it may go so the list never scrolls past its end.
     int32_t wheel = __atomic_exchange_n(&g_wheel, 0, __ATOMIC_SEQ_CST);
     if (wheel) {
-        g_scroll -= wheel;   // away from the player scrolls down
-        if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
-        if (g_scroll < 0) g_scroll = 0;
-        f->scroll = g_scroll;
+        // Over the 3D view the wheel zooms the camera, the way the reference viewer's orbit controls do; over the list
+        // it scrolls, so neither meaning is lost.
+        if (in_preview) {
+            bp_picker_zoom_set(g_cam.zoom * (wheel > 0 ? 1.15f : 1.0f / 1.15f));
+        } else {
+            g_scroll -= wheel;   // away from the player scrolls down
+            if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
+            if (g_scroll < 0) g_scroll = 0;
+            f->scroll = g_scroll;
+        }
         acted = 1;
     }
 

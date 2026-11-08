@@ -13,6 +13,7 @@
 #include "imgui.h"
 
 #include "ui/blueprint_picker.h"
+#include "ui/preview3d.h"
 
 extern "C" {
 #include "host.h"
@@ -39,6 +40,22 @@ static const ImU32 kThumb = IM_COL32(236, 194, 84, 200);
 
 static void text(ImDrawList *dl, ImFont *font, float size, float x, float y, ImU32 col, const char *s) {
     dl->AddText(font, size, ImVec2(x, y), col, s);
+}
+
+// The palette the game's own viewer gives a draft's parts, indexed by the actor's place in the list.
+static const unsigned kActorPalette[21] = {
+    0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0xFF00FF, 0x00FFFF, 0xFFA500, 0x800080, 0xFFC0CB, 0x00FF7F,
+    0xFFD700, 0x008080, 0x9400D3, 0x00CED1, 0xFF4500, 0x00FF99, 0xFF1493, 0xFF6347, 0x87CEEB, 0xFF69B4,
+    0x32CD32,
+};
+
+// A palette entry darkened by the face's own brightness: the hue is which part it belongs to, the shade is the lighting.
+static ImU32 actor_color(int index, float shade) {
+    const unsigned rgb = kActorPalette[(unsigned)index % 21u];
+    const float r = (float)((rgb >> 16) & 0xFF) * shade;
+    const float g = (float)((rgb >> 8) & 0xFF) * shade;
+    const float b = (float)(rgb & 0xFF) * shade;
+    return IM_COL32((int)r, (int)g, (int)b, 235);
 }
 
 // A small vector icon drawn from primitives: a folder tab, a page with a folded corner, a drive disc, or a back arrow.
@@ -133,15 +150,41 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
             const float gy = py + ph * (float)i / 4.0f;
             dl->AddLine(ImVec2(px, gy), ImVec2(px + pw, gy), IM_COL32(255, 255, 255, 10), 1 * s);
         }
-        if (f.preview_faces > 0) {
+        // The 3D view. When the GPU preview is ready it is one textured quad: the parts were rendered offscreen with a
+        // real depth buffer, which is what makes the build read as solid. The CPU face list stays as the fallback for a
+        // machine where the preview could not be created.
+        const int gpu = preview3d_ready();
+        bp_picker_use_gpu(gpu);
+        if (gpu) {
+            // The camera is the picker's own state: feed it to the renderer every frame, which re-renders only when it
+            // actually changed. A different file also invalidates the cached image through the picker's stamp.
+            float yaw = 0, pitch = 0;
+            bp_picker_camera(&yaw, &pitch);
+            preview3d_set_camera(yaw, pitch, bp_picker_zoom());
+            const unsigned stamp = bp_picker_preview_stamp();
+            static unsigned last_stamp;
+            if (stamp != last_stamp) {
+                last_stamp = stamp;
+                preview3d_invalidate();
+            }
+        }
+        if (gpu && preview3d_resize((int)pw, (int)ph) && preview3d_texture()) {
+            dl->PushClipRect(ImVec2(px, py), ImVec2(px + pw, py + ph), true);
+            float u = 1.0f, v = 1.0f;
+            preview3d_uv(&u, &v);
+            dl->AddImage((ImTextureID)preview3d_texture(), ImVec2(px, py), ImVec2(px + pw, py + ph),
+                         ImVec2(0, 0), ImVec2(u, v));
+            dl->PopClipRect();
+        } else if (f.preview_faces > 0) {
             // Quad corners are placed analytically and can land outside the box when a build is viewed at an angle, so
             // the draw is clipped to the view: AddQuadFilled itself does not clip.
             dl->PushClipRect(ImVec2(px, py), ImVec2(px + pw, py + ph), true);
             for (int k = 0; k < f.preview_faces; k++) {
                 const float sh = f.preview_face[k].shade;
-                // The gold the rest of the picker uses, darkened by the face's own brightness. One fill per face, no
-                // outline: outlines at this size turn a 21-part build into a mesh of lines.
-                const ImU32 fill = IM_COL32((int)(236 * sh), (int)(194 * sh), (int)(84 * sh), 235);
+                // The actor's own colour, the way the game's viewer paints a draft when "Show Colors" is on; the shade
+                // is the lighting. A real model and a collision-shape fallback share the colour, so the build reads as one
+                // object rather than as two kinds of thing.
+                const ImU32 fill = actor_color(f.preview_face[k].color, sh);
                 dl->AddQuadFilled(ImVec2(px + f.preview_face[k].x[0] * pw, py + f.preview_face[k].y[0] * ph),
                                   ImVec2(px + f.preview_face[k].x[1] * pw, py + f.preview_face[k].y[1] * ph),
                                   ImVec2(px + f.preview_face[k].x[2] * pw, py + f.preview_face[k].y[2] * ph),

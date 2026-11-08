@@ -70,6 +70,37 @@ of them.
 2. Copy `config.example.toml` to `config.local.toml` and set the paths to your base game, the update and your console's
    keys file. `config.local.toml` is ignored by git. The tools read the keys file themselves.
 
+2b. **The blueprint preview's model decoder** (once). The preview draws each part's real model, and decoding a
+   `.bfres.mc` needs MeshCodec, whose only implementation ([dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec))
+   is GPL-2.0. It is deliberately kept out of this repository: it is compiled into `libmeshcodec.a` beside `totk.exe`,
+   and `tools/build_game.py` puts `libmeshcodec.a` on the link line for every version. Without that library the link
+   fails on `model_meshcodec_decode`, so build it first, or drop `runtime/model_meshcodec.c` from the build to get a
+   preview that falls back to collision bodies. See "The model decoder and the GPL" in `THIRD_PARTY_NOTICES.md` for
+   what that means for a build you distribute.
+
+   ```powershell
+   # In the MeshCodec checkout: its C++20 sources plus its bundled zstd's decompress half, into one static library.
+   $mc = 'C:\src\MeshCodec-main'          # the dt-12345 checkout
+   $zs = "$mc\lib\zstd\lib"               # its zstd submodule (decompress-only is enough)
+   $inc = @("-I$mc\src\include", "-I$mc\src", "-I$zs", "-I$zs\common", "-I$zs\decompress", "-I$mc\lib\float16")
+   $objs = @()
+   foreach ($f in Get-ChildItem "$mc\src\*.cpp") {
+     & clang++ -std=c++20 -O2 @inc -c $f.FullName -o "$mc\$($f.BaseName).o"; $objs += "$mc\$($f.BaseName).o"
+   }
+   foreach ($f in Get-ChildItem "$zs\decompress\*.c") {
+     & clang -O2 @inc -c $f.FullName -o "$mc\z_$($f.BaseName).o"; $objs += "$mc\z_$($f.BaseName).o"
+   }
+   foreach ($f in Get-ChildItem "$zs\common\*.c") {
+     & clang -O2 @inc -c $f.FullName -o "$mc\c_$($f.BaseName).o"; $objs += "$mc\c_$($f.BaseName).o"
+   }
+   & clang -c "$zs\decompress\huf_decompress_amd64.S" -o "$mc\asm.o"; $objs += "$mc\asm.o"
+   # plus one C door of your own exposing DecompressMC with extern "C" (runtime/model_meshcodec.h names it)
+   & ar rcs build\v143\libmeshcodec.a @objs
+   ```
+
+   The build needs `build\<ver>\libmeshcodec.a` beside the executable. `runtime/model_meshcodec.h` fixes the one symbol
+   that matters (`model_meshcodec_decode`), so a door written in any language links.
+
 3. Extract and verify. This writes `build\extracted\v0` (1.0.0) and `build\extracted\<ver>` for each update in
    `updates`, identified by its hash; a hash mismatch stops the run. With another `[work] dir` in `config.local.toml`,
    `extracted` goes there instead, and `build_game.py` reads the ExeFS and RomFS from there:
@@ -259,6 +290,17 @@ A change to the blueprint format passes `python tests\blueprint_cai_test.py`, wh
 version, a bad or disagreeing actor count, an empty name, a non-finite transform, a TOTKAuto file), the accepted shapes
 (1 to 21 actors, and the 6712-byte community form), the positions and bounding box the picker previews from, and a text
 for every result code.
+
+A change to the BYML reader passes `python tests\byml_test.py`, which builds v2..v7 documents byte by byte (every value
+type, a root array, name-keyed and hash-keyed tables, and damaged documents), compiles the real `runtime/byml.c` with a
+walker main, compares the walker's dump line for line with what Python built, then truncates a valid document at every
+byte and only requires survival.
+
+A change to the convex hull passes `python tests\hull_test.py`, which compiles the real `runtime/hull.c` and checks it
+against a brute-force reference: a box, a cylinder ring, an 81-point polytope-like cloud, a random cloud with duplicates
+and interior points, and an all-coplanar set. It asserts every input point is inside every face, every normal points
+away from the centroid, every edge is shared by exactly two opposite triangles (watertight), and the volume matches the
+analytic value.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
