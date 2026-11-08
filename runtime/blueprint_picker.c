@@ -302,13 +302,9 @@ static void preview_project(const float p[3], float *sx, float *sy, float *depth
 // A part vertex in blueprint space: fuseInfo scales the whole part, the rotation (row-major) turns it, the position moves it.
 // `placement_only` leaves fuseInfo out, for the material fused onto the part (fuseInfo is the weapon's own scale).
 static void part_point_ex(const BpcBlueprint *bp, int k, const float v[3], int placement_only, float out[3]) {
-    // A part joined by Ultrahand glue is scaled by its fuseInfo (see part_matrix_ex in ui/preview3d.cpp); a Fuse-made part
-    // and a fused material are not.
-    int bonded = 0;
-    if (!placement_only)
-        for (int b = 0; b < bp->bonds; b++)
-            if (bp->bond[b].src == k || bp->bond[b].tgt == k) { bonded = 1; break; }
-    const float s = bonded ? bp->scale[k] : 1.0f;
+    // A part is drawn at its fuseInfo scale unless it carries a fused material (see part_matrix_ex in ui/preview3d.cpp).
+    const int fused = bp->sub_names[k] && *bp->sub_names[k];
+    const float s = (!placement_only && !fused) ? bp->scale[k] : 1.0f;
     const float p[3] = {v[0] * s, v[1] * s, v[2] * s};
     for (int i = 0; i < 3; i++)
         out[i] = bp->pos[k][i] + bp->rot[k][i][0] * p[0] + bp->rot[k][i][1] * p[1] + bp->rot[k][i][2] * p[2];

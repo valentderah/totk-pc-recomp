@@ -210,23 +210,17 @@ void camera_matrix(const float lo[3], const float hi[3], float yaw, float pitch,
 }
 
 
-// Whether this part takes part in an Ultrahand bond (the glue records). Only those parts are scaled by fuseInfo.
-static int part_is_bonded(const BpcBlueprint *bp, int k) {
-    for (int b = 0; b < bp->bonds; b++)
-        if (bp->bond[b].src == k || bp->bond[b].tgt == k) return 1;
-    return 0;
-}
-
-// The matrix that places one part: its CAI rotation (row-major 3x3), its position, and - for a part joined by Ultrahand glue -
-// its fuseInfo as a scale.
+// The matrix that places one part: its CAI rotation (row-major 3x3), its position, and its fuseInfo as a scale unless the
+// part carries a fused material.
 //
-// fuseInfo is a real scale for a bonded part: `SpObj_LiftGeneratorWing_A_01_MiniGame` names the full-size wing model and
-// carries 0.50, and the game shows the small version by scaling it; bridge doors in a 15 m assembly carry 0.30 and slider
-// blocks 2.40. It is NOT a scale for a Fuse-made part - every fused weapon carries 1.4-1.5 and does not grow - which is why
-// it is applied through the bond and not to every part.
+// fuseInfo is a real scale: `SpObj_LiftGeneratorWing_A_01_MiniGame` names the full-size wing model and carries 0.50, and the
+// game shows the small version by scaling that model; bridge doors in a 15 m assembly carry 0.30 and slider blocks 2.40. It
+// is NOT a scale for a Fuse-made part - every fused weapon carries 1.4-1.5 and does not grow - so exactly those are excluded,
+// which is what the complaint about an oversized fused shield was about.
 void part_matrix_ex(const BpcBlueprint *bp, int k, int placement_only, float out[16]) {
     mat_identity(out);
-    const float s = placement_only ? 1.0f : (part_is_bonded(bp, k) ? bp->scale[k] : 1.0f);
+    const int fused = bp->sub_names[k] && *bp->sub_names[k];
+    const float s = placement_only ? 1.0f : (fused ? 1.0f : bp->scale[k]);
     for (int c = 0; c < 3; c++)
         for (int r = 0; r < 3; r++) out[c * 4 + r] = bp->rot[k][r][c] * s;
     out[12] = bp->pos[k][0];
@@ -722,50 +716,10 @@ extern "C" void preview3d_record(void *command_buffer) {
         rt_log("preview3d: bbox %.2f..%.2f x %.2f..%.2f y %.2f..%.2f z, %d actors", rlo[0], rhi[0], rlo[1],
                rhi[1], rlo[2], rhi[2], bp->actors);
 
-    // The glue: a bonded part is moved onto the part it is joined to. Two passes let a chain settle (a staff glued to a fan
-    // that is itself glued to the stick), and each pass only moves a part that is apart, so settled parts stay put.
-    float shift[BPC_MAX_ACTORS][3];
-    memset(shift, 0, sizeof shift);
-    for (int pass = 0; pass < 2; pass++) {
-        for (int b = 0; b < bp->bonds; b++) {
-            const int a = bp->bond[b].src, t = bp->bond[b].tgt;
-            if (a < 0 || a >= bp->actors || t < 0 || t >= bp->actors) continue;
-            const int sa = upload_part(bp->names[a]);
-            const int st = upload_part(bp->names[t]);
-            if (sa < 0 || st < 0) continue;
-            const GpuPart &pa = S.parts[sa];
-            const GpuPart &pt = S.parts[st];
-            if (pa.lo[0] > pa.hi[0] || pt.lo[0] > pt.hi[0]) continue;
-            float alo[3], ahi[3], tlo[3], thi[3];
-            part_world_box(bp, a, pa.lo, pa.hi, alo, ahi);
-            part_world_box(bp, t, pt.lo, pt.hi, tlo, thi);
-            for (int r = 0; r < 3; r++) {
-                alo[r] += shift[a][r];
-                ahi[r] += shift[a][r];
-                tlo[r] += shift[t][r];
-                thi[r] += shift[t][r];
-            }
-            int axis = -1;
-            float best = 0.0f;
-            for (int r = 0; r < 3; r++) {
-                const float gap = contact_shift(alo[r], ahi[r], tlo[r], thi[r]);
-                // Two boxes are apart when ANY axis has a gap, and the part slides along the smallest such gap. Stopping at
-                // the first axis that overlaps is wrong: they overlap on x and y while being half a metre apart in z all the
-                // time, which is exactly a staff glued to a fan.
-                if (gap == 0.0f) continue;   // touching on this axis
-                if (axis < 0 || fabsf(gap) < fabsf(best)) { best = gap; axis = r; }
-            }
-            if (axis >= 0) {
-                shift[a][axis] += best;
-                const char axis_name[4] = {'x', 'y', 'z', 0};
-                rt_log("preview3d: glue %s (part %d) -> %s (part %d): gap %.2f m on %c, sliding it into contact",
-                       bp->names[a], a + 1, bp->names[t], t + 1, (double)best, axis_name[axis & 3]);
-            }
-        }
-    }
+    // The CAI's 12-byte link records are connection data, not a placement rule: the green glue is something
+    // Ultrahand creates in the game when it joins two objects, and a blueprint that has not been built has none.
+    // Nothing is slid onto anything here.
 
-    if (S.frame < 4 || bp->bonds)
-        rt_log("preview3d: %d parts, %d bond(s)", bp->actors, bp->bonds);
     int drawn = 0;
     for (int k = 0; k < bp->actors; k++) {
         const char *name = bp->names[k];
@@ -785,12 +739,6 @@ extern "C" void preview3d_record(void *command_buffer) {
 
         float model[16], mvp[16];
         part_matrix(bp, k, model);
-        if (shift[k][0] != 0.0f || shift[k][1] != 0.0f || shift[k][2] != 0.0f) {
-            // A bonded part moved onto its partner: the offset is added to the matrix's translation (column-major).
-            model[12] += shift[k][0];
-            model[13] += shift[k][1];
-            model[14] += shift[k][2];
-        }
         mat_mul(camrot, model, mvp);
 
         Push push{};
