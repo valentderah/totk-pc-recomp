@@ -32,6 +32,7 @@
 #define CHECK 128u
 #define TABLE (1u << 14)
 #define SUMMARY 600
+#define LOG (1u << 15)
 
 enum { BONES = 2, PLACE = 4, CLOCK = 11, BANKS = 14 };   // NVN binding index: banks c5, c7 and c14; c3..c16
 
@@ -56,11 +57,28 @@ static struct {
     uint64_t last[BANKS];   // the block the last scene draw bound per binding index
     uint32_t mask;          // binding indices kept (vk_mvprev_want): bones, place and clock from the start
     uint64_t ns_draw, ns_frame;   // time in vk_mvprev_draw and vk_mvprev_frame since the last summary
+    // TOTK_MVPREV_FAST: the draws only append the blocks they bind to a log, and the present puts them into the table
+    // (same entries, same slots, with the cache misses overlapped). The table of this frame is read only by the check.
+    int fmode;       // rt_knob MVPREV_FAST + 1, 0: not read
+    int fast;        // on since the last present
+    Seen *log;       // LOG entries (have stays 0), NULL: without the log
+    uint32_t nlog;
+    uint64_t epoch;  // the tables' generation: changes at each present
+    uint64_t n_log, n_self, n_selfq;   // TOTK_TRACE=perf: blocks logged, blocks asked about, of them bound last frame too
 } P = {.knob = -1, .mask = 1u << BONES | 1u << PLACE | 1u << CLOCK};
 
 static uint32_t slot_of(uint64_t addr, int index) {
     uint64_t h = (addr ^ (uint64_t)index * 0x9E3779B97F4A7C15ull) * 0xff51afd7ed558ccdull;
     return (uint32_t)(h >> 40) & (TABLE - 1);
+}
+
+static Seen *find(Seen *t, uint64_t addr, int index, int add);
+static void log_flush(void) {
+    for (uint32_t i = 0; i < P.nlog; i++) {
+        if (i + 8 < P.nlog) __builtin_prefetch(&P.t[0][slot_of(P.log[i + 8].addr, P.log[i + 8].index)], 1);
+        find(P.t[0], P.log[i].addr, P.log[i].index, 1);
+    }
+    P.nlog = 0;
 }
 
 static Seen *find(Seen *t, uint64_t addr, int index, int add) {
@@ -76,6 +94,16 @@ static Seen *find(Seen *t, uint64_t addr, int index, int add) {
 }
 
 int vk_mvprev_on(void) { return P.on > 0; }
+int vk_mvprev_fast(void) { return P.fast; }
+uint64_t vk_mvprev_epoch(void) { return P.epoch; }
+
+// The block was bound at this address last frame too: vk_mvprev_find answers self, which reads no bytes of it or of its
+// neighbours.
+int vk_mvprev_self(int index, uint64_t addr) {
+    int self = P.fast && P.on > 0 && P.t[1] && find(P.t[1], addr, index, 0);
+    P.n_selfq++, P.n_self += self;
+    return self;
+}
 
 void vk_mvprev_want(uint32_t index_mask) {
     static int fixed = -1;
@@ -135,11 +163,17 @@ static void mvprev_draw_(VkExec *ex) {
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT) return;
     int check = P.bytes[0] != NULL;   // TOTK_MVPREV_CHECK=1: the summary's checks (3.6 ms a frame)
-    for (int index = 0; index < BANKS; index++) {
-        if (!(P.mask >> index & 1)) continue;
+    for (uint32_t m = P.mask; m; m &= m - 1) {
+        int index = __builtin_ctz(m);
         const p_bind_buf *u = &ex->ubo[0][index];
         if (!u->addr || !u->size || u->addr == P.last[index]) continue;   // the next draws keep the block: noted already
         P.last[index] = u->addr;
+        if (P.fast) {
+            if (P.nlog == LOG) log_flush();
+            P.log[P.nlog].addr = u->addr, P.log[P.nlog++].index = index;
+            P.n_log++;
+            continue;
+        }
         Seen *k = find(P.t[0], u->addr, index, 1);
         if (!k || k->have || !check) continue;   // else only the address is noted
         int w = index;
@@ -183,17 +217,23 @@ void vk_mvprev_frame(void) {
                 P.bytes[0] = calloc(TABLE, CHECK), P.bytes[1] = calloc(TABLE, CHECK);
                 if (!P.bytes[0] || !P.bytes[1]) free(P.bytes[0]), free(P.bytes[1]), P.bytes[0] = P.bytes[1] = NULL;
             }
+            P.fmode = rt_knob("MVPREV_FAST", "0") + 1;
+            if (P.fmode > 1 && !P.bytes[0]) P.log = calloc(LOG, sizeof(Seen));   // the check reads this frame's table
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
     int on = P.knob && cfg_bool("TOTK_DLAA");
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
+        P.nlog = 0, P.epoch++;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));
         return;
     }
     if (P.on <= 0) return;
     uint64_t t0 = P.timed ? kern_now_ns() : 0;
+    log_flush();
+    P.epoch++;
+    P.fast = P.log && RT_KNOB_ON(P.fmode - 1);
     Seen *t = P.t[1];
     P.t[1] = P.t[0], P.t[0] = t;
     uint8_t (*b)[CHECK] = P.bytes[1];
@@ -205,6 +245,12 @@ void vk_mvprev_frame(void) {
     if (P.timed) rt_log("mv_prev: %.3f ms a frame in the draws, %.3f ms at the present", P.ns_draw / 1e6 / SUMMARY,
            P.ns_frame / 1e6 / SUMMARY);
     P.ns_draw = P.ns_frame = 0;
+    if ((rt_trace & RT_TRACE_PERF) && P.n_selfq) {
+        rt_log("mv_prev: fast (TOTK_MVPREV_FAST): per frame %.0f block changes logged; the snapshot asked %.0f times about "
+               "a block, %.0f of them bound at the same address last frame, left without neighbours; banks kept %#x",
+               (double)P.n_log / SUMMARY, (double)P.n_selfq / SUMMARY, (double)P.n_self / SUMMARY, P.mask);
+    }
+    P.n_log = P.n_self = P.n_selfq = 0;
     for (int w = 0; w < BANKS; w++) {
         Stat *s = &P.st[w];
         if (!s->blocks) continue;
