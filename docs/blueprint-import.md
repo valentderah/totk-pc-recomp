@@ -286,6 +286,13 @@ viewer (Blehditor) uses, and the same one the game itself uses when it rebuilds 
 3. That file is decoded by `runtime/model_meshcodec.c`, the C door over the MeshCodec reference decoder, and the result is
    walked by `runtime/bfres.c`.
 
+**The decoder is not in this repository, and that is a licensing decision.** The only implementation of MeshCodec is
+[dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec), which is GPL-2.0. It is compiled from `build/` into
+`libmeshcodec.a` beside `totk.exe`; only the door over it is in the tree. `tools/build_game.py` links that library when it
+is there and defines `TOTK_MESHCODEC`, and a build without it comes out with a preview that falls back to collision
+bodies. `THIRD_PARTY_NOTICES.md` records the whole position - what a build that links it becomes, how to build without
+it, and which references the format knowledge came from, each with its commit.
+
 **The `.bfres.mc` container** (`runtime/bfres.c`, and the MeshCodec bridge). A 12-byte `MCPK` header, then a zstd stream
 **without** the 4-byte zstd magic and **without** a frame content size, then an `FMSH` geometry section compressed by
 Nintendo's MeshCodec. Three details cost real time to get right and are worth knowing before touching this code:
