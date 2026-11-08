@@ -96,6 +96,14 @@ static nvn_hmap samplers = {.klen = sizeof(samp_par)};
 static int nreleased;
 static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
 static uint64_t n_uploads, n_reuploads;
+// TOTK_WB_NOLOCK (default 0; 1 on, ab: alternates with the A/B blocks): the GPU wait of a write-back runs without the
+// texture lock and the upload lock, which the replay needs at every texture lookup and every split (write_back_nolock).
+// TOTK_WB_CORE_AWAY (default 0, ab too, with WB_NOLOCK only): the guest thread gives its virtual core up for that wait,
+// as around nvnSyncWait. Stored +1: 0 is "not read yet".
+static int wb_nolock_mode, wb_away_mode;
+// TOTK_TRACE=perf, tex_lock: write-back waits since the last perf line (vk_texture_new_submit), the copies they
+// carried, their time in the GPU wait (the longest one apart) and the copies dropped because the texture changed.
+static uint64_t wb_waits, wb_copies, wb_wait_ns, wb_wait_max, wb_dropped;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
 static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
 // TOTK_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
@@ -1969,18 +1977,11 @@ typedef struct {
     int live;                 // write_back_nolock: the copy still belongs to its texture and goes to storage
 } WbPart;
 
-// TOTK_WB_NOLOCK (default 0; 1 on, ab: alternates with the A/B blocks): the GPU wait of a write-back runs without the
-// texture lock and the upload lock, which the replay needs at every texture lookup and every split (write_back_nolock).
-// TOTK_WB_CORE_AWAY (default 0, ab too, with WB_NOLOCK only): the guest thread gives its virtual core up for that wait,
-// as around nvnSyncWait. Stored +1: 0 is "not read yet".
-static int wb_nolock_mode, wb_away_mode;
+// TOTK_WB_NOLOCK and TOTK_WB_CORE_AWAY (wb_knob, write_back_nolock).
 static int wb_knob(int *mode, const char *name) {
     if (!*mode) *mode = rt_knob(name, "0") + 1;
     return RT_KNOB_ON(*mode - 1);
 }
-// TOTK_TRACE=perf, tex_lock: write-back waits since the last perf line (vk_texture_new_submit), the copies they
-// carried, their time in the GPU wait (the longest one apart) and the copies dropped because the texture changed.
-static uint64_t wb_waits, wb_copies, wb_wait_ns, wb_wait_max, wb_dropped;
 static void wb_note_wait(int copies, uint64_t ns) {
     wb_waits++, wb_copies += (uint64_t)copies, wb_wait_ns += ns;
     if (ns > wb_wait_max) wb_wait_max = ns;
