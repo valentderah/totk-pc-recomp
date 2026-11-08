@@ -111,6 +111,8 @@ site mouse_direct main 874cb4 bd042289 94c9acc7
 site mouse_direct main 874d7c 6d40a3e9 94c9ac91
 site mouse_direct main 18e444 f9400408 94e546db
 site mouse_direct main 18f108 bd4047ec 94e543a6
+# Keep native camera-distance easing when direct mouse orbit bypasses the stick integrators.
+site mouse_direct main 18ea34 b9418a88 94e5454f   # orbit state: ldr w8, [x20, #0x188]
 site mouse_direct main 1d59460 b9004be8 94761acc
 # The aiming, scope, ability, horse and Purah Pad camera cameras: per axis, the float load the stick turn is computed
 # from (the gamepad's part only) and the load of the angle it is added to (plus the mouse's degrees), each a bl to page
