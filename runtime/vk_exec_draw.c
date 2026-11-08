@@ -2071,49 +2071,60 @@ static int vb_used_on(void) {
 }
 
 static void bind_vertex_buffers(VkExec *ex) {
-    VkBuffer vb[17];
-    VkDeviceSize vo[17], vsz[17], vstr[17];
-    int vcls[17] = {0};
-    void *vpool[17] = {0};
     int dyn = vk_pipeline_vertex_input_dynamic();
     // Only the streams the draw's vertex input reads (B.vmask, from vk_pipeline_set_dynamic): the game keeps about ten
-    // bound and a draw reads a few. The others get the zero buffer, never a stale one: a buffer bound but not read must
-    // still be a live handle.
+    // bound and a draw reads a few. The streams it does not read keep what is bound. Giving them the zero buffer made
+    // nearly every draw rebind all 17 slots, since draws in a row read different streams; the NVIDIA driver's cost
+    // for those binds took more than the resolves saved (issue #974: RTX 5060 Laptop, 16 % fps back with vb_used=0).
+    // A buffer left bound was bound earlier in this command buffer, so the deferred frees keep it alive until the
+    // submission is done.
     uint32_t used = vb_used_on() && B.st_valid ? B.vmask : VK_PIPE_ALL_BINDINGS;
-    // A stream whose range is the one its bound buffer was resolved from, with no pool or mirror change since
-    // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
-    uint64_t gen = vk_mem_gen();
-    int same_gen = B.vb_valid && B.vgen == gen;
-    uint32_t res = 0;
-    for (int b = 0; b < 17; b++) {
-        vb[b] = Z.zbuf, vo[b] = 0, vsz[b] = ZERO_BYTES, vstr[b] = b < 16 ? ex->pipe.vstream[b].stride : 0;
-        if (b == VK_PIPE_ZERO_BINDING || !(used >> b & 1)) continue;
-        res |= 1u << b;
-        const NVNbufferRange *r = &ex->vbuf[b];
-        if (same_gen && (B.vres >> b & 1) && B.vin[b].address == r->address && B.vin[b].size == r->size) {
-            vb[b] = B.vb[b], vo[b] = B.vo[b], vsz[b] = B.vsz[b], vcls[b] = B.vcls[b], vpool[b] = B.vpool[b];
-            continue;
-        }
-        VkMemSpan sp;
-        if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
-        VK_MEM_USE(sp);
-        uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
-        vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
-    }
-    memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
-    memcpy(B.vin, ex->vbuf, sizeof B.vin);
-    B.vgen = gen, B.vres = res;
-    if (B.vb_valid && !memcmp(B.vb, vb, sizeof vb) && !memcmp(B.vo, vo, sizeof vo) && !memcmp(B.vsz, vsz, sizeof vsz) &&
-        (dyn || !memcmp(B.vstr, vstr, sizeof vstr)))
-        return;
-    vkCmdBindVertexBuffers2(ex->cb, 0, 17, vb, vo, vsz, dyn ? NULL : vstr);
-    ex->recorded++;
-    for (int b = 0; b < 17; b++)
-        if (vcls[b]) vk_mem_count(vcls[b], VK_MUSE_VB, vsz[b]);
-    if (rt_trace & RT_TRACE_PERF)
+    uint32_t chg = 0;
+    if (!B.vb_valid) {   // the command buffer's first bind sets all 17 slots, the zero buffer where nothing resolves
         for (int b = 0; b < 17; b++)
-            if (vpool[b]) vk_mem_bound_note(vpool[b]);
-    memcpy(B.vb, vb, sizeof vb), memcpy(B.vo, vo, sizeof vo), memcpy(B.vsz, vsz, sizeof vsz), memcpy(B.vstr, vstr, sizeof vstr);
+            B.vb[b] = Z.zbuf, B.vo[b] = 0, B.vsz[b] = ZERO_BYTES, B.vstr[b] = b < 16 ? ex->pipe.vstream[b].stride : 0,
+            B.vcls[b] = 0, B.vpool[b] = NULL;
+        B.vres = 0, chg = VK_PIPE_ALL_BINDINGS;
+    }
+    // A stream whose range is the one its bound buffer was resolved from, with no pool or mirror change since
+    // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none. A
+    // change of vk_mem_gen voids the resolutions of every slot, read by this draw or not.
+    uint64_t gen = vk_mem_gen();
+    if (B.vgen != gen) B.vres = 0;
+    B.vgen = gen;
+    for (int b = 0; b < 17; b++) {
+        if (!(used >> b & 1)) continue;
+        VkBuffer nb = Z.zbuf;
+        VkDeviceSize no = 0, nsz = ZERO_BYTES, nstr = b < 16 ? ex->pipe.vstream[b].stride : 0;
+        int ncls = 0;
+        void *npool = NULL;
+        if (b != VK_PIPE_ZERO_BINDING) {
+            const NVNbufferRange *r = &ex->vbuf[b];
+            if ((B.vres >> b & 1) && B.vin[b].address == r->address && B.vin[b].size == r->size) {
+                nb = B.vb[b], no = B.vo[b], nsz = B.vsz[b], ncls = B.vcls[b], npool = B.vpool[b];
+            } else {
+                VkMemSpan sp;
+                if (r->address && vk_mem_resolve(r->address, 1, &sp)) {
+                    VK_MEM_USE(sp);
+                    nb = sp.buffer, no = sp.offset, nsz = r->size && r->size < sp.avail ? r->size : sp.avail;
+                    ncls = sp.cls, npool = sp.pool;
+                }
+                B.vin[b] = *r, B.vres |= 1u << b;
+            }
+        }
+        if (nb != B.vb[b] || no != B.vo[b] || nsz != B.vsz[b] || (!dyn && nstr != B.vstr[b])) chg |= 1u << b;
+        B.vb[b] = nb, B.vo[b] = no, B.vsz[b] = nsz, B.vstr[b] = nstr, B.vcls[b] = ncls, B.vpool[b] = npool;
+    }
+    if (!chg) return;
+    // One bind over the changed slots; the slots between them get what they hold again.
+    int lo = __builtin_ctz(chg), hi = 31 - __builtin_clz(chg);
+    vkCmdBindVertexBuffers2(ex->cb, (uint32_t)lo, (uint32_t)(hi - lo + 1), &B.vb[lo], &B.vo[lo], &B.vsz[lo],
+                            dyn ? NULL : &B.vstr[lo]);
+    ex->recorded++;
+    for (int b = lo; b <= hi; b++) {
+        if (B.vcls[b]) vk_mem_count(B.vcls[b], VK_MUSE_VB, B.vsz[b]);
+        if ((rt_trace & RT_TRACE_PERF) && B.vpool[b]) vk_mem_bound_note(B.vpool[b]);
+    }
     B.vb_valid = 1;
 }
 
