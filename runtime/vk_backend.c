@@ -172,7 +172,15 @@ int vk_replay_async(void) {
         // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88), the only place a gain was
         // measured. While it was the default, a GTX 1660 Ti at the 60 fps cap with the GPU at 26 % reported uneven
         // motion that 0.3.4 did not have (#659). It adds up to a frame of latency.
-        on = cfg_bool("TOTK_REPLAY_ASYNC");
+        const char *v = cfg_value("TOTK_REPLAY_ASYNC");
+        if (!v || !strcmp(v, "0") || !strcmp(v, "off")) on = 0;
+        else if (!strcmp(v, "1") || !strcmp(v, "on")) on = 1;
+        else {
+            // Automatic: on when kernel.c put the guest and the host in separate affinity groups. Then this thread
+            // works in the host's group while the guest keeps its own half, which is where the split pays; without a
+            // split it would just take a frame of latency for nothing (the measurements in #88 and #659).
+            on = kern_affinity_split();
+        }
         rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d)",
                on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
     }

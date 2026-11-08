@@ -1,6 +1,7 @@
 // Linux implementation of platform.h: pthreads, CLOCK_MONOTONIC, futex locks and condition variables, POSIX files,
 // /proc and sysfs for the load counters, posix_spawn for child processes.
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -111,6 +112,10 @@ PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     return plat_thread_new_ex(fn, arg, name, 0);
 }
 
+static uint64_t g_thread_default_affinity;   // plat_thread_set_default_affinity: the group new threads start in
+
+void plat_thread_set_default_affinity(uint64_t mask) { g_thread_default_affinity = mask; }
+
 PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = calloc(1, sizeof *t);
     if (!t) return NULL;
@@ -121,6 +126,15 @@ PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, siz
     pthread_attr_init(&a);
     // The stack is mapped lazily, as Windows reserves it: only the pages a thread touches cost memory.
     pthread_attr_setstacksize(&a, stack ? stack : PLAT_STACK_DEFAULT);
+    // Start in the default group rather than in the group of whoever called this: a host thread started from inside a
+    // guest thread would otherwise inherit the guest's group and compete with it for the same cache and processors.
+    if (g_thread_default_affinity) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int i = 0; i < 64; i++)
+            if (g_thread_default_affinity >> i & 1) CPU_SET(i, &set);
+        pthread_attr_setaffinity_np(&a, sizeof set, &set);
+    }
     int e = pthread_create(&t->t, &a, thread_main, t);
     pthread_attr_destroy(&a);
     if (e) { free(t); return NULL; }
@@ -151,6 +165,98 @@ int plat_cpu_cores(uint64_t *all, uint64_t *first) {
         if (k == cores) seen[cores][0] = core, seen[cores][1] = pkg, cores++, *first |= 1ull << i;
     }
     return cores;
+}
+
+// The L3 group of cpu0 and everything outside it. A chiplet CPU (the BC-250's two CCX, a Zen 2/3 desktop part) exposes
+// one shared_cpu_map per L3 instance, and a process whose guest and host threads share one cache evicts itself; on a
+// monolithic die the map covers every CPU and this reports 0.
+// The vendor whose chiplet parts this split is for. It is read rather than assumed because the topology test alone is
+// not enough to tell the two cases apart: Intel's hybrid parts (Arrow Lake, Lunar Lake) also publish more than one L3
+// instance, but their groups are P-cores and E-cores, a difference of core type rather than two symmetric CCX.
+static int cpu_vendor_is_amd(void) {
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    char line[256];
+    int amd = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "vendor_id", 9)) continue;
+        amd = strstr(line, "AuthenticAMD") != NULL;
+        break;
+    }
+    fclose(f);
+    return amd;
+}
+
+// The L3 instance a processor belongs to, from /sys/devices/system/cpu/cpu<n>/cache/index3/shared_cpu_map (a hex mask
+// of the processors that share it); 0 when the kernel does not report one.
+static int cpu_groups_read(uint64_t masks[2]);
+
+static uint64_t l3_group_of(int cpu) {
+    char path[96], buf[64] = {0};
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/shared_cpu_map", cpu);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int got = fscanf(f, "%63s", buf) == 1;
+    fclose(f);
+    return got ? strtoull(buf, NULL, 16) : 0;
+}
+
+int plat_cpu_groups(uint64_t masks[2]) {
+    // The topology does not change while the process runs, and the caller asks once a frame: read it once.
+    static int cached = -1;
+    static uint64_t cached_masks[2];
+    if (cached < 0) {
+        cached = cpu_groups_read(cached_masks);
+    }
+    masks[0] = cached_masks[0];
+    masks[1] = cached_masks[1];
+    return cached;
+}
+
+static int cpu_groups_read(uint64_t masks[2]) {
+    masks[0] = masks[1] = 0;
+    uint64_t all = 0, one = 0;
+    if (!plat_cpu_cores(&all, &one) || !all) return 0;
+    // Only AMD's chiplet parts are grouped this way. Intel's hybrid parts also have several L3 instances, but those are
+    // P-cores and E-cores: putting the host's Vulkan work on the E-cores would be worse than not pinning at all, and the
+    // split by core type needs cpuid leaf 0x1a (hybrid information) rather than "one cache each". One group until then.
+    uint64_t groups[16];
+    int n = 0;
+    if (cpu_vendor_is_amd()) {
+        for (int i = 0; i < 64 && n < (int)(sizeof groups / sizeof *groups); i++) {
+            if (!(all >> i & 1)) continue;
+            uint64_t m = l3_group_of(i) & all;
+            if (!m) continue;
+            int seen = 0;
+            for (int k = 0; k < n; k++) seen |= groups[k] == m;
+            if (!seen) groups[n++] = m;
+        }
+    }
+    if (n <= 1) { masks[0] = all; return 1; }   // one cache, or a monolithic CPU: every processor in one group
+    // The placement only ever splits two ways, so of a Threadripper's four to twelve L3 instances the two largest are
+    // reported, in a stable order (size, then lowest processor) so both sides of the split agree on which is which.
+    for (int i = 0; i < n; i++)
+        for (int k = i + 1; k < n; k++) {
+            int ci = __builtin_popcountll(groups[i]), ck = __builtin_popcountll(groups[k]);
+            uint64_t li = groups[i] & (~groups[i] + 1), lk = groups[k] & (~groups[k] + 1);
+            if (ci < ck || (ci == ck && li > lk)) {
+                uint64_t t = groups[i];
+                groups[i] = groups[k];
+                groups[k] = t;
+            }
+        }
+    masks[0] = groups[0];
+    masks[1] = groups[1];
+    return 2;
+}
+
+void plat_thread_pin(uint64_t mask) {
+    if (!mask) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int i = 0; i < 64; i++)
+        if (mask >> i & 1) CPU_SET(i, &set);
+    sched_setaffinity(0, sizeof set, &set);
 }
 
 // Linux has no process-wide affinity: each thread of /proc/self/task gets the mask, and threads started later inherit
@@ -816,6 +922,11 @@ static void ps_set(uint64_t addr, uint64_t n, uint8_t v) {
 }
 
 static void ww_open(void) {
+    const char *force = getenv("TOTK_WATCH");
+    if (force && !strcmp(force, "soft")) {
+        fprintf(stderr, "platform: TOTK_WATCH=soft: the soft-dirty fallback is used even though userfaultfd exists\n");
+        return;
+    }
     int fd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
     struct uffdio_api api = {.api = UFFD_API,
                              .features = UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED};
@@ -833,6 +944,75 @@ static void ww_open(void) {
     ww_fd = fd;
 }
 
+// ---- soft-dirty write watch: the fallback when asynchronous userfaultfd write protection is unavailable (a kernel
+// older than 6.7, or a userfaultfd the distribution does not allow). /proc/self/clear_refs (4) clears the soft-dirty bit
+// of every page in the process and /proc/self/pagemap reports bit 55 for the pages written since then. The bits are
+// process-wide, so a clear drops the other ranges' history too: a range is reported from the bits as they stand, and the
+// bits are cleared only once every watched range has been queried in the current epoch. A range that is never queried
+// keeps the epoch open, which reports too much rather than too little — slow, but never stale.
+enum { SD_MAX_RANGES = 32 };
+static struct { uint64_t addr, n; uint8_t queried; } sd_range[SD_MAX_RANGES];
+static int sd_n, sd_clear = -1, sd_pagemap = -1, sd_on;
+static PlatMutex sd_lock = PLAT_MUTEX_INIT;
+
+static int sd_init(void) {
+    if (sd_on) return 1;
+    plat_mutex_lock(&sd_lock);
+    if (!sd_on) {
+        if (sd_clear < 0) {
+            sd_clear = open("/proc/self/clear_refs", O_WRONLY | O_CLOEXEC);
+            sd_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+        }
+        if (sd_clear >= 0 && sd_pagemap >= 0) {
+            sd_on = 1;
+            fprintf(stderr, "platform: soft-dirty write watch: no asynchronous userfaultfd write protection, scanning "
+                            "/proc/self/pagemap instead (a watched range is reported in full until the epoch closes)\n");
+        }
+    }
+    plat_mutex_unlock(&sd_lock);
+    return sd_on;
+}
+
+static void sd_clear_all(void) {
+    if (sd_clear < 0) return;
+    if (pwrite(sd_clear, "4", 1, 0) != 1) sd_on = 0;   // the kernel dropped the facility: report nothing as written
+    for (int i = 0; i < sd_n; i++) sd_range[i].queried = 0;
+}
+
+static void sd_track(uint64_t addr, uint64_t n) {
+    if (!sd_init()) return;
+    plat_mutex_lock(&sd_lock);
+    for (int i = 0; i < sd_n; i++)
+        if (sd_range[i].addr == addr) {
+            plat_mutex_unlock(&sd_lock);
+            return;
+        }
+    if (sd_n < SD_MAX_RANGES) {
+        sd_range[sd_n].addr = addr;
+        sd_range[sd_n].n = n;
+        sd_range[sd_n].queried = 1;
+        sd_n++;
+    }
+    plat_mutex_unlock(&sd_lock);
+}
+
+static uint64_t sd_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max) {
+    size_t want = (size_t)(n / PG);
+    uint64_t buf[256];
+    uint64_t got = 0;
+    for (size_t done = 0; done < want && got < max;) {
+        size_t take = want - done < 256 ? want - done : 256;
+        ssize_t r = pread(sd_pagemap, buf, take * sizeof buf[0], (off_t)((addr / PG + done) * sizeof buf[0]));
+        if (r <= 0) break;
+        size_t entries = (size_t)r / sizeof buf[0];
+        for (size_t i = 0; i < entries && got < max; i++)
+            if ((buf[i] >> 55) & 1) pages[got++] = addr + (done + i) * PG;
+        done += entries;
+        if (entries < take) break;
+    }
+    return got;
+}
+
 int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
     plat_mutex_lock(&vm_lock);
     if (!pstate) {
@@ -840,6 +1020,7 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
         pstate = p == MAP_FAILED ? NULL : p;
     }
     if (watch && ww_fd < 0 && pm_fd < 0) ww_open();
+    if (watch && ww_fd < 0) sd_track(addr, n);   // no asynchronous userfaultfd: the soft-dirty fallback carries the watch
     void *p = pstate && addr + n <= PS_LIMIT
                   ? mmap((void *)(uintptr_t)addr, n, PROT_NONE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0)
@@ -898,7 +1079,21 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
 
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !n) return 0;
-    if (ww_fd < 0) return UINT64_MAX;
+    if (ww_fd < 0) {
+        if (!sd_on) return UINT64_MAX;
+        plat_mutex_lock(&sd_lock);
+        uint64_t got = sd_written(addr, n, pages, max);
+        if (reset) {
+            int all = 1;
+            for (int i = 0; i < sd_n; i++)
+                if (sd_range[i].addr == addr) sd_range[i].queried = 1;
+            for (int i = 0; i < sd_n; i++)
+                if (!sd_range[i].queried) all = 0;
+            if (all) sd_clear_all();
+        }
+        plat_mutex_unlock(&sd_lock);
+        return got;
+    }
     struct page_region r[256];
     uint64_t got = 0;
     for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
@@ -1239,17 +1434,87 @@ const char *plat_user_locale(void) {
 }
 
 // Noto CJK as the common distributions and SteamOS install it; one collection covers every CJK language.
+// A font file the menu can read: stb_truetype opens .ttc collections at face 0, so those count too.
+static int font_ext_ok(const char *name) {
+    size_t n = strlen(name);
+    if (n < 5) return 0;
+    const char *e = name + n - 4;
+    return !strcasecmp(e, ".ttf") || !strcasecmp(e, ".otf") || !strcasecmp(e, ".ttc");
+}
+
+// Every name that says "this file covers the language", strongest first: the language's own variants, then the pan-CJK
+// families and the stand-alone CJK packages some distributions ship instead of Noto.
+static const char *const *font_tokens(const char *lang) {
+    static const char *const hans[] = {"hans", "notosanssc", "sourcehansc", "wqy", "cjk", "droid", NULL};
+    static const char *const hant[] = {"hant", "notosanstc", "sourcehantc", "wqy", "cjk", "droid", NULL};
+    static const char *const ja[] = {"notosansjp", "sourcehanjp", "cjk", "ipa", "droid", NULL};
+    static const char *const ko[] = {"notosanskr", "sourcehankr", "nanum", "cjk", "droid", NULL};
+    static const char *const none[] = {NULL};
+    if (!strcmp(lang, "zh-Hans")) return hans;
+    if (!strcmp(lang, "zh-Hant")) return hant;
+    if (!strcmp(lang, "ja")) return ja;
+    if (!strcmp(lang, "ko")) return ko;
+    return none;
+}
+
+// The first file under dir whose name carries one of the language's tokens, in token order, then by directory order.
+static int font_scan(const char *dir, const char *lang, char *out, size_t cap, int depth) {
+    if (depth > 4) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    char path[PATH_MAX];
+    int found = 0;
+    for (struct dirent *e; !found && (e = readdir(d));) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            found = font_scan(path, lang, out, cap, depth + 1);
+            continue;
+        }
+        if (!font_ext_ok(e->d_name)) continue;
+        char lower[PATH_MAX];   // the file's own name: the directory names of a font package would match too loosely
+        snprintf(lower, sizeof lower, "%s", e->d_name);
+        for (char *c = lower; *c; c++) *c = (char)tolower((unsigned char)*c);
+        for (const char *const *t = font_tokens(lang); *t; t++)
+            if (strstr(lower, *t)) {
+                snprintf(out, cap, "%s", path);
+                found = 1;
+                break;
+            }
+    }
+    closedir(d);
+    return found;
+}
+
 int plat_font_path(const char *lang, char *out, size_t cap) {
     static const char *files[] = {
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",   // Fedora, Bazzite
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     };
     if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
         if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
+    // Distributions disagree on where and under which name they ship the CJK families (Bazzite has
+    // /usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Medium.ttc), so the known paths above are only the fast
+    // case: the font directories are scanned for a file whose name names the language.
+    static const char *const dirs[] = {"/usr/share/fonts", "/usr/local/share/fonts", "/usr/share/fonts/truetype"};
+    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++)
+        if (font_scan(dirs[i], lang, out, cap, 0)) return 1;
+    const char *home = getenv("HOME");
+    char user[PATH_MAX];
+    if (home && *home) {
+        snprintf(user, sizeof user, "%s/.local/share/fonts", home);
+        if (font_scan(user, lang, out, cap, 0)) return 1;
+        snprintf(user, sizeof user, "%s/.fonts", home);
+        if (font_scan(user, lang, out, cap, 0)) return 1;
+    }
     return 0;
 }
 
