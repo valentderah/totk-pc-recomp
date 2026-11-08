@@ -355,7 +355,7 @@ static int test_import(pool_t *pool) {
     GCHECK(n == 4 && pages[0] == a + 0x30000 && pages[3] == a + 0x33000, "CPU writes to 4 pages: %llu reported",
            (unsigned long long)n);
     vk_mem_resolve(a + 0x30000, 0x4000, &sp);
-    vk_mem_shadow_sync();
+    vk_mem_shadow_sync(0);
     copy_wait(sp.buffer, sp.offset, sb, 0, 0x4000);
     vmaInvalidateAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
     GCHECK(!memcmp(s, m + 0x30000, 0x4000), "GPU read of CPU-written heap differs");
