@@ -527,12 +527,10 @@ material after `__` (`Weapon_Lsword_147_Blade__Mt_Blade_Hide`), and a shape draw
 the part a fusion replaces. `shape_is_hidden_blade` in `runtime/ui/preview3d.cpp` tests exactly that, so it works for any
 weapon without a list of items. The material is then drawn in its place.
 
-### 10.5 It sits on the weapon, not near it
+### 10.5 It sits on the weapon, by contact
 
-The socket and the record's offset place the material close to the weapon, which is not the same as in contact: a spear and
-its horn came out with a visible gap. Both boxes are therefore measured in the weapon's model space, and when they are apart
-the material slides along the axis with the smallest gap until it touches. The shift is zero when the data already brings the
-two together, so nothing that was correct moves.
+The socket and the record's rotation and scale bring the material to the weapon; a translation along the smallest gap axis then
+makes the two touch, which is what Fuse means. Details and what is deliberately excluded: 10.7.
 
 ### 10.6 Which combination the game actually defines
 
@@ -542,7 +540,21 @@ Gerudo statue is one of those - it names bind bones for the three weapon kinds o
 a `TransOffset`. A blueprint holding such a part is a combination the game does not define; the preview draws it with the
 rules above rather than refusing it.
 
-### 10.7 What is not established
+### 10.7 Contact, because Fuse means contact
+
+Fuse joins two things by **direct contact** - it is Ultrahand that makes a glued joint, and a blueprint that has not been built
+has no glue at all. So a fused material must lie against its weapon, and the preview enforces exactly that and nothing more: the
+material is placed on the weapon's socket with the record's rotation and Scale x ExScale, then slid along the axis whose gap
+is smallest until its box meets the weapon's box. A pair already in contact does not move.
+
+Two things are deliberately **not** done:
+
+- The record's TransOffset is not applied. Reading it as an offset from the socket pushed a short sword's horn half a metre off
+  the weapon, while the case that looked right carries an offset of about zero.
+- The material is never scaled to fit the weapon's geometry. Fitting one box onto another stretched the material badly; a fused
+  material keeps the size the file gives it.
+
+### 10.8 What is not established
 
 Whether the game applies the last of step 3 in 10.3 exactly as written, and by what factor, is not readable from the data:
 the fields are empty for exactly the materials that would need it. What the preview does is the rule above, applied to every
