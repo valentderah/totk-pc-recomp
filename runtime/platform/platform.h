@@ -99,6 +99,12 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
 uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
 uint64_t plat_counter_hz(void);
 void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
+int plat_power_full(void);                // opts the process out of OS power throttling: 1 done, 0 refused, -1 no such thing
+// Hybrid CPUs: finds the performance-core logical processors the process may use, once, before any thread asks; returns
+// their count (0: none to prefer, why says which case). plat_thread_perf_core: the calling thread prefers them; 1 done,
+// 0 refused, -1 nothing selected.
+int plat_perf_core_setup(char *why, size_t n);
+int plat_thread_perf_core(void);
 // t * num / den for a fixed num / den without a 128-bit division per call (__udivti3 took 5% of the game's running
 // samples through plat_now_ns and rt_ticks): t * q + (t * f >> 64) with q = num / den and f = (num % den) * 2^64 / den.
 // Monotonic in t and at most one below the exact quotient while t * (num % den) / den fits 64 bits.
