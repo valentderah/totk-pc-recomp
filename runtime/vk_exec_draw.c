@@ -2669,11 +2669,19 @@ static void *mo_grow(void *p, int *cap, int need, size_t elem) {
     return p;
 }
 
+static int mo_fast;   // TOTK_MVPREV_FAST for this frame's list (vk_mvprev_fast, read by mo_begin)
+
 // The position bank masks of the draws considered (gfx_shader_mvprev_banks), with counts, for the summary.
 static struct { uint32_t mask; uint64_t n; int ubo, ssbo, tex; } MM[32];   // ubo, ssbo, tex: the first vertex shader's
 static void mo_mask_note(uint32_t banks, const GfxShader *vs) {
+    static int last;   // with MVPREV_FAST: the entry of the last draw, a model's parts in a row share the banks
+    if (mo_fast && MM[last].n && MM[last].mask == banks) {
+        MM[last].n++;
+        return;
+    }
     for (int i = 0; i < 32; i++)
         if (MM[i].mask == banks || !MM[i].n) {
+            last = i;
             if (!MM[i].n) {
                 const GfxShaderRes *r;
                 MM[i].ubo = gfx_shader_resources(vs, GFX_RES_UBO, &r), MM[i].ssbo = gfx_shader_resources(vs, GFX_RES_SSBO, &r);
@@ -2697,6 +2705,7 @@ static char fm_last[400];                          // the last executed list's, 
 static void mo_begin(VkExec *ex, uint64_t frame) {
     mo_drop();
     mo_gen++;
+    mo_fast = vk_mvprev_fast();
     memset(MF, 0, sizeof MF);
     MQ.frame = frame, MQ.fence = ex->fence, MQ.depth_fmt = ex->depth.format;
     memset(MQ.vin, 0, sizeof MQ.vin);
@@ -2962,6 +2971,17 @@ static int mo_similar(const uint8_t *cur, const uint8_t *old, uint64_t n, int *c
     return 1;
 }
 
+// TOTK_MVPREV_SKIP=<hex bank mask> (test) replaces the default a00 (bit n: cn): the banks that keep this frame's block
+// (see mo_prev_block).
+static long mo_skip(void) {
+    static long skip = -2;
+    if (skip == -2) {
+        const char *e = cfg_get("TOTK_MVPREV_SKIP");
+        skip = e && *e ? strtol(e, NULL, 16) : 1L << 9 | 1L << 11;
+    }
+    return skip;
+}
+
 // Last frame's copy of a block, accepted when it is this frame's block a little changed (mo_similar,
 // which see): a block of another object the address rule found would make motion up. 1 and *out: found (the block itself
 // when it is unchanged, *changed 0); 0: none, the draw keeps this frame's block there.
@@ -2976,13 +2996,7 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
     // object scale the picture shows is 0.6-0.8 of theirs, and with Link stopped against a cliff 40-77 % of the picture
     // got 1-3 px of motion that flipped direction, three times the warp error of the camera's vectors. With c9 kept too,
     // the turning run is as good (object warp error 0.46 of the camera's). Why their copies are wrong is not known.
-    // TOTK_MVPREV_SKIP=<hex bank mask> (test) replaces the default a00 (bit n: cn).
-    static long skip = -2;
-    if (skip == -2) {
-        const char *e = cfg_get("TOTK_MVPREV_SKIP");
-        skip = e && *e ? strtol(e, NULL, 16) : 1L << 9 | 1L << 11;
-    }
-    if (skip >> (index + 3) & 1) return 0;
+    if (mo_skip() >> (index + 3) & 1) return 0;
     uint64_t c0 = __builtin_ia32_rdtsc();
     int found = vk_mvprev_find(index, u->addr, u->size, &pa, &how);
     uint64_t c1 = __builtin_ia32_rdtsc();
@@ -3047,6 +3061,8 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     // the variant: the translation of the same code and answers, kept per shader once found; it names the banks the
     // position depends on (0: none, the shader is skipped from then on)
+    static int noc4 = -1, all = -1;   // TOTK_MVOBJ_NOC4=1, TOTK_MVOBJ_ALL=1 (test): see the filters below
+    if (noc4 < 0) noc4 = rt_knob("MVOBJ_NOC4", "0"), all = rt_knob("MVOBJ_ALL", "0");
     static struct { const GfxShader *of, *vs; uint32_t banks; } vmemo[1024];
     uint32_t vi = (uint32_t)((uintptr_t)D->B.st.vs * 0x9E3779B97F4A7C15ull >> 54);
     if (vmemo[vi].of != D->B.st.vs) {
@@ -3062,7 +3078,13 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         uint32_t extra = gfx_shader_outputs(v, io) & ~gfx_shader_outputs(D->B.st.vs, io);
         uint32_t banks = extra ? gfx_shader_mvprev_banks(v) & 0x1fff8u : 0;
         vmemo[vi].of = D->B.st.vs, vmemo[vi].vs = v, vmemo[vi].banks = banks;
-        vk_mvprev_want((banks & ~(1u << 4)) >> 3);   // binding index = bank - 3
+        uint32_t want = banks & ~(1u << 4);
+        // TOTK_MVPREV_FAST: only the banks the filters below let through and mo_prev_block looks up (not c9 and c11)
+        if (mo_fast) {
+            int used = want && (banks >> 4 & 1 || noc4) && (all || banks & (1u << 5 | 1u << 6 | 1u << 7));
+            want = used ? want & ~(uint32_t)mo_skip() : 0;
+        }
+        vk_mvprev_want(want >> 3);   // binding index = bank - 3
     }
     const GfxShader *vs = vmemo[vi].vs;
     uint32_t banks = vmemo[vi].banks;
@@ -3073,8 +3095,6 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     // a position without the scene camera (c4) has a view of its own (c8 c9 c10 [c13]: its c8 is at a new address every
     // frame, last frame's is never found): drawn again it would get this frame's view and no camera motion
     // (TOTK_MV_CHECK while turning: 6.2 px end-point error against the camera vectors' 1.7)
-    static int noc4 = -1;
-    if (noc4 < 0) noc4 = rt_knob("MVOBJ_NOC4", "0");   // TOTK_MVOBJ_NOC4=1 (test): drawn again all the same
     if (!(banks >> 4 & 1) && !noc4) {
         MO.no_out++;
         return;
@@ -3083,8 +3103,6 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     // c15 c16, with or without c9) measured no better than the camera's motion (TOTK_MV_CHECK, turning, those draws
     // alone: object warp error 0.112 against the camera's 0.113, the object part 0.4 of what the picture shows) and
     // were half the draws checked and listed. TOTK_MVOBJ_ALL=1 (test) takes them again.
-    static int all = -1;
-    if (all < 0) all = rt_knob("MVOBJ_ALL", "0");
     if (!all && !(banks & (1u << 5 | 1u << 6 | 1u << 7))) {
         MO.no_out++;
         return;
@@ -3112,8 +3130,8 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     }
     static struct { uint64_t frame, key; int moving; VkDescriptorBufferInfo b[17]; uint32_t have; } memo[8192];
     uint64_t key = banks;
-    for (int b = 3; b <= 16; b++)
-        if (banks >> b & 1 && b != 4) key = (key ^ ex->ubo[NVN_STAGE_VS][b - 3].addr) * 0x100000001b3ull;
+    for (uint32_t m = banks & ~(1u << 4); m; m &= m - 1)
+        key = (key ^ ex->ubo[NVN_STAGE_VS][__builtin_ctz(m) - 3].addr) * 0x100000001b3ull;
     uint32_t mi = (uint32_t)(key * 0xff51afd7ed558ccdull >> 51);
     uint32_t have = 0;
     if (memo[mi].frame == frame && memo[mi].key == key) {
@@ -3133,7 +3151,8 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
                 have |= 1u << b, moving |= changed << b;   // the banks whose block changed
         }
         memo[mi].frame = frame, memo[mi].key = key, memo[mi].moving = moving;
-        memcpy(memo[mi].b, prevb, sizeof prevb), memo[mi].have = have;
+        // TOTK_MVPREV_FAST: a hit reads the copies only when it moves: a still entry takes its one cache line
+        if (moving || !mo_fast) memcpy(memo[mi].b, prevb, sizeof prevb), memo[mi].have = have;
         if (!moving) {
             if (t0) MO.ns_still += kern_now_ns() - tp;
             return (void)MO.still++;

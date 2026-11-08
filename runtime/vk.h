@@ -278,6 +278,11 @@ void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: free
 enum { MVPREV_NONE, MVPREV_SELF, MVPREV_SIDE, MVPREV_NEARER };
 uint64_t vk_mvprev_step(int stage, int index, uint64_t size);
 int vk_mvprev_on(void);
+// TOTK_MVPREV_FAST, as of the last present: vk_mvprev_fast is on; vk_mvprev_self: the block was bound at this address in
+// this binding index last frame too (vk_mvprev_find answers self); vk_mvprev_epoch changes with the tables.
+int vk_mvprev_fast(void);
+int vk_mvprev_self(int index, uint64_t addr);
+uint64_t vk_mvprev_epoch(void);
 void vk_mvprev_want(uint32_t index_mask);   // also keep these binding indices' last-frame copies (bit n: index n)   // DLAA on and TOTK_DLAA_OBJMV not 0, as of the last present
 int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int *how);
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame

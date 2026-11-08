@@ -61,6 +61,7 @@ static struct {
     Rng *col;                   // collected ranges
     int ncol, ccol;
     int fast;                   // TOTK_USNAP_FAST on for this submission
+    int mvfast;                 // TOTK_MVPREV_FAST on for this submission
     int sparse;                 // the host copy holds only the hot spans (offsets in the arena, sorted, disjoint)
     Rng *hot;
     int nhot, chot;
@@ -165,13 +166,26 @@ static void collect(const op_hdr *h, int depth) {
                 // the vertex stage's object and bone blocks: also the game's other copy on either side, which still
                 // holds last frame's (vk_mvprev.c)
                 uint64_t step = vk_mvprev_step(b->stage, b->index, b->size);
+                // TOTK_MVPREV_FAST: a block bound at this address last frame too is its own last-frame copy
+                // (vk_mvprev_find: self), nothing reads its neighbours: they are left out (the block stays a hot
+                // range, a neighbour of another block may be it). Asked once per block and table generation.
+                int near = step != 0;
+                if (near && U.mvfast) {
+                    static struct { uint64_t addr, epoch; int index, self; } sc[1024];
+                    uint32_t si = (uint32_t)((b->addr ^ (uint64_t)b->index << 56) * 0x9E3779B97F4A7C15ull >> 54);
+                    uint64_t epoch = vk_mvprev_epoch();
+                    if (sc[si].addr != b->addr || sc[si].index != b->index || sc[si].epoch != epoch)
+                        sc[si].addr = b->addr, sc[si].index = b->index, sc[si].epoch = epoch,
+                        sc[si].self = vk_mvprev_self(b->index, b->addr);
+                    if (sc[si].self) near = 0;
+                }
                 // which neighbours lie in an imported pool, per block and vk_mem_gen: the same blocks are bound by
                 // many draws, and two resolves for each binding were a quarter of the snapshot's time
                 static struct { uint64_t addr, size, gen; int ok; } nc[1024];
                 uint32_t ci = (uint32_t)((b->addr ^ n << 48) * 0x9E3779B97F4A7C15ull >> 54);
                 uint64_t gen = vk_mem_gen();
-                int known = step && nc[ci].addr == b->addr && nc[ci].size == n && nc[ci].gen == gen, ok = 0;
-                for (int k = step ? -1 : 0; k <= (step ? 1 : 0); k++) {
+                int known = near && nc[ci].addr == b->addr && nc[ci].size == n && nc[ci].gen == gen, ok = 0;
+                for (int k = near ? -1 : 0; k <= (near ? 1 : 0); k++) {
                     uint64_t at = b->addr + (uint64_t)((int64_t)k * (int64_t)step);
                     if (k < 0 && b->addr < step) continue;
                     // a neighbour past its pool would make the whole merged region fail the pool check below, and
@@ -188,7 +202,7 @@ static void collect(const op_hdr *h, int depth) {
                     }
                     push(at & ~(uint64_t)(ALIGN - 1), at + n, U.fast && step);
                 }
-                if (step && !known) nc[ci].addr = b->addr, nc[ci].size = n, nc[ci].gen = gen, nc[ci].ok = ok;
+                if (near && !known) nc[ci].addr = b->addr, nc[ci].size = n, nc[ci].gen = gen, nc[ci].ok = ok;
             }
         }
         h = nvn_op_next(h);
@@ -321,6 +335,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     }
     uint64_t t0 = kern_now_ns();
     U.fast = RT_KNOB_ON(U.fmode - 1);
+    U.mvfast = vk_mvprev_fast();
     U.seq += U.fast;
     U.ncol = 0;
     for (int i = 0; i < n; i++)
