@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import random
+import shutil
 import struct
 import subprocess
 import sys
@@ -571,6 +572,34 @@ class PromptsTest(unittest.TestCase):
             proc = romfs.run(out, *flags)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual((out / 'manifest.tsv').read_bytes(), (self.outs['v121', 'xbox'][0] / 'manifest.tsv').read_bytes())
+
+    def test_reuse_links_the_files_that_match_and_writes_the_same_overlay(self):
+        romfs = self.romfs['v143']
+        pc, pc_summary = self.outs['v143', 'pc']
+        source = self.base / 'reuse' / 'source'   # a copy, so the class's folder is never linked or rewritten
+        shutil.copytree(pc, source)
+        out = self.base / 'reuse' / 'pc'
+        proc = romfs.run(out, '--prompts', 'pc', '--reuse', str(source))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        self.assertEqual(sorted(json.loads(proc.stdout.strip().splitlines()[-1])['reused']), sorted(manifest(pc)))
+        self.assertEqual(pc_summary['reused'], [])
+        # From the Xbox prompts only what both share is taken; the rest is made, and the overlay is the same.
+        xbox = self.outs['v143', 'xbox'][0]
+        out = self.base / 'reuse' / 'from-xbox'
+        proc = romfs.run(out, '--prompts', 'pc', '--reuse', str(xbox))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        shared = {p for p, row in manifest(pc).items() if manifest(xbox).get(p) == row}
+        self.assertEqual(set(json.loads(proc.stdout.strip().splitlines()[-1])['reused']), shared)
+        # A new run into the source folder replaces its files instead of writing through the links.
+        before = {p: (self.base / 'reuse' / 'pc' / p).read_bytes() for p in manifest(pc)}
+        ini = self.base / 'reuse' / 'totk.ini'
+        ini.write_text('[input]\nbind_A = key:F\n', encoding='utf-8')
+        proc = romfs.run(source, '--prompts', 'pc', '--binds', str(ini))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotEqual((source / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        self.assertEqual({p: (self.base / 'reuse' / 'pc' / p).read_bytes() for p in manifest(pc)}, before)
 
     def test_unrecognised_romfs_fails_before_writing(self):
         cases = {'no text fonts': (dict(text_fonts=False), icons.TEXT_FONTS[0]),
