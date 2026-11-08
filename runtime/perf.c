@@ -217,6 +217,11 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
     rt_log("perf: frame %llu: %s; fence wait per frame: render thread %.2f ms, other threads %.2f ms; %s; ram working set "
            "%.0f MiB, private %.0f MiB; bound: %s",
            (unsigned long long)frame, gs, rw, ow, vs, ws, priv, bound);
+    if (g.fw_ready + g.fw_polled + g.fw_slept + g.cw_polled + g.cw_blocked)
+        rt_log("perf: frame %llu: fence waits per frame: %.1f done at once, %.1f done within the poll, %.1f slept; completion "
+               "thread: %.1f values seen within the poll, %.1f waited for in the kernel (TOTK_FENCE_SPIN_US)",
+               (unsigned long long)frame, (double)g.fw_ready / n, (double)g.fw_polled / n, (double)g.fw_slept / n,
+               (double)g.cw_polled / n, (double)g.cw_blocked / n);
     if (g.have_gpu && g.have_idle)
         rt_log("perf: frame %llu: gpu idle per frame %.2f ms between timed parts: %.2f ms waiting for the next submission, "
                "%.2f ms with it queued (untimed work or waits); %.1f gaps over 0.5 ms, longest %.2f ms; submit to start avg %.2f ms",
