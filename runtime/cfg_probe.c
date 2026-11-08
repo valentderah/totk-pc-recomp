@@ -234,6 +234,16 @@ int probe_cfg(void) {
     dn[KEY_MOUSE_R] = dn[KEY_Z] = 1;
     CHECK(input_map_buttons(dn) == (1ull << B_Y | 1ull << B_ZL), "keys: right mouse button and Z both press ZL");
     memset(dn, 0, sizeof dn);
+    dn[KEY_T] = 1;
+    CHECK(input_map_buttons(dn) == 1ull << B_Y, "keys: T is Y too (the left button is A in the menus)");
+    plat_setenv("TOTK_BIND_X", "key:t");
+    input_map_configure();
+    CHECK(input_map_buttons(dn) == 1ull << B_X, "bind: bind_X = key:t takes T from Y's defaults");
+    dn[KEY_T] = 0, dn[KEY_MOUSE_L] = 1;
+    CHECK(input_map_buttons(dn) == 1ull << B_Y, "bind: Y keeps the left mouse button");
+    plat_setenv("TOTK_BIND_X", NULL);
+    input_map_reset();
+    memset(dn, 0, sizeof dn);
     dn[KEY_X] = dn[KEY_TAB] = dn[KEY_M] = dn[KEY_LCTRL] = dn[KEY_3] = 1;
     CHECK(input_map_buttons(dn) == (1ull << B_ZR | 1ull << B_PLUS | 1ull << B_MINUS | 1ull << B_STICK_L | 1ull << B_RIGHT),
           "keys: X ZR, Tab Plus, M Minus, Left Ctrl stick click, 3 D-pad right");

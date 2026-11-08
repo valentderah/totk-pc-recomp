@@ -17,6 +17,9 @@
 # fps_limit = 60
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
+# Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
+# still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
+# frame_queue = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
@@ -90,13 +93,14 @@
 # fix_zero = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
-# skip push constants that did not change.
+# skip push constants that did not change, bind only the vertex buffers a draw reads.
 # bind_skip = 1
 # shader_memo = 1
 # pipe_memo = 1
 # tex_memo = 1
 # desc_template = 1
 # push_skip = 1
+# vb_used = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
@@ -146,9 +150,12 @@
 # the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
 # prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
 # (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
-# (3:2). Any other size
-# gets the camera's view but a 16:9 HUD, stretched over the picture, unless you build its layout with
-# tools/make_romfs_patches.py --aspect WxH. Read at start.
+# (3:2). For any other size, or a source build that has not made the layout, the game draws the largest 16:9 size that
+# fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
+# tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
+# display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it
+# stays 1920x1080, the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
@@ -162,6 +169,10 @@
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at
 # once.
 # aspect = fit
+# Shape of the pre-rendered movies (16:9) when the game resolution (output_res) is not 16:9: keep, the default, draws
+# them in their own shape with black bars at the sides or above and below; stretch fills the whole picture, as the game
+# does. Read when a movie starts, so a change takes effect at the next movie.
+# movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
 # fov = 100
@@ -305,15 +316,20 @@
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
-# right click is B. 0 leaves the menus to the keys and the pad. Changes while the game runs.
+# right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
+# the map to the keys and the pad. Changes while the game runs.
 # menu_cursor = 1
-# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
+# Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
+# camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
+# The mouse's camera motion times this while the bow is drawn (0.1 to 3; mouse_mode = direct, game 1.4.3), on top of
+# the 0.08 degrees per count every camera turns, the bow's included. Changes while the game runs.
+# mouse_aim_scale = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
 # none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
@@ -355,6 +371,14 @@
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
+# emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
+# the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
+# needs nothing here. Set it for a pack that ships textures without a HeapDef. Without the room the game keeps starting
+# its panic Blood Moon. The memory pool grows by the same amount; the larger of this and a mod's growth counts.
+# Read at start. Default: 0. Such a pack also needs much more video memory: astc_bc = 1 ([performance]) keeps its
+# textures at a quarter of it.
+# tex_heap_extra_mb = 0
 
 [files]
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put

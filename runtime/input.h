@@ -23,10 +23,18 @@ int input_direct_mouse_selector_active(void);
 // Consume direct mouse counts, including one-shot MOUSE events from an input script. enabled=0 discards scripted
 // counts while leaving the real mouse for menu input. Live counts require cursor capture and foreground focus.
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);
+// The buttons (B_* bits) of the last poll, keys and gamepad merged; any thread (mouse_direct.c: ZR for the bow's scale)
+uint64_t input_buttons_last(void);
+// mouse_direct.c: the right stick's side a mouse shake gives while Ultrahand holds an object (-1 / +1), 0 while the
+// mouse does not shake; input.c puts it on the stick
+int input_direct_mouse_shake(void);
+// menu_cursor.c: the L ability wheel or a D-pad strip has the focus: 1 / 0, -1 with the menu cursor off (not read)
+int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
+int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

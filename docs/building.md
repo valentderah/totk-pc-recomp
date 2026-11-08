@@ -118,6 +118,13 @@ of them.
    button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
 
+   A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
+   draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a
+   stretched HUD (`runtime/resolution.c`, `shape_fallback`). For the full shape make `romfs-patches-<w>x<h>` once per
+   size: `make_romfs_patches.py --version <ver> --aspect <w>x<h> --out build\<ver>\romfs-patches-<w>x<h>` (the sizes
+   the installer makes are `ASPECT_SIZES` in `installer/steps.py`); `build_game.py` copies every `romfs-patches*`
+   folder next to `totk.exe`.
+
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
    for the shared shader list:
 
@@ -230,7 +237,11 @@ Before a commit:
 
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
-files); a change to the settings passes `totk.exe --probe-cfg`.
+files); a change to the settings passes `totk.exe --probe-cfg` and `python tests\settings_doc_check.py`, which fails
+when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md). A change to the mods' ExeFS patches
+(`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
+`.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
+table (no game files), and `totk.exe --probe-mods`.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

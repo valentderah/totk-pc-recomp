@@ -1,11 +1,13 @@
 // The SDL3 back end of the keyboard and the mouse (input_wsys.h; input.c merges them with the gamepad): SDL scancodes to
-// the key ids of input_map.h, the mouse camera's relative motion and the cursor capture (SDL's relative mouse mode).
-// Key and button state comes from the window's events (window thread) and is read by any thread. Keys and their map:
-// docs/controls.md.
+// the key ids of input_map.h, the mouse camera's relative motion, the cursor capture (SDL's relative mouse mode), the
+// pointer's place in the window (the game's menus, menu_cursor.c) and the mouse travel (the last-device switch,
+// input_kbm_last). Key and button state comes from the window's events (window thread) and is read by any thread. Keys
+// and their map: docs/controls.md.
 //
 // The capture follows the Win32 back end's rules (input_win.c): captured while the window has the focus, the mouse
 // camera is on and no text entry or menu is open; Esc releases it until a click in the window (and closing the menu
 // opened by that Esc gives it back); losing the focus releases it until the window has the focus again.
+#include <math.h>
 #include <string.h>
 
 #include <SDL3/SDL.h>
@@ -21,8 +23,18 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+static volatile int32_t mouse_wheel;          // wheel turned while captured, in 1/120 notches (ikb_wheel_take)
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
+static volatile int32_t mouse_travel;         // raw counts moved in total, captured or not (ikb_mouse_travel)
+static float travel_rem;                      // window thread: the fraction of a count beyond mouse_travel
 static volatile int32_t captured;             // relative mouse mode is on
+// The pointer's place in the window, as fractions of its size packed 32.32 fixed point (x in the high word), written
+// by the window thread from the mouse events and read by the game thread (menu_cursor.c through ikb_pointer).
+// ptr_have is 0 whenever the pointer is not over the window, as the Win32 back end's client-rect test.
+static volatile uint64_t ptr_pos;
+static volatile int32_t ptr_have;
+static volatile int32_t warp_pending;         // ikb_pointer_set asked the window thread to move the pointer
+static float warp_nx, warp_ny;                // its target, read by the window thread once warp_pending is seen
 enum { CUR_REL = 1, CUR_ESC = 2 };            // as input_win.c: released by Esc or a click elsewhere; by Esc
 static volatile int32_t cur_rel, cur_suspend, cur_pending;
 static uint32_t wake_event;                   // SDL_RegisterEvents: wakes the window thread for a cursor change
@@ -133,6 +145,39 @@ static void cursor_apply(void) {
     plat_xchg32(&captured, want);
 }
 
+// The pointer's place in the window (the window thread): x and y are SDL window units, the same space the mouse
+// events report, so dividing by the window's size makes fractions of it whatever the pixel density is. At and past
+// the edges the fraction is clamped to 0..1, where a letterboxed picture covers no item anyway.
+static void pointer_store(float x, float y) {
+    if (!win) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSize(win, &w, &h);
+    if (w < 1 || h < 1) return;
+    double fx = x / w, fy = y / h;
+    if (!(fx >= 0)) fx = 0;   // also NaN
+    else if (fx > 1) fx = 1;
+    if (!(fy >= 0)) fy = 0;
+    else if (fy > 1) fy = 1;
+    __atomic_store_n(&ptr_pos, (uint64_t)(uint32_t)(fx * 4294967295.0) << 32 | (uint32_t)(fy * 4294967295.0),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&ptr_have, 1, __ATOMIC_RELEASE);
+}
+
+// A warp asked for by ikb_pointer_set, done here as every window call: on the window thread, and after the cursor
+// change of the same menu opening has been applied. SDL's warp makes a motion event where it works (X11); where it
+// does not (some Wayland compositors) the stored place stands, so the item under the pointer is the place asked for
+// even if the visible cursor stayed behind.
+static void pointer_apply(void) {
+    if (!plat_xchg32(&warp_pending, 0)) return;
+    if (!win || !focused) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSize(win, &w, &h);
+    if (w < 1 || h < 1) return;
+    float x = warp_nx * w, y = warp_ny * h;
+    SDL_WarpMouseInWindow(win, x, y);
+    pointer_store(x, y);
+}
+
 // Any thread: the window thread applies the change at its next event.
 void ikb_cursor_update(void) {
     plat_xchg32(&cur_pending, 1);
@@ -158,11 +203,13 @@ void input_sdl_window(SDL_Window *w) {
     win = w;
     wake_event = SDL_RegisterEvents(1);
     plat_xchg32(&focused, (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0);
+    __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);   // the pointer's place is unknown until it enters or moves
     cursor_apply();
 }
 
 void input_sdl_idle(void) {
     if (cur_pending) cursor_apply();
+    pointer_apply();
 }
 
 void input_sdl_event(const SDL_Event *e) {
@@ -186,9 +233,19 @@ void input_sdl_event(const SDL_Event *e) {
         int k = mouse_key(e->button.button);
         if (k) key_held[k] = (uint8_t)down;
         if (down && (cur_rel & CUR_REL)) plat_xchg32(&cur_rel, 0);   // a click in the window captures again
+        if (!captured) pointer_store(e->button.x, e->button.y);   // a click can come without a motion first
         break;
     }
-    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_MOTION: {
+        // The travel counts any motion, captured or not, as the Win32 back end's raw input does: it is what makes a
+        // moved mouse the device used last, so the menu pointer appears without a click or a key.
+        travel_rem += fabsf(e->motion.xrel) + fabsf(e->motion.yrel);
+        int32_t t = (int32_t)travel_rem;
+        if (t) {
+            travel_rem -= t;
+            plat_add32(&mouse_travel, t);
+        }
+        if (!captured) pointer_store(e->motion.x, e->motion.y);   // in relative mode x and y are not the pointer's
         if (captured) {
             rem_x += e->motion.xrel;
             rem_y += e->motion.yrel;
@@ -196,6 +253,22 @@ void input_sdl_event(const SDL_Event *e) {
             rem_x -= (float)dx, rem_y -= (float)dy;
             if (dx) plat_add32(&mouse_dx, dx);
             if (dy) plat_add32(&mouse_dy, dy);
+        }
+        break;
+    }
+    case SDL_EVENT_WINDOW_MOUSE_ENTER: {   // entering without moving yet: the place is where the enter found the pointer
+        float x, y;
+        SDL_GetMouseState(&x, &y);        // the window with mouse focus is this one during its own enter event
+        pointer_store(x, y);
+        break;
+    }
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:   // notches, + away from the player (a flipped wheel reports the other sign)
+        if (captured) {
+            float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
+            plat_add32(&mouse_wheel, (int32_t)(y * 120));
         }
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -207,9 +280,11 @@ void input_sdl_event(const SDL_Event *e) {
         memset((void *)key_held, 0, sizeof key_held);   // the key-ups go elsewhere
         plat_xchg32(&esc_held, 0);
         plat_xchg32(&f8_held, 0);
+        __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);   // the pointer left with the focus, leave or not
         break;
     }
     cursor_apply();
+    pointer_apply();   // after cursor_apply: a menu opening uncaptures first, then the pointer moves to its middle
 }
 
 // ---- input_wsys.h
@@ -217,11 +292,42 @@ int ikb_foreground(void) { return focused != 0; }
 int ikb_down(int key) { return key > 0 && key < KEY_COUNT && key_held[key]; }
 int ikb_escape(void) { return esc_held != 0; }
 int ikb_captured(void) { return captured != 0; }
-int ikb_pointer(float *nx, float *ny) { (void)nx, (void)ny; return 0; }   // (menu_cursor.c: Windows only for now)
-void ikb_pointer_set(float nx, float ny) { (void)nx, (void)ny; }
-uint32_t ikb_mouse_travel(void) { return 0; }   // (the last-device switch: keys and buttons only for now)
+
+// The pointer's place in the window as fractions of its size (menu_cursor.c maps them onto the picture the present
+// drew). 0 whenever the pointer is not over this window or the window has not the focus, as the Win32 back end's
+// GetCursorPos test.
+int ikb_pointer(float *nx, float *ny) {
+    if (!focused || !__atomic_load_n(&ptr_have, __ATOMIC_ACQUIRE)) return 0;
+    uint64_t p = __atomic_load_n(&ptr_pos, __ATOMIC_ACQUIRE);
+    *nx = (float)(uint32_t)(p >> 32) / 4294967295.0f;
+    *ny = (float)(uint32_t)p / 4294967295.0f;
+    return 1;
+}
+
+// Moves the pointer there (menu_cursor.c: to the middle when a menu opens). The window thread warps at its next
+// event, as SDL asks for its video thread; until then the warp target stands as the pointer's place.
+void ikb_pointer_set(float nx, float ny) {
+    if (!(nx >= 0 && nx <= 1) || !(ny >= 0 && ny <= 1)) return;
+    warp_nx = nx, warp_ny = ny;
+    __atomic_store_n(&warp_pending, 1, __ATOMIC_RELEASE);
+    if (wake_event) {
+        SDL_Event e = {.user = {.type = wake_event}};
+        SDL_PushEvent(&e);
+    }
+}
+
+uint32_t ikb_mouse_travel(void) { return (uint32_t)__atomic_load_n(&mouse_travel, __ATOMIC_RELAXED); }
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
+}
+
+int32_t ikb_wheel_take(void) {
+    int32_t o, n;
+    do {
+        o = mouse_wheel;
+        n = o % 120;   // the part of a notch stays for the next call
+    } while (!__atomic_compare_exchange_n(&mouse_wheel, &o, n, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    return o / 120;
 }
