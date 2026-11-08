@@ -1561,6 +1561,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
     t->cpu->sp = t->stack_top;
     t->tid = plat_thread_id();
     perf_main_thread();
+    perf_core_thread(PCORE_MAIN);
     PlatIntr *self = ap_open_self();
     lock();
     t->hthr = self;
