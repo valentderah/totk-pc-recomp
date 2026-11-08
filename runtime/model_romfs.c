@@ -279,7 +279,10 @@ static ModelEntry *model_entry(const char *actor) {
             }
         }
     }
-    rt_log("model: %s decoded at runtime (%d shapes, %zu bytes)", actor, slot->model.count, out_n);
+    // The resolved model name is logged next to the actor because that pairing is what a wrong-looking part is diagnosed
+// from: an actor whose ModelInfo lists several models can be drawn from the wrong one, and the shape count alone does not
+    // say which.
+    rt_log("model: %s <- %s decoded at runtime (%d shapes, %zu bytes)", actor, fmdb, slot->model.count, out_n);
     snprintf(slot->name, sizeof slot->name, "%s", actor);
     slot->buf = buf;
     slot->buf_n = out_n;

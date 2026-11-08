@@ -119,10 +119,13 @@ typedef struct {
     PickKind kind[BPC_PICK_MAX_KINDS];
     int nfaces;
     PickFace face[BPC_PICK_MAX_FACES];   // far first
-    // The camera the faces below were projected with. A drag changes the camera, and the cache is only good while they
-    // still agree, so turning the view re-projects the same file instead of needing a new path to invalidate it.
+    // What the faces below were projected with. Turning the build changes the rotation stamp and the framing, and a
+    // window resize changes the aspect, so the cache is only good while all three still agree and a turn re-projects the
+    // same file instead of needing a new path to invalidate it.
+    unsigned rot_stamp;
     float cam_yaw, cam_pitch, cam_zoom;
     float aspect;                  // the view's width/height, so a window resize also re-projects
+    BpcBlueprint bp;               // the parsed file, kept across turns: a drag must not re-read it from disk
 } PickPreview;
 static PickPreview g_preview;
 
@@ -131,6 +134,16 @@ static PickPreview g_preview;
 // player would use when turning a build in the Autobuild screen. The default is 35 degrees of yaw and 28 of pitch; the
 // pointer can drag it round (a picker-wide setting, kept across files so a player who turned one build keeps that view).
 static struct { float yaw, pitch, zoom; } g_cam = {0.610865f, 0.488692f, 2.4f};
+// The build's own rotation, accumulated by dragging, in row-major order and applied to blueprint space before the camera.
+// The camera itself does not move: a drag turns the BUILD. That is what makes a drag keep working all the way round - a
+// camera carried on two angles (yaw and pitch) has a pole, and past it the picture turns over, so a drag that follows the
+// pointer has to reverse and then feels stuck. A rotation matrix has no pole: dragging up keeps tipping the build the
+// same way for as long as the button is held.
+static float g_rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+static unsigned g_rot_stamp;   // bumped on every change, so the cached face list and GPU image know they are stale
+// The bounding box of the ROTATED build, recomputed each frame: the camera frames this instead of the flat layout box, so
+// a build stays inside the panel at every angle instead of being clipped when it tips towards the viewer.
+static float g_rot_lo[3], g_rot_hi[3];
 // The orbit's leftover momentum, in radians, replayed and decayed after the button is released. three.js' OrbitControls
 // calls this damping and it is what gives a drag weight: the build keeps turning for a fraction of a second and settles,
 // instead of stopping dead the instant the pointer stops. Releasing fast therefore carries the view a little further,
@@ -164,27 +177,108 @@ static int g_gpu_preview;
 void bp_picker_use_gpu(int on) { g_gpu_preview = on != 0; }
 int bp_picker_gpu_in_use(void) { return g_gpu_preview; }
 unsigned bp_picker_preview_stamp(void) { return g_view.stamp; }
+
+// ---- the build's rotation ---------------------------------------------------------------------------------------------
+// Row-major 3x3 matrices: out = a * b, and a vector turns as v' = m * v.
+static void mat3_mul(const float a[9], const float b[9], float out[9]) {
+    float t[9];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            t[i * 3 + j] = a[i * 3 + 0] * b[0 * 3 + j] + a[i * 3 + 1] * b[1 * 3 + j] + a[i * 3 + 2] * b[2 * 3 + j];
+    memcpy(out, t, sizeof t);
+}
+
+// A rotation of `ang` radians about `axis` (a unit vector), right-handed.
+static void mat3_axis_angle(const float axis[3], float ang, float out[9]) {
+    const float c = cosf(ang), s = sinf(ang), t = 1.0f - c;
+    const float x = axis[0], y = axis[1], z = axis[2];
+    out[0] = c + x * x * t;      out[1] = x * y * t - z * s;  out[2] = x * z * t + y * s;
+    out[3] = x * y * t + z * s;  out[4] = c + y * y * t;      out[5] = y * z * t - x * s;
+    out[6] = x * z * t - y * s;  out[7] = y * z * t + x * s;  out[8] = c + z * z * t;
+}
+
+static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]);
+
+// Composes one rotation about a world axis onto the build's own turn. The step happens in the world, so it multiplies on
+// the left of whatever the build had turned to already.
+static void rotate_about(const float axis[3], float ang) {
+    if (ang == 0.0f) return;
+    float step[9];
+    mat3_axis_angle(axis, ang, step);
+    mat3_mul(step, g_rot, g_rot);
+    g_rot_stamp++;
+    g_view.stamp++;
+}
+
+// The two world axes a drag turns about, fixed for as long as the camera is: the world's up and the camera's right.
+static void drag_axes(float up[3], float right[3]) {
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    right[0] = cosf(g_cam.yaw); right[1] = 0.0f; right[2] = sinf(g_cam.yaw);
+}
+
+// Turns the build by one drag step. `dx` and `dy` are pointer pixels; the horizontal turn is about the world's up axis and
+// the vertical one about the camera's right vector, so both follow the pointer exactly, at every orientation and with no
+// pole to run into.
+static void rotate_build(float dx, float dy, float per_px) {
+    float up[3], right[3];
+    drag_axes(up, right);
+    rotate_about(up, -dx * per_px);
+    rotate_about(right, -dy * per_px);
+}
+
+// The bounding box of the build as it is now turned. The camera frames this, so nothing is clipped at any angle.
+static void rotated_bounds(const BpcBlueprint *bp, float lo[3], float hi[3]) {
+    for (int a = 0; a < 3; a++) {
+        lo[a] = 1e30f;
+        hi[a] = -1e30f;
+    }
+    for (int c = 0; c < 8; c++) {
+        const float p[3] = {(c & 1) ? bp->bbox_max[0] : bp->bbox_min[0],
+                            (c & 2) ? bp->bbox_max[1] : bp->bbox_min[1],
+                            (c & 4) ? bp->bbox_max[2] : bp->bbox_min[2]};
+        for (int a = 0; a < 3; a++) {
+            const float w = g_rot[a * 3 + 0] * p[0] + g_rot[a * 3 + 1] * p[1] + g_rot[a * 3 + 2] * p[2];
+            if (w < lo[a]) lo[a] = w;
+            if (w > hi[a]) hi[a] = w;
+        }
+    }
+}
+
+// The rotation and the rotated bounds, for the GPU renderer: it has to frame and turn the build the same way the CPU
+// projection does, or the picture would jump between the two paths.
+void bp_picker_preview_rot(float out[9]) { memcpy(out, g_rot, sizeof g_rot); }
+void bp_picker_preview_bounds(float lo[3], float hi[3]) {
+    memcpy(lo, g_rot_lo, sizeof g_rot_lo);
+    memcpy(hi, g_rot_hi, sizeof g_rot_hi);
+}
 // The blueprint on show, for the GPU renderer (ui/preview3d.cpp). Its storage is preview_load's own static, so the
 // pointer is only valid until another file is loaded.
 static const BpcBlueprint *g_shown;
 const BpcBlueprint *bp_picker_blueprint(void) { return g_preview.ok ? g_shown : NULL; }
 
 // Returns the point in 0..1 of the view box (x right, y down) and its depth, larger being further from the camera.
-static void preview_project(const float p[3], const float bbox_min[3], const float bbox_max[3],
-                            float *sx, float *sy, float *depth) {
+// The point arrives already turned by the build's own rotation, and is framed by that rotation's own bounds, so the build
+// fills the panel at every angle.
+static void preview_project(const float p[3], float *sx, float *sy, float *depth) {
     // Centre on the box's middle and scale all three axes by ONE factor, the box's largest side. Normalising each axis by
     // its own span stretched the build: a round wheel came out oval. One factor keeps the proportions; only the overall
     // size is normalised.
     float centre[3], half = 0.0f;
     for (int i = 0; i < 3; i++) {
-        centre[i] = 0.5f * (bbox_min[i] + bbox_max[i]);
-        const float span = bbox_max[i] - bbox_min[i];
+        centre[i] = 0.5f * (g_rot_lo[i] + g_rot_hi[i]);
+        const float span = g_rot_hi[i] - g_rot_lo[i];
         if (span > half) half = span;
     }
     half *= 0.5f;
     if (half < 0.0005f) half = 0.0005f;
+    // Turn the point by the build's own rotation, then frame it in the turned box.
+    const float rp[3] = {
+        g_rot[0] * p[0] + g_rot[1] * p[1] + g_rot[2] * p[2],
+        g_rot[3] * p[0] + g_rot[4] * p[1] + g_rot[5] * p[2],
+        g_rot[6] * p[0] + g_rot[7] * p[1] + g_rot[8] * p[2],
+    };
     float n[3];
-    for (int i = 0; i < 3; i++) n[i] = (p[i] - centre[i]) / half;
+    for (int i = 0; i < 3; i++) n[i] = (rp[i] - centre[i]) / half;
     const float cy = cosf(g_cam.yaw), syn = sinf(g_cam.yaw);
     const float cp = cosf(g_cam.pitch), sp = sinf(g_cam.pitch);
     const float x1 = cy * n[0] + syn * n[2];
@@ -222,10 +316,10 @@ static void emit_triangle(const BpcBlueprint *bp, int k, const float *a, const f
     part_point(bp, k, c, wc);
     float q[4][2];
     float depth = 0.0f;
-    preview_project(wa, bp->bbox_min, bp->bbox_max, &q[0][0], &q[0][1], &depth);
+    preview_project(wa, &q[0][0], &q[0][1], &depth);
     float d2 = 0.0f, d3 = 0.0f;
-    preview_project(wb, bp->bbox_min, bp->bbox_max, &q[1][0], &q[1][1], &d2);
-    preview_project(wc, bp->bbox_min, bp->bbox_max, &q[2][0], &q[2][1], &d3);
+    preview_project(wb, &q[1][0], &q[1][1], &d2);
+    preview_project(wc, &q[2][0], &q[2][1], &d3);
     depth = (depth + d2 + d3) / 3.0f;
     // The face's normal from the world-space cross product, lit by a fixed key light.
     float u[3] = {wb[0] - wa[0], wb[1] - wa[1], wb[2] - wa[2]};
@@ -432,6 +526,12 @@ static void split_path(void) {
 // Reads the blueprint at path into g_preview, unless it is the file already cached. Failure is not an error: a file the
 // parser refuses still gets a note saying so, which is exactly what the player needs to see before pressing anything.
 static void preview_load(const char *path) {
+    // The parsed blueprint is kept across re-projections, so turning the build re-projects what is already in memory
+    // instead of reading the file again on every frame of a drag. It is only re-read when the path changes.
+    static uint8_t storage[BPF_READ_MAX];
+    static BpcBlueprint bp;
+    static char parsed_path[PICK_PATH_MAX];
+
     if (!path || !*path) {
         g_preview.path[0] = 0;
         g_preview.ok = 0;
@@ -440,20 +540,15 @@ static void preview_load(const char *path) {
         g_preview.note[0] = 0;
         return;
     }
-    // The cache holds one file under one camera: a different file, or the same file after the view was dragged, both
-    // need the geometry again.
-    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch &&
-        g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect) return;
+    // The cache holds one file under one turn of the build and one framing: a different file needs the geometry again, and
+    // the same file after it was turned needs the projection again. Only the framing work below is shared by both.
+    if (!strcmp(g_preview.path, path) && g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect &&
+        g_preview.rot_stamp == g_rot_stamp) return;
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;
     g_preview.nfaces = 0;
     g_preview.actors = 0;
-    // The parsed blueprint is kept across re-projections, so dragging the view re-projects what is already in memory
-    // instead of reading the file again on every frame of the drag. It is only re-read when the path changes.
-    static uint8_t storage[BPF_READ_MAX];
-    static BpcBlueprint bp;
-    static char parsed_path[PICK_PATH_MAX];
     enum BpcResult r;
     if (!strcmp(parsed_path, path)) {
         r = BPC_OK;   // the same file, already parsed: only the projection is stale
@@ -469,6 +564,14 @@ static void preview_load(const char *path) {
             g_shown = NULL;
         }
     }
+    // The framing follows the turned build, so the CPU projection and the GPU renderer both frame what is on screen.
+    if (r == BPC_OK) rotated_bounds(&bp, g_rot_lo, g_rot_hi);
+    g_preview.rot_stamp = g_rot_stamp;
+    g_preview.cam_yaw = g_cam.yaw;
+    g_preview.cam_pitch = g_cam.pitch;
+    g_preview.cam_zoom = g_cam.zoom;
+    g_preview.aspect = g_preview_aspect;
+
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     if (r != BPC_OK) {
@@ -677,6 +780,12 @@ void bp_picker_camera_reset(void) {
     g_cam.yaw = BP_CAM_DEFAULT_YAW;
     g_cam.pitch = BP_CAM_DEFAULT_PITCH;
     g_cam.zoom = BP_CAM_DEFAULT_ZOOM;
+    // The build goes back to its authored orientation too: "reset the view" means the picture the player started from,
+    // and after a few turns the default camera alone would not show that.
+    static const float ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    memcpy(g_rot, ident, sizeof g_rot);
+    g_rot_stamp++;
+    g_cam_vel_yaw = g_cam_vel_pitch = 0.0f;
     g_view.stamp++;
 }
 
@@ -1002,21 +1111,19 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     // The orbit's leftover momentum from the previous drag step. It decays geometrically and stops once it is too small
     // to see, so a fast release glides to a halt and a slow one barely moves - the damping behaviour of the orbit
     // controls every 3D viewer ships. While the button is still down the drag path below overwrites it, so this only
-    // takes effect after a release.
+    // takes effect after a release. It replays the same two turns the drag made, about the same two axes, so the glide
+    // continues the motion the hand started.
     if (!g_cam_dragging && (g_cam_vel_yaw != 0.0f || g_cam_vel_pitch != 0.0f)) {
-        g_cam.yaw += g_cam_vel_yaw * BP_CAM_DAMPING;
-        if (g_cam.yaw > 6.28318531f) g_cam.yaw -= 6.28318531f;
-        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.28318531f;
-        g_cam.pitch += g_cam_vel_pitch * BP_CAM_DAMPING;
-        if (g_cam.pitch > 3.14159265f) g_cam.pitch -= 6.28318531f;
-        if (g_cam.pitch < -3.14159265f) g_cam.pitch += 6.28318531f;
+        float up[3], right[3];
+        drag_axes(up, right);
+        rotate_about(up, g_cam_vel_yaw * BP_CAM_DAMPING);
+        rotate_about(right, g_cam_vel_pitch * BP_CAM_DAMPING);
         g_cam_vel_yaw *= 1.0f - BP_CAM_DAMPING;
         g_cam_vel_pitch *= 1.0f - BP_CAM_DAMPING;
-        // Below a thousandth of a degree per step the glide is invisible: stop it, so the view settles and the renderer
+        // Below a thousandth of a radian per step the glide is invisible: stop it, so the view settles and the renderer
         // can go idle instead of redrawing for a turn nobody can see.
         if (fabsf(g_cam_vel_yaw) < 1e-5f) g_cam_vel_yaw = 0.0f;
         if (fabsf(g_cam_vel_pitch) < 1e-5f) g_cam_vel_pitch = 0.0f;
-        g_view.stamp++;
         acted = 1;
     }
 
@@ -1086,33 +1193,18 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     }
     if (!l) g_cam_dragging = 0;
     if (g_cam_dragging) {
-        // The orbit convention three.js' OrbitControls uses, and the one people already know from Blender: a drag across
-        // the view's HEIGHT turns the build one full circle, on both axes. Dividing by the height instead of the width is
-        // what fixes the "dizzy" feel here - this panel is tall and narrow (426x828), so the old width divisor made the
-        // same pixel of movement turn the build ~1.9x as far as it should.
+        // The build turns by the pointer's movement, one full circle per view height. Dividing by the height instead of the
+        // width is what fixes the "dizzy" feel here - this panel is tall and narrow, so a width divisor made the same pixel
+        // of movement turn the build nearly twice as far as it should.
         const float dx = (float)(px - g_cam_last_x), dy = (float)(py - g_cam_last_y);
         g_cam_last_x = px;
         g_cam_last_y = py;
         const int span = f->preview_h > 0 ? f->preview_h : (f->preview_w > 0 ? f->preview_w : 1);
         const float per_px = 6.28318531f / (float)span;
-        // Past a pole the camera is upside down: its up vector has flipped to point at the bottom of the screen, so the
-        // picture is rotated 180 degrees and a drag that follows the pointer has to turn the build the other way. Without
-        // this, orbiting over the top of a build made every drag feel reversed exactly when the back came into view.
-        // cos(pitch) is the sign of the camera's up-ness: view space up comes from forward x right, which flips there.
-        const float follow = cosf(g_cam.pitch) < 0.0f ? -1.0f : 1.0f;
-        g_cam.yaw -= dx * per_px * follow;   // dragging right turns the build the way the pointer goes
-        if (g_cam.yaw > 6.28318531f) g_cam.yaw -= 6.28318531f;
-        if (g_cam.yaw < 0.0f) g_cam.yaw += 6.28318531f;
-        g_cam.pitch -= dy * per_px * follow;   // dragging down looks down: the build appears to tip up
+        rotate_build(dx, dy, per_px);   // the build turns, not the camera: no pole to run into, so a drag never locks
         // Remember this step as momentum, so a release carries the turn a little further instead of stopping dead.
-        g_cam_vel_yaw = -dx * per_px * follow;
-        g_cam_vel_pitch = -dy * per_px * follow;
-        // Wrap pitch to [-pi, pi] so the view can tip past the poles and come around the far side, but never runs away:
-        // an unwrapped pitch would keep growing and sin(pitch) would make the direction loop back on itself mid-drag,
-        // which reads as the view "resetting". The same wrap yaw already has.
-        if (g_cam.pitch > 3.14159265f) g_cam.pitch -= 6.28318531f;
-        if (g_cam.pitch < -3.14159265f) g_cam.pitch += 6.28318531f;
-        g_view.stamp++;   // the drag turned the view: any rendered image is stale
+        g_cam_vel_yaw = -dx * per_px;
+        g_cam_vel_pitch = -dy * per_px;
         acted = 1;   // the projection changed, so the caller re-lays out and the faces are rebuilt
         return acted;
     }

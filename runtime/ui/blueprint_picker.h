@@ -159,6 +159,11 @@ void bp_picker_use_gpu(int on);
 int bp_picker_gpu_in_use(void);
 // Rises when a different file is shown, so a renderer knows the image it holds is stale.
 unsigned bp_picker_preview_stamp(void);
+// The build's own rotation (row-major 3x3, applied to blueprint space) and the bounds of the rotated build. A drag turns
+// the build rather than moving the camera, so the renderer has to apply this turn and frame these bounds, or its picture
+// would disagree with the CPU projection and with what the pointer is doing.
+void bp_picker_preview_rot(float out[9]);
+void bp_picker_preview_bounds(float lo[3], float hi[3]);
 
 int bp_picker_selected_row(void);
 int bp_picker_scroll(void);

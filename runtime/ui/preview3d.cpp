@@ -1,4 +1,4 @@
-﻿// The blueprint preview rendered on the GPU: an offscreen colour and depth target, one draw call per part, and the
+// The blueprint preview rendered on the GPU: an offscreen colour and depth target, one draw call per part, and the
 // finished image handed to ImGui as a texture.
 //
 // Why this exists: the preview used to be drawn as thousands of filled 2D rectangles through ImGui's draw list. That has
@@ -37,6 +37,7 @@ extern "C" {
 #include "model_romfs.h"
 #include "blueprint_cai.h"
 #include "blueprint_shape.h"
+#include "blueprint_picker.h"   // the build's rotation and the bounds it gives, so both preview paths frame alike
 }
 
 // runtime/blueprint_picker.c: the blueprint on show. Its type, BpcBlueprint, comes from blueprint_cai.h, so the
@@ -612,11 +613,20 @@ extern "C" void preview3d_record(void *command_buffer) {
     vkCmdBindVertexBuffers(cb, 0, 1, &S.vtx_buf, &zero);
     vkCmdBindIndexBuffer(cb, S.idx_buf, 0, VK_INDEX_TYPE_UINT16);
 
-    float cam[16];
-    camera_matrix(bp->bbox_min, bp->bbox_max, S.yaw, S.pitch, S.zoom, cam);
+    float cam[16], rotm[16], camrot[16];
+    // The build's own turn, and the bounds that turn gives: the camera frames the turned build, exactly as the CPU
+    // projection does, so the two paths draw the same picture and the build never leaves the panel at any angle.
+    float rot[9], rlo[3], rhi[3];
+    bp_picker_preview_rot(rot);
+    bp_picker_preview_bounds(rlo, rhi);
+    camera_matrix(rlo, rhi, S.yaw, S.pitch, S.zoom, cam);
+    mat_identity(rotm);
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) rotm[c * 4 + r] = rot[r * 3 + c];   // row-major to Vulkan's column-major
+    mat_mul(cam, rotm, camrot);
     if (S.frame < 4)   // diagnose once: the box the camera is framing must be non-degenerate
-        rt_log("preview3d: bbox %.2f..%.2f x %.2f..%.2f y %.2f..%.2f z, %d actors", bp->bbox_min[0], bp->bbox_max[0],
-               bp->bbox_min[1], bp->bbox_max[1], bp->bbox_min[2], bp->bbox_max[2], bp->actors);
+        rt_log("preview3d: bbox %.2f..%.2f x %.2f..%.2f y %.2f..%.2f z, %d actors", rlo[0], rhi[0], rlo[1],
+               rhi[1], rlo[2], rhi[2], bp->actors);
 
     int drawn = 0;
     for (int k = 0; k < bp->actors; k++) {
@@ -628,7 +638,7 @@ extern "C" void preview3d_record(void *command_buffer) {
 
         float model[16], mvp[16];
         part_matrix(bp, k, model);
-        mat_mul(cam, model, mvp);
+        mat_mul(camrot, model, mvp);
 
         Push push{};
         memcpy(push.mvp, mvp, sizeof push.mvp);
