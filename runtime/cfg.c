@@ -282,10 +282,14 @@ int cfg_load(const char *path) {
 // at the screen's 1280x800 with its own 5/6 scene (the aspect patch gives the camera its 16:10, resolution.c, and the
 // romfs-patches-1280x800 overlay the HUD's);
 // fullscreen and vsync, as gamescope composes Game Mode; 40 fps, which divides 40 Hz (and 120 Hz on the OLED).
-// Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck).
+// Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck), except replay_async: the NVN
+// replay on a thread of its own, at most one frame behind the game. Measured with tools/deck_bench.sh --sim (a Ryzen 7
+// 7735HS held to four cores with their SMT siblings, Radeon 680M, RDNA 2 under RADV like the Deck's GPU, headless
+// gamescope, the Deck settings, three walks of tools/input/walk.txt each at a 60 fps limit): the same 60 fps, and a 1%
+// low over each run's last minute of 55.8 against 48.4 without it, in every run. Not yet measured on a Deck.
 static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
-    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
+    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"}, {"REPLAY_ASYNC", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck
 

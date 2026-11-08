@@ -121,8 +121,9 @@
 
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
-# set default to fullscreen = 1, window_size = 1280x800, output_res = 1280x800, render_scale = game, vk_present = fifo
-# and fps_limit = 40 (starting points, not measured yet). Read at start.
+# set default to fullscreen = 1, window_size = 1280x800, output_res = 1280x800, render_scale = game, vk_present = fifo,
+# fps_limit = 40 (starting points, not measured yet) and replay_async = 1 (steadier frames in a simulation of the
+# Deck). Read at start.
 # device_profile = auto
 # Presentation mode: mailbox (default when the driver offers it, vsync otherwise), fifo (vsync) or immediate.
 # vk_present = mailbox
