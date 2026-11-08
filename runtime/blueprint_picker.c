@@ -1,4 +1,4 @@
-﻿// The blueprint file picker's state and logic, in C: the folder it shows, the entries it lists, the path parts a player
+// The blueprint file picker's state and logic, in C: the folder it shows, the entries it lists, the path parts a player
 // can press, and the hit tests that turn a pointer position or a pad button into an action. Drawing is the only part in
 // C++ (ui/blueprint_picker_draw.cpp), through a small bridge that hands the rectangles and the text to ImGui's draw list
 // without using ImGui's widget or layout system at all.
@@ -714,7 +714,7 @@ static int layout_panel(BPickFrame *f, int screen_w, int screen_h, float scale) 
     f->scale = scale < 1.0f ? 1.0f : scale;
     f->row_h = (int)(PICK_ROW_H * f->scale);
     if (f->row_h < 28) f->row_h = 28;
-    f->w = (int)(screen_w * 0.60f);
+    f->w = (int)(screen_w * 0.66f);
     if (f->w < 680) f->w = screen_w < 720 ? screen_w - 24 : 680;
     f->h = (int)(screen_h * 0.76f);
     if (f->h < 460) f->h = screen_h < 484 ? screen_h - 24 : 460;
@@ -977,8 +977,9 @@ void bp_picker_layout_at(BPickFrame *f, int screen_w, int screen_h, float scale,
     memset(f, 0, sizeof *f);
     const int pad = layout_panel(f, screen_w, screen_h, scale);
     // The preview column is part of the list band, on the right. It is sized from the panel and only reserved while a
-    // file is highlighted, so a folder view keeps the whole width for its rows.
-    const int preview_w = (int)(f->w * 0.30f);
+    // file is highlighted, so a folder view keeps the whole width for its rows. Two fifths of the panel keeps the 3D view
+    // big enough to read a build's parts while the rows still have most of the width for their names.
+    const int preview_w = (int)(f->w * 0.42f);
     layout_header(f);
     layout_breadcrumb(f, pad);
     layout_rows(f, pad);
@@ -1094,13 +1095,18 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
         g_cam_last_y = py;
         const int span = f->preview_h > 0 ? f->preview_h : (f->preview_w > 0 ? f->preview_w : 1);
         const float per_px = 6.28318531f / (float)span;
-        g_cam.yaw -= dx * per_px;   // dragging right turns the build the way the pointer goes (orbit controls convention)
+        // Past a pole the camera is upside down: its up vector has flipped to point at the bottom of the screen, so the
+        // picture is rotated 180 degrees and a drag that follows the pointer has to turn the build the other way. Without
+        // this, orbiting over the top of a build made every drag feel reversed exactly when the back came into view.
+        // cos(pitch) is the sign of the camera's up-ness: view space up comes from forward x right, which flips there.
+        const float follow = cosf(g_cam.pitch) < 0.0f ? -1.0f : 1.0f;
+        g_cam.yaw -= dx * per_px * follow;   // dragging right turns the build the way the pointer goes
         if (g_cam.yaw > 6.28318531f) g_cam.yaw -= 6.28318531f;
         if (g_cam.yaw < 0.0f) g_cam.yaw += 6.28318531f;
-        g_cam.pitch -= dy * per_px;   // dragging down looks down (orbit controls convention): the build appears to tip up
+        g_cam.pitch -= dy * per_px * follow;   // dragging down looks down: the build appears to tip up
         // Remember this step as momentum, so a release carries the turn a little further instead of stopping dead.
-        g_cam_vel_yaw = -dx * per_px;
-        g_cam_vel_pitch = -dy * per_px;
+        g_cam_vel_yaw = -dx * per_px * follow;
+        g_cam_vel_pitch = -dy * per_px * follow;
         // Wrap pitch to [-pi, pi] so the view can tip past the poles and come around the far side, but never runs away:
         // an unwrapped pitch would keep growing and sin(pitch) would make the direction loop back on itself mid-drag,
         // which reads as the view "resetting". The same wrap yaw already has.

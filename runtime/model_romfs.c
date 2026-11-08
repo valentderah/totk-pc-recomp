@@ -80,14 +80,30 @@ static int dict_ready(void) {
 }
 
 // A member of a SARC, passed to find_fmdb's scan.
+//
+// A ModelInfo can name more than one model: 87 of the catalogue's actors do. A weapon lists its base variant first and its
+// own model later (Weapon_Shield_103 carries Weapon_Shield_101 and Weapon_Shield_103), a balloon lists the base envelope
+// then the cloth. Taking the first name draws the base variant - a different, smaller object than the part really is,
+// which is what made an imported shield look wrong. So every name is collected, and the one that matches the actor wins;
+// an actor whose list never names it (a tree trunk lists Obj_Log_* and the tree) keeps the first.
+#define FMDB_MAX 8
 typedef struct {
-    char *out;
-    size_t cap;
-    int found;
+    const char *actor;
+    char names[FMDB_MAX][64];
+    int count;
 } FmdbCtx;
 
-// Descend one BYML node looking for an "FmdbName" hash entry with a string value. Returns 1 and writes out when found.
-static int byml_find_fmdb(const BymlDoc *doc, uint32_t node, char *out, size_t cap) {
+// Adds one name to the list, ignoring duplicates.
+static void fmdb_add(FmdbCtx *ctx, const char *s) {
+    if (!s || !*s || ctx->count >= FMDB_MAX) return;
+    for (int i = 0; i < ctx->count; i++)
+        if (!strcmp(ctx->names[i], s)) return;
+    snprintf(ctx->names[ctx->count], sizeof ctx->names[0], "%s", s);
+    ctx->count++;
+}
+
+// Descend one BYML node collecting every "FmdbName" hash entry with a string value.
+static void byml_find_fmdb(const BymlDoc *doc, uint32_t node, FmdbCtx *ctx) {
     uint8_t t = byml_type(doc, node);
     if (t == BYML_HASH) {
         size_t n = byml_count(doc, node);
@@ -96,34 +112,29 @@ static int byml_find_fmdb(const BymlDoc *doc, uint32_t node, char *out, size_t c
             if (k && !strcmp(k, "FmdbName")) {
                 // The entry's node offset (byml_key returns the value node's offset, not a container).
                 uint32_t v = byml_key(doc, node, "FmdbName");
-                if (v && byml_type(doc, v) == BYML_STRING) {
-                    const char *s = byml_string(doc, v);
-                    if (s && *s) { snprintf(out, cap, "%s", s); return 1; }
-                }
+                if (v && byml_type(doc, v) == BYML_STRING) fmdb_add(ctx, byml_string(doc, v));
             }
             // Descend into container values only (byml_at is 0 for value-typed entries).
             uint32_t v = byml_at(doc, node, i);
-            if (v && byml_find_fmdb(doc, v, out, cap)) return 1;
+            if (v) byml_find_fmdb(doc, v, ctx);
         }
     } else if (t == BYML_ARRAY) {
         size_t n = byml_count(doc, node);
         for (size_t i = 0; i < n; i++) {
             uint32_t v = byml_at(doc, node, i);
-            if (v && byml_find_fmdb(doc, v, out, cap)) return 1;
+            if (v) byml_find_fmdb(doc, v, ctx);
         }
     }
-    return 0;
 }
 
-// Every ModelInfo member of the SARC, looking for an FmdbName.
+// Every ModelInfo member of the SARC, collecting its model names.
 static int fmdb_member(const char *name, const uint8_t *data, size_t size, void *vctx) {
     FmdbCtx *ctx = vctx;
-    if (ctx->found) return 0;
     if (!strstr(name, "ModelInfo")) return 1;
     BymlDoc doc;
     if (!byml_open(&doc, data, size)) return 1;
-    if (byml_find_fmdb(&doc, byml_root(&doc), ctx->out, ctx->cap)) ctx->found = 1;
-    return !ctx->found;
+    byml_find_fmdb(&doc, byml_root(&doc), ctx);
+    return 1;
 }
 
 // The actor's model name from its own ModelInfo. The member name is NOT always the actor name (a propeller's says
@@ -149,10 +160,20 @@ static int find_fmdb(const char *actor, char *out, size_t cap) {
     }
     ZSTD_freeDCtx(dctx); ZSTD_freeDDict(dd); free(z);
     if (!raw) return 0;
-    FmdbCtx ctx = {out, cap, 0};
+    FmdbCtx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.actor = actor;
     sarc_each_matching(raw, raw_n, "", "", fmdb_member, &ctx);
     free(raw);
-    return ctx.found;
+    if (ctx.count == 0) return 0;
+    // The actor's own name wins when its ModelInfo lists it: that entry is the model the game ships for this actor, and
+    // the earlier names are the family's base variants. Everything else keeps the first name, which is how an actor whose
+    // ModelInfo names only a related model (a tree trunk) still resolves.
+    for (int i = 0; i < ctx.count; i++) {
+        if (!strcmp(ctx.names[i], actor)) { snprintf(out, cap, "%s", ctx.names[i]); return 1; }
+    }
+    snprintf(out, cap, "%s", ctx.names[0]);
+    return 1;
 }
 
 // The full decoded model for an actor, cached.
