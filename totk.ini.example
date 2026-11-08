@@ -437,3 +437,8 @@
 # wb_nolock = 0
 # With wb_nolock: the game thread gives up its virtual core during that wait, 0 or 1. Default: 0.
 # wb_core_away = 0
+# Cheaper uniform snapshot with the same bytes for the GPU and the CPU readers (duplicate ranges left out, a remembered
+# region for lookups, with DLSS only the per-object motion ranges through a host copy, the c0 bank compared on its
+# storage bindings alone), 0, 1 or ab (alternates with the A/B blocks). Default: 0. With trace = perf the log shows
+# the ranges left out and the reads outside the host copy.
+# usnap_fast = 0
