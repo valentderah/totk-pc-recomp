@@ -304,6 +304,10 @@ uint32_t plat_cpu_usable(void) {
 // mask, except that processors the system reserves for itself are left out instead of failing. Nothing is selected
 // on a CPU with one efficiency class, or when the affinity already leaves only P-cores or only E-cores. LAS Recomp
 // does the same for its game, render and vsync threads (runtime/platform/windows.c plat_thread_perf_core).
+// Nothing is selected either below PC_MIN_CORES physical P-cores (an i5-1235U or Core 3 100U has 2): the five bound
+// threads (perf_core_thread) and a spinning recorder would crowd two cores and their hyperthreads while the E-cores
+// stay idle, which can be slower than letting the scheduler place them.
+#define PC_MIN_CORES 4
 static ULONG *pc_ids;   // the CPU set ids of the allowed P-core logical processors; NULL: none selected
 static ULONG pc_n;
 
@@ -335,8 +339,9 @@ int plat_perf_core_setup(char *why, size_t n) {
         return 0;
     }
     ULONG *ids = calloc((size_t)all, sizeof *ids);
-    int np = 0, ne = 0, ok_p = 0, ok_e = 0;
-    for (ULONG off = 0; ids && off < len;) {
+    uint16_t *cores = calloc((size_t)all, sizeof *cores);   // group << 8 | core index of each allowed physical P-core
+    int np = 0, ne = 0, ok_p = 0, ok_e = 0, nc = 0;
+    for (ULONG off = 0; ids && cores && off < len;) {
         SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
         if (!i->Size) break;
         if (i->Type == CpuSetInformation) {
@@ -345,16 +350,31 @@ int plat_perf_core_setup(char *why, size_t n) {
                                       (proc >> i->CpuSet.LogicalProcessorIndex) & 1);
             perf ? np++ : ne++;
             if (allowed) perf ? ok_p++ : ok_e++;
-            if (allowed && perf) ids[pc_n++] = i->CpuSet.Id;
+            if (allowed && perf) {
+                ids[pc_n++] = i->CpuSet.Id;
+                uint16_t key = (uint16_t)(i->CpuSet.Group << 8 | i->CpuSet.CoreIndex);
+                int k = 0;
+                while (k < nc && cores[k] != key) k++;
+                if (k == nc) cores[nc++] = key;
+            }
         }
         off += i->Size;
     }
+    int counted = ids && cores;
     free(buf);
-    if (!ids || !ok_p || !ok_e) {
+    free(cores);
+    if (!counted || !ok_p || !ok_e) {
         free(ids);
         pc_n = 0;
         snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors; the affinity allows %d + %d, so it decides",
                  np, ne, ok_p, ok_e);
+        return 0;
+    }
+    if (nc < PC_MIN_CORES) {
+        free(ids);
+        pc_n = 0;
+        snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors on %d P-cores, fewer than %d", np, ne, nc,
+                 PC_MIN_CORES);
         return 0;
     }
     pc_ids = ids;
