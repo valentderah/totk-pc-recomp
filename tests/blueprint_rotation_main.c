@@ -115,6 +115,18 @@ int main(void) {
         scenario("favourite is the oldest card", fold, 1);
     }
 
+    // Two favourites: the layout the imported 100% save came with, and the one the old rule could not rotate. Favourites
+    // hold the two oldest ranks, so the oldest free card's rank sits right below them and moving every free card down one
+    // collides with a favourite. The ranks below the evicted card must stay put instead.
+    {
+        const int f2[] = {5, 13};
+        scenario("two favourites", f2, 2);
+        const int f2mid[] = {3, 17};
+        scenario("two favourites in the middle", f2mid, 2);
+        const int f3[] = {1, 40 % N, 29};
+        scenario("three favourites", f3, 3);
+    }
+
     // The maximum the game allows.
     {
         const int f8[] = {1, 5, 12, 19, 22, 25, 27, 29};

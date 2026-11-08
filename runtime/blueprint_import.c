@@ -251,6 +251,121 @@ static uint64_t ages_present_in_guest(const int32_t *ages) {
     return 0;
 }
 
+// ---- finding the history arrays by shape -----------------------------------------------------------------------------
+//
+// The Index array and the IsFavorite mask are part of the same save block as the draft blobs, so the search runs in a window
+// around a blob address instead of across the whole heap. A run of 30 int32 that are exactly the ranks 0..29 once each is a
+// shape the game always produces and that no save file can make wrong; the same goes for the {count=30, mask} pair, which
+// holds at most the eight favourites the game allows.
+
+// Calls `fn` for each readable range inside [lo, hi). Returns the number of ranges visited.
+static int each_readable(uint64_t lo, uint64_t hi,
+                         int (*fn)(uint64_t at, uint64_t len, void *ctx), void *ctx) {
+    int n = 0;
+    uint64_t at = lo;
+    while (at < hi) {
+        uint64_t end = 0;
+        const int st = plat_mem_state(at, hi, &end);
+        if (st != PLAT_PROT_RW && st != PLAT_PROT_READ) {
+            at = end > at ? end : hi;
+            continue;
+        }
+        const uint64_t to = end > hi ? hi : end;
+        if (to > at && fn(at, to - at, ctx)) return n + 1;
+        n++;
+        at = to;
+    }
+    return n;
+}
+
+typedef struct {
+    uint64_t hit;      // the address found, 0 when none
+    uint64_t nearest;  // the distance of the closest candidate so far
+    uint64_t anchor;
+} PermCtx;
+
+// One readable range: every 4-byte-aligned run of 30 int32 that is a permutation of 0..29. The run closest to the anchor
+// wins, because the save block's arrays are neighbours.
+static int perm_in_range(uint64_t at, uint64_t len, void *vctx) {
+    PermCtx *c = vctx;
+    if (len < (uint64_t)N * 4) return 0;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)at;
+    for (uint64_t o = 0; o + (uint64_t)N * 4 <= len; o += 4) {
+        uint32_t seen = 0;
+        int ok = 1;
+        for (int i = 0; i < N; i++) {
+            int32_t v;
+            memcpy(&v, p + o + (uint64_t)i * 4, 4);
+            if (v < 0 || v >= N || (seen >> v & 1u)) {
+                ok = 0;
+                break;
+            }
+            seen |= 1u << v;
+        }
+        if (!ok) continue;
+        const uint64_t here = at + o;
+        const uint64_t dist = here > c->anchor ? here - c->anchor : c->anchor - here;
+        if (!c->hit || dist < c->nearest) {
+            c->hit = here;
+            c->nearest = dist;
+        }
+        o += (uint64_t)N * 4 - 4;   // the run is one array: skip past it
+    }
+    return 0;
+}
+
+typedef struct {
+    int found;
+    uint32_t mask;
+    uint64_t nearest;
+    uint64_t anchor;
+} FavCtx;
+
+// One readable range: a {count, mask} pair with count == 30 and a mask of at most eight bits below 30.
+static int fav_in_range(uint64_t at, uint64_t len, void *vctx) {
+    FavCtx *c = vctx;
+    if (len < 8) return 0;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)at;
+    for (uint64_t o = 0; o + 8 <= len; o += 4) {
+        int32_t count;
+        uint32_t mask;
+        memcpy(&count, p + o, 4);
+        memcpy(&mask, p + o + 4, 4);
+        if (count != N) continue;
+        if (mask & ~((1u << N) - 1u)) continue;   // a bit outside the 30 entries is not this array
+        int bits = 0;
+        for (uint32_t m = mask; m; m &= m - 1u) bits++;
+        if (bits > 8) continue;                   // the game pins at most eight favourites
+        const uint64_t here = at + o;
+        const uint64_t dist = here > c->anchor ? here - c->anchor : c->anchor - here;
+        if (!c->found || dist < c->nearest) {
+            c->found = 1;
+            c->mask = mask;
+            c->nearest = dist;
+        }
+    }
+    return 0;
+}
+
+static uint64_t find_index_by_shape(uint64_t anchor, uint64_t radius) {
+    if (!anchor) return 0;
+    PermCtx c = {0, 0, anchor};
+    const uint64_t lo = anchor > radius ? anchor - radius : 0;
+    each_readable(lo, anchor + radius, perm_in_range, &c);
+    return c.hit;
+}
+
+static int find_fav_by_shape(uint64_t anchor, uint32_t *out) {
+    if (!anchor || !out) return 0;
+    FavCtx c = {0, 0, 0, anchor};
+    const uint64_t radius = 64u << 10;
+    const uint64_t lo = anchor > radius ? anchor - radius : 0;
+    each_readable(lo, anchor + radius, fav_in_range, &c);
+    if (!c.found) return 0;
+    *out = c.mask;
+    return 1;
+}
+
 // The position the save's Index array calls 0 (the card drawn first), or -1 when it cannot be read.
 //
 // Every save slot has its own Index array, and only one of them belongs to the save the game has loaded; the others are
@@ -283,6 +398,31 @@ static int newest_position_from_save(void) {
         g_ages_at = 0;
         g_fav_bits = 0;
         g_fav_seen = 0;
+    }
+    // Shape first: the arrays are next to the draft blobs, which the scan already located, so this needs no save file and
+    // works whatever the save's ages happen to be.
+    {
+        const uint64_t anchor = g_parsed ? g_parsed : g_cai;
+        const uint64_t at = find_index_by_shape(anchor, 1u << 20);
+        if (at) {
+            int32_t live[N];
+            if (guest_read(at, live, sizeof live)) {
+                uint32_t seen = 0;
+                int ok = 1, newest = -1;
+                for (int i = 0; i < N; i++) {
+                    if (live[i] < 0 || live[i] >= N || (seen >> live[i] & 1u)) { ok = 0; break; }
+                    seen |= 1u << live[i];
+                    if (live[i] == 0) newest = i;
+                }
+                if (ok && newest >= 0) {
+                    g_ages_at = at;
+                    if (!g_fav_seen && find_fav_by_shape(at, &g_fav_bits)) g_fav_seen = 1;
+                    rt_log("blueprint: Index: history array found by its shape at %#llx, newest entry %d%s",
+                           (unsigned long long)at, newest, g_fav_seen ? "" : " (no favourite mask nearby)");
+                    return newest;
+                }
+            }
+        }
     }
     const RtConfig *c = rt_config();
     if (!c || !c->profile) return -1;
@@ -401,10 +541,15 @@ int bp_rotate_ages(const int ages[BP_SLOTS], uint32_t fav_bits, int rotated[BP_S
         }
     }
     if (victim < 0) return -1;   // every entry is a favorite: there is nothing to spend
-    // Favorites keep their age; every other entry moves down one, and the victim takes the new creation at age 0.
+    // The ages are ranks, so the insert has to leave them a permutation: the new creation takes rank 0, the cards ABOVE the
+    // evicted one move down by one, and the cards BELOW it keep their rank. Moving every free card +1 instead is what breaks
+    // a save whose favourites sit at the old end: a free card at age 27 becomes 28 and collides with a favourite at 28, the
+    // result stops being a permutation, and the import is refused (which is exactly what a 100% save with two favourites
+    // did). Favourites keep their rank for the same reason - they are cards, and a card that does not move keeps its rank.
+    const int32_t evicted_age = ages[victim];
     for (int i = 0; i < BP_SLOTS; i++) {
-        if ((fav_bits >> i) & 1u) rotated[i] = ages[i];
-        else rotated[i] = i == victim ? 0 : ages[i] + 1;
+        if (i == victim) rotated[i] = 0;
+        else rotated[i] = ages[i] < evicted_age ? ages[i] + 1 : ages[i];
     }
     // The result must still be a permutation, or the page would draw an order the save cannot mean.
     seen = 0;
