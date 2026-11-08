@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -667,8 +668,12 @@ static void sleep_until(uint64_t deadline) {
 }
 
 // NVNwindowAcquireTextureResult nvnWindowAcquireTexture(NVNwindow *w, NVNsync *s, int *index): blocks here, not in the
-// present, until the image's previous present plus one period has passed (the game often presents with a lock held).
-// That is the time the next frame goes to the display, so the image is free as soon as that time is reached.
+// present, until the image is free (the game often presents with a lock held). Without the frame queue that is the
+// image's previous present plus one period, when the next frame goes to the display, so a frame gets exactly one period
+// from acquire to present. Its present is a copy already on the queue by its display time, so with the frame queue
+// (TOTK_FRAME_QUEUE=1) the image is free from that time on: the game draws the next frame while the previous one waits
+// for its turn, and a frame that takes up to one more period still makes its slot, for up to one frame more latency.
+// Town at 4K with DLAA at 60 on an RTX 5070: frames over 17.5 ms 1-8 per 30 s with the queue against 25-33 without.
 NVN_API(nvnWindowAcquireTexture) {
     win_t *o = arg_p(c, 0);
     sync_t *s = arg_p(c, 1);
@@ -693,8 +698,9 @@ NVN_API(nvnWindowAcquireTexture) {
 
 // void nvnQueuePresentTexture(NVNqueue *q, NVNwindow *w, int index): queues the copy and returns at once. The display
 // time comes from the pacer: the back end's present thread holds the host present until then (back-edge pacing, as the
-// Switch's display flips at vblank), so the present cadence does not follow the replay time; one period later the
-// image is free for the next acquire. Added latency: the slack of the frame (period minus its work), as on the Switch.
+// Switch's display flips at vblank), so the present cadence does not follow the replay time; one period later (at that
+// time with the frame queue) the image is free for the next acquire. Added latency: the slack of the frame (period minus
+// its work), as on the Switch, plus up to a period with the frame queue.
 NVN_API(nvnQueuePresentTexture) {
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
@@ -709,7 +715,7 @@ NVN_API(nvnQueuePresentTexture) {
     uint64_t slot = now + pace(&o->pace, now, period);
     gfx_backend()->present(t, o->crop, slot);
     o->ticket[idx] = o->presents;
-    o->avail[idx] = slot + period;
+    o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }
