@@ -270,14 +270,14 @@ static const uint8_t *shape_fvtx(const BfresModel *m, int index, uint32_t *buf_o
     *buf_off = u32(f + 0x48);
     *count = u32(f + 0x50);
     // The per-buffer size array's first entry is the position buffer's byte size; divided by the vertex count it is the
-    // stride. A stride that is not a multiple of 6 would mean the positions are not tightly packed, which this reader
-    // does not understand, so it is refused rather than drawn wrong.
+    // stride. The positions are three half floats at the start of each vertex, and anything after them is another attribute:
+    // a stride of 7 is six bytes of position plus the one-byte `_i0` blend index, which is normal and must not be refused.
     const uint64_t size_ptr = u64(f + 0x30);
     if (!size_ptr || !in_bounds(m, size_ptr, 4)) return NULL;
     const uint32_t size0 = u32(m->p + size_ptr);
     if (*count == 0 || size0 < *count * 6u) return NULL;
     const uint32_t st = size0 / *count;
-    if (st < 6 || st > 64 || (st % 2)) return NULL;   // positions are half floats, so a valid stride is even
+    if (st < 6 || st > 64) return NULL;   // six bytes of position at least; no parity requirement (a u8 attribute is common)
     *stride = st;
     return f;
 }
@@ -361,6 +361,11 @@ int bfres_shape_geometry(const BfresModel *m, int index, float *verts, int max_v
         verts[3 * v] = x;
         verts[3 * v + 1] = y;
         verts[3 * v + 2] = z;
+        // One wrong buffer offset can turn a tiny face into a kilometre-wide sheet across the preview. A part is metres
+        // across, so a coordinate this large means the shape is being misread: refuse it rather than draw it.
+        if (!(x > -1000.0f && x < 1000.0f && y > -1000.0f && y < 1000.0f && z > -1000.0f && z < 1000.0f)) {
+            return 0;
+        }
     }
 
     const uint8_t *mesh = shape_mesh(m, index, &icount);

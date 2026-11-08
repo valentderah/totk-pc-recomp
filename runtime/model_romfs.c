@@ -296,6 +296,13 @@ const BfresModel *model_romfs_resolve(const char *actor) {
         rt_log("model: no ModelInfo for %s", actor);
         return NULL;
     }
+    // A ModelInfo can name a scene group instead of a part: HiddenKorok_SilhouettePazzle_006 names Group00, which is the
+    // whole area. Drawing one puts a sheet over the preview in place of the part, which reads as missing pieces; the size
+    // guard catches the huge ones and this catches the rest by the name the game gives them.
+    if (!strncmp(fmdb, "Group", 5)) {
+        rt_log("model: %s names the scene group %s, not a part; using its collision body", actor, fmdb);
+        return NULL;
+    }
     ModelEntry *e = model_entry_named(actor, fmdb);
     return e ? &e->model : NULL;
 }

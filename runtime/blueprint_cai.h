@@ -61,6 +61,13 @@ typedef struct {
     // here (a Lynel horn as Item_Enemy_151, a shield's cover as Obj_GerudoHoleCover_A_03). NULL or "" when the part is not
     // fused. Where the material sits is not in this file - see runtime/blueprint_attach.c.
     const char *sub_names[BPC_MAX_ACTORS];
+    // The Ultrahand glue: one 12-byte record per actor at offset 5892, {u32 srcMatrix, u32 tgtMatrix, u8 srcActor, u8
+    // tgtActor}. A bond joins two parts as they were glued together, and the record's matrices are the poses from before
+    // that joint, so a bonded part is placed against its partner rather than at its own matrix.
+    int bonds;
+    struct {
+        uint8_t src, tgt;   // actor indices (0-based), or 0xFF when the record is empty
+    } bond[BPC_MAX_ACTORS];
     float bbox_min[3];
     float bbox_max[3];
 } BpcBlueprint;

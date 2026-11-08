@@ -210,15 +210,23 @@ void camera_matrix(const float lo[3], const float hi[3], float yaw, float pitch,
 }
 
 
-// The matrix that places one part: its CAI rotation (row-major 3x3) and its position.
+// Whether this part takes part in an Ultrahand bond (the glue records). Only those parts are scaled by fuseInfo.
+static int part_is_bonded(const BpcBlueprint *bp, int k) {
+    for (int b = 0; b < bp->bonds; b++)
+        if (bp->bond[b].src == k || bp->bond[b].tgt == k) return 1;
+    return 0;
+}
+
+// The matrix that places one part: its CAI rotation (row-major 3x3), its position, and - for a part joined by Ultrahand glue -
+// its fuseInfo as a scale.
 //
-// fuseInfo is deliberately NOT used as a scale. In game a fused weapon does not get bigger - the material is simply attached
-// - and fuseInfo is above 1 exactly for the parts that carry a fused material (a shield 1.4, spears 1.5). Treating it as a
-// scale is what made a fused shield and everything fused onto it look oversized against the surrounding parts.
+// fuseInfo is a real scale for a bonded part: `SpObj_LiftGeneratorWing_A_01_MiniGame` names the full-size wing model and
+// carries 0.50, and the game shows the small version by scaling it; bridge doors in a 15 m assembly carry 0.30 and slider
+// blocks 2.40. It is NOT a scale for a Fuse-made part - every fused weapon carries 1.4-1.5 and does not grow - which is why
+// it is applied through the bond and not to every part.
 void part_matrix_ex(const BpcBlueprint *bp, int k, int placement_only, float out[16]) {
-    (void)placement_only;   // both callers now draw at the part's own size
     mat_identity(out);
-    const float s = 1.0f;
+    const float s = placement_only ? 1.0f : (part_is_bonded(bp, k) ? bp->scale[k] : 1.0f);
     for (int c = 0; c < 3; c++)
         for (int r = 0; r < 3; r++) out[c * 4 + r] = bp->rot[k][r][c] * s;
     out[12] = bp->pos[k][0];
@@ -305,6 +313,21 @@ static float contact_shift(float a_lo, float a_hi, float b_lo, float b_hi) {
     if (a_hi < b_lo) return b_lo - a_hi;   // A is below B: move up to meet it
     if (b_hi < a_lo) return b_hi - a_lo;   // A is above B: move down
     return 0.0f;                            // they overlap on this axis
+}
+
+// The world box of a part: its model box turned and moved by the part matrix.
+static void part_world_box(const BpcBlueprint *bp, int k, const float lo[3], const float hi[3], float wlo[3],
+                           float whi[3]) {
+    float m[16];
+    part_matrix(bp, k, m);
+    for (int c = 0; c < 8; c++) {
+        const float p[3] = {(c & 1) ? hi[0] : lo[0], (c & 2) ? hi[1] : lo[1], (c & 4) ? hi[2] : lo[2]};
+        for (int r = 0; r < 3; r++) {
+            const float v = m[r * 4 + 0] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
+            if (c == 0 || v < wlo[r]) wlo[r] = v;
+            if (c == 0 || v > whi[r]) whi[r] = v;
+        }
+    }
 }
 
 // A shape whose material is one of the model's `_Hide` ones: the blade of a weapon, which the game stops drawing once a
@@ -691,18 +714,75 @@ extern "C" void preview3d_record(void *command_buffer) {
         rt_log("preview3d: bbox %.2f..%.2f x %.2f..%.2f y %.2f..%.2f z, %d actors", rlo[0], rhi[0], rlo[1],
                rhi[1], rlo[2], rhi[2], bp->actors);
 
+    // The glue: a bonded part is moved onto the part it is joined to. Two passes let a chain settle (a staff glued to a fan
+    // that is itself glued to the stick), and each pass only moves a part that is apart, so settled parts stay put.
+    float shift[BPC_MAX_ACTORS][3];
+    memset(shift, 0, sizeof shift);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int b = 0; b < bp->bonds; b++) {
+            const int a = bp->bond[b].src, t = bp->bond[b].tgt;
+            if (a < 0 || a >= bp->actors || t < 0 || t >= bp->actors) continue;
+            const int sa = upload_part(bp->names[a]);
+            const int st = upload_part(bp->names[t]);
+            if (sa < 0 || st < 0) continue;
+            const GpuPart &pa = S.parts[sa];
+            const GpuPart &pt = S.parts[st];
+            if (pa.lo[0] > pa.hi[0] || pt.lo[0] > pt.hi[0]) continue;
+            float alo[3], ahi[3], tlo[3], thi[3];
+            part_world_box(bp, a, pa.lo, pa.hi, alo, ahi);
+            part_world_box(bp, t, pt.lo, pt.hi, tlo, thi);
+            for (int r = 0; r < 3; r++) {
+                alo[r] += shift[a][r];
+                ahi[r] += shift[a][r];
+                tlo[r] += shift[t][r];
+                thi[r] += shift[t][r];
+            }
+            int axis = -1;
+            float best = 0.0f;
+            for (int r = 0; r < 3; r++) {
+                const float gap = contact_shift(alo[r], ahi[r], tlo[r], thi[r]);
+                // Two boxes are apart when ANY axis has a gap, and the part slides along the smallest such gap. Stopping at
+                // the first axis that overlaps is wrong: they overlap on x and y while being half a metre apart in z all the
+                // time, which is exactly a staff glued to a fan.
+                if (gap == 0.0f) continue;   // touching on this axis
+                if (axis < 0 || fabsf(gap) < fabsf(best)) { best = gap; axis = r; }
+            }
+            if (axis >= 0) {
+                shift[a][axis] += best;
+                const char axis_name[4] = {'x', 'y', 'z', 0};
+                rt_log("preview3d: glue %s (part %d) -> %s (part %d): gap %.2f m on %c, sliding it into contact",
+                       bp->names[a], a + 1, bp->names[t], t + 1, (double)best, axis_name[axis & 3]);
+            }
+        }
+    }
+
+    if (S.frame < 4 || bp->bonds)
+        rt_log("preview3d: %d parts, %d bond(s)", bp->actors, bp->bonds);
     int drawn = 0;
     for (int k = 0; k < bp->actors; k++) {
         const char *name = bp->names[k];
         if (!name || !*name) continue;
         const char *sub = bp->sub_names[k];
         const int fused = sub && *sub;
-        const int slot = fused ? upload_part_fused(name) : upload_part(name);
+        // A fused part loses its covered shapes only when the material brings a replacement model for this weapon class; a
+        // fusion that merely adds a material on top leaves the weapon whole (a spear keeps its blade under a horn).
+        int replaces = 0;
+        if (fused) {
+            BpAttach probe;
+            if (bp_attach_resolve(name, sub, &probe)) replaces = probe.has_sub_model;
+        }
+        const int slot = replaces ? upload_part_fused(name) : upload_part(name);
         if (slot < 0) continue;
         const GpuPart &p = S.parts[slot];
 
         float model[16], mvp[16];
         part_matrix(bp, k, model);
+        if (shift[k][0] != 0.0f || shift[k][1] != 0.0f || shift[k][2] != 0.0f) {
+            // A bonded part moved onto its partner: the offset is added to the matrix's translation (column-major).
+            model[12] += shift[k][0];
+            model[13] += shift[k][1];
+            model[14] += shift[k][2];
+        }
         mat_mul(camrot, model, mvp);
 
         Push push{};
@@ -773,7 +853,7 @@ extern "C" void preview3d_record(void *command_buffer) {
                             float best = 0.0f;
                             for (int a = 0; a < 3; a++) {
                                 const float gap = contact_shift(mlo[a], mhi[a], wlo[a], whi[a]);
-                                if (gap == 0.0f) { axis = -1; break; }   // already overlapping on an axis: no shift needed
+                                if (gap == 0.0f) continue;   // touching on this axis
                                 if (axis < 0 || fabsf(gap) < fabsf(best)) { best = gap; axis = a; }
                             }
                             if (axis >= 0) {

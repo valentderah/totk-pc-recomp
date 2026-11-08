@@ -19,6 +19,8 @@ enum {
     BPC_ACTOR_FLOATS = 38,       // (64 + 64 + 24) / 4: the matrices, only read to reject NaN and infinity
     BPC_ACTOR_NAME_OFFSET = 152, // after the matrices: the actor's own name, 64 bytes
     BPC_ACTOR_SUB_NAME_OFFSET = 216, // the name of the actor it was fused with, 64 bytes more
+    BPC_BOND_OFFSET = 5892,      // 21 x 12 bytes of glue records, right after the actor records
+    BPC_BOND_BYTES = 12,
     BPC_BBOX_OFFSET = 6144,      // the six floats the game frames the draft with: min x, y, z, max x, y, z
     BPC_BBOX_FLOATS = 6,
     BPC_MAGIC_BYTES = 6,
@@ -95,6 +97,17 @@ enum BpcResult bpc_parse(const void *data, size_t size, BpcBlueprint *out) {
         // second name is empty is not damaged.
         const char *sub = NULL;
         if (actor_name(actor + BPC_ACTOR_SUB_NAME_OFFSET, &sub) && sub && *sub) bp.sub_names[k] = sub;
+    }
+    // The glue records: the last two bytes of each carry the two actor indices, the first eight the two matrices they
+    // join. An empty record has both indices 0xFF (or joins a part to itself), and those are skipped.
+    for (int k = 0; k < actors; k++) {
+        const uint8_t *b = blob + BPC_BOND_OFFSET + (size_t)k * BPC_BOND_BYTES;
+        const uint8_t src = b[8], tgt = b[9];
+        if (src >= actors || tgt >= actors || src == tgt) continue;
+        if (bp.bonds >= BPC_MAX_ACTORS) break;
+        bp.bond[bp.bonds].src = src;
+        bp.bond[bp.bonds].tgt = tgt;
+        bp.bonds++;
     }
     // The bounding box frames the draft in the game; an impossible number there is a damaged file as well. BpcResult has
     // no code of its own for it, so it is reported as bad actor data (both are "a number in the blob is not one").
