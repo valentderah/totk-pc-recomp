@@ -47,6 +47,32 @@ Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3)
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
 loads the saves 1.4.3 wrote.
 
+### From the game (Windows)
+
+The Menu tab of the settings menu (F1) runs the same update without a trip to GitHub (`runtime/update.c`):
+
+1. **Check.** The first time the menu opens in a run, the game asks GitHub's API once for the project's latest release
+   (`releases/latest`, which leaves out drafts and pre-releases) and compares its tag with the running version by the
+   three version numbers. A newer one shows on the menu's title line and in the Menu tab, with a link to its release
+   page. `[updates] update_check = 0` stops the automatic check; "Check now" still asks. Scripted runs (`--seconds`,
+   `--boot`, `menu_test`) never check by themselves.
+2. **Download.** On "Download update" it fetches the release's `TotK-Setup-<version>-windows.zip`, only from the
+   project's download address, into `%LOCALAPPDATA%\TotK Recomp\updates\`. Its size and SHA-256 must match the ones the
+   API lists for the asset, Windows' `tar.exe` unpacks it, and the unpacked `VERSION` must name the release; anything
+   else deletes the download and says so in the row (the log has the details). The game keeps running meanwhile. The
+   release is not signed: these checks catch a damaged or swapped download, not a release published by someone who took
+   over the project's GitHub account.
+3. **Install.** "Install and restart" asks first, then starts the downloaded release's
+   `python\pythonw.exe -m installer.gui --upgrade <install folder>` and closes the game as Quit does. That window mode
+   waits until `totk.exe` has exited, fills in the game file paths recorded for the folder (in case the new release
+   must extract again), runs the update and starts the game when it succeeds; then it deletes the other release folders
+   in `updates\`. `build-cache/rebuild.txt` now names the downloaded release, so mod rebuilds use it. A failed run shows
+   the usual finish screen with "Start the game"; running the update again resumes from the last finished step. A folder
+   without `totk-install.json` (a build the setup did not make) can check but not install.
+
+The Linux release ships the setup as an AppImage, which would need a download and start path of its own; the rows do
+not show there.
+
 ## Setup steps
 
 1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
@@ -103,7 +129,9 @@ lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_nee
 window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
 offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
 again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
-needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
+needs the release folder the setup ran from: a moved or deleted release folder means running a setup again. After an
+update from the game that is the downloaded release in `%LOCALAPPDATA%\TotK Recomp\updates\`; a second install folder
+whose rebuild command names an older downloaded release loses it when the first one updates.
 
 ## Command line
 

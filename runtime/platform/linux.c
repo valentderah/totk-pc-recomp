@@ -1434,15 +1434,13 @@ static void reap_main(void *arg) {
     waitpid((pid_t)(intptr_t)arg, NULL, 0);
 }
 
-// xdg-open picks the desktop's file manager; it runs detached, so a slow answer does not hold up the caller, and a
-// thread of its own reaps it so it does not stay a zombie.
-int plat_open_folder(const char *path) {
-    struct stat st;
-    if (stat(path, &st) || !S_ISDIR(st.st_mode)) return 0;
+// xdg-open picks the desktop's file manager or browser; it runs detached, so a slow answer does not hold up the caller,
+// and a thread of its own reaps it so it does not stay a zombie.
+static int xdg_open(const char *what) {
     posix_spawnattr_t a;
     posix_spawnattr_init(&a);
     posix_spawnattr_setflags(&a, POSIX_SPAWN_SETSID);
-    char *argv[] = {"xdg-open", (char *)path, NULL};
+    char *argv[] = {"xdg-open", (char *)what, NULL};
     pid_t pid;
     int e = posix_spawnp(&pid, "xdg-open", NULL, &a, argv, environ);
     posix_spawnattr_destroy(&a);
@@ -1450,6 +1448,14 @@ int plat_open_folder(const char *path) {
     plat_thread_spawn(reap_main, (void *)(intptr_t)pid, "reap", 64 << 10);
     return 1;
 }
+
+int plat_open_folder(const char *path) {
+    struct stat st;
+    if (stat(path, &st) || !S_ISDIR(st.st_mode)) return 0;
+    return xdg_open(path);
+}
+
+int plat_open_url(const char *url) { return !strncmp(url, "https://", 8) && xdg_open(url); }
 
 // ---- dynamic libraries
 
@@ -1863,6 +1869,22 @@ int plat_spawn(const char *const *argv, const char *cwd) {
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return e == 0;
+}
+
+// ---- the in-game update (update.c) is Windows only for now: the Linux release ships the setup as an AppImage, which
+// needs a download and start path of its own
+int plat_http_get(const char *url, const char *headers, int (*cb)(const void *data, size_t n, void *ctx), void *ctx,
+                  int *status, char *err, size_t err_cap) {
+    (void)url, (void)headers, (void)cb, (void)ctx;
+    if (status) *status = 0;
+    snprintf(err, err_cap, "not available on Linux");
+    return 0;
+}
+
+int plat_unzip(const char *name, const char *dir, uint32_t timeout_ms, char *err, size_t err_cap) {
+    (void)name, (void)dir, (void)timeout_ms;
+    snprintf(err, err_cap, "not available on Linux");
+    return 0;
 }
 
 int plat_restart_wait(uint32_t timeout_ms) {

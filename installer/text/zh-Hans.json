@@ -111,6 +111,7 @@
 
  "ui.title": "TotK 安装程序",
  "ui.rebuild_title": "正在为你的模组重新构建游戏",
+ "ui.upgrade_title": "正在将 TotK Recomp 更新到此版本",
  "ui.start_game": "启动游戏",
  "ui.version": "版本 {version}",
  "ui.intro": "用你自己的游戏文件构建一个可以游玩的《王国之泪》文件夹。耗时较长，只需运行一次。",

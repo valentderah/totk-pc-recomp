@@ -111,6 +111,7 @@
 
  "ui.title": "TotK Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",
+ "ui.upgrade_title": "Updating TotK Recomp to this release",
  "ui.start_game": "Start the game",
  "ui.version": "version {version}",
  "ui.intro": "Builds a playable Tears of the Kingdom folder from your own game files. This takes a while and runs once.",

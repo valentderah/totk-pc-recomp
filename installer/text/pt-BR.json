@@ -111,6 +111,7 @@
 
  "ui.title": "Instalação do TotK",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
+ "ui.upgrade_title": "Atualizando o TotK Recomp para esta versão",
  "ui.start_game": "Iniciar o jogo",
  "ui.version": "versão {version}",
  "ui.intro": "Monta uma pasta jogável de Tears of the Kingdom a partir dos seus próprios arquivos do jogo. Isso demora um pouco e só precisa ser feito uma vez.",

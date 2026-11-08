@@ -385,9 +385,10 @@ int plat_is_wine(void);                                   // 1 when the Windows 
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
 
-// ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
+// ---- desktop: the in-game menu's "Copy system info", "Open log folder" and an update's "What's new"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
+int plat_open_url(const char *url);                       // an https:// page in the default browser; 1 on success
 
 // ---- dynamic libraries: a library some machines lack (a GPU vendor's), loaded at run time. A bare name is searched
 // in the system directories only. NULL when missing.
@@ -457,3 +458,15 @@ int plat_spawn(const char *const *argv, const char *cwd);
 // In a process plat_restart started: waits, at most timeout_ms, until the process that started it has exited. 1 after
 // the wait, -1 on timeout, 0 when there is nothing to wait for (not started by plat_restart, or that process is gone).
 int plat_restart_wait(uint32_t timeout_ms);
+
+// ---- the in-game update (update.c). Windows only: elsewhere both return 0 with a reason.
+// GET url (https://, or http:// for a test server on this machine), following redirects, with headers (lines
+// "Name: value\r\n", NULL none). cb gets the body in pieces as they arrive and returns 0 to stop the transfer.
+// *status (may be NULL) gets the HTTP status of the last answer. 1 when the whole body of a 200 answer went to cb (a
+// body shorter than its Content-Length fails); 0 otherwise, with a short reason in err.
+int plat_http_get(const char *url, const char *headers, int (*cb)(const void *data, size_t n, void *ctx), void *ctx,
+                  int *status, char *err, size_t err_cap);
+// Unpacks the zip archive name, a file in the folder dir (name without a directory part), into dir with the system's
+// tar.exe: Windows 10 1803 and later ship bsdtar as System32\tar.exe, which refuses an entry with ".." or an absolute
+// path. Waits at most timeout_ms, then kills it. 1 when tar exited with 0; 0 otherwise, with a short reason in err.
+int plat_unzip(const char *name, const char *dir, uint32_t timeout_ms, char *err, size_t err_cap);

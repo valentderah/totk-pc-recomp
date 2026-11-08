@@ -10,6 +10,7 @@
 #include <restartmanager.h>
 #include <shellapi.h>
 #include <timeapi.h>
+#include <winhttp.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1435,6 +1436,16 @@ int plat_open_folder(const char *path) {
     return 1;
 }
 
+int plat_open_url(const char *url) {
+    if (strncmp(url, "https://", 8)) return 0;
+    wchar_t *w = malloc(WPATH * sizeof *w);
+    if (!w || !widen(url, w, WPATH)) return free(w), 0;
+    HANDLE t = CreateThread(NULL, 0, open_folder_main, w, 0, NULL);   // the shell opens a URL as it opens a folder
+    if (!t) return free(w), 0;
+    CloseHandle(t);
+    return 1;
+}
+
 // ---- dynamic libraries
 
 void *plat_lib_open(const char *name) {
@@ -1870,4 +1881,203 @@ int plat_restart_wait(uint32_t timeout_ms) {
     int r = process_created(h) != created ? 0 : WaitForSingleObject(h, timeout_ms) == WAIT_OBJECT_0 ? 1 : -1;
     CloseHandle(h);
     return r;
+}
+
+// ---- the in-game update: WinHTTP (winhttp.dll, loaded on first use) for the release check and the download, the
+// system's tar.exe for the zip. WinHTTP follows redirects by itself (GitHub's download links redirect to its asset
+// host), never from https to http, and checks the server certificate against the Windows certificate store.
+typedef HINTERNET(WINAPI *WinHttpOpen_t)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
+typedef BOOL(WINAPI *WinHttpSetTimeouts_t)(HINTERNET, int, int, int, int);
+typedef BOOL(WINAPI *WinHttpCrackUrl_t)(LPCWSTR, DWORD, DWORD, LPURL_COMPONENTS);
+typedef HINTERNET(WINAPI *WinHttpConnect_t)(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD);
+typedef HINTERNET(WINAPI *WinHttpOpenRequest_t)(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR *, DWORD);
+typedef BOOL(WINAPI *WinHttpSendRequest_t)(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR);
+typedef BOOL(WINAPI *WinHttpReceiveResponse_t)(HINTERNET, LPVOID);
+typedef BOOL(WINAPI *WinHttpQueryHeaders_t)(HINTERNET, DWORD, LPCWSTR, LPVOID, LPDWORD, LPDWORD);
+typedef BOOL(WINAPI *WinHttpReadData_t)(HINTERNET, LPVOID, DWORD, LPDWORD);
+typedef BOOL(WINAPI *WinHttpCloseHandle_t)(HINTERNET);
+static struct {
+    INIT_ONCE once;
+    WinHttpOpen_t open;
+    WinHttpSetTimeouts_t timeouts;
+    WinHttpCrackUrl_t crack;
+    WinHttpConnect_t connect;
+    WinHttpOpenRequest_t request;
+    WinHttpSendRequest_t send;
+    WinHttpReceiveResponse_t receive;
+    WinHttpQueryHeaders_t query;
+    WinHttpReadData_t read;
+    WinHttpCloseHandle_t close;
+} http = {INIT_ONCE_STATIC_INIT};
+
+static BOOL CALLBACK http_load(INIT_ONCE *o, void *p, void **c) {
+    (void)o, (void)p, (void)c;
+    HMODULE l = plat_lib_open("winhttp.dll");
+    if (!l) return TRUE;
+    http.timeouts = (WinHttpSetTimeouts_t)(void *)GetProcAddress(l, "WinHttpSetTimeouts");
+    http.crack = (WinHttpCrackUrl_t)(void *)GetProcAddress(l, "WinHttpCrackUrl");
+    http.connect = (WinHttpConnect_t)(void *)GetProcAddress(l, "WinHttpConnect");
+    http.request = (WinHttpOpenRequest_t)(void *)GetProcAddress(l, "WinHttpOpenRequest");
+    http.send = (WinHttpSendRequest_t)(void *)GetProcAddress(l, "WinHttpSendRequest");
+    http.receive = (WinHttpReceiveResponse_t)(void *)GetProcAddress(l, "WinHttpReceiveResponse");
+    http.query = (WinHttpQueryHeaders_t)(void *)GetProcAddress(l, "WinHttpQueryHeaders");
+    http.read = (WinHttpReadData_t)(void *)GetProcAddress(l, "WinHttpReadData");
+    http.close = (WinHttpCloseHandle_t)(void *)GetProcAddress(l, "WinHttpCloseHandle");
+    WinHttpOpen_t open = (WinHttpOpen_t)(void *)GetProcAddress(l, "WinHttpOpen");
+    if (http.timeouts && http.crack && http.connect && http.request && http.send && http.receive && http.query &&
+        http.read && http.close)
+        http.open = open;   // open set: all of them are there
+    return TRUE;
+}
+
+// The reason of the failed WinHTTP call what, for the log.
+static void http_error(const char *what, char *err, size_t cap) {
+    DWORD e = GetLastError();
+    const char *why = e == ERROR_WINHTTP_NAME_NOT_RESOLVED ? "the server name was not resolved (no connection?)"
+                    : e == ERROR_WINHTTP_CANNOT_CONNECT    ? "the server did not take the connection"
+                    : e == ERROR_WINHTTP_TIMEOUT           ? "the server did not answer in time"
+                    : e == ERROR_WINHTTP_SECURE_FAILURE    ? "the server certificate was not accepted"
+                    : e == ERROR_WINHTTP_CONNECTION_ERROR  ? "the connection broke"
+                                                           : "WinHTTP failed";
+    snprintf(err, cap, "%s: %s (error %lu)", what, why, (unsigned long)e);
+}
+
+int plat_http_get(const char *url, const char *headers, int (*cb)(const void *data, size_t n, void *ctx), void *ctx,
+                  int *status, char *err, size_t err_cap) {
+    if (status) *status = 0;
+    InitOnceExecuteOnce(&http.once, http_load, NULL, NULL);
+    if (!http.open) return snprintf(err, err_cap, "winhttp.dll is missing"), 0;
+    wchar_t *w = malloc(WPATH * sizeof *w), *wh = malloc(WPATH * sizeof *wh), host[256];
+    uint8_t *buf = malloc(1 << 16);
+    HINTERNET s = NULL, con = NULL, req = NULL;
+    int ok = 0;
+    URL_COMPONENTS u = {.dwStructSize = sizeof u, .dwHostNameLength = (DWORD)-1, .dwUrlPathLength = (DWORD)-1,
+                        .dwExtraInfoLength = (DWORD)-1};
+    if (!w || !wh || !buf || !widen(url, w, WPATH) || !widen(headers ? headers : "", wh, WPATH) ||
+        !http.crack(w, 0, 0, &u) || !u.dwHostNameLength || u.dwHostNameLength >= 256) {
+        snprintf(err, err_cap, "not a URL: %s", url);
+        goto done;
+    }
+    wmemcpy(host, u.lpszHostName, u.dwHostNameLength);
+    host[u.dwHostNameLength] = 0;
+    // plain http only to a test server of this machine: everything else comes over TLS
+    int secure = u.nScheme == INTERNET_SCHEME_HTTPS;
+    if (!secure && (u.nScheme != INTERNET_SCHEME_HTTP || (wcscmp(host, L"127.0.0.1") && _wcsicmp(host, L"localhost")))) {
+        snprintf(err, err_cap, "only https, or http to this machine: %s", url);
+        goto done;
+    }
+    const wchar_t *path = u.dwUrlPathLength ? u.lpszUrlPath : L"/";   // the path and the query run to the end
+    // GitHub's API refuses a request without a user agent; WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY (Windows 8.1 and later)
+    // takes the system's proxy settings
+    s = http.open(L"TotK-Recomp-update", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                  WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) s = http.open(L"TotK-Recomp-update", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                          WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) {
+        http_error("open", err, err_cap);
+        goto done;
+    }
+    http.timeouts(s, 15000, 15000, 30000, 60000);   // resolve, connect, send, each receive
+    con = http.connect(s, host, u.nPort, 0);
+    req = con ? http.request(con, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                             secure ? WINHTTP_FLAG_SECURE : 0)
+              : NULL;
+    if (!req || !http.send(req, *wh ? wh : WINHTTP_NO_ADDITIONAL_HEADERS, *wh ? (DWORD)-1L : 0,
+                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !http.receive(req, NULL)) {
+        http_error("request", err, err_cap);
+        goto done;
+    }
+    DWORD code = 0, len = sizeof code;
+    if (!http.query(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code,
+                    &len, WINHTTP_NO_HEADER_INDEX)) {
+        http_error("status", err, err_cap);
+        goto done;
+    }
+    if (status) *status = (int)code;
+    if (code != 200) {
+        snprintf(err, err_cap, "HTTP status %lu", (unsigned long)code);
+        goto done;
+    }
+    // WinHTTP ends the body without an error when the server closes the connection early: the Content-Length tells
+    DWORD length = 0;
+    len = sizeof length;
+    int has_length = http.query(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &length, &len, WINHTTP_NO_HEADER_INDEX);
+    uint64_t total = 0;
+    for (;;) {
+        DWORD got = 0;
+        if (!http.read(req, buf, 1 << 16, &got)) {
+            http_error("read", err, err_cap);
+            goto done;
+        }
+        if (!got) break;
+        total += got;
+        if (!cb(buf, got, ctx)) {
+            snprintf(err, err_cap, "stopped");
+            goto done;
+        }
+    }
+    if (has_length && total < length) {
+        snprintf(err, err_cap, "the connection closed after %llu of %lu bytes", (unsigned long long)total,
+                 (unsigned long)length);
+        goto done;
+    }
+    ok = 1;
+done:
+    if (req) http.close(req);
+    if (con) http.close(con);
+    if (s) http.close(s);
+    free(buf);
+    free(w);
+    free(wh);
+    return ok;
+}
+
+int plat_unzip(const char *name, const char *dir, uint32_t timeout_ms, char *err, size_t err_cap) {
+    wchar_t sys[MAX_PATH], tar[MAX_PATH + 16];
+    UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+    if (!n || n >= MAX_PATH) return snprintf(err, err_cap, "no system folder"), 0;
+    swprintf(tar, MAX_PATH + 16, L"%ls\\tar.exe", sys);
+    if (GetFileAttributesW(tar) == INVALID_FILE_ATTRIBUTES)
+        return snprintf(err, err_cap, "no tar.exe in the system folder (Windows 10 1803 and later have it)"), 0;
+    if (strpbrk(name, "\\/:")) return snprintf(err, err_cap, "not a file name: %s", name), 0;
+    // tar.exe reads its arguments in the ANSI code page: the folder goes in as its working folder, which CreateProcessW
+    // takes as UTF-16, so a user folder name outside that code page works too
+    enum { CMD = 3 * WPATH };
+    wchar_t *cmd = calloc(CMD, sizeof *cmd), *wz = malloc(WPATH * sizeof *wz), *wd = malloc(WPATH * sizeof *wd);
+    int ok = 0;
+    size_t at = 0;
+    if (cmd && wz && wd && widen(name, wz, WPATH) && widen(dir, wd, WPATH)) {
+        const wchar_t *args[] = {tar, L"-x", L"-f", wz};
+        for (size_t i = 0; i < sizeof args / sizeof *args; i++) at = quote_arg(args[i], cmd, CMD, at);
+    }
+    if (!at || at >= CMD) {
+        snprintf(err, err_cap, "path too long");
+        goto done;
+    }
+    cmd[at - 1] = 0;   // the last separator
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(tar, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, wd, &si, &pi)) {
+        snprintf(err, err_cap, "tar.exe did not start (error %lu)", (unsigned long)GetLastError());
+        goto done;
+    }
+    CloseHandle(pi.hThread);
+    DWORD code = 1;
+    if (WaitForSingleObject(pi.hProcess, timeout_ms) != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        snprintf(err, err_cap, "tar.exe did not finish in %u s", (unsigned)(timeout_ms / 1000));
+    } else if (!GetExitCodeProcess(pi.hProcess, &code) || code) {
+        snprintf(err, err_cap, "tar.exe exited with %lu", (unsigned long)code);
+    } else {
+        ok = 1;
+    }
+    CloseHandle(pi.hProcess);
+done:
+    free(cmd);
+    free(wz);
+    free(wd);
+    return ok;
 }
