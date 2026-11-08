@@ -43,8 +43,11 @@ static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 static int rec_chk;                    // TOTK_REC_CHECK (rec_check_handle)
 static uint64_t rec_delay_ns;          // TOTK_REC_DELAY_US (rec_main)
+static uint64_t rec_spin_ns;           // TOTK_REC_SPIN_US (rec_main); 0: 4096 pauses
+static int rec_spin_ab;                // TOTK_REC_SPIN_US=ab: the timed poll in the B blocks of TOTK_AB only
 static volatile uint64_t part_h0;      // Q.put_h at rec_begin: where the packets of the part being recorded start
 static volatile uint64_t part_fence;   // the value of the part being recorded (rec_begin)
+static uint64_t r_sleeps;              // recorder: sleeps on wake_ev, read by rec_stats_log
 
 // Producer statistics, logged by rec_stats_log.
 static struct { _Alignas(64) uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on, submits; } RS_;
@@ -75,11 +78,27 @@ static void rec_main(void *arg) {
     for (;;) {
         uint64_t h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
         if (t == h) {
-            for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
+            // Poll for the next packets before sleeping: a sleep costs the producer an event set and the recorder
+            // an OS wake-up. The poll is timed (TOTK_REC_SPIN_US, default 60) because a pause takes 8-150 cycles
+            // depending on the CPU: 4096 of them are ~140 us on a Coffee Lake i7 and a few us on Zen 4. With fewer than
+            // 6 logical processors it stays 4096 pauses. Savage Wind Recomp's recorder polls 60 us the same way.
+            if (rec_spin_ns && (!rec_spin_ab || rt_ab())) {
+                uint64_t t0 = now_ns();
+                for (unsigned i = 1; t == h; i++) {
+                    _mm_pause();
+                    h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
+                    if (!(i & 31) && now_ns() - t0 >= rec_spin_ns) break;
+                }
+            } else {
+                for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
+            }
             if (t == h) {
                 __atomic_store_n(&Q.sleeping, 1, __ATOMIC_SEQ_CST);
                 h = __atomic_load_n(&Q.head, __ATOMIC_SEQ_CST);
-                if (t == h) plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
+                if (t == h) {
+                    __atomic_add_fetch(&r_sleeps, 1, __ATOMIC_RELAXED);
+                    plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
+                }
                 __atomic_store_n(&Q.sleeping, 0, __ATOMIC_RELAXED);
                 continue;
             }
@@ -200,6 +219,10 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
             rec_chk = rt_knob("REC_CHECK", "0");   // debug switches, read before the recorder starts
             const char *d = cfg_get("TOTK_REC_DELAY_US");
             rec_delay_ns = d && *d && atoi(d) > 0 ? (uint64_t)atoi(d) * 1000 : 0;
+            const char *sp = cfg_get("TOTK_REC_SPIN_US");
+            rec_spin_ab = sp && !strcmp(sp, "ab");
+            int spin_us = sp && *sp && !rec_spin_ab ? atoi(sp) : 60;
+            rec_spin_ns = spin_us > 0 && plat_cpu_usable() >= 6 ? (uint64_t)spin_us * 1000 : 0;
             const char *pw = cfg_get("TOTK_REC_PUB");   // words per publish (pub); 0: every packet
             Q.pub_words = rec_chk ? 0 : pw && *pw ? (uint64_t)atoi(pw) : 64;
             if (Q.pub_words > RING_WORDS / 8) Q.pub_words = RING_WORDS / 8;
@@ -211,6 +234,11 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
                        mode == 2 ? " in the B blocks (TOTK_AB)" : "");
                 if (rec_chk) rt_log("vk_rec: TOTK_REC_CHECK: deferred and destroyed objects are searched in the ring");
+                if (rec_spin_ns)
+                    rt_log("vk_rec: the recorder polls %llu us before it sleeps%s (TOTK_REC_SPIN_US)",
+                           (unsigned long long)(rec_spin_ns / 1000), rec_spin_ab ? " in the B blocks" : "");
+                else
+                    rt_log("vk_rec: the recorder polls 4096 pauses before it sleeps (TOTK_REC_SPIN_US)");
                 if (Q.pub_words != 64) rt_log("vk_rec: TOTK_REC_PUB: head published every %llu words",
                                               (unsigned long long)Q.pub_words);
                 if (rec_delay_ns) rt_log("vk_rec: TOTK_REC_DELAY_US: the recorder waits %llu us before each batch",
@@ -315,10 +343,12 @@ static void submit_run(const A_Submit *a) {
 void rec_stats_log(void) {
     if (!(rt_trace & RT_TRACE_PERF) || !RS_.parts) return;
     rt_log("vk_rec: %llu of %llu parts recorded by the recorder: %llu packets (%.1f MiB), %llu drains (%llu for a call "
-           "without a packet) waited %.2f ms in all, ring full %llu times, %llu submissions made by the recorder",
+           "without a packet) waited %.2f ms in all, ring full %llu times, %llu submissions made by the recorder, "
+           "recorder slept %llu times",
            (unsigned long long)RS_.parts_on, (unsigned long long)RS_.parts, (unsigned long long)RS_.packets,
            RS_.words * 8 / 1048576.0, (unsigned long long)RS_.drains, (unsigned long long)RS_.fallbacks,
-           RS_.drain_ns / 1e6, (unsigned long long)RS_.full_waits, (unsigned long long)RS_.submits);
+           RS_.drain_ns / 1e6, (unsigned long long)RS_.full_waits, (unsigned long long)RS_.submits,
+           (unsigned long long)__atomic_exchange_n(&r_sleeps, 0, __ATOMIC_RELAXED));
     memset(&RS_, 0, sizeof RS_);
 }
 
