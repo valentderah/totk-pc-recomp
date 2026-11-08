@@ -79,6 +79,12 @@ static void competing_tick(void *arg) {
     for (int i=0;i<100;i++) { input_panel_tick(); Sleep(1); }
 }
 int main(int argc,char **argv) {
+    CHECK(UI_MENU_LAST_ID >= UI_INPUT_LABELS);
+    static const char *const catalog_langs[] = {"en","ru","pt-BR","zh-Hans"};
+    for (size_t i=0;i<sizeof catalog_langs/sizeof *catalog_langs;i++)
+        for (int id=UI_MENU_INPUT_WINDOW;id<=UI_INPUT_LABELS;id++)
+            CHECK(ui_text_defined(catalog_langs[i],(UiTextId)id) && *ui_text_in(catalog_langs[i],(UiTextId)id) &&
+                  strlen(ui_text_in(catalog_langs[i],(UiTextId)id))+256<UI_DESC_BYTES);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     cfg_set("TOTK_MENU_LANG","en");
     fixture.connected = 1; fixture.layout = PAD_LAYOUT_NINTENDO; fixture.motion_enabled = 1;
