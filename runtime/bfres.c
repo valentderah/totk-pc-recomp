@@ -272,12 +272,23 @@ static const uint8_t *shape_fvtx(const BfresModel *m, int index, uint32_t *buf_o
     // The per-buffer size array's first entry is the position buffer's byte size; divided by the vertex count it is the
     // stride. The positions are three half floats at the start of each vertex, and anything after them is another attribute:
     // a stride of 7 is six bytes of position plus the one-byte `_i0` blend index, which is normal and must not be refused.
-    const uint64_t size_ptr = u64(f + 0x30);
-    if (!size_ptr || !in_bounds(m, size_ptr, 4)) return NULL;
-    const uint32_t size0 = u32(m->p + size_ptr);
-    if (*count == 0 || size0 < *count * 6u) return NULL;
-    const uint32_t st = size0 / *count;
-    if (st < 6 || st > 64) return NULL;   // six bytes of position at least; no parity requirement (a u8 attribute is common)
+    if (*count == 0) return NULL;
+    // The stride array (+0x38) declares each buffer's bytes per vertex, and it is the authority: a shape can have more than one
+    // buffer, so the first buffer's byte size divided by the vertex count is not the stride - with 8 vertices and 56 bytes it
+    // gives 7 while the vertices are 6 bytes wide, and reading them one byte out turns a small face into a 52 m sheet.
+    uint32_t st = 0;
+    const uint64_t stride_ptr = u64(f + 0x38);
+    if (stride_ptr && in_bounds(m, stride_ptr, 4)) st = u32(m->p + stride_ptr);
+    if (st < 6 || st > 64) {
+        // A file without a usable stride array: fall back to the first buffer's size, which is right when that buffer holds
+        // nothing but positions.
+        const uint64_t size_ptr = u64(f + 0x30);
+        if (!size_ptr || !in_bounds(m, size_ptr, 4)) return NULL;
+        const uint32_t size0 = u32(m->p + size_ptr);
+        if (size0 < *count * 6u) return NULL;
+        st = size0 / *count;
+        if (st < 6 || st > 64) return NULL;
+    }
     *stride = st;
     return f;
 }
