@@ -433,13 +433,9 @@ static void emit_part(const BpcBlueprint *bp, int k, int budget) {
     if (!nm || !*nm) return;
     const int limit = g_preview.nfaces + budget;
     const int fused = bp->sub_names[k] && *bp->sub_names[k];
-    // The weapon keeps its covered shapes unless the material brings a replacement model for this class (see
-    // shape_hidden_when_fused and blueprint_attach.h).
-    int replaces = 0;
-    if (fused) {
-        BpAttach probe;
-        if (bp_attach_resolve(nm, bp->sub_names[k], &probe)) replaces = probe.has_sub_model;
-    }
+    // A part that carries a fused material loses the shapes that fusion covers; one with none keeps everything (see
+    // shape_hidden_when_fused in ui/preview3d.cpp).
+    const int replaces = fused;
 
     // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
     // shape's vertices and indices, which are then projected like any other mesh.

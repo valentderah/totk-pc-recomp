@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
         check(a.scale > 0.5f && a.scale < 0.6f, "the material scale is the template's 0.55, not the weapon's fuseInfo");
         check(a.trans[1] > 0.5f, "the offset along the weapon is the material's own 0.517");
         check(!strcmp(a.model, "Item_Enemy_151"), "the model is the material itself when it names no SubModel");
-        check(a.has_sub_model == 0, "a spear keeps its blade: the horn brings no replacement model");
+        check(a.has_sub_model == 0, "a spear\'s horn brings no replacement model of its own");
     }
 
     // The same horn on a long sword: the material has a SubModel for that class, and a different template.

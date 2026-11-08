@@ -726,14 +726,10 @@ extern "C" void preview3d_record(void *command_buffer) {
         if (!name || !*name) continue;
         const char *sub = bp->sub_names[k];
         const int fused = sub && *sub;
-        // A fused part loses its covered shapes only when the material brings a replacement model for this weapon class; a
-        // fusion that merely adds a material on top leaves the weapon whole (a spear keeps its blade under a horn).
-        int replaces = 0;
-        if (fused) {
-            BpAttach probe;
-            if (bp_attach_resolve(name, sub, &probe)) replaces = probe.has_sub_model;
-        }
-        const int slot = replaces ? upload_part_fused(name) : upload_part(name);
+        // A part that carries a fused material loses the shapes that fusion covers; a part with none keeps everything. Whether
+        // the material also brings a replacement model of its own is a different question (that decides the material's
+        // model, in blueprint_attach), not whether the weapon's covered shapes make way.
+        const int slot = fused ? upload_part_fused(name) : upload_part(name);
         if (slot < 0) continue;
         const GpuPart &p = S.parts[slot];
 
