@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -218,6 +219,32 @@ static void ts_drop(void) {
     ts_cur = -1;
 }
 
+// ---- fence poll (TOTK_FENCE_SPIN_US, TOTK_TRACE=perf counts)
+// A fence wait ends two OS wake-ups after the GPU: the completion thread wakes from vkWaitSemaphores, runs the side
+// effects and sets done, then the waiting thread wakes from its condition variable. With TOTK_FENCE_SPIN_US > 0 the
+// completion thread polls the timeline for that long before it blocks in vkWaitSemaphores, and a waiter polls done for
+// that long before it sleeps on cv_done. Both polls only change how a thread notices a value: done is still set by the
+// completion thread alone, after the side effects of the value ran. Default 0 (off). Off with fewer than 6 logical
+// processors, as TOTK_KSPIN_US is. =ab polls 100 us in the B blocks of TOTK_AB only.
+static int64_t fspin_ns = -1;
+static int fspin_ab;
+static volatile int64_t fw_ready, fw_polled, fw_slept, cw_polled, cw_blocked;   // TOTK_TRACE=perf: wait outcomes
+
+static uint64_t fence_spin_ns(void) {
+    int64_t v = __atomic_load_n(&fspin_ns, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char *e = cfg_get("TOTK_FENCE_SPIN_US");
+        fspin_ab = e && !strcmp(e, "ab");
+        long long us = fspin_ab ? 100 : e && *e ? atoll(e) : 0;
+        uint32_t cpus = plat_cpu_usable();
+        v = us <= 0 || cpus < 6 ? 0 : us * 1000;
+        __atomic_store_n(&fspin_ns, v, __ATOMIC_RELAXED);
+        if (v) rt_log("vk: fence waits poll %lld us before they sleep%s (TOTK_FENCE_SPIN_US, %u logical processors)",
+                      (long long)(v / 1000), fspin_ab ? " in the B blocks" : "", cpus);
+    }
+    return v && (!fspin_ab || rt_ab()) ? (uint64_t)v : 0;
+}
+
 static void gpu_stats(PerfGpu *g) {
     g->have_gpu = ts_state == 1;
     g->gpu_ns = (uint64_t)plat_xchg64(&ts_busy_ns, 0);
@@ -230,6 +257,11 @@ static void gpu_stats(PerfGpu *g) {
     g->queued_ns = (uint64_t)plat_xchg64(&ts_queued_ns, 0);
     g->idle_gaps = (uint64_t)plat_xchg64(&ts_gaps, 0);
     g->max_gap_ns = (uint64_t)plat_xchg64(&ts_max_gap_ns, 0);
+    g->fw_ready = (uint64_t)plat_xchg64(&fw_ready, 0);
+    g->fw_polled = (uint64_t)plat_xchg64(&fw_polled, 0);
+    g->fw_slept = (uint64_t)plat_xchg64(&fw_slept, 0);
+    g->cw_polled = (uint64_t)plat_xchg64(&cw_polled, 0);
+    g->cw_blocked = (uint64_t)plat_xchg64(&cw_blocked, 0);
 }
 
 // Weak stand-in for vk_exec.c's replay: only empty recordings ({OP_BEGIN, OP_END}) can be submitted.
@@ -254,12 +286,25 @@ static void completion_main(void *arg) {
         if (issued > done) {
             uint64_t want = done + 1;
             plat_mutex_unlock(&st_lock);
-            VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
-                                      .pSemaphores = &c->timeline, .pValues = &want};
-            VkResult r = vkWaitSemaphores(c->device, &wi, 100000000ull);   // 100 ms: stop is checked between waits
-            if (r != VK_SUCCESS && r != VK_TIMEOUT) {
-                vk_device_fault_report(r);
-                rt_fatal("vk: vkWaitSemaphores failed (%d; device lost?)", (int)r);
+            uint64_t spin = fence_spin_ns(), cur = 0;
+            int polled = 0;   // TOTK_FENCE_SPIN_US: the value was reached within the poll, no kernel wait
+            if (spin) {
+                uint64_t end = kern_now_ns() + spin;
+                for (unsigned i = 1; !(polled = vkGetSemaphoreCounterValue(c->device, c->timeline, &cur) == VK_SUCCESS
+                                                && cur >= want); i++) {
+                    plat_pause();
+                    if (!(i & 31) && kern_now_ns() >= end) break;
+                }
+            }
+            if (perf_gpu_timing()) plat_inc64(polled ? &cw_polled : &cw_blocked);
+            if (!polled) {
+                VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                          .pSemaphores = &c->timeline, .pValues = &want};
+                VkResult r = vkWaitSemaphores(c->device, &wi, 100000000ull);   // 100 ms: stop is checked between waits
+                if (r != VK_SUCCESS && r != VK_TIMEOUT) {
+                    vk_device_fault_report(r);
+                    rt_fatal("vk: vkWaitSemaphores failed (%d; device lost?)", (int)r);
+                }
             }
             vkGetSemaphoreCounterValue(c->device, c->timeline, &reached);
             plat_mutex_lock(&st_lock);
@@ -478,22 +523,37 @@ int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns) {
     vk_sync_start();
+    uint64_t spin = fence_spin_ns();   // before st_lock: the first call reads the setting
     plat_mutex_lock(&st_lock);
     int ok;
     if (value > issued && value > reserved) {
         ok = 0;   // never submitted nor queued: never reached (as in the null back end)
     } else {
         uint64_t t0 = kern_now_ns();
+        int trace = perf_gpu_timing(), slept = 0, polled = 0;
+        uint64_t sp = spin < timeout_ns ? spin : timeout_ns;
+        if (sp && done < value) {   // TOTK_FENCE_SPIN_US: poll done with st_lock released; the loop below re-checks it under the lock
+            polled = 1;
+            plat_mutex_unlock(&st_lock);
+            for (unsigned i = 1; __atomic_load_n(&done, __ATOMIC_ACQUIRE) < value; i++) {
+                plat_pause();
+                if (!(i & 31) && kern_now_ns() - t0 >= sp) break;
+            }
+            plat_mutex_lock(&st_lock);
+        }
         while (done < value) {
             if (timeout_ns < (1ull << 62)) {
                 uint64_t el = kern_now_ns() - t0;
                 if (el >= timeout_ns) break;
+                slept = 1;
                 plat_cond_wait_ns(&cv_done, &st_lock, timeout_ns - el);
             } else {
+                slept = 1;
                 plat_cond_wait(&cv_done, &st_lock);
             }
         }
         ok = done >= value;
+        if (trace) plat_inc64(slept ? &fw_slept : polled && ok ? &fw_polled : &fw_ready);
     }
     plat_mutex_unlock(&st_lock);
     return ok;

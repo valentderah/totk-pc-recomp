@@ -44,6 +44,10 @@
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
+# Microseconds a thread polls for a GPU fence before it sleeps, and the completion thread for the GPU, so the OS wake-ups
+# after the GPU finishes drop out of each fence wait (0 = off; ab = 100 in the ab blocks of TOTK_AB only).
+# Costs CPU while a fence is pending; off with fewer than 6 logical processors. TOTK_TRACE=perf counts the waits.
+# fence_spin_us = 0
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.

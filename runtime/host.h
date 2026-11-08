@@ -64,6 +64,8 @@ typedef struct {
     int have_idle;                              // calibrated timestamps: the idle split below is filled
     uint64_t idle_ns, starved_ns, queued_ns;    // GPU idle between timed parts; of it, before the part was submitted; submit to start
     uint64_t idle_gaps, max_gap_ns;             // gaps over 0.5 ms; the longest
+    uint64_t fw_ready, fw_polled, fw_slept;     // fence waits since the previous call: done at once, done within the poll, slept
+    uint64_t cw_polled, cw_blocked;             // completion thread: values seen within the poll, waited for in vkWaitSemaphores
 } PerfGpu;
 extern void (*perf_gpu_stats)(PerfGpu *out);
 // The performance overlay (perfmon.c): mode 0 off, 1 fps, 2 full. While it is on, perf_present hands every frame to
