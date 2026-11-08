@@ -1249,7 +1249,7 @@ static int g_save_pending;   // a changed setting still waits for its write to t
 // ---- the performance overlay (TOTK_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers, in the style of SavageWindRecomp's perf_overlay_draw
 // (menu.mm): the machine's load and temperatures, the frame rate and frame times with a graph, the render thread's waits.
-// Off, it costs a cfg_version load per present.
+// Sampling stays off when both displays are off; the owner still checks the separate window lifecycle and settings.
 static unsigned g_perf_ver = ~0u;
 static int g_perf_mode;                  // In-game display only: 0 off, 1 fps, 2 full
 static int g_perf_sampling;              // The separate window raises sampling without changing the in-game display
