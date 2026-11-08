@@ -72,34 +72,27 @@ of them.
 
 2b. **The blueprint preview's model decoder** (once). The preview draws each part's real model, and decoding a
    `.bfres.mc` needs MeshCodec, whose only implementation ([dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec))
-   is GPL-2.0. It is deliberately kept out of this repository: it is compiled into `libmeshcodec.a` beside `totk.exe`,
-   and `tools/build_game.py` puts `libmeshcodec.a` on the link line for every version. Without that library the link
-   fails on `model_meshcodec_decode`, so build it first, or drop `runtime/model_meshcodec.c` from the build to get a
-   preview that falls back to collision bodies. See "The model decoder and the GPL" in `THIRD_PARTY_NOTICES.md` for
-   what that means for a build you distribute.
+   is GPL-2.0. None of it is in this repository, so it is built into `build\<ver>\libmeshcodec.a` beside `totk.exe`:
 
    ```powershell
-   # In the MeshCodec checkout: its C++20 sources plus its bundled zstd's decompress half, into one static library.
-   $mc = 'C:\src\MeshCodec-main'          # the dt-12345 checkout
-   $zs = "$mc\lib\zstd\lib"               # its zstd submodule (decompress-only is enough)
-   $inc = @("-I$mc\src\include", "-I$mc\src", "-I$zs", "-I$zs\common", "-I$zs\decompress", "-I$mc\lib\float16")
-   $objs = @()
-   foreach ($f in Get-ChildItem "$mc\src\*.cpp") {
-     & clang++ -std=c++20 -O2 @inc -c $f.FullName -o "$mc\$($f.BaseName).o"; $objs += "$mc\$($f.BaseName).o"
-   }
-   foreach ($f in Get-ChildItem "$zs\decompress\*.c") {
-     & clang -O2 @inc -c $f.FullName -o "$mc\z_$($f.BaseName).o"; $objs += "$mc\z_$($f.BaseName).o"
-   }
-   foreach ($f in Get-ChildItem "$zs\common\*.c") {
-     & clang -O2 @inc -c $f.FullName -o "$mc\c_$($f.BaseName).o"; $objs += "$mc\c_$($f.BaseName).o"
-   }
-   & clang -c "$zs\decompress\huf_decompress_amd64.S" -o "$mc\asm.o"; $objs += "$mc\asm.o"
-   # plus one C door of your own exposing DecompressMC with extern "C" (runtime/model_meshcodec.h names it)
-   & ar rcs build\v143\libmeshcodec.a @objs
+   .venv\Scripts\python tools\build_meshcodec.py --version v143
    ```
 
-   The build needs `build\<ver>\libmeshcodec.a` beside the executable. `runtime/model_meshcodec.h` fixes the one symbol
-   that matters (`model_meshcodec_decode`), so a door written in any language links.
+   That fetches MeshCodec at a pinned commit into `build\meshcodec\MeshCodec` (its zstd submodule included), compiles it
+   with this repository's own C door (`tools\meshcodec_bridge.cpp`) and writes the library. Pass
+   `--meshcodec <dir>` to use a checkout you already have. `tools\build_game.py` then puts the library on the link line
+   and defines `TOTK_MESHCODEC` for every version.
+
+   It is optional. Without the library the port still builds: `TOTK_MESHCODEC` stays undefined, `runtime/model_romfs.c`
+   resolves no model, and the preview falls back to each part's collision body — the same fallback the reference viewer
+   uses for actors it has no model for. Delete `build\<ver>\libmeshcodec.a` to go back to that.
+
+   One build detail, because it is not obvious: MeshCodec calls zstd's **internal** block API, so it needs zstd's internal
+   headers, but not its sources — the symbols it calls are exported by the `libzstd.a` this port already links, and
+   compiling zstd here would only duplicate them and fail at link time.
+
+   What a build that links the library becomes, and how to distribute one, is stated in "The model decoder and the GPL" in
+   `THIRD_PARTY_NOTICES.md`.
 
 3. Extract and verify. This writes `build\extracted\v0` (1.0.0) and `build\extracted\<ver>` for each update in
    `updates`, identified by its hash; a hash mismatch stops the run. With another `[work] dir` in `config.local.toml`,
