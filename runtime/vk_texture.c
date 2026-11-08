@@ -47,6 +47,7 @@ typedef struct Tex {
     uint32_t checked;             // submit_epoch of the last check from a draw binding
     int uploaded, released;
     uint32_t rev_epoch, rev_pos;  // the state scan made it live in that submission at that op (vk_texture_revive)
+    uint32_t own_epoch, own_pos;  // a chunk made it GPU-owned in that submission at that op (vk_texture_gpu_written)
     uint32_t n_up;                // uploads of this entry (vk_texture_debug)
     int last_ch;                  // last vk_mem_changed result of make_fresh: 1 written, 0 clean, -1 not tracked
     struct Tex *next_at;          // other entries at the same storage address
@@ -146,11 +147,17 @@ static void tex_init(void *p) {
     __atomic_store_n(&tex_ready, 1, __ATOMIC_RELEASE);
     return;
 }
+static _Thread_local int tex_depth;   // how often this thread holds tex_lock (entry_of releases it for a wait)
+static _Thread_local uint32_t tex_settles;   // entry_of waits of this thread (vk_texture_by_id_locked)
 static void lock(void) {
     if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
     plat_rmutex_lock(&tex_lock);
+    tex_depth++;
 }
-static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
+static void unlock(void) {
+    tex_depth--;
+    plat_rmutex_unlock(&tex_lock);
+}
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static uint32_t mip(uint32_t v, unsigned lv) { return umax(v >> lv, 1); }
@@ -1234,10 +1241,20 @@ static int alias_compatible(const Tex *e, const Tex *src) {
     return eb && eb == sb && ew == sw && eh == sh;
 }
 
-// src holds content the storage bytes do not: the GPU wrote it and, for a mirrored texture, it was not written back
-// and the CPU has not rewritten the storage since (the new entry's upload then reads the newer bytes).
-static int alias_has_gpu_content(const Tex *src) {
-    if (!src->pub.gpu_owned) return 0;
+// Whether e is live at op pos of a chunked replay: the state scan is ahead of the chunks, and an entry it revived at a
+// later op is still released for this one. Two 4K targets at one address, RGBA8 and R8 with memory of their own, were
+// swapped whenever the scan got past the second's SET_RT before a chunk sampling the storage got its turn, and large
+// parts of the scene flickered. UINT32_MAX: the state now.
+static int live_at(const Tex *e, uint32_t pos) {
+    return !e->released && !(e->rev_epoch == submit_epoch && e->rev_pos > pos);
+}
+
+// src holds content the storage bytes do not, at op pos of a chunked replay (UINT32_MAX: the state now): the GPU wrote
+// it and, for a mirrored texture, it was not written back and the CPU has not rewritten the storage since (the new
+// entry's upload then reads the newer bytes). A chunk at a later op that rendered src first does not count: in replay
+// order that render comes after the new entry's first use.
+static int alias_has_gpu_content(const Tex *src, uint32_t pos) {
+    if (!src->pub.gpu_owned || (src->own_epoch == submit_epoch && src->own_pos > pos)) return 0;
     if (!src->pub.mirrored) return 1;
     uint32_t now;
     return src->gpu_dirty && !storage_rewritten(src, src->gpu_gen, &now);
@@ -1298,10 +1315,38 @@ static void entry_live(Tex *e) {
     e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(e->key.addr);
 }
 
+// A live colour entry at e's storage of e's size, as of op pos: the new entry may take its content (alias_copy).
+static int alias_candidate(const TexKey *k, const tex_t *t, uint32_t pos) {
+    for (const Tex *p = nvn_hm_get(&by_addr, &k->addr); p; p = p->next_at)
+        if (live_at(p, pos) && !p->f.depth && !p->f.stencil && p->t.L.size == t->L.size) return 1;
+    return 0;
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
+    uint32_t pos = vk_exec_replay_pos();
+    // A chunk of a chunked replay makes the entry as of its own op: whether it takes the content of a texture at its
+    // storage (alias_copy) depends on what the chunks before it render there, and those may still be recording on
+    // other threads. Taken from a render they had not recorded yet, the new image got the storage's old bytes instead:
+    // on an RX 7800 XT the grass near Link was missing in 3 of 29 launches with 4 threads (a map texture drawn once
+    // per tile, kept from then on). With a live colour texture of its size at the storage, the chunk waits until the
+    // chunks before it are recorded, the texture lock released for the wait (as often as this thread holds it).
+    if (!e && pos != UINT32_MAX && tex_alias != 0 && alias_candidate(&k, t, pos) && vk_exec_chunk_behind()) {
+        tex_t own = *t;   // t may point into tslots, which a registration moves while the lock is released
+        t = &own;
+        int d = tex_depth;
+        for (int i = 0; i < d; i++) unlock();
+        vk_exec_chunk_settle();
+        for (int i = 0; i < d; i++) lock();
+        tex_settles++;
+        if ((e = nvn_hm_get(&by_key, &k))) {   // another chunk made it meanwhile
+            entry_live(e);
+            e->t = *t;
+            return e;
+        }
+    }
     if (!e) {
         if (tex_alias < 0) {
             tex_alias = cfg_bool("TOTK_TEX_ALIAS");
@@ -1319,8 +1364,9 @@ static Tex *entry_of(const tex_t *t) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
+            if (!live_at(p, pos)) continue;   // the scan revives it at a later op: released at this chunk's
             if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
-                alias_compatible(e, p) && alias_has_gpu_content(p))
+                alias_compatible(e, p) && alias_has_gpu_content(p, pos))
                 src = p;
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
@@ -1423,6 +1469,10 @@ void vk_texture_gpu_written(const tex_t *t) {
     Tex *e = entry_of(t);
     if (e) {
         make_fresh(e);   // a partial render keeps what the storage held before
+        if (!e->pub.gpu_owned) {   // entry_of's alias choice of a chunk at an earlier op leaves this render out
+            uint32_t pos = vk_exec_replay_pos();
+            e->own_epoch = pos == UINT32_MAX ? 0 : submit_epoch, e->own_pos = pos;
+        }
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
@@ -1511,14 +1561,6 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     unlock();
 }
 
-// Whether e is live at op pos of a chunked replay: the state scan is ahead of the chunks, and an entry it revived at a
-// later op is still released for this one. Two 4K targets at one address, RGBA8 and R8 with memory of their own, were
-// swapped whenever the scan got past the second's SET_RT before a chunk sampling the storage got its turn, and large
-// parts of the scene flickered. UINT32_MAX: the state now.
-static int live_at(const Tex *e, uint32_t pos) {
-    return !e->released && !(e->rev_epoch == submit_epoch && e->rev_pos > pos);
-}
-
 // The entry slot s resolves to at op pos, and the view and has_view a caller gets with it (the slot's, with the
 // descriptor's swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
 static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view, uint32_t pos) {
@@ -1546,7 +1588,8 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view, uint32_t pos) 
         }
         if (!e) e = any ? any : own;
     }
-    if (!e) e = s->t.mem ? entry_of(&s->t) : NULL;
+    TexSlot copy;   // entry_of may release the lock (a chunk's wait), and a registration then moves tslots
+    if (!e && s->t.mem) copy = *s, s = &copy, e = entry_of(&s->t);
     // A followed texture is another descriptor at the same storage: its image holds the content, but sampling takes the
     // slot descriptor's swizzle. The UI renders text into RGBA8 and samples it through a (A,A,A,A) descriptor; with the
     // render target's RGBA swizzle the text blur saw R = 1 everywhere and drew solid boxes behind tips and labels.
@@ -1594,6 +1637,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
         view_t v;
         int hv;
         Tex *f = slot_resolve(s, &v, &hv, pos);
+        s = &tslots[id];   // slot_resolve may have released the lock
         if (f && (!f->uploaded || f->checked != submit_epoch)) {
             make_fresh_snap(f);
             f->checked = submit_epoch;
@@ -1605,7 +1649,16 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     if (!s->ce || s->cgen != g) {   // resolved again: an entry at its address was created, dropped or released, or the
         view_t v;                   // slot registered (s->ce cleared); an empty result is not kept: image creation may
         int hv;                     // succeed later
-        s->ce = slot_resolve(s, &v, &hv, UINT32_MAX);   // entry_of may create an entry and bump g: g read before it
+        uint32_t settles = tex_settles;
+        Tex *r = slot_resolve(s, &v, &hv, UINT32_MAX);   // entry_of may create an entry and bump g: g read before it
+        s = &tslots[id];
+        if (settles != tex_settles) {   // the lock was released for a wait: the slot may be another texture by now
+            if (r && (!r->uploaded || r->checked != submit_epoch)) make_fresh_snap(r), r->checked = submit_epoch;
+            if (view) *view = has_view ? v : s->v;
+            if (has_view) *has_view = view ? hv : s->has_view;
+            return r ? &r->pub : NULL;
+        }
+        s->ce = r;
         s->cview = v, s->chas_view = (uint8_t)hv;
         s->cgen = g;
         s->cepoch = 0;

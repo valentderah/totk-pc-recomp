@@ -54,6 +54,7 @@ static PlatMutex fw_lock = PLAT_MUTEX_INIT;   // the recording threads of a chun
 
 uint64_t vk_exec_recording_fence(void) { return x_cur ? x_cur->fence : 0; }
 uint32_t vk_exec_replay_pos(void) { return x_cur && x_cur->chunked ? x_cur->pos : UINT32_MAX; }
+static _Thread_local int chunk_k = -1;   // the chunk this thread records (chunk_record), -1 none
 
 
 // A context's counters go into vk_exec_frame (the submitting thread, after the recording).
@@ -1072,6 +1073,7 @@ typedef struct { uint64_t addr, size; uint32_t at; } ScanDrop;
 
 static struct {
     int workers, chunks, min_draws, check;
+    int skew_us;                         // TOTK_REPLAY_SKEW_US (chunk_record)
     VkExec s;                            // the scan's state
     Chunk *ch;                           // chunks + 1 entries, never moved while threads record
     int nch;
@@ -1097,6 +1099,7 @@ static struct {
     uint64_t subs, chunked, nchunks, scan_ns, first_ns, last_ns, rec_ns, rec_max_ns, bad, prep_ns, start0_ns;
     uint64_t rec_t0;                     // vk_exec_record's start
     uint64_t held[HOLD_N];               // TOTK_TRACE=perf: chunks held, by scan_hold's reason
+    uint64_t settles, settle_ns;         // TOTK_TRACE=perf: vk_exec_chunk_settle waits (atomic: recording threads)
     uint64_t mirror_ns, usnap_ns, ready_ns;   // vk_mem_mirror_begin, vk_usnap_begin, both done after t0
 } SC = {.workers = -1};
 
@@ -1278,6 +1281,10 @@ static VkCommandBuffer rec_cb(Rec *r, uint64_t fence) {
 // Chunk k on the calling thread with context r: from its state copy up to the next chunk's first op, into a command
 // buffer of r's pool, ending with every image in GENERAL.
 static void chunk_record(Rec *r, int k) {
+    // TOTK_REPLAY_SKEW_US (debug): the even chunks wait this long before they record, so with several threads the
+    // chunk after each one records first. A recording that depends on the order the threads get to the chunks, rather
+    // than on replay order, then shows in every submission instead of a few launches in thirty.
+    if (SC.skew_us > 0 && nthreads && !(k & 1)) plat_sleep_ns((uint64_t)SC.skew_us * 1000);
     uint64_t t0 = kern_now_ns();
     VkExec *ex = &r->ex;
     Chunk *c = &SC.ch[k];
@@ -1287,6 +1294,7 @@ static void chunk_record(Rec *r, int k) {
     ex->fence = RP.fence, ex->recorded = 0, ex->in_pass = 0, ex->nviews = 0, ex->barrier_at = -1, ex->nfbl = 0;
     ex->part_start = 0;
     x_cur = ex;
+    chunk_k = k;
     vk_completion_defer(&c->defer);
     vk_mem_count_local(r->traffic);
     int ts = vk_sync_ts_open(ex->cb);
@@ -1307,6 +1315,7 @@ static void chunk_record(Rec *r, int k) {
     vk_mem_count_local(NULL);
     vk_mem_count_flush(r->traffic);
     x_cur = NULL;
+    chunk_k = -1;
     vkEndCommandBuffer(ex->cb);
     c->cb = ex->cb, c->by = ex, c->ns = kern_now_ns() - t0;
     plat_mutex_lock(&RP.m);
@@ -1411,6 +1420,22 @@ static void chunks_wait(int k) {
     for (int i = 0; i < k; i++)
         while (!__atomic_load_n(&SC.ch[i].done, __ATOMIC_ACQUIRE)) plat_cond_wait(&RP.done, &RP.m);
     plat_mutex_unlock(&RP.m);
+}
+
+int vk_exec_chunk_behind(void) {
+    for (int i = chunk_k - 1; i >= 0; i--)
+        if (!__atomic_load_n(&SC.ch[i].done, __ATOMIC_ACQUIRE)) return 1;
+    return 0;
+}
+
+// The chunks before take no lock this one holds and wait only for chunks before them, so they all get done: a chunk
+// is taken only after every chunk before it was (chunk_take), and the DLSS records wait the same way (chunks_wait).
+void vk_exec_chunk_settle(void) {
+    if (chunk_k <= 0) return;
+    uint64_t t0 = kern_now_ns();
+    chunks_wait(chunk_k);
+    __atomic_add_fetch(&SC.settles, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&SC.settle_ns, kern_now_ns() - t0, __ATOMIC_RELAXED);
 }
 
 static void scan_job(VkExecJob *j, const op_hdr *h) {
@@ -1603,6 +1628,9 @@ static int chunked_on(void) {
         if (SC.chunks <= 0) SC.chunks = 2 * SC.workers;
         SC.min_draws = cfg_int("TOTK_REPLAY_CHUNK_DRAWS");
         SC.check = cfg_bool("TOTK_REPLAY_STATE_CHECK");
+        SC.skew_us = cfg_int("TOTK_REPLAY_SKEW_US");
+        if (SC.workers && SC.skew_us > 0)
+            rt_log("vk: TOTK_REPLAY_SKEW_US: the even chunks wait %d us before they record", SC.skew_us);
         if (SC.workers)
             rt_log("vk: replay in up to %d chunks per submission of at least %d draws each, %d recording thread%s%s",
                    SC.chunks, SC.min_draws, SC.workers, SC.workers > 1 ? "s" : "", SC.check ? ", state checked" : "");
@@ -1669,6 +1697,9 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
             rt_log("perf: chunked replay: chunks held per submission: %.2f for a new texture, %.2f for DLSS, %.2f for "
                    "unknown storage writes", SC.held[HOLD_TEX] / (double)SC.chunked, SC.held[HOLD_DLSS] / (double)SC.chunked,
                    SC.held[HOLD_WRITES] / (double)SC.chunked);
+            rt_log("perf: chunked replay: %llu chunks waited for the chunks before them to make a texture (%.3f ms in all)",
+                   (unsigned long long)__atomic_exchange_n(&SC.settles, 0, __ATOMIC_RELAXED),
+                   __atomic_exchange_n(&SC.settle_ns, 0, __ATOMIC_RELAXED) / 1e6);
             memset(SC.held, 0, sizeof SC.held);
             char b[768];
             int o = 0;
