@@ -532,6 +532,20 @@ int main(int argc, char **argv) {
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
     // costs a full tick. TOTK_TIMER_1MS=0 keeps the default for comparison.
     if (cfg_bool("TOTK_TIMER_1MS")) plat_timer_1ms();
+    int power = plat_power_full();
+    if (power >= 0)
+        rt_log("power: %s", power ? "OS power throttling off (EcoQoS, timer resolution in the background)"
+                                  : "OS power throttling: the opt-out was refused");
+    // Hybrid CPUs: the threads every frame goes through prefer the P-cores (perf_core_thread). TOTK_PCORE=0: off.
+    if (rt_knob("PCORE", "1")) {
+        char why[160];
+        int n = plat_perf_core_setup(why, sizeof why);
+        if (n) rt_log("power: %s; the game's main and render threads and the vk replay, recorder and present threads "
+                      "prefer the %d P-core ones (TOTK_PCORE=0 turns it off)", why, n);
+        else rt_log("power: %s: no P-core preference", why);
+    } else {
+        rt_log("power: TOTK_PCORE=0: no P-core preference");
+    }
     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
                      .gpu = cfg_get("TOTK_GPU")};
     portable_paths(&cfg);   // command-line paths below still win
