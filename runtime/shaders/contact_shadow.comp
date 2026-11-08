@@ -6,12 +6,13 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(binding = 0) uniform sampler2D lin_depth;                // the game's linear depth: view distance / far
 layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;      // the lit scene colour, darkened in place
+layout(binding = 2) uniform sampler2D sun_vis;                   // half-resolution lighting: alpha is sun visibility
 
 layout(push_constant) uniform Params {
     vec4 proj;    // projection x scale, y scale, far plane, strength (0..1)
     vec4 light;   // view-space direction toward the sun (xyz), march length in metres at 10 m (w)
     vec4 size;    // width, height, 1/width, 1/height
-    vec4 opt;     // x: debug (1: write the shadow factor as grey)
+    vec4 opt;     // x: debug (1: the shadow factor as grey, 2: the sun visibility), y: 1 with sun_vis bound
 } pc;
 
 vec3 view_pos(vec2 uv, float z) {   // z: distance in front of the camera
@@ -36,6 +37,13 @@ void main() {
     float z = d * pc.proj.z;
     if (z > 80.0) return;
     vec2 uv = (vec2(px) + 0.5) * pc.size.zw;
+    // direct sunlight on this pixel: the march only takes that away, never the ambient light (caves, shade)
+    float vis = pc.opt.y > 0.5 ? textureLod(sun_vis, uv, 0.0).a : 1.0;
+    if (pc.opt.x > 1.5) {
+        imageStore(scene, px, vec4(vis, vis, vis, 1.0));
+        return;
+    }
+    if (vis <= 0.0 && pc.opt.x < 0.5) return;
     vec3 p = view_pos(uv, z);
     // the march grows with distance, as one pixel covers more ground; thickness keeps thin blades from hiding the sky
     float len = pc.light.w * clamp(z / 10.0, 0.4, 3.0);
@@ -56,7 +64,7 @@ void main() {
         }
     }
     float fade = 1.0 - smoothstep(40.0, 80.0, z);
-    float k = 1.0 - pc.proj.w * occ * fade;
+    float k = 1.0 - pc.proj.w * occ * fade * vis;
     if (pc.opt.x > 0.5) {
         imageStore(scene, px, vec4(k, k, k, 1.0));
         return;
