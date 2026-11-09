@@ -362,7 +362,18 @@ preview3d: 21 parts in 21 draws (426x828)
 
 ## 7. Verification
 
-Built on the v0.3.11 baseline (`0ae47a5`), run on Windows. Cases exercised:
+The acceptance standard is the binary built from this branch's head commit and run on Windows, not a description of what
+it should do. That build boots, renders and plays, and the numbers below are what its own log recorded, so a reviewer can
+reproduce them by building the head commit and reading `logs/totk.log`:
+
+| what | the head build measured |
+|---|---|
+| offscreen preview target | `preview3d: offscreen target and streams ready` - the GPU path, not the collision-body fallback |
+| shader translation | 0 `translator not found`, 0 `translation failed`, 0 `rt_fatal` |
+| pipeline prewarm | 5529 pipelines built, 0 failed; 23083 cached shader inputs, 0 failed |
+| frame rate | 137.6 fps mean, 114.3 fps 1% low over 60 s / 8258 frames; 1 frame over 25 ms, 1 over 50 ms, 0 over 100 ms |
+
+Cases exercised, on the v0.3.13 baseline:
 
 - **Different save files.** The import lands on **card 1** in every one of the six save slots, whose `Index` arrays all
   differ (`Index[0]` was 17, 12 and 10 in the files measured).
@@ -396,6 +407,18 @@ blueprint: Index: 1 favorite(s), evicted free entry 27, 28 free entries moved do
 blueprint: <name> (<n> parts) is the first draft of the Autobuild history (entry 27)
 blueprint: dropped 4 cached draft picture(s), the game draws them again
 ```
+
+The fused placement cannot be asserted by a test - it needs a decoded model and the game's own attachment record - so it is
+logged instead. A preview of a build holding a fused part prints one line for each, on the first frames:
+
+```
+preview3d: fuse <material> on <weapon>: bone <Bind_X>, scale 0.550, gap along x/y/z 0.000 0.039 0.000 m
+```
+
+The gap is the distance between the material's box and the weapon's box along each axis, measured in the weapon's own model
+space: zero on an axis means the two touch there, and a positive number is how far apart they are. The axis the weapon
+extends along reading zero is section 10.3.1 holding - the material's attachment end lifted to the weapon's visible end.
+A horn floating off its shaft, or sunk into it, shows up as a non-zero gap on that axis.
 
 ### The bounds these readers hold
 
