@@ -33,6 +33,7 @@ void rec_drain(void);                 // waits until the recorder made every cal
 // vk_queue_lock, before it takes the lock (not on the recorder, not when the thread holds the lock already): waits
 // until the recorder submitted every submission queued so far.
 void rec_queue_wait(void);
+int rec_owns(VkCommandBuffer cb);     // the recorder makes cb's calls: a direct call into cb follows rec_drain
 void rec_stats_log(void);             // TOTK_TRACE=perf: packets, bytes, drains and waits since the last call
 // TOTK_REC_CHECK=1 (debug, recorder on): vk_memory.c reports each object it defers (destroy 0, stamped tl) or destroys
 // (destroy 1) with the value the GPU reached (gpu); a packet of the part being recorded that still names it is logged

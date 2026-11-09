@@ -38,6 +38,11 @@
 # Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
 # game waits for the GPU; adds up to a frame of latency.
 # replay_async = 0
+# Record each large submission in chunks on this many threads (0 to 16; 0 = one thread, the default). The chunks go to
+# the GPU in order. In the town at 4K on an RTX 5070, 4 cut the replay from 8.2 to 4.5 ms a frame (71 to 79 fps); more
+# threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
+# Read at start.
+# replay_workers = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
@@ -154,8 +159,8 @@
 # fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
 # tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
 # display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it
-# stays 1920x1080, the only shape the setup builds those prompts for.
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = pc too; with
+# prompts = xbox it stays 1920x1080, the only shape the setup builds those prompts for.
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.

@@ -70,10 +70,10 @@ The Switch prompts stay, with a note under *Button prompts* and a `RomFS overlay
 | Left stick, its press | W A S D (or the keys of the directions meant), Ctrl |
 | Right stick, its press | the mouse, with an arrow for each direction meant, C |
 
-- The glyphs keep the width of the game's own, so the right-aligned guides do not run into their text. A key is a rounded square with its label cut out in the game's own text fonts; a mouse button is a mouse with that button filled and the others hollow.
+- The glyphs keep the width of the game's own, so the right-aligned guides do not run into their text. A key is a rounded square with its label cut out in the game's own text fonts (Shift: an arrow over its name); a mouse button is a mouse with that button filled and the others hollow.
 - The button guide in play draws every button from images of the Common archive (`Nt_KeyTexA/B/X/Y/L/ZL_00`, `Nt_KeyTexLSt_00` and `_01`, the stick tilted and pressed): all of them are painted with the same icons. The letters of the action prompt's diamond are one character of the Normal font each: E, an arrow for Shift, a bar for Space, L and R for the mouse buttons.
 - Like the Xbox prompts they follow the defaults and not the bindings. `--binds <totk.ini>` draws the first key of each `bind_` line of that file instead, for a folder made by hand.
-- At a game resolution of another shape than 16:9 the game loads `romfs-patches-pc-<w>x<h>` in place of `romfs-patches-<w>x<h>` when it is there: the same prompts with that shape's UI layout, `make_romfs_patches.py --prompts pc --aspect <w>x<h> --out <install>\romfs-patches-pc-<w>x<h>`. The setup does not write those, so without one the Switch prompts stay (*off at a game resolution not 16:9*).
+- At a game resolution of another shape than 16:9 the game loads `romfs-patches-pc-<w>x<h>` in place of `romfs-patches-<w>x<h>`: the same prompts with that shape's UI layout, `make_romfs_patches.py --prompts pc --aspect <w>x<h> --reuse <install>\romfs-patches-pc --out <install>\romfs-patches-pc-<w>x<h>`. The setup writes one for each of the fifteen sizes it lays the UI out for, so on a display of one of those shapes the game resolution follows the display with these prompts too. At another size, without that folder, the Switch prompts stay (*off at a game resolution not 16:9*).
 
 ## Window keys
 

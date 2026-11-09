@@ -53,10 +53,10 @@ static const char *const known[] = {
     "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PERF_WINDOW", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC",
-    "RENDER_SCALE", "REPLAY_ASYNC",
+    "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
-    "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+    "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER",
     "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
@@ -95,7 +95,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_RIGHT", "input"}, {"BIND_DOWN", "input"}, {"BIND_LSTICK_LEFT", "input"}, {"BIND_LSTICK_UP", "input"},
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"}, {"BIND_SHAKE", "input"},
-    {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"},
+    {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"REPLAY_WORKERS", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
@@ -164,6 +164,9 @@ static const CfgMeta metas[] = {
     {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
+    {"REPLAY_WORKERS", "0", "0..16", RESTART}, {"REPLAY_CHUNKS", "0", "0..64", RESTART},
+    {"REPLAY_CHUNK_DRAWS", "128", "1..100000", RESTART}, {"REPLAY_STATE_CHECK", "0", "0|1", RESTART},
+    {"REPLAY_SKEW_US", "0", "0..100000", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
@@ -338,8 +341,10 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox or keyboard prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so
-// a default of another shape would trade the prompts the player chose for the Switch ones.
+// Xbox prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so a default of
+// another shape would trade the prompts the player chose for the Switch ones. Keyboard prompts have a folder for each
+// of these sizes (romfs-patches-pc-<w>x<h>, installer/steps.py Prepare): they keep 1920x1080 only when the one for
+// the display's size is missing, as in a source build without make_romfs_patches.py --prompts pc --aspect.
 static const unsigned SHAPED[][2] = {
     {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
     {3840, 1080}, {5120, 1440},                                         // 32:9
@@ -347,10 +352,14 @@ static const unsigned SHAPED[][2] = {
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
 };
 static char screen_res[16];   // set once by cfg_init, "" for none
+static int screen_pc;         // romfs-patches-pc-<screen_res> has a manifest (set once by cfg_init)
 
-static int switch_prompts(void) {
+// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick: an
+// unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is "xbox_prompts".
+static int shape_keeps_prompts(void) {
     const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
-    return (!p || !strcasecmp(p, "nintendo")) && !(l && !strcasecmp(l, "xbox_prompts"));
+    if (p && *p) return !strcasecmp(p, "pc") ? screen_pc : strcasecmp(p, "xbox") != 0;
+    return !(l && !strcasecmp(l, "xbox_prompts"));
 }
 
 static void screen_default(void) {
@@ -368,7 +377,8 @@ static void screen_default(void) {
     if (best < 0) best = fit;
     if (best < 0) return;
     snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
-    if (!raw_get(PREFIX "OUTPUT_RES") && switch_prompts())
+    screen_pc = romfs_shaped_pc_ready(SHAPED[best][0], SHAPED[best][1]);
+    if (!raw_get(PREFIX "OUTPUT_RES") && shape_keeps_prompts())
         rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
                sh, screen_res);
 }
@@ -377,7 +387,8 @@ const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
     if (!profile_of())
-        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && switch_prompts() ? screen_res : NULL;
+        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && shape_keeps_prompts() ? screen_res
+                                                                                                         : NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;

@@ -54,6 +54,7 @@ extern "C" {
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
+int vk_exec_replay_workers(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
@@ -61,6 +62,7 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
+bool amiibo_check_font_rebuild(void);  // ui/amiibo_page.cpp; check and clear font rebuild request
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -356,6 +358,9 @@ static int fonts_up(float scale) {
             if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
         for (int k = 0; k < mods_count(); k++)
             if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
+        // Add amiibo filenames so they display correctly in the menu
+        amiibo_collect_filenames(add_row_glyphs, &b);
+        
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -796,8 +801,8 @@ static const char *prompts_note(bool *restart) {
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
     const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
-    // A game resolution of another shape needs a folder of its own for the PC prompts (romfs-patches-pc-<w>x<h>), which
-    // the setup does not write: the shape is the reason then, not the setup.
+    // A game resolution of another shape needs a folder of its own for the PC prompts (romfs-patches-pc-<w>x<h>). The
+    // setup writes one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
     int off = romfs_prompts_off(want);
     if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
     switch (off) {
@@ -910,6 +915,23 @@ static void row_threads(const char *key, UiTextId label, UiTextId desc) {
     opt_choice_list(key, label, vals, names, N, desc);
 }
 
+// The chunked replay's recording threads: Off, then the counts; the note under the value is what this run uses, which
+// a change replaces only after a restart.
+static void row_replay_workers(void) {
+    static const char *const vals[] = {"0", "2", "3", "4", "6", "8", "12", "16"};
+    enum { N = sizeof vals / sizeof *vals };
+    const char *names[N];
+    names[0] = menu_text(UI_MENU_OFF);
+    for (int i = 1; i < N; i++) names[i] = vals[i];
+    static char now[64];
+    char n[16];
+    int w = vk_exec_replay_workers();
+    snprintf(n, sizeof n, "%d", w);
+    if (w >= 0) snprintf(now, sizeof now, menu_text(UI_MENU_REPLAY_WORKERS_NOW), w ? n : menu_text(UI_MENU_OFF));
+    opt_choice_list("TOTK_REPLAY_WORKERS", UI_MENU_REPLAY_WORKERS, vals, names, N, UI_MENU_REPLAY_WORKERS_DESC, -1,
+                    w >= 0 ? now : nullptr);
+}
+
 // A free-text key shown as Off (unset) / On (value set): On writes on_value, any set value reads as On.
 static void row_set_or_not(const char *key, UiTextId label, UiTextId desc, const char *on_value) {
     const char *vals[] = {"", on_value}, *names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_ON)};
@@ -959,6 +981,7 @@ static void tab_advanced(float scale) {
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
     opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    row_replay_workers();
     opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
@@ -1551,7 +1574,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     uint64_t t0 = plat_now_ns();
     if (!g_ctx_ok) make_context();
     float scale = menu_scale(t->height);
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
+    // Check if amiibo page requested font rebuild (e.g., after refreshing directory with new files)
+    bool amiibo_rebuild = amiibo_check_font_rebuild();
+    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale)) || (amiibo_rebuild && !fonts_up(scale))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);

@@ -91,7 +91,7 @@ void vk_crumbs_report(void) {
 // records changed pipeline state also notes the shaders of a pass's first draw. A full barrier already precedes every
 // pass and dispatch (vk_exec.c vk_exec_pass_begin, vk_exec_draw.c op_dispatch), so the end-of-pipe write adds no wait.
 static VkPassMark ring[VK_PASS_MARKS];
-static uint32_t seq;                        // marks made; only the replay thread writes it
+static uint32_t seq;                        // marks made (atomic: the recording threads of a chunked replay)
 
 // TOTK_PASS_CRUMBS: unset, buffer marks where VK_AMD_buffer_marker exists; 1, also NVIDIA checkpoints; 0, neither.
 int vk_pass_marks_want_nv(void) {
@@ -124,8 +124,8 @@ void vk_pass_mark_cmd(VkCommandBuffer cb, uint32_t id, int end) {
 
 VkPassMark *vk_pass_mark_begin(VkCommandBuffer cb, int kind, uint64_t fence) {
     if (!vk_pass_marks_on || !cb) return NULL;
-    uint32_t id = ++seq;
-    if (!id) id = ++seq;   // 0 means no mark
+    uint32_t id = __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED);   // the recording threads of a chunked replay
+    if (!id) id = __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED);   // 0 means no mark
     VkPassMark *m = &ring[id & (VK_PASS_MARKS - 1)];
     m->id = id, m->kind = (uint8_t)kind, m->fence = fence, m->draws = UINT32_MAX;
     rec_pass_mark(cb, id, 0);
