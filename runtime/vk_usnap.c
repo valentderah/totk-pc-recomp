@@ -11,11 +11,13 @@
 //   that submission's write-back, the mirror holds them until then.
 // - A GPU write within the submission (UpdateUniformBuffer, a storage buffer a shader writes, a buffer copy or fill,
 //   an image-to-buffer copy: vk_usnap_drop) drops the copies it touches from then on, so later draws read the result.
+//   A chunked replay (vk_exec.c) records the ops out of order: its scan drops at the position of the op
+//   (vk_usnap_drop_at, scan_writes for the shaders' stores), and a chunk finds a copy only at a position before that.
 // - The arena goes back to a free list once the submission's fence is done (completion thread).
 // The design follows MacNativeGames' TOTK_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
-// with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
+// with TOTK_REPLAY_ASYNC; a chunked replay takes it on a recording thread while its scan runs. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,7 +44,7 @@ typedef struct Arena {
 } Arena;
 
 typedef struct { uint64_t lo, hi; } Rng;
-typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
+typedef struct { uint64_t lo, hi, off, drop_at; } Reg;   // drop_at: dropped from this position on; UINT64_MAX not
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 static struct {
@@ -62,6 +64,7 @@ static struct {
 
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
+static PlatMutex drop_lock = PLAT_MUTEX_INIT;   // threads recording chunks of one submission drop concurrently
 
 static void *grow(void *p, int *cap, size_t elem) {
     int n = *cap ? *cap * 2 : 1024;
@@ -279,7 +282,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
             continue;
         }
         if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
-        U.reg[U.nreg++] = (Reg){lo, hi, total, 0};
+        U.reg[U.nreg++] = (Reg){lo, hi, total, UINT64_MAX};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
     if (!U.nreg) return;
@@ -313,29 +316,38 @@ static int first_above(uint64_t a) {
     return lo;
 }
 
-int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
+int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t at, uint64_t align, VkDescriptorBufferInfo *out) {
     if (!U.on || !n) return 0;
     int i = first_above(addr);
     if (i >= U.nreg) return 0;
     const Reg *r = &U.reg[i];
-    if (r->dropped || addr < r->lo || addr + n > r->hi) return 0;
+    if (__atomic_load_n(&r->drop_at, __ATOMIC_RELAXED) <= at || addr < r->lo || addr + n > r->hi) return 0;
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
-    U.hits++;
+    __atomic_fetch_add(&U.hits, 1, __ATOMIC_RELAXED);
     return 1;
 }
 
-void vk_usnap_drop(uint64_t addr, uint64_t n) {
+static void drop(uint64_t addr, uint64_t n, uint64_t at) {
     if (!U.mode || !n) return;
+    plat_mutex_lock(&drop_lock);
     if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
-    if (!U.on) return;
-    for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
-        if (!U.reg[i].dropped) U.reg[i].dropped = 1, U.drops++, U.gen++;
+    if (U.on)
+        for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
+            if (at < U.reg[i].drop_at) {
+                if (U.reg[i].drop_at == UINT64_MAX) U.drops++;
+                __atomic_store_n(&U.reg[i].drop_at, at, __ATOMIC_RELAXED);
+                __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELAXED);
+            }
+    plat_mutex_unlock(&drop_lock);
 }
 
-uint64_t vk_usnap_gen(void) { return U.gen; }
+void vk_usnap_drop(uint64_t addr, uint64_t n) { drop(addr, n, 0); }
+void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at); }
+
+uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
 // the host copy where there is one (DLSS), else the device copy
 static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
@@ -344,7 +356,7 @@ const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     VkDescriptorBufferInfo bi;
-    return vk_usnap_find(addr, n, 1, &bi) ? host_copy() + bi.offset : NULL;
+    return vk_usnap_find(addr, n, UINT32_MAX, 1, &bi) ? host_copy() + bi.offset : NULL;
 }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).

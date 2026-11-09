@@ -45,22 +45,22 @@ static const char *const known[] = {
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
     "FREEZE_IDLE", "FREE_CORES",
     "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
-    "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+    "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "KSPIN_US", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "MENU_LANG", "MENU_TEST",
-    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
+    "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
-    "RENDER_SCALE", "REPLAY_ASYNC",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC",
+    "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
-    "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+    "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER",
-    "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
+    "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
+    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
@@ -95,11 +95,11 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_RIGHT", "input"}, {"BIND_DOWN", "input"}, {"BIND_LSTICK_LEFT", "input"}, {"BIND_LSTICK_UP", "input"},
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"}, {"BIND_SHAKE", "input"},
-    {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"},
+    {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"REPLAY_WORKERS", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
-    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_RELEASED_MIB", "performance"}, {"TEX_BLOCK_MIB", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"VB_USED", "performance"}, {"DESC_TEMPLATE", "performance"},
     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
@@ -164,6 +164,9 @@ static const CfgMeta metas[] = {
     {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
+    {"REPLAY_WORKERS", "0", "0..16", RESTART}, {"REPLAY_CHUNKS", "0", "0..64", RESTART},
+    {"REPLAY_CHUNK_DRAWS", "128", "1..100000", RESTART}, {"REPLAY_STATE_CHECK", "0", "0|1", RESTART},
+    {"REPLAY_SKEW_US", "0", "0..100000", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
@@ -171,7 +174,8 @@ static const CfgMeta metas[] = {
     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
     // textures and memory
     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART},
+    {"TEX_RELEASED_MIB", "256", "0..65536", RESTART}, {"TEX_BLOCK_MIB", "64", "0..1024", RESTART}, {"VMA_BLOCK_MIB", "64", "0..1024", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
     // render fixes
     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
@@ -338,8 +342,10 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox or keyboard prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so
-// a default of another shape would trade the prompts the player chose for the Switch ones.
+// Xbox prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so a default of
+// another shape would trade the prompts the player chose for the Switch ones. Keyboard prompts have a folder for each
+// of these sizes (romfs-patches-pc-<w>x<h>, installer/steps.py Prepare): they keep 1920x1080 only when the one for
+// the display's size is missing, as in a source build without make_romfs_patches.py --prompts pc --aspect.
 static const unsigned SHAPED[][2] = {
     {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
     {3840, 1080}, {5120, 1440},                                         // 32:9
@@ -347,10 +353,14 @@ static const unsigned SHAPED[][2] = {
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
 };
 static char screen_res[16];   // set once by cfg_init, "" for none
+static int screen_pc;         // romfs-patches-pc-<screen_res> has a manifest (set once by cfg_init)
 
-static int switch_prompts(void) {
+// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick: an
+// unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is "xbox_prompts".
+static int shape_keeps_prompts(void) {
     const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
-    return (!p || !strcasecmp(p, "nintendo")) && !(l && !strcasecmp(l, "xbox_prompts"));
+    if (p && *p) return !strcasecmp(p, "pc") ? screen_pc : strcasecmp(p, "xbox") != 0;
+    return !(l && !strcasecmp(l, "xbox_prompts"));
 }
 
 static void screen_default(void) {
@@ -368,7 +378,8 @@ static void screen_default(void) {
     if (best < 0) best = fit;
     if (best < 0) return;
     snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
-    if (!raw_get(PREFIX "OUTPUT_RES") && switch_prompts())
+    screen_pc = romfs_shaped_pc_ready(SHAPED[best][0], SHAPED[best][1]);
+    if (!raw_get(PREFIX "OUTPUT_RES") && shape_keeps_prompts())
         rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
                sh, screen_res);
 }
@@ -377,7 +388,8 @@ const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
     if (!profile_of())
-        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && switch_prompts() ? screen_res : NULL;
+        return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && shape_keeps_prompts() ? screen_res
+                                                                                                         : NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
