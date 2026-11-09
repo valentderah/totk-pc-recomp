@@ -266,7 +266,7 @@ game version and every pad layout.
 ### 6.1 The preview column
 
 While a file is highlighted the picker shows a small 3D view of it on the right. Every part is drawn as **its real model**,
-read from the player's own RomFS and decoded at runtime, placed by the CAI's rotation, `fuseInfo` scale and position. The
+read from the player's own RomFS and decoded at runtime, placed by the CAI's own rotation, position and `fuseInfo`. The
 render is one offscreen Vulkan pass with a real depth buffer (`runtime/ui/preview3d.cpp`), shown as a single textured quad
 inside the panel; `layout_preview` and the CPU projection in `runtime/blueprint_picker.c` remain as the fallback for a
 machine where the offscreen target cannot be created.
@@ -414,15 +414,15 @@ New (across the PR's commits):
 | `runtime/model_meshcodec.h/.c` | the C door over the MeshCodec decoder (`libmeshcodec.a`) |
 | `runtime/bfres.h/.c` | the BFRES container reader: shapes, per-model vertex stride, bone rotation type, rigid skinning, and the named bone and its world transform that a fused material hangs on |
 | `runtime/blueprint_attach.h/.c` | where a fused material goes and how big it is, read from the material's `AttachmentParam` per weapon class |
-| `tests/blueprint_attach_main.c`, `tests/blueprint_attach_test.py` | that rule against the game's own attachment data for a horn on a spear and a long sword, and a statue on a shield |
+| `tests/blueprint_attach_main.c`, `tests/blueprint_attach_test.py` | that rule against the game's own attachment data: a horn on a spear and on a long sword, and a statue on a shield and on a short sword |
 | `runtime/blueprint_shape.h/.c` | the collision-body fallback: a part's pack → ShapeParam BYML → tessellated mesh |
 | `runtime/byml.h/.c` | the BYML reader the shape fallback and the ModelInfo resolution both use |
 | `runtime/hull.h/.c` | the convex hull the collision fallback takes over its point cloud |
 | `tests/byml_main.c`, `tests/byml_test.py` | the BYML reader over real and truncated documents |
 | `tests/hull_main.c`, `tests/hull_test.py` | the convex hull over random, deduplicated and coplanar point sets |
 
-The settings-menu **Blueprints tab** (`runtime/ui/blueprint_page.h/.cpp`) was added in an earlier commit and is
-**removed** here: the Autobuild screen is the only entry point.
+The settings-menu **Blueprints tab** (`runtime/ui/blueprint_page.h/.cpp`) is **removed** by this PR: the Autobuild screen is
+the only entry point.
 
 Modified:
 
@@ -520,102 +520,77 @@ The two records that describe one attachment are on opposite sides and both are 
 material's gives its own rotation and size. The material's orientation is its own: a class entry that names no rotation
 leaves the material in the weapon's orientation, which is what a fused object looks like when it sits flat on the weapon.
 
-### 10.3 The sizes, and what is deliberately not a size
+### 10.3 The sizes
 
-`fuseInfo` is **not** a visual scale. Every fused part in the blueprints measured carries it above 1 (a shield 1.40, spears
-1.50) while every unfused part carries 1.0, and in game a fused weapon does not grow - the material is attached to it. Using
-it as a scale made a fused shield and everything fused onto it look oversized against the parts around it; the preview draws
-each part at its own size instead.
+`fuseInfo` is **not** a visual scale for a fused part. Every fused part in the blueprints measured carries it above 1 (a
+shield 1.40, spears 1.50) while every unfused part carries 1.0, and in game a fused weapon does not grow: the material is
+attached to it. It scales the part itself, which is why `part_matrix_ex` applies it to a plain part and skips it for one that
+carries a fused material.
 
-A material's size comes from its record, per weapon class, and from nothing else:
+A material's size comes from its record, per weapon class:
 
 1. `BoundBoxLength` names a length: the material is scaled so its own largest side is that length.
-2. Otherwise `Scale` and `ExScale` multiply, as `bp_attach_matrix` applies them.
-3. Otherwise the material is **capped** to the weapon: shrunk when it is bigger than the weapon, left alone when it is not.
+2. Otherwise `Scale` and `ExScale` multiply, as `bp_attach_matrix` applies them. `ForceScaleMode` says the record's `Scale`
+   must be used as given.
+3. Otherwise the material is **capped** to the weapon: shrunk when it is bigger, left alone when it is not.
 
-Step 3 is a cap and not a fit on purpose. A fit resized every material that legitimately names no size, including ones
-smaller than their weapon. The cap's ratio is the one the game itself uses where it does name a size: its oversized
-materials carry `Scale` 0.22 to 0.30, and a 5.01 m statue on a 1.16 m shield comes out at 0.232 by the same arithmetic.
+Step 3 is a cap and not a fit. A fit resizes every material that legitimately names no size, including ones smaller than
+their weapon; a cap leaves those alone. The ratio the cap produces is the one the game's own records use where they do name a
+size: the oversized ones carry `Scale` 0.22 to 0.30, and a 5.01 m statue on a 1.16 m shield comes out at 0.232.
 
-The statue is the case that shows why the size is read per class: its record names `BoundBoxLength` 0.41 for **swords only**,
-and nothing at all for a shield, so a statue fused to a shield keeps the size its model gives it.
+The size is read per class because the record is per class. The Gerudo statue names `BoundBoxLength` 0.41 for swords and
+nothing for a shield, so on a short sword it is 0.41 m and on a shield the cap decides.
 
-### 10.3.1 The material is placed by the socket, not by an offset
+### 10.3.1 The material is placed by the socket
 
-`bp_attach_matrix` applies the record's `RotateOffset` and `Scale`/`ExScale`, and deliberately **not** its `TransOffset`. The
-offset is a per-class nudge authored against one weapon; reading it as the position is what put horns off the weapon along
-the shaft.
+`bp_attach_matrix` applies the record's `RotateOffset` and `Scale`/`ExScale`. It does not apply `TransOffset`: that is a
+per-class nudge authored against one weapon, and reading it as the position puts a material off its weapon along the shaft.
 
-The position instead comes from the game's own geometry:
+The position comes from the weapon model's own skeleton. The record's `BoneName` names a socket on it, and that is where the
+game hangs the material:
 
-1. The record's `BoneName` names a socket on the weapon model. That bone is where the game hangs the material, and it sits
-   inside the seam where the hidden blade leaves the body - on `Weapon_Spear_129` `Bind_Z` is at z 1.677 while the blade's
-   base is at 1.674 and the shaft's top at 1.680.
-2. The material's attachment end - the low end of its model along the weapon's long axis - goes on that bone.
-3. The attachment end is then lifted to the weapon's visible end along that axis, because the bone is a seam inside the body
-   rather than its surface. Without it a horn sits 3 to 9 cm into the weapon, which is what the sword classes showed.
+| weapon | socket | position | the seam it sits in |
+|---|---|---|---|
+| `Weapon_Spear_129` | `Bind_Z` | z 1.677 | blade base 1.674, shaft top 1.680 |
+| `Weapon_Lsword_147` | `Bind_Z` | z 0.231 | blade base 0.196, body top 0.317 |
+| `Weapon_Sword_052` | `Bind_Z` | z 0.148 | blade base 0.148, body top 0.206 |
+| `Weapon_Shield_103` | `Bind_C` | (0.054, -0.117, 0.003) | no `_Hide` shape, so no seam |
 
-`fuse_placement` in `runtime/ui/preview3d.cpp` does this once per actor, when the pair is uploaded, and caches the matrix.
-It is per ACTOR and not per part: a blueprint can hold the same weapon twice (two swords, each with its own horn) and those
-two sit at different coordinates.
+The socket is inside the weapon's body rather than on its surface, so placing the material on it is not enough:
 
-### 10.3.2 Two things that made every fused part look wrong
+1. The material's attachment end - the low end of its model along the weapon's long axis - goes on the socket.
+2. That end is lifted to the weapon's visible end along the same axis, by the difference between the two. Without it a
+   material sits 3 to 9 cm inside the weapon, which is what the sword classes showed.
 
-Both were found by measuring, and both are fixed:
+The material's lateral position is the centre of its own box, not the centre of its root vertices. The game keeps the lateral
+offset the material's model was authored with, and correcting it towards the weapon's centre line pulls a horn off the
+weapon: measured on the long sword, the gap grew from 5.3 cm to 7.0 cm.
 
-- **The placement matrix was transposed on the way out.** `mat_mul` and `part_matrix` are column-major, but
-  `fuse_placement` returned its result row-major. The transpose moved the translation into the matrix's last row, so the
-  GPU's perspective divide picked it up and every fused material was drawn as streaks radiating from the part. Copying
-  `attach_col` straight out fixed it.
-- **The model cache was read through a stale pointer.** `model_romfs_resolve` keeps 24 entries and evicts round-robin, so
-  resolving the material's model could free the weapon model the code was still reading its bone from. A blueprint with 21
-  parts showed it; a small one did not. The weapon's extent and socket are now read before the material is resolved.
+`fuse_placement` in `runtime/ui/preview3d.cpp` does this once per actor, when the pair is uploaded, and caches the matrix. It
+is per actor and not per part: a blueprint can hold the same weapon twice, each with its own material, and those two sit at
+different coordinates.
 
 ### 10.4 What the fused part hides
 
 A fused weapon keeps its handle and loses its blade, and the model says which shapes those are: an FSHP's name carries its
 material after `__` (`Weapon_Lsword_147_Blade__Mt_Blade_Hide`), and a shape drawn with one of the model's `_Hide` materials is
 the part a fusion replaces. `shape_is_hidden_blade` in `runtime/ui/preview3d.cpp` tests exactly that, so it works for any
-weapon without a list of items. The material is then drawn in its place.
+weapon without a list of items. The material is drawn in its place.
+
+A shield has no `_Hide` shape, so nothing is hidden on it. That is also why the placement for a shield has no seam to measure
+from: its material is placed by closing the air between the two boxes on each axis.
 
 ### 10.5 Which combinations the game defines
 
-A material's AttachmentParam names the fields it accepts per class, and an absent entry means the game defines nothing for
-that pairing. The Gerudo statue is the case in point: its record names `BoundBoxLength` 0.41 for `AttachParamSword_` and
-nothing but a `TransOffset` for `AttachParamShield`. A blueprint holding such a part is a combination the game does not
-define; the preview draws it with the rules above rather than refusing it, and that is why a statue on a shield keeps its
-own 5 m size and covers the shield.
+A material's AttachmentParam names its fields per class, and an absent entry means the game defines nothing for that pairing.
+Whether a class accepts a material is decided by what its `AttachParam<Class>` entry names, and nothing else. A blueprint
+holding such a part is drawn by the rules above rather than refused.
 
-Earlier revisions of this document claimed `ActorParam` carried `AttachmentBindBoneSpear/Sword/LargeSword/Shield` tags. A
-survey of every material pack finds no such field, so the claim is removed. Whether a class accepts a material is decided by
-what its `AttachParam<Class>` entry names, and nothing else.
+### 10.6 Contact
 
-### 10.6 Contact, and how the material is placed
+Fuse joins two things by contact: the material lies against the weapon. Section 10.3.1 is the whole of the rule - the socket
+is where the game hangs the material, and lifting its attachment end to the weapon's visible end is what makes the pair touch.
+No distance is written down anywhere.
 
-Fuse joins two things by **contact**: the material lies against the weapon. The placement is not nudged into position - it
-comes from the game's own geometry, and section 10.3.1 is the rule. In short:
-
-1. The socket bone the record names is where the material hangs, and it sits inside the seam where the hidden blade leaves
-   the body.
-2. The material's attachment end goes on that bone.
-3. It is lifted to the weapon's visible end along the weapon's long axis, because the bone is inside the body.
-
-A weapon model with no `_Hide` shape (a shield) does not say which part fusion covers, and has no such seam. For those the
-material is placed by its box: air is closed on each axis and the material stops at contact.
-
-The vertex-search refine that earlier revisions described is **gone**. It drove the material into the weapon to make the gap
-vanish - measured on a spear with a horn it removed a 3.9 cm box gap by pushing 19.3% of the horn's vertices inside the
-shaft, and it buried a shield inside a statue the same way. It also had to walk two meshes per frame, which made the preview
-crawl on a large part.
-
-### 10.7 What is not established
-
-The statue's model is the Gerudo city hole cover, and its six shapes include four 5 m scene pieces (a floor, two walls and a
-pedestal) alongside the lion body and its gold trim. Nothing in the CAI, the ModelInfo or the FSHP headers marks which of
-those six belong to the object as a fused material rather than to the scene it was authored for: the FSHP fields at 0x50 and
-0x54 are a material index and a shape index, not visibility flags. So a statue fused to a shield draws all six and the scene
-pieces cover the shield. Anyone finding the flag that separates them should put it here.
-
-The attachment end is taken from the material's box rather than from its root vertices. Measuring the real root ring gave a
-lateral correction that pulled a horn off the weapon's centre line (the long sword's gap grew from 5.3 cm to 7.0 cm), so the
-box is what the code uses; a horn therefore keeps the lateral offset its model was authored with.
+The material is not scaled to fit the weapon's geometry. Fitting one box onto another is a different operation, and it
+stretches the material; a material keeps the size section 10.3 gives it.

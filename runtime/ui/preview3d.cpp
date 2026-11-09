@@ -228,8 +228,7 @@ void camera_matrix(const float lo[3], const float hi[3], float yaw, float pitch,
 //
 // fuseInfo is a real scale: `SpObj_LiftGeneratorWing_A_01_MiniGame` names the full-size wing model and carries 0.50, and the
 // game shows the small version by scaling that model; bridge doors in a 15 m assembly carry 0.30 and slider blocks 2.40. It
-// is NOT a scale for a Fuse-made part - every fused weapon carries 1.4-1.5 and does not grow - so exactly those are excluded,
-// which is what the complaint about an oversized fused shield was about.
+// is NOT a scale for a Fuse-made part - every fused weapon carries 1.4-1.5 and does not grow - so exactly those are excluded.
 void part_matrix_ex(const BpcBlueprint *bp, int k, int placement_only, float out[16]) {
     mat_identity(out);
     const int fused = bp->sub_names[k] && *bp->sub_names[k];
@@ -343,7 +342,7 @@ static void material_box(const GpuPart &m, const float a[16], float lo[3], float
 //              names none of them has no size of its own and is capped to the weapon, which is the ratio the game uses
 //              where it does name one. ForceScaleMode says the record's Scale must be used as given.
 //   3. WHICH END. The bone sits at the hidden blade's base, which is INSIDE the weapon's body: on a spear Bind_Z is at
-//              z 1.648 while the shaft's top is 1.678, on a short sword Bind_Z is at 0.148 while the body's top is 0.206.
+//              z 1.677 while the shaft's top is 1.680, on a short sword Bind_Z is at 0.148 while the body's top is 0.206.
 //              A material rooted on the bone therefore sinks by that difference. The contact is the visible geometry's
 //              end, so the material is lifted to it.
 //
@@ -866,9 +865,9 @@ extern "C" void preview3d_record(void *command_buffer) {
                     }
                     if (!have_bone) mat_identity(bone);
                     // Size, in order of authority: BoundBoxLength, else the record's own Scale/ExScale, else a cap to the
-                    // weapon. A class that names no size leaves the combination undefined; the game's own oversized
-                    // materials carry Scale 0.22-0.30, and a 5 m statue on a 1.16 m shield comes out at 0.232 by the same
-                    // arithmetic. It is a cap, not a fit: a material smaller than its weapon keeps its size.
+                    // weapon. The game's own oversized materials carry Scale 0.22-0.30, and a 5 m statue on a 1.16 m shield
+                    // comes out at 0.232 by the same arithmetic. It is a cap, not a fit: a material smaller than its weapon
+                    // keeps its size.
                     const float mat_extent = model_romfs_extent(model_romfs_resolve_model(at.model));
                     float fit = 1.0f;
                     if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
