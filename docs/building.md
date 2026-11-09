@@ -243,6 +243,14 @@ when a setting is described neither in `totk.ini.example` nor in [settings.md](s
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
 table (no game files), and `totk.exe --probe-mods`.
 
+The SDL motion sensor recovery test uses a virtual gamepad and needs SDL3 headers and libraries, but no game files.
+On Linux, build and run it with:
+
+```sh
+cc -std=gnu11 -Iruntime tests/motion_sensor_check.c runtime/motion_sensor.c $(pkg-config --cflags --libs sdl3) -o /tmp/motion_sensor_check
+/tmp/motion_sensor_check
+```
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
 
