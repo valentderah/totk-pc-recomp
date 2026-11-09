@@ -8,6 +8,7 @@ import math
 import struct
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,9 @@ def main():
     ap.add_argument('--exefs', type=Path)
     ap.add_argument('--cflags', default='-march=x86-64-v3')
     args = ap.parse_args()
-    mods = layout(args.exefs) if args.exefs else [('main', 0x7000000000, 0x472d000)]
+    mods = layout(args.exefs) if args.exefs else [
+        ('main', 0x7000000000, 0x472d000), ('subsdk0', 0x7004800000, 0x400000),
+        ('sdk', 0x7004c00000, 0x800000)]
     table = patches.load(ROOT / 'recomp' / 'patches-v110.txt', mods)
     base = mods[0][1]
     if args.exefs:
@@ -100,10 +103,11 @@ def main():
                         struct.pack_into('<' + 'I' * len(code), text, pc - lo, *code)
                         emu = Emu([(lo, text), (table.page, page)])
                         emu.mu.mem_write(BUF, bytes(mem))
-                        x = [BUF + 0x2000] * 31
-                        x[8] = BUF + 0x2000
+                        x = [0x1234567800000000 + i for i in range(31)]
+                        for i in (8, 19, 20, 23, 27):
+                            x[i] = BUF + 0x2000
                         x[25], x[30] = offset, enabled
-                        v = [int.from_bytes(struct.pack('<f', 2.0), 'little')] * 32
+                        v = [(0x123456789abcdef << 32) | int.from_bytes(struct.pack('<f', 2.0), 'little')] * 32
                         v[1] = int.from_bytes(struct.pack('<f', 4.0), 'little')
                         v[9] = int.from_bytes(struct.pack('<f', 3.0), 'little')
                         v[10] = int.from_bytes(struct.pack('<f', 4.0), 'little')
@@ -128,9 +132,20 @@ def main():
                             # The stack save must preserve the complete x10, not just its lower word.
                             if name in ('aspect', 'fov'):
                                 assert ex[10] == x[10]
+                        allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade') else {9} if kind == 'map' else set()
+                        allowed_v = {0, 1} if kind == 'map' else {target}
+                        if enabled and kind in ('map', 'aim', 'gyro'):
+                            allowed_v |= {16}
+                            if kind == 'map':
+                                allowed_v |= {1}
+                        if enabled and kind == 'fov':
+                            allowed_v |= {8}
+                        assert all(ex[i] == x[i] for i in range(31) if i not in allowed_x)
+                        assert all(ev[i] == v[i] for i in range(32) if i not in allowed_v)
                         cases, expect = groups[ratio]
-                        cases.append((k, 0, x, sp, nzcv, v, False))
-                        expect.append((ex, esp, enz, epc, ev, 0))
+                        cases.append((k, 0, x, sp, nzcv, v, True))
+                        memory = zlib.crc32(emu.mu.mem_read(BUF, BUF_SIZE))
+                        expect.append((ex, esp, enz, epc, ev, memory))
         page_path = work / 'page.bin'
         page_base = table.page & ~0xffff  # Windows reserves at 64 KiB allocation granularity
         page_path.write_bytes(bytes(table.page - page_base) + page)
@@ -142,7 +157,7 @@ def main():
             records, err = run_harness(exe, work, mem, cases, [(page_base, page_path)])
             assert not err and len(records) == len(cases), err
             for case, want, got in zip(cases, expect, records):
-                differences = diff_state(got, want, False, False)
+                differences = diff_state(got, want, False, True)
                 assert not differences, (SITES[case[0]], differences)
             total += len(cases)
         print(f'v110: {len(SITES)} patch contracts, {total} native/Unicorn cases passed (on and off)')
