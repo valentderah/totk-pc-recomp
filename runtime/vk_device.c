@@ -475,7 +475,8 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
+        if (create_instance() && pick_device() && create_device())
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
         else destroy_all();
     }
     int ok = g_ready;

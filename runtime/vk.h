@@ -300,8 +300,15 @@ int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at ad
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with TOTK_TRACE=perf, every 1800 frames
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
-// 0: this allocator's own allocations against the heap sizes. 0 when unknown.
+// 0: this allocator's own allocations against the heap sizes. 0 when unknown. Where device memory takes host memory
+// (vk_mem_host_room) the budget is at most the use plus that room.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
+// Bytes the system can still give device memory beyond a reserve (TOTK_MEM_RESERVE_MIB) where device memory takes host
+// memory: a UMA GPU (commit and physical memory), or a discrete GPU whose device-local memory took process commit in
+// vk_mem_host_probe (commit). UINT64_MAX elsewhere.
+uint64_t vk_mem_host_room(void);
+void vk_mem_host_probe(void);                 // vk_device.c, after the device: measures that for a discrete GPU, once
+int vk_mem_uma(void);                         // 1: the device class is uma (vk_mem_class_log), its memory is RAM
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
 // block of each memory type in use ahead of the render thread.
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);

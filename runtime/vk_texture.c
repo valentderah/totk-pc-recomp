@@ -64,6 +64,7 @@ typedef struct Tex {
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
     uint64_t rel_ms;              // while released: when (coarse_ms)
+    uint64_t rel_bytes;           // while released: its own memory, counted in rel_bytes_total
     uint64_t use_seq;             // order of the last creation or take-back among all entries
     uint64_t rel_seq;             // while released: use_seq of the newest entry placed before this release; an entry
                                   // with a later use_seq on overlapping storage replaced this one's bytes
@@ -95,6 +96,7 @@ static SampSlot *sslots;
 static int nsslots;
 static nvn_hmap samplers = {.klen = sizeof(samp_par)};
 static int nreleased;
+static uint64_t rel_bytes_total;   // own memory of the released entries
 static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
 static uint64_t n_uploads, n_reuploads;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
@@ -538,7 +540,11 @@ static void own_remove(Tex *e) {
     plat_mutex_unlock(&owned_lock);
 }
 
+static uint64_t own_bytes(const Tex *e);
+
 static void rel_append(Tex *e) {
+    e->rel_bytes = own_bytes(e);
+    rel_bytes_total += e->rel_bytes;
     e->rel_next = NULL;
     e->rel_prev = rel_tail;
     if (rel_tail) rel_tail->rel_next = e;
@@ -547,6 +553,8 @@ static void rel_append(Tex *e) {
 }
 
 static void rel_unlink(Tex *e) {
+    rel_bytes_total -= e->rel_bytes;
+    e->rel_bytes = 0;
     if (e->rel_prev) e->rel_prev->rel_next = e->rel_next;
     else rel_head = e->rel_next;
     if (e->rel_next) e->rel_next->rel_prev = e->rel_prev;
@@ -644,12 +652,19 @@ static void sweep_released(void) {
 // CLEAN_AGE_MS: without the wait a fight re-created about 500 of them per 10 s. Any other render target lives only in its
 // image: dropping one that was merely old brought the texture back empty (black flashes in a Depths boss fight, ~170
 // "left uninitialised" aliases a minute).
+//
+// TOTK_TEX_RELEASED_MIB (default 256; 0 = no cap): the same drops run while the released entries hold more own memory than
+// that, under pressure or not. A 10-minute field run on the RX 9070 kept 818 MiB of them, 730 MiB with their storage
+// taken by a later texture, while 23579 of 23660 take-backs came within a second and none after 120 s. With the
+// cap the same route ended with 216 MiB of them, 1.1 GB less process commit and 1 GB less in VMA blocks; 15 dropped
+// textures were created again, and the slow frames stayed the same.
 #define PRESSURE_STEP 32
 #define CLEAN_AGE_MS 5000u
 #define DEAD_AGE_MS 30000u
 #define DEAD_QUIET_SUBMITS 600u
 #define DEAD_RETRY_QUERIES 8   // budget queries to skip after a search that found nothing
 static int vram_pressure = -1;
+static uint64_t released_cap;
 static uint64_t n_pressure_drops, n_pressure_overwritten;
 
 static int tex_by_addr(const void *a, const void *b) {
@@ -741,16 +756,23 @@ static void sweep_pressure(void) {   // tex_lock held
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
         vram_pressure = s && *s ? atoi(s) : 90;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
-        rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
+        const char *m = cfg_get("TOTK_TEX_RELEASED_MIB");
+        released_cap = (m && *m ? strtoull(m, NULL, 10) : 256) << 20;
+        rt_log("vk: released textures under VRAM pressure: %s%d%%; above %llu MiB of them: %s (TOTK_TEX_RELEASED_MIB)",
+               vram_pressure ? "dropped above " : "off", vram_pressure, (unsigned long long)(released_cap >> 20),
+               released_cap ? "dropped" : "no cap");
     }
-    if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+    if (!rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+    uint64_t need = released_cap && rel_bytes_total > released_cap ? rel_bytes_total - released_cap : 0;
     uint64_t used, budget;
     int exact;
-    if (!vk_mem_vram(&used, &budget, &exact)) return;
-    uint64_t line = budget / 100 * (uint64_t)vram_pressure;
-    if (used <= line) return;
+    if (vram_pressure && vk_mem_vram(&used, &budget, &exact)) {
+        uint64_t line = budget / 100 * (uint64_t)vram_pressure;
+        if (used > line && used - line > need) need = used - line;
+    }
+    if (!need) return;
     int dropped = 0;
-    uint64_t need = used - line, freed = drop_overwritten(need, &dropped);
+    uint64_t freed = drop_overwritten(need, &dropped);
     for (Tex *e = rel_head, *next; e && freed < need && dropped < PRESSURE_STEP && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
         next = e->rel_next;
         if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
@@ -1740,8 +1762,9 @@ void vk_texture_new_submit(void) {
                (unsigned long long)f * 60, (unsigned long long)ck, (unsigned long long)n_checks, (unsigned long long)calls,
                (unsigned long long)untr);
         n_checks = 0;
-        rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu (%llu overwritten)",
-               (unsigned long long)f * 60, nreleased, (unsigned long long)n_pressure_drops,
+        rt_log("perf: frame %llu: released textures kept %d (%.0f MiB), dropped under VRAM pressure or the cap %llu "
+               "(%llu overwritten)", (unsigned long long)f * 60, nreleased, rel_bytes_total / 1048576.0,
+               (unsigned long long)n_pressure_drops,
                (unsigned long long)n_pressure_overwritten);
         n_pressure_drops = n_pressure_overwritten = 0;
     }
@@ -2533,7 +2556,7 @@ void vk_texture_shutdown(void) {
     by_addr = (nvn_hmap){.klen = 8};
     samplers = (nvn_hmap){.klen = sizeof(samp_par)};
     free(tslots), free(sslots);
-    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0;
+    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0, rel_bytes_total = 0;
     rel_head = rel_tail = NULL;
     if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sepoch, 0, sizeof *sepoch << 20);   // no slot is registered: tokens 0
     unlock();

@@ -571,6 +571,25 @@ void vk_mem_census(uint64_t frame) {
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0,
            (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED));
+    // The baseline for the commit a crash report prints: a crash far above it points at growth during play.
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    uint64_t room = vk_mem_host_room();
+    rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB; room for device memory %s%.0f MiB",
+           (unsigned long long)frame, proc, used, limit, room == UINT64_MAX ? "not counted " : "",
+           room == UINT64_MAX ? 0.0 : room / 1048576.0);
+    // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
+    // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
+    VkCtx *vc = vk_ctx();
+    if (vc && vc->vma) {
+        VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(vc->vma, vb);
+        for (uint32_t h = 0; h < vc->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+            rt_log("mem: heap %u (flags %#x) at frame %llu: vma %u blocks %.0f MiB, %u allocations %.0f MiB; driver usage "
+                   "%.0f of %.0f MiB", h, vc->mem_props.memoryHeaps[h].flags, (unsigned long long)frame,
+                   vb[h].statistics.blockCount, vb[h].statistics.blockBytes / 1048576.0, vb[h].statistics.allocationCount,
+                   vb[h].statistics.allocationBytes / 1048576.0, vb[h].usage / 1048576.0, vb[h].budget / 1048576.0);
+    }
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
@@ -602,6 +621,79 @@ static uint64_t vram_limit(void) {
     return (uint64_t)limit;
 }
 
+// Device memory that takes host memory. A UMA GPU's memory is the machine's RAM. On Windows the AMD driver charges
+// device-local allocations to the process commit one to one (RX 9070: VRAM use and private bytes grew by the same
+// 1164, 256 and 256 MiB), so on a 16 GB machine the commit limit is reached while the VRAM budget shows gigabytes free,
+// and the driver then fails inside a call (#285: std::bad_alloc in amdvlk64.dll under gpl_link). Whether a discrete
+// GPU's driver does so is measured once (vk_mem_host_probe), not assumed per vendor: an RTX 5080 log (#398) showed
+// 10.4 GB of process commit at frame 1200, about what the RX 9070 holds with its VRAM counted. Linux overcommits, so
+// there only a UMA GPU's physical memory counts (plat_mem_room).
+enum { HB_NONE, HB_COMMIT, HB_UMA, HB_PROBE };
+static int host_backed;
+static uint64_t room_reserve;
+static volatile uint64_t room_cached, room_ms;
+
+uint64_t vk_mem_host_room(void) {
+    if (!host_backed) return UINT64_MAX;
+    uint64_t now = plat_now_ms(), at = __atomic_load_n(&room_ms, __ATOMIC_ACQUIRE);
+    if (at && now - at < 250) return __atomic_load_n(&room_cached, __ATOMIC_RELAXED);   // a query costs a system call
+    uint64_t commit, phys;
+    plat_mem_room(&commit, &phys);
+    uint64_t r = host_backed == HB_UMA && phys < commit ? phys : commit;
+    r = r == UINT64_MAX ? r : r > room_reserve ? r - room_reserve : 0;
+    __atomic_store_n(&room_cached, r, __ATOMIC_RELAXED);
+    __atomic_store_n(&room_ms, now | 1, __ATOMIC_RELEASE);
+    return r;
+}
+
+int vk_mem_uma(void) { return host_backed == HB_UMA; }
+
+// A discrete GPU: one device-local allocation of HB_PROBE_SIZE, and the process commit before and after it. The driver
+// charges it at allocation or not at all as far as this sees; one that charged only at first use would read as not
+// counted, as before the probe. Another thread's allocation in between could only add, and half the size is the line.
+#define HB_PROBE_SIZE (128ull << 20)
+void vk_mem_host_probe(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || host_backed != HB_PROBE) return;
+    host_backed = HB_NONE;
+    uint64_t commit, phys;
+    plat_mem_room(&commit, &phys);
+    if (commit == UINT64_MAX) return;   // no commit limit (Linux)
+    uint32_t type = UINT32_MAX;
+    for (uint32_t i = 0; i < c->mem_props.memoryTypeCount && type == UINT32_MAX; i++)
+        if ((c->mem_props.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) ==
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            type = i;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = HB_PROBE_SIZE,
+                               .memoryTypeIndex = type};
+    uint64_t r0, p0, r1, p1;
+    VkDeviceMemory m;
+    plat_process_memory(&r0, &p0);
+    if (type == UINT32_MAX || !p0 || vkAllocateMemory(c->device, &ai, NULL, &m) != VK_SUCCESS) {
+        rt_log("mem: device memory against system memory: not measured (no device-local type or allocation failed): not counted");
+        return;
+    }
+    plat_process_memory(&r1, &p1);
+    vkFreeMemory(c->device, m, NULL);
+    int64_t d = (int64_t)(p1 - p0);
+    host_backed = d >= (int64_t)HB_PROBE_SIZE / 2 ? HB_COMMIT : HB_NONE;
+    rt_log("mem: device memory against system memory: %s (a %llu MiB device-local allocation took %.0f MiB of process "
+           "commit), reserve %llu MiB (TOTK_MEM_RESERVE_MIB)", host_backed == HB_COMMIT ? "commit" : "not counted",
+           (unsigned long long)(HB_PROBE_SIZE >> 20), d / 1048576.0, (unsigned long long)(room_reserve >> 20));
+}
+
+// The budget is at most the use plus what the system can still give, so the paths that react to VRAM pressure (the
+// mirror refusal, released textures, the headroom block) react to a system short of memory too.
+static void host_cap(uint64_t used, uint64_t *budget) {
+    uint64_t room = vk_mem_host_room();
+    if (room == UINT64_MAX || used + room >= *budget) return;
+    *budget = used + room ? used + room : 1;
+    static volatile int32_t logged;
+    if (!plat_xchg32(&logged, 1))
+        rt_log("mem: system memory limits the device-local budget: %.0f MiB in use, %.0f MiB more beyond a reserve of "
+               "%.0f MiB (logged once)", used / 1048576.0, room / 1048576.0, room_reserve / 1048576.0);
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
@@ -617,6 +709,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
         if (limit && *budget > limit) *budget = limit;
+        if (*budget) host_cap(*used, budget);
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -625,6 +718,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
     if (limit && *budget > limit) *budget = limit;
+    if (*budget) host_cap(*used, budget);
     return *budget != 0;
 }
 
@@ -2226,6 +2320,9 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     else if (host_heap < 0) cls = "uma", why = "every heap is device-local";
     else cls = "discrete", why = "device-local heap separate from host memory";
     int discrete = cls[0] == 'd';
+    host_backed = !discrete ? HB_UMA : HB_PROBE;   // a discrete GPU is measured once the device exists
+    const char *rs = cfg_get("TOTK_MEM_RESERVE_MIB");
+    room_reserve = (rs && *rs ? strtoull(rs, NULL, 10) : 1536) << 20;   // Windows, other programs, our own heap
     char line[2048];
     size_t k = (size_t)snprintf(line, sizeof line, "mem: class %s (%s; device type %d %s, %s)", cls, why, t, tn, p->deviceName);
     for (uint32_t h = 0; h < m->memoryHeapCount; h++)
@@ -2245,6 +2342,9 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
                               f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? " LAZY" : "");
     }
     rt_log("%s", line);
+    if (host_backed == HB_UMA)
+        rt_log("mem: device memory against system memory: commit and physical memory (uma), reserve %llu MiB "
+               "(TOTK_MEM_RESERVE_MIB)", (unsigned long long)(room_reserve >> 20));
     mirror_mode(discrete);
 }
 

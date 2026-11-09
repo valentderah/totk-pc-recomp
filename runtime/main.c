@@ -298,6 +298,11 @@ static void crash_handler(const PlatCrash *x) {
     rt_log_raw("\n", 1);
     if (x->cxx_type)
         rt_logf("  C++ type %s%s%s\n", x->cxx_type, x->cxx_what ? ", what(): " : "", x->cxx_what ? x->cxx_what : "");
+    // A driver that runs out of memory faults or throws (std::bad_alloc) instead of returning an error: the commit
+    // tells that apart from a driver bug, as rt_fatal's line does for our own failed allocations.
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    rt_logf("  memory commit: this process %.0f MB, the system %.0f of %.0f MB\n", proc, used, limit);
     uintptr_t fstart = 0;
     uint64_t f = x->module ? 0 : lifted_function_at(rip, &fstart);
     if (f)

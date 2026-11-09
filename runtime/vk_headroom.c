@@ -12,7 +12,7 @@
 // a block per memory type is held back.
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
-// is allocated.
+// is allocated. The same holds when the system runs short of memory (room).
 // TOTK_VRAM_HEADROOM=0 turns it off.
 
 #include "cfg.h"
@@ -58,11 +58,14 @@ static VkDeviceSize block_size(const VkCtx *c, uint32_t type) {
     return heap <= HR_SMALL_HEAP ? heap / 8 : 256ull << 20;   // VMA's default preferredLargeHeapBlockSize
 }
 
+// The spare block is memory the game does not use yet; where device memory takes host memory it is kept only while the
+// system has four blocks to spare beyond the reserve (vk_mem_host_room). On the RX 9070 the spare blocks held 1.4 GB
+// of commit.
 static int room(const VkCtx *c, uint32_t type, VkDeviceSize block) {
     VmaBudget b[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(c->vma, b);
     const VmaBudget *h = &b[c->mem_props.memoryTypes[type].heapIndex];
-    return h->budget && h->usage + 2 * block <= h->budget / 100 * 85;
+    return h->budget && h->usage + 2 * block <= h->budget / 100 * 85 && vk_mem_host_room() >= 4 * block;
 }
 
 static void drop_anchor(const VkCtx *c, uint32_t type) {
@@ -72,7 +75,11 @@ static void drop_anchor(const VkCtx *c, uint32_t type) {
 
 static void top_up(const VkCtx *c, uint32_t type) {
     VkDeviceSize block = block_size(c, type);
-    if (!room(c, type, block)) {
+    // Device-local types only: textures and mirrors grow there. Host memory types are woken by the staging pool's own
+    // blocks (vk_memory.c vk_staging), while their default pool held 4 MiB: on the RX 9070 the spare blocks of types 1
+    // and 3 held 512 MiB of commit for nothing.
+    if (!(c->mem_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+        !room(c, type, block)) {
         drop_anchor(c, type);
         return;
     }
