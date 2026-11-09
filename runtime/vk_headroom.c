@@ -75,7 +75,11 @@ static void drop_anchor(const VkCtx *c, uint32_t type) {
 
 static void top_up(const VkCtx *c, uint32_t type) {
     VkDeviceSize block = block_size(c, type);
-    if (!room(c, type, block)) {
+    // Device-local types only: textures and mirrors grow there. Host memory types are woken by the staging pool's own
+    // blocks (vk_memory.c vk_staging), while their default pool held 4 MiB: on the RX 9070 the spare blocks of types 1
+    // and 3 held 512 MiB of commit for nothing.
+    if (!(c->mem_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+        !room(c, type, block)) {
         drop_anchor(c, type);
         return;
     }
