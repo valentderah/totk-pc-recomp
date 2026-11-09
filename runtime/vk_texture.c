@@ -459,7 +459,19 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         }
     }
     if (!img) {
-        VkResult r = vk_texture_image(&ci, &img, &e->alloc);   // the texture pool or memory of its own
+        VkResult r = rt_oom_forced(RT_OOM_IMAGE) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                                 : vk_texture_image(&ci, &img, &e->alloc);
+        // Out of memory: one more try after the headroom blocks and the finished deferred objects are freed
+        // (vk_oom_release, which takes cmd_lock after the texture lock held here); released textures go at the next
+        // submit. No wait: the texture is asked for again at its next use, while a wait would hold the texture lock.
+        if (r == VK_ERROR_OUT_OF_HOST_MEMORY || r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            static volatile int32_t n_retried;
+            vk_oom_release();
+            VkResult again = vk_texture_image(&ci, &img, &e->alloc);
+            log_limited(&n_retried, "image creation failed (%d), tried again after a memory release: %s (%ux%ux%u fmt %#x)",
+                        (int)r, again == VK_SUCCESS ? "created" : "failed again", w, h, depth, d->format);
+            r = again;
+        }
         if (r != VK_SUCCESS) {
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
                         d->format, w, h, depth, d->target, levels, layers);
@@ -717,16 +729,19 @@ static int dead_candidate(const Tex *e) {
 // Drops overwritten entries until `need` bytes are free or the step is used up. The sort runs only under pressure, while
 // an old enough entry exists, and rests for a while when it finds nothing to drop. Returns the bytes freed.
 static uint64_t pressure_search_ns;   // longest search since the last mem: released line
-static uint64_t drop_overwritten(uint64_t need, int *dropped) {
+// step: PRESSURE_STEP, or OOM_STEP from oom_release, which neither waits out nor starts the rest.
+#define OOM_STEP 256
+static uint64_t drop_overwritten(uint64_t need, int *dropped, int step) {
     static int rest;
-    if (rest > 0) { rest--; return 0; }
+    int urgent = step > PRESSURE_STEP;
+    if (rest > 0 && !urgent) { rest--; return 0; }
     if (!rel_head || coarse_ms - rel_head->rel_ms < DEAD_AGE_MS) return 0;
     uint64_t t0 = plat_now_ns(), freed = 0;
     AddrIndex x;
     if (!addr_index(&x)) return 0;
-    Tex *cand[PRESSURE_STEP];
+    Tex *cand[OOM_STEP];
     int nc = 0;
-    for (Tex *e = rel_head; e && nc < PRESSURE_STEP && coarse_ms - e->rel_ms >= DEAD_AGE_MS; e = e->rel_next) {
+    for (Tex *e = rel_head; e && nc < step && coarse_ms - e->rel_ms >= DEAD_AGE_MS; e = e->rel_next) {
         if (!dead_candidate(e)) continue;
         int lo = 0, hi = x.n;   // the first entry at e's address, then e among those
         while (lo < hi) {
@@ -744,9 +759,22 @@ static uint64_t drop_overwritten(uint64_t need, int *dropped) {
         destroy_tex(cand[i]);
         (*dropped)++, n_pressure_drops++, n_pressure_overwritten++;
     }
-    if (!nc) rest = DEAD_RETRY_QUERIES;
+    if (!nc && !urgent) rest = DEAD_RETRY_QUERIES;
     uint64_t ns = plat_now_ns() - t0;
     if (ns > pressure_search_ns) pressure_search_ns = ns;
+    return freed;
+}
+
+// Clean released entries, oldest first: mirrored ones the GPU never wrote, which come back from their storage.
+static uint64_t drop_clean(uint64_t need, uint64_t freed, int *dropped, int step) {
+    for (Tex *e = rel_head, *next; e && freed < need && *dropped < step && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
+        next = e->rel_next;
+        if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
+        freed += own_bytes(e);
+        dropped_note(e);
+        destroy_tex(e);
+        (*dropped)++, n_pressure_drops++;
+    }
     return freed;
 }
 
@@ -771,15 +799,22 @@ static void sweep_pressure(void) {   // tex_lock held
     }
     if (!need) return;
     int dropped = 0;
-    uint64_t freed = drop_overwritten(need, &dropped);
-    for (Tex *e = rel_head, *next; e && freed < need && dropped < PRESSURE_STEP && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
-        next = e->rel_next;
-        if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
-        freed += own_bytes(e);
-        dropped_note(e);
-        destroy_tex(e);
-        dropped++, n_pressure_drops++;
-    }
+    uint64_t freed = drop_overwritten(need, &dropped, PRESSURE_STEP);
+    drop_clean(need, freed, &dropped, PRESSURE_STEP);
+}
+
+// rt_oom_request (an allocation failed somewhere, oom.c): the same two kinds as sweep_pressure, as many as OOM_STEP
+// whatever the budget says, and the headroom blocks. Never GPU-written content that lives only in its image. The memory
+// comes back once the submission being recorded is done (destroy_tex defers the images). Texture lock held.
+static void oom_release(void) {
+    int dropped = 0;
+    uint64_t freed = drop_overwritten(UINT64_MAX, &dropped, OOM_STEP);
+    int overwritten = dropped;
+    freed = drop_clean(UINT64_MAX, freed, &dropped, OOM_STEP);
+    vk_headroom_release();
+    static volatile int32_t n_logged;
+    log_limited(&n_logged, "out of memory: %d released textures dropped (%d overwritten, %d clean), %.0f MiB, %d kept",
+                dropped, overwritten, dropped - overwritten, freed / 1048576.0, nreleased);
 }
 
 // ---------------------------------------------------------------- uploads
@@ -1735,6 +1770,8 @@ void vk_texture_new_submit(void) {
     if (!++submit_epoch) submit_epoch = 1;
     coarse_ms = plat_now_ms();
     sweep_pressure();
+    if (__atomic_load_n(&rt_oom_req, __ATOMIC_RELAXED) && __atomic_exchange_n(&rt_oom_req, 0, __ATOMIC_ACQUIRE))
+        oom_release();
     static uint64_t log_at;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
     if ((rt_trace & RT_TRACE_PERF) && f != log_at && tex_alias > 0) {
@@ -2059,7 +2096,12 @@ static void write_back_n(Tex **v, int n) {
     if (np) vk_upload_flush(1);
     for (int i = 0; i < np; i++) {
         WbPart *q = &p[i];
-        uint8_t *buf = malloc(q->g.img * (size_t)q->g.nz);
+        size_t bytes = q->g.img * (size_t)q->g.nz;
+        uint8_t *buf = malloc(bytes);
+        if (!buf) {   // waits for memory with the texture lock held, after the release that needs no submit
+            vk_oom_release();
+            buf = rt_realloc_wait(NULL, bytes, "vk: texture write-back buffer");
+        }
         if (!buf) rt_fatal("vk: out of memory for a texture write-back");
         texels_read_take(q->e, &q->g, &q->t, buf);
         storage_texels(&q->e->t, &q->g, &q->r, buf, 1);

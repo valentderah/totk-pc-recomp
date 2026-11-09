@@ -12,7 +12,8 @@
 // a block per memory type is held back.
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
-// is allocated. The same holds when the system runs short of memory (room).
+// is allocated. The same holds when the system runs short of memory (room), and for HR_HOLD_MS after an allocation
+// failed anywhere (vk_headroom_release).
 // The texture pool (vk_memory.c vk_texture_image) is kept ahead the same way, with its own anchor of half its block.
 // TOTK_VRAM_HEADROOM=0 turns it off.
 
@@ -23,6 +24,7 @@
 
 #define HR_PERIOD_MS 500
 #define HR_SMALL_HEAP (1ull << 30)   // VMA_SMALL_HEAP_MAX_SIZE: smaller heaps use blocks of a heap eighth
+#define HR_HOLD_MS 30000u
 
 static struct {
     int on, stop;
@@ -38,6 +40,7 @@ static struct {
     uint32_t pool_type;
     VkDeviceSize pool_block;
     VmaAllocation pool_anchor;
+    volatile uint64_t hold_until;   // plat_now_ms before which no spare block is kept (vk_headroom_release)
 } H;
 
 static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
@@ -84,7 +87,7 @@ static void top_up(const VkCtx *c, uint32_t type, VmaPool pool, VkDeviceSize blo
     // blocks (vk_memory.c vk_staging), while their default pool held 4 MiB: on the RX 9070 the spare blocks of types 1
     // and 3 held 512 MiB of commit for nothing.
     if (!(c->mem_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
-        !room(c, type, block)) {
+        plat_now_ms() < __atomic_load_n(&H.hold_until, __ATOMIC_RELAXED) || !room(c, type, block)) {
         drop_anchor(c, anchor);
         return;
     }
@@ -151,6 +154,23 @@ void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block) {
     if (c) drop_anchor(c, &H.pool_anchor);
     H.pool = pool, H.pool_type = type, H.pool_block = block;
     plat_mutex_unlock(&H.lock);
+}
+
+// After a failed allocation: the spare blocks go at once (an empty VMA block takes the next allocation of its type or
+// is given back), and none is kept for HR_HOLD_MS. H.lock is held only around VMA calls, so the caller may hold any lock
+// of ours, just no VMA lock.
+void vk_headroom_release(void) {
+    __atomic_store_n(&H.hold_until, plat_now_ms() + HR_HOLD_MS, __ATOMIC_RELAXED);
+    if (!H.started) return;
+    int n = 0;
+    plat_mutex_lock(&H.lock);
+    const VkCtx *c = H.stop ? NULL : vk_ctx();
+    for (uint32_t t = 0; c && t < 64; t++)
+        if (H.anchor[t]) drop_anchor(c, &H.anchor[t]), n++;
+    if (c && H.pool_anchor) drop_anchor(c, &H.pool_anchor), n++;
+    plat_mutex_unlock(&H.lock);
+    static volatile int32_t logged;
+    if (n && plat_inc32(&logged) <= 8) rt_log("vk: headroom: %d spare blocks freed after a failed allocation", n);
 }
 
 void vk_headroom_start(void) {

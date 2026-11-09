@@ -77,6 +77,7 @@ Many rows below are developer tools that only act together with another setting 
 | `probe_movie_bench` | `1` makes the movie probe also time the resampler that fits a movie to a game resolution of another shape, and print the time per frame. | Only used by the movie decoder probe. | Safe |
 | `swkbd_answer` | `<text>`, `<cancel>` or `<initial>`: answers the on-screen keyboard (for example a horse name) without opening a window. | The game gets that answer every time it asks for text. | Caution |
 | `swkbd_test` | `ok` or `cancel` opens the keyboard window and presses OK or Cancel on the first timer tick. | The keyboard window closes by itself. | Caution |
+| `test_oom` | `<site>:<n>[,...]` fails the first n allocations at a site: `commit` (guest memory), `staging` (upload buffers), `image` (texture images), `chunk` (draw data buffers). | Each forced failure takes the out-of-memory path: a memory release, a wait of 10 ms per retry and log lines; a large n stalls up to 30 s and then ends the game. | Caution |
 | `test_pad` | `<lx>,<ly>,<rx>,<ry>` attaches a virtual gamepad whose sticks rest at these raw SDL axis values (-32768 to 32767). | The game sees a controller with that drift or deflection; a malformed value is logged and ignored. | Caution |
 | `test_prepare_shaders` | `1` translates every recorded shader on all usable CPUs during start. | Start takes longer and fills the shader cache folder; the CPU is fully used while it runs. | Caution |
 

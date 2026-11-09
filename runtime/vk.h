@@ -316,6 +316,8 @@ void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
 // The texture pool (vk_memory.c vk_texture_image) gets its next block ahead too; pool NULL frees the anchor in it.
 void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block);
+void vk_headroom_release(void);   // after a failed allocation: frees the spare blocks and keeps none for a while;
+                                 // any thread that holds no VMA lock (takes only the headroom lock)
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
@@ -406,6 +408,10 @@ int vk_mem_span_live(const VkMemSpan *sp);
 void vk_mem_note_fence(uint64_t timeline_value);
 void vk_mem_fault_log(void);   // vk_device_fault_report: the deferred-free state, lock-free
 void vk_mem_collect(void);                         // frees what has completed
+// After a failed allocation, on a thread that may hold the texture lock and the upload lock (cmd_lock) but no VMA
+// lock: frees the headroom blocks and the completed upload batches and deferred objects, and requests the release
+// of released textures at the next submit (rt_oom_request).
+void vk_oom_release(void);
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
 void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
