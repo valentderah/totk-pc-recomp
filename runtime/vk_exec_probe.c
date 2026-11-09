@@ -968,6 +968,9 @@ int probe_vkexec(void) {
     const GfxBackend *b = &gfx_vulkan_backend;
     uint64_t heap = 0;
     CHECK(mem_set_heap_size(16ull << 20, &heap) == 0 && heap, "SetHeapSize 16 MiB");
+    // Out-of-memory waits (oom.c): the first two staging buffers, the first texture image and the first draw-data chunk
+    // fail; every part below passes through the wait or the retry that follows.
+    rt_oom_force(RT_OOM_STAGING, 2), rt_oom_force(RT_OOM_IMAGE, 1), rt_oom_force(RT_OOM_CHUNK, 1);
     uint8_t *guest = (uint8_t *)(uintptr_t)heap;
     uint64_t first = 0, last = 0;
     int w = 0, h = 0, inside = 0, xfer_bytes = 0;
@@ -989,6 +992,12 @@ int probe_vkexec(void) {
     vk_exec_xfer_shutdown();
     vk_backend_shutdown();
     long errors = vk_validation_errors_total();
+    int oom_left[3] = {rt_oom_forced_left(RT_OOM_STAGING), rt_oom_forced_left(RT_OOM_IMAGE), rt_oom_forced_left(RT_OOM_CHUNK)};
+    if (!bad && !errors && (oom_left[0] || oom_left[1] || oom_left[2])) {
+        printf("probe-vkexec: FAILED (forced allocation failures never reached: staging %d, image %d, chunk %d)\n",
+               oom_left[0], oom_left[1], oom_left[2]);
+        return 1;
+    }
     if (bad || errors) {
         printf("probe-vkexec: FAILED (%s, %ld validation errors)\n",
                sync_bad ? "a sync check failed" : draw_bad ? "a draw check failed" : bad ? "a clear or xfer check failed" : "checks passed", errors);
@@ -1034,5 +1043,7 @@ int probe_vkexec(void) {
                "finished mark is the last pass, ring records exact); the report reads:\n%s\n", marks_text);
     printf("probe-vkexec: empty pool part passed (a zero-byte pool at the start of another: no Vulkan objects, lookups "
            "there find the other pool before and after its Finalize)\n");
+    printf("probe-vkexec: out-of-memory part passed (2 failed staging buffers waited for, 1 failed texture image retried, "
+           "1 failed draw-data chunk waited for)\n");
     return 0;
 }
