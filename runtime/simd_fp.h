@@ -205,19 +205,21 @@ SN T FN(slow)(Cpu *c, int op, T a, T b, T d) {
 // it to fcmp one, a single ucomiss + jne for scalars and one vcmpps for vectors).
 #define FOK(r) ((__builtin_elementwise_abs(r) < FN(fv)(MINN)) | (__builtin_elementwise_abs(r) > FN(fv)(MINN)))
 SN T FN(redo)(Cpu *c, int op, T a, T b, T d, T r) {
-    if (c->fpcr & FPCR_FZ) return FN(slow)(c, op, a, b, d);
+    if (c->fpcr & (FPCR_FZ | FPCR_RM)) return FN(slow)(c, op, a, b, d);
     return FBAD(op, r) ? FN(fix)(c, op, a, b, d) : r;
 }
 
-// Scalar FP op (constant op folds the selection). RMode = nearest runs on the host, with or without FZ.
+// Scalar FP op (constant op folds the selection). RMode = nearest runs on the host, with or without FZ. A directed
+// RMode is rare, so it shares the result check's branch: the host result, computed in round-to-nearest, is then
+// thrown away and redo recomputes in the FPCR mode. Min and max do not round, so RMode does not matter to them.
 SI T FN(op)(Cpu *c, int op, T a, T b, T d) {
-    if (simd_directed(c)) return FN(slow)(c, op, a, b, d);
     if (FMINMAX(op)) {
         if (c->fpcr & FPCR_FZ) a = FN(flush)(a), b = FN(flush)(b);
         return FN(minmax)(c, op, a, b);
     }
     T r = FCALC(op, a, b, d, K, FMA_S);
-    if (__builtin_expect(op == FOP_RSQRTS ? FREDO(op, r) : !FOK(r), 0)) r = FN(redo)(c, op, a, b, d, r);
+    if (__builtin_expect((op == FOP_RSQRTS ? FREDO(op, r) : !FOK(r)) | simd_directed(c), 0))
+        r = FN(redo)(c, op, a, b, d, r);
     return r;
 }
 
@@ -237,9 +239,9 @@ SI VT FN(vflush)(VT a) {
     return (VT)FN(vsel)(den, u & SGN, u);
 }
 
-// Vector FP op: native lanes; any lane FREDO flags (or FPCR.RMode) reruns all lanes through the scalar path.
+// Vector FP op: native lanes; any lane FREDO flags (or a directed FPCR.RMode, checked in the same branch) reruns all
+// lanes through the scalar path. Min and max ignore RMode, as in FN(op).
 SI VT FN(vop)(Cpu *c, int op, VT a, VT b, VT d) {
-    if (simd_directed(c)) return FN(vslow)(c, op, a, b, d);
     VT r;
     if (FMINMAX(op)) {
         if (c->fpcr & FPCR_FZ) a = FN(vflush)(a), b = FN(vflush)(b);
@@ -252,7 +254,8 @@ SI VT FN(vop)(Cpu *c, int op, VT a, VT b, VT d) {
         return r;
     }
     r = FCALC(op, a, b, d, VK, FMA_V);
-    if (__builtin_expect(op == FOP_RSQRTS ? __builtin_reduce_or(FREDO(op, r)) != 0 : __builtin_reduce_and(FOK(r)) == 0, 0))
+    if (__builtin_expect((op == FOP_RSQRTS ? __builtin_reduce_or(FREDO(op, r)) != 0 : __builtin_reduce_and(FOK(r)) == 0)
+                         | simd_directed(c), 0))
         return FN(vslow)(c, op, a, b, d);
     return r;
 }
@@ -260,13 +263,15 @@ SI VT FN(vop)(Cpu *c, int op, VT a, VT b, VT d) {
 SI VT FN(vfz)(Cpu *c, VT a) { return c->fpcr & FPCR_FZ ? FN(vflush)(a) : a; }
 
 // ---- compares
+// FPCR.FZ needs no flush here: rt_fpcr_sync (runtime/cpu.h) keeps MXCSR.DAZ equal to FPCR.FZ, and x86 compares
+// under DAZ read a denormal operand as a zero of its sign, as ARM compares do under FZ.
 SI uint64_t FN(cmp)(Cpu *c, T a, T b) { // FCMP NZCV
-    a = FN(fz)(c, a), b = FN(fz)(c, b);
+    (void)c;
     return a == b ? 0x60000000ull : a < b ? 0x80000000ull : a > b ? 0x20000000ull : 0x30000000ull;
 }
 // FCMEQ/FCMGE/FCMGT/FACGE/FACGT (op 0..4)
 SI VTU FN(vcmp)(Cpu *c, int op, VT a, VT b) {
-    a = FN(vfz)(c, a), b = FN(vfz)(c, b);
+    (void)c;
     if (op >= 3) a = __builtin_elementwise_abs(a), b = __builtin_elementwise_abs(b);
     switch (op) {
     case 0: return (VTU)(a == b);
