@@ -249,7 +249,11 @@ typedef struct {
     const char *module;        // the module holding rip: NULL for this executable, "" for none (a jump to address 0)
     const char *cxx_type;      // a C++ exception from MSVC-built code: the thrown type's decorated name (.?AV...@@)
     const char *cxx_what;      // and what() when the type derives from std::exception; NULL when unknown
+    int has_regs;              // gpr holds the faulting thread's registers (a fault; not abort or invalid parameter)
+    uint64_t gpr[16];          // rax rcx rdx rbx rsp rbp rsi rdi r8..r15, in the x86 encoding order
 } PlatCrash;
+#define PLAT_GPR_NAMES {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", \
+                        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"}
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
 int plat_screen_size(int *w, int *h);                    // the primary display's current mode in pixels; 0 unknown
