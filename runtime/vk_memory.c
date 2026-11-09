@@ -645,6 +645,8 @@ uint64_t vk_mem_host_room(void) {
     return r;
 }
 
+int vk_mem_uma(void) { return host_backed == HB_UMA; }
+
 // The budget is at most the use plus what the system can still give, so the paths that react to VRAM pressure (the
 // mirror refusal, released textures, the headroom block) react to a system short of memory too.
 static void host_cap(uint64_t used, uint64_t *budget) {

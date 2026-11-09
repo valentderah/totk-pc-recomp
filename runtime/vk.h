@@ -306,6 +306,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
 // Bytes the system can still give device memory beyond a reserve (TOTK_MEM_RESERVE_MIB) where device memory takes host
 // memory: a UMA GPU (commit and physical memory), or a discrete non-NVIDIA GPU on Windows (commit). UINT64_MAX elsewhere.
 uint64_t vk_mem_host_room(void);
+int vk_mem_uma(void);                         // 1: the device class is uma (vk_mem_class_log), its memory is RAM
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
 // block of each memory type in use ahead of the render thread.
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
