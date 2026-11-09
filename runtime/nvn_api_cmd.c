@@ -148,6 +148,7 @@ static void *realloc_wait(void *old, size_t n, const char *what) {
     if (p) return p;
     pool_drain();
     big_drain();
+    rt_oom_request();   // the Vulkan back end gives memory back at its next submit (oom.c)
     static uint32_t reports;
     int report = __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8;
     if (report) {

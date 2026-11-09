@@ -175,6 +175,23 @@ int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be re
                                                            // module or the committed heap answered from the layout,
                                                            // anything else by plat_mem_readable (an OS query)
 
+// ---- short out-of-memory spells (oom.c)
+enum { RT_OOM_COMMIT, RT_OOM_STAGING, RT_OOM_IMAGE, RT_OOM_CHUNK, RT_OOM_SITES };
+extern volatile int32_t rt_oom_req;                        // set by rt_oom_request; vk_texture_new_submit takes it
+void rt_oom_request(void);                                 // asks the Vulkan back end to give memory back at its next
+                                                           // submit (released textures, headroom blocks); any thread,
+                                                           // any lock held
+int rt_oom_wait(const char *what, uint64_t bytes, int (*retry)(void *arg), void *arg);
+                                                           // after a failed allocation: requests a release, then calls
+                                                           // retry every 10 ms for up to 30 s; 1 once retry returned 1,
+                                                           // 0 after the wait (the caller ends the game). Logs the
+                                                           // first 8 with the commit numbers
+void *rt_realloc_wait(void *old, size_t n, const char *what);   // realloc, NULL only after rt_oom_wait gave up
+int rt_oom_forced(int site);                               // 1: fail this attempt at site (TOTK_TEST_OOM=<site>:<n>,
+                                                           // sites commit, staging, image, chunk; or rt_oom_force)
+void rt_oom_force(int site, int n);                        // probes: fail the next n attempts at site
+int rt_oom_forced_left(int site);                          // forced failures still to come at site
+
 // ---- modules (loader.c)
 typedef struct {
     const char *name; uint64_t base, size, text_end, data_off;   // text_end, data_off: offsets from base

@@ -2482,6 +2482,20 @@ void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
 static VmaPool stg_pool;
 static int stg_pool_tried;
 
+typedef struct { const VkBufferCreateInfo *bi; const VmaAllocationCreateInfo *aci; VkBuffer b; VmaAllocation a;
+                 VmaAllocationInfo info; VkResult r; } StgTry;
+static int staging_try(void *arg) {
+    StgTry *t = arg;
+    vk_mem_collect();   // upload batches and deferred objects the GPU finished meanwhile
+    t->r = rt_oom_forced(RT_OOM_STAGING) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                         : vmaCreateBuffer(vk_ctx()->vma, t->bi, t->aci, &t->b, &t->a, &t->info);
+    return t->r == VK_SUCCESS;
+}
+
+// A failed staging buffer waits for memory (rt_oom_wait) before it ends the game: the headroom blocks go and the GPU's
+// finished batches are freed at once, released textures at the next submit (vk_oom_release). The caller may hold the
+// texture lock and cmd_lock (vk_upload_begin), both of which vk_oom_release may take after them, and no VMA lock. The open
+// batch is not submitted: its caller records into it after this returns.
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     VkCtx *c = vk_ctx();
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16,
@@ -2505,11 +2519,22 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
         plat_rmutex_unlock(&cmd_lock);
     }
     if (stg_pool && bi.size <= STG_BLOCK / 2) aci.pool = stg_pool;
-    VmaAllocationInfo info;
-    VkBuffer b;
-    VmaAllocation a;
-    VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
-    if (r != VK_SUCCESS) rt_fatal("vk: staging buffer of %llu bytes failed (%d)", (unsigned long long)size, (int)r);
+    StgTry st = {.bi = &bi, .aci = &aci};
+    st.r = rt_oom_forced(RT_OOM_STAGING) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                         : vmaCreateBuffer(c->vma, &bi, &aci, &st.b, &st.a, &st.info);
+    if (st.r != VK_SUCCESS) {
+        VkResult first = st.r;
+        if (first == VK_ERROR_OUT_OF_HOST_MEMORY || first == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_oom_release();
+            rt_oom_wait("vk: staging buffer", bi.size, staging_try, &st);
+        }
+        if (st.r != VK_SUCCESS)
+            rt_fatal("vk: staging buffer of %llu bytes failed (%d, first %d)", (unsigned long long)size, (int)st.r,
+                     (int)first);
+    }
+    VkBuffer b = st.b;
+    VmaAllocation a = st.a;
+    VmaAllocationInfo info = st.info;
     *buf = b;
     if (alloc) *alloc = a;   // the caller destroys it (vmaDestroyBuffer) after vk_upload_flush(1)
     else {
@@ -2686,6 +2711,15 @@ void vk_mem_collect(void) {
     plat_rmutex_lock(&cmd_lock);
     collect_locked(c);
     plat_rmutex_unlock(&cmd_lock);
+}
+
+// Lock order: the texture lock, then cmd_lock (create_tex records under the first), then the headroom lock, which is
+// held only around VMA calls. A caller holding cmd_lock takes it again (recursive) and keeps the fence thread's own
+// collect (vk_sync.c) out meanwhile, so this collects for it.
+void vk_oom_release(void) {
+    rt_oom_request();
+    vk_headroom_release();
+    vk_mem_collect();
 }
 
 void vk_mem_stats(VkMemStats *s) {
