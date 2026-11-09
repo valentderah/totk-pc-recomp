@@ -191,6 +191,7 @@ Many rows below are developer tools that only act together with another setting 
 | `restart_wait` | Set by the runtime when it restarts itself; names the old process by id and creation time so the new process waits for it to exit. | Meant for the runtime's own use; the code does not describe a manual value. | Unknown |
 | `spin` (default `1`) | `0` makes a guest thread that polls memory keep its virtual core. | Polling threads can starve the thread whose item they wait for, so frames can stall. | Caution |
 | `spin_handoff_us` (default `50`) | Microseconds a polling wait lasts before it gives its virtual core to a waiting thread. | A shorter value hands cores over sooner; a longer one keeps them longer. | Caution |
+| `tex_block_mib` (default `64`) | Block size in MiB of the pool that holds the game's textures; images of a quarter block or more get memory of their own. `0` puts textures in the default pools with the buffers. | Larger blocks hold more memory that no texture uses; smaller ones mean more allocations from the driver. | Caution |
 | `tex_released_mib` (default `256`) | MiB of textures the game released that are kept for reuse; older ones beyond it are dropped. `0` keeps up to 2048 of them, whatever their size. | A larger value keeps more device memory and process commit; a smaller one makes the game create more textures again. | Caution |
 
 ## Generated-code patches

@@ -13,6 +13,7 @@
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
 // is allocated. The same holds when the system runs short of memory (room).
+// The texture pool (vk_memory.c vk_texture_image) is kept ahead the same way, with its own anchor of half its block.
 // TOTK_VRAM_HEADROOM=0 turns it off.
 
 #include "cfg.h"
@@ -33,6 +34,10 @@ static struct {
     volatile int64_t made;     // blocks this thread brought in
     volatile int64_t other;    // device memory of 32 MiB or more other threads allocated (VMA blocks, large dedicated)
     VmaAllocation anchor[64]; // per memory type: the half block that keeps the newest spare block from being deleted
+    VmaPool pool;             // the texture pool, its memory type and block size, and its anchor
+    uint32_t pool_type;
+    VkDeviceSize pool_block;
+    VmaAllocation pool_anchor;
 } H;
 
 static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
@@ -68,23 +73,23 @@ static int room(const VkCtx *c, uint32_t type, VkDeviceSize block) {
     return h->budget && h->usage + 2 * block <= h->budget / 100 * 85 && vk_mem_host_room() >= 4 * block;
 }
 
-static void drop_anchor(const VkCtx *c, uint32_t type) {
-    if (H.anchor[type]) vmaFreeMemory(c->vma, H.anchor[type]);
-    H.anchor[type] = NULL;
+static void drop_anchor(const VkCtx *c, VmaAllocation *anchor) {
+    if (*anchor) vmaFreeMemory(c->vma, *anchor);
+    *anchor = NULL;
 }
 
-static void top_up(const VkCtx *c, uint32_t type) {
-    VkDeviceSize block = block_size(c, type);
+// pool NULL: the default pool of the type
+static void top_up(const VkCtx *c, uint32_t type, VmaPool pool, VkDeviceSize block, VmaAllocation *anchor) {
     // Device-local types only: textures and mirrors grow there. Host memory types are woken by the staging pool's own
     // blocks (vk_memory.c vk_staging), while their default pool held 4 MiB: on the RX 9070 the spare blocks of types 1
     // and 3 held 512 MiB of commit for nothing.
     if (!(c->mem_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
         !room(c, type, block)) {
-        drop_anchor(c, type);
+        drop_anchor(c, anchor);
         return;
     }
     VkMemoryRequirements req = {.size = block / 2, .alignment = 256, .memoryTypeBits = 1u << type};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_UNKNOWN};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_UNKNOWN, .pool = pool};
     VmaAllocation a;
     int64_t before = H.made;
     if (vmaAllocateMemory(c->vma, &req, &ai, &a, NULL) != VK_SUCCESS) return;
@@ -92,12 +97,13 @@ static void top_up(const VkCtx *c, uint32_t type) {
         vmaFreeMemory(c->vma, a);
         return;
     }
-    drop_anchor(c, type);
-    H.anchor[type] = a;
+    drop_anchor(c, anchor);
+    *anchor = a;
     static volatile int32_t logged;
     if (plat_inc32(&logged) <= 32)
-        rt_log("vk: headroom: a %.0f MiB block of memory type %u allocated ahead (%lld so far; %lld allocations of 32 MiB "
-               "or more on other threads)", (double)block / 1048576.0, type, (long long)H.made, (long long)H.other);
+        rt_log("vk: headroom: a %.0f MiB block of memory type %u%s allocated ahead (%lld so far; %lld allocations of "
+               "32 MiB or more on other threads)", (double)block / 1048576.0, type, pool ? " (texture pool)" : "",
+               (long long)H.made, (long long)H.other);
 }
 
 static void headroom_main(void *arg) {
@@ -112,10 +118,15 @@ static void headroom_main(void *arg) {
         plat_mutex_lock(&H.lock);
         const VkCtx *c = H.stop ? NULL : vk_ctx();
         for (uint32_t t = 0; c && t < c->mem_props.memoryTypeCount && t < 64; t++)
-            if (watch >> t & 1) top_up(c, t);
+            if (watch >> t & 1) {
+                top_up(c, t, NULL, block_size(c, t), &H.anchor[t]);
+                if (H.pool && t == H.pool_type) top_up(c, t, H.pool, H.pool_block, &H.pool_anchor);
+            }
         int stop = H.stop;
-        if (stop && (c = vk_ctx()))
-            for (uint32_t t = 0; t < 64; t++) drop_anchor(c, t);
+        if (stop && (c = vk_ctx())) {
+            for (uint32_t t = 0; t < 64; t++) drop_anchor(c, &H.anchor[t]);
+            drop_anchor(c, &H.pool_anchor);
+        }
         plat_mutex_unlock(&H.lock);
         if (stop) return;
     }
@@ -127,9 +138,19 @@ void vk_headroom_stop(void) {
     plat_mutex_lock(&H.lock);
     H.stop = 1;
     const VkCtx *c = vk_ctx();
-    for (uint32_t t = 0; c && t < 64; t++) drop_anchor(c, t);
+    for (uint32_t t = 0; c && t < 64; t++) drop_anchor(c, &H.anchor[t]);
+    if (c) drop_anchor(c, &H.pool_anchor);
     plat_mutex_unlock(&H.lock);
     plat_event_set(&H.ev);
+}
+
+void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block) {
+    if (!H.started) return;
+    plat_mutex_lock(&H.lock);
+    const VkCtx *c = vk_ctx();
+    if (c) drop_anchor(c, &H.pool_anchor);
+    H.pool = pool, H.pool_type = type, H.pool_block = block;
+    plat_mutex_unlock(&H.lock);
 }
 
 void vk_headroom_start(void) {

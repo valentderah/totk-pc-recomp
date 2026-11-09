@@ -314,6 +314,8 @@ int vk_mem_uma(void);                         // 1: the device class is uma (vk_
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
 void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
+// The texture pool (vk_memory.c vk_texture_image) gets its next block ahead too; pool NULL frees the anchor in it.
+void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block);
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
@@ -349,6 +351,8 @@ void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
 void vk_defer_free(void *p);
 // Device-local scratch for the upload batch (storage, transfer src and dst), from a pool of its own (vk_memory.c).
 VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
+// A game texture's image with memory of its own: the texture pool, or a dedicated allocation (vk_memory.c).
+VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *alloc);
 // Staging and scratch bytes the open upload batch holds until it completes. Large texture loads submit the batch early
 // (vk_texture.c UPLOAD_HELD_MAX) so the GPU starts on it and its buffers come back before the pools need new blocks.
 VkDeviceSize vk_upload_held(void);

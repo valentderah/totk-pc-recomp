@@ -459,8 +459,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         }
     }
     if (!img) {
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+        VkResult r = vk_texture_image(&ci, &img, &e->alloc);   // the texture pool or memory of its own
         if (r != VK_SUCCESS) {
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
                         d->format, w, h, depth, d->target, levels, layers);
