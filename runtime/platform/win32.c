@@ -1784,6 +1784,12 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
         *proc_mb = (double)(pmc.PrivateUsage >> 20);
 }
 
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    if (GlobalMemoryStatusEx(&ms)) *commit_room = ms.ullAvailPageFile, *phys_room = ms.ullAvailPhys;
+}
+
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {
     PROCESS_MEMORY_COUNTERS_EX pm = {.cb = sizeof pm};
     *resident = *private_bytes = 0;
