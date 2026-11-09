@@ -756,7 +756,9 @@ static void test_crash_report(void) {
     const char *g = report_line(out, "*5ca1ab1e0c0de002", line, sizeof line);
     CHECK(g && strstr(g, "x19"), "crash report: no memory line for x19 (%s)", g ? g : "none");
     CHECK(strstr(out, "guest stack sp+0x00:"), "crash report: no guest stack words");
-    printf("crash report: exit code %d, host registers, code bytes, memory at rbx and x19, guest stack %s\n", code,
+    CHECK(report_line(out, "  memory commit: this process ", line, sizeof line) && !strstr(line, "process -1 MB"),
+          "crash report: no memory commit line");
+    printf("crash report: exit code %d, host registers, code bytes, memory at rbx and x19, guest stack, commit %s\n", code,
            failures ? "checked with failures" : "present");
 }
 

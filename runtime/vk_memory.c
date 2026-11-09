@@ -571,6 +571,23 @@ void vk_mem_census(uint64_t frame) {
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0,
            (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED));
+    // The baseline for the commit a crash report prints: a crash far above it points at growth during play.
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB", (unsigned long long)frame, proc,
+           used, limit);
+    // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
+    // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
+    VkCtx *vc = vk_ctx();
+    if (vc && vc->vma) {
+        VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(vc->vma, vb);
+        for (uint32_t h = 0; h < vc->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+            rt_log("mem: heap %u (flags %#x) at frame %llu: vma %u blocks %.0f MiB, %u allocations %.0f MiB; driver usage "
+                   "%.0f of %.0f MiB", h, vc->mem_props.memoryHeaps[h].flags, (unsigned long long)frame,
+                   vb[h].statistics.blockCount, vb[h].statistics.blockBytes / 1048576.0, vb[h].statistics.allocationCount,
+                   vb[h].statistics.allocationBytes / 1048576.0, vb[h].usage / 1048576.0, vb[h].budget / 1048576.0);
+    }
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
