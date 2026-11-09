@@ -2564,6 +2564,66 @@ VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *allo
 
 VkDeviceSize vk_upload_held(void) { return open_active ? open_b.held : 0; }
 
+// Own memory of the game's textures (vk_texture.c create_tex): a pool of its own with blocks of TOTK_TEX_BLOCK_MIB
+// (default 64; 0 puts textures back in the default pools). In the default pools textures shared 256 MiB blocks with the
+// mirrors and other buffers, and a block went back to the driver only once all of them were gone: on the RX 9070,
+// after 4.5 minutes of roaming the field, 3 of the 9 device-local blocks were 13-27% full, held by 87-223 small
+// textures and buffers each, and the full ones had hundreds of free gaps under 1 MiB, so blocks held 800 MiB more than
+// their allocations. Where device memory takes process commit (vk_mem_host_probe) that commit backs nothing. A smaller
+// block, holding textures only, empties sooner and wastes less when it does not. With the pool the same 10-minute route
+// ended with 807 MiB of blocks beyond their allocations instead of 1037, the texture pool's 22 blocks mostly 75-100%
+// full, and the slow frames did not grow.
+// An image of a quarter block or more gets memory of its own (a dedicated allocation) that goes back to the driver
+// with the image; so do images the driver prefers that for, and images the pool's memory type does not take. VMA
+// checks neither for a custom pool (VmaAllocator_T::AllocateMemory takes the pool's type as it is), so the image's
+// requirements are read here first.
+static VmaPool tex_pool;
+static uint32_t tex_type;
+static VkDeviceSize tex_block;
+static int tex_pool_tried;
+
+static void tex_pool_init(VkCtx *c, const VkImageCreateInfo *ci) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    if (!tex_pool_tried) {
+        tex_block = (VkDeviceSize)cfg_int("TOTK_TEX_BLOCK_MIB") << 20;   // schema default 64
+        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VmaPoolCreateInfo pi = {.blockSize = tex_block};
+        if (tex_block && vmaFindMemoryTypeIndexForImageInfo(c->vma, ci, &aci, &tex_type) == VK_SUCCESS) {
+            pi.memoryTypeIndex = tex_type;
+            if (vmaCreatePool(c->vma, &pi, &tex_pool) != VK_SUCCESS) tex_pool = NULL;
+        }
+        if (tex_pool) {
+            vk_headroom_pool(tex_pool, tex_type, tex_block);
+            rt_log("vk: texture pool: blocks of %llu MiB in memory type %u; images of %llu MiB or more get memory of "
+                   "their own (TOTK_TEX_BLOCK_MIB)", (unsigned long long)(tex_block >> 20), tex_type,
+                   (unsigned long long)(tex_block >> 22));
+        } else {
+            rt_log("vk: texture pool %s: textures go to the default pools (TOTK_TEX_BLOCK_MIB)",
+                   tex_block ? "unavailable" : "off");
+        }
+        __atomic_store_n(&tex_pool_tried, 1, __ATOMIC_RELEASE);
+    }
+    plat_rmutex_unlock(&cmd_lock);
+}
+
+VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *alloc) {
+    VkCtx *c = vk_ctx();
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (!__atomic_load_n(&tex_pool_tried, __ATOMIC_ACQUIRE)) tex_pool_init(c, ci);
+    if (tex_pool) {
+        VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = ci};
+        VkMemoryDedicatedRequirements dr = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 mr = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dr};
+        vkGetDeviceImageMemoryRequirements(c->device, &q, &mr);
+        if (dr.requiresDedicatedAllocation || dr.prefersDedicatedAllocation || mr.memoryRequirements.size >= tex_block / 4)
+            ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        else if (mr.memoryRequirements.memoryTypeBits >> tex_type & 1)
+            ai = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_UNKNOWN, .pool = tex_pool};   // the pool's type
+    }
+    return vmaCreateImage(c->vma, ci, &ai, img, alloc, NULL);
+}
+
 // At device creation: the staging and scratch pools with their kept blocks, made through a first small buffer each
 // (freed at once), so the first world frame does not allocate them (staging was first used there once the GPU took
 // the early texture uploads).
@@ -2730,6 +2790,10 @@ void vk_mem_shutdown(void) {
     if (scr_pool) vmaDestroyPool(c->vma, scr_pool);   // deferred scratch buffers went with collect_locked above
     scr_pool = NULL;
     scr_pool_tried = 0;
+    vk_headroom_pool(NULL, 0, 0);   // frees the headroom's anchor in the texture pool
+    if (tex_pool) vmaDestroyPool(c->vma, tex_pool);   // textures went with vk_texture_shutdown, deferred ones above
+    tex_pool = NULL;
+    tex_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);
