@@ -43,6 +43,11 @@
 # threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
 # Read at start.
 # replay_workers = 0
+# With replay_workers: 0, 1 or ab (alternates with the A/B blocks). Default: 0. A chunk copies each uniform update into
+# its buffer at once (a pass end, a full barrier and a pass restart each), where the sequential replay overlays the
+# updates (ub_overlay) and copies them in batches; with 1 chunks overlay too, which takes GPU time off the frame. Needs
+# ub_overlay. With trace = perf the log shows the updates and barriers left out.
+# chunk_lean = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
