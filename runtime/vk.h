@@ -226,6 +226,10 @@ enum { VK_MCLS_NONE, VK_MCLS_HOST_NOACC, VK_MCLS_HOST_UNC, VK_MCLS_HOST_CACHED, 
 enum { VK_MUSE_VB, VK_MUSE_IB, VK_MUSE_UBO, VK_MUSE_SSBO, VK_MUSE_IND, VK_MUSE_COPY_SRC, VK_MUSE_GPU_WRITE,
        VK_MUSE_CPU_READ, VK_MUSE_N };
 void vk_mem_count(int cls, int use, uint64_t bytes);
+// A thread recording a chunk of a submission (vk_exec.c) counts into its own acc from vk_mem_count_local(acc) on, until
+// vk_mem_count_local(NULL); vk_mem_count_flush adds acc into the census and clears it.
+void vk_mem_count_local(int64_t (*acc)[VK_MUSE_N]);
+void vk_mem_count_flush(int64_t (*acc)[VK_MUSE_N]);
 // TOTK_TRACE=perf dirty census (vk_memory.c): the replay notes each imported pool it binds as a vertex, index, uniform,
 // storage or indirect buffer; at the start of every submit the pages the CPU wrote in such pools since the previous
 // submit are counted from the shared page generations and logged as `mem: dirty` every 60 frames. Nothing when tracing
@@ -258,10 +262,14 @@ void vk_mem_gpu_wrote_shader(const VkMemSpan *sp, uint64_t size);
 // it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
-int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+// at: the copies dropped at or before it are not found (vk_usnap_drop_at); UINT32_MAX outside a chunked replay.
+int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t at, uint64_t align, VkDescriptorBufferInfo *out);
 const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy of [addr, addr+n) as of the submit, NULL: none
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+// The state scan of a chunked replay (vk_exec.c): the op that writes [addr, addr+n) is the at-th that may; the chunks
+// pass at with the ops they record (VkExec.drop_n) and find the copies only before it.
+void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at);
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 // vk_mvprev.c: last frame's copy of the scene's object (c7) and bone (c5) blocks, for per-object motion vectors.
@@ -426,6 +434,7 @@ typedef struct {
 void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
 void vk_hdr_image_gone(VkImage image);
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos);  // the entry vk_texture_get would return if it exists, made live at op pos
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the
@@ -433,6 +442,12 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 void vk_texture_lock(void);
 void vk_texture_unlock(void);
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view);
+// 1 when slot id's entry had its freshness check in this submission, so vk_texture_by_id_locked would only look it up.
+// No lock: a context of a chunked replay asks before taking the texture lock.
+int vk_texture_slot_checked(int id);
+// 1 when the state scan revived a texture at the slot's storage in this submission: the slot's answer depends on the op
+// a chunk records, so no memo holds it (vk_exec_draw.c); a chunk sees every revival up to its last op.
+int vk_texture_slot_moves(int id);
 VkSampler vk_sampler_by_id_locked(int id);
 // The slot's sampler with nearest filtering and no anisotropy: a depth texture read without a compare lands on one texel
 // on the Switch although the game binds a linear sampler, and MacNativeGames samples it the same way. VK_NULL_HANDLE
@@ -495,9 +510,22 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.
 VkCommandBuffer vk_sync_split(void);
+// Inside vk_exec_record: submits cb, a part recorded and ended on another thread, after the upload batch and the
+// mirror copies queued so far, without a signal (the submitting thread, in the order of the submission).
+void vk_sync_part(VkCommandBuffer cb);
+// GPU time of a part recorded on another thread (vk_sync.c "GPU time"): the start timestamp after vkBeginCommandBuffer,
+// the pair or -1; the end before vkEndCommandBuffer.
+int vk_sync_ts_open(VkCommandBuffer cb);
+void vk_sync_ts_close(VkCommandBuffer cb, int pair, uint64_t fence);
 // Runs fn(arg) on the completion thread once fence is done on the GPU (event writes, counter reports, sync state).
 // Callbacks run in the order they were added, after those of earlier values; a value already done runs at once there.
 void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg);
+// Callbacks of a part recorded on another thread: between vk_completion_defer(d) and vk_completion_defer(NULL) the
+// calling thread's vk_completion_add calls collect in d, and vk_completion_flush adds them, in their order, when the
+// part takes its place in the submission (vk_exec.c record_chunks).
+typedef struct { void *items; int n, cap; } VkDeferred;
+void vk_completion_defer(VkDeferred *d);
+void vk_completion_flush(VkDeferred *d);
 // gfx_vulkan_backend (vk_backend.c): presents go to a present thread and run after the submissions made before them.
 void rdoc_init(void);                     // runtime/rdoc.c: TOTK_RDOC debug capture; before vkCreateInstance
 int rdoc_active(void);

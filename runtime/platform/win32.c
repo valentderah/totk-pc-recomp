@@ -736,8 +736,13 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep);
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Heap corruption is raised by the heap manager, which then ends the process itself: it never reaches the
+    // unhandled-exception filter, so it is reported from here, wherever the heap was called from.
+    if (code == 0xc0000374u) return crash_filter(ep);   // STATUS_HEAP_CORRUPTION
     const char *what = code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
                      : code == EXCEPTION_ILLEGAL_INSTRUCTION ? "illegal instruction"
                      : code == EXCEPTION_INT_DIVIDE_BY_ZERO ? "integer division by zero"
