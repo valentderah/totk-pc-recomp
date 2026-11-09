@@ -47,6 +47,7 @@ extern "C" {
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
+#include "update.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
@@ -889,13 +890,114 @@ static void tab_controls(float scale) {
     restart_confirm();
 }
 
+// ---- Updates (update.c, Windows only): the automatic check, "Check now" with the result, the download with its
+// progress, Install and restart behind a confirmation, and the release page. The rows read update_status every frame.
+static bool g_update_ask;   // the Install row was pressed: the confirmation opens after the page
+
+static void update_rows(const UpdateStatus &s) {
+    opt_group(UI_MENU_GROUP_UPDATES);
+    opt_toggle("TOTK_UPDATE_CHECK", UI_MENU_UPDATE_CHECK, UI_MENU_UPDATE_CHECK_DESC);
+    char now[96] = "", value[96];
+    if (s.state == UPDATE_CHECKING) snprintf(now, sizeof now, "%s", menu_text(UI_MENU_UPDATE_CHECKING));
+    else if (s.state == UPDATE_CURRENT) snprintf(now, sizeof now, menu_text(UI_MENU_UPDATE_CURRENT), s.version);
+    else if (s.state >= UPDATE_NEWER) snprintf(now, sizeof now, menu_text(UI_MENU_UPDATE_AVAILABLE), s.version);
+    const char *check_note = s.error == UPDATE_ERR_CHECK     ? menu_text(UI_MENU_UPDATE_ERR_CHECK)
+                           : s.error == UPDATE_ERR_VERSION ? menu_text(UI_MENU_UPDATE_ERR_VERSION)
+                                                           : nullptr;
+    if (opt_text_row("##update_now", menu_text(UI_MENU_UPDATE_NOW), now, check_note, menu_text(UI_MENU_UPDATE_NOW_DESC),
+                     false) == 2)
+        update_check();
+    if (s.state < UPDATE_NEWER) return;
+    const char *note = s.error == UPDATE_ERR_DOWNLOAD ? menu_text(UI_MENU_UPDATE_ERR_DOWNLOAD)
+                     : s.error == UPDATE_ERR_VERIFY   ? menu_text(UI_MENU_UPDATE_ERR_VERIFY)
+                     : s.error == UPDATE_ERR_DISK     ? menu_text(UI_MENU_UPDATE_ERR_DISK)
+                     : s.error == UPDATE_ERR_START    ? menu_text(UI_MENU_UPDATE_ERR_START)
+                                                      : nullptr;
+    if (s.state == UPDATE_DOWNLOADING) {
+        if (s.cancelling) snprintf(value, sizeof value, "%s", menu_text(UI_MENU_UPDATE_STOPPING));
+        else snprintf(value, sizeof value, menu_text(UI_MENU_UPDATE_PROGRESS), s.done / 1e6, s.size / 1e6);
+        if (opt_text_row("##update_get", menu_text(UI_MENU_UPDATE_CANCEL), value, nullptr,
+                         menu_text(UI_MENU_UPDATE_CANCEL_DESC), false) == 2)
+            update_cancel();
+    } else if (!s.setup_made || s.error == UPDATE_ERR_NO_SETUP) {
+        // a build the setup did not make cannot run it on its folder; a release without a verifiable setup offers none
+        opt_disable_next(s.setup_made ? UI_MENU_UPDATE_NO_SETUP : UI_MENU_UPDATE_NOT_SETUP);
+        opt_button("##update_get", UI_MENU_UPDATE_DOWNLOAD, UI_MENU_UPDATE_DOWNLOAD_DESC);
+    } else if (s.state == UPDATE_READY) {
+        if (opt_text_row("##update_get", menu_text(UI_MENU_UPDATE_INSTALL), s.version, note,
+                         menu_text(UI_MENU_UPDATE_INSTALL_DESC), false) == 2)
+            g_update_ask = true;
+    } else {
+        snprintf(value, sizeof value, menu_text(UI_MENU_UPDATE_SIZE), s.size / 1e6);
+        if (opt_text_row("##update_get", menu_text(UI_MENU_UPDATE_DOWNLOAD), value, note,
+                         menu_text(UI_MENU_UPDATE_DOWNLOAD_DESC), false) == 2)
+            update_download();
+    }
+    static uint64_t notes_failed;   // plat_now_ns until which the row says the browser did not open
+    if (s.page[0] && opt_button("##update_notes", UI_MENU_UPDATE_NOTES, UI_MENU_UPDATE_NOTES_DESC,
+                                plat_now_ns() < notes_failed ? menu_text(UI_MENU_ACTION_FAILED) : "") &&
+        !plat_open_url(s.page))
+        notes_failed = plat_now_ns() + 3000000000ull;
+}
+
+// The confirmation of "Install and restart", over the menu; Cancel has the cursor first. Install writes totk.ini, starts
+// the setup on this folder (update_install) and closes the game as Quit does. It waits while the game writes a save,
+// and the game stays when totk.ini cannot be written or the setup does not start (the row then says so).
+static void update_confirm(const char *version) {
+    g_modal = false;
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##update_confirm", nullptr,
+                                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    g_modal = true;
+    char text[UI_DESC_BYTES];
+    snprintf(text, sizeof text, menu_text(UI_MENU_UPDATE_CONFIRM), version);
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    bool saving = fs_save_busy() != 0;
+    if (saving || !cfg_last_save_ok())
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s",
+                           menu_text(saving ? UI_MENU_RESTART_SAVING : UI_MENU_SAVE_FAILED));
+    ImGui::Spacing();
+    const char *yes = menu_text(UI_MENU_UPDATE_INSTALL), *no = menu_text(UI_MENU_RESET_NO);
+    const ImGuiStyle &st = ImGui::GetStyle();
+    float bw = fmaxf(ImGui::CalcTextSize(yes).x, ImGui::CalcTextSize(no).x) + st.FramePadding.x * 4;
+    bool close = ImGui::Button(no, ImVec2(bw, 0));
+    if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(saving);
+    if (ImGui::Button(yes, ImVec2(bw, 0)) && cfg_save()) {
+        if (update_install()) gfx_window_request_close();
+        close = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
+        close = true;
+    if (close) {
+        ImGui::CloseCurrentPopup();
+        opt_focus_key("##update_get");   // back on the row it came from
+    }
+    ImGui::EndPopup();
+}
+
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
                                      UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
+    UpdateStatus us = {};
+    if (update_supported()) {
+        update_status(&us);
+        update_rows(us);
+    }
     opt_end();
+    if (g_update_ask) {
+        g_update_ask = false;
+        ImGui::OpenPopup("##update_confirm");   // at the level BeginPopupModal looks it up
+    }
+    update_confirm(us.version);
 }
 
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
@@ -1189,12 +1291,22 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SetNextWindowSize(ImVec2(ww, wh), ImGuiCond_Always);
     ImGui::Begin("##menu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                         ImGuiWindowFlags_NoSavedSettings);
+    update_menu_opened();   // the first open of a run starts the update check (update.c)
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_TITLE));
-    // the port version and the game update, right-aligned on the title line: what a bug report needs first
-    char game[16], version[96];
+    // the port version and the game update, right-aligned on the title line: what a bug report needs first; before
+    // them a newer release the update check found
+    char game[16], version[96], newer[96] = "";
     snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
     snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, game);
-    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
+    UpdateStatus us;
+    if (update_supported() && (update_status(&us), us.state >= UPDATE_NEWER))
+        snprintf(newer, sizeof newer, menu_text(UI_MENU_UPDATE_TITLE), us.version);
+    float vx = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x;
+    if (newer[0]) {
+        ImGui::SameLine(vx - ImGui::CalcTextSize(newer).x - ImGui::GetFontSize());
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1), "%s", newer);
+    }
+    ImGui::SameLine(vx);
     ImGui::TextDisabled("%s", version);
 
     int step = g_modal || binds_modal()                                                                  ? 0
@@ -1258,7 +1370,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
+    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS && g_tab != TAB_MENU) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

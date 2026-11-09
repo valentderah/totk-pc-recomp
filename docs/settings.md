@@ -78,6 +78,7 @@ Many rows below are developer tools that only act together with another setting 
 | `swkbd_answer` | `<text>`, `<cancel>` or `<initial>`: answers the on-screen keyboard (for example a horse name) without opening a window. | The game gets that answer every time it asks for text. | Caution |
 | `swkbd_test` | `ok` or `cancel` opens the keyboard window and presses OK or Cancel on the first timer tick. | The keyboard window closes by itself. | Caution |
 | `test_pad` | `<lx>,<ly>,<rx>,<ry>` attaches a virtual gamepad whose sticks rest at these raw SDL axis values (-32768 to 32767). | The game sees a controller with that drift or deflection; a malformed value is logged and ignored. | Caution |
+| `update_api` | `http://127.0.0.1:<port>/...` or `http://localhost:<port>/...`: the URL the in-game update check asks in place of GitHub's latest release; the setup download URLs in its answer must then point at the same server. Any other value is logged and ignored. | The menu's update rows show what that test server announces, and Download update fetches its zip. | Caution |
 | `test_prepare_shaders` | `1` translates every recorded shader on all usable CPUs during start. | Start takes longer and fills the shader cache folder; the CPU is fully used while it runs. | Caution |
 
 ## Input

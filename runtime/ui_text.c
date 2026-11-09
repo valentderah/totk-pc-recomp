@@ -376,6 +376,47 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "Shows \"Playing TotK Recomp\" with the play time in your Discord status while the "
                                  "game runs. discord_app_id and discord_image in totk.ini choose the application.",
+    [UI_MENU_GROUP_UPDATES] = "Updates",
+    [UI_MENU_UPDATE_CHECK] = "Check for updates",
+    [UI_MENU_UPDATE_CHECK_DESC] = "The first time this menu opens after the game starts, asks GitHub once whether a "
+                                  "newer release of TotK Recomp is out. Nothing is downloaded or installed until you "
+                                  "choose it below. Off: only Check now asks.",
+    [UI_MENU_UPDATE_NOW] = "Check now",
+    [UI_MENU_UPDATE_NOW_DESC] = "Asks GitHub for the latest release of TotK Recomp and compares it with the version of "
+                                "this game, shown at the top right.",
+    [UI_MENU_UPDATE_CHECKING] = "Checking…",
+    [UI_MENU_UPDATE_CURRENT] = "Up to date (latest: %s)",
+    [UI_MENU_UPDATE_AVAILABLE] = "%s available",
+    [UI_MENU_UPDATE_TITLE] = "Update %s available",
+    [UI_MENU_UPDATE_ERR_CHECK] = "GitHub could not be reached",
+    [UI_MENU_UPDATE_ERR_VERSION] = "this build has no release version",
+    [UI_MENU_UPDATE_DOWNLOAD] = "Download update",
+    [UI_MENU_UPDATE_DOWNLOAD_DESC] = "Downloads the Windows setup of the new release from GitHub into TotK "
+                                     "Recomp\\updates in your local app data folder, and checks it against the size "
+                                     "and SHA-256 that GitHub lists for it. You can keep playing meanwhile: the game "
+                                     "changes only when you choose Install and restart.",
+    [UI_MENU_UPDATE_SIZE] = "%.0f MB",
+    [UI_MENU_UPDATE_CANCEL] = "Cancel download",
+    [UI_MENU_UPDATE_CANCEL_DESC] = "Stops the download and deletes what has arrived so far.",
+    [UI_MENU_UPDATE_PROGRESS] = "%.0f of %.0f MB",
+    [UI_MENU_UPDATE_STOPPING] = "Stopping…",
+    [UI_MENU_UPDATE_INSTALL] = "Install and restart",
+    [UI_MENU_UPDATE_INSTALL_DESC] = "Closes the game and runs the downloaded setup on this game's folder. It rebuilds "
+                                    "the game and prepares the shaders again, which takes about as long as the setup "
+                                    "took when you installed. Saves, game files and settings stay; progress since your "
+                                    "last save is lost. The game starts again when the setup is done; if it fails, the "
+                                    "setup's window says why and can start the game you have.",
+    [UI_MENU_UPDATE_CONFIRM] = "The game closes now, and the setup updates it to %s. That takes about as long as the "
+                               "setup took when you installed; the game starts again when it is done. Progress since "
+                               "your last save is lost.",
+    [UI_MENU_UPDATE_NOTES] = "What's new",
+    [UI_MENU_UPDATE_NOTES_DESC] = "Opens the release page on GitHub in your browser.",
+    [UI_MENU_UPDATE_NO_SETUP] = "This release has no Windows setup that can be checked; get it from the release page.",
+    [UI_MENU_UPDATE_NOT_SETUP] = "This game was not installed by the setup; install the new release with its setup.",
+    [UI_MENU_UPDATE_ERR_DOWNLOAD] = "the download broke off",
+    [UI_MENU_UPDATE_ERR_VERIFY] = "did not match the release",
+    [UI_MENU_UPDATE_ERR_DISK] = "could not be saved",
+    [UI_MENU_UPDATE_ERR_START] = "the setup did not start",
 
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
@@ -855,6 +896,49 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "Пока игра запущена, показывает «Играю в TotK Recomp» со временем игры в статусе "
                                  "Discord. Приложение выбирают discord_app_id и discord_image в totk.ini.",
+    [UI_MENU_GROUP_UPDATES] = "Обновления",
+    [UI_MENU_UPDATE_CHECK] = "Проверять обновления",
+    [UI_MENU_UPDATE_CHECK_DESC] = "При первом открытии этого меню после запуска игры один раз спрашивает GitHub, вышла "
+                                  "ли новая версия TotK Recomp. Ничего не скачивается и не устанавливается, пока вы не "
+                                  "выберете это ниже. Выкл.: спрашивает только «Проверить сейчас».",
+    [UI_MENU_UPDATE_NOW] = "Проверить сейчас",
+    [UI_MENU_UPDATE_NOW_DESC] = "Спрашивает у GitHub последнюю версию TotK Recomp и сравнивает её с версией этой игры, "
+                                "указанной справа вверху.",
+    [UI_MENU_UPDATE_CHECKING] = "Проверка…",
+    [UI_MENU_UPDATE_CURRENT] = "Обновлений нет (последняя: %s)",
+    [UI_MENU_UPDATE_AVAILABLE] = "Доступна %s",
+    [UI_MENU_UPDATE_TITLE] = "Доступно обновление %s",
+    [UI_MENU_UPDATE_ERR_CHECK] = "нет связи с GitHub",
+    [UI_MENU_UPDATE_ERR_VERSION] = "у этой сборки нет номера выпуска",
+    [UI_MENU_UPDATE_DOWNLOAD] = "Скачать обновление",
+    [UI_MENU_UPDATE_DOWNLOAD_DESC] = "Скачивает установщик новой версии для Windows с GitHub в папку TotK "
+                                     "Recomp\\updates в локальных данных приложений и сверяет его размер и SHA-256 с "
+                                     "теми, что указаны на GitHub. Играть во время загрузки можно: игра меняется, "
+                                     "только когда вы выберете «Установить и перезапустить».",
+    [UI_MENU_UPDATE_SIZE] = "%.0f МБ",
+    [UI_MENU_UPDATE_CANCEL] = "Отменить загрузку",
+    [UI_MENU_UPDATE_CANCEL_DESC] = "Останавливает загрузку и удаляет то, что уже скачано.",
+    [UI_MENU_UPDATE_PROGRESS] = "%.0f из %.0f МБ",
+    [UI_MENU_UPDATE_STOPPING] = "Остановка…",
+    [UI_MENU_UPDATE_INSTALL] = "Установить и перезапустить",
+    [UI_MENU_UPDATE_INSTALL_DESC] = "Закрывает игру и запускает скачанный установщик на папке этой игры. Он заново "
+                                    "собирает игру и готовит шейдеры, это занимает примерно столько же, сколько заняла "
+                                    "установка. Сохранения, файлы игры и настройки остаются; прогресс после последнего "
+                                    "сохранения будет потерян. Когда установщик закончит, игра запустится снова; если "
+                                    "что-то пойдёт не так, окно установщика покажет причину и сможет запустить текущую "
+                                    "игру.",
+    [UI_MENU_UPDATE_CONFIRM] = "Игра сейчас закроется, и установщик обновит её до %s. Это займёт примерно столько же, "
+                               "сколько заняла установка; когда он закончит, игра запустится снова. Прогресс после "
+                               "последнего сохранения будет потерян.",
+    [UI_MENU_UPDATE_NOTES] = "Что нового",
+    [UI_MENU_UPDATE_NOTES_DESC] = "Открывает страницу выпуска на GitHub в браузере.",
+    [UI_MENU_UPDATE_NO_SETUP] = "В этом выпуске нет установщика для Windows, который можно проверить; скачайте его со "
+                                "страницы выпуска.",
+    [UI_MENU_UPDATE_NOT_SETUP] = "Эта игра установлена не установщиком; установите новую версию её установщиком.",
+    [UI_MENU_UPDATE_ERR_DOWNLOAD] = "загрузка прервалась",
+    [UI_MENU_UPDATE_ERR_VERIFY] = "не совпал с выпуском",
+    [UI_MENU_UPDATE_ERR_DISK] = "не удалось сохранить",
+    [UI_MENU_UPDATE_ERR_START] = "установщик не запустился",
 
     [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
     [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",
@@ -1230,6 +1314,50 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC_DESC] = "Mostra \"Jogando TotK Recomp\" com o tempo de jogo no seu status do Discord "
                                  "enquanto o jogo roda. discord_app_id e discord_image no totk.ini escolhem a "
                                  "aplicação.",
+    [UI_MENU_GROUP_UPDATES] = "Atualizações",
+    [UI_MENU_UPDATE_CHECK] = "Procurar atualizações",
+    [UI_MENU_UPDATE_CHECK_DESC] = "Na primeira vez que este menu abre depois que o jogo inicia, pergunta uma vez ao "
+                                  "GitHub se saiu uma versão mais nova do TotK Recomp. Nada é baixado nem instalado "
+                                  "até você escolher abaixo. Desligado: só Verificar agora pergunta.",
+    [UI_MENU_UPDATE_NOW] = "Verificar agora",
+    [UI_MENU_UPDATE_NOW_DESC] = "Pergunta ao GitHub qual é a versão mais recente do TotK Recomp e a compara com a "
+                                "versão deste jogo, mostrada no canto superior direito.",
+    [UI_MENU_UPDATE_CHECKING] = "Verificando…",
+    [UI_MENU_UPDATE_CURRENT] = "Atualizado (mais recente: %s)",
+    [UI_MENU_UPDATE_AVAILABLE] = "%s disponível",
+    [UI_MENU_UPDATE_TITLE] = "Atualização %s disponível",
+    [UI_MENU_UPDATE_ERR_CHECK] = "sem conexão com o GitHub",
+    [UI_MENU_UPDATE_ERR_VERSION] = "esta build não tem versão de lançamento",
+    [UI_MENU_UPDATE_DOWNLOAD] = "Baixar atualização",
+    [UI_MENU_UPDATE_DOWNLOAD_DESC] = "Baixa do GitHub o instalador para Windows da nova versão para TotK "
+                                     "Recomp\\updates na pasta de dados locais de aplicativos e confere o tamanho e o "
+                                     "SHA-256 com os que o GitHub informa. Você pode continuar jogando enquanto isso: "
+                                     "o jogo só muda quando você escolher Instalar e reiniciar.",
+    [UI_MENU_UPDATE_SIZE] = "%.0f MB",
+    [UI_MENU_UPDATE_CANCEL] = "Cancelar download",
+    [UI_MENU_UPDATE_CANCEL_DESC] = "Para o download e apaga o que já chegou.",
+    [UI_MENU_UPDATE_PROGRESS] = "%.0f de %.0f MB",
+    [UI_MENU_UPDATE_STOPPING] = "Parando…",
+    [UI_MENU_UPDATE_INSTALL] = "Instalar e reiniciar",
+    [UI_MENU_UPDATE_INSTALL_DESC] = "Fecha o jogo e executa o instalador baixado na pasta deste jogo. Ele recompila o "
+                                    "jogo e prepara os shaders de novo, o que leva mais ou menos o mesmo tempo que a "
+                                    "instalação. Salvamentos, arquivos do jogo e configurações ficam; o progresso "
+                                    "desde o último salvamento é perdido. O jogo inicia de novo quando o instalador "
+                                    "terminar; se algo falhar, a janela do instalador diz o motivo e pode iniciar o "
+                                    "jogo que você tem.",
+    [UI_MENU_UPDATE_CONFIRM] = "O jogo fecha agora e o instalador o atualiza para %s. Isso leva mais ou menos o mesmo "
+                               "tempo que a instalação; o jogo inicia de novo quando terminar. O progresso desde o "
+                               "último salvamento é perdido.",
+    [UI_MENU_UPDATE_NOTES] = "Novidades",
+    [UI_MENU_UPDATE_NOTES_DESC] = "Abre a página da versão no GitHub no navegador.",
+    [UI_MENU_UPDATE_NO_SETUP] = "Esta versão não tem um instalador para Windows que possa ser conferido; baixe-o na "
+                                "página da versão.",
+    [UI_MENU_UPDATE_NOT_SETUP] = "Este jogo não foi instalado pelo instalador; instale a nova versão com o instalador "
+                                 "dela.",
+    [UI_MENU_UPDATE_ERR_DOWNLOAD] = "o download foi interrompido",
+    [UI_MENU_UPDATE_ERR_VERIFY] = "não confere com a versão",
+    [UI_MENU_UPDATE_ERR_DISK] = "não foi possível salvar",
+    [UI_MENU_UPDATE_ERR_START] = "o instalador não iniciou",
 
     [UI_MENU_ADV_WARNING] = "Estas configurações são para testes e solução de problemas. Altere-as só quando souber "
                             "por quê.",
@@ -1836,6 +1964,35 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "游戏运行时在 Discord 状态中显示“正在玩 TotK Recomp”及游戏时长。totk.ini 中的 "
                                  "discord_app_id 和 discord_image 选择应用。",
+    [UI_MENU_GROUP_UPDATES] = "更新",
+    [UI_MENU_UPDATE_CHECK] = "检查更新",
+    [UI_MENU_UPDATE_CHECK_DESC] = "游戏启动后首次打开本菜单时，向 GitHub 询问一次是否有更新版本的 TotK Recomp。在你于下方选择之前，不会下载或安装任何内容。关闭时只有“立即检查”会询问。",
+    [UI_MENU_UPDATE_NOW] = "立即检查",
+    [UI_MENU_UPDATE_NOW_DESC] = "向 GitHub 查询 TotK Recomp 的最新版本，并与右上角显示的本游戏版本比较。",
+    [UI_MENU_UPDATE_CHECKING] = "正在检查…",
+    [UI_MENU_UPDATE_CURRENT] = "已是最新（最新版：%s）",
+    [UI_MENU_UPDATE_AVAILABLE] = "%s 可用",
+    [UI_MENU_UPDATE_TITLE] = "有可用更新 %s",
+    [UI_MENU_UPDATE_ERR_CHECK] = "无法连接 GitHub",
+    [UI_MENU_UPDATE_ERR_VERSION] = "此版本没有正式版本号",
+    [UI_MENU_UPDATE_DOWNLOAD] = "下载更新",
+    [UI_MENU_UPDATE_DOWNLOAD_DESC] = "从 GitHub 将新版本的 Windows 安装程序下载到本地应用数据文件夹中的 TotK Recomp\\updates，并按 GitHub 列出的大小和 SHA-256 校验。下载时可以继续游戏：只有选择“安装并重启”后游戏才会改变。",
+    [UI_MENU_UPDATE_SIZE] = "%.0f MB",
+    [UI_MENU_UPDATE_CANCEL] = "取消下载",
+    [UI_MENU_UPDATE_CANCEL_DESC] = "停止下载并删除已下载的部分。",
+    [UI_MENU_UPDATE_PROGRESS] = "%.0f / %.0f MB",
+    [UI_MENU_UPDATE_STOPPING] = "正在停止…",
+    [UI_MENU_UPDATE_INSTALL] = "安装并重启",
+    [UI_MENU_UPDATE_INSTALL_DESC] = "关闭游戏并在本游戏的文件夹上运行下载的安装程序。它会重新构建游戏并重新准备着色器，耗时与安装时相近。存档、游戏文件和设置都会保留；上次存档之后的进度会丢失。安装程序完成后游戏会重新启动；如果失败，安装程序窗口会说明原因，并可启动现有的游戏。",
+    [UI_MENU_UPDATE_CONFIRM] = "游戏将立即关闭，安装程序会将其更新到 %s。耗时与安装时相近；完成后游戏会重新启动。上次存档之后的进度会丢失。",
+    [UI_MENU_UPDATE_NOTES] = "更新内容",
+    [UI_MENU_UPDATE_NOTES_DESC] = "在浏览器中打开 GitHub 上的发布页面。",
+    [UI_MENU_UPDATE_NO_SETUP] = "此版本没有可校验的 Windows 安装程序；请从发布页面获取。",
+    [UI_MENU_UPDATE_NOT_SETUP] = "本游戏不是由安装程序安装的；请用新版本的安装程序安装。",
+    [UI_MENU_UPDATE_ERR_DOWNLOAD] = "下载中断",
+    [UI_MENU_UPDATE_ERR_VERIFY] = "与发布版本不符",
+    [UI_MENU_UPDATE_ERR_DISK] = "无法保存",
+    [UI_MENU_UPDATE_ERR_START] = "安装程序未能启动",
     [UI_MENU_ADV_WARNING] = "这些设置用于测试和排查问题，请在了解原因后再修改。",
     [UI_MENU_GROUP_SCHED] = "调度",
     [UI_MENU_GROUP_SHADERS] = "着色器和管线",

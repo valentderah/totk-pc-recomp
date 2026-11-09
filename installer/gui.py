@@ -10,10 +10,14 @@ display's DPI (installer/dpi.py): fonts and paddings grow with the scale, so Win
     --lang en|ru|pt-BR|zh-Hans window language (default: the Windows display language)
     --rebuild DIR              rebuild the install folder DIR for its mods (totk.exe starts this, build-cache/rebuild.txt):
                                the run starts at once with that folder, and the game starts again when it succeeds
+    --upgrade DIR              update the install folder DIR with this release (the game's settings menu starts this from
+                               a release it downloaded, runtime/update.c): the run starts once DIR's game has exited, the
+                               game starts again when it succeeds, and the release folders earlier updates downloaded go
 """
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,6 +52,7 @@ PAD = dpi.px(14)      # padding of the window and its frames
 WRAP = dpi.px(620)    # wrap width of the long labels
 
 RECENT_WAIT = 1.5   # seconds the window waits for the recorded paths
+GAME_EXIT_WAIT = 60   # seconds --upgrade waits for the game that started it to exit
 
 
 def load_recent(wait=RECENT_WAIT):
@@ -60,6 +65,41 @@ def load_recent(wait=RECENT_WAIT):
     return {} if thread.is_alive() else out
 
 
+def game_running(dest):
+    """True while dest's totk.exe runs: Windows refuses to open a running executable for writing."""
+    exe = Path(dest) / 'totk.exe'
+    if os.name != 'nt' or not exe.is_file():
+        return False
+    try:
+        with open(exe, 'r+b'):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def downloaded_releases_dir():
+    """Where the game puts the releases it downloads (runtime/update.c updates_dir), or None off Windows."""
+    base = os.environ.get('LOCALAPPDATA')
+    return Path(base) / 'TotK Recomp' / 'updates' if os.name == 'nt' and base else None
+
+
+def remove_old_downloads(root):
+    """After a successful --upgrade run from root, a release the game downloaded: the other release folders in the
+    same folder, which earlier updates left. The install's rebuild command (build-cache/rebuild.txt) now names root. A
+    release anywhere else, one the player unpacked, is never touched."""
+    updates = downloaded_releases_dir()
+    try:
+        if updates is None or Path(root).resolve().parent != updates.resolve():
+            return
+        for p in updates.iterdir():
+            if p.is_dir() and p.name.startswith('TotK-Setup-') and p.resolve() != Path(root).resolve():
+                shutil.rmtree(p, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def fix_tcl_paths():
     """The embeddable Python keeps Tcl/Tk next to python.exe (python/tcl); point Tcl at it when it is not found."""
     tcl = Path(sys.executable).resolve().parent / 'tcl'
@@ -70,9 +110,10 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, ui_lang, layout, run_args=None, rebuild=None):
+    def __init__(self, root, ui_lang, layout, run_args=None, rebuild=None, upgrade=None):
         self.root, self.layout = root, layout
-        self.rebuild = rebuild           # the install folder of --rebuild, or None
+        self.rebuild = rebuild or upgrade   # the install folder of --rebuild or --upgrade, or None
+        self.upgrade = upgrade is not None
         self.cat = Catalog(ui_lang)
         self.model = Model()
         self.process = None
@@ -129,7 +170,18 @@ class App:
         self.vars['lang'].set(self.lang_label(self.lang_code))
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
         self.show('form')
-        if rebuild:
+        if self.upgrade:
+            # the recorded sources of this install folder, in case the new release must extract the game again
+            last = load_recent()
+            same = 'dest' in last and Path(last['dest']) == Path(upgrade)
+            self.recorded = {n: last[n] for n in ('base', 'update') if same and n in last}
+            for name in recent.SOURCES:
+                if same and name in last:
+                    self.set_prefill(name, last[name])
+            self.bind_text(self.title, 'text', 'ui.upgrade_title')
+            self.vars['dest'].set(str(upgrade))
+            root.after(POLL_MS, self.wait_for_game)
+        elif rebuild:
             self.bind_text(self.title, 'text', 'ui.rebuild_title')
             self.vars['dest'].set(str(rebuild))
             root.after(POLL_MS, self.start)
@@ -421,6 +473,14 @@ class App:
                                temp=self.run_args.get('temp'), verify_hashes=self.run_args.get('verify', False))
         self.begin(command, self.layout.root)
 
+    def wait_for_game(self, waited=0.0):
+        """--upgrade: the game that started this closes right after; the run starts once its totk.exe is free, or after
+        GAME_EXIT_WAIT seconds (the compile step then says that the game still runs)."""
+        if waited < GAME_EXIT_WAIT and game_running(self.vars['dest'].get().strip()):
+            self.root.after(500, lambda: self.wait_for_game(waited + 0.5))
+            return
+        self.start()
+
     def begin(self, command, cwd):
         self.model = Model()
         self.model.dest = self.vars['dest'].get().strip()
@@ -465,6 +525,8 @@ class App:
         self.model.finish(code)
         self.process = None
         if self.rebuild and self.model.result == 'ok' and not self.closing:
+            if self.upgrade:
+                remove_old_downloads(self.layout.root)
             self.start_game()
             return
         self.refresh_run()
@@ -740,13 +802,14 @@ def main(argv=None):
     ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
     ap.add_argument('--rebuild', type=Path)
+    ap.add_argument('--upgrade', type=Path)
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
     if args.selftest:
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild)
+    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild, upgrade=args.upgrade)
     root.mainloop()
     return 0
 

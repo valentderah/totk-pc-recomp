@@ -274,6 +274,14 @@
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 
+[updates]
+# The first time the settings menu (F1) opens after the game starts, ask GitHub once whether a newer release of
+# TotK Recomp is out; the menu's title line and its Menu tab then say so. Nothing is downloaded until you choose
+# Download update there, and nothing is installed until you choose Install and restart: the game then closes, the
+# downloaded setup updates this folder (keeping saves, game files and this file) and starts the game again.
+# 0 = no automatic check; "Check now" in the Menu tab still asks. Windows only.
+# update_check = 1
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default

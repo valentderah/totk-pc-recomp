@@ -111,6 +111,7 @@
 
  "ui.title": "Установка TotK",
  "ui.rebuild_title": "Пересборка игры под ваши моды",
+ "ui.upgrade_title": "Обновление TotK Recomp до этой версии",
  "ui.start_game": "Запустить игру",
  "ui.version": "версия {version}",
  "ui.intro": "Собирает готовую к запуску папку с Tears of the Kingdom из ваших игровых файлов. Занимает много времени и выполняется один раз.",
