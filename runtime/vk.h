@@ -44,6 +44,7 @@ typedef struct VkCtx {
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
+    VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
 } VkCtx;
 enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };

@@ -63,7 +63,7 @@ const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void) {
 
 static VkDeviceSize block_size(const VkCtx *c, uint32_t type) {
     VkDeviceSize heap = c->mem_props.memoryHeaps[c->mem_props.memoryTypes[type].heapIndex].size;
-    return heap <= HR_SMALL_HEAP ? heap / 8 : 256ull << 20;   // VMA's default preferredLargeHeapBlockSize
+    return heap <= HR_SMALL_HEAP ? heap / 8 : c->vma_block;   // VMA's preferredLargeHeapBlockSize
 }
 
 // The spare block is memory the game does not use yet; where device memory takes host memory it is kept only while the
