@@ -310,6 +310,20 @@ int main(void) {
             check(f.preview_x >= f.x && f.preview_y >= f.y &&
                   f.preview_x + f.preview_w <= f.x + f.w && f.preview_y + f.preview_h <= f.y + f.h, msg);
             printf("preview: %d kinds, title '%s', note '%s'\n", f.preview_kinds, f.preview_title, f.preview_note);
+
+            // Turning the view marks the rendered image stale. The projection cache in preview_load is keyed on the
+            // file, the build's turn and the whole framing - the camera angle included - so a drag that changes only the
+            // angle re-projects; this checks the stamp half of that, which is what a renderer reads.
+            {
+                const unsigned before = bp_picker_preview_stamp();
+                float yaw = 0, pitch = 0;
+                bp_picker_camera(&yaw, &pitch);
+                bp_picker_camera_set(yaw + 0.35f, pitch);
+                snprintf(msg, sizeof msg, "preview: a camera turn marks the image stale");
+                check(bp_picker_preview_stamp() != before, msg);
+                bp_picker_camera_reset();
+                bp_picker_layout(&f, 1920, 1080, 1.0f);
+            }
         } else {
             printf("preview: the cursor did not land on the file row (row selected, no preview)\n");
             check(0, "preview: a file row should have produced a preview");

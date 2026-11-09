@@ -319,24 +319,34 @@ static int dict_ready(void) {
     unsigned long long rn = ZSTD_getFrameContentSize(dz, dn);
     uint8_t *raw = (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= PACK_MAX)
                        ? malloc((size_t)rn) : NULL;
-    if (raw && ZSTD_decompress(raw, (size_t)rn, dz, dn) == rn) {
+    if (raw && ZSTD_decompress(raw, (size_t)rn, dz, dn) == rn && rn >= 6) {
         uint16_t head, count, bom;
         uint32_t base;
         memcpy(&head, raw + 4, 2);
         memcpy(&bom, raw + 6, 2);
+        // Every field read below is bounds-checked first: the archive is game data, and a truncated or corrupt one must
+        // be refused rather than read past its end. The entry table sits at head + 12 with 16 bytes per entry, and the
+        // name table follows it.
+        if ((size_t)head + 8 > rn) { free(raw); free(dz); return 0; }
         memcpy(&count, raw + head + 6, 2);
         memcpy(&base, raw + 12, 4);
-        size_t names = head + 12 + (size_t)count * 16 + 8;
+        const size_t entries = (size_t)head + 12;
+        const size_t names = entries + (size_t)count * 16 + 8;
+        if (names > rn) { free(raw); free(dz); return 0; }
         for (unsigned i = 0; i < count; i++) {
             uint32_t attr, lo, hi;
-            size_t e = head + 12 + (size_t)i * 16;
+            size_t e = entries + (size_t)i * 16;
             memcpy(&attr, raw + e + 4, 4);
             memcpy(&lo, raw + e + 8, 4);
             memcpy(&hi, raw + e + 12, 4);
-            const char *name = (const char *)raw + names + (size_t)(attr & 0xffffff) * 4;
-            if (name >= (const char *)raw + rn) break;
+            const size_t name_off = names + (size_t)(attr & 0xffffff) * 4;
+            // The name has to be terminated INSIDE the buffer before strcmp may walk it: name_off < rn only proves its
+            // first byte is in range, and a name that runs to the end of a corrupt archive would be read past it.
+            if (name_off >= rn || !memchr(raw + name_off, 0, rn - name_off)) break;
+            const char *name = (const char *)raw + name_off;
             if (!strcmp(name, "pack.zsdic")) {
-                size_t mn = hi - lo;
+                if (hi < lo || (uint64_t)base + hi > rn) break;
+                const size_t mn = (size_t)hi - lo;
                 g_dict = mn ? malloc(mn) : NULL;
                 if (g_dict) {
                     memcpy(g_dict, raw + base + lo, mn);

@@ -27,9 +27,9 @@ being forced to the centre, and the settings menu's **Blueprints tab is gone**: 
 point. `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
 
 There is no slot to pick. An import behaves exactly like a creation made in the game: the new blueprint becomes the
-first card of the history, every older free card moves down one place, and the oldest free card is discarded. The
-history stays at 30 entries. Cards the player marked as favorites are never discarded and keep their place, as on the
-console (up to 8 favorites). Successive imports therefore stack up in order: importing A, then B, then C leaves
+first card of the history, every card that was drawn above the discarded one moves down one place, and the oldest free
+card is discarded. The history stays at 30 entries. Cards the player marked as favorites are never the card discarded, as
+on the console (up to 8 favorites). Successive imports therefore stack up in order: importing A, then B, then C leaves
 C first, B second, A third.
 
 ## 2. The two file forms (`runtime/blueprint_file.c`)
@@ -185,11 +185,15 @@ current ages every time.
 
 ### Rotating the ages (the insert)
 
-The game's own rule for a new creation is: favorites keep their age, every other (free) entry's age increases by one,
-and the oldest free entry — the one with the largest age among the non-favorites — is evicted. The new creation takes
-that entry and its age becomes 0, so it is drawn first. The result is still a permutation of 0..29; a save whose ages
-do not fit that shape is refused rather than written. The `IsFavorite` bitmask (30 bits in one `u32`, with a count word
-in front of it) is read from the same save file, so a favorite is never chosen as the victim.
+The game's own rule for a new creation is: the oldest free entry - the one with the largest age among the non-favorites -
+is evicted, the new creation takes that entry and its age becomes 0 so it is drawn first, and every card that was drawn
+above the evicted one rises by one. Cards below it keep their age. The result is still a permutation of 0..29; a save whose
+ages do not fit that shape is refused rather than written. The `IsFavorite` bitmask (30 bits in one `u32`, with a count
+word in front of it) is read from the same save file, so a favorite is never chosen as the victim.
+
+A favourite is therefore protected from being spent, not from moving: a favourite drawn above the evicted card rises by one
+like every other card there. Keeping every favourite's age instead would give two entries the same age the moment a
+favourite sits above the oldest free card, which is not a permutation and could not be written at all.
 
 That rule is `bp_rotate_ages` (`runtime/blueprint_import.c`), kept free of save-memory access so it can be exercised
 without a running game: `tests/blueprint_rotation_test.py` links the real file against stubs and checks it directly.
@@ -217,8 +221,8 @@ like a failed import. Clearing them is what makes the new creation appear on the
 ### What stays untouched
 
 The array keeps its 30 entries, the item count never changes, and the save never grows. Only one entry's blob changes:
-the evicted oldest free entry. The other 29 entries keep their data byte for byte, the favorites keep their age, and no
-favorite flag is changed (an imported blueprint is not made a favorite).
+the evicted oldest free entry. The other 29 entries keep their data byte for byte, and no favorite flag is changed (an
+imported blueprint is not made a favorite). The ages are rewritten, as they are for any new creation.
 
 ## 6. The entry in the Autobuild screen (`runtime/blueprint_hint.cpp`)
 
@@ -369,8 +373,8 @@ Built on the v0.3.11 baseline (`0ae47a5`), run on Windows. Cases exercised:
   the same and the favorite is held.
 - **Live, no reload.** The creation shows up in the already-open Autobuild page right after the import; the rotated ages
   are in guest memory, so the game's own save persists the new order with the rest of the progress.
-- **Nothing else disturbed.** The other 29 entries keep their blobs; only the evicted entry changes. Favorites keep their
-  age, no favorite flag is touched, and the array stays at 30 entries.
+- **Nothing else disturbed.** The other 29 entries keep their blobs; only the evicted entry changes. The favorite is never
+  the entry spent, no favorite flag is touched, and the array stays at 30 entries.
 - **The in-screen picker, end to end.** Opened the Autobuild page, pressed Plus, the port's own picker opened, chose a
   `.cai`, and the creation became the first card — the whole path in one session, with no Windows dialog.
 - **A `.txt` file, end to end.** Three exports from HyruleWorks decoded in the reader's own harness to blobs

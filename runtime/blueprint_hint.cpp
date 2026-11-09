@@ -178,7 +178,17 @@ static void start_import(const char *path) {
     g_importing = 1;
     plat_mutex_unlock(&g_lock);
     char *copy = (char *)malloc(strlen(path) + 1);
-    if (!copy || !plat_thread_spawn(import_thread, copy, "blueprint import", 0)) {
+    if (!copy) {
+        rt_log("blueprint: hint: cannot start the import thread");
+        plat_mutex_lock(&g_lock);
+        g_importing = 0;
+        plat_mutex_unlock(&g_lock);
+        return;
+    }
+    // The path is copied BEFORE the thread starts: the thread reads it at once, so starting first leaves it reading a
+    // buffer that has not been written yet.
+    strcpy(copy, path);
+    if (!plat_thread_spawn(import_thread, copy, "blueprint import", 0)) {
         rt_log("blueprint: hint: cannot start the import thread");
         free(copy);
         plat_mutex_lock(&g_lock);
@@ -186,7 +196,6 @@ static void start_import(const char *path) {
         plat_mutex_unlock(&g_lock);
         return;
     }
-    strcpy(copy, path);
 }
 
 void bp_hint_frame(void) {

@@ -97,7 +97,10 @@ static void bone_rotation(const uint8_t *b, float r[3][3]) {
 }
 
 // The world transform of one bone: its own local T*R*S, then its parent's world on the left.
-static void bone_world(const uint8_t *p, uint32_t bones, int count, int i, float out[4][4]) {
+// Walks the parent chain to the root, so `out` is the bone's world transform. A range check on `parent` is not enough:
+// a file whose parents form a cycle (bone 0's parent is 1 and bone 1's parent is 0) would recurse forever and overflow
+// the stack, so the walk is bounded by the bone count - a chain longer than that can only be a cycle.
+static void bone_world_depth(const uint8_t *p, uint32_t bones, int count, int i, int budget, float out[4][4]) {
     float local[4][4] = {{0}};
     const uint8_t *b = p + bones + (uint32_t)i * 0x58u;
     float sx, sy, sz, px, py, pz;
@@ -112,10 +115,14 @@ static void bone_world(const uint8_t *p, uint32_t bones, int count, int i, float
     local[3][3] = 1;
     // parent index at +0x22 (i16)
     int16_t parent; memcpy(&parent, b + 0x22, 2);
-    if (parent < 0 || parent >= count) { memcpy(out, local, sizeof local); return; }
+    if (parent < 0 || parent >= count || budget <= 0) { memcpy(out, local, sizeof local); return; }
     float pw[4][4];
-    bone_world(p, bones, count, parent, pw);
+    bone_world_depth(p, bones, count, parent, budget - 1, pw);
     bone_mul(pw, local, out);
+}
+
+static void bone_world(const uint8_t *p, uint32_t bones, int count, int i, float out[4][4]) {
+    bone_world_depth(p, bones, count, i, count, out);
 }
 
 // Reads the FSKL skeleton's Node_Array (mtx_to_bone_list): the render order of the rigid bones. It maps a per-vertex
@@ -186,7 +193,9 @@ static int fvtx_blend_attr(const BfresModel *m, int index, uint32_t *buf_idx, ui
         if (i >= 1) {
             if (!in_bounds(m, vp, 16)) return 0;
             const char *vname = bfres_string(m, u64(m->p + vp));
-            if (key && vname && !memcmp(key, "_i0", 3) && !memcmp(vname, "_i0", 3)) {
+            // strcmp, not memcmp: bfres_string guarantees the bytes up to and including the terminating NUL and nothing
+            // past it, so a three-byte compare reads past a one- or two-character name at the end of the buffer.
+            if (key && vname && !strcmp(key, "_i0") && !strcmp(vname, "_i0")) {
                 // VertexAttrib: +0x08 format (u16 BE), +0x0C offset (u16), +0x0E buffer_idx (u16).
                 *off = u16(m->p + vp + 0x0C);
                 *buf_idx = u16(m->p + vp + 0x0E);

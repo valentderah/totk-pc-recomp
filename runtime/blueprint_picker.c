@@ -639,8 +639,11 @@ static void preview_load(const char *path) {
     }
     // The cache holds one file under one turn of the build and one framing: a different file needs the geometry again, and
     // the same file after it was turned needs the projection again. Only the framing work below is shared by both.
-    if (!strcmp(g_preview.path, path) && g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect &&
-        g_preview.rot_stamp == g_rot_stamp) return;
+    // The yaw and pitch are part of that key: turning the view without turning the build leaves rot_stamp alone, so a
+    // cache keyed on the zoom only would keep drawing the projection made at the old angle.
+    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch &&
+        g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect && g_preview.rot_stamp == g_rot_stamp)
+        return;
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;

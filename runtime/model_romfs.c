@@ -52,23 +52,33 @@ static int dict_ready(void) {
     unsigned long long rn = ZSTD_getFrameContentSize(dz, dn);
     uint8_t *raw = (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= MODEL_MAX)
                        ? malloc((size_t)rn) : NULL;
-    if (raw && ZSTD_decompress(raw, (size_t)rn, dz, dn) == rn) {
+    if (raw && ZSTD_decompress(raw, (size_t)rn, dz, dn) == rn && rn >= 6) {
         uint16_t head, count;
         uint32_t base;
         memcpy(&head, raw + 4, 2);
+        // Every field this walk reads is bounds-checked first: the archive is game data and a truncated or corrupt one
+        // must be refused rather than read past its end. `head` is the header size, `count` the entry count, and the
+        // entry table sits at head + 12 with 16 bytes each; the name table follows it.
+        if ((size_t)head + 8 > rn) { free(raw); free(dz); return 0; }
         memcpy(&count, raw + head + 6, 2);
         memcpy(&base, raw + 12, 4);
-        size_t names = head + 12 + (size_t)count * 16 + 8;
+        const size_t entries = (size_t)head + 12;
+        const size_t names = entries + (size_t)count * 16 + 8;
+        if (entries + (size_t)count * 16 + 8 > rn || names > rn) { free(raw); free(dz); return 0; }
         for (unsigned i = 0; i < count; i++) {
             uint32_t attr, lo, hi;
-            size_t e = head + 12 + (size_t)i * 16;
+            size_t e = entries + (size_t)i * 16;
             memcpy(&attr, raw + e + 4, 4);
             memcpy(&lo, raw + e + 8, 4);
             memcpy(&hi, raw + e + 12, 4);
-            const char *name = (const char *)raw + names + (size_t)(attr & 0xffffff) * 4;
-            if (name >= (const char *)raw + rn) break;
+            const size_t name_off = names + (size_t)(attr & 0xffffff) * 4;
+            // The name has to be terminated INSIDE the buffer before strcmp may walk it: name_off < rn only proves its
+            // first byte is in range, and a name that runs to the end of a corrupt archive would be read past it.
+            if (name_off >= rn || !memchr(raw + name_off, 0, rn - name_off)) break;
+            const char *name = (const char *)raw + name_off;
             if (!strcmp(name, "pack.zsdic")) {
-                size_t mn = hi - lo;
+                if (hi < lo || (uint64_t)base + hi > rn) break;
+                const size_t mn = (size_t)hi - lo;
                 g_dict = mn ? malloc(mn) : NULL;
                 if (g_dict) { memcpy(g_dict, raw + base + lo, mn); g_dict_n = mn; }
                 break;
@@ -104,7 +114,12 @@ static void fmdb_add(FmdbCtx *ctx, const char *s) {
 }
 
 // Descend one BYML node collecting every "FmdbName" hash entry with a string value.
-static void byml_find_fmdb(const BymlDoc *doc, uint32_t node, FmdbCtx *ctx) {
+// Descends the document looking for FmdbName. A BYML may point a container entry at a node that is already on the way
+// down (a self-referencing hash, or an array whose element offset is the array), and nothing in byml_open rejects that:
+// the walk therefore carries a depth budget, which a real ModelInfo stays far below. Without it such a document
+// recurses until the stack runs out.
+static void byml_find_fmdb_depth(const BymlDoc *doc, uint32_t node, FmdbCtx *ctx, int depth) {
+    if (depth <= 0) return;
     uint8_t t = byml_type(doc, node);
     if (t == BYML_HASH) {
         size_t n = byml_count(doc, node);
@@ -117,15 +132,19 @@ static void byml_find_fmdb(const BymlDoc *doc, uint32_t node, FmdbCtx *ctx) {
             }
             // Descend into container values only (byml_at is 0 for value-typed entries).
             uint32_t v = byml_at(doc, node, i);
-            if (v) byml_find_fmdb(doc, v, ctx);
+            if (v) byml_find_fmdb_depth(doc, v, ctx, depth - 1);
         }
     } else if (t == BYML_ARRAY) {
         size_t n = byml_count(doc, node);
         for (size_t i = 0; i < n; i++) {
             uint32_t v = byml_at(doc, node, i);
-            if (v) byml_find_fmdb(doc, v, ctx);
+            if (v) byml_find_fmdb_depth(doc, v, ctx, depth - 1);
         }
     }
+}
+
+static void byml_find_fmdb(const BymlDoc *doc, uint32_t node, FmdbCtx *ctx) {
+    byml_find_fmdb_depth(doc, node, ctx, 32);
 }
 
 // Every ModelInfo member of the SARC, collecting its model names.

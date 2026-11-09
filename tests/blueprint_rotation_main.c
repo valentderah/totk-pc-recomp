@@ -89,28 +89,43 @@ static void scenario(const char *name, const int *favs, int nfav) {
         check(ages[victim] == max_free, msg);
     }
 
-    // Favourites keep their age; every other surviving entry moved down exactly one.
+    // Every surviving entry keeps its age or rises by exactly one, and a favourite is never the one spent. A favourite
+    // ABOVE the evicted card does rise by one - a new creation takes age 0, so every card drawn above the spent one moves
+    // down a place - and a favourite below it keeps its age. The result being a permutation is what rules out the other
+    // reading: keeping every favourite's age would give two entries the same age as soon as a favourite sits above the
+    // oldest free card, which the check above would have caught.
     for (int i = 0; i < N; i++) {
+        if (i == victim) continue;
+        const int rose = rotated[i] == ages[i] + 1;
+        const int kept = rotated[i] == ages[i];
+        snprintf(msg, sizeof msg, "%s: entry %d kept its age or rose by one (%d -> %d)", name, i, ages[i], rotated[i]);
+        check(kept || rose, msg);
         if ((fav_bits >> i) & 1u) {
-            snprintf(msg, sizeof msg, "%s: favourite entry %d kept its age %d", name, i, ages[i]);
-            check(rotated[i] == ages[i], msg);
-        } else if (i != victim) {
-            snprintf(msg, sizeof msg, "%s: free entry %d moved down one (%d -> %d)", name, i, ages[i], rotated[i]);
-            check(rotated[i] == ages[i] + 1, msg);
+            snprintf(msg, sizeof msg, "%s: favourite entry %d was not spent", name, i);
+            check(i != victim, msg);
         }
     }
+    // A favourite is never the evicted entry, and the eviction is always a free one.
+    snprintf(msg, sizeof msg, "%s: the evicted entry %d is not a favourite", name, victim);
+    check(!((fav_bits >> victim) & 1u), msg);
 }
 
 int main(void) {
     // A fresh save: nothing is a favourite.
     scenario("fresh save", NULL, 0);
 
-    // One favourite, in several places.
+    // One favourite, in several places. A favourite is never the entry spent, wherever it sits - including on the newest
+    // card, which does move down one place because the new creation takes age 0.
+    // A favourite on the newest card. It is not evicted, but it does move down: a new creation takes age 0, so every card
+    // that was drawn above the evicted one rises by one. What a favourite is guaranteed is that it is never the entry
+    // spent, and that its own age never lands on another entry's.
     {
         const int f1[] = {12};
         scenario("one favourite", f1, 1);
         const int f0[] = {0};
         scenario("favourite on the first card", f0, 1);
+        const int f0b[] = {0, 29};
+        scenario("a favourite on the first and on the oldest card", f0b, 2);
         const int fold[] = {29};
         scenario("favourite is the oldest card", fold, 1);
     }

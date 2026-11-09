@@ -132,8 +132,11 @@ static int scan_hits(uint64_t *out, int cap) {
         uint64_t len = to - at;
         const uint8_t *hit = memchr(p, 'C', (size_t)len);
         while (hit && n < cap) {
-            if (!memcmp(hit, "CmbAct", 6)) out[n++] = at + (uint64_t)(hit - p);
-            size_t done = (size_t)(hit - p) + 1;
+            // The magic is six bytes, and the readable run ends at `to`: a 'C' in its last five bytes has no magic to
+            // compare, and reading past the run would touch a page plat_mem_state did not vouch for.
+            const size_t off = (size_t)(hit - p);
+            if (off + 6 <= (size_t)len && !memcmp(hit, "CmbAct", 6)) out[n++] = at + (uint64_t)off;
+            const size_t done = off + 1;
             hit = done < len ? memchr(p + done, 'C', (size_t)(len - done)) : NULL;
         }
         at = to;
@@ -624,7 +627,13 @@ int bp_import_newest(const char *path) {
     }
     // The new blob, first: the serialized array (what the game saves) and the parsed copies the page draws from. The
     // parsed failure does not fail the import, because the serialized array is the one that matters for persistence.
+    //
+    // The entry's old blob is kept until the rotation has been written: the rotation can still fail, and a blob written
+    // into an entry whose age was never rotated shows up as some old card having turned into the new creation while the
+    // card the rotation meant to spend is gone. Restoring it on failure leaves the history exactly as it was.
     const uint64_t dst = g_cai + (uint64_t)victim * ITEM_STRIDE;
+    static uint8_t undo[BPC_BLOB_SIZE];
+    const int have_undo = guest_read(dst, undo, BPC_BLOB_SIZE);
     if (!guest_write(dst, bp.blob, BPC_BLOB_SIZE)) {
         rt_log("blueprint: cannot write entry %d at %#llx", victim, (unsigned long long)dst);
         g_cai = 0;
@@ -639,6 +648,17 @@ int bp_import_newest(const char *path) {
     if (do_rotate) {
         if (!guest_write(g_ages_at, rotated, sizeof rotated)) {
             rt_log("blueprint: cannot rotate the live Index array at %#llx", (unsigned long long)g_ages_at);
+            // Put the entry's own blob back, so a rotation that failed leaves no half-import behind.
+            if (have_undo && guest_write(dst, undo, BPC_BLOB_SIZE)) {
+                if (g_parsed && victim < g_parsed_slots) {
+                    uint64_t page = g_parsed + (uint64_t)victim * SLOT_STRIDE;
+                    guest_write(page, undo, BPC_BLOB_SIZE);
+                    guest_write(page + BPC_BLOB_SIZE, undo, BPC_BLOB_SIZE);
+                }
+                rt_log("blueprint: entry %d restored; the history is unchanged", victim);
+            } else {
+                rt_log("blueprint: entry %d could not be restored; it holds the new creation at its old age", victim);
+            }
             return BP_IMPORT_NO_ROOM;
         }
         rt_log("blueprint: Index: %d favorite(s), evicted free entry %d, %d free entries moved down one", fav_count,

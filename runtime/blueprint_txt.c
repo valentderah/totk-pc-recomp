@@ -112,9 +112,12 @@ enum BtxResult btx_decode(const void *data, size_t size, void *blob, size_t blob
     }
     if (i >= size) return BTX_NO_MEMBER;   // the string is not closed
 
-    // The run decodes to the compressed stream. Its size is bounded by the largest blob the game stores: a deflate
-    // stream cannot encode 6688 bytes in fewer than a handful, and the container is not expected to be huge either.
-    static uint8_t packed[BPC_BLOB_SIZE];
+    // The run decodes to the COMPRESSED stream, which is not bounded by the blob size: a deflate stream of a stored
+    // (incompressible) block is the payload plus 5 bytes of block header per 65535, and the gzip wrapper adds 18. A
+    // 6688-byte blob therefore gzips to 6711 bytes, which a buffer of 6688 would refuse. The bound here is the
+    // compressed form's own worst case; bpi_gunzip is what enforces that the OUTPUT is exactly BPC_BLOB_SIZE.
+    enum { PACKED_MAX = BPC_BLOB_SIZE + (BPC_BLOB_SIZE / 65535 + 1) * 5 + 18 };
+    static uint8_t packed[PACKED_MAX];
     size_t packed_bytes = 0;
     if (!b64_decode(bytes + start, n, packed, sizeof packed, &packed_bytes)) return BTX_BAD_BASE64;
 
