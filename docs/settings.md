@@ -194,6 +194,7 @@ Many rows below are developer tools that only act together with another setting 
 | `spin_handoff_us` (default `50`) | Microseconds a polling wait lasts before it gives its virtual core to a waiting thread. | A shorter value hands cores over sooner; a longer one keeps them longer. | Caution |
 | `tex_block_mib` (default `64`) | Block size in MiB of the pool that holds the game's textures; images of a quarter block or more get memory of their own. `0` puts textures in the default pools with the buffers. | Larger blocks hold more memory that no texture uses; smaller ones mean more allocations from the driver. | Caution |
 | `tex_released_mib` (default `256`) | MiB of textures the game released that are kept for reuse; older ones beyond it are dropped. `0` keeps up to 2048 of them, whatever their size. | A larger value keeps more device memory and process commit; a smaller one makes the game create more textures again. | Caution |
+| `vma_block_mib` (default `64`) | Block size in MiB that the Vulkan memory allocator takes from the driver for buffers and other images on heaps over 1 GiB; larger allocations than half a block get memory of their own. `0` uses the allocator's 256. | Larger blocks hold more memory that nothing uses; smaller ones mean more allocations from the driver. | Caution |
 
 ## Generated-code patches
 
