@@ -227,6 +227,11 @@
 # characters, a little more flicker). Any other model by its letter, a to m: on slower RTX cards the older model e is
 # cheaper. Changes while the game runs take effect at once (DLSS starts a new history).
 # dlss_preset = default
+# A new scene size (the game's dynamic resolution switches between a few) needs a DLSS feature, and making it on the frame
+# thread took 30 to 60 ms. 1 makes it on a thread of its own: the frames until it is ready go without DLSS (the game's own
+# scaling or FXAA shows), and a size that is dropped is freed once the GPU is done with it instead of draining the GPU.
+# Needs dlaa = 1. Read at start.
+# dlss_prewarm = 0
 # Per-object motion vectors for DLSS: characters, animals and moving objects get their own motion instead of the
 # camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
 # on a laptop CPU); 0 leaves camera-only motion. Read at start.
