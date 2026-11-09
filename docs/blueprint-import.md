@@ -397,6 +397,36 @@ blueprint: <name> (<n> parts) is the first draft of the Autobuild history (entry
 blueprint: dropped 4 cached draft picture(s), the game draws them again
 ```
 
+### The bounds these readers hold
+
+A code review of this PR found nine places where one of these readers could read or write past a buffer, or produce a
+wrong value. They are recorded here because each one is a rule the code now follows, and a later change that drops it
+reintroduces the same defect.
+
+- **A recursion needs a budget, not a range check.** `bfres.c` walks a bone's parent chain, and a skeleton whose parents
+  form a cycle (bone 0 names 1, bone 1 names 0) is in range and infinite. The walk is bounded by the bone count.
+  `model_romfs.c` walks BYML containers, and `byml_open` accepts a container entry that points at a node already on the
+  way down; that walk is bounded by depth 32.
+- **A duplicated parser loses the guards.** Both `dict_ready` copies re-implemented the SARC traversal instead of using
+  the validated `sarc_each_matching`, and dropped every check it makes: header, entry table, name table, member bounds,
+  and the name's terminating NUL. Bounding a name's first byte is not bounding the name.
+- **A compressed stream is not bounded by the size it decompresses to.** `blueprint_txt.c` held the gzip stream in a
+  buffer the size of the blob; a stored-block stream is the payload plus 5 bytes per 65535 plus 18, so a 6688-byte
+  incompressible blob is 6711 bytes and a valid export was refused.
+- **`memcmp` on a name is a fixed-size read.** `bfres_string` guarantees the bytes up to its NUL and nothing past it, so a
+  three-byte compare reads past a one- or two-character name. `strcmp` stops at the NUL.
+- **A uint16 index bounds the vertices it can address.** The preview's index buffer is uint16, so one part cannot exceed
+  65535 vertices; casting a larger base wraps it and draws between unrelated vertices.
+- **`alloca` in a loop is not freed per iteration.** One buffer sized for the largest shape, allocated once, is the same
+  code without the stack growth.
+- **A failure path owns what it created.** The preview's target creation has six failure returns after an image, view,
+  allocation or buffer was made; the pass is built once and never retried, so those are released on the way out.
+- **Two writes to one save flag are ordered, and the first can be undone.** The blob is written before the Index rotation,
+  and the entry's own blob is kept until the rotation lands: a rotation that fails after the blob was written would leave
+  an old card silently holding the new creation.
+- **A setting read at start has to be in `known[]`.** `BLUEPRINT_ZOOM` was written and read but missing from that table,
+  so it was rejected as an unknown key when `totk.ini` was read and the remembered zoom never survived a restart.
+
 ## 8. Files
 
 New (across the PR's commits):
