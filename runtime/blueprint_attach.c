@@ -133,10 +133,6 @@ static int attach_member(const char *name, const uint8_t *data, size_t size, voi
             const float v = (float)byml_number(&doc, bbl, 0.0);
             r->bound_box_length = v > 0.0f ? v : 0.0f;
         }
-        // Any of the three is the data taking charge of the size; none of them means the material is fitted to its weapon.
-        if (r->bound_box_length > 0.0f || r->scale != 1.0f || r->scale_xyz[0] != 1.0f || r->scale_xyz[1] != 1.0f ||
-            r->scale_xyz[2] != 1.0f)
-            r->has_own_scale = 1;
         const uint32_t sub = byml_key(&doc, at, "SubModel");
         if (sub) {
             const char *s = byml_string(&doc, sub);
@@ -265,11 +261,15 @@ static void mat4_rot_deg(const float deg[3], float out[16]) {
 
 void bp_attach_matrix(const BpAttach *a, const float bone_world[16], float fit_scale, float out[16]) {
     static const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    float rot[16], scale[16], trans[16];
+    float rot[16], scale[16];
     memset(out, 0, sizeof(float) * 16);
     out[0] = out[5] = out[10] = out[15] = 1.0f;
     if (!a || !a->found) return;
 
+    // Only the material's ORIENTATION and SIZE come from the record. Its TransOffset does not decide the position: the
+    // blueprint's own coordinates are exact and place every part, and the material is located by the weapon shape it
+    // replaces (see fuse_placement in ui/preview3d.cpp). Using the record's offset as the position is what put horns off
+    // the weapon along the shaft, because it is a per-class nudge authored for one weapon, not a universal placement.
     mat4_rot_deg(a->rot_deg, rot);
     memcpy(scale, ident, sizeof scale);
     const float fit = fit_scale > 0.0f ? fit_scale : 1.0f;
@@ -277,17 +277,10 @@ void bp_attach_matrix(const BpAttach *a, const float bone_world[16], float fit_s
     scale[0] = s * (a->scale_xyz[0] > 0.0f ? a->scale_xyz[0] : 1.0f);
     scale[5] = s * (a->scale_xyz[1] > 0.0f ? a->scale_xyz[1] : 1.0f);
     scale[10] = s * (a->scale_xyz[2] > 0.0f ? a->scale_xyz[2] : 1.0f);
-    // The socket already sits where the material belongs; the record's TransOffset is not applied. Reading it as an offset
-    // from the socket pushed a short sword's horn 0.51 m off the weapon and left a spear's short of contact, while the one
-    // case that looked right (a long sword) carries an offset of ~0 - so the offset is consistent with zero, and the socket
-    // alone is what the three cases agree on.
-    memcpy(trans, ident, sizeof trans);
 
-    // The material's own transform about the socket is R * T * S: the offset is given in the frame the rotation produces, so
-    // the rotation is applied first. Applying the offset in the bone's own frame instead leaves a large offset pointing
-    // sideways - a short sword's horn stands off the weapon while a long sword's, whose offset is ~0, looks right either way.
-    float local[16], tmp[16];
-    mat4_mul(rot, trans, tmp);
-    mat4_mul(tmp, scale, local);
+    // The material is scaled, then rotated about the socket, and the socket's world transform carries it into the
+    // weapon's model space.
+    float local[16];
+    mat4_mul(rot, scale, local);
     mat4_mul(bone_world ? bone_world : ident, local, out);
 }

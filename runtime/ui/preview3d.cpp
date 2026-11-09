@@ -57,10 +57,16 @@ struct GpuPart {
     uint32_t vtx_bytes;     // byte offset into the vertex buffer
     uint32_t idx_bytes;     // byte offset into the index buffer
     uint32_t count;         // indices to draw
+    uint32_t vcount;        // vertices in the buffer
     float lo[3], hi[3];     // its box in model space
+    // 1 when the model has shapes fusion hides (a weapon's `_Hide` blade). Such a model defines which part fusion
+    // replaces, so the material is placed on its socket and needs no gap closing; a model without one does not.
+    int has_hidden;
 };
 
 constexpr int kMaxParts = 2048;
+// The CAI holds 21 actor records, so this is the most parts a blueprint can name.
+constexpr int kMaxActors = 32;
 // The offscreen target is one fixed square, made once. The panel's size only picks a viewport inside it: an image that is
 // recreated on every size change would have to be waited for and freed mid-frame, which is what crashed the driver.
 constexpr uint32_t kImageSize = 1024;
@@ -90,6 +96,13 @@ struct State {
     uint32_t vtx_used = 0, idx_used = 0;
 
     GpuPart parts[kMaxParts];
+    // The fused placement is per ACTOR, not per part: a blueprint can hold the same weapon twice (two swords, each with
+    // its own horn) and those two sit at different coordinates, so a placement cached on the shared GpuPart would draw
+    // both horns in the same place. The CAI has 21 records, so this covers any blueprint.
+    int fuse_done[kMaxActors];
+    float fuse_at[kMaxActors][16];
+    int fuse_slot_at[kMaxActors];
+
     int part_count = 0;
     uint64_t frame = 0;
     int dirty = 1;
@@ -301,27 +314,115 @@ int make_streams(void) {
     return S.vtx_map && S.idx_map;
 }
 
-// The gap between two spans, signed towards the other box: 0 when they overlap. A fused material slides along the axis whose
-// gap is smallest, which is the shortest way to satisfy Fuse's rule that the two are in contact.
-static float gap_between(float a_lo, float a_hi, float b_lo, float b_hi) {
-    if (a_hi < b_lo) return b_lo - a_hi;
-    if (b_hi < a_lo) return b_hi - a_lo;
-    return 0.0f;
-}
-
-// The world box of a part: its model box turned and moved by the part matrix.
-static void part_world_box(const BpcBlueprint *bp, int k, const float lo[3], const float hi[3], float wlo[3],
-                           float whi[3]) {
-    float m[16];
-    part_matrix(bp, k, m);
+// The world box of a part's axis-aligned extent under the placement `a` (stored transposed, so a[3*4+r] is the translation
+// of row r): the eight model-space corners carried by the matrix. Used to see where a fused material sits against the weapon.
+static void material_box(const GpuPart &m, const float a[16], float lo[3], float hi[3]) {
+    lo[0] = lo[1] = lo[2] = 1e30f;
+    hi[0] = hi[1] = hi[2] = -1e30f;
     for (int c = 0; c < 8; c++) {
-        const float p[3] = {(c & 1) ? hi[0] : lo[0], (c & 2) ? hi[1] : lo[1], (c & 4) ? hi[2] : lo[2]};
+        const float q[3] = {(c & 1) ? m.hi[0] : m.lo[0], (c & 2) ? m.hi[1] : m.lo[1], (c & 4) ? m.hi[2] : m.lo[2]};
         for (int r = 0; r < 3; r++) {
-            const float v = m[r * 4 + 0] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
-            if (c == 0 || v < wlo[r]) wlo[r] = v;
-            if (c == 0 || v > whi[r]) whi[r] = v;
+            const float v = a[0 * 4 + r] * q[0] + a[1 * 4 + r] * q[1] + a[2 * 4 + r] * q[2] + a[3 * 4 + r];
+            if (v < lo[r]) lo[r] = v;
+            if (v > hi[r]) hi[r] = v;
         }
     }
+}
+
+
+// Where a fused material sits in its weapon's model space. Worked out once, when the pair is uploaded.
+//
+// The chain is three independent pieces of the game's own data, and nothing else:
+//
+//   1. WHERE.  The blueprint's CAI coordinates place every part; a fused material is one of those parts. Within the
+//              weapon's model the material hangs on the bone the record names (Bind_Z, Bind_W, ...), and that bone is
+//              where the `_Hide` shape is anchored - the shape fusion replaces. So the material's ROOT goes on that
+//              bone. The root is the low end of the material's own model and is not its origin (a Lynel horn's root is
+//              at local z -0.66), so the root offset has to come out or the material sinks by it.
+//   2. HOW BIG. The record's Scale (per axis), ExScale (uniform, gated by UseExScale) and BoundBoxLength. A class that
+//              names none of them has no size of its own and is capped to the weapon, which is the ratio the game uses
+//              where it does name one. ForceScaleMode says the record's Scale must be used as given.
+//   3. WHICH END. The bone sits at the hidden blade's base, which is INSIDE the weapon's body: on a spear Bind_Z is at
+//              z 1.648 while the shaft's top is 1.678, on a short sword Bind_Z is at 0.148 while the body's top is 0.206.
+//              A material rooted on the bone therefore sinks by that difference. The contact is the visible geometry's
+//              end, so the material is lifted to it.
+//
+// The record's TransOffset is deliberately unused: it is a per-class nudge authored against one weapon, and reading it as
+// the position is what put horns off the weapon along the shaft.
+//
+// `out` receives the material-model-space -> weapon-model-space matrix. Returns 1 when a material was placed.
+static int fuse_placement(const GpuPart &w, const GpuPart &m, const BpAttach &at, const float bone_world[16],
+                          float fit_scale, float out[16]) {
+    float attach_row[16], attach_col[16];
+    bp_attach_matrix(&at, bone_world, fit_scale, attach_row);
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) attach_col[c * 4 + r] = attach_row[r * 4 + c];
+    if (m.lo[0] > m.hi[0]) {
+        memcpy(out, attach_row, sizeof attach_row);
+        return 0;
+    }
+
+    // The weapon's long axis: the axis it extends furthest along, in the WEAPON's model space.
+    int axis = 0;
+    float span = w.hi[0] - w.lo[0];
+    for (int a = 1; a < 3; a++) {
+        const float s = w.hi[a] - w.lo[a];
+        if (s > span) { span = s; axis = a; }
+    }
+
+    // The placement's translation column is expressed in the weapon's space, but the material's own axes are carried by
+    // the placement's 3x3 part, which includes the socket bone's rotation: a spear's Bind_Z is rotated -90 degrees about X,
+    // so its local Y is the weapon's Z. Working in the weapon's axes throughout keeps the two consistent - the material's
+    // root and the weapon's surface are both measured in the same frame.
+    const float socket[3] = {attach_col[3 * 4 + 0], attach_col[3 * 4 + 1], attach_col[3 * 4 + 2]};
+
+    // 1. The material's attachment end goes on the socket bone.
+    //
+    //    The bone is where the game hangs a fused material: on a spear Bind_Z sits at z 1.677, inside the seam where the
+    //    blade leaves the shaft (blade base 1.674, shaft top 1.680). Putting the material's attachment end there is what
+    //    makes the pair touch.
+    //
+    //    The attachment end is the low end of the material's model along the weapon's long axis. Its centre is taken from
+    //    the model's box rather than from the vertices: measuring the real root ring gave a lateral correction that pulled
+    //    a horn off the weapon's own centre line (the long sword's gap grew from 5.3 cm to 7.0 cm), because the game's
+    //    placement keeps the material's authored lateral offset. Only the attachment end's own axis is corrected here;
+    //    step 2 then lifts it to the weapon's surface.
+    {
+        float ring[3];
+        for (int r = 0; r < 3; r++) ring[r] = 0.5f * (m.lo[r] + m.hi[r]);
+        ring[axis] = (axis == 0) ? m.lo[0] : (axis == 1) ? m.lo[1] : m.lo[2];   // the low end of the material's long axis
+        for (int r = 0; r < 3; r++) {
+            const float placed = attach_col[0 * 4 + r] * ring[0] + attach_col[1 * 4 + r] * ring[1] +
+                                 attach_col[2 * 4 + r] * ring[2];
+            attach_col[3 * 4 + r] -= placed;
+        }
+    }
+
+    // 2. The bone is a seam inside the weapon, so the ring is lifted to the weapon's visible end along the axis. Without
+    //    this the ring sits at the blade's base, which is below the body's surface.
+    if (w.has_hidden) {
+        const float surface = (axis == 0) ? w.hi[0] : (axis == 1) ? w.hi[1] : w.hi[2];
+        if (surface > socket[axis]) attach_col[3 * 4 + axis] += surface - socket[axis];
+    }
+
+    // No `_Hide` shape means the model does not say which part fusion covers (a shield has none). There is no bone to
+    // measure from either, so the material is placed by its box: close the air on each axis and stop at contact.
+    if (!w.has_hidden && w.lo[0] <= w.hi[0]) {
+        float mlo[3], mhi[3];
+        material_box(m, attach_col, mlo, mhi);
+        for (int r = 0; r < 3; r++) {
+            float move = 0.0f;
+            if (mhi[r] < w.lo[r]) move = w.lo[r] - mhi[r];
+            else if (w.hi[r] < mlo[r]) move = w.hi[r] - mlo[r];
+            if (move != 0.0f) attach_col[3 * 4 + r] += move;
+        }
+    }
+
+    // The caller multiplies this with mat_mul, which is column-major (out[c*4+r], translation in out[12..14]), the same
+    // layout part_matrix produces. attach_col is that layout already - a[c*4+r] is row r of column c - so it is copied
+    // straight out. Transposing it here put the scale on the wrong axes and drew the material as streaks.
+    memcpy(out, attach_col, sizeof(float) * 16);
+    return 1;
 }
 
 // A shape whose material is one of the model's `_Hide` ones: the blade of a weapon, which the game stops drawing once a
@@ -369,6 +470,7 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
         p.idx_bytes = S.idx_used;
         p.count = (uint32_t)total_tris * 3u;
         float box_lo[3] = {1e30f, 1e30f, 1e30f}, box_hi[3] = {-1e30f, -1e30f, -1e30f};
+        int hid_shapes = 0;
 
         int vbase = 0, tbase = 0;
         for (int s = 0; s < model->count; s++) {
@@ -377,10 +479,15 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
             const int ntris = bfres_shape_triangles(model, s);
             if (nverts <= 0 || ntris <= 0) continue;
             float *verts = (float *)alloca((size_t)nverts * 3 * sizeof(float));
-            uint16_t *tris = (uint16_t *)alloca((size_t)ntris * 3 * sizeof(uint16_t));
+            uint16_t *tris = (uint16_t *)(alloca((size_t)ntris * 3 * sizeof(uint16_t)));
             const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
             if (vc <= 0) continue;
-            if (hidden) continue;
+            if (hidden) {
+                // The model says which part fusion replaces. That is all this is for: a model that names one places the
+                // material on its socket and needs no gap closing, because the socket is already the contact point.
+                hid_shapes++;
+                continue;
+            }
             if (S.frame < 3)   // diagnostic: the first vertices, to see whether the decode/bone produced sane numbers
                 rt_log("preview3d: %s shape%d v0=(%.2f,%.2f,%.2f) v1=(%.2f,%.2f,%.2f) tris0=(%u,%u,%u)",
                        name, s, verts[0], verts[1], verts[2], verts[3], verts[4], verts[5], tris[0], tris[1], tris[2]);
@@ -403,9 +510,11 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
             p.lo[a] = box_lo[a];
             p.hi[a] = box_hi[a];
         }
+        p.has_hidden = hid_shapes > 0;
         S.vtx_used += (uint32_t)vbase * 12u;
         S.idx_used += (uint32_t)tbase * 6u;
         p.count = (uint32_t)tbase * 3u;
+        p.vcount = (uint32_t)vbase;   // the contact refine reads the vertices, so the count has to travel with them
         // The mapped memory may be non-coherent, so the CPU writes must be flushed before the GPU reads them.
         vmaFlushAllocation(S.vma, S.vtx_alloc, p.vtx_bytes, (uint32_t)vbase * 12u);
         vmaFlushAllocation(S.vma, S.idx_alloc, p.idx_bytes, (uint32_t)tbase * 6u);
@@ -448,12 +557,11 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
     vmaFlushAllocation(S.vma, S.idx_alloc, S.idx_used, idx_bytes);
     S.vtx_used += vtx_bytes;
     S.idx_used += idx_bytes;
+    p.vcount = (uint32_t)nverts;
     return S.part_count++;
 }
 
 int upload_part(const char *name) { return upload_part_named(name, 0, 0); }
-// A part with a fused material: the weapon keeps its handle and loses the blade shapes (see shape_is_hidden_blade).
-int upload_part_fused(const char *name) { return upload_part_named(name, 0, 1); }
 // A fused material names a model directly, which has no ModelInfo to read.
 int upload_model(const char *model_name) { return upload_part_named(model_name, 1, 0); }
 
@@ -614,7 +722,12 @@ extern "C" void preview3d_set_camera(float yaw, float pitch, float zoom) {
     }
 }
 
-extern "C" void preview3d_invalidate(void) { S.dirty = 1; }
+// A new blueprint is on show: the per-actor placements belong to the old one, so they are dropped here rather than
+// compared against the new names. The geometry itself stays in the shared buffers, which are keyed by part name.
+extern "C" void preview3d_invalidate(void) {
+    S.dirty = 1;
+    memset(S.fuse_done, 0, sizeof S.fuse_done);
+}
 
 extern "C" int preview3d_resize(int w, int h) {
     if (!S.ok) return 0;
@@ -719,12 +832,55 @@ extern "C" void preview3d_record(void *command_buffer) {
         if (!name || !*name) continue;
         const char *sub = bp->sub_names[k];
         const int fused = sub && *sub;
-        // A part that carries a fused material loses the shapes that fusion covers; a part with none keeps everything. Whether
-        // the material also brings a replacement model of its own is a different question (that decides the material's
-        // model, in blueprint_attach), not whether the weapon's covered shapes make way.
-        const int slot = fused ? upload_part_fused(name) : upload_part(name);
+        // A fused weapon loses the shapes fusion covers: the blade is what the material replaces, so it is hidden, and the
+        // hidden shape's own coordinates are what locate the material (see fuse_placement).
+        const int slot = fused ? upload_part_named(name, 0, 1) : upload_part(name);
         if (slot < 0) continue;
-        const GpuPart &p = S.parts[slot];
+        GpuPart &p = S.parts[slot];
+
+        // Resolve the pair and place the material once, per actor. A blueprint does not change while it is on show, and a
+        // vertex search every frame made the preview crawl on a large part; the two swords a blueprint can hold also need
+        // their own placement, which is why this is indexed by the actor rather than stored on the shared part.
+        if (fused && k < kMaxActors && !S.fuse_done[k]) {
+            S.fuse_done[k] = 1;      // set first: a pair that fails below must not retry the search every frame
+            S.fuse_slot_at[k] = -1;
+            BpAttach at;
+            if (bp_attach_resolve(name, sub, &at)) {
+                const int sub_slot = upload_model(at.model);
+                if (sub_slot >= 0) {
+                    // Resolve the weapon ONCE and take everything off it before touching another model: the model cache holds
+                    // 24 entries and evicts round-robin, so a second resolve can free the buffer the first pointer refers
+                    // to. Reading a bone from an evicted model yields garbage vertices, which draw as streaks radiating from
+                    // the part - the failure a blueprint with 21 parts showed and a small one did not.
+                    const BfresModel *weapon = model_romfs_resolve(name);
+                    float weapon_extent = 0.0f;
+                    float bone[16];
+                    int have_bone = 0;
+                    if (weapon) {
+                        weapon_extent = model_romfs_extent(weapon);
+                        const int bi = bfres_bone_find(weapon, at.bone);
+                        if (bi >= 0) have_bone = bfres_bone_world(weapon, bi, bone);
+                        // The record's socket name can be missing from a model (a class may inherit a name meant for
+                        // another weapon). The root bone exists on every model and carries the weapon's own placement.
+                        if (!have_bone) have_bone = bfres_bone_world(weapon, 0, bone);
+                    }
+                    if (!have_bone) mat_identity(bone);
+                    // Size, in order of authority: BoundBoxLength, else the record's own Scale/ExScale, else a cap to the
+                    // weapon. A class that names no size leaves the combination undefined; the game's own oversized
+                    // materials carry Scale 0.22-0.30, and a 5 m statue on a 1.16 m shield comes out at 0.232 by the same
+                    // arithmetic. It is a cap, not a fit: a material smaller than its weapon keeps its size.
+                    const float mat_extent = model_romfs_extent(model_romfs_resolve_model(at.model));
+                    float fit = 1.0f;
+                    if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
+                        fit = at.bound_box_length / mat_extent;
+                    } else if (mat_extent > 0.0005f && !(at.scale < 1.0f) && at.scale_xyz[0] == 1.0f &&
+                               at.scale_xyz[1] == 1.0f && at.scale_xyz[2] == 1.0f) {
+                        if (weapon_extent > 0.0005f && mat_extent > weapon_extent) fit = weapon_extent / mat_extent;
+                    }
+                    if (fuse_placement(p, S.parts[sub_slot], at, bone, fit, S.fuse_at[k])) S.fuse_slot_at[k] = sub_slot;
+                }
+            }
+        }
 
         float model[16], mvp[16];
         part_matrix(bp, k, model);
@@ -737,79 +893,19 @@ extern "C" void preview3d_record(void *command_buffer) {
         vkCmdDrawIndexed(cb, p.count, 1, p.idx_bytes / 2, (int32_t)(p.vtx_bytes / 12), 0);
         drawn++;
 
-        // A part that was fused with a material is two objects: draw the material on the socket the game names for it.
-        // Where that is comes from the game's AttachmentParam data (runtime/blueprint_attach.c); the socket is a bone of
-        // the weapon model, so its world transform goes first and the material's own rotation, scale and offset follow.
-        if (fused) {
-            BpAttach at;
-            if (bp_attach_resolve(name, sub, &at)) {
-                const int sub_slot = upload_model(at.model);
-                if (sub_slot >= 0) {
-                    float bone[16];
-                    // A record that names a BoundBoxLength is fitted to it, which is how the game keeps a large fused object
-                    // readable; the material's own largest side comes from the decoded model.
-                    const BfresModel *weapon = model_romfs_resolve(name);
-                    float fit = 1.0f;
-                    {
-                        const float mat_extent = model_romfs_extent(model_romfs_resolve_model(at.model));
-                        if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
-                            fit = at.bound_box_length / mat_extent;   // the fitted length this class names
-                        } else if (!at.has_own_scale && mat_extent > 0.0005f) {
-                            // No size of its own: fit it to the weapon, so a fused world object is the size the weapon can
-                            // carry rather than its size in the world. This is the rule behind "a boulder looks smaller on
-                            // a shield": it is the shield's size that wins.
-                            const float weapon_extent = model_romfs_extent(weapon);
-                            if (weapon_extent > 0.0005f) fit = weapon_extent / mat_extent;
-                        }
-                    }
-                    const int bi = weapon ? bfres_bone_find(weapon, at.bone) : -1;
-                    if (bi < 0 || !bfres_bone_world(weapon, bi, bone))
-                        mat_identity(bone);   // no socket found: draw the material at the part's own origin rather than drop it
-                    float attach_row[16], attach_col[16], placed[16], sub_mvp[16], material_part[16];
-                    bp_attach_matrix(&at, bone, fit, attach_row);
-                    for (int r = 0; r < 4; r++)
-                        for (int c = 0; c < 4; c++) attach_col[c * 4 + r] = attach_row[r * 4 + c];
-                    // fuseInfo is the WEAPON's scale, so it is left out here: a fuse joins two objects that keep their own size.
-                    part_matrix_ex(bp, k, 1, material_part);
-                    mat_mul(material_part, attach_col, placed);   // the material sits in the weapon's model space
-                    // Fuse is direct contact, so the material is brought against the weapon: both boxes are measured in the
-                    // weapon's model space and the material moves along the axis with the smallest gap, by exactly that gap.
-                    // Translation only - scaling one box onto another is what stretched the material.
-                    {
-                        const GpuPart &w = S.parts[slot];
-                        const GpuPart &m = S.parts[sub_slot];
-                        if (w.lo[0] <= w.hi[0] && m.lo[0] <= m.hi[0]) {
-                            float mlo[3] = {1e30f, 1e30f, 1e30f}, mhi[3] = {-1e30f, -1e30f, -1e30f};
-                            for (int c = 0; c < 8; c++) {
-                                const float q[3] = {(c & 1) ? m.hi[0] : m.lo[0], (c & 2) ? m.hi[1] : m.lo[1],
-                                                    (c & 4) ? m.hi[2] : m.lo[2]};
-                                for (int r = 0; r < 3; r++) {
-                                    const float v = placed[r * 4 + 0] * q[0] + placed[r * 4 + 1] * q[1] +
-                                                    placed[r * 4 + 2] * q[2] + placed[r * 4 + 3];
-                                    if (v < mlo[r]) mlo[r] = v;
-                                    if (v > mhi[r]) mhi[r] = v;
-                                }
-                            }
-                            int axis = -1;
-                            float best = 0.0f;
-                            for (int r = 0; r < 3; r++) {
-                                const float g = gap_between(mlo[r], mhi[r], w.lo[r], w.hi[r]);
-                                if (g == 0.0f) continue;
-                                if (axis < 0 || fabsf(g) < fabsf(best)) { best = g; axis = r; }
-                            }
-                            if (axis >= 0) placed[axis * 4 + 3] += best;
-                        }
-                    }
-                    mat_mul(camrot, placed, sub_mvp);
-                    Push sub_push{};
-                    memcpy(sub_push.mvp, sub_mvp, sizeof sub_push.mvp);
-                    palette_rgb(k, sub_push.color);
-                    vkCmdPushConstants(cb, S.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof sub_push, &sub_push);
-                    vkCmdDrawIndexed(cb, S.parts[sub_slot].count, 1, S.parts[sub_slot].idx_bytes / 2,
-                                     (int32_t)(S.parts[sub_slot].vtx_bytes / 12), 0);
-                    drawn++;
-                }
-            }
+        // A part that was fused with a material is two objects: the weapon and the material placed on it.
+        if (fused && k < kMaxActors && S.fuse_slot_at[k] >= 0) {
+            float model[16], mvp[16];
+            part_matrix(bp, k, model);
+            mat_mul(model, S.fuse_at[k], model);   // the material sits in the weapon's model space
+            mat_mul(camrot, model, mvp);
+            Push sub_push{};
+            memcpy(sub_push.mvp, mvp, sizeof sub_push.mvp);
+            palette_rgb(k, sub_push.color);
+            vkCmdPushConstants(cb, S.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof sub_push, &sub_push);
+            const GpuPart &mp = S.parts[S.fuse_slot_at[k]];
+            vkCmdDrawIndexed(cb, mp.count, 1, (int32_t)(mp.idx_bytes / 2), (int32_t)(mp.vtx_bytes / 12), 0);
+            drawn++;
         }
     }
     vkCmdEndRendering(cb);

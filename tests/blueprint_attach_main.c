@@ -62,10 +62,8 @@ int main(int argc, char **argv) {
         printf("     statue on a shield: bone='%s' trans=(%.4f %.4f %.4f) rot=(%.1f %.1f %.1f) scale=%.4f x %.4f %.4f %.4f bbl=%.3f\n",
                st.bone, st.trans[0], st.trans[1], st.trans[2], st.rot_deg[0], st.rot_deg[1], st.rot_deg[2], st.scale,
                st.scale_xyz[0], st.scale_xyz[1], st.scale_xyz[2], st.bound_box_length);
-        // This material names no size for a shield, so nothing may be invented for it: it reports no scale of its own, and
-        // the draw then fits it to the weapon. Borrowing the sword class's number is exactly the per-object patch this rule
-        // replaces.
-        check(st.has_own_scale == 0, "a material with no size for this class reports no scale of its own");
+        // This material names no size for a shield, so nothing may be invented for it: it keeps its own model size. Borrowing
+        // the sword class's number, or shrinking it to the shield, is exactly the per-object patch this rule replaces.
         check(st.bound_box_length == 0.0f, "the sword class's fitted length does not leak into the shield class");
         check(st.rot_deg[0] == 0.0f && st.rot_deg[1] == 0.0f && st.rot_deg[2] == 0.0f,
               "a material with no rotation for this class keeps the weapon's own orientation");

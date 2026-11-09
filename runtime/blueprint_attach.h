@@ -13,10 +13,9 @@ typedef struct {
     float scale;
     float scale_xyz[3];
     // The length the material's bounding box is scaled to when the record names one (BoundBoxLength); 0 when it does not.
+    // This is the ONLY size limit the record can place on a material, and it is per weapon class: a class that names none
+    // draws the material at its own model size.
     float bound_box_length;
-    // 1 when the record gave this class a scale of its own (Scale, ExScale or BoundBoxLength). A material with no scale of
-    // its own is fitted to the weapon it is fused to; a material with one is drawn at exactly what the data says.
-    int has_own_scale;
     // 1 when the entry names a SubModel for this class, i.e. the material brings a model of its own and replaces the part of
     // the weapon it covers. Only then are the weapon's `_Hide` shapes dropped; otherwise the weapon keeps its shape and the
     // material is added to it.

@@ -362,26 +362,34 @@ static void emit_fused_material(const BpcBlueprint *bp, int k, const BfresModel 
     if (!sub || !*sub || !weapon) return;
     BpAttach at;
     if (!bp_attach_resolve(bp->names[k], sub, &at)) return;
-    const BfresModel *mat = model_romfs_resolve_model(at.model);
-    if (!mat) return;
 
     float bone[16], place[16];
+    // The weapon's extent and socket are read BEFORE the material's model is resolved: the model cache holds 24 entries and
+    // evicts round-robin, so resolving the material can free the buffer `weapon` points at, and reading it afterwards gives
+    // garbage. That is what drew streaks radiating from a part in a large blueprint.
+    const float weapon_extent = model_romfs_extent(weapon);
+    const int bi = bfres_bone_find(weapon, at.bone);
+    int have_bone = (bi >= 0) ? bfres_bone_world(weapon, bi, bone) : 0;
+    if (!have_bone) have_bone = bfres_bone_world(weapon, 0, bone);   // the root bone exists on every model
+    if (!have_bone) {
+        memset(bone, 0, sizeof bone);
+        bone[0] = bone[5] = bone[10] = bone[15] = 1.0f;
+    }
+
+    const BfresModel *mat = model_romfs_resolve_model(at.model);
+    if (!mat) return;
+    // Size: BoundBoxLength when the class names one, else the record's own factors, else a CAP to the weapon - shrink a
+    // material bigger than the weapon, leave a smaller one alone. See the same rule in ui/preview3d.cpp; the two paths must
+    // agree or the preview jumps between them.
     float fit = 1.0f;
     {
         const float mat_extent = model_romfs_extent(mat);
         if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
             fit = at.bound_box_length / mat_extent;
-        } else if (!at.has_own_scale && mat_extent > 0.0005f) {
-            const float weapon_extent = model_romfs_extent(weapon);
-            if (weapon_extent > 0.0005f) fit = weapon_extent / mat_extent;
+        } else if (mat_extent > 0.0005f && !(at.scale < 1.0f) && at.scale_xyz[0] == 1.0f && at.scale_xyz[1] == 1.0f &&
+                   at.scale_xyz[2] == 1.0f) {
+            if (weapon_extent > 0.0005f && mat_extent > weapon_extent) fit = weapon_extent / mat_extent;
         }
-    }
-    const int bi = bfres_bone_find(weapon, at.bone);
-    if (bi < 0 || !bfres_bone_world(weapon, bi, bone)) {
-        // No socket found: the material still gets drawn at the part's own origin, which is visibly wrong rather than
-        // silently missing - a missing material is the bug this whole path exists to fix.
-        memset(bone, 0, sizeof bone);
-        bone[0] = bone[5] = bone[10] = bone[15] = 1.0f;
     }
     bp_attach_matrix(&at, bone, fit, place);
 
