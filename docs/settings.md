@@ -181,6 +181,7 @@ Many rows below are developer tools that only act together with another setting 
 | --- | --- | --- | --- |
 | `app_pool` | Size in bytes of the guest application memory pool; accepts decimal or `0x` hex. | The default depends on the resolution settings; `0` stops the start with a message, and too small a pool leaves the game without memory. | Risky |
 | `audio_off` | Any value mixes audio without opening an output device. | The game runs in silence and reports two channels; same as `audio = none`. | Caution |
+| `mem_reserve_mib` (default `1536`) | MiB of system memory kept free for Windows, other programs and the game's own heap when the renderer sizes what it keeps in device memory, where device memory takes system memory (integrated GPUs, and discrete GPUs whose driver charges it to the process). | A larger value keeps fewer released textures and spare blocks when the system runs short; a smaller one lets the game use more before it holds back. | Caution |
 | `one_per_core` (default `0`) | `1` keeps the process on the first logical processor of each physical core; `ab` switches it with the `ab` blocks. | Busy threads stop sharing a core with a sibling thread, which can help or hurt on the CPU; it only applies when the CPU has hyperthreads. | Caution |
 | `reexec` | Counter of address-space retries that the runtime sets itself when it starts the process again. | The counter is cleared when the window is recreated; a value of 20 or more stops the start with a fatal error. | Risky |
 | `replay_chunks` (default `0`) | Most chunks a submission is cut into when `replay_workers` is set; `0` uses twice the number of recording threads. | Fewer chunks leave threads idle at the end of a submission, more add scan and submit work per chunk; no effect while `replay_workers` is `0`. | Caution |
@@ -190,6 +191,7 @@ Many rows below are developer tools that only act together with another setting 
 | `restart_wait` | Set by the runtime when it restarts itself; names the old process by id and creation time so the new process waits for it to exit. | Meant for the runtime's own use; the code does not describe a manual value. | Unknown |
 | `spin` (default `1`) | `0` makes a guest thread that polls memory keep its virtual core. | Polling threads can starve the thread whose item they wait for, so frames can stall. | Caution |
 | `spin_handoff_us` (default `50`) | Microseconds a polling wait lasts before it gives its virtual core to a waiting thread. | A shorter value hands cores over sooner; a longer one keeps them longer. | Caution |
+| `tex_released_mib` (default `256`) | MiB of textures the game released that are kept for reuse; older ones beyond it are dropped. `0` keeps up to 2048 of them, whatever their size. | A larger value keeps more device memory and process commit; a smaller one makes the game create more textures again. | Caution |
 
 ## Generated-code patches
 
