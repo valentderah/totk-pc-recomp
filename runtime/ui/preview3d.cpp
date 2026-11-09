@@ -254,6 +254,18 @@ VkImageView make_view(VkImage img, VkFormat fmt, VkImageAspectFlags aspect) {
     return v;
 }
 
+// Releases the offscreen target and the two stream buffers. Called on a failure path so a partly created target does not
+// keep its images and allocations for the life of the process, and by nothing else: this pass is built once at start.
+static void drop_targets() {
+    if (S.tex != VK_NULL_HANDLE) { ImGui_ImplVulkan_RemoveTexture(S.tex); S.tex = VK_NULL_HANDLE; }
+    if (S.color_view != VK_NULL_HANDLE) { vkDestroyImageView(S.device, S.color_view, NULL); S.color_view = VK_NULL_HANDLE; }
+    if (S.depth_view != VK_NULL_HANDLE) { vkDestroyImageView(S.device, S.depth_view, NULL); S.depth_view = VK_NULL_HANDLE; }
+    if (S.color != VK_NULL_HANDLE) { vmaDestroyImage(S.vma, S.color, S.color_alloc); S.color = VK_NULL_HANDLE; S.color_alloc = nullptr; }
+    if (S.depth != VK_NULL_HANDLE) { vmaDestroyImage(S.vma, S.depth, S.depth_alloc); S.depth = VK_NULL_HANDLE; S.depth_alloc = nullptr; }
+    if (S.vtx_buf != VK_NULL_HANDLE) { vmaDestroyBuffer(S.vma, S.vtx_buf, S.vtx_alloc); S.vtx_buf = VK_NULL_HANDLE; S.vtx_alloc = nullptr; S.vtx_map = nullptr; }
+    if (S.idx_buf != VK_NULL_HANDLE) { vmaDestroyBuffer(S.vma, S.idx_buf, S.idx_alloc); S.idx_buf = VK_NULL_HANDLE; S.idx_alloc = nullptr; S.idx_map = nullptr; }
+}
+
 int make_targets(uint32_t w, uint32_t h) {
     for (int i = 0; i < 2; i++) {
         VkImageCreateInfo ci{};
@@ -459,6 +471,9 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
             total_tris += bfres_shape_triangles(model, s);
         }
         if (total_verts < 3 || total_tris < 1) return -1;
+        // The index buffer is uint16, so one part's vertices must fit in 16 bits: a larger model would have its indices
+        // wrapped by the cast below and draw triangles between unrelated vertices.
+        if (total_verts > 65535) return -1;
         const uint32_t vtx_bytes = (uint32_t)total_verts * 12u;
         const uint32_t idx_bytes = (uint32_t)total_tris * 6u;
         if (S.vtx_used + vtx_bytes > kVtxCapacity || S.idx_used + idx_bytes > kIdxCapacity) return -1;
@@ -471,14 +486,25 @@ static int upload_part_named(const char *name, int as_model_name, int hide_blade
         float box_lo[3] = {1e30f, 1e30f, 1e30f}, box_hi[3] = {-1e30f, -1e30f, -1e30f};
         int hid_shapes = 0;
 
+        // One scratch buffer for every shape, sized for the largest one, instead of an alloca per shape: alloca is only
+        // released when the function returns, so a model of many shapes accumulated its whole geometry on the stack.
+        int max_verts = 0, max_tris = 0;
+        for (int s = 0; s < model->count; s++) {
+            const int nv = bfres_shape_vertices(model, s), nt = bfres_shape_triangles(model, s);
+            if (nv > max_verts) max_verts = nv;
+            if (nt > max_tris) max_tris = nt;
+        }
+        if (max_verts <= 0 || max_tris <= 0) return -1;
+        float *verts = (float *)alloca((size_t)max_verts * 3 * sizeof(float));
+        uint16_t *tris = (uint16_t *)alloca((size_t)max_tris * 3 * sizeof(uint16_t));
+
         int vbase = 0, tbase = 0;
         for (int s = 0; s < model->count; s++) {
             const int hidden = hide_blade && shape_is_hidden_blade(model, s);
             const int nverts = bfres_shape_vertices(model, s);
             const int ntris = bfres_shape_triangles(model, s);
             if (nverts <= 0 || ntris <= 0) continue;
-            float *verts = (float *)alloca((size_t)nverts * 3 * sizeof(float));
-            uint16_t *tris = (uint16_t *)(alloca((size_t)ntris * 3 * sizeof(uint16_t)));
+            if (nverts > max_verts || ntris > max_tris) continue;   // cannot happen: the sizes above are the maximum
             const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
             if (vc <= 0) continue;
             if (hidden) {
@@ -701,6 +727,9 @@ extern "C" int preview3d_init(void) {
     vk_queue_lock();   // everything the allocator does here happens with no frame in flight and no other allocator user
     const int targets = make_targets(kImageSize, kImageSize);
     const int streams = targets ? make_streams() : 0;
+    // A target that was built halfway holds images and allocations that nothing else will ever release: this pass is
+    // created once, and a failed one is never retried. Drop them here, under the same lock that made them.
+    if (!targets || !streams) drop_targets();
     vk_queue_unlock();
     S.want_w = S.want_h = kImageSize;
     S.ok = targets && streams;
