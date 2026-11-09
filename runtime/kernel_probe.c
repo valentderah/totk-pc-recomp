@@ -682,6 +682,25 @@ static int cmp_u64(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+// A refused commit waits and retries (memory.c commit, oom.c rt_oom_wait): three forced refusals, then the page maps.
+static void test_oom_commit(void) {
+    const RtGuestLayout *g = mem_layout();
+    uint64_t a = g->alias.base + g->alias.size - 0x10000;
+    rt_oom_force(RT_OOM_COMMIT, 3);
+    uint64_t t0 = plat_now_ms();
+    uint32_t r = mem_map_physical(a, 0x1000);
+    uint64_t ms = plat_now_ms() - t0;
+    CHECK(r == 0 && rt_oom_forced_left(RT_OOM_COMMIT) == 0 && ms >= 20,
+          "MapPhysicalMemory after 3 refused commits: result %#x, %d refusals left, %llu ms", r,
+          rt_oom_forced_left(RT_OOM_COMMIT), (unsigned long long)ms);
+    rt_oom_force(RT_OOM_COMMIT, 0);
+    if (r == 0) {
+        *(volatile uint64_t *)(uintptr_t)a = 1;
+        CHECK(mem_unmap_physical(a, 0x1000) == 0, "UnmapPhysicalMemory after the refused commits");
+    }
+    printf("oom: commit waited %llu ms through 3 refusals\n", (unsigned long long)ms);
+}
+
 static void test_platform(void) {
     PlatThread *t = plat_thread_new(plat_worker, (void *)(intptr_t)1, "probe-kernel plat");
     CHECK(t, "plat_thread_new");
@@ -792,6 +811,7 @@ int probe_kernel(void) {
         return 1;
     }
     test_platform();
+    test_oom_commit();
     test_crash_report();
     kern_run_on_guest_main(probe_main);
     RtStats s = rt_stats();

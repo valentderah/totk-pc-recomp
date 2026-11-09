@@ -363,6 +363,16 @@ static CbRes *cb_res(VkExec *ex) {
     return D->cur;
 }
 
+typedef struct { const VkBufferCreateInfo *bi; const VmaAllocationCreateInfo *ai; Chunk *c; VmaAllocationInfo info;
+                 VkResult r; } ChunkTry;
+static int chunk_try(void *arg) {
+    ChunkTry *t = arg;
+    vk_mem_collect();   // the fence thread's collect waits while the caller holds cmd_lock
+    t->r = rt_oom_forced(RT_OOM_CHUNK) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                       : vmaCreateBuffer(vk_ctx()->vma, t->bi, t->ai, &t->c->buf, &t->c->alloc, &t->info);
+    return t->r == VK_SUCCESS;
+}
+
 static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     CbRes *r = cb_res(ex);
     size = (size + 255) & ~255ull;
@@ -396,10 +406,17 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                       .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
-        VmaAllocationInfo info;
-        VkResult res = vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &c->buf, &c->alloc, &info);
-        if (res != VK_SUCCESS) rt_fatal("vk: transient buffer of %llu bytes failed (%d)", (unsigned long long)n, (int)res);
-        c->map = info.pMappedData, c->size = n, c->used = 0;
+        // Out of memory: the recording waits for memory (rt_oom_wait) with what it holds (the texture lock at most,
+        // which vk_oom_release takes before cmd_lock); new chunks are made only when the spare ones ran out.
+        ChunkTry ct = {.bi = &bi, .ai = &ai, .c = c};
+        ct.r = rt_oom_forced(RT_OOM_CHUNK) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                           : vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &c->buf, &c->alloc, &ct.info);
+        if (ct.r == VK_ERROR_OUT_OF_HOST_MEMORY || ct.r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_oom_release();
+            rt_oom_wait("vk: transient buffer", n, chunk_try, &ct);
+        }
+        if (ct.r != VK_SUCCESS) rt_fatal("vk: transient buffer of %llu bytes failed (%d)", (unsigned long long)n, (int)ct.r);
+        c->map = ct.info.pMappedData, c->size = n, c->used = 0;
         r->nchunks++;
     }
     *buf = c->buf;
