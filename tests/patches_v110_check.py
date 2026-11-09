@@ -133,7 +133,8 @@ def main():
                             if name in ('aspect', 'fov'):
                                 assert ex[10] == x[10]
                         allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade') else {9} if kind == 'map' else set()
-                        allowed_v = {0, 1} if kind == 'map' else {target}
+                        # Integer destinations do not authorize writes to the same-numbered SIMD register.
+                        allowed_v = set() if kind in ('offset', 'source', 'shadow', 'cascade') else {0, 1} if kind == 'map' else {target}
                         if enabled and kind in ('map', 'aim', 'gyro'):
                             allowed_v |= {16}
                             if kind == 'map':
