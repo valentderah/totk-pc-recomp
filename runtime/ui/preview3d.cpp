@@ -905,7 +905,26 @@ extern "C" void preview3d_record(void *command_buffer) {
                                at.scale_xyz[1] == 1.0f && at.scale_xyz[2] == 1.0f) {
                         if (weapon_extent > 0.0005f && mat_extent > weapon_extent) fit = weapon_extent / mat_extent;
                     }
-                    if (fuse_placement(p, S.parts[sub_slot], at, bone, fit, S.fuse_at[k])) S.fuse_slot_at[k] = sub_slot;
+                    if (fuse_placement(p, S.parts[sub_slot], at, bone, fit, S.fuse_at[k])) {
+                        S.fuse_slot_at[k] = sub_slot;
+                        // Where the material ended up, in the weapon's own model space, measured against the weapon's box:
+                        // this is what makes a fused placement checkable from the log instead of only from a picture. The
+                        // per-axis gap is how far the material's box sits outside the weapon's along each axis, so a
+                        // negative number is how far it is buried on that axis.
+                        if (S.frame < 4) {
+                            float mlo[3], mhi[3];
+                            material_box(S.parts[sub_slot], S.fuse_at[k], mlo, mhi);
+                            char gaps[96];
+                            int off = 0;
+                            for (int a = 0; a < 3; a++) {
+                                const float gap = mhi[a] < p.lo[a] ? p.lo[a] - mhi[a]
+                                                : p.hi[a] < mlo[a] ? p.hi[a] - mlo[a] : 0.0f;
+                                off += snprintf(gaps + off, sizeof gaps - (size_t)off, "%s%.3f", a ? " " : "", (double)gap);
+                            }
+                            rt_log("preview3d: fuse %s on %s: bone %s, scale %.3f, gap along x/y/z %s m",
+                                   at.model, bp->names[k], at.bone, (double)fit, gaps);
+                        }
+                    }
                 }
             }
         }
