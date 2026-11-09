@@ -41,7 +41,6 @@ Code copied or adapted from another project is listed here with its source, the 
 | AMD Display Library (ADL) declarations: `AdapterInfo`, `ADLSingleSensorData`, `ADLPMLogDataOutput`, the `ADL_PMLOG_*` sensor numbers and the `ADL2_*` function signatures | https://github.com/GPUOpen-LibrariesAndSDKs/display-library @ `84c881cb2136f04287eb3af12de00a9e2867aa9e` (`include/adl_structures.h`, `include/adl_defines.h`, `include/adl_sdk.h`), Copyright (c) 2016 - 2022 Advanced Micro Devices, Inc. | MIT | `runtime/perfmon.c` |
 | Zstandard 1.5.7 (MSYS2 `mingw-w64-ucrt-x86_64-zstd`), static link | https://github.com/facebook/zstd, Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | `runtime/resolution.c` (the HeapDef table), `runtime/ov_zstd.c` (the game's zstd frames decoded on the host) |
 | musl `fma.c`, `fmaf.c` and `scalbn.c`, adapted into one file for the x86-64-v2 build | https://github.com/kraj/musl @ `5a56ad13e1e0790c06122978aad2a14d6b9efc1a` (mirror of https://git.musl-libc.org/cgit/musl), Copyright (c) 2005-2020 Rich Felker and contributors | MIT | `runtime/fma.c` (the correctly rounded fma/fmaf the FP lowering needs on CPUs without FMA3) |
-
 | MacNativeGames texture pool offset fix: widen the 32-bit texture storage and packaged-data offsets unsigned | https://github.com/ly05010419/MacNativeGames @ `ca311e2d` (`games/totk/runtime/game_patches.c` patch_pool_offset), Copyright (c) 2026 MacNativeGames contributors | MIT | `recomp/patches-v110.txt` (set pooloff; sites located again in 1.1.0) |
 
 ## Compiler runtime in a source build
