@@ -101,6 +101,12 @@ static struct {
     VkPipeStats stats;
 } P = {.lock = PLAT_MUTEX_INIT};
 
+// Builds into P.cache take it shared, vk_pipeline_save takes it to copy the cache out. Vulkan lets
+// vkGetPipelineCacheData run alongside builds into a cache created without the EXTERNALLY_SYNCHRONIZED bit, but
+// Intel's Windows driver (101.7085, Iris Xe) faults in it (igvk64.dll, reading 0x170) when the first autosave meets the
+// boot's pipeline builds (#681). Nothing is taken while it is held.
+static PlatMutex cache_use = PLAT_MUTEX_INIT;
+
 typedef struct Layout {
     struct Layout *next;
     uint64_t hash;
@@ -1440,7 +1446,9 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
     if (k->fbl & 1) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     if (k->fbl & 2) pi.flags |= VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     uint64_t p0 = perf_begin();
+    plat_mutex_lock_shared(&cache_use);
     VkResult r = vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe);
+    plat_mutex_unlock_shared(&cache_use);
     perf_end(PERF_PIPE, p0);   // counts on the render thread only, so background builds stay out of it
     if (r != VK_SUCCESS) {
         rt_log("vk_pipeline: vkCreateGraphicsPipelines failed (%d)", (int)r);
@@ -1591,7 +1599,9 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
         ri.depthAttachmentFormat = (VkFormat)k->depth, ri.stencilAttachmentFormat = (VkFormat)k->stencil;
         pi.pColorBlendState = &cb, pi.pMultisampleState = &ms;
     }
+    plat_mutex_lock_shared(&cache_use);
     if (vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    plat_mutex_unlock_shared(&cache_use);
 out:
     if (m) vkDestroyShaderModule(P.device, m, NULL);
     free(patched);
@@ -1803,7 +1813,8 @@ static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc
 // shaders (gfx_shader_get results) live for the process (gfx_shader_drop_memory is the shader probe's, which builds no
 // pipelines), layouts until vk_pipeline_shutdown, which drains the queue first. Workers call vkCreateGraphicsPipelines
 // without P.lock: P.cache is created without VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT, so the driver
-// synchronises it, vkGetPipelineCacheData in vk_pipeline_save included. Compute pipelines stay synchronous: a skipped
+// synchronises the builds among themselves. vk_pipeline_save still keeps them apart from vkGetPipelineCacheData (see
+// cache_use). Compute pipelines stay synchronous: a skipped
 // dispatch can change what the game computes.
 //
 // Two queues: draws' misses (A.head) and the boot prebuild (A.low, see "pipeline keys" below). Workers take the low
@@ -2512,7 +2523,7 @@ static void prebuild_start(void) {
     plat_mutex_unlock(&P.lock);
 }
 
-// A compute pipeline for cs in layout l; VK_NULL_HANDLE on failure. No lock needed (P.cache is driver-synchronised).
+// A compute pipeline for cs in layout l; VK_NULL_HANDLE on failure. Takes cache_use shared, like the graphics builds.
 static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
@@ -2525,7 +2536,9 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
                                       .layout = l->layout};
     pin_subgroup32(&ci.stage, &rqc, code, words);
     VkPipeline pipe = VK_NULL_HANDLE;
+    plat_mutex_lock_shared(&cache_use);
     if (vkCreateComputePipelines(P.device, P.cache, 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    plat_mutex_unlock_shared(&cache_use);
     vkDestroyShaderModule(P.device, m, NULL);
     return pipe;
 }
@@ -3168,6 +3181,118 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     return streams;
 }
 
+// The values vk_pipeline_set_dynamic records for a state, as the commands take them.
+typedef struct {
+    VkCullModeFlags cull;
+    VkFrontFace front;
+    VkPrimitiveTopology topo;
+    VkBool32 dt, dw, st, bias, discard, restart, clamp, a2c;
+    VkCompareOp df, scmp[2];
+    VkStencilOp sop[2][3];               // fail, pass, depth fail; front, back
+    VkPolygonMode poly;
+    int n;                               // colour attachments en, eq and wm hold
+    VkBool32 en[8];
+    VkColorBlendEquationEXT eq[8];
+    VkColorComponentFlags wm[8];
+} DynVals;
+
+static void dyn_vals(const VkPipeState *s, DynVals *o) {
+    const poly_st *pl = &s->poly;
+    const ds_st *d = &s->ds;
+    memset(o, 0, sizeof *o);
+    o->cull = (VkCullModeFlags)(pl->cull & 3);
+    o->front = pl->front == NVN_FRONT_FACE_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    o->topo = vk_pipeline_topology(s->prim);
+    o->dt = d->dt, o->dw = d->dw, o->st = d->st;
+    o->df = compare_op(d->df);
+    o->sop[0][0] = stencil_op(d->fail_f), o->sop[0][1] = stencil_op(d->zpass_f), o->sop[0][2] = stencil_op(d->zfail_f);
+    o->sop[1][0] = stencil_op(d->fail_b), o->sop[1][1] = stencil_op(d->zpass_b), o->sop[1][2] = stencil_op(d->zfail_b);
+    o->scmp[0] = compare_op(d->sf_f), o->scmp[1] = compare_op(d->sf_b);
+    unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
+    o->bias = (pl->offset_en >> mode & 1) != 0;
+    o->discard = s->raster_discard != 0, o->restart = s->prim_restart != 0;
+    o->clamp = s->depth_clamp != 0, o->a2c = s->ms.a2c != 0;
+    o->poly = polygon_mode(pl->mode);
+    o->n = target_count(s);
+    for (int i = 0; i < o->n; i++) {
+        const blend_st *b = &s->blend[i];
+        o->en[i] = (s->color.blend_en >> i & 1) && blendable(target_format(s->color_fmt[i], NULL, NULL));
+        o->eq[i] = (VkColorBlendEquationEXT){blend_factor(b->src_rgb), blend_factor(b->dst_rgb), blend_op(b->eq_rgb),
+                                             blend_factor(b->src_a), blend_factor(b->dst_a), blend_op(b->eq_a)};
+        o->wm[i] = target_wmask(s, i);
+    }
+}
+
+// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it (the replay thread only):
+// the values, the inputs of the vertex input and the vertex bindings it reads. Invariant while the caller passes
+// valid 1: cb holds DC.v for every dynamic state of P.dyn, colour attachments [0, DC.v.n) included.
+static struct {
+    DynVals v;
+    const GfxShader *vs;
+    uint32_t vattr[16];
+    vs_st vstream[16];
+    uint32_t streams;
+} DC;
+
+uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s, int valid, uint32_t *cmds) {
+    *cmds = 0;
+    if (!ensure_init()) return VK_PIPE_ALL_BINDINGS;
+    if (!valid) {   // a new command buffer, or one whose dynamic state someone else set: everything, as before
+        uint32_t streams = vk_pipeline_set_dynamic(cb, s);
+        dyn_vals(s, &DC.v);
+        DC.vs = s->vs, DC.streams = streams;
+        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+        *cmds = 1;
+        return streams;
+    }
+    DynVals v;
+    dyn_vals(s, &v);
+    const DynVals *o = &DC.v;
+    uint32_t k = 0;
+    if (v.cull != o->cull) vkCmdSetCullMode(cb, v.cull), k++;
+    if (v.front != o->front) vkCmdSetFrontFace(cb, v.front), k++;
+    if (v.topo != o->topo) vkCmdSetPrimitiveTopology(cb, v.topo), k++;
+    if (v.dt != o->dt) vkCmdSetDepthTestEnable(cb, v.dt), k++;
+    if (v.dw != o->dw) vkCmdSetDepthWriteEnable(cb, v.dw), k++;
+    if (v.df != o->df) vkCmdSetDepthCompareOp(cb, v.df), k++;
+    if (v.st != o->st) vkCmdSetStencilTestEnable(cb, v.st), k++;
+    for (int f = 0; f < 2; f++)
+        if (memcmp(v.sop[f], o->sop[f], sizeof v.sop[f]) || v.scmp[f] != o->scmp[f])
+            vkCmdSetStencilOp(cb, f ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT, v.sop[f][0], v.sop[f][1],
+                              v.sop[f][2], v.scmp[f]),
+                k++;
+    if (v.bias != o->bias) vkCmdSetDepthBiasEnable(cb, v.bias), k++;
+    if (v.discard != o->discard) vkCmdSetRasterizerDiscardEnable(cb, v.discard), k++;
+    if (v.restart != o->restart) vkCmdSetPrimitiveRestartEnable(cb, v.restart), k++;
+    // The vertex input is made from the vertex shader's inputs and the attribute and stream states alone
+    // (vertex_input): a draw that keeps all three keeps it, and the bindings it reads.
+    if (s->vs != DC.vs || memcmp(s->vattr, DC.vattr, sizeof DC.vattr) || memcmp(s->vstream, DC.vstream, sizeof DC.vstream)) {
+        uint32_t streams = VK_PIPE_ALL_BINDINGS;
+        if (s->vs) {
+            VtxInput vi;
+            vertex_input(s, &vi);
+            if (P.dyn_vi) rec_vertex_input(P.set_vi, cb, vi.n_bind, vi.b, vi.n_attr, vi.a), k++;
+            streams = 0;
+            for (uint32_t i = 0; i < vi.n_bind; i++) streams |= 1u << vi.b[i].binding;
+        }
+        DC.vs = s->vs, DC.streams = streams;
+        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+    }
+    if (P.dyn_clamp && v.clamp != o->clamp) rec_bool(P.set_clamp, cb, v.clamp), k++;
+    if (P.dyn_poly && v.poly != o->poly) rec_polygon_mode(P.set_poly, cb, v.poly), k++;
+    if (P.dyn_a2c && v.a2c != o->a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, v.a2c), k++;
+    // Attachments past o->n may hold nothing yet in this command buffer: a state with more targets sets all of them.
+    // One with fewer leaves the ones past its count as they were, which no draw of it reads.
+    uint32_t n = (uint32_t)v.n;
+    int all = v.n > o->n;
+    if (n && P.dyn_blend_en && (all || memcmp(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
+    if (n && P.dyn_blend_eq && (all || memcmp(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
+    if (n && P.dyn_wmask && (all || memcmp(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
+    DC.v = v;   // the invariant now covers [0, v.n) only
+    *cmds = k;
+    return DC.streams;
+}
+
 // ---- statistics, persistence, teardown
 
 void vk_pipeline_stats(VkPipeStats *s) {
@@ -3178,7 +3303,8 @@ void vk_pipeline_stats(VkPipeStats *s) {
 
 static PlatMutex save_lock = PLAT_MUTEX_INIT;   // one cache save at a time; shutdown takes it to destroy the cache
 
-void vk_pipeline_save(void) {
+// One cache save; wait: queue for cache_use (the exit saves) rather than try for it (the autosave).
+static void cache_save(int wait) {
     if (P.ready) keys_flush();
     if (P.ready && P.gpl) {
         rt_log("vk_pipeline: gpl: %llu fast links (%llu by workers; avg %.2f ms, max %.2f ms, %llu failed), %llu draws "
@@ -3205,22 +3331,45 @@ void vk_pipeline_save(void) {
     }
     gfx_shader_record_flush(1);
     if (!P.ready || !P.cache || !P.cache_path[0]) return;
-    // Not under P.lock: the driver synchronises P.cache, and holding P.lock through the copy and the file write (about
-    // 60 ms on the 1.4.3 fight) stopped every pipeline lookup of the replay, a freeze at each 20 s autosave.
+    // Not under P.lock: holding it through the copy and the file write (about 60 ms on the 1.4.3 fight) stopped every
+    // pipeline lookup of the replay, a freeze at each 20 s autosave. Only the copy takes cache_use, so no pipeline is
+    // being built into P.cache while the driver reads it.
     plat_mutex_lock(&save_lock);
     if (!P.cache) {   // vk_pipeline_shutdown destroyed it
         plat_mutex_unlock(&save_lock);
         return;
     }
+    uint64_t t0 = qpc();
+    if (wait) {
+        plat_mutex_lock(&cache_use);
+    } else {
+        // The autosave never queues for cache_use: a queued exclusive request on an SRW lock holds back new shared
+        // ones, so the drawing thread's next build would wait for a worker's build to end. It tries for about 2 s
+        // and otherwise saves on its next round.
+        int got = 0;
+        for (int i = 0; i < 1000 && !(got = plat_mutex_trylock(&cache_use)); i++) plat_sleep_ms(2);
+        if (!got) {
+            rt_log("vk_pipeline: cache save put off, pipelines were being built for %.0f ms", ms_since(t0));
+            plat_mutex_unlock(&save_lock);
+            return;
+        }
+    }
+    uint64_t t1 = qpc();
     size_t size = 0;
     void *data = NULL;
-    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
-        vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
-        if (!plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
-    }
+    int ok = vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
+             vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS;
+    plat_mutex_unlock(&cache_use);
+    // The copy time is how long a pipeline build on the drawing thread (a compute miss, under P.lock) can wait for
+    // this save; the wait is how long the save waited for builds in flight.
+    rt_log("vk_pipeline: cache %s: %.1f MB copied in %.1f ms, after %.1f ms waiting for builds", wait ? "save" : "autosave",
+           (double)size / 1e6, ms_since(t1), (double)(t1 - t0) / 1e6);
+    if (ok && !plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
     free(data);
     plat_mutex_unlock(&save_lock);
 }
+
+void vk_pipeline_save(void) { cache_save(1); }
 
 // The game never shuts the device down (boot.c and the window end the process), so the cache is saved while it
 // runs: at most every 20 s, and only after new pipelines were built. New pipeline keys are appended every 2 s.
@@ -3235,7 +3384,7 @@ static void autosave_once(void) {
     vk_pipeline_stats(&s);
     if (s.graphics + s.compute == last_n) return;
     last_n = s.graphics + s.compute, last_ms = now;
-    vk_pipeline_save();
+    cache_save(0);
 }
 
 // On its own thread: the save (vkGetPipelineCacheData and the file write, about 60 ms) and the key appends (a flush to

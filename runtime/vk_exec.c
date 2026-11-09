@@ -183,6 +183,7 @@ static void memory_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAcce
 // be made (logged). Replay thread.
 static int bc_standin(const VkTexImage *img, uint32_t level, VkFormat fmt, BcStandIn *out) {
     static int warned;
+    if (img->gone) return 0;   // dropped since the lookup: a stand-in kept by its handle would outlive it
     plat_mutex_lock(&bcs_lock);
     int full = nbcs == BC_STANDINS;
     for (int i = 0; i < nbcs; i++)

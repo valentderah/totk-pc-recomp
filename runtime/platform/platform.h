@@ -222,9 +222,10 @@ _Noreturn void plat_reexec(void);
 // - A fault in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
 //   overflow) is reported as it happens.
 // - A fault in another module (a GPU driver, a system library) is reported only when nothing handles it: on Windows
-//   from the unhandled-exception filter, with the return addresses in this executable on the faulting thread's stack,
-//   so the report shows which host call ran into the driver; on Linux from the signal handler, without frames. Drivers
-//   that raise and catch their own exceptions never reach fn.
+//   from the unhandled-exception filter, with the return addresses on the faulting thread's stack in every module, so
+//   the report shows which driver code failed and which host call ran into it; on Linux from the signal handler,
+//   without frames. Drivers that raise and catch their own exceptions never reach fn. For a C++ exception thrown by
+//   MSVC-built code (a driver) the report names its type and, for a std::exception, its what() text.
 // - On Windows abort() (a failed assert, std::terminate) and an invalid parameter to a C runtime function go there
 //   too, with the host frames in this executable: the C runtime ends the process for both with 0xc0000409 and no
 //   exception.
@@ -234,9 +235,14 @@ typedef struct {
     uintptr_t rip, offset;     // the faulting instruction, and its offset in its module
     int access;                // the data access that faulted: 0 read, 1 write, 8 execute; -1 when not an access
     uint64_t addr;             // its address when access >= 0
-    int nframes;               // return addresses in this executable, innermost first: for abort and invalid parameter
-    uintptr_t frames[16];      // (rip is frames[0]) and for a fault in another module; 0 for a fault in this one
+    int nframes;               // return addresses, innermost first: for abort and invalid parameter (rip is frames[0])
+    uintptr_t frames[32];      // and for a fault in another module; 0 for a fault in this one
+    const char *frame_module[32];   // the module of each frame: NULL for this executable, "" for none
+    uintptr_t frame_offset[32];     // each frame's offset in its module
+    int frames_left_out;       // frames in other modules past the limit the walk keeps, so this executable's still fit
     const char *module;        // the module holding rip: NULL for this executable, "" for none (a jump to address 0)
+    const char *cxx_type;      // a C++ exception from MSVC-built code: the thrown type's decorated name (.?AV...@@)
+    const char *cxx_what;      // and what() when the type derives from std::exception; NULL when unknown
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
@@ -387,6 +393,16 @@ int plat_open_folder(const char *path);                   // shows the folder in
 // in the system directories only. NULL when missing.
 void *plat_lib_open(const char *name);
 void *plat_lib_sym(void *lib, const char *name);
+// Why the calling thread's last plat_lib_open failed, for a log line (the OS error code on Windows, dlerror on Linux).
+void plat_lib_error(char *out, size_t cap);
+
+// ---- NVIDIA NGX (vk_dlaa.c). The path of the driver's NGX core library into out: on Windows _nvngx.dll in the folder
+// the driver records in the registry (NGXCore FullPath), on Linux libnvidia-ngx.so.1, which the dynamic loader finds
+// where the driver put it. 0 when the driver records none.
+int plat_ngx_core_path(char *out, size_t cap);
+// The running executable's folder with a trailing separator, as the wchar_t string NGX takes for its application data
+// path (UTF-16 on Windows, UTF-32 code points on Linux). 0 on failure or when out has no room.
+int plat_exe_dir_wide(wchar_t *out, size_t cap);
 
 // ---- machine load for the performance overlay (perfmon.c's sampling thread; each call can take milliseconds). A number
 // the system does not give is -1.
