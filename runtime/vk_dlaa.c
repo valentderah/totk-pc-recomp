@@ -294,6 +294,7 @@ static struct {
     unsigned cfg_seen;           // cfg_version when preset was read
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
+#define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
@@ -949,7 +950,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
-        for (int i = 0; i < 3; i++)
+        for (size_t i = 0; i < DLSS_SIZES; i++)
             if (D.sizes[i].out) free_size(&D.sizes[i]);
         D.last = NULL, D.preset_dirty = 0;
     }
