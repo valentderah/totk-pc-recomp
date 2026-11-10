@@ -135,6 +135,22 @@ static struct FfxApiResource resource(VkImage img, VkFormat f, uint32_t w, uint3
     return r;
 }
 
+// The library's Vulkan backend takes its device commands from the function given to it. Where the GPU lists
+// VK_KHR_dedicated_allocation it calls vkGetBufferMemoryRequirements2KHR without looking at what it got
+// (sdk/src/backends/vk/ffx_vk.cpp CreateBackendContextVK). This device is Vulkan 1.3 and enables neither that
+// extension nor VK_KHR_get_memory_requirements2, both core since 1.1, so the loader has nothing under the KHR name and
+// the library would call address 0. A KHR name the device does not have is answered with the core command it was
+// promoted to, which is the same command.
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL proc_addr(VkDevice dev, const char *name) {
+    PFN_vkVoidFunction fn = vkGetDeviceProcAddr(dev, name);
+    size_t n = strlen(name);
+    char core[96];
+    if (fn || n <= 3 || n >= sizeof core || strcmp(name + n - 3, "KHR")) return fn;
+    memcpy(core, name, n - 3);
+    core[n - 3] = 0;
+    return vkGetDeviceProcAddr(dev, core);
+}
+
 static void destroy(void) {
     if (!F.ctx) return;
     vkDeviceWaitIdle(vk_ctx()->device);   // its images may still be read by the frames before this one
@@ -153,7 +169,7 @@ static int context_for(const VkFsr3Frame *f) {
     if (mh > moh) moh = mh;
     struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
                                              .vkDevice = c->device, .vkPhysicalDevice = c->phys,
-                                             .vkDeviceProcAddr = vkGetDeviceProcAddr};
+                                             .vkDeviceProcAddr = proc_addr};
     // linear scene light, no exposure texture, scene sizes that change from frame to frame; the motion vectors are
     // at the scene's size and without the jitter, which are the library's defaults
     struct ffxCreateContextDescUpscale up = {
