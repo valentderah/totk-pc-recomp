@@ -279,6 +279,7 @@ static struct {
     uint8_t *mvm_map;
     uint32_t mvm_slot;
     double cam_prev[16];         // last frame's view-projection (rows 3-6 of its block), for the reprojection
+    double inv_w[4];             // row 3 of this frame's inverse view-projection: 1 / clip w from ndc (mv_pass)
     int cam_slot, cam_prev_ok;   // the slot this frame writes / the other slot holds last frame's camera
     VkDescriptorSetLayout mv_dsl;
     VkPipelineLayout mv_layout;
@@ -581,6 +582,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
                     m[r * 4 + k] = v;
                 }
             have_m = 1;
+            memcpy(D.inv_w, ci + 12, sizeof D.inv_w);   // a pixel's distance, for the motion blur (vk_mblur.c)
         }
     }
     int s = D.cam_slot, had_prev = D.cam_prev_ok;
@@ -963,8 +965,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
-    int masked = 0;
+    int masked = 0, have_mv = 1;
     if (no_mv || !mv_pass(ex, e, zv, jx, jy, char_bias(), &masked)) {
+        have_mv = 0;
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
@@ -1061,11 +1064,16 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (mvdebug < 0) mvdebug = rt_knob("DLAA_MVDEBUG", "0");
     static int maskdebug = -1;
     if (maskdebug < 0) maskdebug = rt_knob("DLAA_MASKDEBUG", "0");
+    // Motion blur (vk_mblur.c, motion_blur): DLSS's picture blurred along this frame's vectors into an image of its
+    // own, which goes on in the picture's place. Not on a frame without vectors (no camera, or no last frame).
+    VkImage pic = e->out;
+    VkImageView pic_view = e->out_view;
+    if (have_mv) vk_mblur_apply(ex, &pic, &pic_view, ow, oh, e->mv_view, zv, w, h, D.inv_w);
     if (mvdebug || (maskdebug && mk)) b.srcOffsets[1] = (VkOffset3D){(int32_t)w, (int32_t)h, 1};
-    vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+    vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : pic, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                    VK_FILTER_NEAREST);
     full_barrier(cb);
-    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
+    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = pic_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
     vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;

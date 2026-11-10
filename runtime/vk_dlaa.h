@@ -49,6 +49,12 @@ void vk_mvcheck_final(VkCommandBuffer cb, uint64_t fence, VkImage mv, VkImage ci
                       uint32_t layer, uint32_t w, uint32_t h, float jx, float jy);
 const char *vk_mvobj_frame_masks(void);   // vk_exec_draw.c: the last motion list, per position and changed banks
 void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh);   // after DLSS on a check frame
+// vk_mblur.c (TOTK_MOTION_BLUR): after DLSS's evaluation, blurs its picture (*pic, ow x oh, RGBA16F) along the motion
+// vectors mv (w x h, scene pixels) with the scene depth, both as DLSS got them; inv_w gives a pixel's distance (row 3
+// of the inverse view-projection). 1: *pic and *pic_view now name the blurred picture, which stays valid until the
+// next call; 0: the setting is off or the pass cannot run, and they are unchanged.
+int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow, uint32_t oh, VkImageView mv,
+                   VkImageView depth, uint32_t w, uint32_t h, const double inv_w[4]);
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);

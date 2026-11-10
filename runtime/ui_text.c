@@ -166,6 +166,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_MOTION_BLUR] = "Motion blur",
+    [UI_MENU_MOTION_BLUR_DESC] = "Blurs what moves across the picture, the camera's motion and the characters' own, by "
+                                 "this share of each frame's motion; 0 turns it off. The HUD stays sharp. Works only "
+                                 "with DLSS / DLAA on, whose motion vectors it uses. Applies at once.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -649,6 +653,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_MOTION_BLUR] = "Размытие в движении",
+    [UI_MENU_MOTION_BLUR_DESC] = "Размывает то, что движется в кадре, — движение камеры и самих персонажей — на эту "
+                                 "долю движения за кадр; 0 выключает. Интерфейс остаётся чётким. Работает только с "
+                                 "включённым DLSS / DLAA: использует его векторы движения. Действует сразу.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1486,6 +1494,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_MOTION_BLUR] = "Desfoque de movimento",
+    [UI_MENU_MOTION_BLUR_DESC] = "Desfoca o que se move na imagem, o movimento da câmera e o dos próprios personagens, "
+                                 "por esta parte do movimento de cada quadro; 0 desliga. A interface continua nítida. "
+                                 "Só funciona com DLSS / DLAA ligado, cujos vetores de movimento ele usa. Vale na hora.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2096,6 +2108,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_MOTION_BLUR] = "动态模糊",
+    [UI_MENU_MOTION_BLUR_DESC] = "按每帧运动的这一比例模糊画面中移动的内容，包括镜头运动和角色自身的运动；0 为关闭。"
+                                 "界面保持清晰。仅在开启 DLSS / DLAA 时有效，因为它使用其运动矢量。立即生效。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
