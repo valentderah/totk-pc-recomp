@@ -1,15 +1,19 @@
 // Motion blur (TOTK_MOTION_BLUR, totk.ini motion_blur: the percentage of a frame's motion the blur spans, 0 = off,
 // read each frame). It works from what DLSS is given: the scene's motion vectors (vk_dlaa.c mv_pass: the camera's
-// motion, and with dlaa_objmv the characters' own over it) and the scene depth. So it runs only while DLSS or DLAA
-// does, right after DLSS's evaluation (vk_dlaa.c evaluate) and on DLSS's picture: that is scene light at the output
-// size, before the tonemap and before the HUD, which the game draws later and which stays sharp.
+// motion, and with dlaa_objmv the characters' own over it) and the scene depth. With DLSS it runs right after DLSS's
+// evaluation (vk_dlaa.c evaluate) on DLSS's picture, at the output size. Without DLSS (dlaa = 0, or a GPU without it)
+// vk_dlaa.c still follows the scene and makes the vectors while the blur is on, and the blur runs on the scene's light
+// target at the end of the scene (vk_dlaa.c blur_only). Either way the picture is scene light before the tonemap and
+// before the HUD, which the game draws later and which stays sharp.
 //
 // Two compute passes, recorded like the replay's own commands:
 //   1. runtime/shaders/motion_blur_tiles.comp: the longest motion vector of each tile of the motion image.
 //   2. runtime/shaders/motion_blur.comp: each pixel of the picture averaged along the longest motion near it, with
 //      samples weighted by depth and by their own motion (the filter of McGuire et al. 2012; the shader's header
 //      explains it). A pixel with no motion near it is copied.
-// The result goes into an image of this file's, which vk_dlaa.c then hands on in place of DLSS's output.
+// The result goes into an image of this file's, which vk_dlaa.c then hands on in place of DLSS's output or copies back
+// into the light target. That image only grows: TotK's dynamic resolution changes the picture's size from frame to
+// frame in the DLAA mode and without DLSS, and a smaller picture uses the top left of the image.
 //
 // Sizes. A tile is 8 * ceil(h / 180) scene pixels, 1/22.5 of the scene's height or more. The longest blur is 1/15 of
 // the picture's height (72 pixels at 1080p), so a smear reaches at most 1/30 of the height to either side of what
@@ -17,6 +21,7 @@
 // everything that can sweep over it in the 3 x 3 tiles around it. The tile image is TILES_W x TILES_H, enough for any
 // picture up to 5.6:1; only its top left ceil(w / tile) x ceil(h / tile) is written and read.
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -44,14 +49,12 @@ static struct {
     VmaAllocation tiles_mem;
     VkImageView tiles_view;
     int tiles_new;               // created, not yet in GENERAL
-    struct Out {                 // the blurred picture per output size (RGBA16F, GENERAL); the output size changes
-        uint32_t w, h;           // with a setting, so two cover a switch back and forth
+    struct Out {                 // the blurred picture (RGBA16F, GENERAL), in the top left of an image at least its size
+        uint32_t w, h;
         VkImage img;
         VmaAllocation mem;
         VkImageView view;
-        int fresh;               // created, not yet in GENERAL
-        uint64_t used;           // frames when it was last written
-    } out[2];
+    } out;
     uint64_t frames;
 } M = {.ok = -1, .percent = -1};
 
@@ -120,19 +123,23 @@ static int compute_pipe(const uint32_t *code, size_t bytes, uint32_t nbind, cons
     return r == VK_SUCCESS;
 }
 
-// Once, at the first frame with the setting on. The passes store into RG16F and RGBA16F images and filter the RGBA16F
-// picture; a device whose formats cannot do that keeps the picture as it is.
+// Once, at the first frame with the setting on. The passes store into RG16F and RGBA16F images, filter the picture
+// (RGBA16F from DLSS, else the game's light target, R11G11B10F or RGBA16F) and their result is blitted into the game's
+// target; a device whose formats cannot do that keeps the picture as it is.
 static int init(void) {
     if (M.ok >= 0) return M.ok;
     M.ok = 0;
     const VkCtx *c = vk_ctx();
-    VkFormatProperties rg, rgba;
+    VkFormatProperties rg, rgba, r11;
     vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_R16G16_SFLOAT, &rg);
     vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_R16G16B16A16_SFLOAT, &rgba);
+    vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &r11);
     VkFormatFeatureFlags st = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    VkFormatFeatureFlags pic = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((rg.optimalTilingFeatures & st) != st || (rgba.optimalTilingFeatures & st) != st ||
-        !(rgba.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
-        rt_log("mblur: motion blur off: the device cannot store into or filter 16-bit float images");
+        !(rgba.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+        (rgba.optimalTilingFeatures & pic) != pic || (r11.optimalTilingFeatures & pic) != pic) {
+        rt_log("mblur: motion blur off: the device cannot store into, filter or blit the float formats it works in");
         return 0;
     }
     VkDescriptorSetLayoutBinding tb[2] = {
@@ -166,58 +173,66 @@ static int init(void) {
     return M.ok = 1;
 }
 
-// The image the blurred picture is written to for an output size. A third size takes the place of the one used
-// longest ago, which no frame in flight still reads unless the size changed twice within those frames; the wait
-// covers that, as vk_dlaa.c free_size does for DLSS's own images.
-static struct Out *out_for(uint32_t w, uint32_t h) {
-    struct Out *e = NULL, *lru = &M.out[0];
-    for (int i = 0; i < 2; i++) {
-        if (M.out[i].img && M.out[i].w == w && M.out[i].h == h) return &M.out[i];
-        if (!M.out[i].img && !e) e = &M.out[i];
-        if (M.out[i].used < lru->used) lru = &M.out[i];
-    }
+static void out_free(void *arg) {
+    struct Out *o = arg;
     const VkCtx *c = vk_ctx();
-    if (!e) {
-        e = lru;
-        vkDeviceWaitIdle(c->device);
-        vkDestroyImageView(c->device, e->view, NULL);
-        vmaDestroyImage(c->vma, e->img, e->mem);
-        memset(e, 0, sizeof *e);
-    }
-    // TRANSFER_SRC: vk_dlaa.c blits it into the game's target
-    if (!image2d(w, h, VK_FORMAT_R16G16B16A16_SFLOAT,
-                 VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &e->img,
-                 &e->mem, &e->view)) {
-        if (e->view) vkDestroyImageView(c->device, e->view, NULL);
-        if (e->img) vmaDestroyImage(c->vma, e->img, e->mem);
-        memset(e, 0, sizeof *e);
-        return NULL;
-    }
-    e->w = w, e->h = h, e->fresh = 1;
-    return e;
+    if (o->view) vkDestroyImageView(c->device, o->view, NULL);
+    if (o->img) vmaDestroyImage(c->vma, o->img, o->mem);
+    free(o);
 }
 
-int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow, uint32_t oh, VkImageView mv,
-                   VkImageView depth, uint32_t w, uint32_t h, const double inv_w[4]) {
-    int percent = cfg_int("TOTK_MOTION_BLUR");
-    percent = percent < 0 ? 0 : percent > 100 ? 100 : percent;
-    if (percent != M.percent) {
-        if (percent) rt_log("mblur: motion blur over %d %% of each frame's motion", percent);
-        else if (M.percent > 0) rt_log("mblur: motion blur off");
-        M.percent = percent;
+// The image the blurred picture is written to: M.out when it is large enough (exact: just that size), else a new one
+// that covers both sizes, in GENERAL. The one it replaces was read by the frames before this one, so it goes when the
+// GPU has finished this submission, which comes after them. 0: no memory.
+static int out_for(VkExec *ex, uint32_t w, uint32_t h, int exact) {
+    struct Out *o = &M.out;
+    if (o->img && (exact ? o->w == w && o->h == h : o->w >= w && o->h >= h)) return 1;
+    struct Out n = {.w = exact || o->w < w ? w : o->w, .h = exact || o->h < h ? h : o->h};
+    // TRANSFER_SRC: vk_dlaa.c blits it into the game's target
+    int ok = image2d(n.w, n.h, VK_FORMAT_R16G16B16A16_SFLOAT,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &n.img,
+                     &n.mem, &n.view);
+    struct Out *old = malloc(sizeof *old);
+    if (!ok || !old) {
+        const VkCtx *c = vk_ctx();
+        if (n.view) vkDestroyImageView(c->device, n.view, NULL);
+        if (n.img) vmaDestroyImage(c->vma, n.img, n.mem);
+        free(old);
+        return 0;
     }
-    if (!percent || !init()) return 0;
+    *old = *o, *o = n;
+    if (old->img) vk_completion_add(ex->fence, out_free, old);
+    else free(old);
+    to_general(ex->cb, o->img), ex->recorded++;
+    return 1;
+}
+
+static int percent(void) {
+    int p = cfg_int("TOTK_MOTION_BLUR");
+    return p < 0 ? 0 : p > 100 ? 100 : p;
+}
+
+int vk_mblur_wanted(void) { return M.ok != 0 && percent() > 0; }
+
+int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow, uint32_t oh, VkImageView mv,
+                   VkImageView depth, uint32_t w, uint32_t h, const double inv_w[4], int exact) {
+    int pct = percent();
+    if (pct != M.percent) {
+        if (pct) rt_log("mblur: motion blur over %d %% of each frame's motion", pct);
+        else if (M.percent > 0) rt_log("mblur: motion blur off");
+        M.percent = pct;
+    }
+    if (!pct || !init()) return 0;
     uint32_t cell = (h + TILE_ROWS - 1) / TILE_ROWS, tile = 8 * cell;
     uint32_t tx = (w + tile - 1) / tile, ty = (h + tile - 1) / tile;
     if (tx > TILES_W || ty > TILES_H) return 0;   // a picture wider than 5.6:1
-    struct Out *o = out_for(ow, oh);
-    if (!o) {
+    if (!out_for(ex, ow, oh, exact)) {
         rt_log("mblur: motion blur off: no memory for a %ux%u picture", ow, oh);
         return M.ok = 0;
     }
+    struct Out *o = &M.out;
     VkCommandBuffer cb = ex->cb;
     if (M.tiles_new) to_general(cb, M.tiles), M.tiles_new = 0, ex->recorded++;
-    if (o->fresh) to_general(cb, o->img), o->fresh = 0, ex->recorded++;
 
     // 1. the tiles' longest motion; vectors past a quarter of the scene in one frame are a cut, not motion
     VkDescriptorImageInfo mi = {M.nearest, mv, VK_IMAGE_LAYOUT_GENERAL};
@@ -255,14 +270,14 @@ int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow,
     float noise = (float)fmod((double)(M.frames % 64) * 0.6180339887, 1.0);
     float bp[12] = {(float)inv_w[0], (float)inv_w[1], (float)(2.0 * inv_w[2]), (float)(inv_w[3] - inv_w[2]),
                     (float)ow, (float)oh, (float)w, (float)h,
-                    (float)percent / 100.0f, (float)oh / MAX_SHARE, (float)tile, noise};
+                    (float)pct / 100.0f, (float)oh / MAX_SHARE, (float)tile, noise};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, M.blur_pipe);
     rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, M.blur_layout, 0, 5, bw);
     vkCmdPushConstants(cb, M.blur_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof bp, bp);
     vkCmdDispatch(cb, (ow + 7) / 8, (oh + 7) / 8, 1);
     mem_barrier(cb);
     ex->recorded += 10;
-    o->used = ++M.frames;
+    M.frames++;
     *pic = o->img, *pic_view = o->view;
     return 1;
 }
