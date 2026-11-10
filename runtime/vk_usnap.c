@@ -37,9 +37,10 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
-                     // map is often device memory through the BAR, written fast but read back at about a microsecond a
-                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
+    uint8_t *cpu;    // while motion vectors are made (vk_dlaa_motion: DLSS, or the motion blur without it), the same
+                     // bytes in host memory for the CPU's reads (vk_usnap_bytes): map is often device memory through
+                     // the BAR, written fast but read back at about a microsecond a cache line. Otherwise nothing
+                     // reads them back, and the bytes go into map in one copy.
     uint64_t size;
 } Arena;
 
@@ -288,7 +289,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
     uint8_t *dst = U.arena->map;
-    if (vk_dlaa_available()) {
+    if (vk_dlaa_motion()) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
