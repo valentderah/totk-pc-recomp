@@ -396,12 +396,13 @@ Cases exercised, on the v0.3.13 baseline:
   reaches the save data.
 - **Automated checks.** `tools/check_content.py --staged`, `tests/settings_doc_check.py` (0 problems),
   `tests/blueprint_txt_test.py` (12 tests) and `totk.exe --selftest` (0 failures) all pass.
-- **The fused placement: measured, not yet right.** A real run on `blueprint_1735691340478.cai` (two fused spears) logged
-  `fuse Item_Enemy_151 on Weapon_Spear_050: bone Bind_Z, scale 0.550, box sep x/y/z -0.084 -0.260 -1.102 m, pushed out
-  0.000 m, box centre off the axis 0.001 m`. That says three things: the record resolves (the scale is the record's own
-  0.55), the material is centred across the weapon (0.001 m off its axis), and it overlaps the shaft by 1.102 m along the
-  weapon - which is the open question in section 10.3.1, not a passing check. It is recorded here so the next person starts
-  from the number rather than from a picture.
+- **The fused placement: measured against the decoded meshes, not yet right.** A run on `blueprint_1735691340478.cai`
+  (two fused spears) logged `fuse Item_Enemy_151 on Weapon_Spear_050: bone Bind_Z, scale 0.550, ...`, which confirms the
+  record resolves and the socket is found - 0.550 is the record's own `ExScale`. What that line cannot show is where the
+  material ends up along the weapon, because its gap reads zero for an overlap as well as for a touch. Placing the pair by
+  the code's own rule against the decoded geometry gives a horn spanning z 1.285..2.662 on a weapon ending at 1.678, so
+  roughly two thirds of it lies past the tip while the rest overlaps the shaft. That is the open question in section 10.3.1
+  and not a passing check; it is recorded here so the next person starts from the numbers rather than from a picture.
 
 Log lines that make this checkable:
 
@@ -418,13 +419,13 @@ The fused placement cannot be asserted by a test - it needs a decoded model and 
 logged instead. A preview of a build holding a fused part prints one line for each, on the first frames:
 
 ```
-preview3d: fuse <material> on <weapon>: bone <Bind_X>, scale 0.550, gap along x/y/z 0.000 0.039 0.000 m
+preview3d: fuse Item_Enemy_151 on Weapon_Spear_050: bone Bind_Z, scale 0.550, gap along x/y/z 0.000 0.039 0.000 m
 ```
 
-The gap is the distance between the material's box and the weapon's box along each axis, measured in the weapon's own model
-space: zero on an axis means the two touch there, and a positive number is how far apart they are. The axis the weapon
-extends along reading zero is section 10.3.1 holding - the material's attachment end lifted to the weapon's visible end.
-A horn floating off its shaft, or sunk into it, shows up as a non-zero gap on that axis.
+`scale` is the fit factor the code computed for this pair, and `gap along x/y/z` is, per axis in the weapon's own model
+space, how far the material's box lies outside the weapon's - **zero when the two overlap as well as when they touch**, which
+is the weakness of this line: it cannot tell a material resting on the weapon from one buried in it. That is why the open
+question in section 10.3.1 is stated in terms of the material's measured span rather than from this line alone.
 
 ### The bounds these readers hold
 
@@ -633,15 +634,16 @@ it (the Lynel horn's is at z -0.660); subtracting the root is what makes the two
 is per actor and not per part: a blueprint can hold the same weapon twice, each with its own material, and those two sit at
 different coordinates.
 
-**Still open: how far along the weapon the material should run.** The code currently lifts the material's root to the
-weapon's visible end, and the measured result is a spear's horn overlapping the shaft by 1.102 m - it reads as the horn
-passing through the shaft rather than being part of the weapon. Candidates measured against the decoded meshes, all with the
-root on the socket:
+**Still open: how far along the weapon the material should run.** The code currently lifts the material's root from the
+socket to the weapon's visible end. Placed against the decoded meshes by that rule, a spear's horn spans z 1.285..2.662 on a
+weapon whose visible box ends at 1.678: about two thirds of the horn lies past the tip and the rest overlaps the shaft, so
+it reads as a horn passing through a spear rather than as a weapon made of one. Candidates measured the same way, all with
+the root on the socket:
 
 | rule | spear: horn span | overlap with the weapon's visible box |
 |---|---|---|
-| root on the socket, no lift (current) | z 1.648..3.025 | 0.031 m - almost none of it on the weapon |
-| root lifted to the visible end | z 1.285..2.662 | 0.393 m |
+| root on the socket, no lift | z 1.648..3.025 | 0.031 m - almost none of it on the weapon |
+| root lifted to the visible end (current) | z 1.285..2.662 | 0.393 m |
 | material box centre on the weapon's box centre | z -0.023..1.355 | 1.378 m (all of it) |
 | material's far end on the weapon's tip | z 0.300..1.678 | 1.378 m (all of it) |
 
