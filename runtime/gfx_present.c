@@ -801,6 +801,7 @@ void gfx_window_release_vk(void) {
         vk_hdr_release();
         vk_contact_release();
         vk_ssr_release();
+        vk_fsr3_release();
         free_capture();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {
