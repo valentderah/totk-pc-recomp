@@ -203,6 +203,7 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `aspect_patch` (default `0`) | Patch set that feeds the camera the output's aspect ratio when it is not 16:9. | The resolution code switches this set on or off itself at start, so a value here is replaced; the code does not settle what a manual value does. | Unknown |
+| `fixed_res_patch` (default `0`) | Patch set that holds the game's dynamic resolution at 100 percent (the scene tier). | The resolution code switches this set itself unless `dynamic_res = 1`; a manual value is replaced. | Unknown |
 | `fov_patch` (default `0`) | Patch set that scales the camera's vertical view angle by the field-of-view setting. | The resolution code switches this set itself whenever the field of view is not 100 percent; a manual value is replaced. | Unknown |
 | `mouse_direct_patch` (default `1`) | Patch set of the hooks in the game's camera code behind `mouse_mode = direct` on game 1.4.3. | `0` stops `mouse_mode = direct` from taking effect; other mouse modes are unaffected. | Safe |
 | `patch_output` (default `0`) | Patch set that makes the game use the configured output size for its swapchain and display configuration. | The resolution code switches this set whenever the output differs from the base size; a manual value is replaced. | Unknown |
