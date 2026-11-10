@@ -82,7 +82,10 @@ mode; for Game Mode, add `totk` from the install folder to Steam as a non-Steam 
 
 The game recognises the Deck (LCD and OLED) and uses its device profile for every setting `totk.ini` does not set:
 fullscreen, the screen's own 1280x800 (16:10: the camera and interface take that shape), the game's own 3D scale,
-vsync and a 40 fps limit. These are starting points, not measurements. What helps most:
+vsync, a 40 fps limit and the NVN replay on a thread of its own (`replay_async = 1`). The first five are starting
+points, not measurements. `replay_async` was measured with `tools/deck_bench.sh --sim` (below) on a Ryzen 7 7735HS held
+to four cores with their SMT siblings and its Radeon 680M (RDNA 2 under RADV, as the Deck's GPU): three walks each at a
+60 fps limit, all at 60 fps, with a 1% low of 55.8 fps against 48.4 without it. What helps most:
 
 1. The performance overlay (F10, or both stick clicks L3 + R3) in full mode: the frame rate, mean and longest frame
    time over a minute in Lookout Landing, in the Depths and in the Sky, with the settings named.
@@ -95,6 +98,20 @@ vsync and a 40 fps limit. These are starting points, not measurements. What help
 
 `device_profile = desktop` in `totk.ini` turns the profile off; `deck` turns it on elsewhere, to try the Deck's
 settings on a PC.
+
+`tools/deck_bench.sh` takes the measurements of points 1 and 2 by itself: scripted walks through a save
+(`tools/input/walk.txt`), the start put back before each run, the configs interleaved, with the frame rate, the 1% low
+and the APU's power draw of each run in a CSV and a table. Save at the spot to start from, quit, then in Desktop Mode's
+terminal, from a checkout of this repository:
+
+```sh
+tools/deck_bench.sh --runs 3 ~/Games/TotK base fps30:fps_limit=30 fps60:fps_limit=60 scale67:render_scale=67
+```
+
+A config is a name, optionally with `:key=value,key=value` (`totk.ini` keys); each run takes four minutes. On a PC,
+`--sim` approximates the Deck's CPU budget: four cores with their SMT siblings, the Deck profile's settings and a
+headless gamescope. It cannot slow the GPU, the clocks or the power limit down to the Deck's, so its numbers rank
+settings and builds against each other and say nothing about the Deck's frame rate.
 
 ## Switches for the developer's questions
 
