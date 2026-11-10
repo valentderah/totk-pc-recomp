@@ -2865,6 +2865,15 @@ static void mo_emit(VkCommandBuffer cb) {
         if (!p || memcmp(q->bias, p->bias, sizeof q->bias)) vkCmdSetDepthBias(cb, q->bias[0], q->bias[1], q->bias[2]);
         uint32_t n_sets = info->n_sets ? info->n_sets : 1;
         const VkDescSlot *d = MQ.desc + q->desc;
+        // Under the validation layer, a new layout binds set 1 before set 0 is pushed, as the replay's draws do
+        // (bind_descriptors, the comment at set1_first): the layer (SDK 1.4.363) keeps the push set it made for an
+        // earlier INDEPENDENT_SETS layout and drops writes to bindings that layout lacks, then reports the motion draw's
+        // last-frame banks as missing (VUID-vkCmdDrawIndexed-None-08114, "vp_c20") and faults inside the layer. The bind
+        // at set 1 disturbs set 0, so the push below gets a new push set.
+        if (n_sets == 2 && lay[0] != info->layout && info->push && !info->push1 && q->set[1] && vk_ctx()->validation) {
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, info->layout, 1, 1, &q->set[1], 0, NULL);
+            bound[1] = q->set[1], lay[1] = info->layout, pinfo[1] = info, pdesc[1] = -1, MO.e_sets++;
+        }
         for (uint32_t s = 0, i0 = 0, k0 = 0; s < n_sets && s < 2; s++) {
             uint32_t i1 = i0, k1 = k0;
             while (i1 < info->n_bindings && (n_sets == 1 || info->bindings[i1].set == s))
