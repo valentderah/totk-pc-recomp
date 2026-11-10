@@ -26,8 +26,9 @@
 #include "platform/platform.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "vk_dlaa.h"
 
-#define FRAMES 2
+#define FRAMES 4
 #define MAX_IMAGES 16
 #define VSYNC_NS 1000000000ull
 #define VSYNC_HZ 60
@@ -239,16 +240,25 @@ unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+// Mailbox keeps only the newest image, so the interpolated present is thrown away and the
+// displayed rate stays the game's. Frame generation needs every present to be shown.
+static const char *present_effective(void) {
+    const char *e = cfg_value("TOTK_VK_PRESENT");
+    if (!e || !*e) e = "fifo";
+    if (!strcmp(e, "mailbox") && cfg_bool("TOTK_DLSS_FG")) return "fifo";
+    return e;
+}
+
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
-    static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
+    static char present[16];   // the effective mode the swapchain was made with
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
     res_dynres_live();
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = present_effective();
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
@@ -261,7 +271,8 @@ static void window_settings_live(void) {
 static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *set = cfg_value("TOTK_VK_PRESENT");
+    const char *e = present_effective();
     VkPresentModeKHR want = !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -276,7 +287,8 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     static int logged = -1;   // the mode last logged: a change from the menu shows in the log
     if ((int)got != logged) {
         logged = (int)got;
-        rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s)", name, e);
+        rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s%s)", name, set,
+               strcmp(e, set) ? "; frame generation uses vsync instead of mailbox" : "");
     }
     return got;
 }
@@ -339,7 +351,8 @@ static int build_swapchain(void) {
     vkDeviceWaitIdle(c->device);
     VkSwapchainKHR old = g_sc;
     VkSwapchainCreateInfoKHR ci = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = g_surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // every surface supports it (the menu overlay draws into it)
@@ -796,6 +809,7 @@ void gfx_window_release_vk(void) {
         vk_queue_unlock();
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
+        vk_dlssg_release();
         vk_fsr_release();
         vk_color_release();
         vk_hdr_release();

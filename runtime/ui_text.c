@@ -166,6 +166,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_DLSS_FG] = "DLSS Frame Generation",
+    [UI_MENU_DLSS_FG_DESC] = "NVIDIA DLSS Frame Generation (DLSS-G): generates an interpolated frame between each rendered frame using optical flow, scene depth and motion vectors. Needs DLAA/DLSS on. Applies at once.",
+    [UI_MENU_DLSS_FG_X] = "Frame generation multiplier",
+    [UI_MENU_DLSS_FG_X_DESC] = "How many frames are shown for each frame the game renders. 2x generates one frame, up to 6x which generates five. Fixed only: there is no automatic multiplier.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -649,6 +653,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_DLSS_FG] = "Генерация кадров DLSS",
+    [UI_MENU_DLSS_FG_DESC] = "NVIDIA DLSS Frame Generation (DLSS-G): создаёт промежуточный кадр между каждым отрисованным кадром по глубине и векторам движения. Требует включения DLAA/DLSS. Действует сразу.",
+    [UI_MENU_DLSS_FG_X] = "Множитель генерации кадров",
+    [UI_MENU_DLSS_FG_X_DESC] = "Сколько кадров показывается на каждый кадр игры. 2x генерирует один, 6x — пять. Только фиксированный множитель, без авто.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1486,6 +1494,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_DLSS_FG] = "Geração de Quadros DLSS (Frame Gen)",
+    [UI_MENU_DLSS_FG_DESC] = "NVIDIA DLSS Frame Generation (DLSS-G): gera um quadro interpolado por IA entre cada quadro renderizado usando fluxo óptico, profundidade e vetores de movimento. Requer DLAA/DLSS ligado. Vale na hora.",
+    [UI_MENU_DLSS_FG_X] = "Multiplicador da geração",
+    [UI_MENU_DLSS_FG_X_DESC] = "Quantos quadros aparecem para cada quadro que o jogo desenha. 2x gera um. 6x gera cinco, que é o máximo desta versão. Só multiplicador fixo: não existe modo automático.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2096,6 +2108,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_DLSS_FG] = "DLSS 帧生成 (Frame Generation)",
+    [UI_MENU_DLSS_FG_DESC] = "NVIDIA DLSS 帧生成 (DLSS-G)：利用光流、场景深度和运动矢量在每两帧之间生成一帧插值画面。需要开启 DLAA/DLSS。立即生效。",
+    [UI_MENU_DLSS_FG_X] = "帧生成倍率",
+    [UI_MENU_DLSS_FG_X_DESC] = "每个游戏帧显示多少帧。2x 生成 1 帧，6x 生成 5 帧，这是此版本的上限。只有固定倍率，没有自动模式。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"

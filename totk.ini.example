@@ -259,6 +259,17 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# NVIDIA DLSS Frame Generation (DLSS-G) for RTX 40 series and newer GPUs: a generated image is shown between the frames
+# the game renders. Needs dlaa = 1 and nvngx_dlssg.dll from NVIDIA's DLSS SDK next to totk.exe; without them the
+# setting does nothing. Best tried with hdr = 0, a display without VRR (G-SYNC, FreeSync) and vsync on (vk_present = fifo):
+# with HDR on the generated images wash out over bright clouds, and with VRR on they leave in bursts (uneven motion).
+# The images are unevenly spaced with Vulkan and this port does not pace them yet; vsync on evens most of it out.
+# Above 4x the generated images show artifacts. vk_present = mailbox becomes fifo while it is on.
+# Changes while the game runs take effect at once.
+# dlss_fg = 0
+# Images shown for each game frame with dlss_fg = 1: 2 to 6 (2 generates one image, 6 generates five). Beyond the
+# display's refresh rate the extra images cannot be shown.
+# dlss_fg_x = 2
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1

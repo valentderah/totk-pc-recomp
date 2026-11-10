@@ -51,7 +51,7 @@ typedef struct {
 // A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
 // decides it in replay order, vk_contact_exec records it), or DLSS's copy of the lit scene or its evaluation
 // (vk_dlaa.c: vk_dlaa_plan, vk_dlaa_exec). The chunk that holds the op records it.
-enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS };
+enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS, VK_JOB_FG_CAPTURE };
 typedef struct VkExecJob {
     const void *op;                      // vk_exec.c: the op it precedes in a scanned submission
     int kind;                            // VK_JOB_*
