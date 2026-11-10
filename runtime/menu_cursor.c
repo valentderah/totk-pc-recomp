@@ -166,13 +166,15 @@ static void layout_name(uint64_t scr, char *out, size_t n) {
 // 1.4.3 constructor keeps). The map has no focus box, so it is found here: the Purah Pad's frame (AppMenuOverlay_00)
 // with AppMap_00 and the menu's background AppMenuBG_00 open. The Scope opens the frame over AppMap_00 without that
 // background (Weeping of the Empire's engine/runtime/totk_menu_cursor.cpp census tells them apart the same way).
+// A D-pad strip has no focus box either while it is held open: *strip is ShortCut_00 being open.
 // TOTK_MENU_CURSOR_LOG=1 logs the open screens whenever the set changes.
 enum { SM_COUNT = 0x8, SM_SCREENS = 0x10 };
-static int map_open(void) {
+static int map_open(int *strip) {
     uint64_t sm = screen_mgr();
     if (!sm) return 0;
     int32_t n = (int32_t)rd32(sm + SM_COUNT);
     uint64_t arr = rd64(sm + SM_SCREENS);
+    *strip = 0;
     if (n <= 0 || n > 1024 || !ok_at(arr, 8ull * (uint64_t)n)) return 0;
     const char *e = cfg_get("TOTK_MENU_CURSOR_LOG");
     int verbose = e && !strcmp(e, "1"), pad = 0, map = 0, bg = 0;
@@ -187,6 +189,7 @@ static int map_open(void) {
         pad |= !strcmp(nm, "AppMenuOverlay_00");
         map |= !strcmp(nm, "AppMap_00");
         bg |= !strcmp(nm, "AppMenuBG_00");
+        *strip |= !strcmp(nm, "ShortCut_00");
         if (!verbose) continue;
         for (const char *c = nm; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
         if (len < sizeof list - 64) len += (size_t)snprintf(list + len, sizeof list - len, "%s%s", len ? " " : "", nm);
@@ -280,9 +283,13 @@ static int gameplay_screen(const char *nm) {
 
 static volatile int32_t g_pointer;   // a menu has the pointer: input_cursor_allowed releases the capture
 static volatile int32_t g_map;       // the Purah Pad's map is open (not the Scope): the mouse moves its cursor
+static volatile int32_t g_menu;      // a menu screen has the focus box, from either device (the scroll wheel's steps)
+static volatile int32_t g_strip;     // a D-pad strip's screen is open (the scroll wheel's steps along it)
 
 int menu_cursor_pointer(void) { return __atomic_load_n(&g_pointer, __ATOMIC_RELAXED); }
 int menu_cursor_map(void) { return __atomic_load_n(&g_map, __ATOMIC_RELAXED); }
+int menu_cursor_menu(void) { return __atomic_load_n(&g_menu, __ATOMIC_RELAXED); }
+int menu_cursor_strip(void) { return __atomic_load_n(&g_strip, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
@@ -325,19 +332,27 @@ void menu_cursor_poll(uint64_t *buttons) {
         main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
-    if (!enabled()) { set_pointer(0); __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED); return; }
+    if (!enabled()) {
+        set_pointer(0);
+        __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_menu, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_strip, 0, __ATOMIC_RELAXED);
+        return;
+    }
     Focus f = focus_now();
     char nm[48] = "";
     if (f.screen) layout_name(f.screen, nm, sizeof nm);
     // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries
     uint64_t now = plat_now_ms();
     static uint64_t map_at;
-    static int map, map_logged;
-    if (!map_at || now - map_at >= 100) map_at = now, map = map_open();
+    static int map, map_logged, strip;
+    if (!map_at || now - map_at >= 100) map_at = now, map = map_open(&strip);
+    __atomic_store_n(&g_strip, strip, __ATOMIC_RELAXED);
     if (map && !map_logged) map_logged = 1, rt_log("menu_cursor: the map is open: the mouse moves its cursor");
     __atomic_store_n(&g_map, map, __ATOMIC_RELAXED);
     // With the gamepad as the last device the menus stay as they are on the console: no pointer, the capture kept.
     // Moving the mouse (or a key) makes keyboard and mouse the last device and the pointer comes.
+    __atomic_store_n(&g_menu, f.screen && !gameplay_screen(nm) && !map, __ATOMIC_RELAXED);
     int menu = f.screen && !gameplay_screen(nm) && ikb_foreground() && input_kbm_last();
     if (menu) menu_seen = now;
     // A menu's focus gap (a tab switch, a popup opening: no focus box for a frame or two) keeps the pointer where it

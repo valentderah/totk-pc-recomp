@@ -23,7 +23,8 @@ static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
-static volatile int32_t mouse_wheel;          // wheel turned while captured, in 1/120 notches (ikb_wheel_take)
+static volatile int32_t mouse_wheel;          // wheel turned while captured or over the window, in 1/120 notches
+                                              // (ikb_wheel_take)
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t mouse_travel;         // raw counts moved in total, captured or not (ikb_mouse_travel)
 static float travel_rem;                      // window thread: the fraction of a count beyond mouse_travel
@@ -266,7 +267,8 @@ void input_sdl_event(const SDL_Event *e) {
         __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);
         break;
     case SDL_EVENT_MOUSE_WHEEL:   // notches, + away from the player (a flipped wheel reports the other sign)
-        if (captured) {
+        // Captured, or released over the focused window: a game menu with the pointer takes it (input.c)
+        if (captured || (focused && __atomic_load_n(&ptr_have, __ATOMIC_ACQUIRE))) {
             float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
             plat_add32(&mouse_wheel, (int32_t)(y * 120));
         }
