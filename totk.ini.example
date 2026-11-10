@@ -54,8 +54,7 @@
 # Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
 # game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
-# frame of input delay. The frame rate swings less from frame to frame when uncapped than before, but more than
-# without it. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
+# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
 # Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage, which is on by default on Linux and Wine and needs
 # the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and the log says so.
 # sync_ahead = 0
