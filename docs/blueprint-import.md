@@ -396,6 +396,12 @@ Cases exercised, on the v0.3.13 baseline:
   reaches the save data.
 - **Automated checks.** `tools/check_content.py --staged`, `tests/settings_doc_check.py` (0 problems),
   `tests/blueprint_txt_test.py` (12 tests) and `totk.exe --selftest` (0 failures) all pass.
+- **The fused placement: measured, not yet right.** A real run on `blueprint_1735691340478.cai` (two fused spears) logged
+  `fuse Item_Enemy_151 on Weapon_Spear_050: bone Bind_Z, scale 0.550, box sep x/y/z -0.084 -0.260 -1.102 m, pushed out
+  0.000 m, box centre off the axis 0.001 m`. That says three things: the record resolves (the scale is the record's own
+  0.55), the material is centred across the weapon (0.001 m off its axis), and it overlaps the shaft by 1.102 m along the
+  weapon - which is the open question in section 10.3.1, not a passing check. It is recorded here so the next person starts
+  from the number rather than from a picture.
 
 Log lines that make this checkable:
 
@@ -563,7 +569,7 @@ only the fields it names. A survey of 1356 material records finds these fields, 
 
 | field | records naming it | meaning |
 |---|---|---|
-| `TransOffset` | 4541 | metres; **read for nothing**, see 10.3.1 |
+| `TransOffset` | 4541 | metres; a per-class nudge, not the position - see 10.3.1 |
 | `RotateOffset` | 3540 | degrees about X, Y and Z |
 | `BoneName` | 1802 | the weapon model's socket, e.g. `Bind_A`, `Bind_W`, `Bind_Z` |
 | `Scale` | 1504 | a per-axis scale |
@@ -602,30 +608,49 @@ nothing for a shield, so on a short sword it is 0.41 m and on a shield the cap d
 
 `bp_attach_matrix` applies the record's `RotateOffset` and `Scale`/`ExScale`. It does not apply `TransOffset`: that is a
 per-class nudge authored against one weapon, and reading it as the position puts a material off its weapon along the shaft.
+Its along-the-weapon component is centimetres against a weapon measured in metres (0.029 m on a 2.08 m spear), so it is a
+hand adjustment, not a placement.
 
 The position comes from the weapon model's own skeleton. The record's `BoneName` names a socket on it, and that is where the
 game hangs the material:
 
-| weapon | socket | position | the seam it sits in |
+| weapon | socket | position | the hidden blade it anchors |
 |---|---|---|---|
+| `Weapon_Spear_050` | `Bind_Z` | z 1.6477 | blade z 1.642..2.227 |
 | `Weapon_Spear_129` | `Bind_Z` | z 1.677 | blade base 1.674, shaft top 1.680 |
-| `Weapon_Lsword_147` | `Bind_Z` | z 0.231 | blade base 0.196, body top 0.317 |
+| `Weapon_Lsword_147` | `Bind_Z` | z 0.231 | blade z 0.196..1.607 |
 | `Weapon_Sword_052` | `Bind_Z` | z 0.148 | blade base 0.148, body top 0.206 |
 | `Weapon_Shield_103` | `Bind_C` | (0.054, -0.117, 0.003) | no `_Hide` shape, so no seam |
 
-The socket is inside the weapon's body rather than on its surface, so placing the material on it is not enough:
-
-1. The material's attachment end - the low end of its model along the weapon's long axis - goes on the socket.
-2. That end is lifted to the weapon's visible end along the same axis, by the difference between the two. Without it a
-   material sits 3 to 9 cm inside the weapon, which is what the sword classes showed.
-
-The material's lateral position is the centre of its own box, not the centre of its root vertices. The game keeps the lateral
-offset the material's model was authored with, and correcting it towards the weapon's centre line pulls a horn off the
-weapon: measured on the long sword, the gap grew from 5.3 cm to 7.0 cm.
+That table is the useful fact: **the socket sits at the base of the blade the fusion hides**, on every weapon measured. A
+class that names a `SubModel` ships it with its root authored at z = 0.000 (`Item_Enemy_151_Sub_Lsword` spans z
+0.000..2.615), which says the same thing from the other side: the model is authored to start at the socket. So the material
+stands in for the blade it replaces, and the material's root - the low end of its model along the weapon's long axis - is
+what goes on the socket. A class with no `SubModel` uses the material's own model, whose root is wherever that model authors
+it (the Lynel horn's is at z -0.660); subtracting the root is what makes the two cases one rule.
 
 `fuse_placement` in `runtime/ui/preview3d.cpp` does this once per actor, when the pair is uploaded, and caches the matrix. It
 is per actor and not per part: a blueprint can hold the same weapon twice, each with its own material, and those two sit at
 different coordinates.
+
+**Still open: how far along the weapon the material should run.** The code currently lifts the material's root to the
+weapon's visible end, and the measured result is a spear's horn overlapping the shaft by 1.102 m - it reads as the horn
+passing through the shaft rather than being part of the weapon. Candidates measured against the decoded meshes, all with the
+root on the socket:
+
+| rule | spear: horn span | overlap with the weapon's visible box |
+|---|---|---|
+| root on the socket, no lift (current) | z 1.648..3.025 | 0.031 m - almost none of it on the weapon |
+| root lifted to the visible end | z 1.285..2.662 | 0.393 m |
+| material box centre on the weapon's box centre | z -0.023..1.355 | 1.378 m (all of it) |
+| material's far end on the weapon's tip | z 0.300..1.678 | 1.378 m (all of it) |
+
+The horn is 1.378 m at the record's 0.55 against a 2.082 m spear, so it fits inside the weapon and every rule above is
+geometrically possible - which is why this needs settling against the game rather than by argument. The `TransOffset` does
+not answer it (see above). Whichever rule is chosen has to make both a spear and a long sword read as one object, and the
+long sword's material is 1.569 m against a weapon whose visible part is only 0.873 m long, so it must overhang its weapon
+wherever it is put.
+
 
 ### 10.4 What the fused part hides
 
@@ -645,9 +670,10 @@ holding such a part is drawn by the rules above rather than refused.
 
 ### 10.6 Contact
 
-Fuse joins two things by contact: the material lies against the weapon. Section 10.3.1 is the whole of the rule - the socket
-is where the game hangs the material, and lifting its attachment end to the weapon's visible end is what makes the pair touch.
-No distance is written down anywhere.
+Fuse joins two things by contact, unlike Ultrahand, which is a glued joint: the material has to lie against its weapon
+rather than beside it. Section 10.3.1 is where that is decided, and its open question is the part still not settled - a
+material wider than the shaft wraps it when centred, which is what a fusion looks like, but how far along the weapon it
+runs is not yet right (see the table there).
 
 The material is not scaled to fit the weapon's geometry. Fitting one box onto another is a different operation, and it
 stretches the material; a material keeps the size section 10.3 gives it.
