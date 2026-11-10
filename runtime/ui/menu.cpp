@@ -1105,6 +1105,7 @@ static void mods_builtin_rows(void) {
     opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
     opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
     opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_toggle("TOTK_CLIMB_FIX", UI_MENU_CLIMB_FIX, UI_MENU_CLIMB_FIX_DESC);
     opt_button("##mods_quickmenu", UI_MENU_MODS_QUICKMENU, UI_MENU_MODS_QUICKMENU_DESC,
                menu_text(romfs_patches_loaded() ? UI_MENU_ON : UI_MENU_OFF));
 }
