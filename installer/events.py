@@ -121,3 +121,49 @@ class Reporter:
         if self.log_file:
             self.log_file.close()
             self.log_file = None
+
+
+class ProgressLines:
+    """An output stream that turns the Reporter's JSON events into `progress <0-1> <text>` lines, the form a launcher's
+    setup step reads (`python -m installer --prepare`). The fraction counts finished steps of the plan plus the share of
+    the running one; it never goes back. An error prints its text at the fraction reached, since the launcher reads
+    stdout and the exit code only."""
+
+    def __init__(self, out):
+        self.out = out
+        self.catalog = load_catalog()
+        self.steps = []
+        self.index = 0
+        self.fraction = 0.0
+
+    def write(self, text):
+        for line in text.splitlines():
+            if line.strip():
+                self.event(json.loads(line))
+        return len(text)
+
+    def flush(self):
+        self.out.flush()
+
+    def say(self, fraction, text):
+        self.fraction = max(self.fraction, min(fraction, 1.0))
+        self.out.write(f'progress {self.fraction:.3f} {" ".join(text.split())}\n')
+        self.out.flush()
+
+    def event(self, e):
+        c = self.catalog
+        kind = e['type']
+        count = max(len(self.steps), 1)
+        if kind == 'start':
+            self.steps = e.get('steps', [])
+        elif kind == 'step' and e['step'] in self.steps:
+            self.index = self.steps.index(e['step'])
+            if e['state'] == 'started':
+                self.say(self.index / count, render(c, 'step.' + e['step']))
+            else:
+                self.say((self.index + 1) / count, render(c, 'step.' + e['step']))
+        elif kind == 'progress':
+            share = e['done'] / e['total'] if e.get('total') else 0.0
+            self.say((self.index + min(share, 1.0)) / count, render(c, f'phase.{e["step"]}.{e["phase"]}'))
+        elif kind == 'error':
+            self.say(self.fraction, render(c, e['id'], e.get('params')))

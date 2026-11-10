@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--prepare]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import layout as layouts
 from . import state as statefile
-from .events import Reporter
+from .events import ProgressLines, Reporter
 from .runner import Context, run_steps
 from .steps import all_steps, migrate_state
 
@@ -63,6 +63,8 @@ def main(argv=None):
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--prepare', action='store_true', help='for a launcher: print `progress <0-1> <text>` lines instead of '
+                                                           'JSON events, and take en-US as the language of a first install')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
@@ -75,7 +77,9 @@ def main(argv=None):
     base = args.temp or layout.temp
     temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
-    rep = Reporter(log_path=log)
+    if args.prepare:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    rep = Reporter(out=ProgressLines(sys.stdout) if args.prepare else None, log_path=log)
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)
@@ -83,6 +87,8 @@ def main(argv=None):
         rep.error(e.id, {'path': str(e.path)})
         rep.emit('end', result='failed', seconds=0)
         return 1
+    if args.prepare and not args.lang and not (state or {}).get('lang'):
+        args.lang = 'en-US'
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
     migrate_state(ctx)
     steps = all_steps()

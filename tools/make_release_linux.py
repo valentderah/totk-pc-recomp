@@ -430,6 +430,8 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 export TCL_LIBRARY="$HERE/python/lib/tcl9.0"
 export TK_LIBRARY="$HERE/python/lib/tk9.0"
+# --prepare: the setup without a window, for a launcher (installer/cli.py)
+if [ "${1:-}" = "--prepare" ]; then exec "$HERE/python/bin/python3" -m installer "$@"; fi
 exec "$HERE/python/bin/python3" -m installer.gui "$@"
 '''
 

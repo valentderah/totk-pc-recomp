@@ -17,7 +17,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import ini, runner, state, steps  # noqa: E402
-from installer.events import Reporter  # noqa: E402
+from installer.events import ProgressLines, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
 
@@ -741,6 +741,39 @@ class DlssTest(unittest.TestCase):
         self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
         self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
         self.assertEqual(self.warnings(), [])
+
+
+class ProgressLinesTest(unittest.TestCase):
+    """`--prepare` prints the lines a launcher reads: progress <0-1> <text>, counting finished steps."""
+
+    def lines(self, events):
+        out = io.StringIO()
+        rep = Reporter(out=ProgressLines(out))
+        for e in events:
+            rep.emit(e['type'], **{k: v for k, v in e.items() if k != 'type'})
+        return out.getvalue().splitlines()
+
+    def test_fraction_follows_the_steps(self):
+        lines = self.lines([
+            {'type': 'start', 'steps': ['check', 'extract']},
+            {'type': 'step', 'step': 'check', 'state': 'started'},
+            {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1},
+            {'type': 'step', 'step': 'extract', 'state': 'started'},
+            {'type': 'progress', 'step': 'extract', 'phase': 'romfs', 'done': 1, 'total': 2, 'unit': 'bytes'},
+            {'type': 'step', 'step': 'extract', 'state': 'done', 'seconds': 5},
+            {'type': 'end', 'result': 'ok', 'seconds': 6},
+        ])
+        self.assertEqual([float(line.split()[1]) for line in lines], [0.0, 0.5, 0.5, 0.75, 1.0])
+        self.assertTrue(all(line.startswith('progress ') for line in lines))
+
+    def test_error_text_at_the_fraction_reached(self):
+        lines = self.lines([
+            {'type': 'start', 'steps': ['check', 'extract']},
+            {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1},
+            {'type': 'error', 'id': 'check.lang_missing', 'params': {}, 'step': 'check'},
+        ])
+        self.assertEqual(lines[-1].split()[:2], ['progress', '0.500'])
+        self.assertGreater(len(lines[-1].split()), 2)
 
 
 if __name__ == '__main__':
