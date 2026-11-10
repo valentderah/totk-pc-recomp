@@ -429,8 +429,14 @@ static int create_device(void) {
     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
     vk_caps_init(&g_vk);
 
+    // Blocks of 64 MiB instead of VMA's 256 (TOTK_VMA_BLOCK_MIB, 0 = VMA's). Since the textures moved to their own pool
+    // (vk_memory.c vk_texture_image), the default device-local blocks hold mirrors and other buffers: on the RX 9070
+    // after 10 minutes in the field one 256 MiB block held 53 MiB of them, and the headroom thread kept half a block of
+    // each device-local type ahead (128 MiB each). Larger buffers than half a block get memory of their own.
+    g_vk.vma_block = (VkDeviceSize)cfg_int("TOTK_VMA_BLOCK_MIB") << 20;
+    if (!g_vk.vma_block) g_vk.vma_block = 256ull << 20;   // VMA_DEFAULT_LARGE_HEAP_BLOCK_SIZE
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3,
+                                 .vulkanApiVersion = VK_API_VERSION_1_3, .preferredLargeHeapBlockSize = g_vk.vma_block,
                                  .flags = (g_vk.has_buffer_device_address ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0) |
                                           (g_vk.has_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0),
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
@@ -475,7 +481,8 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
+        if (create_instance() && pick_device() && create_device())
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
         else destroy_all();
     }
     int ok = g_ready;
