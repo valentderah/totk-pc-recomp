@@ -474,12 +474,20 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
                                  .value = fence, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkLatencySubmissionPresentIdNV lsid = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+        .pNext = NULL,
+        .presentID = vk_reflex_submit_id()
+    };
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .pNext = (c->has_nv_reflex) ? &lsid : NULL,
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
+    if (recorded && c->has_nv_reflex) vk_reflex_marker(2, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
     VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
+    if (recorded && c->has_nv_reflex) vk_reflex_marker(3, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
