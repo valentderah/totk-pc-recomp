@@ -641,6 +641,14 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 if (!counts || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
+            // On the Purah Pad's map (menu_cursor.c finds it, TOTK_MAP_CLICK) the left mouse button presses A at the
+            // map's cursor, which the mouse moves there, instead of its binding (Y by default). A press is one or the
+            // other from the moment it goes down until it is released, so a button held as the map opens or closes
+            // keeps what it pressed.
+            static int click_held, click_a;
+            if (!down[KEY_MOUSE_L]) click_held = click_a = 0;
+            else if (!click_held) click_held = 1, click_a = menu_cursor_map() && cfg_bool("TOTK_MAP_CLICK");
+            if (click_a) down[KEY_MOUSE_L] = 0, b |= 1ull << B_A;
             b |= input_map_buttons(down);
             int32_t k[2];
             walk_get();

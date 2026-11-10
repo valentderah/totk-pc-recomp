@@ -203,6 +203,10 @@ On game 1.4.3, while one of the game's menus has its focus box (the frame the d-
 
 `runtime/menu_cursor.c` reads eui's screens at each pad read and moves the focus with the writes `eui::BoxCursorMgr::moveBoxCursor` makes, so no game code is called. `menu_cursor = 0` (`TOTK_MENU_CURSOR=0`, live; the *Mouse in the game's menus* row of the Controls tab) turns it off; `TOTK_MENU_CURSOR_LOG=1` logs every screen it reads (by default the first six), with the layout size, the node count and the hit panes it uses.
 
+### Left click on the map
+
+On game 1.4.3, while the Purah Pad's map is open (found as above; the Scope is not the map), the left mouse button presses A at the map's cursor instead of the button it is bound to (Y by default). A press is A or the binding from the moment the button goes down until it is released, so a button held as the map opens or closes keeps what it pressed (`poll_merged` in `runtime/input.c`). `map_click = 0` (`TOTK_MAP_CLICK=0`, live; the *Left click on the map* row of the Controls tab) leaves the left button on its binding there. The map is found only while `menu_cursor` is on.
+
 ## Nintendo Switch 2 controllers
 
 Windows does not present the Switch 2 Pro Controller as a gamepad SDL can open (the log says `input: no gamepad`), so it needs a bridge program that wakes it and creates a virtual gamepad. The DS4Windows fork by hbashton ([github.com/hbashton/DS4Windows](https://github.com/hbashton/DS4Windows), tested with release VIIPERRC4.5.1, a pre-release) with the output set to an emulated DualSense gives buttons, rumble, gyro and accelerometer, and reads the sticks through the controller's calibration (they rest at 0 to 2%). The game reads its virtual DualSense directly; the log then shows `input: gamepad "DualSense Wireless Controller" (rumble, gyro and accelerometer, ...)` and `input: motion sensors on`. Its release notes also list Joy-Con 2 support, which is untested here.

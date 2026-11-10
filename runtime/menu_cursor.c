@@ -20,6 +20,9 @@
 //
 // Only while keyboard and mouse are the device used last (input_kbm_last): a gamepad player sees the menus unchanged.
 // TOTK_MENU_CURSOR (live, default 1): 0 leaves the menus to the keys and the pad.
+//
+// On the map input.c makes the left mouse button A (menu_cursor_map; TOTK_MAP_CLICK, live, default 1), so a click
+// acts at the map's cursor. The map is found only while TOTK_MENU_CURSOR is on.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
