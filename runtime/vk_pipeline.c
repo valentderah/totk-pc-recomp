@@ -1712,7 +1712,11 @@ static VkPipeline lib_get(int kind, const VkPipeState *s, const GKey *k, Layout 
             return VK_NULL_HANDLE;
         }
         if (have->job) U.stolen++, lib_steal(have);
-        else plat_cond_wait(&done_cv, &P.lock);
+        else {
+            uint64_t wp0 = waitstat_now();
+            plat_cond_wait(&done_cv, &P.lock);
+            if (wp0) waitstat_add("pipeline build", plat_now_ns() - wp0);
+        }
     }
     if (have) {
         if (have->pre && !have->used) have->used = 1, P.g.pre_used[kind]++;

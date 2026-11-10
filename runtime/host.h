@@ -253,6 +253,10 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear);   // guest thre
 void kern_signal_system_event(uint64_t ev);                // any thread
 int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
 uint64_t kern_now_ns(void);
+// Wait accounting (waitstat.c): how long the port blocks, per site, with TOTK_WAIT_LOG=1.
+void waitstat_add(const char *name, uint64_t ns);
+uint64_t waitstat_now(void);              // the clock, or 0 when accounting is off
+void waitstat_dump(const char *why);      // prints the table since the last dump and clears it
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
