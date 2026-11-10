@@ -976,6 +976,11 @@ static void run_job(VkExec *ex) {
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
         if (si && di) {
             j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
+            for (int i = 0; i < 2; i++) {   // the reflections' targets likewise; one that is gone leaves them out
+                const VkTexImage *ai = j.aux[i].tex ? vk_texture_get(j.aux[i].tex) : NULL;
+                if (ai) j.aux[i].img = ai, j.aux[i].image = ai->image;
+                else j.aux[i] = (VkExecTarget){0};
+            }
             vk_contact_exec(ex, &j);
         }
     }

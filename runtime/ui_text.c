@@ -137,6 +137,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
                                      "Traced on the screen after lighting. Takes effect at the next start.",
+    [UI_MENU_WATER_REFLECTIONS] = "Water reflections",
+    [UI_MENU_WATER_REFLECTIONS_DESC] = "The world mirrored on the water, which the game's own water does not do. "
+                                       "Natural keeps the ripples in the reflection, Clear fewer of them. Only what "
+                                       "is on screen can be reflected, so reflections fade toward the picture's edges. "
+                                       "Applies at once.",
+    [UI_MENU_WATER_REFLECTIONS_NATURAL] = "Natural", [UI_MENU_WATER_REFLECTIONS_CLEAR] = "Clear",
+    [UI_MENU_SURFACE_REFLECTIONS] = "Surface reflections",
+    [UI_MENU_SURFACE_REFLECTIONS_DESC] = "The same on smooth surfaces: polished stone, ice, metal. Soft blurs the "
+                                         "reflection more on rougher surfaces, Sharp mirrors on every smooth one. "
+                                         "Applies at once.",
+    [UI_MENU_SURFACE_REFLECTIONS_SOFT] = "Soft", [UI_MENU_SURFACE_REFLECTIONS_SHARP] = "Sharp",
+    [UI_MENU_REFLECTIONS_OFF] = "Off",
     [UI_MENU_SHADOW_RANGE] = "Shadow cascade range",
     [UI_MENU_SHADOW_RANGE_DESC] = "Moves the steps where shadows turn softer (the game's 20, 40, 80 and 160 m) further "
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
@@ -620,6 +632,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
                                      "складках. Считаются по экрану после освещения. Действует после перезапуска.",
+    [UI_MENU_WATER_REFLECTIONS] = "Отражения на воде",
+    [UI_MENU_WATER_REFLECTIONS_DESC] = "Мир отражается в воде, чего сама игра не делает. «Естественные» сохраняют рябь "
+                                       "в отражении, «Чистые» — меньше ряби. Отразиться может только то, что есть на "
+                                       "экране, поэтому к краям кадра отражения гаснут. Действует сразу.",
+    [UI_MENU_WATER_REFLECTIONS_NATURAL] = "Естественные", [UI_MENU_WATER_REFLECTIONS_CLEAR] = "Чистые",
+    [UI_MENU_SURFACE_REFLECTIONS] = "Отражения на поверхностях",
+    [UI_MENU_SURFACE_REFLECTIONS_DESC] = "То же на гладких поверхностях: полированный камень, лёд, металл. «Мягкие» "
+                                         "сильнее размывают отражение на шероховатых поверхностях, «Резкие» дают "
+                                         "зеркало на каждой гладкой. Действует сразу.",
+    [UI_MENU_SURFACE_REFLECTIONS_SOFT] = "Мягкие", [UI_MENU_SURFACE_REFLECTIONS_SHARP] = "Резкие",
+    [UI_MENU_REFLECTIONS_OFF] = "Выкл.",
     [UI_MENU_SHADOW_RANGE] = "Дальность каскадов теней",
     [UI_MENU_SHADOW_RANGE_DESC] = "Отодвигает границы, за которыми тени становятся мягче (в игре 20, 40, 80 и 160 м). "
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
@@ -1455,6 +1478,17 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequenas sombras do sol que os mapas de sombra não pegam: nos pés, sob pedras, "
                                      "na grama e em dobras. Traçadas na tela depois da iluminação. Vale no próximo "
                                      "início.",
+    [UI_MENU_WATER_REFLECTIONS] = "Reflexos na água",
+    [UI_MENU_WATER_REFLECTIONS_DESC] = "O mundo espelhado na água, o que a água do próprio jogo não faz. Natural mantém "
+                                       "as ondulações no reflexo, Limpo menos delas. Só o que está na tela pode ser "
+                                       "refletido, então os reflexos somem perto das bordas da imagem. Vale na hora.",
+    [UI_MENU_WATER_REFLECTIONS_NATURAL] = "Natural", [UI_MENU_WATER_REFLECTIONS_CLEAR] = "Limpo",
+    [UI_MENU_SURFACE_REFLECTIONS] = "Reflexos em superfícies",
+    [UI_MENU_SURFACE_REFLECTIONS_DESC] = "O mesmo em superfícies lisas: pedra polida, gelo, metal. Suave desfoca mais "
+                                         "o reflexo nas superfícies mais ásperas, Nítido espelha em toda superfície "
+                                         "lisa. Vale na hora.",
+    [UI_MENU_SURFACE_REFLECTIONS_SOFT] = "Suave", [UI_MENU_SURFACE_REFLECTIONS_SHARP] = "Nítido",
+    [UI_MENU_REFLECTIONS_OFF] = "Desligado",
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
@@ -2072,6 +2106,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "把阴影变柔和的分界（游戏中为 20、40、80 和 160 米）推得更远。阴影贴图会覆盖更大的地面，请同时提高阴影分辨率。下次启动时生效。",
     [UI_MENU_CONTACT_SHADOWS] = "接触阴影",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
+    [UI_MENU_WATER_REFLECTIONS] = "水面反射",
+    [UI_MENU_WATER_REFLECTIONS_DESC] = "让世界倒映在水面上，游戏自身的水面没有这种倒影。“自然”保留倒影中的波纹，“清晰”波纹更少。"
+                                       "只有画面内的内容才能被反射，因此倒影在画面边缘会淡出。立即生效。",
+    [UI_MENU_WATER_REFLECTIONS_NATURAL] = "自然", [UI_MENU_WATER_REFLECTIONS_CLEAR] = "清晰",
+    [UI_MENU_SURFACE_REFLECTIONS] = "表面反射",
+    [UI_MENU_SURFACE_REFLECTIONS_DESC] = "同样作用于光滑表面：抛光石材、冰、金属。“柔和”在较粗糙的表面上让倒影更模糊，"
+                                         "“锐利”让每个光滑表面都像镜子。立即生效。",
+    [UI_MENU_SURFACE_REFLECTIONS_SOFT] = "柔和", [UI_MENU_SURFACE_REFLECTIONS_SHARP] = "锐利",
+    [UI_MENU_REFLECTIONS_OFF] = "关闭",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
