@@ -452,7 +452,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Forces dynamic vertex input on or off; the default depends on the GPU.",
     [UI_MENU_VK_DYN_A2C] = "Dynamic alpha to coverage",
     [UI_MENU_VK_DYN_A2C_DESC] = "Forces dynamic alpha to coverage on or off. Default: off on AMD's driver for RDNA 2 and "
-                                "older, which draws characters black with it, on elsewhere.",
+                                "older, which draws characters black with it, and on Intel's Windows driver for "
+                                "integrated GPUs, which draws coloured noise on foliage; on elsewhere.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Pin subgroup size", [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Fixes the shader subgroup size.",
     [UI_MENU_TRACE] = "Performance log", [UI_MENU_TRACE_DESC] = "Writes frame timings to a file.",
     [UI_MENU_FLIGHT] = "Flight recorder",
@@ -943,8 +944,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Принудительно включает или выключает динамический ввод вершин; по умолчанию зависит от GPU.",
     [UI_MENU_VK_DYN_A2C] = "Динамический alpha to coverage",
     [UI_MENU_VK_DYN_A2C_DESC] = "Принудительно включает или выключает динамический alpha to coverage. По умолчанию "
-                                "выключен на драйвере AMD для RDNA 2 и старше, где с ним персонажи чёрные, и включён "
-                                "на остальных.",
+                                "выключен на драйвере AMD для RDNA 2 и старше, где с ним персонажи чёрные, и на "
+                                "драйвере Intel для Windows на встроенных GPU, где с ним цветной шум на листве; "
+                                "включён на остальных.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Фиксировать размер подгруппы",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Фиксирует размер подгруппы шейдера.",
     [UI_MENU_TRACE] = "Журнал производительности", [UI_MENU_TRACE_DESC] = "Пишет время кадров в файл.",
@@ -1333,7 +1335,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Força a entrada dinâmica de vértices ligada ou desligada; o padrão depende da GPU.",
     [UI_MENU_VK_DYN_A2C] = "Alpha to coverage dinâmico",
     [UI_MENU_VK_DYN_A2C_DESC] = "Força o alpha to coverage dinâmico ligado ou desligado. Padrão: desligado no driver da AMD "
-                                "para RDNA 2 e anteriores, que com ele desenha os personagens pretos, ligado nos demais.",
+                                "para RDNA 2 e anteriores, que com ele desenha os personagens pretos, e no driver da "
+                                "Intel para Windows em GPUs integradas, que desenha ruído colorido na folhagem; "
+                                "ligado nos demais.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Fixar tamanho do subgrupo",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Fixa o tamanho do subgrupo dos shaders.",
     [UI_MENU_TRACE] = "Registro de desempenho", [UI_MENU_TRACE_DESC] = "Grava os tempos de quadro num arquivo.",
@@ -1978,7 +1982,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "强制开关动态顶点输入；默认值取决于显卡。",
     [UI_MENU_VK_DYN_A2C] = "动态 Alpha 覆盖",
     [UI_MENU_VK_DYN_A2C_DESC] = "强制开关动态 Alpha 覆盖。默认：AMD RDNA 2 及更早的驱动上为关闭，"
-                                "开启会导致人物变黑；其他显卡上为开启。",
+                                "开启会导致人物变黑；Intel 集成显卡的 Windows 驱动上也为关闭，开启会使植被出现彩色噪点；"
+                                "其他显卡上为开启。",
     [UI_MENU_VK_SUBGROUP_PIN] = "固定子群大小",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "固定着色器的子群大小。",
     [UI_MENU_TRACE] = "性能日志",
