@@ -65,14 +65,14 @@ static void present_main(void *arg) {
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
-        plat_mutex_lock(&pl);
-        busy = 0;
-        plat_cond_broadcast(&pcv);
-        plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
         wait_until(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
+        plat_mutex_lock(&pl);
+        busy = 0;
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)

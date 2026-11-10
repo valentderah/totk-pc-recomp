@@ -273,6 +273,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_CLOSE:
         gfx_window_closed();
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     }
@@ -385,6 +386,14 @@ void wsys_resize(int cw, int ch) {
     int ow, oh;
     outer_size(g_hwnd, cw, ch, &ow, &oh);
     SetWindowPos(g_hwnd, NULL, 0, 0, ow, oh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void wsys_destroy(void) {
+    if (g_hwnd) {
+        HWND h = g_hwnd;
+        g_hwnd = NULL;
+        DestroyWindow(h);
+    }
 }
 
 void wsys_probe_focus(int in) { SendMessageW(g_hwnd, WM_ACTIVATEAPP, in ? TRUE : FALSE, 0); }

@@ -1010,6 +1010,7 @@ void plat_exit(int code) {
 #endif
     fflush(stdout);
     fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
     ExitProcess((UINT)code);
 }
 
