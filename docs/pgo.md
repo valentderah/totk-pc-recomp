@@ -58,7 +58,7 @@ Copy your `totk.ini` into the build folder and prepare the shaders (`tools\prepa
 --version v143`). Shader preparation runs `totk.exe` too, so move `pgo\*.profraw` out of the build folder afterwards:
 its counts describe shader building, not play.
 
-Keep the default settings, with the GPU command recorder on (`vk_recorder = 1`, the default except on AMD).
+Keep the default settings, with the GPU command recorder on (`vk_recorder = 1`, the default).
 
 ### 3. Training scenes
 

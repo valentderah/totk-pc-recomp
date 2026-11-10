@@ -127,7 +127,8 @@
 # Vulkan.
 # Vulkan validation layer: checks every call and slows the game down a lot. Needs the layer installed (Vulkan SDK).
 # vk_validation = 0
-# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on, except on AMD GPUs.
+# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on. Set 0 if an AMD GPU shows a black
+# screen or stops with VK_ERROR_DEVICE_LOST.
 # vk_recorder = 1
 # Dynamic vertex input, 0 or 1. Default: on, except on Intel's Windows driver for integrated GPUs (UHD, Iris Xe),
 # which draws black patches with it.
