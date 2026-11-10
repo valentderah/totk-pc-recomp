@@ -43,6 +43,15 @@ _Static_assert(sizeof(nvn_mapping_t) == 0x28, "NVNmappingRequest stride");
 
 const pool_t *nvn_pool_find(uint64_t addr, uint64_t len);  // GPU-visible pool holding [addr, addr+len], NULL if none
 uint64_t nvn_new_serial(void);                             // next tex_t / prog_t serial, from 1
+// TOTK_SYNC_AHEAD (nvn_api_core.c): nvnQueuePresentTexture notes the newest fence at each present; the newest
+// previous-frame value the game was told is done although it may not be (0: none). The back end's shadow copies
+// wait for it or are queued for the GPU (vk_sync.c prologue), so the GPU never reads CPU writes the game made under
+// that assumption too early.
+void nvn_sync_ahead_present(void);
+uint64_t nvn_sync_ahead_guard(void);
+int vk_mem_shadow_on(void);   // vk_memory.c: 1 with shadow storage on (valid once the Vulkan back end is up)
+void vk_mem_shadow_fence(void);   // vk_memory.c: returns once every shadow sync that read the old guard is done
+void gfx_replay_wait_value(uint64_t v);   // vk_backend.c: the replay thread submitted value v
 uint64_t nvn_fence_last(void);                             // fence value of the newest submit (0 before the first)
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads

@@ -160,6 +160,7 @@ static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
 static ReplayItem rq[RQ_CAP];
 static int rq_head, rq_n, r_busy, r_started;
 static uint64_t r_presents_queued, r_presents_done, r_submit_done, game_frames;
+static uint64_t r_value_done;   // under rl: the newest timeline value the replay thread submitted
 // Under rl: calls, calls that waited and the time waited per cause, since the last replay_log line and over the run.
 static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr_twaits[DR_N], dr_tns[DR_N];
 // TOTK_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
@@ -190,6 +191,15 @@ uint64_t gfx_replayed_submits(void) {
     uint64_t v = r_submit_done;
     plat_mutex_unlock_shared(&rl);
     return v;
+}
+
+// TOTK_SYNC_AHEAD (nvn_api_core.c nvnSyncWait): waits until the replay thread submitted value v, so every shadow copy
+// of v was made before the game writes memory v reads. The caller has given its core up.
+void gfx_replay_wait_value(uint64_t v) {
+    if (!gfx_replay_async()) return;
+    plat_mutex_lock(&rl);
+    while (r_value_done < v) plat_cond_wait(&rcv, &rl);
+    plat_mutex_unlock(&rl);
 }
 
 static uint64_t submit_sync(const uint64_t *handles, int n) {
@@ -227,6 +237,7 @@ static void replay_main(void *arg) {
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
         plat_mutex_lock(&rl);
+        if (it.kind != RI_RELEASE) r_value_done = it.value;
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
         else r_presents_done++;
         r_busy = 0;
