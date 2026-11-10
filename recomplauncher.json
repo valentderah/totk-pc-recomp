@@ -1,0 +1,118 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "repo": "valentderah/totk-pc-recomp",
+  "inputs": [
+    {
+      "id": "base",
+      "label": "The Legend of Zelda: Tears of the Kingdom, base game (.xci or .nsp; compressed .xcz or .nsz also work)",
+      "role": "game",
+      "formats": [{ "type": "file", "extensions": ["xci", "nsp", "xcz", "nsz"], "requires": ["keys"] }]
+    },
+    {
+      "id": "update",
+      "label": "Update 1.4.3, 1.2.1 or 1.1.0 (.nsp, or compressed .nsz)",
+      "role": "update",
+      "formats": [{ "type": "file", "extensions": ["nsp", "nsz"], "requires": ["keys"] }]
+    },
+    {
+      "id": "keys",
+      "label": "Your Nintendo Switch prod.keys",
+      "role": "key",
+      "shared": "switch.prod-keys"
+    }
+  ],
+  "prepare": {
+    "program": ["python/python.exe", "TotK-Setup-x86_64.AppImage"],
+    "args": ["-m", "installer", "--prepare", "--base", "{input:base}", "--update", "{input:update}", "--keys", "{input:keys}", "--dest", "{install}/TotK"],
+    "label": "Building the game from your files (one time, it takes a while)",
+    "timeout": 14400
+  },
+  "start": {
+    "program": ["TotK/totk.exe", "TotK/totk"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [{ "path": "{install}/TotK/totk.ini" }]
+    }
+  ],
+  "folders": {
+    "saves": [{ "path": "{install}/TotK/profile" }],
+    "logs": [{ "path": "{install}/TotK/logs" }]
+  },
+  "settings": [
+    {
+      "id": "language",
+      "label": "Game language",
+      "help": "The language of the game's text. Korean and Chinese need the Switch fonts, which the TotK Setup window extracts from a firmware folder.",
+      "choices": [
+        { "label": "English (US)", "set": { "lang": "en-US" } },
+        { "label": "English (UK)", "set": { "lang": "en-GB" } },
+        { "label": "Japanese", "set": { "lang": "ja" } },
+        { "label": "French", "set": { "lang": "fr" } },
+        { "label": "French (Canada)", "set": { "lang": "fr-CA" } },
+        { "label": "German", "set": { "lang": "de" } },
+        { "label": "Italian", "set": { "lang": "it" } },
+        { "label": "Spanish", "set": { "lang": "es" } },
+        { "label": "Spanish (Latin America)", "set": { "lang": "es-419" } },
+        { "label": "Dutch", "set": { "lang": "nl" } },
+        { "label": "Portuguese", "set": { "lang": "pt" } },
+        { "label": "Portuguese (Brazil)", "set": { "lang": "pt-BR" } },
+        { "label": "Russian", "set": { "lang": "ru" } }
+      ],
+      "defaults": { "lang": "en-US" }
+    },
+    {
+      "id": "frame_rate",
+      "label": "Frame rate limit",
+      "help": "60 is the game's smooth default. Above 60 is experimental. On a Steam Deck the game starts at 40 until you pick one.",
+      "choices": [
+        { "label": "30", "set": { "fps_limit": "30" } },
+        { "label": "40", "set": { "fps_limit": "40" } },
+        { "label": "60", "set": { "fps_limit": "60" } },
+        { "label": "90", "set": { "fps_limit": "90" } },
+        { "label": "120", "set": { "fps_limit": "120" } },
+        { "label": "144", "set": { "fps_limit": "144" } },
+        { "label": "Monitor's refresh rate", "set": { "fps_limit": "display" } }
+      ],
+      "defaults": { "fps_limit": "60" }
+    },
+    {
+      "id": "window",
+      "label": "Window",
+      "help": "Fullscreen fills the screen without a border. F11 switches it in the game.",
+      "choices": [
+        { "label": "Windowed", "set": { "fullscreen": "0" } },
+        { "label": "Fullscreen", "set": { "fullscreen": "1" } }
+      ],
+      "defaults": { "fullscreen": "0" }
+    },
+    {
+      "id": "upscaler",
+      "label": "Upscaling",
+      "help": "How the picture is fitted to the window when the window is larger than the game's resolution. FSR sharpens it.",
+      "choices": [
+        { "label": "FSR", "set": { "upscaler": "fsr" } },
+        { "label": "Bilinear", "set": { "upscaler": "bilinear" } }
+      ],
+      "defaults": { "upscaler": "fsr" }
+    },
+    {
+      "id": "overlay",
+      "label": "Performance overlay",
+      "help": "The frame rate in the top right corner. F10 cycles it in the game.",
+      "choices": [
+        { "label": "Off", "set": { "perf_overlay": "off" } },
+        { "label": "Frame rate", "set": { "perf_overlay": "fps" } },
+        { "label": "Full", "set": { "perf_overlay": "full" } }
+      ],
+      "defaults": { "perf_overlay": "off" }
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your saves and the play time.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "totk.log of the last run, to attach to a bug report.", "open": "logs" }
+  ]
+}
