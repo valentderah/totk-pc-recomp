@@ -65,6 +65,22 @@ site cursor main ec3d9c bd400361 f94002e9 bd400930 1e300800 bd400361   # map pan
 site cursor main 1d48d64 1e2a198c 1e2a198c bd400a90 1e30098c   # fdiv s12, s12, s10, then s12 *= [x20 + 8]: vertical Ultrahand aim
 site cursor main 1d484e4 1e200923 1e200923 bd400a90 1e300863   # fmul s3, s9, s0, then s3 *= [x20 + 8]: vertical gyro aim (Recall)
 
+# Gear rotation check (issues #330, #984). The update of ActorCheckRotateModule (main+0x21350c0; vtable +0x110, called
+# by the AI node dispatchers main+0x11f5a40 / 0x2adbcf8 with x1 = the update context) reports a gear or water wheel as
+# turning when the angle it turned since the previous update is above RotateStartDeg / 30, the angle of one 30 Hz
+# frame. Above 30 fps a gear turns less per update than that, reads as stopped, and the shrine doors that wait on it
+# (Riogok, Turakamik, the Wind Temple) never open. 1.4.3 (main+0x273d080) divides the angle by the context's +8, the
+# frame delta in 30 Hz frames (the AI root sets it from its owner's virtual +0x30, main+0x106acc4, and the frame
+# counter node SelectorGenericFrameCounter, main+0x10b66f8, adds it up per update). 1.2.1 gets the same context and
+# ignores it: the update overwrites x1 with its first instruction. The first site keeps ctx+8 in s12 (the prologue has
+# saved d12, the function first writes it at the second site, and callees preserve it); the second multiplies the
+# threshold by it, which is 1.4.3's test with both sides multiplied by the delta. s4 is free after the fdiv: the next
+# read follows a write in the callee main+0x11c2014. The context follows the measured step with the set realtime and is
+# the whole-vsync ratio without it (0.25 at 120 fps, 0.5 at 60 fps measured), so the set works either way.
+set gears    TOTK_HIGHFPS_FIX    1
+site gears main 21350e0 f9402001 bd40082c f9402001   # ldr x1, [x0, #0x40], after ldr s12, [x1, #8] (frame delta)
+site gears main 21352d0 1e24180c 1e241804 1e2c088c   # fdiv s12, s0, s4 -> fdiv s4, s0, s4; fmul s12, s4, s12
+
 # Output size (upstream games/totk/runtime/game_patches.c patch_output_res; runtime/resolution.c switches the set on).
 # The swapchain size nnMain writes before NvInitializeGraphics comes from page +48 ({w, h} as one 64-bit value), and
 # the output size the renderer lays out its canvas, crop and UI in (main+0xcc3f00, read from the graphics parameters
