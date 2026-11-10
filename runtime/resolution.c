@@ -51,6 +51,7 @@
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
 #define TEX_HEAP_KIB 506880u // TextureHeap, shipped (1.2.1 and 1.4.3): what a mod's own HeapDef is measured against
 #define SCENE_MAX 8192       // per side
+#define SCENE_KEEP 4096      // per side: the heap bound shrinks no scene below this (scene_for)
 #define DTA_MAX_KIB 2031616u // DynamicTextureAllocatorMem grown at most to 1984 MiB, under 2 GiB (decide)
 #define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
@@ -99,14 +100,17 @@ static uint64_t shadow_kib(void);
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
 // holds next to the output and the shadow map (res_heap_extra_kib's growth). 1.2.1 already misplaced textures in a
 // pool past 2 GiB, where a signed 32-bit offset turns negative (recomp/patches-v121.txt, set pooloff); larger heaps
-// have not been run. Needs R.shadow. 1 when the scene was made smaller than k asks.
+// have not been run. The heap bound never takes the scene below 4096 a side, the size earlier builds gave: an output
+// near 8K grows the heap past 2 GiB for its own targets, and its scene stays what it was. Needs R.shadow. 1 when the
+// scene was made smaller than k asks.
 static int scene_for(double k, unsigned *w, unsigned *h) {
     double sw = R.ow * k, sh = R.oh * k;
     double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
+    double keep = fmin(1.0, fmin(SCENE_KEEP / sw, SCENE_KEEP / sh));
     double room = (double)(DTA_MAX_KIB - shadow_kib()) / DTA_KIB - 1.0 -
                   fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0);
     double most = (1.0 + fmax(0.0, room)) * SCENE_W * SCENE_H;   // scene pixels that fit
-    if (sw * sh * fit * fit > most) fit = sqrt(most / (sw * sh));
+    if (sw * sh * fit * fit > most) fit = fmax(keep, sqrt(most / (sw * sh)));
     *w = (unsigned)(sw * fit + 0.5);
     *h = (unsigned)(sh * fit + 0.5);
     return fit < 1.0;
@@ -200,8 +204,8 @@ static void decide(void) {
     if (R.live || R.dlss_k) R.scene_set = 1;
     if (scene_for(sk, &R.sw, &R.sh)) {
         R.scene_set = 1;
-        rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB); "
-               "%ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
+        rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB "
+               "past 4096 a side); %ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
     }
     if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
     else R.hw = R.sw, R.hh = R.sh;
