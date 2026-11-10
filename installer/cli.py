@@ -1,5 +1,6 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
                                      [--root DIR] [--temp DIR] [--verify] [--dlss] [--prepare]
+                                     (--game FILE_OR_FOLDER in place of --base and --update)
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -22,7 +23,7 @@ from . import layout as layouts
 from . import state as statefile
 from .events import ProgressLines, Reporter
 from .runner import Context, run_steps
-from .steps import all_steps, migrate_state
+from .steps import UPDATE_TITLE_ID, all_steps, migrate_state
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -31,6 +32,32 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         Reporter().error('cli.usage', {'detail': message})
         sys.exit(2)
+
+
+GAME_SUFFIXES = ('.xci', '.xcz', '.nsp', '.nsz')
+BASE_TITLE_ID = '0100F2C0115B6000'
+
+
+def split_game(path):
+    """The files --game names, as {'base': [files], 'update': [files]} with the kinds it found.
+
+    A file is the base game. A folder is searched without its subfolders: an XCI or XCZ is the base game (an update in
+    either is refused), an NSP or NSZ is told by the title id its name carries, as dumps are named
+    (`... [0100F2C0115B6800][v...].nsp`). A file whose name says neither is left out, and --base and --update still
+    take any file.
+    """
+    if path.is_file():
+        return {'base': [path]}
+    found = {}
+    for f in sorted(path.iterdir()) if path.is_dir() else []:
+        suffix, name = f.suffix.lower(), f.name.upper()
+        if not f.is_file() or suffix not in GAME_SUFFIXES:
+            continue
+        if UPDATE_TITLE_ID in name:
+            found.setdefault('update', []).append(f)
+        elif suffix in ('.xci', '.xcz') or BASE_TITLE_ID in name:
+            found.setdefault('base', []).append(f)
+    return found
 
 
 # The temp folder inside the install folder when the layout names none (the Linux release); the check step does not
@@ -65,7 +92,19 @@ def main(argv=None):
                                                       'to the game, for dlaa and the DLSS modes')
     ap.add_argument('--prepare', action='store_true', help='for a launcher: print `progress <0-1> <text>` lines instead of '
                                                            'JSON events, and take en-US as the language of a first install')
+    ap.add_argument('--game', type=Path, help='the game files in one place: the base game file, or a folder holding the '
+                                              'base game and the update (instead of --base and --update)')
     args = ap.parse_args(argv)
+    if args.game:
+        if args.base or args.update:
+            ap.error('--game replaces --base and --update: give either')
+        for kind, files in split_game(args.game).items():
+            if len(files) > 1:
+                ap.error(f'--game: {len(files)} {kind} files in {args.game} ({", ".join(f.name for f in files)}): '
+                         f'name the one to use with --{kind}')
+            setattr(args, kind, files[0])
+        if not args.base and not args.update:
+            ap.error(f'--game: no game file found in {args.game}')
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
     # the tools it runs; Python's default for it ends the process without recording anything.

@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state, steps  # noqa: E402
+from installer import cli, ini, runner, state, steps  # noqa: E402
 from installer.events import ProgressLines, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
@@ -774,6 +774,43 @@ class ProgressLinesTest(unittest.TestCase):
         ])
         self.assertEqual(lines[-1].split()[:2], ['progress', '0.500'])
         self.assertGreater(len(lines[-1].split()), 2)
+
+
+class SplitGameTest(unittest.TestCase):
+    """--game: a file is the base game; a folder gives the base game and the update by their names."""
+
+    def folder(self, *names):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name in names:
+            (Path(tmp.name) / name).write_bytes(b'')
+        return Path(tmp.name)
+
+    def test_folder_with_both(self):
+        d = self.folder('Game [0100F2C0115B6000][v0].nsp', 'Game [0100F2C0115B6800][v1].nsp', 'notes.txt')
+        found = cli.split_game(d)
+        self.assertEqual([f.name for f in found['base']], ['Game [0100F2C0115B6000][v0].nsp'])
+        self.assertEqual([f.name for f in found['update']], ['Game [0100F2C0115B6800][v1].nsp'])
+
+    def test_xci_is_the_base_game(self):
+        d = self.folder('totk.xci', 'Update [0100f2c0115b6800].nsz')
+        found = cli.split_game(d)
+        self.assertEqual([f.name for f in found['base']], ['totk.xci'])
+        self.assertEqual([f.name for f in found['update']], ['Update [0100f2c0115b6800].nsz'])
+
+    def test_unnamed_nsp_is_left_out(self):
+        self.assertEqual(cli.split_game(self.folder('a.nsp', 'b.nsp')), {})
+
+    def test_a_file_is_the_base_game(self):
+        d = self.folder('x.nsp')
+        self.assertEqual(cli.split_game(d / 'x.nsp'), {'base': [d / 'x.nsp']})
+
+    def test_two_bases_and_both_options_are_usage_errors(self):
+        d = self.folder('a [0100F2C0115B6000].nsp', 'b [0100F2C0115B6000].nsp')
+        for argv in (['--game', str(d), '--dest', 'x'], ['--game', str(d), '--base', 'f', '--dest', 'x']):
+            with self.assertRaises(SystemExit) as e, mock.patch.object(sys, 'stdout', io.StringIO()):
+                cli.main(argv)
+            self.assertEqual(e.exception.code, 2)
 
 
 if __name__ == '__main__':
