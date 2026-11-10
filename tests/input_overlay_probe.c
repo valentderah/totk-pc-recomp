@@ -47,6 +47,7 @@ uint64_t kern_now_ns(void) { abort(); }
 GfxStats gfx_counters;
 void ikb_cursor_update(void) {}
 void ikb_menu_closed(void) {}
+int romfs_shaped_pc_ready(unsigned w, unsigned h) { (void)w; (void)h; return 0; }
 #define CHECK(c) do { if (!(c)) { fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#c); exit(1); } } while (0)
 
 static SDL_JoystickID attach(SDL_Joystick **joy) {
