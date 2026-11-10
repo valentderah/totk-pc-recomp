@@ -281,8 +281,8 @@
 # lang = en-US
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
-# Language of the settings menu and the overlay: en, ru, pt-BR or zh-Hans. Default: the Windows display language, English if
-# it is none of them.
+# Language of the settings menu and the overlay: en, ru, pt-BR, zh-Hans, de, fr, es, it, nl, ja or ko. Default: the
+# Windows display language (zh-Hans for Traditional Chinese), English if it is none of them.
 # menu_lang = en
 
 [discord]
