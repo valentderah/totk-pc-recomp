@@ -386,6 +386,9 @@ uint64_t vk_reflex_submit_id(void) { return t_reflex_submit ? t_reflex_submit : 
 
 // The present thread, before the blit of frame id: the present of that blit carries id.
 void vk_reflex_present_frame(uint64_t id) {
+    // g_blit_pid feeds flip_locked's VkPresentIdKHR (Reflex) and latency_note (TOTK_TRACE=perf); with neither, the
+    // present skips the lock
+    if (!vk_has_reflex() && !(rt_trace & RT_TRACE_PERF)) return;
     plat_rmutex_lock(&g_pl);
     g_blit_pid = id;
     plat_rmutex_unlock(&g_pl);

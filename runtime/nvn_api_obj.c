@@ -19,11 +19,6 @@
 #include "nvn_tex.h"
 #include "platform/platform.h"
 
-void vk_reflex_marker(int marker, uint64_t present_id);
-uint64_t vk_reflex_frame_begin(void);
-uint64_t vk_reflex_frame(void);
-void vk_reflex_sleep(void);
-
 // ---------- Descriptor pools
 // NVNboolean nvnTexturePoolInitialize(NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
 NVN_API(nvnTexturePoolInitialize) {

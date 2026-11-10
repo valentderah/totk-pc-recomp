@@ -12,13 +12,11 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "gfx.h"
 #include "host.h"
 #include "input.h"
 #include "ov.h"
 #include "platform/platform.h"
-
-void vk_reflex_marker(int marker, uint64_t present_id);
-uint64_t vk_reflex_frame(void);
 
 typedef struct { int64_t sampling; uint64_t buttons; int32_t lx, ly, rx, ry; uint32_t attributes, pad; } NpadState;
 typedef struct { int64_t sampling; int32_t x, y, dx, dy, wx, wy; uint32_t buttons, attributes; } MouseState;
