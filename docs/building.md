@@ -246,7 +246,9 @@ files); a change to the settings passes `totk.exe --probe-cfg` and `python tests
 when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md). A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
-table (no game files), and `totk.exe --probe-mods`.
+table (no game files), and `totk.exe --probe-mods`. A change to the cheat VM or the cheat opcode tables
+(`runtime/cheats.c`, `tools/cheats.py`) passes `.venv\Scripts\python tests\cheats_vm_check.py`, which runs both on
+cheats of its own with clang from PATH (`--cc` names another).
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

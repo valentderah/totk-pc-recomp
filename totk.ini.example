@@ -116,10 +116,12 @@
 # vk_validation = 0
 # A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on, except on AMD GPUs.
 # vk_recorder = 1
-# Dynamic vertex input, 0 or 1. Default: on, except on Intel's older integrated GPU drivers (Vulkan 1.3.215 and older).
+# Dynamic vertex input, 0 or 1. Default: on, except on Intel's Windows driver for integrated GPUs (UHD, Iris Xe),
+# which draws black patches with it.
 # vk_dyn_vertex = 1
 # Dynamic alpha to coverage, 0 or 1. Default: on, except on AMD's driver for RDNA 2 and older (RX 400 to RX 6000),
-# which applies alpha to coverage while the dynamic state says off and draws the characters black.
+# which applies alpha to coverage while the dynamic state says off and draws the characters black, and on Intel's
+# Windows driver for integrated GPUs (UHD, Iris Xe), which draws coloured noise on foliage with it.
 # vk_dyn_a2c = 1
 # Pin the shader subgroup size to 32 when the GPU allows it.
 # vk_subgroup_pin = 1
