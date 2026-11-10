@@ -1018,6 +1018,11 @@ class Compile(Step):
         replace_file(build / 'romfs-index.bin', dest / 'romfs-index.bin')
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
+        for rh_name in ('renhdrum.dll', 'librenhdrum.so'):
+            for rh in (build / rh_name, layout.root / 'bin' / rh_name, layout.root / 'lib' / rh_name, layout.root / rh_name):
+                if rh.is_file():
+                    replace_file(rh, dest / rh_name)
+                    break
         return {'exe_sha256': file_sha256(dest / exe.name), 'cpu': cpu}
 
 

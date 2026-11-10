@@ -26,13 +26,15 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_SWKBD_TITLE] = title, [UI_SWKBD_PROMPT] = prompt, [UI_SWKBD_DEFAULT_NAME] = name, [UI_SWKBD_OK] = ok, \
     [UI_SWKBD_CANCEL] = cancel, [UI_SWKBD_PAD_HINT] = hint, LANG_NAMES
 
-// The DLSS model file and the executable, as the player sees them on this platform.
+// The DLSS model file, the RenHDrum library and the executable, as the player sees them on this platform.
 #ifdef _WIN32
 #define DLSS_FILE "nvngx_dlss.dll"
 #define EXE_FILE "totk.exe"
+#define RENHDRUM_FILE "renhdrum.dll"
 #else
 #define DLSS_FILE "libnvidia-ngx-dlss.so"
 #define EXE_FILE "totk"
+#define RENHDRUM_FILE "librenhdrum.so"
 #endif
 
 static const char *const text_en[UI_TEXT_COUNT] = {
@@ -513,6 +515,42 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
+    [UI_MENU_GROUP_HD_SWITCH] = "Switch Controller (Pro Controller & Joy-Con)",
+    [UI_MENU_HD_RUMBLE] = "HD Rumble",
+    [UI_MENU_HD_RUMBLE_DESC] = "HD Rumble for Switch Pro Controller and Joy-Con via RenHDrum (" RENHDRUM_FILE "): sends the "
+                               "game's low and high frequency and amplitude bands directly to the linear resonant "
+                               "actuators (5 ms envelope, pitch inside the packet). Off: standard controller rumble.",
+    [UI_MENU_HD_BT_SPEED] = "Bluetooth send speed",
+    [UI_MENU_HD_BT_SPEED_DESC] = "How fast HD Rumble packets are sent over Bluetooth. Fast is the recommended level: "
+                                 "close to wired, and buttons do not lag because of rumble. Choose Balanced or Stable "
+                                 "if your Bluetooth adapter drops packets.",
+    [UI_MENU_HD_BT_STABLE] = "Stable", [UI_MENU_HD_BT_BALANCED] = "Balanced", [UI_MENU_HD_BT_FAST] = "Fast",
+    [UI_MENU_HD_CRISP] = "Crisp notes (Wired)",
+    [UI_MENU_HD_CRISP_DESC] = "Sharpens short attacks and musical notes on a wired Pro Controller or Joy-Con.",
+    [UI_MENU_HD_BT_CRISP] = "Crisp notes (Bluetooth)",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Sharpens short attacks and musical notes on a Bluetooth Pro Controller or Joy-Con.",
+    [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
+    [UI_MENU_DS_HAPTICS] = "DualSense Haptics",
+    [UI_MENU_DS_HAPTICS_DESC] = "Rumble through the voice-coil haptic actuators in the PS5 DualSense controller via "
+                                "RenHDrum (" RENHDRUM_FILE "). Over USB, the controller's audio channel carries a continuous "
+                                "48,000 samples/sec waveform for the most detailed rumble. Over Bluetooth, it sends "
+                                "3,000 samples/sec haptics (Report 0x32). Off: standard controller rumble.",
+    [UI_MENU_DS_VOLUME] = "Haptics volume",
+    [UI_MENU_DS_VOLUME_DESC] = "Strength of the DualSense voice-coil haptics (10 % to 100 %).",
+    [UI_MENU_DS_CRISP] = "Crisp notes (Wired)",
+    [UI_MENU_DS_CRISP_DESC] = "Sharpens transient impacts and musical notes over a wired USB connection.",
+    [UI_MENU_DS_BT_CRISP] = "Crisp notes (Bluetooth)",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Sharpens transient impacts over Bluetooth (off by default to keep the 3 kHz Bluetooth "
+                                 "haptic stream smooth).",
+    [UI_MENU_GROUP_HD_XBOX] = "Xbox Controller (Xbox One & Series X|S)",
+    [UI_MENU_XBOX_RUMBLE] = "Xbox One Rumble",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Translates Switch HD Rumble for the four motors of a Microsoft Xbox One or Series X|S "
+                                 "controller via RenHDrum (" RENHDRUM_FILE "): the heavy left grip motor takes low-band hits, "
+                                 "the light right grip motor takes high-band taps and surface texture, and the two "
+                                 "trigger motors add left and right onset ticks. Off: standard controller rumble.",
+    [UI_MENU_XBOX_TRIGGERS] = "Trigger rumble (all 4 motors)",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Lets the two impulse trigger motors join in with short left and right onset ticks on "
+                                   "impacts and beats when Xbox One Rumble is on.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -998,6 +1036,41 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
+    [UI_MENU_GROUP_HD_SWITCH] = "Контроллер Switch (Pro Controller и Joy-Con)",
+    [UI_MENU_HD_RUMBLE] = "Вибрация HD Rumble",
+    [UI_MENU_HD_RUMBLE_DESC] = "Вибрация HD Rumble для Switch Pro Controller и Joy-Con через RenHDrum (" RENHDRUM_FILE "): "
+                               "передаёт низкую и высокую частоты и амплитуды игры напрямую на линейные приводы. "
+                               "Выкл.: обычная вибрация геймпада.",
+    [UI_MENU_HD_BT_SPEED] = "Скорость отправки по Bluetooth",
+    [UI_MENU_HD_BT_SPEED_DESC] = "Как часто пакеты HD Rumble отправляются по Bluetooth. «Быстро» — рекомендуемый "
+                                 "уровень: близко к проводу и без задержки кнопок. Выберите «Сбалансированно» или "
+                                 "«Стабильно», если адаптер Bluetooth теряет пакеты.",
+    [UI_MENU_HD_BT_STABLE] = "Стабильно", [UI_MENU_HD_BT_BALANCED] = "Сбаланс.", [UI_MENU_HD_BT_FAST] = "Быстро",
+    [UI_MENU_HD_CRISP] = "Чёткие ноты (по проводу)",
+    [UI_MENU_HD_CRISP_DESC] = "Подчёркивает короткие удары и ноты при проводном подключении Pro Controller или Joy-Con.",
+    [UI_MENU_HD_BT_CRISP] = "Чёткие ноты (Bluetooth)",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Подчёркивает короткие удары и ноты при подключении Pro Controller или Joy-Con по Bluetooth.",
+    [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
+    [UI_MENU_DS_HAPTICS] = "Тактильная отдача DualSense",
+    [UI_MENU_DS_HAPTICS_DESC] = "Вибрация через звуковые катушки контроллера PS5 DualSense с помощью RenHDrum "
+                                "(" RENHDRUM_FILE "). По USB аудиоканал контроллера передаёт непрерывный сигнал 48 000 "
+                                "отсчётов/с. По Bluetooth передаётся сигнал 3000 отсчётов/с (отчёт 0x32). Выкл.: "
+                                "обычная вибрация геймпада.",
+    [UI_MENU_DS_VOLUME] = "Громкость отдачи",
+    [UI_MENU_DS_VOLUME_DESC] = "Сила тактильной отдачи DualSense (от 10 % до 100 %).",
+    [UI_MENU_DS_CRISP] = "Чёткие ноты (по проводу)",
+    [UI_MENU_DS_CRISP_DESC] = "Подчёркивает короткие удары и ноты при проводном подключении по USB.",
+    [UI_MENU_DS_BT_CRISP] = "Чёткие ноты (Bluetooth)",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Подчёркивает короткие удары по Bluetooth (по умолчанию выключено для плавного потока 3 кГц).",
+    [UI_MENU_GROUP_HD_XBOX] = "Контроллер Xbox (Xbox One и Series X|S)",
+    [UI_MENU_XBOX_RUMBLE] = "Вибрация Xbox One Rumble",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Переводит сигнал Switch HD Rumble на четыре мотора контроллера Microsoft Xbox One или "
+                                 "Series X|S через RenHDrum (" RENHDRUM_FILE "): левый мотор рукоятки берёт низкие удары, "
+                                 "правый — высокие касания и текстуру поверхности, а моторы триггеров добавляют "
+                                 "направленные отклики. Выкл.: обычная вибрация геймпада.",
+    [UI_MENU_XBOX_TRIGGERS] = "Вибрация триггеров (все 4 мотора)",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Подключает два импульсных мотора в триггерах для коротких левых и правых откликов "
+                                   "при ударах и ритме, когда включена вибрация Xbox One Rumble.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1516,6 +1589,42 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
+    [UI_MENU_GROUP_HD_SWITCH] = "Controle do Switch (Pro Controller e Joy-Con)",
+    [UI_MENU_HD_RUMBLE] = "Vibração HD (HD Rumble)",
+    [UI_MENU_HD_RUMBLE_DESC] = "Vibração HD para Pro Controller e Joy-Con via RenHDrum (" RENHDRUM_FILE "): envia as bandas "
+                               "de frequência e amplitude baixa e alta do jogo diretamente aos atuadores lineares "
+                               "(envelope de 5 ms, tom no pacote). Desligado: vibração padrão do controle.",
+    [UI_MENU_HD_BT_SPEED] = "Velocidade de envio (Bluetooth)",
+    [UI_MENU_HD_BT_SPEED_DESC] = "Velocidade de envio dos pacotes de vibração HD via Bluetooth. Rápido é o nível "
+                                 "recomendado: próximo ao cabo e os botões não atrasam por causa da vibração. Escolha "
+                                 "Equilibrado ou Estável se o seu adaptador Bluetooth perder pacotes.",
+    [UI_MENU_HD_BT_STABLE] = "Estável", [UI_MENU_HD_BT_BALANCED] = "Equilibrado", [UI_MENU_HD_BT_FAST] = "Rápido",
+    [UI_MENU_HD_CRISP] = "Notas nítidas (Cabo)",
+    [UI_MENU_HD_CRISP_DESC] = "Realça impactos curtos e notas musicais no Pro Controller ou Joy-Con via cabo USB.",
+    [UI_MENU_HD_BT_CRISP] = "Notas nítidas (Bluetooth)",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Realça impactos curtos e notas musicais no Pro Controller ou Joy-Con via Bluetooth.",
+    [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
+    [UI_MENU_DS_HAPTICS] = "Vibração háptica do DualSense",
+    [UI_MENU_DS_HAPTICS_DESC] = "Vibração pelos alto-falantes hápticos (voice-coil) do controle PS5 DualSense via "
+                                "RenHDrum (" RENHDRUM_FILE "). Por cabo USB, o canal de áudio do controle recebe 48.000 "
+                                "amostras/s para a vibração mais detalhada. Por Bluetooth, envia 3.000 amostras/s "
+                                "(Relatório 0x32). Desligado: vibração padrão do controle.",
+    [UI_MENU_DS_VOLUME] = "Volume da vibração háptica",
+    [UI_MENU_DS_VOLUME_DESC] = "Intensidade dos atuadores hápticos do DualSense (10 % a 100 %).",
+    [UI_MENU_DS_CRISP] = "Notas nítidas (Cabo)",
+    [UI_MENU_DS_CRISP_DESC] = "Realça impactos curtos e notas musicais conectado por cabo USB.",
+    [UI_MENU_DS_BT_CRISP] = "Notas nítidas (Bluetooth)",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Realça impactos curtos via Bluetooth (desligado por padrão para manter o fluxo de "
+                                 "3 kHz suave).",
+    [UI_MENU_GROUP_HD_XBOX] = "Controle Xbox (Xbox One e Series X|S)",
+    [UI_MENU_XBOX_RUMBLE] = "Xbox One Rumble",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Traduz o HD Rumble do Switch para os quatro motores de um controle Microsoft Xbox One "
+                                 "ou Series X|S via RenHDrum (" RENHDRUM_FILE "): o motor esquerdo (pesado) recebe impactos "
+                                 "graves, o direito (leve) recebe toques agudos e textura de superfície, e os dois "
+                                 "motores dos gatilhos adicionam pulsos direcionais. Desligado: vibração padrão.",
+    [UI_MENU_XBOX_TRIGGERS] = "Vibração nos gatilhos (todos os 4 motores)",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Permite que os dois motores dos gatilhos participem com pulsos curtos à esquerda e à "
+                                   "direita em impactos e batidas quando o Xbox One Rumble está ligado.",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2118,6 +2227,34 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
+    [UI_MENU_GROUP_HD_SWITCH] = "Switch 手柄（Pro 手柄与 Joy-Con）",
+    [UI_MENU_HD_RUMBLE] = "HD 震动",
+    [UI_MENU_HD_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 为 Switch Pro 手柄和 Joy-Con 提供 HD 震动：将游戏的低频与高频"
+                               "频率和振幅直接发送给线性谐振马达（5 毫秒包络、包内音高）。关闭：使用普通手柄震动。",
+    [UI_MENU_HD_BT_SPEED] = "蓝牙发送速度",
+    [UI_MENU_HD_BT_SPEED_DESC] = "蓝牙下发送 HD 震动包的速度。推荐使用“快速”：接近有线连接，且按键不会因震动而延迟。如果蓝牙适配器丢包，可选择“均衡”或“稳定”。",
+    [UI_MENU_HD_BT_STABLE] = "稳定", [UI_MENU_HD_BT_BALANCED] = "均衡", [UI_MENU_HD_BT_FAST] = "快速",
+    [UI_MENU_HD_CRISP] = "清脆音符（有线）",
+    [UI_MENU_HD_CRISP_DESC] = "有线连接 Pro 手柄或 Joy-Con 时增强短促震动与音符清晰度。",
+    [UI_MENU_HD_BT_CRISP] = "清脆音符（蓝牙）",
+    [UI_MENU_HD_BT_CRISP_DESC] = "蓝牙连接 Pro 手柄或 Joy-Con 时增强短促震动与音符清晰度。",
+    [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
+    [UI_MENU_DS_HAPTICS] = "DualSense 触觉反馈",
+    [UI_MENU_DS_HAPTICS_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 使用 PS5 DualSense 手柄中的音圈触觉马达表现震动。USB 有线连接下，"
+                                "手柄音频通道传输连续的 48,000 采样/秒波形，呈现最细腻的震动；蓝牙连接下传输 3,000 采样/秒波形（报告 0x32）。关闭：使用普通手柄震动。",
+    [UI_MENU_DS_VOLUME] = "触觉反馈音量",
+    [UI_MENU_DS_VOLUME_DESC] = "DualSense 音圈触觉反馈的强度（10 % 至 100 %）。",
+    [UI_MENU_DS_CRISP] = "清脆音符（有线）",
+    [UI_MENU_DS_CRISP_DESC] = "USB 有线连接下增强瞬态冲击与音符清晰度。",
+    [UI_MENU_DS_BT_CRISP] = "清脆音符（蓝牙）",
+    [UI_MENU_DS_BT_CRISP_DESC] = "蓝牙连接下增强瞬态冲击（默认关闭，以保持 3 kHz 蓝牙触觉流平滑）。",
+    [UI_MENU_GROUP_HD_XBOX] = "Xbox 手柄（Xbox One 与 Series X|S）",
+    [UI_MENU_XBOX_RUMBLE] = "Xbox One 震动（Xbox One Rumble）",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 将 Switch 的 HD 震动转换为微软 Xbox One 或 Series X|S 手柄的四马达震动："
+                                 "左侧重握把马达表现低频重击，右侧轻握把马达表现高频轻触与表面纹理，左右扳机马达补充短促的方向起振反馈。"
+                                 "关闭：使用普通手柄震动。",
+    [UI_MENU_XBOX_TRIGGERS] = "扳机震动（全部 4 个马达）",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "开启 Xbox One 震动时，让两个脉冲扳机马达共同参与，在冲击与节拍时提供左右短促震动。",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
