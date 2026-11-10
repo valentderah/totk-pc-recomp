@@ -145,6 +145,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
                           "from. Takes effect after a restart.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 for the 3D scene, on any graphics card (Windows; amd_fidelityfx_vk.dll next to "
+                          "totk.exe): smoother edges and less shimmer, and with the DLSS mode below the scene is drawn "
+                          "smaller and scaled up. Where NVIDIA DLSS is on and can run, DLSS is used instead. Takes "
+                          "effect after a restart.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
                                  "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
@@ -632,6 +637,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
                           "работает. Действует после перезапуска.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 для 3D-сцены на любой видеокарте (Windows; amd_fidelityfx_vk.dll рядом с "
+                          "totk.exe): ровнее края и меньше мерцания, а в режимах DLSS ниже сцена рисуется меньше и "
+                          "масштабируется. Если NVIDIA DLSS включён и может работать, используется DLSS. Действует "
+                          "после перезапуска.",
     [UI_MENU_DLSS_PRESET] = "Модель DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
                                  "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
@@ -1470,6 +1480,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
                           "onde ele parte. Vale após reiniciar.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 para a cena 3D, em qualquer placa de vídeo (Windows; amd_fidelityfx_vk.dll ao "
+                          "lado do totk.exe): bordas mais suaves e menos cintilação e, com o modo do DLSS abaixo, a "
+                          "cena é desenhada menor e ampliada. Onde o NVIDIA DLSS está ligado e funciona, o DLSS é "
+                          "usado no lugar. Vale após reiniciar.",
     [UI_MENU_DLSS] = "Modo do DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
                           "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
@@ -2090,6 +2105,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "用于 3D 场景的 AMD FSR 3.1，适用于任何显卡（Windows；amd_fidelityfx_vk.dll 放在 totk.exe 旁）："
+                          "边缘更平滑，闪烁更少；配合下方的 DLSS 模式，场景以较低分辨率绘制后再放大。"
+                          "如果 NVIDIA DLSS 已开启且可以运行，则改用 DLSS。重启后生效。",
     [UI_MENU_DLSS] = "DLSS 模式",
     [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
     [UI_MENU_DLSS_DLAA] = "DLAA（原生）",

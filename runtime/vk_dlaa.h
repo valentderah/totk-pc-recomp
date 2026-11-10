@@ -61,6 +61,24 @@ int vk_dlaa_motion(void);
 int vk_mblur_wanted(void);
 int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow, uint32_t oh, VkImageView mv,
                    VkImageView depth, uint32_t w, uint32_t h, const double inv_w[4], int exact);
+// vk_fsr3.c (TOTK_FSR3): AMD FSR 3.1 as the scene's temporal upscaler where DLSS does not run, through AMD's library
+// next to the executable. vk_fsr3_wanted: the setting, read at start. vk_fsr3_available: wanted and the library
+// loaded (at the first call). vk_fsr3_upscale records one frame
+// into cb (the recorder drained): the images in GENERAL, first level and layer; the jitter and vectors as DLSS takes
+// them; 0: failed, to be taken as off for the run.
+typedef struct {
+    VkImage color, depth, mv, mask, out;   // mask: FSR's reactive mask (R8), or none
+    VkFormat color_fmt;                    // R11G11B10F or RGBA16F; depth is D32F, mv RG16F, out RGBA16F
+    uint32_t w, h, ow, oh;                 // the scene's size and the picture's
+    float jx, jy;                          // the jitter the scene's draws took, pixels
+    int reset;                             // no history carries over
+    float dt_ms, near_m, far_m, fov_y;     // frame time; the camera's planes and vertical field of view (radians)
+    int inverted;                          // depth 1 is the near plane
+    float sharpness;                       // 0..1, 0: no sharpening pass
+} VkFsr3Frame;
+int vk_fsr3_wanted(void);
+int vk_fsr3_available(void);
+int vk_fsr3_upscale(VkCommandBuffer cb, const VkFsr3Frame *f);
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);
