@@ -159,7 +159,11 @@ const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
+volatile int g_lastcall = 0; // TOTK_LASTCALLS=1: lastcalls.c records and dumps the last calls of each thread
+void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (g_lastcall) lastcall_note(addr, lr);
+    (void)lr, res_fn_hit(addr, x0);
+}
 
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
@@ -647,6 +651,7 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);
+    lastcall_setup();   // TOTK_LASTCALLS=1: record the last calls of each thread, and dump them on SIGQUIT
     parse_trace();
     prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
