@@ -990,6 +990,13 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    rh_names = ('renhdrum.dll',) if WIN else ('librenhdrum.so', 'renhdrum.so')
+    for rh_name in rh_names:
+        for rh_lib in (ROOT / rh_name, ROOT.parent / rh_name,
+                       ROOT.parent / 'RenHDrum' / 'target' / 'release' / rh_name):
+            if rh_lib.is_file():
+                shutil.copy2(rh_lib, exe.parent / rh_name)
+                break
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
