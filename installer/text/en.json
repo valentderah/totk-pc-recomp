@@ -5,6 +5,7 @@
  "step.lift": "Translating the game code to C",
  "step.compile": "Compiling {game_exe}",
  "step.prepare": "Preparing the shaders",
+ "step.pc_prompts": "Drawing the keyboard and mouse prompts",
  "step.dlss": "Downloading NVIDIA DLSS",
  "step.cleanup": "Cleaning up",
 
@@ -29,6 +30,7 @@
  "phase.compile.compile": "Compiling",
  "phase.compile.link": "Linking {game_exe}",
  "phase.prepare.romfs_patches": "Writing the 60 fps game data patches",
+ "phase.pc_prompts.draw": "Drawing the keyboard and mouse button prompts from totk.ini's bindings",
  "phase.prepare.seed": "Reading the shaders from the game data",
  "phase.prepare.translate": "Translating the shaders",
  "phase.prepare.libraries": "Building the shaders for the graphics driver",

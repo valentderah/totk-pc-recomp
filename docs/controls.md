@@ -65,7 +65,7 @@ At a game resolution of another shape than 16:9 the game loads `romfs-patches-xb
 
 | Switch | Prompt |
 |---|---|
-| A, B, X, Y | E, Shift, Space, left click |
+| A, B, X, Y | E, Shift, Space, left click (T in text prompts) |
 | L, R, ZL, ZR | Q, R, right click, F |
 | Plus, Minus | Tab, M |
 | D-pad | 1 (left), 2 (up), 3 (right), 4 (down), as a cross or the keys of the directions meant |
@@ -74,7 +74,8 @@ At a game resolution of another shape than 16:9 the game loads `romfs-patches-xb
 
 - The glyphs keep the width of the game's own, so the right-aligned guides do not run into their text. A key is a rounded square with its label cut out in the game's own text fonts (Shift: an arrow over its name); a mouse button is a mouse with that button filled and the others hollow.
 - The button guide in play draws every button from images of the Common archive (`Nt_KeyTexA/B/X/Y/L/ZL_00`, `Nt_KeyTexLSt_00` and `_01`, the stick tilted and pressed): all of them are painted with the same icons. The letters of the action prompt's diamond are one character of the Normal font each: E, an arrow for Shift, a bar for Space, L and R for the mouse buttons.
-- Like the Xbox prompts they follow the defaults and not the bindings. `--binds <totk.ini>` draws the first key of each `bind_` line of that file instead, for a folder made by hand.
+- Y has two keys, the left mouse button and T. The button guide in play and the action prompt show the left button, which attacks there; the prompts in text (the menus' guides such as *Sort*, the dialogue log's) show T, because while a menu has the pointer the left button is that menu's A, and T presses Y everywhere (`PC_TEXT_KEYS` in `tools/button_icons.py`). With a `bind_y` line, the text prompts take its first key that is not a mouse button (its only key when all are mouse buttons).
+- They follow the bindings of the install's `totk.ini` as the setup found them: its *Drawing the keyboard and mouse prompts* step passes the file as `--binds` (the first key of each `bind_` line), and the keyboard defaults without one. After a change on the Controls tab run the setup again: that step alone runs, since it is keyed by the `bind_` lines (`PcPrompts` in `installer/steps.py`). The Xbox prompts follow the defaults.
 - At a game resolution of another shape than 16:9 the game loads `romfs-patches-pc-<w>x<h>` in place of `romfs-patches-<w>x<h>`: the same prompts with that shape's UI layout, `make_romfs_patches.py --prompts pc --aspect <w>x<h> --reuse <install>\romfs-patches-pc --out <install>\romfs-patches-pc-<w>x<h>`. The setup writes one for each of the fifteen sizes it lays the UI out for, so on a display of one of those shapes the game resolution follows the display with these prompts too. At another size, without that folder, the Switch prompts stay (*off at this game resolution*).
 
 ## Window keys
