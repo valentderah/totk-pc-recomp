@@ -41,6 +41,16 @@ with tempfile.TemporaryDirectory() as tmp:
     shadow.mkdir(parents=True)
     (shadow / '__init__.py').write_text('# stands in for the PyPI "installer" package: no gui submodule\n')
 
+    # The test only means something if this interpreter would put the user site on sys.path without AppRun's
+    # setting. A venv has no user site, so run it with the system Python; otherwise the shadow is never tried.
+    probe_env = dict(env)
+    probe_env.pop('PYTHONNOUSERSITE', None)
+    probe = subprocess.run([sys.executable, '-c', 'import sys; print(sys.argv[1] in sys.path)', str(user_site)],
+                           env=probe_env, capture_output=True, text=True, cwd=tmp)
+    assert probe.stdout.strip() == 'True', (
+        f'user site {user_site} is not on sys.path for {sys.executable}; run this test with the system Python, '
+        'not a venv, or it cannot catch the shadowing')
+
     bundle = tmp / 'bundle'
     (bundle / 'installer').mkdir(parents=True)
     (bundle / 'installer' / '__init__.py').write_text('')
