@@ -116,6 +116,11 @@ needs the release folder the setup ran from: a moved or deleted release folder m
 python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--root DIR] [--temp DIR] [--verify]
 ```
 
+- `--game PATH` stands in for `--base` and `--update`, so a script, a launcher or a Steam shortcut can start the setup without
+  anyone moving files: a file is the base game; a folder is searched (not its subfolders) for it and the update. An XCI or
+  XCZ is the base game, an NSP or NSZ is told by the title id its name carries (`[0100F2C0115B6000]` base,
+  `[0100F2C0115B6800]` update, as dumps are named). More than one file of a kind, or a name that says neither, is a usage
+  error that names the files; `--base` and `--update` still take any file. Giving `--game` with either is a usage error.
 - On a folder with `totk-install.json` only `--dest` is needed; the game files only when the extraction must run again.
 - `--firmware DIR` is the folder holding the firmware NCAs: an unpacked firmware, or the emulators' installed
   `Contents/registered` (the parent `Contents` folder works too). It is read only with Chinese, Korean or Traditional
