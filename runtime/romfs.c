@@ -340,7 +340,8 @@ static void overlay_push(Overlay o) {
 }
 
 // 1 when path names a file of one game version only (Product.<n> in a name: the resource size table, the actor
-// database and other version-bound files); the RomFS lacking it means it is another version's.
+// database and other version-bound files); the RomFS lacking it means it is another version's, or a name this version
+// still asks for (mod_walk_cb).
 static int other_version(const char *path) {
     for (const char *p = strstr(path, ".Product."); p; p = strstr(p + 1, ".Product.")) {
         const char *d = p + strlen(".Product.");
@@ -420,9 +421,18 @@ static int mod_walk_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
     }
     uint64_t i = index_any_case(path);
     if (i == UINT64_MAX && other_version(path)) {
-        if (is_restbl(path)) shipped_add(file, w->k + 1, 1);   // its entries for this mod's files still apply
         m->other_version++;
-        return 1;
+        // Another version's resource size table is no file this game opens; its entries for this mod's files still
+        // apply.
+        if (is_restbl(path)) {
+            shipped_add(file, w->k + 1, 1);
+            return 1;
+        }
+        // Any other file is served under its own name below, as an added file, the way LayeredFS shows a console every
+        // file of a mod: the game does ask for names its RomFS lacks. Measured on 1.4.3 with mods on (trace = fs): it
+        // opened Sound/Resource/Pack_MasterSword.Product.110.bars.zs, where its RomFS holds Product.140 and the
+        // unversioned file only. A sound mod that ships its pack under all those names stayed silent while this file
+        // was left out.
     }
     PlatFile *f = open_read(file);
     if (!f) {
