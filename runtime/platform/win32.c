@@ -736,6 +736,14 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+// The faulting thread's general registers, for the report to tie the faulting instruction to its operands.
+static void regs_of(const CONTEXT *x, PlatCrash *c) {
+    const DWORD64 r[16] = {x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi,
+                           x->R8,  x->R9,  x->R10, x->R11, x->R12, x->R13, x->R14, x->R15};
+    for (int i = 0; i < 16; i++) c->gpr[i] = r[i];
+    c->has_regs = 1;
+}
+
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep);
 
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
@@ -758,6 +766,7 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -895,6 +904,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
                    (uint32_t)code, rip, 0, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
         c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
     void *base = NULL;
     RtlPcToFileHeader((void *)rip, &base);
     uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
@@ -1773,6 +1783,12 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof pmc))
         *proc_mb = (double)(pmc.PrivateUsage >> 20);
+}
+
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    if (GlobalMemoryStatusEx(&ms)) *commit_room = ms.ullAvailPageFile, *phys_room = ms.ullAvailPhys;
 }
 
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {

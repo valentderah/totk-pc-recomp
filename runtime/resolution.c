@@ -14,10 +14,11 @@
 // 64-bit word, +40 the renderer (1.2.1) or display configuration (1.4.3) the patched code stores there.
 // +56 the camera's aspect ratio as a float when the output is not 16:9 (set aspect), +60 the field-of-view factor
 // (set fov, res_fov_live).
-// 1.4.3 scales the scene it reads by output width / 1920 (a 2560x1440 output renders its 1600x900 scene at 2128x1200;
-// MacNativeGames measured the same), so its page holds the wanted size divided by that factor and the game's 5/6 needs
-// no scene patch. 1.2.1 renders the size it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and
-// the scene set is on whenever the output differs from 1920x1080.
+// 1.4.3 scales the scene it reads by canvas width / the console mode's base width, 1920 docked and 1280 handheld (a
+// 2560x1440 output renders its 1600x900 scene at 2128x1200 docked; MacNativeGames measured the same), so its page holds
+// the wanted size divided by that factor (scene_scale) and the game's 5/6 needs no scene patch. 1.2.1 renders the size
+// it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and the scene set is on whenever the
+// output differs from 1920x1080.
 //
 // Heap: agl's DynamicTextureAllocator is one fixed heap, "DynamicTextureAllocatorMem" in
 // System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs (113664 KiB, carved from "Graphics", 201728 KiB). At 2560x1440
@@ -40,6 +41,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "mods.h"
+#include "ov.h"
 #include "platform/platform.h"
 
 #define BASE_W 1920
@@ -207,6 +209,17 @@ uint64_t res_heap_extra_kib(void) {
                   fmax(0.0, (double)R.hw * R.hh / (SCENE_W * SCENE_H) - 1.0);
     uint64_t kib = grow > 0 ? (uint64_t)ceil(DTA_KIB * (1.0 + grow) / 1024.0) * 1024 - DTA_KIB : 0;
     return kib + ((shadow_kib() + 1023) & ~1023ull);   // whole MiB
+}
+
+// 1.4.3's factor between the scene size it reads from the page and the one it renders. The game's scene setter
+// (main+0x585e48 and the code before it) multiplies the page's size by the canvas width (display configuration +0x10)
+// over the current console mode's base width (+0xf4 of the mode's entry, mode 1 handheld: main+0x2dac1c stores
+// GetOperationMode != 1 at +0x546). The base is 1280 handheld and 1920 docked. The canvas is the output whenever the
+// scene patch is on: docked the game's own canvas is 1920, handheld res_init switches the output patch on (a 1280 base
+// with the game's 1280x720 handheld canvas would render R.ow / 1280 times the scene). 1.2.1 renders the size it reads.
+static double scene_scale(void) {
+    if (!RT_V143) return 1.0;
+    return (double)R.ow / (ov_handheld() ? 1280 : BASE_W);
 }
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
@@ -485,15 +498,20 @@ void res_init(void) {
         return;
     }
     uint8_t *page = rt_patch_page();
-    double k = RT_V143 ? (double)R.ow / BASE_W : 1.0;   // 1.4.3's own scaling of the scene with the output width
+    double k = scene_scale();
     int scene_on = R.scene_set || (!RT_V143 && (R.ow != BASE_W || R.oh != BASE_H));
+    // Handheld, 1.4.3 draws a 1280x720 canvas unless the output patch is on, whatever the output setting (measured: a
+    // 1920x1080 output with the patch off composed the frame at 1280x720 and only the swapchain was 1920x1080). With
+    // the scene patch on the output patch is switched on too, so the canvas is the output size that scene_scale and
+    // the heap size (res_heap_extra_kib) assume.
+    int output_on = R.ow != BASE_W || R.oh != BASE_H || (RT_V143 && scene_on && ov_handheld());
     float sc[2] = {(float)(R.sw / k), (float)(R.sh / k)};
     uint64_t out = pack(R.ow, R.oh), none = 0;
     memcpy(page + 16, sc, sizeof sc);
     memcpy(page + 32, &out, 8);
     memcpy(page + 40, &none, 8);
     memcpy(page + 48, &out, 8);
-    rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
+    rt_patch_switch(output, output_on);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
@@ -614,7 +632,7 @@ int res_dlss_mode(const char *m) {
     unsigned w, h;
     scene_for(k ? k : R.base_k, &w, &h);
     if (w == R.sw && h == R.sh) return 0;
-    double s = RT_V143 ? (double)R.ow / BASE_W : 1.0;
+    double s = scene_scale();
     float sc[2] = {(float)(w / s), (float)(h / s)};
     memcpy((uint8_t *)rt_patch_page() + 16, sc, sizeof sc);
     R.sw = w, R.sh = h;

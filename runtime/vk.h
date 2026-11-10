@@ -44,6 +44,7 @@ typedef struct VkCtx {
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
+    VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
 } VkCtx;
 enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
@@ -300,13 +301,24 @@ int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at ad
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with TOTK_TRACE=perf, every 1800 frames
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
-// 0: this allocator's own allocations against the heap sizes. 0 when unknown.
+// 0: this allocator's own allocations against the heap sizes. 0 when unknown. Where device memory takes host memory
+// (vk_mem_host_room) the budget is at most the use plus that room.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
+// Bytes the system can still give device memory beyond a reserve (TOTK_MEM_RESERVE_MIB) where device memory takes host
+// memory: a UMA GPU (commit and physical memory), or a discrete GPU whose device-local memory took process commit in
+// vk_mem_host_probe (commit). UINT64_MAX elsewhere.
+uint64_t vk_mem_host_room(void);
+void vk_mem_host_probe(void);                 // vk_device.c, after the device: measures that for a discrete GPU, once
+int vk_mem_uma(void);                         // 1: the device class is uma (vk_mem_class_log), its memory is RAM
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
 // block of each memory type in use ahead of the render thread.
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
 void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
+// The texture pool (vk_memory.c vk_texture_image) gets its next block ahead too; pool NULL frees the anchor in it.
+void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block);
+void vk_headroom_release(void);   // after a failed allocation: frees the spare blocks and keeps none for a while;
+                                 // any thread that holds no VMA lock (takes only the headroom lock)
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
@@ -342,6 +354,8 @@ void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
 void vk_defer_free(void *p);
 // Device-local scratch for the upload batch (storage, transfer src and dst), from a pool of its own (vk_memory.c).
 VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
+// A game texture's image with memory of its own: the texture pool, or a dedicated allocation (vk_memory.c).
+VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *alloc);
 // Staging and scratch bytes the open upload batch holds until it completes. Large texture loads submit the batch early
 // (vk_texture.c UPLOAD_HELD_MAX) so the GPU starts on it and its buffers come back before the pools need new blocks.
 VkDeviceSize vk_upload_held(void);
@@ -395,6 +409,10 @@ int vk_mem_span_live(const VkMemSpan *sp);
 void vk_mem_note_fence(uint64_t timeline_value);
 void vk_mem_fault_log(void);   // vk_device_fault_report: the deferred-free state, lock-free
 void vk_mem_collect(void);                         // frees what has completed
+// After a failed allocation, on a thread that may hold the texture lock and the upload lock (cmd_lock) but no VMA
+// lock: frees the headroom blocks and the completed upload batches and deferred objects, and requests the release
+// of released textures at the next submit (rt_oom_request).
+void vk_oom_release(void);
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
 void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object

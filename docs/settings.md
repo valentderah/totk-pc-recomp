@@ -84,6 +84,7 @@ Many rows below are developer tools that only act together with another setting 
 | `probe_movie_bench` | `1` makes the movie probe also time the resampler that fits a movie to a game resolution of another shape, and print the time per frame. | Only used by the movie decoder probe. | Safe |
 | `swkbd_answer` | `<text>`, `<cancel>` or `<initial>`: answers the on-screen keyboard (for example a horse name) without opening a window. | The game gets that answer every time it asks for text. | Caution |
 | `swkbd_test` | `ok` or `cancel` opens the keyboard window and presses OK or Cancel on the first timer tick. | The keyboard window closes by itself. | Caution |
+| `test_oom` | `<site>:<n>[,...]` fails the first n allocations at a site: `commit` (guest memory), `staging` (upload buffers), `image` (texture images), `chunk` (draw data buffers). | Each forced failure takes the out-of-memory path: a memory release, a wait of 10 ms per retry and log lines; a large n stalls up to 30 s and then ends the game. | Caution |
 | `test_pad` | `<lx>,<ly>,<rx>,<ry>` attaches a virtual gamepad whose sticks rest at these raw SDL axis values (-32768 to 32767). | The game sees a controller with that drift or deflection; a malformed value is logged and ignored. | Caution |
 | `test_prepare_shaders` | `1` translates every recorded shader on all usable CPUs during start. | Start takes longer and fills the shader cache folder; the CPU is fully used while it runs. | Caution |
 
@@ -188,6 +189,7 @@ Many rows below are developer tools that only act together with another setting 
 | --- | --- | --- | --- |
 | `app_pool` | Size in bytes of the guest application memory pool; accepts decimal or `0x` hex. | The default depends on the resolution settings; `0` stops the start with a message, and too small a pool leaves the game without memory. | Risky |
 | `audio_off` | Any value mixes audio without opening an output device. | The game runs in silence and reports two channels; same as `audio = none`. | Caution |
+| `mem_reserve_mib` (default `1536`) | MiB of system memory kept free for Windows, other programs and the game's own heap when the renderer sizes what it keeps in device memory, where device memory takes system memory (integrated GPUs, and discrete GPUs whose driver charges it to the process). | A larger value keeps fewer released textures and spare blocks when the system runs short; a smaller one lets the game use more before it holds back. | Caution |
 | `one_per_core` (default `0`) | `1` keeps the process on the first logical processor of each physical core; `ab` switches it with the `ab` blocks. | Busy threads stop sharing a core with a sibling thread, which can help or hurt on the CPU; it only applies when the CPU has hyperthreads. | Caution |
 | `reexec` | Counter of address-space retries that the runtime sets itself when it starts the process again. | The counter is cleared when the window is recreated; a value of 20 or more stops the start with a fatal error. | Risky |
 | `replay_chunks` (default `0`) | Most chunks a submission is cut into when `replay_workers` is set; `0` uses twice the number of recording threads. | Fewer chunks leave threads idle at the end of a submission, more add scan and submit work per chunk; no effect while `replay_workers` is `0`. | Caution |
@@ -197,6 +199,9 @@ Many rows below are developer tools that only act together with another setting 
 | `restart_wait` | Set by the runtime when it restarts itself; names the old process by id and creation time so the new process waits for it to exit. | Meant for the runtime's own use; the code does not describe a manual value. | Unknown |
 | `spin` (default `1`) | `0` makes a guest thread that polls memory keep its virtual core. | Polling threads can starve the thread whose item they wait for, so frames can stall. | Caution |
 | `spin_handoff_us` (default `50`) | Microseconds a polling wait lasts before it gives its virtual core to a waiting thread. | A shorter value hands cores over sooner; a longer one keeps them longer. | Caution |
+| `tex_block_mib` (default `64`) | Block size in MiB of the pool that holds the game's textures; images of a quarter block or more get memory of their own. `0` puts textures in the default pools with the buffers. | Larger blocks hold more memory that no texture uses; smaller ones mean more allocations from the driver. | Caution |
+| `tex_released_mib` (default `256`) | MiB of textures the game released that are kept for reuse; older ones beyond it are dropped. `0` keeps up to 2048 of them, whatever their size. | A larger value keeps more device memory and process commit; a smaller one makes the game create more textures again. | Caution |
+| `vma_block_mib` (default `64`) | Block size in MiB that the Vulkan memory allocator takes from the driver for buffers and other images on heaps over 1 GiB; larger allocations than half a block get memory of their own. `0` uses the allocator's 256. | Larger blocks hold more memory that nothing uses; smaller ones mean more allocations from the driver. | Caution |
 
 ## Generated-code patches
 

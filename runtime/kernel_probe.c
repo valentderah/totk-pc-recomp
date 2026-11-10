@@ -682,6 +682,25 @@ static int cmp_u64(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+// A refused commit waits and retries (memory.c commit, oom.c rt_oom_wait): three forced refusals, then the page maps.
+static void test_oom_commit(void) {
+    const RtGuestLayout *g = mem_layout();
+    uint64_t a = g->alias.base + g->alias.size - 0x10000;
+    rt_oom_force(RT_OOM_COMMIT, 3);
+    uint64_t t0 = plat_now_ms();
+    uint32_t r = mem_map_physical(a, 0x1000);
+    uint64_t ms = plat_now_ms() - t0;
+    CHECK(r == 0 && rt_oom_forced_left(RT_OOM_COMMIT) == 0 && ms >= 20,
+          "MapPhysicalMemory after 3 refused commits: result %#x, %d refusals left, %llu ms", r,
+          rt_oom_forced_left(RT_OOM_COMMIT), (unsigned long long)ms);
+    rt_oom_force(RT_OOM_COMMIT, 0);
+    if (r == 0) {
+        *(volatile uint64_t *)(uintptr_t)a = 1;
+        CHECK(mem_unmap_physical(a, 0x1000) == 0, "UnmapPhysicalMemory after the refused commits");
+    }
+    printf("oom: commit waited %llu ms through 3 refusals\n", (unsigned long long)ms);
+}
+
 static void test_platform(void) {
     PlatThread *t = plat_thread_new(plat_worker, (void *)(intptr_t)1, "probe-kernel plat");
     CHECK(t, "plat_thread_new");
@@ -719,6 +738,49 @@ static void test_platform(void) {
     CHECK(over[N / 2] < 500000, "plat_sleep_ns(1 ms) median overshoot %.3f ms (want < 0.5)", over[N / 2] / 1e6);
 }
 
+// ---- crash report (main.c crash_handler): a child faults on a guest thread with known values in rbx and x19; the
+// report must hold the host registers, the faulting instruction's bytes and the memory both values point at.
+#define CRASH_CHILD_ENV "TOTK_PROBE_KERNEL_CRASH_CHILD"
+static uint64_t crash_host_words[6] = {0, 0, 0x5ca1ab1e0c0de001ull, 0, 0, 0};
+static uint64_t crash_guest_words[6] = {0, 0, 0x5ca1ab1e0c0de002ull, 0, 0, 0};
+
+static void crash_child_main(Cpu *c) {
+    c->x[19] = (uint64_t)(uintptr_t)&crash_guest_words[2];
+    c->sp -= 0x100;   // a frame on the guest stack, as a crashing function has
+    __asm__ volatile("movq %0, %%rbx\n\tmovq 0x10, %%rax" : : "r"(&crash_host_words[2]) : "rax", "rbx", "memory");
+}
+
+// The report line that holds needle, NULL when none does
+static const char *report_line(const char *out, const char *needle, char *line, size_t cap) {
+    const char *p = strstr(out, needle);
+    if (!p) return NULL;
+    while (p > out && p[-1] != '\n') p--;
+    size_t n = strcspn(p, "\r\n");
+    snprintf(line, cap, "%.*s", (int)(n < cap ? n : cap - 1), p);
+    return line;
+}
+
+static void test_crash_report(void) {
+    static char out[65536];
+    char line[512], want[64];
+    int code = plat_run_self(CRASH_CHILD_ENV, "1", out, sizeof out, 30000);
+    CHECK(code == 71 && strstr(out, "FATAL: access violation") && strstr(out, "reading address 0x10"),
+          "crash child: exit code %d, no access violation at 0x10 reported", code);
+    snprintf(want, sizeof want, "rbx %016llx", (unsigned long long)(uintptr_t)&crash_host_words[2]);
+    CHECK(strstr(out, want), "crash report: no host register line with %s", want);
+    CHECK(report_line(out, "host code at rip-", line, sizeof line) && strstr(line, "| 48 8b 04 25 10 00 00 00"),
+          "crash report: the faulting instruction's bytes are missing");
+    const char *h = report_line(out, "*5ca1ab1e0c0de001", line, sizeof line);
+    CHECK(h && strstr(h, "rbx"), "crash report: no memory line for rbx (%s)", h ? h : "none");
+    const char *g = report_line(out, "*5ca1ab1e0c0de002", line, sizeof line);
+    CHECK(g && strstr(g, "x19"), "crash report: no memory line for x19 (%s)", g ? g : "none");
+    CHECK(strstr(out, "guest stack sp+0x00:"), "crash report: no guest stack words");
+    CHECK(report_line(out, "  memory commit: this process ", line, sizeof line) && !strstr(line, "process -1 MB"),
+          "crash report: no memory commit line");
+    printf("crash report: exit code %d, host registers, code bytes, memory at rbx and x19, guest stack, commit %s\n", code,
+           failures ? "checked with failures" : "present");
+}
+
 int probe_kernel(void) {
     a_lock_waiter = hostfn_register("probe-kernel lock waiter", lock_waiter);
     a_cv_waiter = hostfn_register("probe-kernel condvar waiter", cv_waiter);
@@ -742,7 +804,15 @@ int probe_kernel(void) {
         printf("probe-kernel: FAILED (no PLT stub for %s in main)\n", TICK_SYMBOL);
         return 1;
     }
+    const char *child = getenv(CRASH_CHILD_ENV);
+    if (child && *child) {
+        kern_run_on_guest_main(crash_child_main);
+        printf("crash child: returned without a fault\n");
+        return 1;
+    }
     test_platform();
+    test_oom_commit();
+    test_crash_report();
     kern_run_on_guest_main(probe_main);
     RtStats s = rt_stats();
     printf("stats: %llu SVCs, %llu threads, %llu host calls\n", (unsigned long long)s.svcs,

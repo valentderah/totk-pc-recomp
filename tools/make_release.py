@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import build_xlate  # noqa: E402
 import check_content  # noqa: E402
+import pgo  # noqa: E402
 import shader_list  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -385,11 +386,13 @@ def lifted_version():
 
 
 def profiles():
-    """{version tag: .profdata} of build/pgo (tools/pgo.py merge). A profile trained on another recomp/ than the one
-    shipped still works but misses the functions whose generated C changed since: warn, so the next release retrains."""
+    """{version tag: .profdata} of build/pgo (tools/pgo.py merge). A profile trained on another recomp/, or with other
+    runtime headers inlined into the generated C, than the ones shipped still works but misses the functions whose
+    code changed since: warn, so the next release retrains."""
     tree = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:recomp'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', 'recomp'], capture_output=True,
                            text=True).stdout.strip()
+    retrain = 'build without a profile; retrain (docs/building.md, "Profile-guided build")'
     found = {}
     for p in sorted(PGO_DIR.glob('pgo-*.profdata')):
         rec = p.with_suffix('.json')
@@ -397,7 +400,15 @@ def profiles():
         if record.get('recomp_tree') != tree or dirty:
             print(f'make_release: warning: {p.name} was trained on recomp tree {record.get("recomp_tree", "unknown")[:12]}, '
                   f'this is {tree[:12]}{" with local changes" if dirty else ""}: functions whose generated C changed '
-                  'build without a profile; retrain (docs/building.md, "Profile-guided build")', file=sys.stderr)
+                  f'{retrain}', file=sys.stderr)
+        stale = pgo.stale_headers(record, ROOT)
+        if stale is None:
+            print(f'make_release: warning: {p.name} has no runtime header digests (merged before they were recorded): '
+                  'a change to a header the generated C includes would go unnoticed; re-merge or retrain',
+                  file=sys.stderr)
+        elif stale:
+            print(f'make_release: warning: {p.name} was trained with other {", ".join(stale)}: every lifted function '
+                  f'that inlines them may {retrain}', file=sys.stderr)
         found[p.stem.removeprefix('pgo-')] = p
     if not found:
         print(f'make_release: no execution profile in {PGO_DIR}: installs build the game at -O1', file=sys.stderr)
