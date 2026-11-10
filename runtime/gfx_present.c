@@ -147,6 +147,7 @@ static int g_cap_w, g_cap_h, g_cap_valid;
 // presents the oldest. Two with frame generation: the generated picture, then the game's frame.
 static int g_flip_n;
 static uint32_t g_flip_idx[2];
+static volatile int64_t g_shown;   // presents queued so far: the frames the screen was given (gfx_presents_shown)
 static int g_fg_images;          // the swapchain was built with an image more, for those two
 static int g_overlay_on;         // the last menu_overlay_frame laid a menu out
 
@@ -304,7 +305,10 @@ static void flip_one(void) {
     vk_queue_unlock();
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
+    __atomic_add_fetch(&g_shown, 1, __ATOMIC_RELAXED);
 }
+
+uint64_t gfx_presents_shown(void) { return (uint64_t)__atomic_load_n(&g_shown, __ATOMIC_RELAXED); }
 
 // Every blit left waiting goes out, in order (g_pl held): before a swapchain rebuild and before the next frame's blit;
 // the device release drops them.
