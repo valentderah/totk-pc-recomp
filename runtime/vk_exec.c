@@ -1500,6 +1500,8 @@ static void scan_draw(VkExec *s, uint32_t op, const void *a, const op_hdr *h) {
     if (s->pass_noatt) s->rt_resolved = 0;   // sized by this draw's viewport
     resolve_rt_as(s, 1);
     scan_pass(s, h);
+    VkExecJob j;
+    if (vk_dlaa_hud_plan(s, &j)) scan_job(&j, h);   // what vk_dlaa_hud does in the sequential replay
     vk_dlaa_scan_draw(s);
 }
 

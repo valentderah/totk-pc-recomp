@@ -51,7 +51,7 @@ typedef struct {
 // A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
 // decides it in replay order, vk_contact_exec records it), or DLSS's copy of the lit scene or its evaluation
 // (vk_dlaa.c: vk_dlaa_plan, vk_dlaa_exec). The chunk that holds the op records it.
-enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS };
+enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS, VK_JOB_FG };
 typedef struct VkExecJob {
     const void *op;                      // vk_exec.c: the op it precedes in a scanned submission
     int kind;                            // VK_JOB_*
@@ -208,7 +208,8 @@ void vk_exec_draw_shaders(const VkExec *ex, const GfxShader **vs, const GfxShade
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);
 // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
 void vk_exec_bc_gone(VkImage image);
-// vk_hdr.c: with TOTK_HDR=1, notes a draw into a presented window texture (vk_hdr_track: set by the first present).
+// vk_hdr.c: with TOTK_HDR=1 or frame generation, notes a draw into a presented window texture (vk_hdr_track: set by
+// the first present that asks for the float picture).
 extern int vk_hdr_track;
 void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info);
 // Scissor 0 clipped to the render area of the open pass; extent 0: nothing to draw.

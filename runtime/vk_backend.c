@@ -30,10 +30,20 @@
 #include "vk_exec.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_fg.h"
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
+typedef struct {
+    VkImage image;
+    VkFormat format;
+    int w, h, has_crop, crop[4];
+    uint64_t frame, at, queued, value;
+    int fg;               // frame generation (vk_fg.c): the frame comes with a generated picture to show before it
+    VkFgFrame fgf;
+    VkImage pic;          // the float picture the window texture was copied from
+    VkFormat pic_fmt;
+} PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -50,7 +60,8 @@ static void wait_until(uint64_t at) {
 static void present_main(void *arg) {
     (void)arg;
     perf_core_thread(PCORE_PRESENT);
-    uint64_t last = 0, last_queued = 0;
+    uint64_t last = 0, last_queued = 0, last_at = 0;
+    double period = 0;   // frame generation: the time from one frame to the next, smoothed
     plat_mutex_lock(&pl);
     for (;;) {
         while (!pending) plat_cond_wait(&pcv, &pl);
@@ -60,7 +71,10 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
-        vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        // Frame generation: both blits go out now, the generated picture's first, so neither reads an image the next
+        // frame's work has reached.
+        int two = j.fg && vk_present_blit_fg(&j.fgf, j.pic, j.pic_fmt, j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        if (!j.fg) vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
@@ -73,6 +87,19 @@ static void present_main(void *arg) {
         wait_until(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
+        // Frame generation: the generated picture went out at the frame's display time, and the frame itself follows
+        // half a frame later, so the two alternate evenly; that half frame is what generated frames cost in latency.
+        // The time from frame to frame is that of the display times, smoothed over about eight frames; a gap (a load,
+        // a menu) starts it over.
+        uint64_t shown = j.at > t1 ? j.at : t1;
+        double d = last_at && shown > last_at ? (double)(shown - last_at) : 0;
+        last_at = shown;
+        if (d <= 0 || d > 100e6) period = 0;
+        else period = period > 0 ? period + (d - period) * 0.125 : d;
+        if (two) {
+            wait_until(shown + (uint64_t)(period * 0.5));
+            vk_present_flip();
+        }
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
@@ -102,6 +129,8 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
                           uint64_t value) {
     static volatile int32_t n_skipped;
     vk_exec_frame_log(t, frame);
+    VkFgFrame fgf;
+    int fg_on = vk_fg_wanted(), fg = vk_fg_take(&fgf);   // before vk_dlaa_frame starts the next frame
     vk_dlaa_frame();
     vk_ssr_frame();
     vk_mvsurvey_frame();
@@ -122,6 +151,11 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
                     .at = at_ns, .queued = queued, .value = value};
+    // Frame generation: the pictures the replay made of this frame, when the game's last draw into the window texture
+    // copied the float target they were taken from
+    if (fg_on) j.pic = vk_hdr_float_picture(img, &j.pic_fmt);
+    j.fg = fg && j.pic && j.pic == fgf.target && fgf.w == img->width && fgf.h == img->height;
+    j.fgf = fgf;
     vk_hdr_present_source(img, &j.image, &j.format);   // TOTK_HDR: the float picture the game copied into it, same size
     if (crop) {
         j.has_crop = 1;
