@@ -498,10 +498,8 @@ static void free_views(void *arg) {   // completion thread, once the submission 
 // before. prepare_draw lets a draw into a target the previous frame did not render (a one-shot draw: a volume or LUT
 // generated once) wait for its shaders and pipeline instead of skipping it. Per subresource, not per image: a volume
 // may be generated a few slices per frame. TFR_WAYS-way sets: a new subresource takes the way rendered longest ago, so
-// the targets a frame renders keep their entries. A direct-mapped table of 1024 lost them: in a 1.4.3 field run about
-// 16 entries rendered the frame before were taken by another subresource each frame, the scene's colour target among
-// them, and every draw there whose pipeline was still building waited for it as one-shot (50 to 400 ms) instead of
-// skipping a frame.
+// the targets a frame renders keep their entries; a direct-mapped table lost a few each frame to collisions, and a draw
+// into a lost target waited as one-shot instead of skipping a frame.
 #define TFR_SETS 512
 #define TFR_WAYS 8
 typedef struct { VkImage image; uint32_t level, layer; uint64_t last, prev; } TargetFrames;
