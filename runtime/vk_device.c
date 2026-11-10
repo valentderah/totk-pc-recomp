@@ -405,6 +405,11 @@ static int create_device(void) {
            : !ab_want ? "off (TOTK_ADDR_REPORT=0 or no VK_EXT_debug_utils)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
+    // VkPresentIdKHR on a present needs the presentId feature, not just the extension
+    if (g_vk.has_nv_reflex && !c->pid.presentId) {
+        g_vk.has_nv_reflex = 0;
+        rt_log("Reflex: VK_NV_low_latency2 not available (no presentId feature)");
+    }
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");

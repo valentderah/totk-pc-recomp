@@ -655,7 +655,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
     [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Снижает задержку системы на видеокартах NVIDIA с помощью VK_NV_low_latency2. On + Boost удерживает высокие частоты GPU при упоре в процессор.",
+    [UI_MENU_REFLEX_DESC] = "Снижает задержку системы на видеокартах NVIDIA с помощью VK_NV_low_latency2. «Вкл + Ускорение» удерживает высокие частоты GPU при упоре в процессор.",
     [UI_MENU_REFLEX_OFF] = "Выкл",
     [UI_MENU_REFLEX_ON] = "Вкл",
     [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
@@ -1497,7 +1497,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
     [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Reduz a latência do sistema em GPUs NVIDIA usando VK_NV_low_latency2. On + Boost mantém os clocks da GPU altos quando limitado pela CPU.",
+    [UI_MENU_REFLEX_DESC] = "Reduz a latência do sistema em GPUs NVIDIA usando VK_NV_low_latency2. Ligado + Boost mantém os clocks da GPU altos quando limitado pela CPU.",
     [UI_MENU_REFLEX_OFF] = "Desligado",
     [UI_MENU_REFLEX_ON] = "Ligado",
     [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",

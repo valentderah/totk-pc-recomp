@@ -148,10 +148,14 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
-void vk_reflex_marker(int marker);
+void vk_reflex_marker(int marker, uint64_t present_id);   // present_id: the frame's (vk_reflex_frame_begin)
+uint64_t vk_reflex_frame_begin(void);   // SIMULATION_START: the new frame's present ID
+uint64_t vk_reflex_frame(void);         // the ID of the frame the game simulates now
+void vk_reflex_submit_frame(uint64_t id);   // this thread's submissions belong to frame id (0: the game's current one)
+uint64_t vk_reflex_submit_id(void);
+void vk_reflex_present_frame(uint64_t id);  // the present thread, before the blit of frame id
 void vk_reflex_sleep(void);
 int vk_has_reflex(void);
-uint64_t vk_reflex_current_present_id(void);
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
