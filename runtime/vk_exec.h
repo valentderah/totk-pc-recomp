@@ -61,8 +61,10 @@ typedef struct VkExecJob {
     float pc[16];                        // the march's push constants
 } VkExecJob;
 
-// An OP_UPDATE_UB of the submission: [lo, hi) of guest memory takes data (vk_exec_draw.c ubo_ptr reads them).
-typedef struct { uint64_t lo, hi; const uint8_t *data; } VkExecUpd;
+// An OP_UPDATE_UB of the submission: [lo, hi) of guest memory takes data (vk_exec_draw.c ubo_ptr reads them). old, set by
+// the scan with TOTK_CHUNK_LEAN: an earlier GPU write of the submission (a copy, a fill, a shader's storage write) covers
+// part of the range, so a chunk copies the update at once instead of overlaying it.
+typedef struct { uint64_t lo, hi; const uint8_t *data; int old; } VkExecUpd;
 
 struct VkExecDraw;   // vk_exec_draw.c: the memos and command buffer state of one recording context
 
@@ -198,6 +200,10 @@ void vk_exec_draw_new_cb(VkExec *ex);
 // The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
 // submission read it (the settings menu shows it).
 int vk_exec_replay_workers(void);
+// TOTK_CHUNK_LEAN for the chunked submission being recorded (1: its chunks overlay uniform updates as the sequential
+// replay does), and vk_exec_draw.c's hook at the start of a chunk's recording.
+int vk_exec_chunk_lean(void);
+void vk_exec_draw_chunk_begin(VkExec *ex);
 // vk_exec_draw.c, for the state scan of a chunked replay: the storage ranges the shaders of a draw (dispatch 0) or a
 // dispatch at state s write, as {address, size} into out; their count, or -1 when there are more than max or a stage's
 // shader is not known yet (no context has translated it). Reads uniform blocks through s->upd like a chunk.

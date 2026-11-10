@@ -941,6 +941,7 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
 // per-object motion list), so it waits until they are recorded; the chunks after it wait for it (a hold, scan_job).
 static uint32_t job_turn;
 static void chunks_wait(int k);
+static void dlss_note(uint64_t ns);
 
 static void run_job(VkExec *ex) {
     uint32_t turn = ex->job_i;
@@ -949,7 +950,9 @@ static void run_job(VkExec *ex) {
     while (__atomic_load_n(&job_turn, __ATOMIC_ACQUIRE) != turn) plat_yield();
     vk_exec_pass_end(ex);
     if (j.kind != VK_JOB_CONTACT) {
+        uint64_t t0 = j.kind == VK_JOB_DLSS && (rt_trace & RT_TRACE_PERF) ? kern_now_ns() : 0;
         vk_dlaa_exec(ex, &j);
+        if (t0) dlss_note(kern_now_ns() - t0);
     } else {
         // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
@@ -1043,7 +1046,13 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
 // first use wait until that chunk is recorded (SC.holds). TotK makes a few such targets a frame: thumbnails, and depth
 // targets whose size follows the camera; a wrong one darkened the whole scene for some frames.
 // TOTK_REPLAY_STATE_CHECK=1 compares the state after the last chunk with the scan's.
+// TOTK_CHUNK_LEAN=1 takes from the chunks what the sequential replay does not pay on the GPU: its uniform updates are
+// overlays that the chunk copies into the buffers behind the full barrier that ends it (vk_exec_draw.c op_update_ub),
+// not one pass end, full barrier, copy and pass restart each (about 280 per submission in a field scene). An update
+// then does not end a pass in the scan either (scan_ends_pass, SC.open). An update over an earlier GPU write of the
+// submission (scan_foreign, scan_upd_old) is no overlay and ends a pass, as in the sequential replay.
 #define MAX_JOBS 64
+#define FW_N 256
 #define MAX_RECS 16
 
 typedef struct {
@@ -1073,6 +1082,7 @@ typedef struct { uint64_t addr, size; uint32_t at; } ScanDrop;
 
 static struct {
     int workers, chunks, min_draws, check;
+    int lean_mode, lean;                 // rt_knob CHUNK_LEAN, -1 until read; on for this submission
     int skew_us;                         // TOTK_REPLAY_SKEW_US (chunk_record)
     VkExec s;                            // the scan's state
     Chunk *ch;                           // chunks + 1 entries, never moved while threads record
@@ -1084,6 +1094,11 @@ static struct {
     VkExecJob jobs[MAX_JOBS];
     uint32_t njobs;
     uint32_t drop_n;                     // scan: ops so far that may write a uniform range
+    struct { uint64_t lo, hi; } fw[FW_N];   // scan, lean: the GPU writes of the submission so far other than updates
+    uint32_t nfw, fw_last;               // (merged where they touch), and the one the last write went to
+    uint64_t fw_lo, fw_hi;               // their span
+    int fw_over;                         // more than FW_N, or a shader's writes unknown: every later update is "old"
+    int uold;                            // scan, lean: the update being scanned lies over one (scan_upd_old)
     uint32_t *wpos;                      // scan: the positions of the draws and dispatches among them, sized like upd
     uint32_t nwpos, cwpos;
     ScanDrop *dr;                        // scan: its uniform drops, applied once the snapshot exists (chunks_publish)
@@ -1099,9 +1114,12 @@ static struct {
     uint64_t subs, chunked, nchunks, scan_ns, first_ns, last_ns, rec_ns, rec_max_ns, bad, prep_ns, start0_ns;
     uint64_t rec_t0;                     // vk_exec_record's start
     uint64_t held[HOLD_N];               // TOTK_TRACE=perf: chunks held, by scan_hold's reason
+    uint64_t mid;                        // TOTK_TRACE=perf: chunks that started inside a pass of the replay
+    int rec_max_k, rec_max_draws, rec_max_dlss;   // TOTK_TRACE=perf: the longest chunk: its number, draws, a DLSS record in it
+    uint64_t dlss_n, dlss_ns, dlss_max_ns;        // TOTK_TRACE=perf: DLSS records the chunks made (atomic: recording threads)
     uint64_t settles, settle_ns;         // TOTK_TRACE=perf: vk_exec_chunk_settle waits (atomic: recording threads)
     uint64_t mirror_ns, usnap_ns, ready_ns;   // vk_mem_mirror_begin, vk_usnap_begin, both done after t0
-} SC = {.workers = -1};
+} SC = {.workers = -1, .lean_mode = -1};
 
 static Rec recs[MAX_RECS + 1];           // [0]: the submitting thread's, used without recording threads
 static int nrecs, nthreads;
@@ -1209,9 +1227,64 @@ static void scan_hold(int why) {
     SC.held[why]++;
 }
 
+// TOTK_TRACE=perf: a DLSS record a chunk made (run_job). One that takes tens of ms makes a DLSS feature for a scene size
+// not used before (the game's dynamic resolution picks it): the chunks after it, and so the GPU, wait for it, in the
+// sequential replay too.
+static void dlss_note(uint64_t ns) {
+    __atomic_add_fetch(&SC.dlss_n, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&SC.dlss_ns, ns, __ATOMIC_RELAXED);
+    uint64_t m = __atomic_load_n(&SC.dlss_max_ns, __ATOMIC_RELAXED);
+    while (ns > m && !__atomic_compare_exchange_n(&SC.dlss_max_ns, &m, ns, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    if (ns >= 10000000)
+        rt_log("perf: chunked replay: frame %llu: a DLSS record in chunk %d took %.1f ms",
+               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, chunk_k, ns / 1e6);
+}
+
+static int chunk_has_dlss(const Chunk *c) {
+    for (uint32_t i = c->job_i; i < c->job_end; i++)
+        if (SC.jobs[i].kind == VK_JOB_DLSS) return 1;
+    return 0;
+}
+
 static void scan_drop(uint64_t addr, uint64_t size) {
     if (SC.ndr == SC.cdr) SC.dr = grow_n(SC.dr, &SC.cdr, sizeof *SC.dr);
     SC.dr[SC.ndr++] = (ScanDrop){addr, size, SC.drop_n};
+}
+
+// TOTK_CHUNK_LEAN: a chunk knows the GPU writes (copies, fills, the storage the shaders write) of its own ops only, and an
+// update it overlays over an earlier chunk's write would get a merged copy without those bytes (vk_exec_draw.c ub_bind).
+// The sequential replay sends an update over such bytes the old way (ov_foreign_hits), so the scan, which passes every op
+// in order, notes the ranges (at most FW_N, merged where they touch) and marks the updates over one (VkExecUpd.old).
+// With more ranges, or a shader whose writes are not known (scan_writes), every later update is marked.
+static void scan_foreign(uint64_t addr, uint64_t n) {
+    if (!SC.lean || !n || SC.fw_over) return;
+    uint64_t hi = addr + n;
+    uint32_t i = SC.fw_last;
+    if (i >= SC.nfw || addr > SC.fw[i].hi || hi < SC.fw[i].lo)
+        for (i = 0; i < SC.nfw && (addr > SC.fw[i].hi || hi < SC.fw[i].lo); i++) {}
+    if (i < SC.nfw) {   // it touches one: the union is covered exactly
+        if (addr < SC.fw[i].lo) SC.fw[i].lo = addr;
+        if (hi > SC.fw[i].hi) SC.fw[i].hi = hi;
+    } else if (SC.nfw == FW_N) {
+        SC.fw_over = 1;
+        return;
+    } else {
+        SC.fw[SC.nfw].lo = addr, SC.fw[SC.nfw].hi = hi, i = SC.nfw++;
+    }
+    SC.fw_last = i;
+    if (addr < SC.fw_lo) SC.fw_lo = addr;
+    if (hi > SC.fw_hi) SC.fw_hi = hi;
+}
+
+// 1 when the update lies over a GPU write the scan has passed, as ov_foreign_hits asks.
+static int scan_upd_old(const p_update_ub *u) {
+    if (!u->size) return 0;
+    if (SC.fw_over) return 1;
+    uint64_t lo = u->dst, hi = u->dst + u->size;
+    if (hi <= SC.fw_lo || lo >= SC.fw_hi) return 0;
+    for (uint32_t i = 0; i < SC.nfw; i++)
+        if (lo < SC.fw[i].hi && hi > SC.fw[i].lo) return 1;
+    return 0;
 }
 
 // A draw or dispatch whose shaders write storage buffers drops the uniform copies they cover from its own op on, as
@@ -1228,8 +1301,8 @@ static void scan_writes(VkExec *s, uint32_t op) {
     if (!n) return;
     SC.drop_n++;
     SC.wpos[SC.nwpos++] = s->pos;
-    if (n < 0) scan_hold(HOLD_WRITES);
-    for (int i = 0; i < n; i++) scan_drop(w[i][0], w[i][1]);
+    if (n < 0) scan_hold(HOLD_WRITES), SC.fw_over |= SC.lean;
+    for (int i = 0; i < n; i++) scan_drop(w[i][0], w[i][1]), scan_foreign(w[i][0], w[i][1]);
 }
 
 // The next chunk of submission gen nobody took: -1 none yet, -2 none left (or a later submission).
@@ -1301,6 +1374,7 @@ static void chunk_record(Rec *r, int k) {
     copy_state(ex, &c->st);
     ex->rt_resolved = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->tex_serial++, ex->fb_fs = NULL;
     vk_exec_draw_new_cb(ex);
+    vk_exec_draw_chunk_begin(ex);
     ex->chunked = 1, ex->upd = SC.upd, ex->cond = SC.cond, ex->jobs = SC.jobs, ex->njobs = c->job_end;
     ex->upd_n = c->upd_n, ex->cond_i = c->cond_i, ex->job_i = c->job_i, ex->drop_n = c->drop_n, ex->pos = c->pos;
     ex->wpos = SC.wpos, ex->wpos_i = c->wpos_i, ex->wpos_end = c->wpos_end;
@@ -1383,7 +1457,8 @@ static void chunks_submit(int wait) {
         if (!SC.sub) SC.first_ns += t, SC.start0_ns += c->start;
         SC.last_ns += SC.sub == SC.nch - 1 ? t : 0;
         SC.rec_ns += c->ns;
-        if (c->ns > SC.rec_max_ns) SC.rec_max_ns = c->ns;
+        if (c->ns > SC.rec_max_ns)
+            SC.rec_max_ns = c->ns, SC.rec_max_k = SC.sub, SC.rec_max_draws = c->draws, SC.rec_max_dlss = chunk_has_dlss(c);
         SC.sub++;
         n_parts++;
     }
@@ -1393,7 +1468,8 @@ static void chunks_submit(int wait) {
 static int scan_ends_pass(const VkExec *s, uint32_t op, const void *a) {
     switch (op) {
     case OP_SET_RT: return memcmp(&s->rt, a, sizeof s->rt) != 0;
-    case OP_BARRIER: case OP_DISPATCH: case OP_DISPATCH_IND: case OP_UPDATE_UB: case OP_COPY_B2B: case OP_COPY_B2T:
+    case OP_UPDATE_UB: return !SC.lean || SC.uold;   // lean: an overlay in the pass, or between passes, ends none
+    case OP_BARRIER: case OP_DISPATCH: case OP_DISPATCH_IND: case OP_COPY_B2B: case OP_COPY_B2T:
     case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_CLEAR_BUF: return 1;
     default: return 0;
     }
@@ -1482,9 +1558,12 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
         check_op(h);
         const void *a = nvn_op_payload(h);
         if (h->op == OP_END) return;
+        if (h->op == OP_UPDATE_UB) SC.uold = SC.lean && scan_upd_old(a);
         if (!depth && SC.in_chunk >= SC.per && SC.nch < SC.chunks &&
-            (!SC.open || scan_ends_pass(s, h->op, a) || 2 * SC.in_chunk >= 3 * SC.per))
+            (!SC.open || scan_ends_pass(s, h->op, a) || 2 * SC.in_chunk >= 3 * SC.per)) {
+            SC.mid += SC.open && !scan_ends_pass(s, h->op, a);
             chunk_start(s, hi, h);
+        }
         if (drop_op(h->op)) SC.drop_n++;
         s->pos++;
         if ((draw_op(h->op) && !s->render_disabled) || h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) scan_writes(s, h->op);
@@ -1521,10 +1600,10 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
             const p_update_ub *u = a;
             VkMemSpan sp;
             if (u->size && vk_mem_resolve(u->dst, u->size, &sp)) {
-                SC.upd[SC.nupd++] = (VkExecUpd){u->dst, u->dst + u->size, u->data};
+                SC.upd[SC.nupd++] = (VkExecUpd){u->dst, u->dst + u->size, u->data, SC.uold};
                 scan_drop(u->dst, u->size);
             }
-            SC.open = 0;
+            if (!SC.lean || SC.uold) SC.open = 0;
             break;
         }
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
@@ -1533,7 +1612,7 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
             break;
         case OP_COPY_B2B: case OP_COPY_T2B: case OP_CLEAR_BUF: {
             uint64_t at, size = vk_exec_xfer_written(s, h->op, a, &at);
-            if (size) scan_drop(at, size);
+            if (size) scan_drop(at, size), scan_foreign(at, size);
             if (vk_exec_xfer_revive(h->op, a, s->pos)) scan_hold(HOLD_TEX);
             SC.open = 0;
             break;
@@ -1584,6 +1663,9 @@ static void record_chunks(VkExec *ex, const uint64_t *handles, int n, const OpCo
     copy_state(s, ex);
     s->fence = ex->fence, s->rt_resolved = 0, s->pos = 0;
     SC.holds = 0;
+    if (SC.lean_mode < 0) SC.lean_mode = rt_knob("CHUNK_LEAN", "0");
+    SC.lean = RT_KNOB_ON(SC.lean_mode);   // once per submission, before the threads wake: they read it
+    SC.nfw = SC.fw_last = SC.fw_over = SC.uold = 0, SC.fw_lo = UINT64_MAX, SC.fw_hi = 0;
     SC.nch = SC.sub = SC.pub = 0, SC.nupd = SC.ncond = SC.njobs = SC.drop_n = SC.ndr = SC.dr_done = 0, SC.open = 0;
     SC.nwpos = 0;
     job_turn = 0;
@@ -1614,6 +1696,7 @@ static void record_chunks(VkExec *ex, const uint64_t *handles, int n, const OpCo
 }
 
 int vk_exec_replay_workers(void) { return SC.workers; }
+int vk_exec_chunk_lean(void) { return SC.lean; }
 
 void vk_exec_contexts(void (*fn)(VkExec *ex)) {
     fn(&X);
@@ -1700,7 +1783,14 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
             rt_log("perf: chunked replay: %llu chunks waited for the chunks before them to make a texture (%.3f ms in all)",
                    (unsigned long long)__atomic_exchange_n(&SC.settles, 0, __ATOMIC_RELAXED),
                    __atomic_exchange_n(&SC.settle_ns, 0, __ATOMIC_RELAXED) / 1e6);
+            rt_log("perf: chunked replay: %.2f chunk starts per submission inside a pass (its attachments stored and loaded "
+                   "again behind two full barriers)%s", SC.mid / (double)SC.chunked, SC.lean ? " (TOTK_CHUNK_LEAN)" : "");
+            rt_log("perf: chunked replay: the longest chunk was number %d with %d draws%s; %llu DLSS records, %.3f ms each, the "
+                   "longest %.3f ms (a DLSS feature made for a scene size not used before takes tens of ms)", SC.rec_max_k,
+                   SC.rec_max_draws, SC.rec_max_dlss ? " and a DLSS record" : "", (unsigned long long)SC.dlss_n,
+                   SC.dlss_n ? SC.dlss_ns / 1e6 / (double)SC.dlss_n : 0.0, SC.dlss_max_ns / 1e6);
             memset(SC.held, 0, sizeof SC.held);
+            SC.mid = 0, SC.dlss_n = SC.dlss_ns = SC.dlss_max_ns = 0;
             char b[768];
             int o = 0;
             for (int i = 0; i < SC.nch && o < 700; i++)
