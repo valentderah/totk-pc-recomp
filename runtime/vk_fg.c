@@ -20,8 +20,11 @@
 //    moves behind them, which is the best known flaw of generated frames.
 // 2. vk_fg_take, when the present is queued: the frame's two pictures go along with it.
 // 3. vk_fg_compose, on the present thread: this frame's HUD goes onto the generated picture (fg_compose.comp).
-// The game's float target holds the values the screen shows (the present's blit decodes the sRGB window texture the
-// game copies them into), so for the library the pictures are sRGB-encoded SDR.
+// The game's float target is linear light with the HUD's white at 1; its last draw stores it sRGB-encoded in the window
+// texture, whose bytes the present shows. For the library the pictures are therefore scRGB with 80 nits per unit,
+// the transfer function that leaves linear values as they are (ffx_frameinterpolation_common.h ffxscRGBToLinear), and
+// vk_fg_compose encodes the generated picture as that last draw would. (The first build of this passed the float
+// values to the screen unencoded: every generated frame came out dark and the picture flickered.)
 //
 // A frame is not generated, and the game's own frame is shown alone, when the scene was not drawn or has no camera
 // (menus, loading), when the picture does not continue the last one (the first frame, another size, a frame without
@@ -266,8 +269,8 @@ static int generate(VkCommandBuffer cb, const VkFgScene *s, uint32_t ow, uint32_
     d.outputs[0] = vk_ffx_resource(G.gen.img, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1);
     d.numGeneratedFrames = 1;
     d.reset = reset != 0;
-    d.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
-    d.minMaxLuminance[0] = 0.0f, d.minMaxLuminance[1] = 80.0f;   // read for PQ and scRGB only
+    d.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SCRGB;   // linear light
+    d.minMaxLuminance[0] = 0.0f, d.minMaxLuminance[1] = 80.0f;                   // 1.0 is the picture's white
     d.generationRect = cf.generationRect;
     d.frameID = id;
     r = fx->dispatch(&G.ctx, &d.header);
@@ -380,6 +383,12 @@ static int out_for(const VkCtx *c, uint32_t w, uint32_t h) {
     return 1;
 }
 
+// The window texture's bytes as they are: its sRGB formats are viewed as their UNORM twins (the back end's colour
+// images take views of another format, vk_texture.c).
+static VkFormat bytes_format(VkFormat f) {
+    return f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM : f == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM : f;
+}
+
 static VkImageView view_of(const VkCtx *c, VkImageView *slot, VkImage img, VkFormat fmt) {
     if (*slot) vkDestroyImageView(c->device, *slot, NULL);   // the present waited for this slot's fence
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img,
@@ -395,7 +404,7 @@ VkImage vk_fg_compose(VkCommandBuffer cb, unsigned slot, const VkFgFrame *f, VkI
     if (__atomic_load_n(&G.failed, __ATOMIC_RELAXED) || (!G.tried && !init(c)) || !G.ok) return VK_NULL_HANDLE;
     if (pic != f->target || !out_for(c, f->w, f->h)) return VK_NULL_HANDLE;
     slot %= SLOTS;
-    VkImageView pv = view_of(c, &G.pic_view[slot], pic, pic_fmt), wv = view_of(c, &G.win_view[slot], win, win_fmt);
+    VkImageView pv = view_of(c, &G.pic_view[slot], pic, pic_fmt), wv = view_of(c, &G.win_view[slot], win, bytes_format(win_fmt));
     if (!pv || !wv) return VK_NULL_HANDLE;
     // what the replay wrote becomes visible; the last present's read of the output is over
     memory_barrier(cb);
@@ -418,7 +427,9 @@ VkImage vk_fg_compose(VkCommandBuffer cb, unsigned slot, const VkFgFrame *f, VkI
     vkCmdPushConstants(cb, G.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
     vkCmdDispatch(cb, (f->w + 7) / 8, (f->h + 7) / 8, 1);
     memory_barrier(cb);
-    if (!G.shown++) rt_log("fg: generated frames are shown (%ux%u, the HUD from the game's frame)", f->w, f->h);
+    if (!G.shown++)
+        rt_log("fg: generated frames are shown (%ux%u, the HUD from the game's frame; float target format %d, window "
+               "texture format %d)", f->w, f->h, (int)pic_fmt, (int)win_fmt);
     return G.out.img;
 }
 

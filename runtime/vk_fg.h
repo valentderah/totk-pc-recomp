@@ -31,8 +31,8 @@ typedef struct {
 int vk_fg_take(VkFgFrame *f);
 // The present thread, into the present's command buffer: the picture to show before this frame's, with this frame's
 // HUD (fg_compose.comp); pic is the float target at the frame's end and win the window texture, both w x h and in
-// GENERAL. An RGBA8 image in GENERAL holding what the present's blit makes of a window texture, valid until the next
-// call; VK_NULL_HANDLE: not this time.
+// GENERAL. An RGBA8 image in GENERAL holding bytes as a window texture's (sRGB-encoded), valid until the next call;
+// VK_NULL_HANDLE: not this time.
 VkImage vk_fg_compose(VkCommandBuffer cb, unsigned slot, const VkFgFrame *f, VkImage pic, VkFormat pic_fmt, VkImage win,
                       VkFormat win_fmt);
 // gfx_present.c, the present thread: vk_present_blit for a frame with a generated picture. 1: two blits wait for
