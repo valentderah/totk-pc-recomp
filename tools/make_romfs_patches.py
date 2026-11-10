@@ -38,7 +38,8 @@ from the game's own files on the player's machine, nothing added (tools/button_i
   every pad not labelled the Nintendo way), so the face buttons keep their letters. The action prompt's diamond is
   laid out as an Xbox pad's (bflyt_xbox_diamond): A at the bottom, B on the right, X on the left, Y at the top, the
   button the prompt names lit in its place with its bar.
---xbox-prompts is the older name of --prompts xbox.
+--xbox-prompts is the older name of --prompts xbox. With --aspect, romfs-patches-xbox-<w>x<h> or
+romfs-patches-xbox-label-<w>x<h>: the same prompts with that shape's UI layout.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
 (button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
@@ -451,8 +452,9 @@ if args.prompts:
 
 def reusable(path, contents, dictionary):
     """The --reuse folder's copy of path when it holds these contents under the same dictionary, else None. The level 19
-    compression is most of a run (about 80 s for the four fonts of 1.4.3), and romfs-patches-pc-<w>x<h> differs from
-    romfs-patches-pc in the Common archive alone, so the setup makes the fifteen shapes from the 16:9 folder."""
+    compression is most of a run (about 80 s for the four fonts of 1.4.3), and romfs-patches-<style>-<w>x<h> differs
+    from romfs-patches-<style> in the Common archive alone, so the setup makes the fifteen shapes from the 16:9
+    folder."""
     if not args.reuse or not (args.reuse / path).is_file():
         return None
     data = (args.reuse / path).read_bytes()

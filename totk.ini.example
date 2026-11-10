@@ -157,8 +157,8 @@
 # fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
 # tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
 # display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = pc too; with
-# prompts = xbox it stays 1920x1080, the only shape the setup builds those prompts for.
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
+# too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
