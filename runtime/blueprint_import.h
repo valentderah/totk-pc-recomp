@@ -6,11 +6,11 @@
 // (hash 0xd27f8651): 30 ages where age 0 is the card at the top. Both arrays are held in guest memory while the game
 // runs, and an import writes both, so the save never grows and no layout changes.
 //
-// The write follows what the game does for a creation built in game, rather than overwriting the first card: favourites
-// keep their age, every other entry's age rises by one, and the oldest free entry - the one the player would have lost
-// anyway - receives the new blob at age 0. bp_rotate_ages is that rule. Deleting the game's cached draft pictures
-// (<profile>/cache/<i>/icon/Draft_NNN.png) makes it draw the cards again, which is what makes the new creation visible
-// on the open page instead of after a reload.
+// The write follows what the game does for a creation built in game, rather than overwriting the first card: the oldest
+// free entry - the one the player would have lost anyway - receives the new blob at age 0, and every card drawn above it
+// rises by one. A favourite is never that entry; it moves with the cards above it like any other. bp_rotate_ages is that
+// rule. Deleting the game's cached draft pictures (<profile>/cache/<i>/icon/Draft_NNN.png) makes it draw the cards again,
+// which is what makes the new creation visible on the open page instead of after a reload.
 #pragma once
 
 #include <stdbool.h>
@@ -32,8 +32,11 @@ enum BpImport {
     BP_IMPORT_NO_ROOM,   // the save data could not be written in guest memory (logging says why)
 };
 
-// The history rotation a new creation causes, as the game itself does it: favorites keep their age, every other (free)
-// entry's age rises by one, and the free entry holding the largest age is evicted and takes the new creation at age 0.
+// The history rotation a new creation causes, as the game itself does it: the oldest free entry - the largest age among
+// the non-favorites - is evicted and takes the new creation at age 0, and every card drawn above it rises by one. Cards
+// below it keep their age. A favorite is therefore never the entry spent, but it does move when it sits above the evicted
+// card: keeping its age instead would give two entries the same age as soon as a favorite is above the oldest free card,
+// and the result would not be a permutation.
 // ages[i] is entry i's place in the display order (0 is the card drawn first) and fav_bits' bit i marks entry i a
 // favorite. Fills rotated with the new ages and returns the evicted entry index, or -1 when the input does not fit the
 // rule (no free entry, or the ages are not a permutation of 0..BP_SLOTS-1) - in which case nothing must be written.

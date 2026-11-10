@@ -5,9 +5,9 @@
 // {u32 size = 6688; CmbAct blob}. The order the page draws them in is a second array, AutoBuilder.Draft.Content.Index
 // (0xd27f8651): 30 ages, where age 0 is the card at the top. Both live in guest memory, and an import writes both.
 //
-// The write copies what the game does for a creation built in game instead of overwriting the first card: favourites
-// keep their age, every other entry's age rises by one, and the oldest free entry receives the new blob at age 0. That
-// rule is bp_rotate_ages, kept pure so tests/blueprint_rotation_test.py can check it without a running game.
+// The write copies what the game does for a creation built in game instead of overwriting the first card: the oldest
+// free entry receives the new blob at age 0, and every card drawn above it rises by one. That rule is bp_rotate_ages,
+// kept pure so tests/blueprint_rotation_test.py can check it without a running game.
 //
 // Deleting the cached draft pictures (<profile>/cache/<i>/icon/Draft_NNN.png) is what makes the change visible on the
 // open page: without it the game keeps drawing the picture it drew before, which looks exactly like a failed import.
@@ -475,7 +475,8 @@ static int newest_position_from_save(void) {
                 uint32_t off = rd32(d + pos);
                 pos += 4;
                 // IsFavorite (0x67f4b46b) is a BoolArray of 30 entries held as {count=30; u32 bitmask}: bit i says the
-                // entry i is a favorite. Those entries keep their age and are never the one an insert replaces.
+                // entry i is a favorite. A favorite is never the entry an insert spends; it still moves down when it is
+                // drawn above the evicted card.
                 if (hash == 0x67F4B46Bu && (uint64_t)off + 8 <= (uint64_t)id.size && rd32(d + off) == N) {
                     fav_bits = rd32(d + off + 4);
                     fav_seen = 1;
