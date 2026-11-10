@@ -330,6 +330,10 @@ int vk_fg_take(VkFgFrame *f) {
 
 int gfx_frame_gen_live(void) { return __atomic_load_n(&G.live, __ATOMIC_RELAXED) > 0; }
 
+// frame_gen = 1: the frame limit counts the frames shown, so the game draws half of it (frame_rate.c); x2: the limit
+// stays the game's and twice as many frames are shown.
+int gfx_frame_gen_halves(void) { return gfx_frame_gen_live() && !strcmp(cfg_value("TOTK_FRAME_GEN"), "1"); }
+
 // ---------------------------------------------------------------- the present
 static int init(const VkCtx *c) {
     G.tried = 1;

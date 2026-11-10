@@ -160,9 +160,10 @@ uint64_t frame_step_cap_ns(void) {
     double hz = limit_hz ? limit_hz : gfx_window_refresh_hz();
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
-    // Frame generation (vk_fg.c) shows two frames for each one the game draws: the limit is then what is shown, and the
-    // game draws half of it, 30 at least. Only while frames are generated: a menu, which has none, keeps the whole limit.
-    if (gfx_frame_gen_live()) hz = hz / 2 < LIMIT_MIN_HZ ? LIMIT_MIN_HZ : hz / 2;
+    // Frame generation (vk_fg.c) shows two frames for each one the game draws. With frame_gen = 1 the limit is what is
+    // shown, and the game draws half of it, 30 at least; only while frames are generated: a menu, which has none, keeps
+    // the whole limit. With frame_gen = x2 the limit stays the game's.
+    if (gfx_frame_gen_halves()) hz = hz / 2 < LIMIT_MIN_HZ ? LIMIT_MIN_HZ : hz / 2;
     return (uint64_t)(1e9 / hz + 0.5);
 }
 
