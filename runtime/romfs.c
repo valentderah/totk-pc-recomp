@@ -878,7 +878,7 @@ static void *plain_mod_heapdef(size_t *n, const char **who) {
     return NULL;
 }
 static void heapdef_overlay(void) {
-    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes()) return;
+    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes() && !res_grass_heap_extra_kib()) return;
     static const char keeps[] = "the game keeps its own resolution";
     Overlay *base;
     size_t n;
