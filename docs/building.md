@@ -224,6 +224,14 @@ table (no game files), and `totk.exe --probe-mods`. A change to the cheat VM or 
 (`runtime/cheats.c`, `tools/cheats.py`) passes `.venv\Scripts\python tests\cheats_vm_check.py`, which runs both on
 cheats of its own with clang from PATH (`--cc` names another).
 
+The SDL motion sensor recovery test uses a virtual gamepad and needs SDL3 headers and libraries, but no game files.
+On Linux, build and run it with:
+
+```sh
+cc -std=gnu11 -Iruntime tests/motion_sensor_check.c runtime/motion_sensor.c $(pkg-config --cflags --libs sdl3) -o /tmp/motion_sensor_check
+/tmp/motion_sensor_check
+```
+
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
 

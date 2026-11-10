@@ -209,6 +209,22 @@ Windows does not present the Switch 2 Pro Controller as a gamepad SDL can open (
 
 Bridges that output a ViGEm DualShock 4 (ProCon2Windows, connectyourpro as tested) give buttons and rumble but no motion: their virtual DualShock 4 reports a gyro and an accelerometer that never change, so motion aiming and Ultrahand rotation do nothing. Run one bridge at a time; Steam Input can also claim the controller, so close Steam if the bridge does not find it.
 
+## DualSense motion on Linux
+
+The game reads a DualSense's gyro and accelerometer through SDL and exposes them as the Switch controller's six-axis
+sensor. This is native motion input, not mouse or right-stick emulation: the game chooses when it uses motion. Enable
+motion controls in the Controls tab (F1) and in the game's own options. For a direct connection, disable Steam Input
+for the game and turn off any gyro-to-mouse mapping; if another application claims the controller, try closing it.
+The first SDL gamepad is used, so disconnect other gamepads if the wrong one is selected.
+
+`logs/totk.log` beside the game identifies the selected gamepad and reports `motion sensors on` when both sensors
+activate and `first six-axis read with live motion` when the game receives samples. If a sensor cannot be activated or
+read, the log includes the SDL error and the game retries with a bounded delay. Persistently all-zero readings are
+also logged and the sensors restarted. `no motion sensors` can mean a virtual gamepad without motion support, or that
+the system's SDL driver cannot access the physical device; check the connection, device permissions and competing
+controller software. Test USB and Bluetooth separately. A device reporting stale nonzero readings is not detected by
+the all-zero check.
+
 ## Scripted input
 
 `TOTK_INPUT_SCRIPT=<file>` replays presses. It is ORed with real input and still applies under `TOTK_INPUT=none`. One event per line, `#` starts a comment:

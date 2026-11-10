@@ -17,6 +17,7 @@
 #include "input.h"
 #include "input_map.h"
 #include "input_wsys.h"
+#include "motion_sensor.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -41,8 +42,7 @@ static int pad_east_a;               // ... and labels its east face button A (N
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
 static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
-static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
-static int sensor_ok;                // ... and it has both sensors, enabled
+static MotionSensor sensor;          // sensor state of the open gamepad; under lock
 static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
@@ -400,7 +400,7 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
-        SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
+        SDL_CloseGamepad(pad); pad = NULL; motion_sensor_reset(&sensor);
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
@@ -856,24 +856,6 @@ void input_motion_axes(const float a[3], const float g[3], double acc[3], double
     gyro[2] = g[1];
 }
 
-// Under lock: (re)enable the sensors when the open gamepad changed; 1 if it has both and they are on.
-static int sensors_ready(void) {
-    SDL_JoystickID id = SDL_GetGamepadID(pad);
-    if (id == sensor_pad) return sensor_ok;
-    sensor_pad = id;
-    // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
-    SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
-    sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    if (sensor_ok) rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
-    else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
-                SDL_GetGamepadName(pad));
-    return sensor_ok;
-}
-
 int input_motion_enabled(void) {
     static int on = -1;
     static unsigned seen;
@@ -890,6 +872,8 @@ int input_motion_enabled(void) {
 // sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
+    // Sensor values still update with events disabled, without filling the event queue.
+    SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
     for (;;) {
         plat_wait_ns(4000000);
         float a[3], g[3];
@@ -897,8 +881,7 @@ static void motion_main(void *arg) {
         plat_mutex_lock(&lock);
         if (pad && SDL_GamepadConnected(pad)) {
             SDL_UpdateGamepads();
-            have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
+            have = motion_sensor_read(&sensor, pad, kern_now_ns(), a, g);
         }
         plat_mutex_unlock(&lock);
         if (!have || !input_motion_enabled()) continue;
