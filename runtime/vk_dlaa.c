@@ -23,6 +23,7 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "vk_fg.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
@@ -290,13 +291,24 @@ static struct {
     uint64_t mv_frames, mv_none, masked;   // masked: frames with the characters' bias mask
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
-    int blur;                    // the motion blur is on (vk_mblur_wanted), read at each present: with DLSS off the
-                                 // scene is still followed and its motion vectors made, for the blur alone (blur_only)
+    int blur;                    // the motion blur or frame generation is on (vk_mblur_wanted, vk_fg_wanted), read at
+                                 // each present: with DLSS off the scene is still followed and its motion vectors
+                                 // made, for them alone (blur_only)
+    int fg;                      // frame generation is on (vk_fg_wanted), read at each present
+    int hud;                     // this frame: 1 once the picture before the HUD went to vk_fg.c (vk_dlaa_hud_plan)
+    int hud_wait;                // this frame: hud_t is the scaling pass's target and its scaling draw came by
+    VkExecTarget hud_t;          // the output-sized target the game scales the scene into and draws the HUD over
+    struct {                     // this frame's scene as frame generation takes it (evaluate, blur_only)
+        int ok, reset;           // the frame has motion vectors; they do not continue the frame before
+        VkImage mv;
+        uint32_t w, h;
+        float jx, jy;
+    } fgs;
     int blur_nomem;              // blur_only could not make its work images: logged once
     int fsr, fsr_failed;         // FSR 3 can run (vk_fsr3_available), read at each present; it failed: off for this run
-    int fsr_inv;                 // the depth convention FSR's context is made for: -1 not settled, 1 inverted
+    int fsr_inv;                 // the depth convention AMD's contexts are made for: -1 not settled, 1 inverted
     int planes_ok;               // inv_w and proj_y hold this frame's camera (mv_pass)
-    float proj_y, near_m, far_m; // the projection's y scale and the camera's planes, for FSR (fsr_evaluate)
+    float proj_y, near_m, far_m; // the projection's y scale and the camera's planes, for AMD's library (camera_planes)
     int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
@@ -1045,6 +1057,18 @@ static int ngx_evaluate(VkCommandBuffer cb, struct Size *e, const VkExecTarget *
     return 1;
 }
 
+// The camera's planes and the depth convention as AMD's library takes them (FSR 3, frame generation), from this
+// frame's inverse view-projection where mv_pass had a camera; otherwise the last frame's stand.
+static void camera_planes(void) {
+    if (!D.planes_ok) return;
+    double at0 = D.inv_w[3] - D.inv_w[2], at1 = D.inv_w[3] + D.inv_w[2];   // 1 / distance at depth 0 and at depth 1
+    if (D.fsr_inv < 0) D.fsr_inv = at0 < at1;
+    double nearer = at0 > at1 ? at0 : at1, farther = at0 > at1 ? at1 : at0;
+    if (nearer > 1e-9) D.near_m = (float)(1.0 / nearer);
+    D.far_m = farther > 1e-9 ? (float)(1.0 / farther) : 1e9f;   // an infinite far plane
+}
+static float camera_fov(void) { return 2.0f * atanf(1.0f / (D.proj_y > 0.1f ? D.proj_y : 2.0f)); }
+
 // FSR 3's part of evaluate (vk_fsr3.c), where DLSS does not run: the same colour, depth, motion vectors, jitter and
 // characters' mask (as FSR's reactive mask), and the camera's planes and field of view, which FSR also asks for. They
 // come from mv_pass: 1 / distance at the picture's centre is a * depth + b (D.inv_w), so the planes are at depth 0
@@ -1057,18 +1081,12 @@ static int fsr_evaluate(VkCommandBuffer cb, struct Size *e, const VkExecTarget *
                "image, which is what the library views");
         return D.fsr_failed = 1, 0;
     }
-    if (D.planes_ok) {
-        double at0 = D.inv_w[3] - D.inv_w[2], at1 = D.inv_w[3] + D.inv_w[2];   // 1 / distance at depth 0 and at depth 1
-        if (D.fsr_inv < 0) D.fsr_inv = at0 < at1;
-        double nearer = at0 > at1 ? at0 : at1, farther = at0 > at1 ? at1 : at0;
-        if (nearer > 1e-9) D.near_m = (float)(1.0 / nearer);
-        D.far_m = farther > 1e-9 ? (float)(1.0 / farther) : 1e9f;   // an infinite far plane
-    }
+    camera_planes();
     VkFsr3Frame f = {.color = t->image, .color_fmt = t->format, .depth = z->image, .mv = e->mv,
                      .mask = masked ? e->mask : VK_NULL_HANDLE, .out = e->out,
                      .w = t->width, .h = t->height, .ow = ow, .oh = oh, .jx = jx, .jy = jy, .reset = D.reset,
                      .dt_ms = dt_ms, .near_m = D.near_m, .far_m = D.far_m,
-                     .fov_y = 2.0f * atanf(1.0f / (D.proj_y > 0.1f ? D.proj_y : 2.0f)),
+                     .fov_y = camera_fov(),
                      .inverted = D.fsr_inv > 0, .sharpness = (float)cfg_int("TOTK_SHARPNESS") / 100.0f};
     if (f.sharpness < 0.0f) f.sharpness = 0.0f;
     if (f.sharpness > 1.0f) f.sharpness = 1.0f;
@@ -1117,6 +1135,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     rec_drain();   // NGX and FSR record into the command buffer themselves: the recorder must have made every call so far
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    D.fgs.ok = have_mv, D.fgs.reset = D.reset, D.fgs.mv = e->mv, D.fgs.w = w, D.fgs.h = h, D.fgs.jx = jx, D.fgs.jy = jy;
     // The time since the previous evaluation, which the upscaler weighs its history by; 60 fps before the first and
     // after a gap (a pause, a load), where no history carries over anyway.
     uint64_t now = plat_now_ns();
@@ -1178,7 +1197,7 @@ static void blur_only(VkExec *ex) {
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     struct Size *e = size_for(cb, w, h, w, h, 0);
     if (!e) {
-        if (!D.blur_nomem) rt_log("dlaa: no memory for the motion images at %ux%u: no motion blur at that size", w, h);
+        if (!D.blur_nomem) rt_log("dlaa: no memory for the motion images at %ux%u: no motion blur or frame generation at that size", w, h);
         D.blur_nomem = 1;
         return;
     }
@@ -1188,6 +1207,7 @@ static void blur_only(VkExec *ex) {
     int masked = 0;
     int have_mv = mv_pass(ex, e, zv, 0.0f, 0.0f, 0.0f, &masked);
     D.jdepth = z->image;   // the scene depth note_camera knows the scene's draws by in the next frame
+    D.fgs.ok = have_mv, D.fgs.reset = !have_mv, D.fgs.mv = e->mv, D.fgs.w = w, D.fgs.h = h, D.fgs.jx = D.fgs.jy = 0.0f;
     VkImage pic = t->image;
     VkImageView pic_view = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
                                                t->level, t->base_layer, 1, 0);
@@ -1203,7 +1223,7 @@ static void blur_only(VkExec *ex) {
     }
     vk_exec_draw_new_cb(ex);   // the passes bound pipelines and descriptors of their own: the next draw binds everything again
     if (++D.blurs == 1 || D.blurs == 300 || D.blurs % 3600 == 0)   // 300: one early line with the frames counted
-        rt_log("dlaa: motion vectors without DLSS for the motion blur: %llu frames (scene %ux%u; %llu with camera "
+        rt_log("dlaa: motion vectors without DLSS (motion blur, frame generation): %llu frames (scene %ux%u; %llu with camera "
                "motion, %llu without a camera, %llu frames without the end of the scene)",
                (unsigned long long)D.blurs, w, h, (unsigned long long)D.mv_frames, (unsigned long long)D.mv_none,
                (unsigned long long)D.frames_missed);
@@ -1295,6 +1315,71 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     return 0;
 }
 
+// ---------------------------------------------------------------- frame generation: the picture before the HUD
+// Frame generation (vk_fg.c) interpolates the game's picture as it is before the HUD is drawn. Where that is, measured
+// in a frame dump of 1.4.3 (frame 6000, a 1920x1080 scene and output, FSR 3 at the scene's size): after the bloom chain
+// the game draws its bloom composite and its FXAA into the light target, each one draw in a pass with the scene depth
+// attached; then the HUD, in passes on the light target alone, without depth (the stamina wheel, 18 draws; the
+// ability and time icons, 35; hearts, items and the map, 62), with the HUD's own small targets drawn in between; and
+// one last draw copies the light target into the 8-bit window texture.
+// With a scene smaller than the output (DLSS, FSR 3 or the game's dynamic resolution) the game's scaling draw comes
+// first, alone, into an output-sized target without depth (vk_dlaa_plan's last case), and the HUD is drawn over that.
+// So, once the scene has ended, the picture before the HUD is what the HUD's target holds
+//   - before the first draw into the light target in a pass without depth, when the scene has the output's size;
+//   - before the second draw into the scaling pass's target otherwise: the first one scales the scene (or is skipped,
+//     where DLSS or FSR 3 wrote that target at the pass's begin);
+//   - or, in a frame without HUD (a cutscene), before the draw into an 8-bit target of the output's size, which is the
+//     copy into the window texture.
+// Asked once per draw in replay order (the sequential replay's prepare_draw, a chunked replay's scan): it only looks
+// at the targets and counts. 1: the picture goes to vk_fg.c before this draw (j).
+int vk_dlaa_hud_plan(const VkExec *ex, VkExecJob *j) {
+    if (!D.fg || !D.armed || !D.ended || D.hud) return 0;
+    const VkExecTarget *c = &ex->color[0];
+    if (ex->pass_ncolor != 1 || !c->image || ex->depth.image || c->level || c->is3d || c->samples > 1) return 0;
+    unsigned o[2], sc[2];
+    res_sizes(o, sc);
+    if (c->width != o[0] || c->height != o[1]) return 0;
+    int scaled = D.color.width < o[0];
+    const VkExecTarget *pic = scaled ? &D.hud_t : &D.color;
+    if (scene_color(c->format)) {
+        if (scaled && !D.hud_wait) {   // the scaling draw
+            D.hud_t = *c, D.hud_wait = 1;
+            return 0;
+        }
+        if (c->image != pic->image) return 0;
+    } else if ((c->format != VK_FORMAT_R8G8B8A8_SRGB && c->format != VK_FORMAT_R8G8B8A8_UNORM) || (scaled && !D.hud_wait) ||
+               D.color.width > o[0]) {
+        return 0;
+    }
+    D.hud = 1;
+    *j = (VkExecJob){.kind = VK_JOB_FG, .scene = *pic};
+    return 1;
+}
+
+// The sequential replay's part of it, after the draw's pass has begun: the pass ends for the copy and begins again.
+void vk_dlaa_hud(VkExec *ex) {
+    VkExecJob j;
+    if (ex->chunked || !vk_dlaa_hud_plan(ex, &j)) return;
+    vk_exec_pass_end(ex);
+    vk_dlaa_exec(ex, &j);
+    ex->dirty = VK_EXEC_DIRTY_ALL;
+    vk_exec_pass_begin(ex);
+}
+
+// t: the HUD's target, holding the frame's picture so far. The scene's depth must be what the library views: the
+// first level and layer of a D32F image.
+static void fg_scene(VkExec *ex, const VkExecTarget *t) {
+    const VkExecTarget *z = &D.depth;
+    vk_exec_barrier(ex);   // what drew the picture is done (no pass is open here)
+    camera_planes();
+    int ok = D.fgs.ok && z->image && !z->level && !z->base_layer && z->format == VK_FORMAT_D32_SFLOAT;
+    VkFgScene s = {.target = t, .have_mv = ok, .depth = z->image, .mv = D.fgs.mv, .w = D.fgs.w, .h = D.fgs.h,
+                   .jx = D.fgs.jx, .jy = D.fgs.jy, .near_m = D.near_m, .far_m = D.far_m, .fov_y = camera_fov(),
+                   .inverted = D.fsr_inv > 0, .reset = D.fgs.reset};
+    vk_fg_scene(ex, &s);
+    vk_exec_draw_new_cb(ex);   // the library bound pipelines and descriptor sets of its own: the next draw binds everything again
+}
+
 // The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
 // now, as the scan's pointers may be stale by then.
 static void target_now(VkExecTarget *t) {
@@ -1312,6 +1397,7 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
         if (dl_active()) mask_snapshot(ex, &t);
         return;
     }
+    if (j->kind == VK_JOB_FG) return fg_scene(ex, &t);
     if (!tu_active()) return blur_only(ex);
     if (!t.tex) return evaluate(ex, NULL);
     D.up = 1;
@@ -1359,8 +1445,11 @@ void vk_dlaa_frame(void) {
     preset_check();
     int on = N.available && cfg_bool("TOTK_DLAA");
     int fsr = vk_fsr3_available() && !D.fsr_failed;
-    int blur = vk_mblur_wanted();
-    // DLSS or FSR switched, or with both off the motion blur did (the scene starts or stops being followed)
+    int fg = vk_fg_wanted();
+    int blur = vk_mblur_wanted() || fg;
+    D.fg = fg, D.hud = D.hud_wait = 0, D.fgs.ok = 0;
+    // DLSS or FSR switched, or with both off the motion blur or frame generation did (the scene starts or stops being
+    // followed)
     if (on != D.on || fsr != D.fsr || (blur != D.blur && !tu_active())) {
         if (on != D.on) rt_log("dlaa: %s", on ? "on" : "off");
         if (fsr != D.fsr) rt_log("dlaa: FSR 3 %s", !fsr ? "off" : on ? "ready; DLSS runs instead" : "on");

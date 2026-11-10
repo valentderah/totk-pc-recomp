@@ -135,6 +135,14 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   GPU: `vk_dlaa.c` follows the frame, jitters the scene and makes the motion vectors as for DLSS, and hands the same
   images to AMD's prebuilt library (`amd_fidelityfx_vk.dll` next to the executable, loaded at run time; Windows only),
   which records its passes into the replay's command buffer. The DLSS modes set the scene size for it too.
+- Frame generation (`vk_fg.c`, `frame_gen`, off by default). AMD FSR 3.1 frame interpolation from the same library,
+  without its replacement swapchain: where the game is about to draw its HUD (`vk_dlaa.c` `vk_dlaa_hud_plan`: the
+  first draw into the HUD's target in a pass without depth, after the scaling draw when the scene is smaller than the
+  output), the replay copies the game's float target and has the library make the picture halfway from the last
+  frame's copy to this one, from the scene's depth and motion vectors. The present thread puts this frame's HUD on the
+  generated picture (`fg_compose.comp`: a pixel the HUD's draws changed takes the window texture's), shows it at the
+  frame's display time and the frame itself half a frame later (`vk_backend.c` `present_main`, two blits and two
+  timed presents). While frames are generated the frame limit counts the frames shown (`frame_rate.c`).
 - Motion blur (`vk_mblur.c`, `motion_blur`, off by default). Two compute passes right after DLSS's evaluation, on
   DLSS's picture and with the motion vectors and depth DLSS gets: the longest motion per tile, then a reconstruction
   filter (McGuire et al. 2012) that averages each pixel along the longest motion near it, weighting samples by depth and
