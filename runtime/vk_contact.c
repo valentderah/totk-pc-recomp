@@ -16,6 +16,10 @@
 // a view-space position toward
 // the sun (the G-buffer shaders compare dot(c4[44].xyz, pos) + c4[44].w with the cascade map). The scene colour images
 // get STORAGE usage when the setting is on (vk_texture.c create_tex).
+//
+// The screen-space reflections (vk_ssr.c) run at the same point, right after the march, and need the same inputs plus
+// two more G-buffer targets, so this file follows the frame for both: the plan is made when either is on, a job
+// carries the march's strength (0: none) and the reflections' targets, and vk_contact_exec calls vk_ssr_exec.
 #include "vk.h"
 
 #include <math.h>
@@ -27,13 +31,16 @@
 #include "vk_exec.h"
 
 static struct {
-    int read, tried, ok, strength, debug, logged;
+    int read, tried, ok, strength, debug, logged, gbuf_logged;
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkPipeline pipe;
     VkSampler sampler;
     VkExecTarget scene, depth;         // the last G-buffer's scene colour and linear depth
+    VkExecTarget aux[2];               // its targets 0 (object classes) and 3 (normal, smoothness) where they are
+                                       // RGBA8 of the scene's size, for the reflections; no image: absent
+    int storage;                       // the scene colour can be stored into: the march can run
     int pending;                       // the composite into scene ran; the march waits for the next pass
     uint64_t c4;
 } C;
@@ -94,6 +101,7 @@ static int init(VkCtx *c) {
 }
 
 // A G-buffer pass: a B10G11R11 scene colour, an R32F linear depth and a D32F depth, all one size, at least 640 wide.
+// The march also needs STORAGE usage on the scene colour (C.storage); the reflections do not.
 static int is_gbuffer(const VkExec *ex, const VkExecTarget **scene, const VkExecTarget **depth) {
     *scene = *depth = NULL;
     if (ex->pass_noatt || ex->pass_w < 640 || ex->depth.format != VK_FORMAT_D32_SFLOAT || ex->depth.level) return 0;
@@ -103,7 +111,16 @@ static int is_gbuffer(const VkExec *ex, const VkExecTarget **scene, const VkExec
         if (t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && !*scene) *scene = t;
         if (t->format == VK_FORMAT_R32_SFLOAT && !*depth) *depth = t;
     }
-    return *scene && *depth && (*scene)->img && ((*scene)->img->usage & VK_IMAGE_USAGE_STORAGE_BIT);
+    return *scene && *depth && (*scene)->img;
+}
+
+// Target i of the G-buffer pass as the reflections read it: RGBA8 of the pass's size, else none.
+static VkExecTarget aux_target(const VkExec *ex, uint32_t i) {
+    const VkExecTarget *t = &ex->color[i];
+    if (i < ex->pass_ncolor && t->image && t->img && !t->level && t->format == VK_FORMAT_R8G8B8A8_UNORM &&
+        t->width == ex->pass_w && t->height == ex->pass_h && t->samples <= 1 && !t->is3d)
+        return *t;
+    return (VkExecTarget){0};
 }
 
 static void mem_barrier(VkCommandBuffer cb) {
@@ -123,7 +140,8 @@ static int is_composite(const VkExec *ex) {
 }
 
 int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
-    if (!vk_contact_strength()) return 0;
+    int ssr = vk_ssr_wanted();
+    if (!vk_contact_strength() && !ssr) return 0;
     if (pass) {
         const VkExecTarget *scene, *depth;
         // The camera block: c4 of the fragment stage, 0x940 bytes. The composite binds it only after its pass begins, so
@@ -133,6 +151,16 @@ int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
         if (is_gbuffer(ex, &scene, &depth)) {
             C.pending = 0;
             C.scene = *scene, C.depth = *depth;
+            C.storage = (scene->img->usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+            C.aux[0] = aux_target(ex, 0), C.aux[1] = aux_target(ex, 3);
+            if (ssr && !C.gbuf_logged) {   // once: what the reflections found, for a report from another GPU or update
+                C.gbuf_logged = 1;
+                int f[6] = {0};
+                for (uint32_t i = 0; i < ex->pass_ncolor && i < 6; i++) f[i] = (int)ex->color[i].format;
+                rt_log("vk: G-buffer %ux%u for the reflections: %u colour targets, formats %d %d %d %d %d %d; object "
+                       "classes (target 0) %s, normal (target 3) %s", ex->pass_w, ex->pass_h, ex->pass_ncolor, f[0], f[1],
+                       f[2], f[3], f[4], f[5], C.aux[0].image ? "found" : "missing", C.aux[1].image ? "found" : "missing");
+            }
             return 0;
         }
         if (is_composite(ex)) {
@@ -145,17 +173,21 @@ int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
     const float *u = (const float *)(uintptr_t)C.c4;
     float lx = -u[44 * 4 + 0], ly = -u[44 * 4 + 1], lz = -u[44 * 4 + 2], ll = sqrtf(lx * lx + ly * ly + lz * lz);
     float px = u[7 * 4 + 0], py = u[8 * 4 + 1], zfar = u[14 * 4 + 1];
-    if (!(ll > 1e-6f) || !(px > 0) || !(py > 0) || !(zfar > 1)) return 0;
+    if (!(px > 0) || !(py > 0) || !(zfar > 1)) return 0;
+    // the march's strength: none without a sun direction, or where the scene colour cannot be stored into
+    float k = C.storage && ll > 1e-6f ? (float)vk_contact_strength() / 100.0f : 0.0f;
+    if (!(k > 0) && !ssr) return 0;
+    if (!(ll > 1e-6f)) ll = 1.0f;
     float w = (float)C.scene.width, h = (float)C.scene.height;
-    *j = (VkExecJob){.scene = C.scene, .depth = C.depth,
-                     .pc = {px, py, zfar, (float)C.strength / 100.0f,
+    *j = (VkExecJob){.scene = C.scene, .depth = C.depth, .aux = {C.aux[0], C.aux[1]},
+                     .pc = {px, py, zfar, k,
                             lx / ll, ly / ll, lz / ll, 0.6f,
                             w, h, 1.0f / w, 1.0f / h,
                             0, 0, 0, 0}};
     return 1;
 }
 
-void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
+static void march(VkExec *ex, const VkExecJob *j) {
     if (!C.tried) init(vk_ctx());
     if (!C.ok) return;
     VkImageView in = vk_exec_target_view(j->depth.img, VK_FORMAT_R32_SFLOAT, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -189,6 +221,11 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
     mem_barrier(cb);   // and what follows sees the darkened colour
     ex->recorded += 6;
     vk_exec_draw_new_cb(ex);   // the game's bound compute pipeline and descriptors were replaced: bind them again
+}
+
+void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
+    if (j->pc[3] > 0) march(ex, j);
+    vk_ssr_exec(ex, j);   // the reflections see the contact shadows, as they see every other shadow
 }
 
 // The sequential replay's hooks; a chunk leaves the marches to the scan.

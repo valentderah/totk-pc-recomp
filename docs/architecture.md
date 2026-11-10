@@ -131,6 +131,11 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
   vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+- Reflections (`vk_ssr.c`, `water_reflections`, `surface_reflections`, off by default). Screen-space reflections on
+  the water and on smooth surfaces, picked from the G-buffer (target 0's water class, target 3's smoothness). They run
+  where the contact shadows do, after the pass that composes the lighting into the scene colour: `vk_contact.c` follows
+  the frame for both and hands over the scene colour, the linear depth and the projection. One compute pass traces each
+  reflecting pixel's ray through the linear depth and mixes in what it hits by Fresnel, reading a copy of the scene.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

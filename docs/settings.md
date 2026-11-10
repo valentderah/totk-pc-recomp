@@ -27,6 +27,7 @@ Many rows below are developer tools that only act together with another setting 
 | `replay_check` | `1` reads every texture read-back a second time after a full drain of the replay queue and compares the two. | Stalls the replay queue at every read-back, so frames get much slower; mismatches are only counted and logged. | Caution |
 | `resolve_check` | `1` compares every cached pool lookup with the locked lookup and stops on a difference. | Slows every pool lookup; the game stops if the two ever differ. | Caution |
 | `speed_probe` | `1` adds the player's position and ground speed to the frame-rate line that `TOTK_TRACE=perf` prints every 120 presents. | Only adds log text; has no effect without `TOTK_TRACE=perf`. | Safe |
+| `ssr_debug` | `1` paints what the reflections act on over the picture (water magenta, smooth surfaces cyan by their weight); `2` shows the reflected colour alone wherever a ray hits. Read at each present. | The frame shows a debug image while it is set; has no effect when both reflection settings are off. | Caution |
 
 ## Profiling and measurement
 
