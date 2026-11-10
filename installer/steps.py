@@ -168,7 +168,8 @@ def run_tool(ctx, step, script, args, parse=None, cwd=None):
 def free_bytes(path):
     """Free bytes on the disk of path (its nearest existing parent) and that parent's device."""
     p = Path(path)
-    while not p.exists():
+    # An unavailable drive or share has no existing ancestor: let disk_usage report its OS error at the root.
+    while not p.exists() and p.parent != p:
         p = p.parent
     return shutil.disk_usage(p).free, os.stat(p).st_dev
 

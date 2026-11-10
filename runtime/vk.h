@@ -60,9 +60,10 @@ typedef struct {
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
     int mesa;                          // a Mesa driver the game runs on: RADV, ANV or NVK
+    int intel_igpu_win;                // Intel's Windows driver on an integrated GPU (UHD, Iris Xe, Core Ultra graphics)
 } VkCaps;
 extern VkCaps vk_caps;
-void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa
+void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa, intel_igpu_win
 void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (TOTK_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
@@ -294,7 +295,13 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb);
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
 // write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
 // which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).
-void vk_mem_shadow_sync(void);
+void vk_mem_shadow_sync(uint64_t fence);   // fence: the value of the part about to be submitted (0 untracked)
+// TOTK_SHADOW_DEFER: shadow updates that may not be written by the CPU while the GPU still reads the shadow are queued
+// by vk_mem_shadow_sync as ranges of guest memory. vk_mem_shadow_deferred says whether there are any;
+// vk_mem_shadow_prologue records the copies (staging -> shadow buffers) into the prologue command buffer, before
+// vk_mem_mirror_prologue's copies, which read the shadow.
+int vk_mem_shadow_deferred(void);
+void vk_mem_shadow_prologue(VkCommandBuffer cb, uint64_t fence);
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
