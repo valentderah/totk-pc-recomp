@@ -142,7 +142,8 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   frame's copy to this one, from the scene's depth and motion vectors. The present thread puts this frame's HUD on the
   generated picture (`fg_compose.comp`: a pixel the HUD's draws changed takes the window texture's), shows it at the
   frame's display time and the frame itself half a frame later (`vk_backend.c` `present_main`, two blits and two
-  timed presents). While frames are generated the frame limit counts the frames shown (`frame_rate.c`).
+  timed presents). With `frame_gen = 1` the frame limit counts the frames shown while frames are generated
+  (`frame_rate.c`); with `x2` it stays the game's and twice as many are shown.
 - Motion blur (`vk_mblur.c`, `motion_blur`, off by default). Two compute passes right after DLSS's evaluation, on
   DLSS's picture and with the motion vectors and depth DLSS gets: the longest motion per tile, then a reconstruction
   filter (McGuire et al. 2012) that averages each pixel along the longest motion near it, weighting samples by depth and

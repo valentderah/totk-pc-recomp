@@ -147,11 +147,15 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
                           "from. Takes effect after a restart.",
     [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_LIMIT] = "2x, within the frame limit",
+    [UI_MENU_FRAME_GEN_X2] = "2x, on top of the frame limit",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 3 frame generation, on any graphics card (Windows; amd_fidelityfx_vk.dll next to "
                                "totk.exe): one more frame is shown between every two the game draws, so motion is twice "
-                               "as smooth. The frame rate limit then counts the frames shown, and the game draws half of "
-                               "them (30 at least). Adds half a frame of delay; the fewer frames the game draws, the more "
-                               "a generated one can show flaws. The HUD and menus are not generated. Not with HDR.",
+                               "as smooth. Within the frame limit: the limit counts the frames shown and the game draws "
+                               "half of them (30 at least), which suits a limit at the monitor's rate. On top of it: the "
+                               "game draws up to the limit and twice as many are shown. Adds half a frame of delay; the "
+                               "fewer frames the game draws, the more a generated one can show flaws. The HUD and menus "
+                               "are not generated. Not with HDR.",
     [UI_MENU_FSR3] = "AMD FSR 3",
     [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 for the 3D scene, on any graphics card (Windows; amd_fidelityfx_vk.dll next to "
                           "totk.exe): smoother edges and less shimmer, and with the DLSS mode below the scene is drawn "
@@ -647,12 +651,15 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
                           "работает. Действует после перезапуска.",
     [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_LIMIT] = "2x, в пределах лимита кадров",
+    [UI_MENU_FRAME_GEN_X2] = "2x, сверх лимита кадров",
     [UI_MENU_FRAME_GEN_DESC] = "Генерация кадров AMD FSR 3 на любой видеокарте (Windows; amd_fidelityfx_vk.dll рядом с "
                                "totk.exe): между каждыми двумя кадрами игры показывается ещё один, и движение "
-                               "становится вдвое плавнее. Ограничение частоты кадров тогда считает показанные кадры, а "
-                               "игра рисует половину из них (не меньше 30). Добавляет задержку в полкадра; чем меньше "
-                               "кадров рисует игра, тем заметнее огрехи в сгенерированных. Интерфейс и меню не "
-                               "генерируются. Не работает с HDR.",
+                               "становится вдвое плавнее. В пределах лимита: лимит считает показанные кадры, а игра "
+                               "рисует половину из них (не меньше 30) — подходит для лимита на частоте монитора. Сверх "
+                               "лимита: игра рисует до лимита, а показывается вдвое больше. Добавляет задержку в "
+                               "полкадра; чем меньше кадров рисует игра, тем заметнее огрехи в сгенерированных. "
+                               "Интерфейс и меню не генерируются. Не работает с HDR.",
     [UI_MENU_FSR3] = "AMD FSR 3",
     [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 для 3D-сцены на любой видеокарте (Windows; amd_fidelityfx_vk.dll рядом с "
                           "totk.exe): ровнее края и меньше мерцания, а в режимах DLSS ниже сцена рисуется меньше и "
@@ -1500,12 +1507,15 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
                           "onde ele parte. Vale após reiniciar.",
     [UI_MENU_FRAME_GEN] = "Geração de quadros",
+    [UI_MENU_FRAME_GEN_OFF] = "Desligada", [UI_MENU_FRAME_GEN_LIMIT] = "2x, dentro do limite de quadros",
+    [UI_MENU_FRAME_GEN_X2] = "2x, além do limite de quadros",
     [UI_MENU_FRAME_GEN_DESC] = "Geração de quadros do AMD FSR 3, em qualquer placa de vídeo (Windows; amd_fidelityfx_vk.dll "
                                "ao lado do totk.exe): um quadro a mais é mostrado entre cada dois que o jogo desenha, e o "
-                               "movimento fica duas vezes mais suave. O limite de quadros passa a contar os quadros "
-                               "mostrados, e o jogo desenha a metade deles (no mínimo 30). Acrescenta meio quadro de "
-                               "atraso; quanto menos quadros o jogo desenha, mais um quadro gerado pode mostrar falhas. O "
-                               "HUD e os menus não são gerados. Não funciona com HDR.",
+                               "movimento fica duas vezes mais suave. Dentro do limite: o limite conta os quadros "
+                               "mostrados e o jogo desenha a metade deles (no mínimo 30), o que combina com um limite na "
+                               "taxa do monitor. Além do limite: o jogo desenha até o limite e o dobro é mostrado. "
+                               "Acrescenta meio quadro de atraso; quanto menos quadros o jogo desenha, mais um quadro "
+                               "gerado pode mostrar falhas. O HUD e os menus não são gerados. Não funciona com HDR.",
     [UI_MENU_FSR3] = "AMD FSR 3",
     [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 para a cena 3D, em qualquer placa de vídeo (Windows; amd_fidelityfx_vk.dll ao "
                           "lado do totk.exe): bordas mais suaves e menos cintilação e, com o modo do DLSS abaixo, a "
@@ -2134,9 +2144,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
     [UI_MENU_FRAME_GEN] = "帧生成",
+    [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_LIMIT] = "2 倍，计入帧率上限",
+    [UI_MENU_FRAME_GEN_X2] = "2 倍，在帧率上限之上",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 3 帧生成，适用于任何显卡（Windows；amd_fidelityfx_vk.dll 放在 totk.exe 旁）："
-                               "在游戏绘制的每两帧之间多显示一帧，画面运动的流畅度翻倍。此时帧率上限计算的是显示的帧数，"
-                               "游戏只绘制其中一半（至少 30 帧）。会增加半帧延迟；游戏绘制的帧数越少，生成帧越容易出现瑕疵。"
+                               "在游戏绘制的每两帧之间多显示一帧，画面运动的流畅度翻倍。计入帧率上限：上限计算的是显示的帧数，"
+                               "游戏只绘制其中一半（至少 30 帧），适合把上限设为显示器刷新率。在帧率上限之上：游戏按上限绘制，"
+                               "显示的帧数是其两倍。会增加半帧延迟；游戏绘制的帧数越少，生成帧越容易出现瑕疵。"
                                "HUD 和菜单不参与生成。不支持 HDR。",
     [UI_MENU_FSR3] = "AMD FSR 3",
     [UI_MENU_FSR3_DESC] = "用于 3D 场景的 AMD FSR 3.1，适用于任何显卡（Windows；amd_fidelityfx_vk.dll 放在 totk.exe 旁）："
