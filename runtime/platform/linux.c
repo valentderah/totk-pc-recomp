@@ -1,6 +1,7 @@
 // Linux implementation of platform.h: pthreads, CLOCK_MONOTONIC, futex locks and condition variables, POSIX files,
 // /proc and sysfs for the load counters, posix_spawn for child processes.
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -1251,17 +1252,87 @@ const char *plat_user_locale(void) {
 }
 
 // Noto CJK as the common distributions and SteamOS install it; one collection covers every CJK language.
+// A font file the menu can read: stb_truetype opens .ttc collections at face 0, so those count too.
+static int font_ext_ok(const char *name) {
+    size_t n = strlen(name);
+    if (n < 5) return 0;
+    const char *e = name + n - 4;
+    return !strcasecmp(e, ".ttf") || !strcasecmp(e, ".otf") || !strcasecmp(e, ".ttc");
+}
+
+// Every name that says "this file covers the language", strongest first: the language's own variants, then the pan-CJK
+// families and the stand-alone CJK packages some distributions ship instead of Noto.
+static const char *const *font_tokens(const char *lang) {
+    static const char *const hans[] = {"hans", "notosanssc", "sourcehansc", "wqy", "cjk", "droid", NULL};
+    static const char *const hant[] = {"hant", "notosanstc", "sourcehantc", "wqy", "cjk", "droid", NULL};
+    static const char *const ja[] = {"notosansjp", "sourcehanjp", "cjk", "ipa", "droid", NULL};
+    static const char *const ko[] = {"notosanskr", "sourcehankr", "nanum", "cjk", "droid", NULL};
+    static const char *const none[] = {NULL};
+    if (!strcmp(lang, "zh-Hans")) return hans;
+    if (!strcmp(lang, "zh-Hant")) return hant;
+    if (!strcmp(lang, "ja")) return ja;
+    if (!strcmp(lang, "ko")) return ko;
+    return none;
+}
+
+// The first file under dir whose name carries one of the language's tokens, in token order, then by directory order.
+static int font_scan(const char *dir, const char *lang, char *out, size_t cap, int depth) {
+    if (depth > 4) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    char path[PATH_MAX];
+    int found = 0;
+    for (struct dirent *e; !found && (e = readdir(d));) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            found = font_scan(path, lang, out, cap, depth + 1);
+            continue;
+        }
+        if (!font_ext_ok(e->d_name)) continue;
+        char lower[PATH_MAX];   // the file's own name: the directory names of a font package would match too loosely
+        snprintf(lower, sizeof lower, "%s", e->d_name);
+        for (char *c = lower; *c; c++) *c = (char)tolower((unsigned char)*c);
+        for (const char *const *t = font_tokens(lang); *t; t++)
+            if (strstr(lower, *t)) {
+                snprintf(out, cap, "%s", path);
+                found = 1;
+                break;
+            }
+    }
+    closedir(d);
+    return found;
+}
+
 int plat_font_path(const char *lang, char *out, size_t cap) {
     static const char *files[] = {
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",   // Fedora, Bazzite
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     };
     if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
         if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
+    // Distributions disagree on where and under which name they ship the CJK families (Bazzite has
+    // /usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Medium.ttc), so the known paths above are only the fast
+    // case: the font directories are scanned for a file whose name names the language.
+    static const char *const dirs[] = {"/usr/share/fonts", "/usr/local/share/fonts", "/usr/share/fonts/truetype"};
+    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++)
+        if (font_scan(dirs[i], lang, out, cap, 0)) return 1;
+    const char *home = getenv("HOME");
+    char user[PATH_MAX];
+    if (home && *home) {
+        snprintf(user, sizeof user, "%s/.local/share/fonts", home);
+        if (font_scan(user, lang, out, cap, 0)) return 1;
+        snprintf(user, sizeof user, "%s/.fonts", home);
+        if (font_scan(user, lang, out, cap, 0)) return 1;
+    }
     return 0;
 }
 
