@@ -58,7 +58,8 @@ typedef struct VkExecJob {
     int chunk;                           // vk_exec.c: the chunk that holds the op
     VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
                                          // (mask) or the scaling pass's target (evaluation; no tex: in place)
-    float pc[16];                        // the march's push constants
+    VkExecTarget aux[2];                 // contact: the G-buffer's targets 0 and 3 for the reflections (vk_ssr.c)
+    float pc[16];                        // the march's push constants; pc[3], its strength, 0: no march
 } VkExecJob;
 
 // An OP_UPDATE_UB of the submission: [lo, hi) of guest memory takes data (vk_exec_draw.c ubo_ptr reads them).
@@ -279,6 +280,9 @@ void vk_contact_pass_begin(VkExec *ex);
 void vk_contact_flush(VkExec *ex);
 int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j);
 void vk_contact_exec(VkExec *ex, const VkExecJob *j);
+// vk_ssr.c: the reflections, recorded by vk_contact_exec after its march from the same job (scene, depth, aux and the
+// projection in pc[0..2]). Nothing when both settings are off.
+void vk_ssr_exec(VkExec *ex, const VkExecJob *j);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

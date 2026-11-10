@@ -304,6 +304,7 @@ const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
 static int dl_active(void) { return N.available && !D.failed && D.on; }
+int vk_dlaa_resolving(void) { return dl_active(); }
 
 // The scene is followed (its G-buffer, light target, end and camera) and its motion vectors are made: for DLSS, or
 // with DLSS off or missing for the motion blur, which runs where DLAA would (blur_only).
