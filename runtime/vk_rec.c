@@ -318,8 +318,14 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     return 1;
 }
 
-// At most two command buffers and one signal: the shape vk_sync.c submits.
-typedef struct { uint32_t ncb, nsig; VkCommandBufferSubmitInfo cbi[2]; VkSemaphoreSubmitInfo sig; } A_Submit;
+// At most two command buffers and one signal: the shape vk_sync.c submits. The only pNext it chains is Reflex's
+// VkLatencySubmissionPresentIdNV (vk_sync_submit), carried as its present ID.
+typedef struct {
+    uint32_t ncb, nsig, has_pid;
+    uint64_t present_id;
+    VkCommandBufferSubmitInfo cbi[2];
+    VkSemaphoreSubmitInfo sig;
+} A_Submit;
 VkResult rec_submit(const VkSubmitInfo2 *si) {
     if (!sub_pending) {
         vk_queue_lock();
@@ -328,12 +334,16 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
         return r;
     }
     sub_pending = 0;
-    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount || si->pNext)
+    const VkBaseInStructure *nx = si->pNext;
+    int pid = nx && nx->sType == VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV && !nx->pNext;
+    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount ||
+        (nx && !pid))
         rt_fatal("vk_rec: a submission of %u command buffers, %u waits and %u signals the recorder cannot carry",
                  si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
     A_Submit *a = put(R_Submit, sizeof *a);
     memset(a, 0, sizeof *a);
     a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
+    if (pid) a->has_pid = 1, a->present_id = ((const VkLatencySubmissionPresentIdNV *)nx)->presentID;
     for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
     if (a->nsig) a->sig = si->pSignalSemaphoreInfos[0];
     __atomic_store_n(&q_subs, q_subs + 1, __ATOMIC_RELEASE);
@@ -354,7 +364,10 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
 }
 
 static void submit_run(const A_Submit *a) {
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb,
+    VkLatencySubmissionPresentIdNV lsid = {.sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+                                           .presentID = a->present_id};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .pNext = a->has_pid ? &lsid : NULL,
+                        .commandBufferInfoCount = a->ncb,
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
                         .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
     vk_queue_lock();
