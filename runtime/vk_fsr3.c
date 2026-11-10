@@ -4,9 +4,8 @@
 //
 // AMD's prebuilt, signed library is loaded at run time from the executable's folder: amd_fidelityfx_vk.dll of the
 // FidelityFX SDK 1.1.4 (PrebuiltSignedDLL), the last SDK release with a Vulkan build. There is no build of it for
-// Linux, so the setting does nothing there. Nothing of the SDK is compiled in; the structures of its C interface come
-// from three of its headers, kept unmodified in runtime/third_party/ffx_api (MIT), and the Vulkan backend's
-// description, which its C++-only header declares, is repeated below.
+// Linux, so the setting does nothing there. This file also loads it for vk_fg.c, which generates frames with it
+// (vk_ffx.h).
 //
 // The library records its passes into the replay's command buffer, as NGX does, so vk_dlaa.c drains the recorder
 // before the call. It takes the game's images as they are: every image of the back end is kept in GENERAL, which is
@@ -26,27 +25,21 @@
 #include "platform/platform.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_ffx.h"
 #include "third_party/ffx_api/ffx_upscale.h"
-
-// ffx-api/include/ffx_api/vk/ffx_api_vk.h of the same SDK release (MIT, Copyright (C) 2024 Advanced Micro Devices,
-// Inc.): the creation description of the Vulkan backend, chained behind an effect's.
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK 0x0000003u
-struct ffxCreateBackendVKDesc {
-    ffxCreateContextDescHeader header;
-    VkDevice vkDevice;
-    VkPhysicalDevice vkPhysicalDevice;
-    PFN_vkGetDeviceProcAddr vkDeviceProcAddr;
-};
 
 #define LIB_NAME "amd_fidelityfx_vk.dll"
 
+// ---------------------------------------------------------------- the library (vk_ffx.h)
+static struct {
+    PlatMutex lock;   // the replay (the upscaler) and the present thread (frame generation) both ask
+    int tried;
+    void *lib;
+    VkFfx fn;
+} L = {.lock = PLAT_MUTEX_INIT};
+
 static struct {
     int wanted;                  // -1 not read
-    int tried, loaded;
-    void *lib;
-    PfnFfxCreateContext create;
-    PfnFfxDestroyContext destroy;
-    PfnFfxDispatch dispatch;
     ffxContext ctx;
     uint32_t mw, mh, mow, moh;   // the context's largest render and output size
     int inverted;                // the depth convention the context was made for
@@ -77,57 +70,69 @@ static int lib_file(void) {
 #endif
 }
 
-int vk_fsr3_available(void) {
-    if (!vk_fsr3_wanted()) return 0;
-    if (F.tried) return F.loaded;
-    F.tried = 1;
+static void load(void) {
     char path[PLAT_PATH_MAX + 32];
     if (!lib_file() || !lib_path(path, sizeof path)) {
-        rt_log("fsr3: " LIB_NAME " is not next to the executable (FidelityFX SDK 1.1.4, PrebuiltSignedDLL): FSR 3 off");
-        return 0;
+        rt_log("ffx: " LIB_NAME " is not next to the executable (FidelityFX SDK 1.1.4, PrebuiltSignedDLL): FSR 3 and "
+               "frame generation stay off");
+        return;
     }
-    F.lib = plat_lib_open(path);
-    if (!F.lib) {
+    void *lib = plat_lib_open(path);
+    if (!lib) {
         char why[256];
         plat_lib_error(why, sizeof why);
-        rt_log("fsr3: cannot load %s (%s): FSR 3 off", path, why);
-        return 0;
+        rt_log("ffx: cannot load %s (%s): FSR 3 and frame generation stay off", path, why);
+        return;
     }
-    F.create = (PfnFfxCreateContext)plat_lib_sym(F.lib, "ffxCreateContext");
-    F.destroy = (PfnFfxDestroyContext)plat_lib_sym(F.lib, "ffxDestroyContext");
-    F.dispatch = (PfnFfxDispatch)plat_lib_sym(F.lib, "ffxDispatch");
-    if (!F.create || !F.destroy || !F.dispatch) {
-        rt_log("fsr3: %s lacks the ffx-api entry points: FSR 3 off", path);
-        return 0;
+    L.fn.create = (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext");
+    L.fn.destroy = (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext");
+    L.fn.configure = (PfnFfxConfigure)plat_lib_sym(lib, "ffxConfigure");
+    L.fn.dispatch = (PfnFfxDispatch)plat_lib_sym(lib, "ffxDispatch");
+    if (!L.fn.create || !L.fn.destroy || !L.fn.configure || !L.fn.dispatch) {
+        rt_log("ffx: %s lacks the ffx-api entry points: FSR 3 and frame generation stay off", path);
+        return;
     }
-    rt_log("fsr3: %s loaded", path);
-    return F.loaded = 1;
+    rt_log("ffx: %s loaded", path);
+    L.lib = lib;
 }
 
-static void message(uint32_t type, const wchar_t *msg) {
+const VkFfx *vk_ffx(void) {
+    plat_mutex_lock(&L.lock);
+    if (!L.tried) {
+        load();
+        L.tried = 1;
+    }
+    const VkFfx *fn = L.lib ? &L.fn : NULL;
+    plat_mutex_unlock(&L.lock);
+    return fn;
+}
+
+int vk_fsr3_available(void) { return vk_fsr3_wanted() && vk_ffx() != NULL; }
+
+void vk_ffx_message(uint32_t type, const wchar_t *msg) {
     static int n;
-    if (n++ < 32) rt_log("fsr3: %s: %ls", type == FFX_API_MESSAGE_TYPE_ERROR ? "error" : "warning", msg);
+    if (n++ < 32) rt_log("ffx: %s: %ls", type == FFX_API_MESSAGE_TYPE_ERROR ? "error" : "warning", msg);
 }
 
-static uint32_t surface_format(VkFormat f) {
+uint32_t vk_ffx_format(VkFormat f) {
     switch (f) {
     case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT;
     case VK_FORMAT_R16G16B16A16_SFLOAT: return FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
     case VK_FORMAT_R16G16_SFLOAT: return FFX_API_SURFACE_FORMAT_R16G16_FLOAT;
     case VK_FORMAT_R8_UNORM: return FFX_API_SURFACE_FORMAT_R8_UNORM;
+    case VK_FORMAT_R8G8B8A8_UNORM: return FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
     case VK_FORMAT_D32_SFLOAT: return FFX_API_SURFACE_FORMAT_R32_FLOAT;   // as the SDK's ffxApiGetSurfaceFormatVK maps it
     default: return FFX_API_SURFACE_FORMAT_UNKNOWN;
     }
 }
 
-// An image of the back end as the library takes it: in GENERAL (state COMMON; UNORDERED_ACCESS for the one written).
-static struct FfxApiResource resource(VkImage img, VkFormat f, uint32_t w, uint32_t h, int written) {
+struct FfxApiResource vk_ffx_resource(VkImage img, VkFormat f, uint32_t w, uint32_t h, int written) {
     struct FfxApiResource r;
     memset(&r, 0, sizeof r);
     if (!img) return r;
     r.resource = (void *)img;
     r.description.type = FFX_API_RESOURCE_TYPE_TEXTURE2D;
-    r.description.format = surface_format(f);
+    r.description.format = vk_ffx_format(f);
     r.description.width = w, r.description.height = h, r.description.depth = 1, r.description.mipCount = 1;
     r.description.usage = f == VK_FORMAT_D32_SFLOAT ? FFX_API_RESOURCE_USAGE_DEPTHTARGET
                           : written ? FFX_API_RESOURCE_USAGE_UAV : FFX_API_RESOURCE_USAGE_READ_ONLY;
@@ -151,10 +156,18 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL proc_addr(VkDevice dev, const ch
     return vkGetDeviceProcAddr(dev, core);
 }
 
+void vk_ffx_backend(struct ffxCreateBackendVKDesc *b) {
+    const VkCtx *c = vk_ctx();
+    *b = (struct ffxCreateBackendVKDesc){.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
+                                         .vkDevice = c->device, .vkPhysicalDevice = c->phys,
+                                         .vkDeviceProcAddr = proc_addr};
+}
+
+// ---------------------------------------------------------------- the upscaler
 static void destroy(void) {
     if (!F.ctx) return;
     vkDeviceWaitIdle(vk_ctx()->device);   // its images may still be read by the frames before this one
-    F.destroy(&F.ctx, NULL);
+    vk_ffx()->destroy(&F.ctx, NULL);
     F.ctx = NULL;
 }
 
@@ -162,22 +175,20 @@ static void destroy(void) {
 static int context_for(const VkFsr3Frame *f) {
     if (F.ctx && f->w <= F.mw && f->h <= F.mh && f->ow <= F.mow && f->oh <= F.moh && f->inverted == F.inverted) return 1;
     destroy();
-    const VkCtx *c = vk_ctx();
     uint32_t mow = f->ow > F.mow ? f->ow : F.mow, moh = f->oh > F.moh ? f->oh : F.moh;
     uint32_t mw = f->w > F.mw ? f->w : F.mw, mh = f->h > F.mh ? f->h : F.mh;
     if (mw > mow) mow = mw;   // a scene is never larger than the picture made from it
     if (mh > moh) moh = mh;
-    struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                             .vkDevice = c->device, .vkPhysicalDevice = c->phys,
-                                             .vkDeviceProcAddr = proc_addr};
+    struct ffxCreateBackendVKDesc backend;
+    vk_ffx_backend(&backend);
     // linear scene light, no exposure texture, scene sizes that change from frame to frame; the motion vectors are
     // at the scene's size and without the jitter, which are the library's defaults
     struct ffxCreateContextDescUpscale up = {
         .header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, .pNext = &backend.header},
         .flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
                  FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION | (f->inverted ? FFX_UPSCALE_ENABLE_DEPTH_INVERTED : 0),
-        .maxRenderSize = {mw, mh}, .maxUpscaleSize = {mow, moh}, .fpMessage = message};
-    ffxReturnCode_t r = F.create(&F.ctx, &up.header, NULL);
+        .maxRenderSize = {mw, mh}, .maxUpscaleSize = {mow, moh}, .fpMessage = vk_ffx_message};
+    ffxReturnCode_t r = vk_ffx()->create(&F.ctx, &up.header, NULL);
     if (r != FFX_API_RETURN_OK || !F.ctx) {
         rt_log("fsr3: context creation for a %ux%u scene and a %ux%u picture failed (%u): FSR 3 off for this run", mw, mh,
                mow, moh, (unsigned)r);
@@ -191,18 +202,18 @@ static int context_for(const VkFsr3Frame *f) {
 }
 
 int vk_fsr3_upscale(VkCommandBuffer cb, const VkFsr3Frame *f) {
-    if (!F.loaded) return 0;
+    if (!vk_ffx()) return 0;
     int fresh = !F.ctx || f->w > F.mw || f->h > F.mh || f->ow > F.mow || f->oh > F.moh || f->inverted != F.inverted;
     if (!context_for(f)) return 0;
     struct ffxDispatchDescUpscale d;
     memset(&d, 0, sizeof d);
     d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     d.commandList = (void *)cb;
-    d.color = resource(f->color, f->color_fmt, f->w, f->h, 0);
-    d.depth = resource(f->depth, VK_FORMAT_D32_SFLOAT, f->w, f->h, 0);
-    d.motionVectors = resource(f->mv, VK_FORMAT_R16G16_SFLOAT, f->w, f->h, 0);
-    d.reactive = resource(f->mask, VK_FORMAT_R8_UNORM, f->w, f->h, 0);
-    d.output = resource(f->out, VK_FORMAT_R16G16B16A16_SFLOAT, f->ow, f->oh, 1);
+    d.color = vk_ffx_resource(f->color, f->color_fmt, f->w, f->h, 0);
+    d.depth = vk_ffx_resource(f->depth, VK_FORMAT_D32_SFLOAT, f->w, f->h, 0);
+    d.motionVectors = vk_ffx_resource(f->mv, VK_FORMAT_R16G16_SFLOAT, f->w, f->h, 0);
+    d.reactive = vk_ffx_resource(f->mask, VK_FORMAT_R8_UNORM, f->w, f->h, 0);
+    d.output = vk_ffx_resource(f->out, VK_FORMAT_R16G16B16A16_SFLOAT, f->ow, f->oh, 1);
     // The jitter as the scene's draws took it: the picture moved by this many pixels, x right and y down, which is
     // how the SDK's own jittered projection moves it. The vectors are last frame's window position minus this
     // frame's, in scene pixels: the library's convention, at a scale of one.
@@ -217,7 +228,7 @@ int vk_fsr3_upscale(VkCommandBuffer cb, const VkFsr3Frame *f) {
     d.reset = f->reset || fresh;
     d.cameraNear = f->near_m, d.cameraFar = f->far_m, d.cameraFovAngleVertical = f->fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
-    ffxReturnCode_t r = F.dispatch(&F.ctx, &d.header);
+    ffxReturnCode_t r = vk_ffx()->dispatch(&F.ctx, &d.header);
     if (r != FFX_API_RETURN_OK) {
         rt_log("fsr3: dispatch failed (%u): FSR 3 off for this run", (unsigned)r);
         return 0;

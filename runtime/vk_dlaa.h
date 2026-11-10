@@ -24,6 +24,10 @@ void vk_dlaa_pass(VkExec *ex);
 // vk_dlaa_exec makes on the chunk that holds the op (vk_exec.c run_job).
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
+// Frame generation's picture before the HUD (vk_fg.c), once per draw in replay order: vk_dlaa_hud_plan is the scan's
+// part (1: a VK_JOB_FG record goes before this draw), vk_dlaa_hud the sequential replay's, after the draw's pass began.
+int vk_dlaa_hud_plan(const VkExec *ex, VkExecJob *j);
+void vk_dlaa_hud(VkExec *ex);
 void vk_dlaa_frame(void);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).

@@ -1,0 +1,42 @@
+#version 450
+// Frame generation, the picture that is shown (vk_fg.c vk_fg_compose): the generated picture with this frame's HUD on
+// it. The library interpolated the game's picture as it was before the HUD (hearts, map, prompts) was drawn, so that a
+// heart never smears along with the mountain moving behind it. The HUD goes back on here, as the frame after the
+// generated one shows it: a pixel of the game's float target that the HUD's draws changed takes this frame's pixel of
+// the window texture, every other pixel the generated one.
+// "Changed" is exact: hud_tex is a copy of pic_tex taken before the HUD's first draw, and a blend that leaves a pixel
+// as it was stores the same value again. The tolerance is far below one step of the R11G11B10F target (1/64 of the
+// value in red and green), so it only passes over a copy that rounds.
+// The window texture is read through its sRGB view and written to an 8-bit UNORM image, the conversion the present's
+// blit makes for a frame the game drew. A generated pixel is a value of the float target, which the game's last draw
+// would store sRGB-encoded in the window texture's 8 bits and the blit decode again; it is rounded the same way here,
+// so a place that does not move has the same byte in generated frames and in the game's, and does not flicker.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D pic_tex;   // the game's float target at the frame's end, with the HUD
+layout(binding = 1) uniform sampler2D hud_tex;   // its copy from before the HUD
+layout(binding = 2) uniform sampler2D gen_tex;   // the generated picture, without HUD
+layout(binding = 3) uniform sampler2D win_tex;   // this frame's window texture
+layout(binding = 4, rgba8) uniform writeonly image2D dst;
+layout(push_constant) uniform P {
+    ivec2 size;
+    int debug;   // 1: the HUD's pixels in magenta; 2: the picture before the HUD in place of the generated one
+} pc;
+
+vec3 srgb_encode(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, greaterThan(c, vec3(0.0031308))); }
+vec3 srgb_decode(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045))); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    vec3 t = texelFetch(pic_tex, p, 0).rgb, h = texelFetch(hud_tex, p, 0).rgb;
+    bool hud = any(greaterThan(abs(t - h), max(t, h) * (1.0 / 256.0) + 1e-5));
+    vec3 c;
+    if (hud) {
+        c = texelFetch(win_tex, p, 0).rgb;
+    } else {
+        c = clamp(pc.debug == 2 ? h : texelFetch(gen_tex, p, 0).rgb, 0.0, 1.0);
+        c = srgb_decode(round(srgb_encode(c) * 255.0) / 255.0);
+    }
+    if (pc.debug == 1 && hud) c = vec3(1.0, 0.0, 1.0);
+    imageStore(dst, p, vec4(c, 1.0));
+}

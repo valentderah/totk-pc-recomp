@@ -20,6 +20,15 @@
 # Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
 # still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
 # frame_queue = 0
+# Frame generation (AMD FSR 3.1, on any GPU): between every two frames the game draws, one more is made from them and
+# shown halfway in time, so the picture moves twice as often. fps_limit then counts the frames shown and the game draws
+# half of them, 30 at least: with fps_limit = 60 the game draws 30 frames a second and 60 are shown, so set fps_limit
+# to the monitor's rate (or display). The HUD comes from the game's frame, and menus are not generated. A generated
+# frame is a guess between two drawn ones: the fewer frames the game draws, the more its flaws show, and it adds half a
+# frame of input delay. It needs AMD's library amd_fidelityfx_vk.dll next to totk.exe (PrebuiltSignedDLL of AMD's
+# FidelityFX SDK 1.1.4; Windows only, AMD has no Linux build) and does nothing without it or with hdr = 1. Takes
+# effect at once.
+# frame_gen = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
