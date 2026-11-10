@@ -245,6 +245,10 @@ TotK-Setup-x86_64.AppImage -m installer --prepare ...         (Linux; AppRun han
 - The launcher does not pass `--firmware` or `--dlss`: Chinese and Korean text and NVIDIA DLSS stay with the setup window,
   which can be run on the same folder afterwards.
 - The launcher keeps `prod.keys` in its own folder and passes its path; key values stay out of the output as always.
+- `totk.exe --game DIR` starts the game from an install folder at another place: its `exefs`, `romfs` and `profile`
+  folders become the paths, and `--exefs`, `--romfs` and `--profile` after it still win. A folder without
+  `exefs/main.npdm` or `romfs/romfs.bin` stops with one line that says so. `totk.ini`, the logs, the mods and the
+  caches stay with `totk.exe`'s own folder, and nothing changes without the flag.
 - Without `--prepare` nothing changes: the window and the JSON events are the same.
 
 ## Constraints
