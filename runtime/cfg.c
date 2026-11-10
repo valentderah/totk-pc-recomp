@@ -38,7 +38,7 @@ static const char *const known[] = {
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SHAKE",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLIMB_FIX", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
     "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "DYNAMIC_RES", "DYN_DELTA", "EXEFS", "FEEDBACK", "FIXED_RES_PATCH", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
@@ -69,6 +69,7 @@ static const char *const known[] = {
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"}, {"FRAME_QUEUE", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
+    {"CLIMB_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
     {"SHARPNESS", "display"}, {"DYNAMIC_RES", "display"}, {"ASPECT", "display"}, {"MOVIE_ASPECT", "display"}, {"FOV", "display"}, {"ANISO", "display"},
@@ -142,7 +143,7 @@ static const CfgMeta metas[] = {
     {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE}, {"FRAME_QUEUE", "0", "0|1", LIVE},
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"MODS_REBUILD", "auto", "auto|off", RESTART},
-    {"HIGHFPS_FIX", "1", "0|1", RESTART},
+    {"HIGHFPS_FIX", "1", "0|1", RESTART}, {"CLIMB_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
@@ -343,10 +344,10 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox prompts keep 1920x1080 too: the setup builds their folders for 16:9 only (romfs.c overlay_init), so a default of
-// another shape would trade the prompts the player chose for the Switch ones. Keyboard prompts have a folder for each
-// of these sizes (romfs-patches-pc-<w>x<h>, installer/steps.py Prepare): they keep 1920x1080 only when the one for
-// the display's size is missing, as in a source build without make_romfs_patches.py --prompts pc --aspect.
+// Xbox and keyboard prompts have a folder for each of these sizes (romfs-patches-xbox-<w>x<h>, -xbox-label-<w>x<h>,
+// -pc-<w>x<h>, installer/steps.py Prepare): they keep 1920x1080 only when the one for the display's size is missing,
+// as in a source build without make_romfs_patches.py --prompts <style> --aspect or an install by an older setup,
+// where a default of another shape would trade the prompts the player chose for the Switch ones.
 static const unsigned SHAPED[][2] = {
     {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
     {3840, 1080}, {5120, 1440},                                         // 32:9
@@ -354,14 +355,22 @@ static const unsigned SHAPED[][2] = {
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
 };
 static char screen_res[16];   // set once by cfg_init, "" for none
-static int screen_pc;         // romfs-patches-pc-<screen_res> has a manifest (set once by cfg_init)
+// romfs-patches-xbox-, romfs-patches-xbox-label- and romfs-patches-pc-<screen_res> have a manifest (set once by
+// cfg_init)
+static const char *const screen_folders[3] = {"romfs-patches-xbox", "romfs-patches-xbox-label", "romfs-patches-pc"};
+static int screen_prompts[3];
 
-// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick: an
-// unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is "xbox_prompts".
+// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick and
+// input_prompts_folder: an unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is
+// "xbox_prompts"; the Xbox prompts take romfs-patches-xbox with the Nintendo pad layout (or "xbox_prompts") and
+// romfs-patches-xbox-label with any other.
 static int shape_keeps_prompts(void) {
     const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
-    if (p && *p) return !strcasecmp(p, "pc") ? screen_pc : strcasecmp(p, "xbox") != 0;
-    return !(l && !strcasecmp(l, "xbox_prompts"));
+    if (p && *p && !strcasecmp(p, "pc")) return screen_prompts[2];
+    int xbox = p && *p ? !strcasecmp(p, "xbox") : l && !strcasecmp(l, "xbox_prompts");
+    if (!xbox) return 1;
+    int by_position = l && (!strcasecmp(l, "nintendo") || !strcasecmp(l, "xbox_prompts"));
+    return screen_prompts[by_position ? 0 : 1];
 }
 
 static void screen_default(void) {
@@ -379,7 +388,8 @@ static void screen_default(void) {
     if (best < 0) best = fit;
     if (best < 0) return;
     snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
-    screen_pc = romfs_shaped_pc_ready(SHAPED[best][0], SHAPED[best][1]);
+    for (int i = 0; i < 3; i++)
+        screen_prompts[i] = romfs_shaped_prompts_ready(screen_folders[i], SHAPED[best][0], SHAPED[best][1]);
     if (!raw_get(PREFIX "OUTPUT_RES") && shape_keeps_prompts())
         rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
                sh, screen_res);

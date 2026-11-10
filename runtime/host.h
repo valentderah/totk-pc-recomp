@@ -301,7 +301,8 @@ int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x<h> has a manifest (romfs.c; works
                                                            // before fs_init)
-int romfs_shaped_pc_ready(unsigned w, unsigned h);         // the same for romfs-patches-pc-<w>x<h>
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h);   // the same for <folder>-<w>x<h>, a
+                                                           // prompts' folder (romfs-patches-xbox, -xbox-label, -pc)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 void res_dynres_live(void);                                // TOTK_DYNAMIC_RES to the game (set fixres); on a settings change

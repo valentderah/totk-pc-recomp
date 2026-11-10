@@ -799,8 +799,8 @@ static const char *prompts_note(bool *restart) {
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
     const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
-    // A game resolution of another shape needs a folder of its own for the PC prompts (romfs-patches-pc-<w>x<h>). The
-    // setup writes one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
+    // A game resolution of another shape needs a folder of its own for the prompts (<folder>-<w>x<h>). The setup writes
+    // one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
     int off = romfs_prompts_off(want);
     if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
     switch (off) {
@@ -1107,6 +1107,7 @@ static void mods_builtin_rows(void) {
     opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
     opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
     opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_toggle("TOTK_CLIMB_FIX", UI_MENU_CLIMB_FIX, UI_MENU_CLIMB_FIX_DESC);
     opt_button("##mods_quickmenu", UI_MENU_MODS_QUICKMENU, UI_MENU_MODS_QUICKMENU_DESC,
                menu_text(romfs_patches_loaded() ? UI_MENU_ON : UI_MENU_OFF));
 }

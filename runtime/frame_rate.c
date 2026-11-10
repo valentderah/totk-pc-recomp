@@ -91,6 +91,11 @@ void frame_step_init(void) {
         rt_patch_disable(cloth);
         rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
     }
+    int climb = rt_patch_set("climb");   // reads the page's frame ratio, written only with the real-time step
+    if (climb >= 0 && !rt_patch_enabled(realtime) && rt_patch_enabled(climb)) {
+        rt_patch_disable(climb);
+        rt_log("frame rate: climb speed fix off, it needs the real-time step (TOTK_REALTIME=0)");
+    }
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
         step_interval = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 8);
