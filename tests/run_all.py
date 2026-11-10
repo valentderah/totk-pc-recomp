@@ -16,10 +16,13 @@ No third-party imports: this runs before any venv is trusted.
 """
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +57,7 @@ TESTS = {
     'exefs_patches_test':       ('.venv', None, [], ''),
     'settings_doc_check':       ('.venv', None, [], ''),
     'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
+    'cheats_vm_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles runtime/cheats.c into a harness with clang'),
     'diff/atomic':              ('.venv', None, [], ''),
     'diff/simd':                ('.venv', None, [], ''),
     # ---- read the game or a build ----
@@ -78,7 +82,6 @@ def load_work_dir():
     if not cfg.exists():
         return ROOT / 'build'
     try:
-        import tomllib
         with open(cfg, 'rb') as f:
             d = tomllib.load(f).get('work', {}).get('dir')
         return Path(d) if d else ROOT / 'build'
@@ -110,7 +113,6 @@ def find_romfs():
     gui = ROOT / 'build' / 'build_gui.json'         # the GUI builder remembers where it built from
     if gui.exists():
         try:
-            import json
             r = json.loads(gui.read_text(encoding='utf-8')).get('romfs')
             if r:
                 cands.append(Path(r))
@@ -134,7 +136,6 @@ def find_cc():
     c = MSYS_BIN / 'clang.exe'
     if WIN and c.exists():
         return c
-    import shutil
     w = shutil.which('clang')
     return Path(w) if w else None
 
