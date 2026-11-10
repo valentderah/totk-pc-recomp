@@ -245,6 +245,17 @@ class RenamedVersionTest(unittest.TestCase):
         self.assertEqual(self.ctx.state['version'], '1.4.3')
         self.assertEqual(self.ctx.state['steps']['extract']['key'], 'recorded by 0.2.8')
 
+    def test_real_1_1_1_keeps_its_name(self):
+        """An install whose main is not the 1.1.0 one is the real 1.1.1 update (0x30000)."""
+        (self.ctx.dest / 'exefs').mkdir()
+        (self.ctx.dest / 'exefs' / 'main').write_bytes(b'not the 1.1.0 main')
+        steps.migrate_state(self.ctx)
+        self.assertEqual(steps.game_version(self.ctx), '1.1.1')
+        self.assertEqual(steps.version_tag(steps.game_version(self.ctx)), 'v111')
+        self.assertEqual(steps.expected_update(self.ctx)['version'], 0x30000)
+        self.assertTrue(self.ctx.layout.patches(steps.game_version(self.ctx)).is_file())
+        self.assertEqual(self.ctx.state['steps']['extract']['key'], 'recorded by 0.2.8')
+
 
 class LiftKeyTest(unittest.TestCase):
     def setUp(self):
