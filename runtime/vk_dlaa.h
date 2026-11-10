@@ -10,7 +10,8 @@ int vk_dlaa_wanted(void);   // the setting is on (the device may still lack DLSS
 // vk_device.c: NGX's instance and device extensions join the lists (room for max names); vk_dlaa_init after the
 // device exists brings NGX up and checks that DLSS is available.
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max);
-void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max);
+void vk_dlaa_device_exts(VkInstance inst, VkPhysicalDevice phys, const VkExtensionProperties *have, uint32_t nhave,
+                         const char **ext, uint32_t *n, uint32_t max);
 void vk_dlaa_init(void);
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
@@ -52,3 +53,12 @@ void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);
+// DLSS Frame Generation (DLSS-G, NVSDK_NGX_Feature_FrameGeneration = 11): evaluates interpolated frames between the
+// previous and current backbuffer using this frame's scene depth, motion vectors and camera matrices. Fixed multiplier
+// only (TOTK_DLSS_FG_X = 2, 3, 4, 5 or 6). 6x is five generated frames, the maximum this NGX build reports.
+// Writes up to out_cap images (VK_IMAGE_LAYOUT_GENERAL, ow x oh, fmt), earliest
+// first, and returns how many are ready to present before the real frame.
+#define VK_DLSSG_MAX_GEN 5
+int vk_dlssg_available(void);
+int vk_dlssg_evaluate(VkImage backbuffer, VkFormat fmt, uint32_t ow, uint32_t oh, VkImage *out_interps, int out_cap);
+void vk_dlssg_release(void);

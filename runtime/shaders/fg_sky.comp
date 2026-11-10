@@ -1,0 +1,24 @@
+// Sky stamp for DLSS Frame Generation (runtime/vk_dlaa.c fg_sky_stamp). The sky is drawn into colour without writing
+// depth, so its pixels still hold the reverse-Z clear, 0 at the far plane. Frame generation warps those pixels with
+// vectors that are not theirs and the sky flickers. Where the scene depth is at the far plane this copies the real frame
+// onto the generated one; solid surfaces, which have written depth, stay as generated.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_tex;           // scene depth at the size of the frame
+layout(set = 0, binding = 1) uniform sampler2D real_tex;            // the real frame
+layout(set = 0, binding = 2) uniform writeonly image2D gen_img;     // one generated frame
+
+layout(push_constant) uniform PC {
+    uvec2 size;   // output size in pixels
+    float cut;    // depth at or below this counts as the far plane
+} pc;
+
+void main() {
+    uvec2 id = gl_GlobalInvocationID.xy;
+    if (id.x >= pc.size.x || id.y >= pc.size.y) return;
+    vec2 uv = (vec2(id) + 0.5) / vec2(pc.size);
+    if (textureLod(depth_tex, uv, 0.0).r > pc.cut) return;
+    imageStore(gen_img, ivec2(id), textureLod(real_tex, uv, 0.0));
+}

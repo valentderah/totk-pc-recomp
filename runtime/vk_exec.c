@@ -966,7 +966,7 @@ static void chunks_wait(int k);
 static void run_job(VkExec *ex) {
     uint32_t turn = ex->job_i;
     VkExecJob j = ex->jobs[ex->job_i++];
-    if (j.kind == VK_JOB_DLSS) chunks_wait(j.chunk);
+    if (j.kind == VK_JOB_DLSS || j.kind == VK_JOB_FG_CAPTURE) chunks_wait(j.chunk);
     while (__atomic_load_n(&job_turn, __ATOMIC_ACQUIRE) != turn) plat_yield();
     vk_exec_pass_end(ex);
     if (j.kind != VK_JOB_CONTACT) {
