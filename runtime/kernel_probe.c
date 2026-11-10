@@ -10,6 +10,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "kernel.h"
+#include "layout.h"
 #include "platform/platform.h"
 
 #define STACK 0x10000
@@ -682,6 +683,25 @@ static int cmp_u64(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+// A refused commit waits and retries (memory.c commit, oom.c rt_oom_wait): three forced refusals, then the page maps.
+static void test_oom_commit(void) {
+    const RtGuestLayout *g = mem_layout();
+    uint64_t a = g->alias.base + g->alias.size - 0x10000;
+    rt_oom_force(RT_OOM_COMMIT, 3);
+    uint64_t t0 = plat_now_ms();
+    uint32_t r = mem_map_physical(a, 0x1000);
+    uint64_t ms = plat_now_ms() - t0;
+    CHECK(r == 0 && rt_oom_forced_left(RT_OOM_COMMIT) == 0 && ms >= 20,
+          "MapPhysicalMemory after 3 refused commits: result %#x, %d refusals left, %llu ms", r,
+          rt_oom_forced_left(RT_OOM_COMMIT), (unsigned long long)ms);
+    rt_oom_force(RT_OOM_COMMIT, 0);
+    if (r == 0) {
+        *(volatile uint64_t *)(uintptr_t)a = 1;
+        CHECK(mem_unmap_physical(a, 0x1000) == 0, "UnmapPhysicalMemory after the refused commits");
+    }
+    printf("oom: commit waited %llu ms through 3 refusals\n", (unsigned long long)ms);
+}
+
 static void test_platform(void) {
     PlatThread *t = plat_thread_new(plat_worker, (void *)(intptr_t)1, "probe-kernel plat");
     CHECK(t, "plat_thread_new");
@@ -719,6 +739,90 @@ static void test_platform(void) {
     CHECK(over[N / 2] < 500000, "plat_sleep_ns(1 ms) median overshoot %.3f ms (want < 0.5)", over[N / 2] / 1e6);
 }
 
+// ---- crash report (main.c crash_handler): a child faults on a guest thread with known values in rbx and x19; the
+// report must hold the host registers, the faulting instruction's bytes and the memory both values point at.
+#define CRASH_CHILD_ENV "TOTK_PROBE_KERNEL_CRASH_CHILD"
+static uint64_t crash_host_words[6] = {0, 0, 0x5ca1ab1e0c0de001ull, 0, 0, 0};
+static uint64_t crash_guest_words[6] = {0, 0, 0x5ca1ab1e0c0de002ull, 0, 0, 0};
+
+// The compound shape note (main.c crash_compound_shape, 1.2.1): a shape of 3 records whose child 0 has no shape, child
+// 1 has one but its live bit is clear, child 2 is live and filled.
+static uint64_t crash_shape[0x1a0 / 8], crash_records[3 * 0x78 / 8], crash_child_shape;
+
+static void crash_shape_fill(Cpu *c) {
+    uint8_t *s = (uint8_t *)crash_shape, *r = (uint8_t *)crash_records;
+    static const char *const names[3] = {"PartA", "PartB", "PartC"};
+    for (int i = 0; i < 3; i++) {
+        uint64_t name = (uint64_t)(uintptr_t)(r + i * 0x78 + 0x14);
+        memcpy(r + i * 0x78 + 8, &name, 8);
+        memcpy(r + i * 0x78 + 0x14, names[i], strlen(names[i]) + 1);
+    }
+    uint64_t child = (uint64_t)(uintptr_t)&crash_child_shape, vt = MOD_MAIN_BASE + 0x45e1218;
+    uint64_t rec = (uint64_t)(uintptr_t)crash_records;
+    uint32_t n = 3, bits = 0x5;
+    memcpy(r + 0x78, &child, 8);
+    memcpy(r + 2 * 0x78, &child, 8);
+    memcpy(s, &vt, 8);
+    memcpy(s + 0x78, &n, 4);
+    memcpy(s + 0x80, &rec, 8);
+    memcpy(s + 0x88, &bits, 4);
+    memcpy(s + 0x190, &n, 4);
+    c->x[20] = (uint64_t)(uintptr_t)crash_shape;
+    c->x[21] = 0x1000038;
+    c->x[30] = MOD_MAIN_BASE + 0xe056d4;
+}
+
+static void crash_child_main(Cpu *c) {
+    const char *mode = getenv(CRASH_CHILD_ENV);
+    if (mode && !strcmp(mode, "shape")) crash_shape_fill(c);
+    c->x[19] = (uint64_t)(uintptr_t)&crash_guest_words[2];
+    c->sp -= 0x100;   // a frame on the guest stack, as a crashing function has
+    __asm__ volatile("movq %0, %%rbx\n\tmovq 0x10, %%rax" : : "r"(&crash_host_words[2]) : "rax", "rbx", "memory");
+}
+
+// The report line that holds needle, NULL when none does
+static const char *report_line(const char *out, const char *needle, char *line, size_t cap) {
+    const char *p = strstr(out, needle);
+    if (!p) return NULL;
+    while (p > out && p[-1] != '\n') p--;
+    size_t n = strcspn(p, "\r\n");
+    snprintf(line, cap, "%.*s", (int)(n < cap ? n : cap - 1), p);
+    return line;
+}
+
+static void test_crash_report(void) {
+    static char out[65536];
+    char line[512], want[64];
+    int code = plat_run_self(CRASH_CHILD_ENV, "1", out, sizeof out, 30000);
+    CHECK(code == 71 && strstr(out, "FATAL: access violation") && strstr(out, "reading address 0x10"),
+          "crash child: exit code %d, no access violation at 0x10 reported", code);
+    snprintf(want, sizeof want, "rbx %016llx", (unsigned long long)(uintptr_t)&crash_host_words[2]);
+    CHECK(strstr(out, want), "crash report: no host register line with %s", want);
+    CHECK(report_line(out, "host code at rip-", line, sizeof line) && strstr(line, "| 48 8b 04 25 10 00 00 00"),
+          "crash report: the faulting instruction's bytes are missing");
+    const char *h = report_line(out, "*5ca1ab1e0c0de001", line, sizeof line);
+    CHECK(h && strstr(h, "rbx"), "crash report: no memory line for rbx (%s)", h ? h : "none");
+    const char *g = report_line(out, "*5ca1ab1e0c0de002", line, sizeof line);
+    CHECK(g && strstr(g, "x19"), "crash report: no memory line for x19 (%s)", g ? g : "none");
+    CHECK(strstr(out, "guest stack sp+0x00:"), "crash report: no guest stack words");
+    CHECK(report_line(out, "  memory commit: this process ", line, sizeof line) && !strstr(line, "process -1 MB"),
+          "crash report: no memory commit line");
+    printf("crash report: exit code %d, host registers, code bytes, memory at rbx and x19, guest stack, commit %s\n", code,
+           failures ? "checked with failures" : "present");
+    if (rt_game_version != 121) return;
+    code = plat_run_self(CRASH_CHILD_ENV, "shape", out, sizeof out, 30000);
+    CHECK(report_line(out, "  compound shape ", line, sizeof line) && strstr(line, "3 children, 3 records") &&
+              strstr(line, "live bits: 00000005"),
+          "crash report: no compound shape line (%s)", strstr(out, "compound shape") ? line : "none");
+    CHECK(report_line(out, "child   0:", line, sizeof line) && strstr(line, "shape 0 \"PartA\""),
+          "crash report: child 0 should have no shape (%s)", line);
+    CHECK(report_line(out, "child   1:", line, sizeof line) && strstr(line, "(off) \"PartB\""),
+          "crash report: child 1 should be off (%s)", line);
+    CHECK(report_line(out, "child   2:", line, sizeof line) && !strstr(line, "(off)") && strstr(line, "\"PartC\""),
+          "crash report: child 2 should be live (%s)", line);
+    printf("crash report, compound shape: exit code %d, %s\n", code, failures ? "checked with failures" : "children listed");
+}
+
 int probe_kernel(void) {
     a_lock_waiter = hostfn_register("probe-kernel lock waiter", lock_waiter);
     a_cv_waiter = hostfn_register("probe-kernel condvar waiter", cv_waiter);
@@ -742,7 +846,15 @@ int probe_kernel(void) {
         printf("probe-kernel: FAILED (no PLT stub for %s in main)\n", TICK_SYMBOL);
         return 1;
     }
+    const char *child = getenv(CRASH_CHILD_ENV);
+    if (child && *child) {
+        kern_run_on_guest_main(crash_child_main);
+        printf("crash child: returned without a fault\n");
+        return 1;
+    }
     test_platform();
+    test_oom_commit();
+    test_crash_report();
     kern_run_on_guest_main(probe_main);
     RtStats s = rt_stats();
     printf("stats: %llu SVCs, %llu threads, %llu host calls\n", (unsigned long long)s.svcs,

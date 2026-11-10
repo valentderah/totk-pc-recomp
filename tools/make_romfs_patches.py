@@ -38,12 +38,17 @@ from the game's own files on the player's machine, nothing added (tools/button_i
   every pad not labelled the Nintendo way), so the face buttons keep their letters. The action prompt's diamond is
   laid out as an Xbox pad's (bflyt_xbox_diamond): A at the bottom, B on the right, X on the left, Y at the top, the
   button the prompt names lit in its place with its bar.
---xbox-prompts is the older name of --prompts xbox.
+--xbox-prompts is the older name of --prompts xbox. With --aspect, romfs-patches-xbox-<w>x<h> or
+romfs-patches-xbox-label-<w>x<h>: the same prompts with that shape's UI layout.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
 (button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
 guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes around the action prompt name the keys
 with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
+
+--reuse <folder>: an overlay made before, such as romfs-patches-pc for romfs-patches-pc-<w>x<h>. Each file of it whose
+contents match the new one is hard-linked (copied where links fail) instead of compressed again; the summary's reused
+lists them. The output is byte for byte the same as without it.
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
@@ -53,6 +58,7 @@ import compression.zstd as zstd
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import struct
 from pathlib import Path
@@ -70,6 +76,8 @@ ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
                      'pc for the keyboard and mouse')
 ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_ lines the key icons follow')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
+ap.add_argument('--reuse', type=Path,
+                help='an overlay folder made before: its files with the same contents are linked, not compressed again')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
 args.out = args.out or root / 'build' / args.version / (f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches')
@@ -442,19 +450,46 @@ if args.prompts:
     prompts = dict(style=args.prompts, textures=KEY_TEXTURES if by_position else [], letters=letters,
                    diamond=len(diamond), messages=messages, hud=hud, icons=len(drawn), fonts=FONTS, grown=grown)
 
-lines = []
+def reusable(path, contents, dictionary):
+    """The --reuse folder's copy of path when it holds these contents under the same dictionary, else None. The level 19
+    compression is most of a run (about 80 s for the four fonts of 1.4.3), and romfs-patches-<style>-<w>x<h> differs
+    from romfs-patches-<style> in the Common archive alone, so the setup makes the fifteen shapes from the 16:9
+    folder."""
+    if not args.reuse or not (args.reuse / path).is_file():
+        return None
+    data = (args.reuse / path).read_bytes()
+    try:
+        same = (zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(originals[path]).dictionary_id
+                and zstd.decompress(data, zstd_dict=dictionary) == contents)
+    except zstd.ZstdError:
+        return None
+    return data if same else None
+
+
+lines, reused = [], []
 for path, contents in outputs.items():
     raw = originals[path]
     dictionary = dictionaries.get(zstd.get_frame_info(raw).dictionary_id)
-    data = zstd.compress(contents, level=19, zstd_dict=dictionary)
-    assert zstd.decompress(data, zstd_dict=dictionary) == contents
-    assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
     target = args.out / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    # Unlinked first: a file linked from another folder (--reuse) is not written through, which would break the other
+    # folder's manifest.
+    target.unlink(missing_ok=True)
+    data = reusable(path, contents, dictionary)
+    if data is not None:
+        try:   # a hard link takes no room; a volume without them gets a copy
+            os.link(args.reuse / path, target)
+        except OSError:
+            target.write_bytes(data)
+        reused.append(path)
+    else:
+        data = zstd.compress(contents, level=19, zstd_dict=dictionary)
+        assert zstd.decompress(data, zstd_dict=dictionary) == contents
+        assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
+        target.write_bytes(data)
     lines.append('\t'.join([path, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
 (args.out / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
                                        + ''.join(line + '\n' for line in lines))
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None,
-                      prompts=prompts)))
+                      prompts=prompts, reused=reused)))
