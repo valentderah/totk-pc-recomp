@@ -797,8 +797,8 @@ static const char *prompts_note(bool *restart) {
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
     const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
-    // A game resolution of another shape needs a folder of its own for the PC prompts (romfs-patches-pc-<w>x<h>). The
-    // setup writes one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
+    // A game resolution of another shape needs a folder of its own for the prompts (<folder>-<w>x<h>). The setup writes
+    // one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
     int off = romfs_prompts_off(want);
     if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
     switch (off) {

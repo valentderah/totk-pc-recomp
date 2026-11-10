@@ -275,8 +275,8 @@ def copy_romfs_patches(version, out):
     menus' captured background turned black). Copies every romfs-patches* folder of build/<version> that has a
     manifest, the same way when it differs: romfs-patches, romfs-patches-xbox, romfs-patches-xbox-label and
     romfs-patches-pc (the same with Xbox or keyboard and mouse button prompts, make_romfs_patches.py --prompts) and
-    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-pc-<w>x<h> (make_romfs_patches.py --aspect),
-    which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
+    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-<style>-<w>x<h> (make_romfs_patches.py
+    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
     names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*') if p.is_dir())
     for name in names:
         src = ROOT / 'build' / version / name
