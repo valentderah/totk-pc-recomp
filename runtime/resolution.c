@@ -595,15 +595,14 @@ void res_fov_live(void) {
     rt_log("resolution: field of view %d%% of the game's", pct);
 }
 
-// TOTK_DYNAMIC_RES = 0 (default) holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and
-// patches-v143.txt, set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90
-// or 80 %) mostly from a fixed cost model made for the Switch: one term grows with the object counts, one with
-// (scene width / 1600) squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers
-// that prediction when the GPU is slower than the model says, which a PC GPU never is, so the model alone decides.
-// Measured on 1.2.1: a 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one
-// (5120x1440 at render_scale 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 lets the
-// game step again (the Steam Deck profile's default, cfg.c DECK, where the scene is far narrower). Runs on a settings
-// change (gfx_present.c window_settings_live), like res_fov_live.
+// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and patches-v143.txt,
+// set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90 or 80 %) mostly
+// from a fixed cost model made for the Switch: one term grows with the object counts, one with (scene width / 1600)
+// squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers that prediction when the
+// GPU is slower than the model says, which a PC GPU never is, so the model alone decides. Measured on 1.2.1: a
+// 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
+// 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
+// stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
@@ -615,7 +614,8 @@ void res_dynres_live(void) {
         return;
     }
     rt_patch_switch(set, !dyn);
-    rt_log("resolution: dynamic resolution %s", dyn ? "the game's own (100, 90 or 80 %)" : "off: the scene stays at 100 %");
+    rt_log("resolution: dynamic resolution %s",
+           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {

@@ -180,9 +180,9 @@
 # render_scale = game
 # Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
 # by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
-# scene wider than about 3000 pixels can drop to 80 % on any GPU. 0 is the default (1 on the Steam Deck). 1.2.1 and
-# 1.4.3. Changes in the menu take effect at once.
-# dynamic_res = 0
+# scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.2.1 and 1.4.3. Changes in
+# the menu take effect at once.
+# dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
