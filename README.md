@@ -1,5 +1,7 @@
 # TotK Recomp
 
+<a href="https://recomplauncher.com/game/totk-pc-recomp"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
 > [!IMPORTANT]
@@ -64,6 +66,8 @@ Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ub
 2. Make it executable (`chmod +x TotK-Setup-x86_64.AppImage`) and start it. On a Steam Deck, do this in Desktop Mode.
 3. Pick your game files, the language and an install folder, and press *Start*.
 4. Play `totk` from the install folder.
+
+RecompLauncher can install this release and run the setup for you: it asks for the base game, the update and your `prod.keys`, builds the game into a `TotK` folder next to the setup, and starts it from there ([docs/installer.md](docs/installer.md), "For a launcher").
 
 To update, run a newer setup on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
 

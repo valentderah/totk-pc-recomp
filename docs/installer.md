@@ -221,6 +221,27 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
   is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
 
+## For a launcher
+
+`recomplauncher.json` at the top of the release folder (the zip, and `/recomplauncher.json` in the AppImage) tells
+[RecompLauncher](https://recomplauncher.com) what to ask for and what to run. It names three inputs (the base game, the
+update and `prod.keys`) and runs the setup without a window:
+
+```
+pythonpython.exe -m installer --prepare --base FILE --update FILE --keys FILE --dest <release folder>/TotK
+TotK-Setup-x86_64.AppImage -m installer --prepare ...         (Linux; AppRun hands a command line that starts with -m
+                                                              to the bundled Python)
+```
+
+- `--prepare` prints `progress <0-1> <text>` lines instead of the JSON events: the fraction counts the finished steps of
+  the plan plus the share of the running one, and an error prints its text at the fraction reached (`installer/events.py`,
+  `ProgressLines`). The exit codes are those of the command line. `--lang` defaults to `en-US` on a first install; the
+  `lang` key in `totk.ini` changes it later, and the launcher shows it as a setting.
+- The launcher does not pass `--firmware` or `--dlss`: Chinese and Korean text and NVIDIA DLSS stay with the setup window,
+  which can be run on the same folder afterwards.
+- The launcher keeps `prod.keys` in its own folder and passes its path; key values stay out of the output as always.
+- Without `--prepare` nothing changes: the window and the JSON events are the same.
+
 ## Constraints
 
 - The installer steps contain no Win32 calls; only the window's DPI awareness (`installer/dpi.py`) is Windows-only, and
