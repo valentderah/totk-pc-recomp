@@ -392,7 +392,7 @@ def profiles():
     tree = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:recomp'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', 'recomp'], capture_output=True,
                            text=True).stdout.strip()
-    retrain = 'build without a profile; retrain (docs/building.md, "Profile-guided build")'
+    retrain = 'build without a profile; retrain (docs/pgo.md)'
     found = {}
     for p in sorted(PGO_DIR.glob('pgo-*.profdata')):
         rec = p.with_suffix('.json')

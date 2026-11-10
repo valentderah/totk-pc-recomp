@@ -160,7 +160,7 @@ runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated 
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
 data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
-                      update's code and the runtime libraries compile with (building.md, "Profile-guided build")
+                      update's code and the runtime libraries compile with (pgo.md)
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
