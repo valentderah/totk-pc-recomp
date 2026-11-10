@@ -13,24 +13,30 @@
 #include "launcher_text.h"
 
 #define LANGID_RUSSIAN 0x19     /* primary language id */
+#define LANGID_SPANISH 0x0a     /* primary language id shared by the Spanish regions */
 #define LANGID_PT_BR 0x0416     /* the whole LANGID: Portugal's Portuguese stays English */
 #define PATH_CHARS (MAX_PATH * 2)
 
-/* The language of the window (installer/guilogic.py ui_language_for_langid): Russian, Simplified Chinese (zh-CN and
-   zh-SG; the Traditional Chinese regions get English, as the window has no Traditional Chinese), else English. */
+/* The language of the window (installer/guilogic.py ui_language_for_langid): Spanish, Russian, Brazilian Portuguese,
+   Simplified Chinese (zh-CN and zh-SG; the Traditional Chinese regions get English), else English. */
 static void fail(void)
 {
     LANGID ui = GetUserDefaultUILanguage();
     int russian = (ui & 0x3ff) == LANGID_RUSSIAN, brazilian = ui == LANGID_PT_BR;
+    int spanish = (ui & 0x3ff) == LANGID_SPANISH;
     int chinese = ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
                   ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE);
     MessageBoxW(NULL,
-                russian    ? LAUNCHER_PYTHON_MISSING_RU
+                spanish     ? LAUNCHER_PYTHON_MISSING_ES
+                : russian   ? LAUNCHER_PYTHON_MISSING_RU
                 : brazilian ? LAUNCHER_PYTHON_MISSING_PT_BR
                 : chinese   ? LAUNCHER_PYTHON_MISSING_ZH_HANS
                             : LAUNCHER_PYTHON_MISSING_EN,
-                russian ? LAUNCHER_TITLE_RU : brazilian ? LAUNCHER_TITLE_PT_BR : chinese ? LAUNCHER_TITLE_ZH_HANS
-                                                                                         : LAUNCHER_TITLE_EN,
+                spanish     ? LAUNCHER_TITLE_ES
+                : russian   ? LAUNCHER_TITLE_RU
+                : brazilian ? LAUNCHER_TITLE_PT_BR
+                : chinese   ? LAUNCHER_TITLE_ZH_HANS
+                            : LAUNCHER_TITLE_EN,
                 MB_OK | MB_ICONERROR);
 }
 
