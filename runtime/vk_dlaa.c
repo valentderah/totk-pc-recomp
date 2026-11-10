@@ -239,6 +239,8 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 // over DLSS's picture, so the jittered scene reached the screen and the whole picture shook. So from DLSS's evaluation
 // to the frame's end, draws in passes larger than the light target sample DLSS's output in its place
 // (vk_dlaa_swap_img, applied by vk_exec_draw.c tex_info): whichever shader scales, it scales DLSS's picture.
+enum { SZ_FREE, SZ_BUILDING, SZ_READY };   // Size.state with TOTK_DLSS_PREWARM (build_main, size_ready)
+
 static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
     int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
@@ -258,10 +260,15 @@ static struct {
         int chars_cur, chars_ok; // chars[chars_cur] is written next; chars_ok: the other holds last frame's
         NgxHandle *feat;
         uint64_t used;           // evals count when it last ran
+        int state;               // DLSS_PREWARM: SZ_FREE, SZ_BUILDING (build_main owns the entry), SZ_READY
+        int preset;              // DLSS_PREWARM: the model its feature was created with
+        int scene_fmt, depth_fmt;   // DLSS_PREWARM: the formats of the armed pair at the request (the creation log line)
+        uint64_t asked_ns;       // DLSS_PREWARM: plat_now_ns when its creation was queued
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     NgxParam *params;
     int failed, reset;
+    int skipped;                 // DLSS_PREWARM: this frame's DLSS was skipped for want of a feature (evaluate)
     uint64_t evals, frames_missed;
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
@@ -294,6 +301,7 @@ static struct {
     unsigned cfg_seen;           // cfg_version when preset was read
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
+#define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
@@ -337,6 +345,36 @@ static void free_size(struct Size *e) {
     memset(e, 0, sizeof *e);
 }
 
+// The work images of an entry (size_for, build_one): 0 when one could not be made.
+static int size_images(struct Size *e, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
+    VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    return image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) &&
+           image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) &&
+           image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) &&
+           image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) &&
+           image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]);
+}
+
+// The images of an entry into GENERAL, where every image of the back end is kept.
+static void size_layouts(VkCommandBuffer cb, const struct Size *e) {
+    VkImageMemoryBarrier2 ib[5];
+    VkImage im[5] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1]};
+    for (int i = 0; i < 5; i++)
+        ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = im[i],
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5,
+                           .pImageMemoryBarriers = ib};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
 // The entry for a scene and output size: its output (RGBA16F at the output size, written by DLSS, then blitted into
 // the target) and motion vectors (RG16F at the scene size, render pixels), both kept in GENERAL like every image of the
 // back end. TotK's dynamic resolution switches between a few sizes; each keeps its feature, the least recently used
@@ -352,29 +390,8 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
         if (D.last == lru) D.last = NULL;
         free_size(e = lru);
     }
-    VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) ||
-        !image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]))
-        return NULL;
-    VkImageMemoryBarrier2 ib[5];
-    VkImage im[5] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1]};
-    for (int i = 0; i < 5; i++)
-        ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                                        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = im[i],
-                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5,
-                           .pImageMemoryBarriers = ib};
-    vkCmdPipelineBarrier2(cb, &di);
+    if (!size_images(e, w, h, ow, oh)) return NULL;
+    size_layouts(cb, e);
     e->w = w, e->h = h, e->ow = ow, e->oh = oh;
     return e;
 }
@@ -941,20 +958,424 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// A DLSS feature for a scene and output size, recorded into cb through the parameter object p (which it fills). preset:
+// the model (D.preset: 0 NVIDIA's choice per mode, else 1 A ... 13 M); the formats are for the log line.
+static NgxResult create_feature(VkCommandBuffer cb, NgxParam *p, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh,
+                                int preset, int scene_fmt, int depth_fmt, NgxHandle **feat) {
+    p_setu(p, "CreationNodeMask", 1);
+    p_setu(p, "VisibilityNodeMask", 1);
+    p_setu(p, "Width", w);
+    p_setu(p, "Height", h);
+    p_setu(p, "OutWidth", ow);
+    p_setu(p, "OutHeight", oh);
+    p_seti(p, "PerfQualityValue", perf_quality(w, ow));
+    // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
+    p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
+    p_seti(p, "DLSS.Enable.Output.Subrects", 0);
+    // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
+    // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
+    // M and L cost more on cards without FP8 (RTX 20/30). dlss_preset (D.preset, preset_check) takes one model for
+    // every mode instead.
+    int pk = preset ? preset : 11, pm = preset ? preset : 13, pl = preset ? preset : 12;
+    p_setu(p, "DLSS.Hint.Render.Preset.DLAA", (unsigned)pk);
+    p_setu(p, "DLSS.Hint.Render.Preset.UltraQuality", (unsigned)pk);
+    p_setu(p, "DLSS.Hint.Render.Preset.Quality", (unsigned)pk);
+    p_setu(p, "DLSS.Hint.Render.Preset.Balanced", (unsigned)pk);
+    p_setu(p, "DLSS.Hint.Render.Preset.Performance", (unsigned)pm);
+    p_setu(p, "DLSS.Hint.Render.Preset.UltraPerformance", (unsigned)pl);
+    NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, feat);
+    if (!NGX_OK(r) || !*feat) return r;
+    int q = perf_quality(w, ow), pr = q == 0 ? pm : q == 3 ? pl : pk;
+    rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d, preset %c (scene format %d, depth format "
+           "%d)", w, h, ow, oh, q, 'A' + pr - 1, scene_fmt, depth_fmt);
+    return r;
+}
+
+// ---------------------------------------------------------------- features made off the frame path (TOTK_DLSS_PREWARM)
+// A new scene size (the game's dynamic resolution switches between a few) needs work images and a DLSS feature, and
+// creating them on the thread that records the frame took 30 to 62 ms in measured runs, at load and mid-game at a camera
+// turn: a frame of 41-46 ms with the GPU idle for 30 of them, since in a chunked replay the submit thread waits for that
+// chunk. With the setting on, evaluate asks build_main (a thread of its own, with its own command pool, fence and NGX
+// parameter object) for the entry and goes without DLSS for that frame, as for a frame that missed the DLAA point but
+// without the jitter hold (vk_dlaa_frame): the game's own scaling or FXAA shows, and the sizes that were made stay cached.
+// An entry is SZ_FREE, SZ_BUILDING (build_main owns it, the frame path only reads its size and state) or SZ_READY
+// (the frame path owns it); the state is the hand-over, stored with release after everything else of the entry.
+//
+// NGX documents no thread safety, so B.ngx serialises every call into the core that takes a feature or a parameter
+// object: creation and release on build_main, the parameter allocation, the setting of parameters and the evaluation on
+// the frame path. build_main holds it for a creation (tens of ms) and the frame path only tries it: when it is taken,
+// that frame skips DLSS like one without a feature. Neither side takes another lock while holding it, and the frame
+// path never waits for it, so it cannot stall a frame or form a cycle.
+//
+// An entry that is evicted (the least recently used one when a sixth size arrives, or all of them on a preset change)
+// is not waited for: its images go through vk_defer_image and vk_defer_view and its feature through
+// vk_completion_add, all behind the submission being recorded, so they are freed once the GPU has finished it and
+// every earlier one. The completion thread only hands the feature to build_main, which releases it under B.ngx.
+struct Rel { NgxHandle *feat; struct Rel *next; };
+
+static struct {
+    PlatMutex ngx;               // see above
+    PlatMutex lock;              // q, nq and rel
+    PlatCond wake;               // build_main waits here for work
+    int started;                 // 0 the thread is not started yet, 1 it runs, -1 it could not start
+    int failed;                  // build_main could not go on: DLAA is off for this run (what, result)
+    const char *fail_what;
+    NgxResult fail_r;
+    uint8_t q[DLSS_SIZES];       // entries waiting to be built, in the order asked
+    int nq;
+    struct Rel *rel;             // features to release
+    NgxParam *params;            // build_main's own parameter object
+    uint64_t built, skipped, retired, build_ns;   // the perf line: features built, frames skipped, entries retired, ms
+    uint64_t epoch;              // build_main's steps so far (a build or a release begun or done): perf_entry
+} B;
+
+static void build_main(void *arg);
+
+static int prewarm_active(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("DLSS_PREWARM", "0") != 0;   // read once: entries are not moved between the two ways
+    if (on && !B.started) {
+        B.started = plat_thread_spawn(build_main, NULL, "dlss build", 0) ? 1 : -1;
+        if (B.started < 0)
+            rt_log("dlaa: cannot start the thread that creates DLSS features: they are created on the frame path");
+    }
+    return on && B.started > 0;
+}
+
+// ---------------------------------------------------------------- where the time goes (TOTK_TRACE=perf)
+// One line per 60 frames (at the frame numbers the other perf lines carry), with the DLAA steps of those frames: the
+// lookup (evaluate before the record: the barrier, the preset check, the entry for the size, the NGX lock) and the
+// record (evaluate_on), their average and largest, and in which frame the largest was; frames skipped and how many of
+// them found the NGX lock taken; the time the frame path spent retiring entries; the largest gap between two
+// evaluations, which tells a stall outside DLAA (the evaluations come late) from one inside it, and how many build
+// thread steps fell into that gap; and the build thread's busy time and its largest step of each kind: the work images,
+// waiting for the queue lock, vkQueueSubmit, waiting for the GPU, waiting for the NGX lock, the creation, a release.
+// Off the trace, evaluate reads the clock not at all.
+static struct {
+    uint64_t next;               // the frame number the next line is due at
+    uint64_t n, look_ns, look_max, look_at, rec_ns, rec_max, rec_at;
+    uint64_t skips, lock_busy, ret_n, ret_ns, ret_max;
+    uint64_t last_entry, last_epoch, gap_max, gap_at, gap_ev;
+    uint64_t bt_n, bt_busy, bt_img, bt_qlock, bt_submit, bt_wait, bt_lock, bt_create, bt_rel_n, bt_rel;
+} P;
+#define P_ADD(f, v) __atomic_add_fetch(&P.f, (v), __ATOMIC_RELAXED)
+#define P_SET(f, v) __atomic_store_n(&P.f, (v), __ATOMIC_RELAXED)
+#define P_GET(f) __atomic_load_n(&P.f, __ATOMIC_RELAXED)
+#define P_TAKE(f) __atomic_exchange_n(&P.f, 0, __ATOMIC_RELAXED)
+
+static uint64_t perf_now(void) { return rt_trace & RT_TRACE_PERF ? plat_now_ns() : 0; }
+static uint64_t perf_frame(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED); }
+
+// 1 when v raised the maximum.
+static int perf_max(uint64_t *p, uint64_t v) {
+    uint64_t o = __atomic_load_n(p, __ATOMIC_RELAXED);
+    while (v > o)
+        if (__atomic_compare_exchange_n(p, &o, v, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return 1;
+    return 0;
+}
+
+// At the start of an evaluation (t0 from perf_now, 0 off the trace).
+static void perf_entry(uint64_t t0) {
+    if (!t0) return;
+    uint64_t ev = __atomic_load_n(&B.epoch, __ATOMIC_RELAXED), last = P_GET(last_entry);
+    if (last && perf_max(&P.gap_max, t0 - last)) P_SET(gap_at, perf_frame()), P_SET(gap_ev, ev - P_GET(last_epoch));
+    P_SET(last_entry, t0), P_SET(last_epoch, ev);
+}
+
+// At the end of one: t1 after the lookup, t2 after the record.
+static void perf_eval(uint64_t t0, uint64_t t1, uint64_t t2) {
+    if (!t0) return;
+    P_ADD(n, 1);
+    P_ADD(look_ns, t1 - t0);
+    P_ADD(rec_ns, t2 - t1);
+    if (perf_max(&P.look_max, t1 - t0)) P_SET(look_at, perf_frame());
+    if (perf_max(&P.rec_max, t2 - t1)) P_SET(rec_at, perf_frame());
+}
+
+// vk_dlaa_frame: the line, when the frame number has passed the next multiple of 60.
+static void perf_window(void) {
+    if (!(rt_trace & RT_TRACE_PERF)) return;
+    uint64_t f = perf_frame();
+    if (f < P.next) return;
+    P.next = (f / 60 + 1) * 60;
+    uint64_t n = P_TAKE(n);
+    if (!n) return;
+    uint64_t look = P_TAKE(look_ns), rec = P_TAKE(rec_ns), skips = P_TAKE(skips), busy = P_TAKE(lock_busy);
+    uint64_t rn = P_TAKE(ret_n), rns = P_TAKE(ret_ns), rmax = P_TAKE(ret_max);
+    uint64_t bn = P_TAKE(bt_n), bb = P_TAKE(bt_busy), rel_n = P_TAKE(bt_rel_n);
+    static uint64_t switches;   // D.why[0] when the last line was made: the size changes since
+    uint64_t sw = D.why[0] - switches;
+    switches = D.why[0];
+    uint64_t look_max = P_TAKE(look_max), rec_max = P_TAKE(rec_max), gap_max = P_TAKE(gap_max);
+    rt_log("perf: dlaa steps to frame %llu: %llu evaluations, %llu size changes; lookup avg %.3f max %.2f ms (frame "
+           "%llu), record avg %.3f max %.2f ms (frame %llu); %llu skipped (%llu with the NGX lock taken); %llu retired, "
+           "%.2f ms on the frame path, largest %.2f; gap between evaluations max %.2f ms (frame %llu, %llu build thread "
+           "steps in it); build thread: %llu built, %llu released, %.1f ms busy, largest steps: images %.2f, queue lock "
+           "%.2f, submit %.2f, GPU wait %.2f, NGX lock %.2f, create %.2f, release %.2f ms",
+           (unsigned long long)f, (unsigned long long)n, (unsigned long long)sw, look / 1e6 / (double)n, look_max / 1e6,
+           (unsigned long long)P_GET(look_at), rec / 1e6 / (double)n, rec_max / 1e6, (unsigned long long)P_GET(rec_at),
+           (unsigned long long)skips, (unsigned long long)busy, (unsigned long long)rn, rns / 1e6, rmax / 1e6,
+           gap_max / 1e6, (unsigned long long)P_GET(gap_at), (unsigned long long)P_GET(gap_ev), (unsigned long long)bn,
+           (unsigned long long)rel_n, bb / 1e6, P_TAKE(bt_img) / 1e6, P_TAKE(bt_qlock) / 1e6, P_TAKE(bt_submit) / 1e6,
+           P_TAKE(bt_wait) / 1e6, P_TAKE(bt_lock) / 1e6, P_TAKE(bt_create) / 1e6, P_TAKE(bt_rel) / 1e6);
+}
+
+static void build_fail(const char *what, NgxResult r) {
+    B.fail_what = what, B.fail_r = r;
+    __atomic_store_n(&B.failed, 1, __ATOMIC_RELEASE);
+}
+
+// The feature goes to build_main, which makes the NGX call (the completion thread does not wait for a creation).
+static void feat_gone(void *arg) {
+    plat_mutex_lock(&B.lock);
+    ((struct Rel *)arg)->next = B.rel, B.rel = arg;
+    plat_cond_signal(&B.wake);
+    plat_mutex_unlock(&B.lock);
+}
+
+// Frees an entry once the GPU is done with the submission fence (the one being recorded) and every earlier one.
+static void retire_size(struct Size *e, uint64_t fence) {
+    uint64_t t0 = perf_now();
+    vk_defer_view(e->out_view);
+    vk_defer_view(e->mv_view);
+    vk_defer_image(e->out, e->out_mem);
+    vk_defer_image(e->mv, e->mv_mem);
+    vk_defer_view(e->mask_view);
+    vk_defer_image(e->mask, e->mask_mem);
+    for (int i = 0; i < 2; i++) {
+        vk_defer_view(e->chars_view[i]);
+        vk_defer_image(e->chars[i], e->chars_mem[i]);
+    }
+    if (e->feat) {
+        struct Rel *r = malloc(sizeof *r);
+        if (!r) rt_fatal("vk: out of memory");
+        r->feat = e->feat;
+        vk_completion_add(fence, feat_gone, r);
+    }
+    memset(e, 0, sizeof *e);
+    __atomic_add_fetch(&B.retired, 1, __ATOMIC_RELAXED);
+    if (t0) P_ADD(ret_n, 1), P_ADD(ret_ns, plat_now_ns() - t0), perf_max(&P.ret_max, plat_now_ns() - t0);
+}
+
+// Builds entry slot: the work images, their layouts and the feature in one command buffer, submitted and waited for
+// here, so the entry is complete on the GPU when the frame path sees it ready.
+static void build_one(int slot, VkCommandPool pool, VkCommandBuffer cb, VkFence fence) {
+    const VkCtx *c = vk_ctx();
+    struct Size *e = &D.sizes[slot];
+    uint64_t t0 = plat_now_ns(), t1 = t0, t2 = t0, t3 = t0;   // images made, NGX lock taken, feature made
+    const char *what = NULL;
+    NgxResult r = 0;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    __atomic_add_fetch(&B.epoch, 1, __ATOMIC_RELAXED);
+    if (!size_images(e, e->w, e->h, e->ow, e->oh)) {
+        what = "work image creation";
+    } else if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+        what = "command buffer recording";
+    } else {
+        t1 = plat_now_ns();
+        size_layouts(cb, e);
+        plat_mutex_lock(&B.ngx);
+        t2 = plat_now_ns();
+        r = create_feature(cb, B.params, e->w, e->h, e->ow, e->oh, e->preset, e->scene_fmt, e->depth_fmt, &e->feat);
+        plat_mutex_unlock(&B.ngx);
+        t3 = plat_now_ns();
+        if (!NGX_OK(r) || !e->feat) what = "DLSS feature creation", e->feat = NULL;
+        if (vkEndCommandBuffer(cb) != VK_SUCCESS && !what) what = "command buffer recording";
+    }
+    if (what) {   // nothing of the entry ran on the GPU
+        retire_size(e, 0);
+        __atomic_add_fetch(&B.epoch, 1, __ATOMIC_RELAXED);
+        return build_fail(what, r);
+    }
+    // The queue lock is held for the submission only, never while waiting for the GPU: every other submission and the
+    // present take it.
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+    uint64_t q0 = plat_now_ns();
+    vk_queue_lock();
+    uint64_t q1 = plat_now_ns();
+    VkResult vr = vkQueueSubmit(c->gfx_queue, 1, &si, fence);
+    vk_queue_unlock();
+    uint64_t q2 = plat_now_ns();
+    if (vr == VK_SUCCESS) vr = vkWaitForFences(c->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (vr != VK_SUCCESS) {
+        vk_device_fault_report(vr);
+        rt_fatal("vk: the DLSS feature build failed on the GPU (%d)", (int)vr);
+    }
+    vkResetFences(c->device, 1, &fence);
+    vkResetCommandPool(c->device, pool, 0);
+    uint64_t t4 = plat_now_ns();
+    uint32_t w = e->w, h = e->h, ow = e->ow, oh = e->oh;   // the frame path owns the entry from here on
+    uint64_t asked = e->asked_ns;
+    __atomic_store_n(&e->state, SZ_READY, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&B.epoch, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&B.build_ns, t4 - t0, __ATOMIC_RELAXED);
+    uint64_t n = __atomic_add_fetch(&B.built, 1, __ATOMIC_RELAXED);
+    P_ADD(bt_n, 1), P_ADD(bt_busy, t4 - t0);
+    perf_max(&P.bt_img, t1 - t0), perf_max(&P.bt_lock, t2 - t1), perf_max(&P.bt_create, t3 - t2);
+    perf_max(&P.bt_qlock, q1 - q0), perf_max(&P.bt_submit, q2 - q1), perf_max(&P.bt_wait, t4 - q2);
+    if (rt_trace & RT_TRACE_PERF)
+        rt_log("perf: dlaa prewarm: feature %ux%u -> %ux%u built in the background in %.1f ms (work images %.1f, NGX "
+               "lock %.1f, NGX create %.1f, queue lock %.1f, submit %.1f, GPU %.1f), %.1f ms after it was asked for; "
+               "%llu built (%.1f ms each), %llu frames skipped waiting for a feature, %llu deferred frees",
+               w, h, ow, oh, (t4 - t0) / 1e6, (t1 - t0) / 1e6, (t2 - t1) / 1e6, (t3 - t2) / 1e6, (q1 - q0) / 1e6,
+               (q2 - q1) / 1e6, (t4 - q2) / 1e6, (t4 - asked) / 1e6, (unsigned long long)n,
+               (double)__atomic_load_n(&B.build_ns, __ATOMIC_RELAXED) / 1e6 / (double)n,
+               (unsigned long long)__atomic_load_n(&B.skipped, __ATOMIC_RELAXED),
+               (unsigned long long)__atomic_load_n(&B.retired, __ATOMIC_RELAXED));
+}
+
+static void build_main(void *arg) {
+    (void)arg;
+    const VkCtx *c = vk_ctx();
+    plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);   // the game's threads win a core over a creation
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                  .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, .queueFamilyIndex = c->gfx_family};
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    const char *what = NULL;
+    NgxResult r = 0;
+    if (vkCreateCommandPool(c->device, &pi, NULL, &pool) != VK_SUCCESS ||
+        vkCreateFence(c->device, &fi, NULL, &fence) != VK_SUCCESS) {
+        what = "build thread setup";
+    } else {
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+        if (vkAllocateCommandBuffers(c->device, &ai, &cb) != VK_SUCCESS) {
+            what = "build thread setup";
+        } else {
+            plat_mutex_lock(&B.ngx);
+            r = N.alloc_params(&B.params);
+            plat_mutex_unlock(&B.ngx);
+            if (!NGX_OK(r) || !B.params) what = "parameter allocation";
+        }
+    }
+    if (what) return build_fail(what, r);
+    for (;;) {
+        plat_mutex_lock(&B.lock);
+        while (!B.nq && !B.rel) plat_cond_wait(&B.wake, &B.lock);
+        struct Rel *rel = B.rel;
+        B.rel = NULL;
+        int slot = B.nq ? B.q[0] : -1;
+        if (slot >= 0) memmove(B.q, B.q + 1, (size_t)--B.nq);
+        plat_mutex_unlock(&B.lock);
+        while (rel) {
+            struct Rel *next = rel->next;
+            uint64_t r0 = plat_now_ns();
+            __atomic_add_fetch(&B.epoch, 1, __ATOMIC_RELAXED);
+            plat_mutex_lock(&B.ngx);
+            N.release(rel->feat);
+            plat_mutex_unlock(&B.ngx);
+            __atomic_add_fetch(&B.epoch, 1, __ATOMIC_RELAXED);
+            P_ADD(bt_rel_n, 1), P_ADD(bt_busy, plat_now_ns() - r0), perf_max(&P.bt_rel, plat_now_ns() - r0);
+            free(rel);
+            rel = next;
+        }
+        if (slot >= 0) build_one(slot, pool, cb, fence);
+    }
+}
+
+// The entry for a size whose images and feature are made, else NULL: after queueing the build, or while one is under
+// way. The least recently used ready entry makes room when there is no free one; entries being built stay.
+static struct Size *size_ready(uint64_t fence, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int scene_fmt,
+                               int depth_fmt) {
+    struct Size *e = NULL, *lru = NULL;
+    for (size_t i = 0; i < DLSS_SIZES; i++) {
+        struct Size *s = &D.sizes[i];
+        int st = __atomic_load_n(&s->state, __ATOMIC_ACQUIRE);
+        if (st == SZ_FREE) {
+            if (!e) e = s;
+        } else if (s->w == w && s->h == h && s->ow == ow && s->oh == oh) {
+            if (st == SZ_BUILDING) return NULL;
+            if (s->preset == D.preset) return s;
+            if (D.last == s) D.last = NULL;
+            retire_size(s, fence);   // built with the model of before a preset change
+            e = s;
+            break;
+        } else if (st == SZ_READY && (!lru || s->used < lru->used)) {
+            lru = s;
+        }
+    }
+    if (!e) {
+        if (!lru) return NULL;   // every entry is being built
+        if (D.last == lru) D.last = NULL;
+        retire_size(e = lru, fence);
+    }
+    e->w = w, e->h = h, e->ow = ow, e->oh = oh;
+    e->preset = D.preset, e->scene_fmt = scene_fmt, e->depth_fmt = depth_fmt, e->asked_ns = plat_now_ns();
+    __atomic_store_n(&e->state, SZ_BUILDING, __ATOMIC_RELEASE);
+    plat_mutex_lock(&B.lock);
+    B.q[B.nq++] = (uint8_t)(e - D.sizes);
+    plat_cond_signal(&B.wake);
+    plat_mutex_unlock(&B.lock);
+    return NULL;
+}
+
+// This frame goes without DLSS (no feature yet). Its history is gone when DLSS comes back, and vk_dlaa_frame keeps the
+// next frames unjittered meanwhile. vk_dlaa_exec set D.up before the evaluation, which makes vk_dlaa_skip_draw drop the
+// game's scaling draw because DLSS wrote the output: nothing did, so the draw must stay (the chunks after the DLSS record
+// wait for it, so they see this).
+static void skip_frame(void) {
+    __atomic_store_n(&D.skipped, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&D.up, 0, __ATOMIC_RELEASE);
+    D.last = NULL;
+    __atomic_add_fetch(&B.skipped, 1, __ATOMIC_RELAXED);
+    P_ADD(skips, 1);
+}
+
+static void evaluate_on(VkExec *ex, const VkExecTarget *dst, struct Size *e);
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
     if (!dst) dst = t;
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
+    uint64_t t0 = perf_now();
+    perf_entry(t0);
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
+    int pre = prewarm_active();
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
-        for (int i = 0; i < 3; i++)
-            if (D.sizes[i].out) free_size(&D.sizes[i]);
+        for (size_t i = 0; i < DLSS_SIZES; i++) {
+            struct Size *s = &D.sizes[i];
+            if (!pre) {
+                if (s->out) free_size(s);
+            } else if (__atomic_load_n(&s->state, __ATOMIC_ACQUIRE) == SZ_READY) {
+                retire_size(s, ex->fence);   // one still being built is checked against the preset in size_ready
+            }
+        }
         D.last = NULL, D.preset_dirty = 0;
     }
-    struct Size *e = size_for(cb, w, h, ow, oh);
+    struct Size *e;
+    if (pre) {   // the feature is made off the frame path: until it is, this frame goes without DLSS
+        if (__atomic_load_n(&B.failed, __ATOMIC_ACQUIRE)) return dl_fail(B.fail_what, B.fail_r);
+        e = size_ready(ex->fence, w, h, ow, oh, (int)t->format, (int)z->format);
+        int locked = e && plat_mutex_trylock(&B.ngx);
+        uint64_t t1 = perf_now();
+        if (!locked) {
+            if (e) P_ADD(lock_busy, 1);
+            skip_frame();
+            return perf_eval(t0, t1, t1);
+        }
+        evaluate_on(ex, dst, e);
+        plat_mutex_unlock(&B.ngx);
+        return perf_eval(t0, t1, perf_now());
+    }
+    e = size_for(cb, w, h, ow, oh);
+    uint64_t t1 = perf_now();
     if (!e) return dl_fail("work image creation", 0);
+    evaluate_on(ex, dst, e);
+    perf_eval(t0, t1, perf_now());
+}
+
+// The rest of evaluate, on the entry e of the frame's size: the motion vectors, DLSS, and its result into dst.
+static void evaluate_on(VkExec *ex, const VkExecTarget *dst, struct Size *e) {
+    const VkExecTarget *t = &D.color, *z = &D.depth;
+    if (!dst) dst = t;
+    uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
+    VkCommandBuffer cb = ex->cb;
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
     if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
     NgxParam *p = D.params;
@@ -980,33 +1401,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (!e->feat) {
-        p_setu(p, "CreationNodeMask", 1);
-        p_setu(p, "VisibilityNodeMask", 1);
-        p_setu(p, "Width", w);
-        p_setu(p, "Height", h);
-        p_setu(p, "OutWidth", ow);
-        p_setu(p, "OutHeight", oh);
-        p_seti(p, "PerfQualityValue", perf_quality(w, ow));
-        // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
-        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
-        p_seti(p, "DLSS.Enable.Output.Subrects", 0);
-        // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
-        // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
-        // M and L cost more on cards without FP8 (RTX 20/30). dlss_preset (D.preset, preset_check) takes one model for
-        // every mode instead.
-        int pk = D.preset ? D.preset : 11, pm = D.preset ? D.preset : 13, pl = D.preset ? D.preset : 12;
-        p_setu(p, "DLSS.Hint.Render.Preset.DLAA", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.UltraQuality", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Quality", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Balanced", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Performance", (unsigned)pm);
-        p_setu(p, "DLSS.Hint.Render.Preset.UltraPerformance", (unsigned)pl);
-        NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, &e->feat);
+        NgxResult r = create_feature(cb, p, w, h, ow, oh, D.preset, (int)t->format, (int)z->format, &e->feat);
         if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r);
         D.reset = 1;
-        int q = perf_quality(w, ow), pr = q == 0 ? pm : q == 3 ? pl : pk;
-        rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d, preset %c (scene format %d, depth format "
-               "%d)", w, h, ow, oh, q, 'A' + pr - 1, (int)t->format, (int)z->format);
     }
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
     NgxResourceVK rc = res_image(cv, t->image, t->format, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
@@ -1224,6 +1621,7 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
+    perf_window();
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
@@ -1239,6 +1637,9 @@ void vk_dlaa_frame(void) {
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
+    // A frame DLSS skipped for want of a feature (DLSS_PREWARM, evaluate) reached the DLAA point (D.done), so it starts
+    // no jitter hold above. The frames after it are drawn unjittered until DLSS runs again (next_jitter turns jit_ok on).
+    if (__atomic_exchange_n(&D.skipped, 0, __ATOMIC_ACQ_REL)) D.jit_ok = 0;
     D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0, D.nodepth = VK_NULL_HANDLE;
     D.cam_addr = 0;
 }
