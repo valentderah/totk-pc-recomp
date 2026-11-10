@@ -6,17 +6,23 @@ An instrumented build (build_game.py --pgo gen) writes <build>/pgo/default_<id>.
 minute and at exit); successive runs of the same exe add to that file. llvm-profdata comes from the llvm-mingw toolchain
 the instrumented build used: its raw format is tied to the compiler version.
 
-Beside the profile goes <out>.json, the training record: the game version and the git tree of recomp/ at the merge.
-The profile matches the generated C of that generator; tools/make_release.py ships it only while recomp/ is unchanged,
-since llvm-profdata matches functions by name and control-flow hash and a regenerated function silently loses its
-counts. Merge right after the training runs, from the commit they were built at.
+Beside the profile goes <out>.json, the training record: the game version, the git tree of recomp/ at the merge and
+the digests of the runtime/ headers the generated C includes (gen_headers; their inline helpers end up inside every
+lifted function). The profile matches the generated C of that generator and those headers; tools/make_release.py warns
+when either changed, since llvm-profdata matches functions by name and control-flow hash and a changed function
+silently loses its counts. Merge right after the training runs, from the checkout and commit they were built at.
 """
 import argparse
 import datetime
+import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_game  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 EXE = '.exe' if sys.platform == 'win32' else ''
@@ -44,6 +50,51 @@ def recomp_tree():
                           text=True).stdout.strip() or None
 
 
+def header_digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def gen_headers(build):
+    """{runtime-relative path: digest} of the runtime/ headers the generated objects of an instrumented build include,
+    from its Ninja deps log. Their inline helpers (simd_fp.h, cpu.h, ...) become part of every lifted function before
+    the profile is matched, so a change to one invalidates the profile as surely as a generator change."""
+    env = dict(os.environ, PATH=str(build_game.UCRT) + os.pathsep + os.environ.get('PATH', ''))
+    r = subprocess.run([str(build_game.NINJA), '-f', str(build / 'build.ninja'), '-t', 'deps'], cwd=ROOT, env=env,
+                       capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f'ninja -t deps failed in {build}: {(r.stdout + r.stderr).strip()[-500:]}')
+    runtime = (ROOT / 'runtime').resolve()
+    found, cur = {}, False
+    for line in r.stdout.splitlines():
+        if not line.startswith(' '):
+            target = line.split(': #deps')[0].replace('\\', '/')
+            cur = '/obj/' in target and '/obj/runtime/' not in target
+            continue
+        if not cur:
+            continue
+        p = Path(line.strip())
+        p = (p if p.is_absolute() else ROOT / p).resolve()
+        try:
+            rel = p.relative_to(runtime).as_posix()
+        except ValueError:
+            continue
+        if rel not in found:
+            found[rel] = header_digest(p)
+    if not found:
+        sys.exit(f'no runtime/ header in the deps log of {build}: was it built from this checkout?')
+    return dict(sorted(found.items()))
+
+
+def stale_headers(record, root):
+    """The headers of a training record that differ in root/runtime now (missing ones included); None when the record
+    predates the header list."""
+    headers = record.get('gen_headers')
+    if headers is None:
+        return None
+    rt = root / 'runtime'
+    return [h for h, d in headers.items() if not (rt / h).is_file() or header_digest(rt / h) != d]
+
+
 def merge(build, out, version, toolchain):
     raw = sorted((build / 'pgo').glob('*.profraw'))
     if not raw:
@@ -51,6 +102,7 @@ def merge(build, out, version, toolchain):
     tree = recomp_tree()
     if not tree:
         sys.exit('recomp/ has uncommitted changes: the record could not name the generator the profile matches')
+    headers = gen_headers(build)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.profdata.tmp')
     cmd = [str(llvm_profdata(toolchain)), 'merge', '--failure-mode=all', '-o', str(tmp), *map(str, raw)]
@@ -60,11 +112,11 @@ def merge(build, out, version, toolchain):
         sys.exit(f'llvm-profdata merge failed: {(p.stdout + p.stderr).strip()[-2000:]}')
     tmp.replace(out)
     record = {'version': version, 'recomp_tree': tree, 'merged': datetime.date.today().isoformat(),
-              'raw_files': len(raw)}
+              'raw_files': len(raw), 'gen_headers': headers}
     out.with_suffix('.json').write_text(json.dumps(record, indent=1) + '\n', encoding='utf-8')
     size = sum(f.stat().st_size for f in raw)
     print(f'{out}: {len(raw)} raw files ({size / 2**20:.1f} MiB) -> {out.stat().st_size / 2**20:.1f} MiB; '
-          f'recomp tree {tree[:12]}')
+          f'recomp tree {tree[:12]}, {len(headers)} runtime headers')
 
 
 def main():

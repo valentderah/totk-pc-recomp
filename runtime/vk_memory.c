@@ -571,6 +571,25 @@ void vk_mem_census(uint64_t frame) {
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0,
            (unsigned long long)__atomic_load_n(&n_cross_defer, __ATOMIC_RELAXED));
+    // The baseline for the commit a crash report prints: a crash far above it points at growth during play.
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    uint64_t room = vk_mem_host_room();
+    rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB; room for device memory %s%.0f MiB",
+           (unsigned long long)frame, proc, used, limit, room == UINT64_MAX ? "not counted " : "",
+           room == UINT64_MAX ? 0.0 : room / 1048576.0);
+    // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
+    // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
+    VkCtx *vc = vk_ctx();
+    if (vc && vc->vma) {
+        VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(vc->vma, vb);
+        for (uint32_t h = 0; h < vc->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+            rt_log("mem: heap %u (flags %#x) at frame %llu: vma %u blocks %.0f MiB, %u allocations %.0f MiB; driver usage "
+                   "%.0f of %.0f MiB", h, vc->mem_props.memoryHeaps[h].flags, (unsigned long long)frame,
+                   vb[h].statistics.blockCount, vb[h].statistics.blockBytes / 1048576.0, vb[h].statistics.allocationCount,
+                   vb[h].statistics.allocationBytes / 1048576.0, vb[h].usage / 1048576.0, vb[h].budget / 1048576.0);
+    }
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
     for (int j = 0; j < ng; j++) {
         char f[160];
@@ -602,6 +621,79 @@ static uint64_t vram_limit(void) {
     return (uint64_t)limit;
 }
 
+// Device memory that takes host memory. A UMA GPU's memory is the machine's RAM. On Windows the AMD driver charges
+// device-local allocations to the process commit one to one (RX 9070: VRAM use and private bytes grew by the same
+// 1164, 256 and 256 MiB), so on a 16 GB machine the commit limit is reached while the VRAM budget shows gigabytes free,
+// and the driver then fails inside a call (#285: std::bad_alloc in amdvlk64.dll under gpl_link). Whether a discrete
+// GPU's driver does so is measured once (vk_mem_host_probe), not assumed per vendor: an RTX 5080 log (#398) showed
+// 10.4 GB of process commit at frame 1200, about what the RX 9070 holds with its VRAM counted. Linux overcommits, so
+// there only a UMA GPU's physical memory counts (plat_mem_room).
+enum { HB_NONE, HB_COMMIT, HB_UMA, HB_PROBE };
+static int host_backed;
+static uint64_t room_reserve;
+static volatile uint64_t room_cached, room_ms;
+
+uint64_t vk_mem_host_room(void) {
+    if (!host_backed) return UINT64_MAX;
+    uint64_t now = plat_now_ms(), at = __atomic_load_n(&room_ms, __ATOMIC_ACQUIRE);
+    if (at && now - at < 250) return __atomic_load_n(&room_cached, __ATOMIC_RELAXED);   // a query costs a system call
+    uint64_t commit, phys;
+    plat_mem_room(&commit, &phys);
+    uint64_t r = host_backed == HB_UMA && phys < commit ? phys : commit;
+    r = r == UINT64_MAX ? r : r > room_reserve ? r - room_reserve : 0;
+    __atomic_store_n(&room_cached, r, __ATOMIC_RELAXED);
+    __atomic_store_n(&room_ms, now | 1, __ATOMIC_RELEASE);
+    return r;
+}
+
+int vk_mem_uma(void) { return host_backed == HB_UMA; }
+
+// A discrete GPU: one device-local allocation of HB_PROBE_SIZE, and the process commit before and after it. The driver
+// charges it at allocation or not at all as far as this sees; one that charged only at first use would read as not
+// counted, as before the probe. Another thread's allocation in between could only add, and half the size is the line.
+#define HB_PROBE_SIZE (128ull << 20)
+void vk_mem_host_probe(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || host_backed != HB_PROBE) return;
+    host_backed = HB_NONE;
+    uint64_t commit, phys;
+    plat_mem_room(&commit, &phys);
+    if (commit == UINT64_MAX) return;   // no commit limit (Linux)
+    uint32_t type = UINT32_MAX;
+    for (uint32_t i = 0; i < c->mem_props.memoryTypeCount && type == UINT32_MAX; i++)
+        if ((c->mem_props.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) ==
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            type = i;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = HB_PROBE_SIZE,
+                               .memoryTypeIndex = type};
+    uint64_t r0, p0, r1, p1;
+    VkDeviceMemory m;
+    plat_process_memory(&r0, &p0);
+    if (type == UINT32_MAX || !p0 || vkAllocateMemory(c->device, &ai, NULL, &m) != VK_SUCCESS) {
+        rt_log("mem: device memory against system memory: not measured (no device-local type or allocation failed): not counted");
+        return;
+    }
+    plat_process_memory(&r1, &p1);
+    vkFreeMemory(c->device, m, NULL);
+    int64_t d = (int64_t)(p1 - p0);
+    host_backed = d >= (int64_t)HB_PROBE_SIZE / 2 ? HB_COMMIT : HB_NONE;
+    rt_log("mem: device memory against system memory: %s (a %llu MiB device-local allocation took %.0f MiB of process "
+           "commit), reserve %llu MiB (TOTK_MEM_RESERVE_MIB)", host_backed == HB_COMMIT ? "commit" : "not counted",
+           (unsigned long long)(HB_PROBE_SIZE >> 20), d / 1048576.0, (unsigned long long)(room_reserve >> 20));
+}
+
+// The budget is at most the use plus what the system can still give, so the paths that react to VRAM pressure (the
+// mirror refusal, released textures, the headroom block) react to a system short of memory too.
+static void host_cap(uint64_t used, uint64_t *budget) {
+    uint64_t room = vk_mem_host_room();
+    if (room == UINT64_MAX || used + room >= *budget) return;
+    *budget = used + room ? used + room : 1;
+    static volatile int32_t logged;
+    if (!plat_xchg32(&logged, 1))
+        rt_log("mem: system memory limits the device-local budget: %.0f MiB in use, %.0f MiB more beyond a reserve of "
+               "%.0f MiB (logged once)", used / 1048576.0, room / 1048576.0, room_reserve / 1048576.0);
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
@@ -617,6 +709,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
         *exact = 1;
         if (limit && *budget > limit) *budget = limit;
+        if (*budget) host_cap(*used, budget);
         return *budget != 0;
     }
     VmaBudget vb[VK_MAX_MEMORY_HEAPS];
@@ -625,6 +718,7 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
         if (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
     if (limit && *budget > limit) *budget = limit;
+    if (*budget) host_cap(*used, budget);
     return *budget != 0;
 }
 
@@ -2226,6 +2320,9 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     else if (host_heap < 0) cls = "uma", why = "every heap is device-local";
     else cls = "discrete", why = "device-local heap separate from host memory";
     int discrete = cls[0] == 'd';
+    host_backed = !discrete ? HB_UMA : HB_PROBE;   // a discrete GPU is measured once the device exists
+    const char *rs = cfg_get("TOTK_MEM_RESERVE_MIB");
+    room_reserve = (rs && *rs ? strtoull(rs, NULL, 10) : 1536) << 20;   // Windows, other programs, our own heap
     char line[2048];
     size_t k = (size_t)snprintf(line, sizeof line, "mem: class %s (%s; device type %d %s, %s)", cls, why, t, tn, p->deviceName);
     for (uint32_t h = 0; h < m->memoryHeapCount; h++)
@@ -2245,6 +2342,9 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
                               f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? " LAZY" : "");
     }
     rt_log("%s", line);
+    if (host_backed == HB_UMA)
+        rt_log("mem: device memory against system memory: commit and physical memory (uma), reserve %llu MiB "
+               "(TOTK_MEM_RESERVE_MIB)", (unsigned long long)(room_reserve >> 20));
     mirror_mode(discrete);
 }
 
@@ -2382,6 +2482,20 @@ void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
 static VmaPool stg_pool;
 static int stg_pool_tried;
 
+typedef struct { const VkBufferCreateInfo *bi; const VmaAllocationCreateInfo *aci; VkBuffer b; VmaAllocation a;
+                 VmaAllocationInfo info; VkResult r; } StgTry;
+static int staging_try(void *arg) {
+    StgTry *t = arg;
+    vk_mem_collect();   // upload batches and deferred objects the GPU finished meanwhile
+    t->r = rt_oom_forced(RT_OOM_STAGING) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                         : vmaCreateBuffer(vk_ctx()->vma, t->bi, t->aci, &t->b, &t->a, &t->info);
+    return t->r == VK_SUCCESS;
+}
+
+// A failed staging buffer waits for memory (rt_oom_wait) before it ends the game: the headroom blocks go and the GPU's
+// finished batches are freed at once, released textures at the next submit (vk_oom_release). The caller may hold the
+// texture lock and cmd_lock (vk_upload_begin), both of which vk_oom_release may take after them, and no VMA lock. The open
+// batch is not submitted: its caller records into it after this returns.
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     VkCtx *c = vk_ctx();
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16,
@@ -2405,11 +2519,22 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
         plat_rmutex_unlock(&cmd_lock);
     }
     if (stg_pool && bi.size <= STG_BLOCK / 2) aci.pool = stg_pool;
-    VmaAllocationInfo info;
-    VkBuffer b;
-    VmaAllocation a;
-    VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
-    if (r != VK_SUCCESS) rt_fatal("vk: staging buffer of %llu bytes failed (%d)", (unsigned long long)size, (int)r);
+    StgTry st = {.bi = &bi, .aci = &aci};
+    st.r = rt_oom_forced(RT_OOM_STAGING) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                         : vmaCreateBuffer(c->vma, &bi, &aci, &st.b, &st.a, &st.info);
+    if (st.r != VK_SUCCESS) {
+        VkResult first = st.r;
+        if (first == VK_ERROR_OUT_OF_HOST_MEMORY || first == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            vk_oom_release();
+            rt_oom_wait("vk: staging buffer", bi.size, staging_try, &st);
+        }
+        if (st.r != VK_SUCCESS)
+            rt_fatal("vk: staging buffer of %llu bytes failed (%d, first %d)", (unsigned long long)size, (int)st.r,
+                     (int)first);
+    }
+    VkBuffer b = st.b;
+    VmaAllocation a = st.a;
+    VmaAllocationInfo info = st.info;
     *buf = b;
     if (alloc) *alloc = a;   // the caller destroys it (vmaDestroyBuffer) after vk_upload_flush(1)
     else {
@@ -2463,6 +2588,66 @@ VkResult vk_scratch_buffer(VkDeviceSize size, VkBuffer *buf, VmaAllocation *allo
 }
 
 VkDeviceSize vk_upload_held(void) { return open_active ? open_b.held : 0; }
+
+// Own memory of the game's textures (vk_texture.c create_tex): a pool of its own with blocks of TOTK_TEX_BLOCK_MIB
+// (default 64; 0 puts textures back in the default pools). In the default pools textures shared 256 MiB blocks with the
+// mirrors and other buffers, and a block went back to the driver only once all of them were gone: on the RX 9070,
+// after 4.5 minutes of roaming the field, 3 of the 9 device-local blocks were 13-27% full, held by 87-223 small
+// textures and buffers each, and the full ones had hundreds of free gaps under 1 MiB, so blocks held 800 MiB more than
+// their allocations. Where device memory takes process commit (vk_mem_host_probe) that commit backs nothing. A smaller
+// block, holding textures only, empties sooner and wastes less when it does not. With the pool the same 10-minute route
+// ended with 807 MiB of blocks beyond their allocations instead of 1037, the texture pool's 22 blocks mostly 75-100%
+// full, and the slow frames did not grow.
+// An image of a quarter block or more gets memory of its own (a dedicated allocation) that goes back to the driver
+// with the image; so do images the driver prefers that for, and images the pool's memory type does not take. VMA
+// checks neither for a custom pool (VmaAllocator_T::AllocateMemory takes the pool's type as it is), so the image's
+// requirements are read here first.
+static VmaPool tex_pool;
+static uint32_t tex_type;
+static VkDeviceSize tex_block;
+static int tex_pool_tried;
+
+static void tex_pool_init(VkCtx *c, const VkImageCreateInfo *ci) {
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    if (!tex_pool_tried) {
+        tex_block = (VkDeviceSize)cfg_int("TOTK_TEX_BLOCK_MIB") << 20;   // schema default 64
+        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VmaPoolCreateInfo pi = {.blockSize = tex_block};
+        if (tex_block && vmaFindMemoryTypeIndexForImageInfo(c->vma, ci, &aci, &tex_type) == VK_SUCCESS) {
+            pi.memoryTypeIndex = tex_type;
+            if (vmaCreatePool(c->vma, &pi, &tex_pool) != VK_SUCCESS) tex_pool = NULL;
+        }
+        if (tex_pool) {
+            vk_headroom_pool(tex_pool, tex_type, tex_block);
+            rt_log("vk: texture pool: blocks of %llu MiB in memory type %u; images of %llu MiB or more get memory of "
+                   "their own (TOTK_TEX_BLOCK_MIB)", (unsigned long long)(tex_block >> 20), tex_type,
+                   (unsigned long long)(tex_block >> 22));
+        } else {
+            rt_log("vk: texture pool %s: textures go to the default pools (TOTK_TEX_BLOCK_MIB)",
+                   tex_block ? "unavailable" : "off");
+        }
+        __atomic_store_n(&tex_pool_tried, 1, __ATOMIC_RELEASE);
+    }
+    plat_rmutex_unlock(&cmd_lock);
+}
+
+VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *alloc) {
+    VkCtx *c = vk_ctx();
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (!__atomic_load_n(&tex_pool_tried, __ATOMIC_ACQUIRE)) tex_pool_init(c, ci);
+    if (tex_pool) {
+        VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = ci};
+        VkMemoryDedicatedRequirements dr = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 mr = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dr};
+        vkGetDeviceImageMemoryRequirements(c->device, &q, &mr);
+        if (dr.requiresDedicatedAllocation || dr.prefersDedicatedAllocation || mr.memoryRequirements.size >= tex_block / 4)
+            ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        else if (mr.memoryRequirements.memoryTypeBits >> tex_type & 1)
+            ai = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_UNKNOWN, .pool = tex_pool};   // the pool's type
+    }
+    return vmaCreateImage(c->vma, ci, &ai, img, alloc, NULL);
+}
 
 // At device creation: the staging and scratch pools with their kept blocks, made through a first small buffer each
 // (freed at once), so the first world frame does not allocate them (staging was first used there once the GPU took
@@ -2588,6 +2773,15 @@ void vk_mem_collect(void) {
     plat_rmutex_unlock(&cmd_lock);
 }
 
+// Lock order: the texture lock, then cmd_lock (create_tex records under the first), then the headroom lock, which is
+// held only around VMA calls. A caller holding cmd_lock takes it again (recursive) and keeps the fence thread's own
+// collect (vk_sync.c) out meanwhile, so this collects for it.
+void vk_oom_release(void) {
+    rt_oom_request();
+    vk_headroom_release();
+    vk_mem_collect();
+}
+
 void vk_mem_stats(VkMemStats *s) {
     memset(s, 0, sizeof *s);
     plat_mutex_lock_shared(&pool_lock);
@@ -2630,6 +2824,10 @@ void vk_mem_shutdown(void) {
     if (scr_pool) vmaDestroyPool(c->vma, scr_pool);   // deferred scratch buffers went with collect_locked above
     scr_pool = NULL;
     scr_pool_tried = 0;
+    vk_headroom_pool(NULL, 0, 0);   // frees the headroom's anchor in the texture pool
+    if (tex_pool) vmaDestroyPool(c->vma, tex_pool);   // textures went with vk_texture_shutdown, deferred ones above
+    tex_pool = NULL;
+    tex_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);

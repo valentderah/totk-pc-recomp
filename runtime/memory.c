@@ -175,12 +175,29 @@ static int thaw_fault(uint64_t a) {
 }
 
 // Mapping changes thaw the regions they touch and run under frz_lock, so no freeze sees them half done.
-static void commit(uint64_t a, uint64_t n, const char *what) {
+typedef struct { uint64_t a, n; } CommitTry;
+static int commit_try(void *arg) {
+    const CommitTry *t = arg;
+    if (rt_oom_forced(RT_OOM_COMMIT)) return 0;
     plat_mutex_lock(&frz_lock);
-    thaw_range_locked(a, n, 3);
-    int ok = !n || plat_mem_commit(a, n);
+    thaw_range_locked(t->a, t->n, 3);
+    int ok = !t->n || plat_mem_commit(t->a, t->n);
     plat_mutex_unlock(&frz_lock);
-    if (!ok) rt_fatal("memory: commit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
+    return ok;
+}
+
+// A refused commit waits for memory (rt_oom_wait): the system's commit ran out for a moment (a page file growing, the
+// driver's device memory charged to this process), and the Vulkan back end gives memory back at its next submit. The
+// wait holds the caller's lock (lock or klock: only memory SVCs and kernel-region allocations wait behind it) but not
+// frz_lock, which write faults on frozen regions need. Every caller waits, the boot's ones too: there a refusal has the
+// same cause, and the wait only delays an end the game would reach anyway.
+static void commit(uint64_t a, uint64_t n, const char *what) {
+    CommitTry t = {a, n};
+    if (commit_try(&t)) return;
+    char w[64];
+    snprintf(w, sizeof w, "memory: commit of %s at %#llx", what, (unsigned long long)a);
+    if (!rt_oom_wait(w, n, commit_try, &t))
+        rt_fatal("memory: commit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
 }
 
 static void decommit(uint64_t a, uint64_t n, const char *what) {

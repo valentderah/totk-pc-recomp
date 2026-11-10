@@ -957,6 +957,10 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
         }
         if (sig == SIGSEGV || sig == SIGBUS)
             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
+        static const int gr[16] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                                   REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+        for (int i = 0; i < 16; i++) c.gpr[i] = (uint64_t)u->uc_mcontext.gregs[gr[i]];
+        c.has_regs = 1;
         crash_fn(&c);
     }
     signal(sig, SIG_DFL);   // returns into the faulting instruction, which faults again with the default action
@@ -1672,6 +1676,17 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
     uint64_t resident, private_bytes;
     plat_process_memory(&resident, &private_bytes);
     if (private_bytes) *proc_mb = (double)(private_bytes >> 20);
+}
+
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
+    char line[128];
+    unsigned long long k;
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "MemAvailable: %llu kB", &k) == 1) *phys_room = (uint64_t)k << 10;
+    fclose(f);
 }
 
 // ---- child processes
