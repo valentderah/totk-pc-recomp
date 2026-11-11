@@ -222,6 +222,7 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass s
 int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
+int vk_exec_tfr_check(void);   // --probe-vkexec: a new target replaces a way of its own set; 1 when it does
 
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into

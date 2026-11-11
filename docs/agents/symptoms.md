@@ -55,6 +55,7 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 
 | Symptom | Usual causes | First check |
 |---|---|---|
+| with `replay_workers` above 0: the picture freezes for good mid-play while the window still closes, or a crash in `chunk_record` reading address 0x8 | the chunked replay's state (`RP` in vk_exec.c) overwritten: the submitting thread waits in `chunks_submit` for a chunk no `vk replay` thread takes (fixed: `tfr_note` walked its oldest-way search past the set, and from the last set into `RP`) | `replay_workers = 0`; `--probe-vkexec`'s target history part |
 | device lost a few frames in, GPU writes to address 0 (older NVIDIA) | present from another thread or queue | every submit and present on one queue under one lock |
 | device lost or garbage on one AMD generation | views the driver branch mishandles (BC block views of 3D textures) | `vk: pass marks`, validation; the formats in the pass |
 | device lost on one scene, every run, one vendor | a shader or pass that driver cannot run | pass marks name the pass; skip shaders by hash to bisect |

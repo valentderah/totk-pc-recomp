@@ -966,6 +966,8 @@ int probe_vkexec(void) {
     layouts_equal = 0;
     main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;
+    CHECK(vk_exec_tfr_check(), "a target noted into a full set of the target history did not take that set's oldest way");
+    printf("probe-vkexec: target history part passed (a new target replaces the oldest way of its own set)\n");
     uint64_t heap = 0;
     CHECK(mem_set_heap_size(16ull << 20, &heap) == 0 && heap, "SetHeapSize 16 MiB");
     // Out-of-memory waits (oom.c): the first two staging buffers, the first texture image and the first draw-data chunk
