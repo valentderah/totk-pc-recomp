@@ -10,7 +10,58 @@
 
 extern "C" {
 #include "cheats.h"
+#include "cfg.h"
+#include "host.h"
 #include "ui_text.h"
+}
+
+typedef struct {
+    const char *set;
+    const char *key;
+    const char *label;
+    const char *desc;
+    int idx;
+} BuiltinCheat;
+
+static BuiltinCheat kBuiltin[] = {
+    {"bcheat_health", "TOTK_CHEAT_BUILTIN_HEALTH", "Infinite health",
+     "Keeps Link's health from dropping.", -2},
+    {"bcheat_stamina", "TOTK_CHEAT_BUILTIN_STAMINA", "Infinite stamina",
+     "Stamina actions no longer drain stamina.", -2},
+    {"bcheat_battery", "TOTK_CHEAT_BUILTIN_BATTERY", "Infinite battery",
+     "Zonai battery charge stays full.", -2},
+    {"bcheat_durability", "TOTK_CHEAT_BUILTIN_DURABILITY", "Infinite equipment durability",
+     "Weapons, shields and bows do not lose durability from use.", -2},
+    {"bcheat_horse_stamina", "TOTK_CHEAT_BUILTIN_HORSE_STAMINA", "Infinite horse stamina",
+     "Horse sprint stamina does not drain.", -2},
+    {"bcheat_stealth", "TOTK_CHEAT_BUILTIN_STEALTH", "Stealth mode",
+     "Greatly lowers enemy detection.", -2},
+    {"bcheat_thermo", "TOTK_CHEAT_BUILTIN_THERMO", "Perfect thermometer",
+     "Disables heat and cold penalties.", -2},
+    {"bcheat_gloom", "TOTK_CHEAT_BUILTIN_GLOOM", "Ignore gloom effects",
+     "Disables gloom damage and blocking.", -2},
+};
+
+static bool builtin_rows(void) {
+    bool any = false;
+    for (int i = 0; i < (int)(sizeof kBuiltin / sizeof *kBuiltin); i++) {
+        if (kBuiltin[i].idx == -2) kBuiltin[i].idx = rt_patch_set(kBuiltin[i].set);
+        if (kBuiltin[i].idx < 0) continue;
+        any = true;
+    }
+    if (!any) return false;
+    opt_group_text("Built-in");
+    for (int i = 0; i < (int)(sizeof kBuiltin / sizeof *kBuiltin); i++) {
+        BuiltinCheat *c = &kBuiltin[i];
+        if (c->idx < 0) continue;
+        int on = rt_patch_enabled(c->idx);
+        if (!opt_toggle_text(c->key, c->label, c->desc, on)) continue;
+        int next = !on;
+        rt_patch_switch(c->idx, next);
+        cfg_set(c->key, next ? "1" : "0");
+        opt_save_soon();
+    }
+    return true;
 }
 
 // Returns true when "Rebuild the game now" was chosen: the menu then asks to restart (ui/menu.cpp restart_confirm).
@@ -18,7 +69,8 @@ extern "C" bool tab_cheats(float scale) {
     opt_begin("##cheats", scale);
     static char line[512], desc[768], buttons[192];
     int n = cheats_count();
-    if (!n) {
+    bool have_builtin = builtin_rows();
+    if (!n && !have_builtin) {
         snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_NONE), cheats_file()[0] ? cheats_file() : "<build id>.txt");
         opt_text_str(line);
         opt_end();

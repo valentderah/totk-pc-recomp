@@ -10,6 +10,30 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set bcheat_health        TOTK_CHEAT_BUILTIN_HEALTH        0
+set bcheat_stamina       TOTK_CHEAT_BUILTIN_STAMINA       0
+set bcheat_battery       TOTK_CHEAT_BUILTIN_BATTERY       0
+set bcheat_durability    TOTK_CHEAT_BUILTIN_DURABILITY    0
+set bcheat_horse_stamina TOTK_CHEAT_BUILTIN_HORSE_STAMINA 0
+set bcheat_stealth       TOTK_CHEAT_BUILTIN_STEALTH       0
+set bcheat_thermo        TOTK_CHEAT_BUILTIN_THERMO        0
+set bcheat_gloom         TOTK_CHEAT_BUILTIN_GLOOM         0
+
+# Built-in cheats.
+site bcheat_health main 9953ec f9400008 b9401808 b9000808 34000048 f9400008
+site bcheat_stamina main 746d20 1e212841 1e204041
+site bcheat_battery main b73b10 bd004668 bd004669
+site bcheat_battery main b73b88 bd004668 bd004669
+site bcheat_durability main 1b7f6bc 1b09a148 1b09a3e8
+site bcheat_durability main a71e68 9482dc36 b9401901 b9000901
+site bcheat_durability main a71b40 9482dd00 b9401901 b9000901
+site bcheat_horse_stamina main 1cb6060 71000508 d503201f
+site bcheat_stealth main 9ee014 4ea81d00 1e2703e0
+site bcheat_stealth main 9f1570 1e200d00 1e2703e0
+site bcheat_thermo main b2f488 1a9f57e0 2a1f03e0
+site bcheat_thermo main b2f554 1a9fd7e0 2a1f03e0
+site bcheat_gloom main 995cac 52800095 2a1f03f5
+site bcheat_gloom main 995e28 1a89c115 1a98c315
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 90e978 6b08015f 7100055f  # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
