@@ -10,6 +10,7 @@ set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
+set grass    TOTK_PATCH_GRASS    0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -1115,3 +1116,13 @@ spin sdk 3d3250 3d3270   # 9 instructions; loads
 # goes in just before the rounding, as the community's shadow resolution mods do (1.1.0: mov w11, #1024 over the
 # computation). Found by a write watch on the size field (the writer was this function, and no other).
 site shadow main cec22c 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
+
+# Grass range (runtime/resolution.c res_grass_range; patches-v143.txt describes the set and the page). The near grass
+# map's constructor loads its extent, step and texture sizes at main+0xfe58b4..0xfe5950, and main+0x1a30a28 sets the
+# extent to 62.5 or 31.25 m, as on 1.4.3.
+site grass  main fe58b4 52a84f48 @page:x8 b9408108   # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main fe58c0 52a80f48 @page:x8 b9408508   # mov w8, #3.90625   -> ldr w8, [page+132]
+site grass  main fe58ec 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr w2, [page+136]
+site grass  main fe5950 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
+site grass  main 1a30a8c 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 1a30a98 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]

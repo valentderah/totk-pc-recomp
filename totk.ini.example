@@ -228,6 +228,11 @@
 # Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
 # the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
 # shadow_range = 100
+# How far around the camera grass grows, in percent of the game's (its near grass map covers 62.5 m), 50 to 400.
+# Higher keeps the grass in meadows further out instead of growing it in a short way in front of you, and draws more of
+# it; the grass map's textures grow with it, so its detail per metre stays the game's, and the grass heap grows by about
+# 9 MiB times (percent / 100)^2 - 1. Lower draws less grass. Read at start.
+# grass_range = 100
 # Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.

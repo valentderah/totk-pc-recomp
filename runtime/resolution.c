@@ -243,6 +243,23 @@ static double scene_scale(void) {
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
 
+// TOTK_GRASS_RANGE (percent, 50 to 400; 100 = the game's): how far around the camera grass blades grow. The near grass
+// map (the grass patch set, recomp/patches-v121.txt and patches-v143.txt) covers 62.5 m and draws into 256x256 and
+// 128x128 textures; other values scale the extent, its step and both textures together, so the grass keeps its detail
+// per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for them (at 200 %
+// without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in 1.4.3, times
+// the textures' growth in area (k^2 - 1).
+#define GRASS_HEAP_KIB 9318
+static int grass_pct(void) {
+    int pct = cfg_int("TOTK_GRASS_RANGE");
+    return pct < 50 ? 50 : pct > 400 ? 400 : pct;
+}
+uint64_t res_grass_heap_extra_kib(void) {
+    int pct = grass_pct();
+    return pct > 100 ? (uint64_t)GRASS_HEAP_KIB * (uint64_t)(pct * pct - 10000) / 10000 : 0;
+}
+uint64_t res_grass_heap_extra_bytes(void) { return ((res_grass_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
+
 // TOTK_TEX_HEAP_EXTRA_MB (0 to 4096): more room in "TextureHeap" and its parent "ゲームグラフィックス", the heap the
 // world's textures stream into. HD texture packs made for emulators with 8 GB of DRAM grow it by about 3.3 GiB in their
 // own HeapDef; without the room the game runs out and starts its panic Blood Moon over and over. The pool and the heap
@@ -397,9 +414,9 @@ int res_heapdef_plain(const void *in, size_t n) {
 }
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
-    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
+    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib(), grass = res_grass_heap_extra_kib();
     *out = NULL;
-    if (!extra && !tex) return 0;
+    if (!extra && !tex && !grass) return 0;
     Byml b;
     uint32_t heaps = 0;
     size_t dta_at = 0, gfx_at = 0;
@@ -438,6 +455,17 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
                 return 0;
             }
         }
+    }
+    if (grass) {
+        size_t at = heap_size_field(&b, heaps, "\xe8\x8d\x89");   // 草, the grass heap
+        if (at) {
+            int32_t g, g2;
+            memcpy(&g, b.p + at, 4);
+            g2 = g + (int32_t)grass;
+            memcpy(b.p + at, &g2, 4);
+            rt_log("resolution: HeapDef grass heap %d -> %d KiB (TOTK_GRASS_RANGE)", g, g2);
+        } else
+            rt_log("resolution: the HeapDef table has no grass heap; grass_range may run out of grass memory");
     }
     size_t cap = ZSTD_compressBound(b.n);
     void *z = malloc(cap);
@@ -499,8 +527,29 @@ static void res_shadow_range(void) {
     rt_log("resolution: shadow cascades end at %g, %g, %g and %g m", d[0], d[1], d[2], d[3]);
 }
 
+// The grass map's values on page +128..+144 (the grass patch set): extent, step, the two texture sizes, and the
+// half extent main+0x206340c picks instead of the extent. Texture sizes stay multiples of 32.
+static void res_grass_range(void) {
+    int pct = grass_pct(), set = rt_patch_set("grass");
+    if (pct == 100) return;
+    if (set < 0) {
+        rt_log("resolution: this game version has no grass patch set; grass_range stays 100");
+        return;
+    }
+    float k = pct / 100.0f, f[2] = {62.5f * k, 3.90625f * k}, half = 31.25f * k;
+    uint32_t t[2] = {(uint32_t)(256 * pct / 100 + 16) / 32 * 32, (uint32_t)(128 * pct / 100 + 16) / 32 * 32};
+    uint8_t *page = rt_patch_page();
+    memcpy(page + 128, f, sizeof f);
+    memcpy(page + 136, t, sizeof t);
+    memcpy(page + 144, &half, sizeof half);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: grass map %g m, textures %ux%u and %ux%u (TOTK_GRASS_RANGE=%d)", f[0], t[0], t[0], t[1], t[1],
+           pct);
+}
+
 void res_init(void) {
     res_shadow_range();
+    res_grass_range();
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         shadow_init(rt_patch_page());

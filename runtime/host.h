@@ -279,6 +279,8 @@ int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, 
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
 void cam_pack_served(void);                                // romfs.c serves the multiplied pack
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
+uint64_t res_grass_heap_extra_kib(void);                   // TOTK_GRASS_RANGE: added to the HeapDef grass heap; 0 = none
+uint64_t res_grass_heap_extra_bytes(void);                 // the same, added to the application pool, 2 MiB steps
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
 uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTRA_MB: added to the application pool and
