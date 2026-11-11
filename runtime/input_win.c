@@ -122,39 +122,6 @@ static void cursor_update(HWND h) {
     ReleaseSRWLockExclusive(&cur_lock);
 }
 
-// The pointer shown over the client area while the cursor is not captured (cursor_art.c), 32 pixels at 96 DPI and
-// larger with the window's DPI; made again when the DPI changes. Window thread. NULL when Windows refuses it: the
-// window class's arrow stays.
-static HCURSOR art_cursor(HWND h) {
-    static HCURSOR cur;
-    static UINT made_dpi;
-    UINT dpi = GetDpiForWindow(h);
-    if (!dpi) dpi = USER_DEFAULT_SCREEN_DPI;
-    if (cur && dpi == made_dpi) return cur;
-    int size = MulDiv(32, (int)dpi, USER_DEFAULT_SCREEN_DPI), hot;
-    size = size < 32 ? 32 : size > 128 ? 128 : size;
-    BITMAPV5HEADER bh = {.bV5Size = sizeof bh, .bV5Width = size, .bV5Height = -size, .bV5Planes = 1, .bV5BitCount = 32,
-                         .bV5Compression = BI_BITFIELDS, .bV5RedMask = 0xff0000, .bV5GreenMask = 0xff00,
-                         .bV5BlueMask = 0xff, .bV5AlphaMask = 0xff000000u};
-    void *bits = NULL;
-    HDC dc = GetDC(NULL);
-    HBITMAP color = CreateDIBSection(dc, (BITMAPINFO *)&bh, DIB_RGB_COLORS, &bits, NULL, 0);
-    ReleaseDC(NULL, dc);
-    HBITMAP mask = CreateBitmap(size, size, 1, 1, NULL);
-    HCURSOR made = NULL;
-    if (color && mask && bits) {
-        cursor_art(bits, size, &hot);
-        ICONINFO ii = {.fIcon = FALSE, .xHotspot = (DWORD)hot, .yHotspot = (DWORD)hot, .hbmMask = mask,
-                       .hbmColor = color};
-        made = (HCURSOR)CreateIconIndirect(&ii);
-    }
-    if (color) DeleteObject(color);
-    if (mask) DeleteObject(mask);
-    if (!made) return cur;   // the old size, or NULL
-    cur = made, made_dpi = dpi;   // the old one may still be on screen: kept (a DPI change is rare)
-    return cur;
-}
-
 int input_cursor_released(void) { return (cur_rel & CUR_REL) != 0; }
 
 void input_cursor_suspend(int on) {
@@ -192,10 +159,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
     case WM_SETCURSOR:
-        if (LOWORD(l) == HTCLIENT) {
-            HCURSOR c = cur_captured ? NULL : art_cursor(h);
-            if (cur_captured || c) { SetCursor(c); *res = TRUE; return 1; }
-        }
+        if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
         break;
     case WM_SYSCOMMAND:   // Alt pressed alone would enter the window menu loop, which stalls the game: Alt is a game key
         if ((w & 0xFFF0) == SC_KEYMENU && l == 0) { *res = 0; return 1; }

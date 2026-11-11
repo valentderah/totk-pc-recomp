@@ -19,10 +19,5 @@ int32_t ikb_wheel_take(void);                 // whole wheel notches turned sinc
 void ikb_cursor_update(void);                 // what input_cursor_allowed says may have changed
 void ikb_menu_closed(void);                   // the menu closed: a capture that Esc gave up comes back
 
-// ---- shared by the back ends
-// cursor_art.c: the pointer's image at size x size pixels (0xAARRGGBB, straight alpha, rows from the top) and its
-// hotspot (*hot, the same in x and y). Pure.
-void cursor_art(uint32_t *argb, int size, int *hot);
-
 // ---- what input.c provides the back end
 int input_cursor_allowed(void);               // no text entry or menu open, the mouse camera on, input not disabled

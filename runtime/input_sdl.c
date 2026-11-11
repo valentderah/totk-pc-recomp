@@ -200,26 +200,8 @@ void ikb_menu_closed(void) {
     if (o & CUR_ESC) plat_cas32(&cur_rel, 0, o);
 }
 
-// The pointer over the window while the cursor is not captured (cursor_art.c), sized by the window's display scale.
-// The default arrow stays when SDL refuses it.
-static void art_cursor(SDL_Window *w) {
-    float scale = SDL_GetWindowDisplayScale(w);
-    int size = (int)lrintf(32 * (scale > 0 ? scale : 1)), hot;
-    size = size < 32 ? 32 : size > 128 ? 128 : size;
-    SDL_Surface *s = SDL_CreateSurface(size, size, SDL_PIXELFORMAT_ARGB8888);
-    if (!s) return;
-    if (s->pitch == size * 4) {
-        cursor_art(s->pixels, size, &hot);
-        SDL_Cursor *c = SDL_CreateColorCursor(s, hot, hot);
-        if (c) SDL_SetCursor(c);
-        else rt_log("input: the pointer's image failed (%s); the arrow stays", SDL_GetError());
-    }
-    SDL_DestroySurface(s);
-}
-
 void input_sdl_window(SDL_Window *w) {
     win = w;
-    art_cursor(w);
     wake_event = SDL_RegisterEvents(1);
     plat_xchg32(&focused, (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0);
     __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);   // the pointer's place is unknown until it enters or moves
