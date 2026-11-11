@@ -1306,6 +1306,21 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     }
     if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
+    // 1.2.1 scales the light target to the output with an upscaler of its own (12 texelFetch taps around the source
+    // pixel, fragment shader e6f7ae35b8479ef3 with this build's translator), not with the FXAA one, in a pass without
+    // depth. It addresses its source in the scene's pixels (constant bank 3), so DLSS's output-sized picture swapped in
+    // (tex_info) showed only its top-left part, the scene's share of the output (two thirds at DLSS quality), over
+    // the whole screen (#1106). DLSS already wrote its picture into that pass's target
+    // (evaluate), so on 1.2.1 a draw there that samples the light target is skipped instead; the HUD drawn later into
+    // the same target samples other textures and stays. On 1.4.3 a tonemap can be the draw that scales (the comment
+    // above struct D), and it keeps the swap.
+    if (D.up && !RT_V143 && !ex->depth.image && vk_dlaa_swap_img && ex->pass_w > vk_dlaa_swap_img->width + 1 &&
+        vk_exec_draw_samples(ex, fs, vk_dlaa_swap_img)) {
+        static int logged;
+        if (!logged) logged = 1, rt_log("dlaa: DLSS replaces the game's scaling draw (fragment shader %016llx)",
+                                        (unsigned long long)spirv_hash(fs));
+        return 1;
+    }
     uint64_t h = spirv_hash(fs);
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];

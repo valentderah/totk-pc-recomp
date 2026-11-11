@@ -195,6 +195,9 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(VkExec *ex);
+// vk_exec_draw.c: the fragment stage of the draw being recorded samples img through one of its bound combined
+// textures (OP_BIND_TEX, the handles tex_info swaps; vk_dlaa.c vk_dlaa_skip_draw). Takes the texture lock.
+int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img);
 // The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
 // submission read it (the settings menu shows it).
 int vk_exec_replay_workers(void);
