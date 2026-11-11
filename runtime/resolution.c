@@ -95,6 +95,29 @@ static int dlss_dll(void) {
 #endif
 }
 
+// FSR 3 runs through AMD's amd_fidelityfx_vk.dll next to totk.exe (vk_fsr3.c), which exists for Windows only.
+static int fsr3_dll(void) {
+#ifdef _WIN32
+    char exe[1024], path[1024 + 32];
+    if (!plat_exe_path(exe, sizeof exe)) return 0;
+    char *last = plat_last_sep(exe);
+    if (!last) return 0;
+    snprintf(path, sizeof path, "%.*s/amd_fidelityfx_vk.dll", (int)(last - exe), exe);
+    return plat_file_exists(path);
+#else
+    return 0;
+#endif
+}
+
+// A temporal upscaler is asked for and its library is there: DLSS (dlaa = 1, dlss_dll) or FSR 3 (fsr3 = 1, fsr3_dll).
+// Either one scales the scene of a TOTK_DLSS mode up; which of them runs is settled once the device exists
+// (vk_dlaa.c: DLSS where NGX has it, else FSR).
+static int temporal_ready(void) {
+    static int ready = -1;
+    if (ready < 0) ready = (cfg_bool("TOTK_DLAA") && dlss_dll()) || (cfg_bool("TOTK_FSR3") && fsr3_dll());
+    return ready;
+}
+
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -116,22 +139,27 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
     return fit < 1.0;
 }
 
-// The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA and FSR 3
+// are off (the mode the menu still holds would shrink the scene for the plain upscaler) and where neither can run
+// (temporal_ready).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
     static int dll = -1;
-    if (!cfg_bool("TOTK_DLAA")) return 0;
+    if (!cfg_bool("TOTK_DLAA") && !cfg_bool("TOTK_FSR3")) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
+            if (dll < 0 && !(dll = temporal_ready())) {
+                if (!cfg_bool("TOTK_DLAA"))
+                    rt_log("resolution: FSR 3 %s needs amd_fidelityfx_vk.dll next to totk.exe (Windows only), which is "
+                           "missing: the scene follows render_scale", m);
+                else
 #ifdef _WIN32
-                rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
-                       "render_scale", m);
+                    rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene "
+                           "follows render_scale", m);
 #else
-                rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
-                       "scene follows render_scale", m);
+                    rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: "
+                           "the scene follows render_scale", m);
 #endif
             }
             return dll ? dlss[i].k : 0;
@@ -196,7 +224,7 @@ static void decide(void) {
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
+    R.live = RT_V143 && temporal_ready();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);

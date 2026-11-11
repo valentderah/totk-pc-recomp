@@ -54,6 +54,8 @@ void vk_queue_unlock(void);
 int vk_exec_replay_workers(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
+uint64_t gfx_presents_shown(void);   // gfx_present.c
+int gfx_frame_gen_live(void);        // vk_fg.c
 extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
@@ -686,6 +688,9 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
+    opt_toggle("TOTK_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
+    static const UiTextId frame_gen[] = {UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_LIMIT, UI_MENU_FRAME_GEN_X2};
+    opt_choice("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, frame_gen, 3, UI_MENU_FRAME_GEN_DESC);
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
     opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
@@ -695,6 +700,7 @@ static void tab_screen(float scale) {
                                      UI_MENU_DLSS_CHARS_FULL};
     opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+    opt_slider("TOTK_MOTION_BLUR", UI_MENU_MOTION_BLUR, 0, 100, UI_MENU_MOTION_BLUR_DESC, 10, "%.0f %%");
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);
     opt_toggle("TOTK_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
@@ -1279,6 +1285,22 @@ static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
 static char g_perf_text[96];
 
+// Frame generation (vk_fg.c) shows more frames than the game draws: the presents per second over the last half second,
+// 0 while no frames are generated. The frame counts of both modes are the frames the game drew.
+static double g_shown_fps;
+
+static void shown_tick(uint64_t now) {
+    static uint64_t t0, n0;
+    uint64_t n = gfx_presents_shown();
+    if (!gfx_frame_gen_live() || !t0 || now - t0 > 2000000000ull) {
+        t0 = now, n0 = n;
+        if (!gfx_frame_gen_live()) g_shown_fps = 0;
+    } else if (now - t0 >= 500000000ull) {
+        g_shown_fps = (double)(n - n0) * 1e9 / (double)(now - t0);
+        t0 = now, n0 = n;
+    }
+}
+
 static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
 
 extern "C" void menu_perf_cycle(void) {
@@ -1324,6 +1346,7 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         }
         g_perf_mode = m;
     }
+    if (g_perf_mode) shown_tick(now);
     if (g_perf_mode != 1) return;
     uint64_t d = now - g_perf_last_ns;
     if (!g_perf_last_ns || d > 2000000000ull) {   // first frame, or a stall the window should not average in
@@ -1334,7 +1357,9 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         g_perf_frames++;
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
-            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), g_perf_frames * 1e9 / g_perf_win_ns);
+            double drawn = g_perf_frames * 1e9 / g_perf_win_ns;
+            if (g_shown_fps > 0) snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS_GEN), drawn, g_shown_fps);
+            else snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), drawn);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -1389,7 +1414,8 @@ static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
+    int n = 6;
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
@@ -1408,14 +1434,16 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
     snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
-                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    // with frame generation: the frames shown a second, of which the FPS row above counts the ones the game drew
+    if (g_shown_fps > 0) snprintf(v[n++], sizeof v[0], menu_text(UI_MENU_OV_FPS), g_shown_fps);
+    static const UiTextId labels[7] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_SCALING,
+                                       UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT, UI_MENU_OV_SHOWN};
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
-    for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
+    for (int i = 0; i < n; i++) vw = fmaxf(vw, ImGui::CalcTextSize(v[i]).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < n; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
         perf_right(v[i], false);

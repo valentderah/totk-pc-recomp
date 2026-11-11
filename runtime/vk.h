@@ -172,6 +172,7 @@ void vk_hdr_support(float out[4]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away
+void vk_fsr3_release(void);      // vk_fsr3.c (TOTK_FSR3): its context, before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -457,6 +458,9 @@ typedef struct {
 // The window texture the backend presents (vk_backend.c): *image and *format become the float picture the game copied
 // into it, when the last draw into it was that copy and the swapchain is HDR10.
 void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
+// The float picture the game's last draw into the window texture win copied (VK_NULL_HANDLE: that draw was no such
+// copy, or none was seen yet), for frame generation; it starts vk_hdr.c's record of the window texture.
+VkImage vk_hdr_float_picture(const VkTexImage *win, VkFormat *format);
 void vk_hdr_image_gone(VkImage image);
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos);  // the entry vk_texture_get would return if it exists, made live at op pos

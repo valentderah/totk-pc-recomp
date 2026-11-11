@@ -1,0 +1,103 @@
+#version 450
+// Motion blur, second pass (vk_mblur.c): DLSS's picture averaged along the motion vectors DLSS was given (camera motion
+// with the characters' own motion over it, last frame's window position minus this frame's, scene pixels). It is the
+// reconstruction filter of McGuire et al., "A Reconstruction Filter for Plausible Motion Blur" (I3D 2012), written
+// from the paper:
+//   - Around each pixel, the longest motion of the 3 x 3 tiles (motion_blur_tiles.comp) says whether anything near
+//     moves and in which direction to look; a still neighbourhood costs nine fetches and keeps the pixel as it is.
+//   - Samples along that motion count when they are in front of this pixel and their own motion reaches it (they sweep
+//     over it), when they are behind it and this pixel's motion reaches them (seen through this pixel's smear), or
+//     when both move through each other. So a sword swing smears over the still wall behind it, and a still character
+//     in front of a panning background stays sharp.
+//   - Depth is compared softly, over 3 % of the nearer distance, so a surface does not occlude itself.
+// Two things follow Guertin, McGuire and Nowrouzezahrai, "A Fast and Stable Feature-Aware Motion Blur Filter" (HPG
+// 2014): the tile lookup is jittered by up to a quarter tile, which turns tile edges into noise instead of steps, and
+// a pixel that moves takes every other sample along its own motion, so its smear keeps its direction where the
+// tile's longest motion goes another way (along a turning blade).
+// The picture is scene light before the bloom and the tonemap in the DLAA mode, and before the tonemap in the
+// upscaling modes, so bright things smear as light does. The HUD is drawn later and is not touched.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src_tex;     // the picture, output size, linear filter
+layout(binding = 1) uniform sampler2D mv_tex;      // motion vectors, scene size
+layout(binding = 2) uniform sampler2D depth_tex;   // scene depth, scene size
+layout(binding = 3) uniform sampler2D tile_tex;    // the tiles' longest motion; its used part is ceil(mv_size / tile)
+layout(binding = 4, rgba16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P {
+    vec4 inv_w;      // 1 / clip w of a scene pixel = dot(inv_w, vec4(ndc.x, ndc.y, depth, 1)): its distance
+    vec2 out_size;   // the picture's size
+    vec2 mv_size;    // the scene's size
+    float shutter;   // the share of a frame's motion the blur spans
+    float max_len;   // the longest blur, output pixels
+    float tile;      // a tile's edge, scene pixels
+    float noise;     // this frame's offset of the sample positions, 0..1
+} pc;
+
+// the scene pixel under an output position
+ivec2 scene_px(vec2 px) { return clamp(ivec2(px / pc.out_size * pc.mv_size), ivec2(0), ivec2(pc.mv_size) - 1); }
+
+// A motion vector as the blur's span in output pixels: the shutter's share of it, max_len at most; none for more than
+// a quarter of the picture in one frame, which is a cut or a teleport.
+vec2 span(vec2 mv) {
+    vec2 v = mv * (pc.out_size / pc.mv_size);
+    float l = length(v);
+    if (l > 0.25 * max(pc.out_size.x, pc.out_size.y)) return vec2(0.0);
+    v *= pc.shutter, l *= pc.shutter;
+    return l > pc.max_len ? v * (pc.max_len / l) : v;
+}
+
+vec2 span_at(ivec2 q) { return span(texelFetch(mv_tex, q, 0).xy); }
+
+float dist_at(ivec2 q) {
+    vec2 ndc = (vec2(q) + 0.5) / pc.mv_size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+    return 1.0 / max(dot(pc.inv_w, vec4(ndc, texelFetch(depth_tex, q, 0).r, 1.0)), 1e-6);
+}
+
+float in_front(float a, float b) { return clamp(1.0 - (a - b) / max(0.03 * min(a, b), 1e-3), 0.0, 1.0); }   // a before b
+float cone(float d, float r) { return clamp(1.0 - d / max(r, 1e-3), 0.0, 1.0); }
+float cylinder(float d, float r) { return 1.0 - smoothstep(0.95 * r, 1.05 * r + 1e-3, d); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.out_size.x) || p.y >= int(pc.out_size.y)) return;
+    vec2 c = vec2(p) + 0.5;
+    vec3 center = texelFetch(src_tex, p, 0).rgb;
+    ivec2 q = scene_px(c);
+    // interleaved gradient noise (Jimenez, "Next Generation Post Processing in Call of Duty: Advanced Warfare", 2014)
+    float jit = fract(52.9829189 * fract(dot(c, vec2(0.06711056, 0.00583715))) + pc.noise);
+
+    ivec2 tiles = ivec2(ceil(pc.mv_size / pc.tile));
+    vec2 tj = vec2(jit, fract(jit * 7.31 + 0.37)) - 0.5;
+    ivec2 tq = ivec2(floor((vec2(q) + tj * 0.5 * pc.tile) / pc.tile));
+    vec2 vn = vec2(0.0);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            vec2 v = span(texelFetch(tile_tex, clamp(tq + ivec2(dx, dy), ivec2(0), tiles - 1), 0).xy);
+            if (dot(v, v) > dot(vn, vn)) vn = v;
+        }
+    if (dot(vn, vn) < 1.0) {   // nothing near moves a pixel
+        imageStore(dst, p, vec4(center, 1.0));
+        return;
+    }
+
+    vec2 vx = span_at(q);
+    float rx = 0.5 * length(vx);   // a smear reaches half its span to either side
+    float zx = dist_at(q);
+    float w = 1.0 / max(rx, 1.0);
+    vec3 sum = center * w;
+    int n = clamp(int(length(vn) * 0.4) + 6, 8, 28) & ~1;   // a sample every 2.5 pixels or closer
+    bool own = dot(vx, vx) > 2.25;
+    for (int i = 0; i < n; i++) {
+        vec2 off = (own && (i & 1) == 1 ? vx : vn) * ((float(i) + jit) / float(n) - 0.5);
+        vec2 s = c + off;
+        if (s.x < 0.0 || s.y < 0.0 || s.x >= pc.out_size.x || s.y >= pc.out_size.y) continue;
+        ivec2 qs = scene_px(s);
+        float d = length(off);
+        float rs = 0.5 * length(span_at(qs));
+        float zs = dist_at(qs);
+        float ws = in_front(zs, zx) * cone(d, rs) + in_front(zx, zs) * cone(d, rx) +
+                   cylinder(d, rs) * cylinder(d, rx) * 2.0;
+        sum += textureLod(src_tex, s / pc.out_size, 0.0).rgb * ws;
+        w += ws;
+    }
+    imageStore(dst, p, vec4(sum / w, 1.0));
+}

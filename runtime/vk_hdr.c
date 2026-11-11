@@ -240,7 +240,7 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
 
 // ---- 2. the picture the window texture is copied from
 
-int vk_hdr_track;                 // vk_exec_draw.c calls vk_hdr_draw: set at the first present with TOTK_HDR=1
+int vk_hdr_track;                 // vk_exec_draw.c calls vk_hdr_draw: set at the first present that asks (copy_source)
 static volatile int32_t g_active;   // the swapchain is HDR10 (gfx_present.c vk_hdr_set_active)
 static PlatMutex rec_lock = PLAT_MUTEX_INIT;
 // Per presented window image: what the last draw in replay order copied, and where that draw is. Chunks of a replay
@@ -284,20 +284,33 @@ void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info) {
     plat_mutex_unlock(&rec_lock);
 }
 
-void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format) {
-    if (!vk_hdr_wanted()) return;
+// The float picture the last draw into the window texture win copied, VK_NULL_HANDLE when that draw was something
+// else; the first call for a window texture starts its record.
+static VkImage copy_source(const VkTexImage *win, VkFormat *format) {
     vk_hdr_track = 1;
+    VkImage src = VK_NULL_HANDLE;
     plat_mutex_lock(&rec_lock);
     int r = -1;
     for (int i = 0; i < nrecs; i++)
         if (recs[i].win == win->image) r = i;
     if (r < 0 && nrecs < 4) r = nrecs++, recs[r].win = win->image, recs[r].src = VK_NULL_HANDLE;
     // kept until the next draw into the window texture: a present again without a new copy shows the same picture
-    if (r >= 0 && recs[r].src && vk_hdr_active()) *image = recs[r].src, *format = recs[r].fmt;
+    if (r >= 0 && recs[r].src) src = recs[r].src, *format = recs[r].fmt;
     plat_mutex_unlock(&rec_lock);
+    return src;
+}
+
+void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format) {
+    if (!vk_hdr_wanted()) return;
+    VkFormat f = *format;
+    VkImage src = copy_source(win, &f);
+    if (src && vk_hdr_active()) *image = src, *format = f;
     static int logged;
     if (!logged && *image != win->image) logged = 1, rt_log("hdr: the present reads the game's float picture");
 }
+
+// Frame generation (vk_fg.c) reads the same picture beside the window texture, whatever TOTK_HDR says.
+VkImage vk_hdr_float_picture(const VkTexImage *win, VkFormat *format) { return copy_source(win, format); }
 
 void vk_hdr_image_gone(VkImage image) {   // a texture image went away: forget it as window or source
     if (!vk_hdr_track) return;   // no records before the first HDR present (vk_hdr_present_source): no lock per image

@@ -61,6 +61,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps drawn, %.0f shown",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
@@ -145,6 +146,21 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
                           "from. Takes effect after a restart.",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_LIMIT] = "2x, within the frame limit",
+    [UI_MENU_FRAME_GEN_X2] = "2x, on top of the frame limit",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 3 frame generation, on any graphics card (Windows; amd_fidelityfx_vk.dll next to "
+                               "totk.exe): one more frame is shown between every two the game draws, so motion is twice "
+                               "as smooth. Within the frame limit: the limit counts the frames shown and the game draws "
+                               "half of them (30 at least), which suits a limit at the monitor's rate. On top of it: the "
+                               "game draws up to the limit and twice as many are shown. Adds half a frame of delay; the "
+                               "fewer frames the game draws, the more a generated one can show flaws. The HUD and menus "
+                               "are not generated. Not with HDR.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 for the 3D scene, on any graphics card (Windows; amd_fidelityfx_vk.dll next to "
+                          "totk.exe): smoother edges and less shimmer, and with the DLSS mode below the scene is drawn "
+                          "smaller and scaled up. Where NVIDIA DLSS is on and can run, DLSS is used instead. Takes "
+                          "effect after a restart.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
                                  "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
@@ -166,6 +182,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_MOTION_BLUR] = "Motion blur",
+    [UI_MENU_MOTION_BLUR_DESC] = "Blurs what moves across the picture, the camera's motion and the characters' own, by "
+                                 "this share of each frame's motion; 0 turns it off. The HUD stays sharp. Without "
+                                 "DLSS, making the motion vectors costs some CPU time each frame. Applies at once.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -479,6 +499,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
     [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_SHOWN] = "Shown (frame generation)",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -543,6 +564,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f к/с отрисовано, %.0f показано",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
@@ -628,6 +650,21 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
                           "работает. Действует после перезапуска.",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_LIMIT] = "2x, в пределах лимита кадров",
+    [UI_MENU_FRAME_GEN_X2] = "2x, сверх лимита кадров",
+    [UI_MENU_FRAME_GEN_DESC] = "Генерация кадров AMD FSR 3 на любой видеокарте (Windows; amd_fidelityfx_vk.dll рядом с "
+                               "totk.exe): между каждыми двумя кадрами игры показывается ещё один, и движение "
+                               "становится вдвое плавнее. В пределах лимита: лимит считает показанные кадры, а игра "
+                               "рисует половину из них (не меньше 30) — подходит для лимита на частоте монитора. Сверх "
+                               "лимита: игра рисует до лимита, а показывается вдвое больше. Добавляет задержку в "
+                               "полкадра; чем меньше кадров рисует игра, тем заметнее огрехи в сгенерированных. "
+                               "Интерфейс и меню не генерируются. Не работает с HDR.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 для 3D-сцены на любой видеокарте (Windows; amd_fidelityfx_vk.dll рядом с "
+                          "totk.exe): ровнее края и меньше мерцания, а в режимах DLSS ниже сцена рисуется меньше и "
+                          "масштабируется. Если NVIDIA DLSS включён и может работать, используется DLSS. Действует "
+                          "после перезапуска.",
     [UI_MENU_DLSS_PRESET] = "Модель DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
                                  "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
@@ -649,6 +686,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_MOTION_BLUR] = "Размытие в движении",
+    [UI_MENU_MOTION_BLUR_DESC] = "Размывает то, что движется в кадре, — движение камеры и самих персонажей — на эту "
+                                 "долю движения за кадр; 0 выключает. Интерфейс остаётся чётким. Без DLSS расчёт "
+                                 "векторов движения отнимает немного времени процессора в каждом кадре. Действует сразу.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -965,6 +1006,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
     [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
     [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров",
+    [UI_MENU_OV_SHOWN] = "Показано (генерация кадров)",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
@@ -1063,6 +1105,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "renderização. F10 alterna os modos.",
     [UI_MENU_PERF_OFF] = "Desligado", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Completo",
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps desenhados, %.0f mostrados",
     [UI_MENU_GRAPHICS] = "Imagem",
     [UI_MENU_OUTPUT_RES] = "Resolução do jogo",
     [UI_MENU_OUTPUT_RES_DESC] = "O tamanho em que o jogo desenha a imagem e a interface. Acima de 1920 x 1080 o jogo "
@@ -1348,6 +1391,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_GAME_GB] = "jogo %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f por quadro",
     [UI_MENU_OV_WINDOW] = "Janela", [UI_MENU_OV_OUTPUT] = "Imagem do jogo", [UI_MENU_OV_SCENE] = "Cena 3D",
     [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação",
+    [UI_MENU_OV_SHOWN] = "Mostrados (geração de quadros)",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -1462,6 +1506,21 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
                           "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
                           "onde ele parte. Vale após reiniciar.",
+    [UI_MENU_FRAME_GEN] = "Geração de quadros",
+    [UI_MENU_FRAME_GEN_OFF] = "Desligada", [UI_MENU_FRAME_GEN_LIMIT] = "2x, dentro do limite de quadros",
+    [UI_MENU_FRAME_GEN_X2] = "2x, além do limite de quadros",
+    [UI_MENU_FRAME_GEN_DESC] = "Geração de quadros do AMD FSR 3, em qualquer placa de vídeo (Windows; amd_fidelityfx_vk.dll "
+                               "ao lado do totk.exe): um quadro a mais é mostrado entre cada dois que o jogo desenha, e o "
+                               "movimento fica duas vezes mais suave. Dentro do limite: o limite conta os quadros "
+                               "mostrados e o jogo desenha a metade deles (no mínimo 30), o que combina com um limite na "
+                               "taxa do monitor. Além do limite: o jogo desenha até o limite e o dobro é mostrado. "
+                               "Acrescenta meio quadro de atraso; quanto menos quadros o jogo desenha, mais um quadro "
+                               "gerado pode mostrar falhas. O HUD e os menus não são gerados. Não funciona com HDR.",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "AMD FSR 3.1 para a cena 3D, em qualquer placa de vídeo (Windows; amd_fidelityfx_vk.dll ao "
+                          "lado do totk.exe): bordas mais suaves e menos cintilação e, com o modo do DLSS abaixo, a "
+                          "cena é desenhada menor e ampliada. Onde o NVIDIA DLSS está ligado e funciona, o DLSS é "
+                          "usado no lugar. Vale após reiniciar.",
     [UI_MENU_DLSS] = "Modo do DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
                           "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
@@ -1486,6 +1545,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_MOTION_BLUR] = "Desfoque de movimento",
+    [UI_MENU_MOTION_BLUR_DESC] = "Desfoca o que se move na imagem, o movimento da câmera e o dos próprios personagens, "
+                                 "por esta parte do movimento de cada quadro; 0 desliga. A interface continua nítida. "
+                                 "Sem o DLSS, calcular os vetores de movimento custa um pouco de tempo de CPU a cada "
+                                 "quadro. Vale na hora.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -1593,6 +1657,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_FULL] = "完整",
 
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "绘制 %.0f fps，显示 %.0f fps",
 
     [UI_MENU_GRAPHICS] = "画面",
     [UI_MENU_OUTPUT_RES] = "游戏分辨率",
@@ -2008,6 +2073,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCENE] = "3D 场景",
     [UI_MENU_OV_SCALING] = "缩放",
     [UI_MENU_OV_LIMIT] = "帧率上限",
+    [UI_MENU_OV_SHOWN] = "显示帧率（帧生成）",
     [UI_MENU_OV_PRESENT] = "呈现模式",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u",
     [UI_MENU_OV_FMT_SCENE] = "%ux%u，%.0f%%",
@@ -2077,6 +2143,18 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
                           "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
+    [UI_MENU_FRAME_GEN] = "帧生成",
+    [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_LIMIT] = "2 倍，计入帧率上限",
+    [UI_MENU_FRAME_GEN_X2] = "2 倍，在帧率上限之上",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 3 帧生成，适用于任何显卡（Windows；amd_fidelityfx_vk.dll 放在 totk.exe 旁）："
+                               "在游戏绘制的每两帧之间多显示一帧，画面运动的流畅度翻倍。计入帧率上限：上限计算的是显示的帧数，"
+                               "游戏只绘制其中一半（至少 30 帧），适合把上限设为显示器刷新率。在帧率上限之上：游戏按上限绘制，"
+                               "显示的帧数是其两倍。会增加半帧延迟；游戏绘制的帧数越少，生成帧越容易出现瑕疵。"
+                               "HUD 和菜单不参与生成。不支持 HDR。",
+    [UI_MENU_FSR3] = "AMD FSR 3",
+    [UI_MENU_FSR3_DESC] = "用于 3D 场景的 AMD FSR 3.1，适用于任何显卡（Windows；amd_fidelityfx_vk.dll 放在 totk.exe 旁）："
+                          "边缘更平滑，闪烁更少；配合下方的 DLSS 模式，场景以较低分辨率绘制后再放大。"
+                          "如果 NVIDIA DLSS 已开启且可以运行，则改用 DLSS。重启后生效。",
     [UI_MENU_DLSS] = "DLSS 模式",
     [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
     [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
@@ -2096,6 +2174,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_MOTION_BLUR] = "动态模糊",
+    [UI_MENU_MOTION_BLUR_DESC] = "按每帧运动的这一比例模糊画面中移动的内容，包括镜头运动和角色自身的运动；0 为关闭。"
+                                 "界面保持清晰。未开启 DLSS 时，计算运动矢量每帧会占用少量 CPU 时间。立即生效。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
