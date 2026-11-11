@@ -1,0 +1,40 @@
+#version 450
+// Motion blur, first pass (vk_mblur.c): the longest motion vector of each tile of the motion image, which tells the
+// blur pass (motion_blur.comp) how far around a pixel something may be sweeping over it. A tile is 8 * pc.cell texels
+// square and one workgroup: each of its 64 invocations scans a cell x cell block, then the group reduces the 64
+// results to one in shared memory. Vectors longer than pc.cut (squared, texels) are a camera cut or a teleport, not
+// motion, and are left out.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D mv_tex;
+layout(binding = 1, rg16f) uniform writeonly image2D tiles_out;
+layout(push_constant) uniform P {
+    ivec2 size;   // the motion image's size
+    int cell;     // texels per invocation, each way
+    float cut;    // the longest vector that counts, squared
+} pc;
+
+shared vec3 best[64];   // squared length, vector
+
+void main() {
+    ivec2 base = ivec2(gl_WorkGroupID.xy) * (8 * pc.cell) + ivec2(gl_LocalInvocationID.xy) * pc.cell;
+    vec3 b = vec3(0.0);
+    for (int y = 0; y < pc.cell; y++)
+        for (int x = 0; x < pc.cell; x++) {
+            ivec2 q = base + ivec2(x, y);
+            if (q.x >= pc.size.x || q.y >= pc.size.y) continue;
+            vec2 v = texelFetch(mv_tex, q, 0).xy;
+            float l = dot(v, v);
+            if (l > b.x && l <= pc.cut) b = vec3(l, v);
+        }
+    uint li = gl_LocalInvocationIndex;
+    best[li] = b;
+    memoryBarrierShared();
+    barrier();
+    // each step folds the upper half onto the lower: invocation li reads slot li + s, which nobody writes in that step
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (li < s && best[li + s].x > best[li].x) best[li] = best[li + s];
+        memoryBarrierShared();
+        barrier();
+    }
+    if (li == 0u) imageStore(tiles_out, ivec2(gl_WorkGroupID.xy), vec4(best[0].yz, 0.0, 0.0));
+}

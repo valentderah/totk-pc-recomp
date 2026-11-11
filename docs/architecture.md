@@ -131,6 +131,16 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
   vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+- FSR 3 (`vk_fsr3.c`, `fsr3`, off by default). AMD FSR 3.1 as the temporal upscaler where DLSS does not run, on any
+  GPU: `vk_dlaa.c` follows the frame, jitters the scene and makes the motion vectors as for DLSS, and hands the same
+  images to AMD's prebuilt library (`amd_fidelityfx_vk.dll` next to the executable, loaded at run time; Windows only),
+  which records its passes into the replay's command buffer. The DLSS modes set the scene size for it too.
+- Motion blur (`vk_mblur.c`, `motion_blur`, off by default). Two compute passes right after DLSS's evaluation, on
+  DLSS's picture and with the motion vectors and depth DLSS gets: the longest motion per tile, then a reconstruction
+  filter (McGuire et al. 2012) that averages each pixel along the longest motion near it, weighting samples by depth and
+  by their own motion. Without DLSS (`dlaa = 0`, or a GPU without it) `vk_dlaa.c` still follows the scene and makes
+  the motion vectors while the blur is on, and the blur runs on the light target where DLAA would (`blur_only`). Bloom
+  in the DLAA mode and without DLSS, the tonemap and the HUD come after it.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

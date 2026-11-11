@@ -1,4 +1,5 @@
-// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA). The banks kept
+// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on while motion vectors are made:
+// vk_dlaa_motion). The banks kept
 // start as c5, c7 and c14 and grow with what the vertex shader variants read (vk_mvprev_want); c7 and c5 are described
 // here, the others follow the same two-copy rule.
 //
@@ -172,8 +173,9 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without DLSS (no NGX, no RTX GPU, dlaa = 0) nothing reads last frame's blocks: P.on stays 0, no tables
-    if (!vk_dlaa_available()) return;
+    // until motion vectors are made (vk_dlaa_motion: DLSS runs, or the motion blur is on without it) nothing reads
+    // last frame's blocks: P.on stays 0, no tables
+    if (P.knob < 0 && !vk_dlaa_motion()) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
@@ -186,7 +188,7 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && cfg_bool("TOTK_DLAA");
+    int on = P.knob && vk_dlaa_motion();
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));
