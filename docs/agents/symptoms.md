@@ -49,7 +49,8 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 | a host core at 100% while the game waits | game spin loops without system calls | profile: which guest function spins |
 | crash on world load | sizes the game reads from the driver (command memory used) differ from the console's | the sizes the game asks for against the console's |
 | crash with one save only | the save itself; some crash on a real Switch | the same save on another build and, if possible, on hardware |
-| random crash after minutes to hours, access violation reading `0xffffffffffffffff` in a game function | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null; set `optref` in `recomp/patches-v143.txt` guards main+0x1bd0138 | the crash dump's faulting host instruction, the register it loads through and the field that register came from |
+| random crash after minutes to hours, access violation reading `0xffffffffffffffff` in a game function (Windows reports any non-canonical address so) | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null; in main+0x1bd0138 (Recall / Ultrahand picking a target) also a reused holder whose actor points into other memory. Sets `optref` and `ability` in `recomp/patches-v143.txt` guard both there | the crash dump's faulting host instruction, the register it loads through and the field that register came from; `ability: stale target skipped` lines in the log |
+| crash while using Ultrahand or aiming, in the model scene's report loop (1.4.3 main+0xa22bc..0xa234c) | a report row index read from the report buffer with no bound (Weeping of the Empire #52, #73); set `report` sends a negative handle or an index from 0x8000 to the game's own reset | the faulting address against the report rows base (x12) |
 
 ## Device lost, hangs, black window
 
