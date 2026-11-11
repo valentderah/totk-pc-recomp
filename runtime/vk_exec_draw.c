@@ -2007,7 +2007,7 @@ static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage,
         if (vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == vk_dlaa_swap_img)
             out->imageView = vk_dlaa_swap_view, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     }
-    if (stage == NVN_STAGE_FS && !storage && h && feedback_nreads) {
+    if (!ex->chunked && stage == NVN_STAGE_FS && !storage && h && feedback_nreads) {
         tex_lock(locked);
         view_t v;
         int hv;
@@ -2300,7 +2300,7 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
     PUT(ex->chunked ? ex->pass_serial : 0);
     PUT(vk_mem_gen() + vk_usnap_gen() + ex->drop_n);   // all only grow in a submission; drop_n: copies a chunk passed
-    PUT(feedback_bind_gen);
+    PUT(ex->chunked ? 0 : feedback_bind_gen);
     for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
         float in[3];

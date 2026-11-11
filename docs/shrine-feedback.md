@@ -49,6 +49,9 @@ view changes need validation. The cache has one most-recent entry, not one perma
 These settings require restarting the game. Mode 2 is useful for comparison, but it is not a complete reference for
 all rendering semantics: it snapshots only linear depth and can be much slower.
 
+Submissions recorded in parallel chunks keep the renderer's existing feedback barriers and layouts. The depth
+snapshots apply to sequential recording, the default with `replay_workers = 0`.
+
 `feedback_debug = 1` / `TOTK_FEEDBACK_DEBUG=1` logs the material decision and masks for up to 48 signatures, plus
 periodic draw, eligibility and copy counters. The printed SPIR-V identifier hashes instruction words after the
 header; it is not the raw-byte hash used by the frame dumper. Diagnostics are off by default.
