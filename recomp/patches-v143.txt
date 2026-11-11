@@ -12,6 +12,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
+set grass    TOTK_PATCH_GRASS    0
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -1102,3 +1103,16 @@ site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8
 # switches the set off without the real-time step, where the page is not written.
 set climb    TOTK_CLIMB_FIX      1
 site climb main 1f497f4 1e201001 @page:x8 bd400104 1e286884 52946dc8 72a7e528 1e270102 1e241842 52828248 72a7dfe8 1e270103 1e232842 529573e8 72a7b5a8 1e270103 1f040862 1e2a3883 2f00e404 1e246863 1e261004 1f048862 1e241004 1e247842 1e226800 1e201001 1e226821   # fmov s1, #2.0 -> s2 = g(u); s0 = max(s0, s2); s1 = max(2.0, s2)
+
+
+# Grass range (runtime/resolution.c res_grass_range switches the set on). Grass blades grow from the near grass map, a
+# square texture the game draws around the camera (GrassShader.sharcb). Its constructor (main+0xa38e58) gives it a
+# 62.5 m extent, a 3.90625 m step (1/16 of it) and 256x256 and 128x128 textures; main+0x206340c later sets the extent
+# to 62.5 or 31.25 m. With the set on all of them come from page +128..+144, scaled together so the map keeps its
+# texels per metre; resolution.c grows the grass heap of the HeapDef for the larger textures.
+site grass  main a38e58 52a84f48 @page:x8 b9408108   # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main a38e64 52a80f48 @page:x8 b9408508   # mov w8, #3.90625   -> ldr w8, [page+132]
+site grass  main a38e94 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr w2, [page+136]
+site grass  main a38ef4 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
+site grass  main 2063454 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
