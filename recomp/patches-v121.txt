@@ -1126,3 +1126,10 @@ site grass  main fe58ec 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr
 site grass  main fe5950 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
 site grass  main 1a30a8c 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
 site grass  main 1a30a98 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+
+
+# Optional reference with an invalid value (#1005). The same guard as set optref in patches-v143.txt (main+0x1bd01c0),
+# here for 1.2.1's main+0x1622bec: ldr x8, [x19, #0x6b0]; cbz x8; ldr x21, [x8]. A negative value counts as absent.
+# x8 and x9 are dead at the branch target 0x1622c1c, which loads x8 again.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 1622bec b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8

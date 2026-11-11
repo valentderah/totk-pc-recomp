@@ -1116,3 +1116,15 @@ site grass  main a38e94 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr
 site grass  main a38ef4 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
 site grass  main 2063454 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
 site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+
+
+# Optional reference with an invalid value (#1005). main+0x1bd0138 reads an optional reference at object +0x6b0 (null or
+# a holder whose first word is the target, bit 0 a tag) and checks it only for null: ldr x8, [x19, #0x6b0]; cbz x8;
+# ldr x21, [x8]. Players' crash reports show the field holding 0xffffffffffffffff after minutes to hours of play, and
+# the load of the holder faults. MacNativeGames (games/totk/runtime/loader.c, crash) met the same field holding
+# 0xffff0000ffffffff during a save load and treats the reference as absent there. Every valid holder is a heap address
+# below 2^63, so the cbz becomes a test for null or negative: x9 = x8 >> 63 (arithmetic, all ones when negative),
+# x8 &= ~x9, cbz x8. Both x8 and x9 are dead at the branch target 0x1bd01f0, which loads x8 again and writes x9 before
+# any read; on the fall-through path x8 is unchanged.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
