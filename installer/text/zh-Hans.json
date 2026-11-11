@@ -5,6 +5,7 @@
  "step.lift": "将游戏代码转换为 C 代码",
  "step.compile": "编译 {game_exe}",
  "step.prepare": "准备着色器",
+ "step.pc_prompts": "绘制键盘和鼠标按键提示",
  "step.dlss": "下载 NVIDIA DLSS",
  "step.cleanup": "清理",
 
@@ -29,6 +30,7 @@
  "phase.compile.compile": "编译",
  "phase.compile.link": "链接 {game_exe}",
  "phase.prepare.romfs_patches": "写入 60 帧游戏数据补丁",
+ "phase.pc_prompts.draw": "根据 totk.ini 中的按键绑定绘制键盘和鼠标按键提示",
  "phase.prepare.seed": "从游戏数据中读取着色器",
  "phase.prepare.translate": "转译着色器",
  "phase.prepare.libraries": "为显卡驱动构建着色器",

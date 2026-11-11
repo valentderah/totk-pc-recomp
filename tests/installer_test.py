@@ -575,7 +575,7 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'dlss', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()

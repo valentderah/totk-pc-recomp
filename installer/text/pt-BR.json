@@ -5,6 +5,7 @@
  "step.lift": "Traduzindo o código do jogo para C",
  "step.compile": "Compilando o {game_exe}",
  "step.prepare": "Preparando os shaders",
+ "step.pc_prompts": "Desenhando os ícones de teclado e mouse",
  "step.dlss": "Baixando o NVIDIA DLSS",
  "step.cleanup": "Finalizando",
 
@@ -29,6 +30,7 @@
  "phase.compile.compile": "Compilando",
  "phase.compile.link": "Ligando o {game_exe}",
  "phase.prepare.romfs_patches": "Gravando os patches de 60 fps nos dados do jogo",
+ "phase.pc_prompts.draw": "Desenhando os ícones de teclas e botões do mouse a partir das atribuições do totk.ini",
  "phase.prepare.seed": "Lendo os shaders dos dados do jogo",
  "phase.prepare.translate": "Traduzindo os shaders",
  "phase.prepare.libraries": "Montando os shaders para o driver de vídeo",
