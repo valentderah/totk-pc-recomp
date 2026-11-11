@@ -50,7 +50,7 @@ static const char *const known[] = {
     "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POINTER_IMAGE",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
     "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
@@ -89,7 +89,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -158,6 +158,7 @@ static const CfgMeta metas[] = {
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MOUSE_AIM_SCALE", "1", "0.1..3", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
     {"MAP_CLICK", "0", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
     {"DIALOGUE_CLICK", "0", "0|1", LIVE},   // menu_cursor.c: in a dialogue box left click is B, right click A
+    {"POINTER_IMAGE", "0", "0|1", LIVE},    // input_win.c / input_sdl.c: the game window's own pointer (cursor_art.c)
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
