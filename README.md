@@ -1,121 +1,43 @@
-# TotK Recomp
+# TotK Recomp — Blueprint Import
 
-**TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
+**This branch adds in-game Autobuild blueprint import to [TotK Recomp](https://github.com/valentderah/totk-pc-recomp).** It is a research branch: the goal is a window inside the game that imports a community blueprint and shows it in 3D before the player builds it. Upstream is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* into a native x86-64 application for Windows and Linux; this branch carries the blueprint work, tracked in PR [#757](https://github.com/valentderah/totk-pc-recomp/pull/757) and documented in [docs/blueprint-import.md](docs/blueprint-import.md).
 
 > [!IMPORTANT]
-> **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.1.0, 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
->
-> The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
+> **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console. The game is built from your files on your machine; the result contains the game, is for your own use and must not be shared. Instructions for obtaining those files will not be provided.
 
-## Status
+## What this branch supports
 
-Early development. The game is playable on Windows and Linux; visual bugs and crashes are still expected.
+- **Import.** On the Autobuild screen, the ⊕ (Plus) button opens the port's own file picker. Choosing a local `.cai` or `.txt` blueprint writes it into the save data the game holds in memory, so it appears as the newest draft and builds with the game's own preview, rotation and Zonai-energy costs — no reload, no external save editor.
+- **Container contents.** `.cai` and `.txt` are two wrappers around the same 6688-byte CAI blob. A `.cai` file is the blob itself; a `.txt` file is the blob gzip-compressed and Base64-encoded inside one JSON member (`combinedActorInfoBase64`). The blob holds up to 21 actor records (two matrices, six floats and a 128-byte name each), the 12-byte bond records and a six-float bounding box.
+- **Container and media parsing.** The `.txt` reader finds the Base64 member with a bounded scan, inflates it with a hard size bound and checks the gzip trailer's CRC32 and length. The `.cai` reader validates magic, version, both actor-count copies, names, matrix floats and the bounding box before anything is written. For the 3D view, each actor name resolves to a real model in the player's own RomFS: `Pack/Actor/<actor>.pack.zs` (SARC, game zstd dictionary) → ModelInfo BYML → `FmdbName` → `Model/<project>.<FmdbName>.bfres.mc` → `MCPK` header + magicless, sizeless zstd + `FMSH` (MeshCodec) → BFRES `FMDL`/`FSHP`/`FVTX`/`FSKL` → vertices and indices. A part with no usable model falls back to its collision body (a convex hull from `ShapeParam` BYML).
+- **3D preview.** While a file is highlighted, the picker renders the blueprint in one offscreen Vulkan pass with a real depth buffer, from each part's real model placed by the CAI's rotation, position and scale. Decoding MeshCodec needs [dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec) (GPL-2.0, the only implementation); it is built outside the tree into `libmeshcodec.a`, so the repository does not carry GPL code, and a build without it uses the collision-body fallback. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **Upcoming.** A blueprint editor, and exporting a blueprint back to `.cai`/`.txt`, are the planned next work. They are **not implemented yet**.
 
-Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
+## Terminology
 
-## Features
+Game-specific names use the official localizations, not literal translations:
 
-- Native code, not emulation
-- Game updates 1.1.0, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
-- Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
-- 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
-- Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
-- NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
-  (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
-- HDR10 output with peak, game and HUD brightness settings
-- 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
-- Anisotropic texture filtering up to 16x, for sharp ground into the distance
-- In-game settings menu (F1) and performance overlay (F10)
-- Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
-- Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
-- Keyboard, mouse and gamepad with remapping, rumble and gyro
-- Stereo or 5.1 surround sound output
-- Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
-- Shaders prepared at install instead of during play
-- Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
-  mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches
-  ([docs/mods.md](docs/mods.md)). HD texture packs work: the port grows the texture heap a pack asks for by itself. Tested
-  with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
-- Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
+| English | Japanese | Simplified Chinese |
+|---|---|---|
+| Autobuild | ブループリント | 蓝图 |
+| Fuse (attaching a material to a weapon or shield) | スクラビルド | 余料建造 |
+| Ultrahand | ウルトラハンド | 究极手 |
 
-## Blueprint import (research)
+## Current state
 
-This fork researches importing *Autobuild* blueprints into the game. **Autobuild** is the in-game ability that rebuilds
-a saved construction from its Zonai-device parts; the official localizations are *ブループリント* (Japanese) and
-*蓝图* (Simplified Chinese). The feature and the format knowledge it is built on live in
-[docs/blueprint-import.md](docs/blueprint-import.md), and a public write-up of the whole feature is published as a
-[gist](https://gist.github.com/kaiyao7/ad158b08a365e0e6020d0db332d96e13).
+Import, in-game use of imported blueprints, and the 3D preview work, and were re-verified locally against a 0.4.0 build of the port. One preview-geometry problem remains open: a material fused onto a weapon is drawn **intersecting** the weapon instead of sitting on its tip. This affects the 3D preview only — importing, saving and building are unaffected. It is accepted as an unfixed limitation of the draft so the work can be handed over.
 
-- **Import.** On the Autobuild screen the ⊕ (Plus) button opens the port's own file picker. Choosing a local `.cai` or
-  `.txt` blueprint writes it into the save data the game holds in memory, so it appears as the newest draft and builds
-  with the game's own preview, rotation and Zonai-energy costs.
-- **Container contents.** Both `.cai` and `.txt` carry the same 6688-byte CAI blob; only the wrapping differs. A `.cai`
-  file is the blob itself; a `.txt` file is the blob gzip-compressed and Base64-encoded inside one JSON member. The blob
-  holds up to 21 actor records (two matrices, six floats and a name each), the bond records and a bounding box.
-- **Container and media parsing.** The `.txt` reader finds the Base64 member with a bounded scan, inflates it with a
-  hard size bound and checks the gzip trailer's CRC32 and length. The `.cai` reader validates magic, version, actor
-  counts, names, matrix floats and the bounding box before anything is written. The model path decodes each part's
-  real model from the player's own RomFS: `Pack/Actor/<actor>.pack.zs` → ModelInfo BYML → `FmdbName` →
-  `Model/<project>.<FmdbName>.bfres.mc` → MeshCodec/BFRES, with a collision-body fallback for parts without a model.
-- **3D preview.** While a file is highlighted, the picker renders the blueprint in one offscreen Vulkan pass with a
-  depth buffer, from each part's real model placed by the CAI's rotation, position and scale. The **Fuse** ability
-  (the one that attaches one material to a weapon or shield; official localizations *スクラビルド*, *余料建造*) is
-  the one area still open: a fused material is drawn intersecting its weapon, and the measured candidate placements
-  and the approaches that already failed are recorded so the last step can be taken by anyone.
-- **Upcoming.** A blueprint editor, and exporting a blueprint back to `.cai`/`.txt`, are the planned next work. They are
-  not implemented yet.
+## Read this first
 
-## Planned
+- [docs/blueprint-import.md](docs/blueprint-import.md) — the format, the five save arrays, the model path, the fused-material rule set and the open placement question.
+- [Public knowledge write-up](https://gist.github.com/kaiyao7/ad158b08a365e0e6020d0db332d96e13) — main write-up, references, knowledge map and the open-problem page; everything needed to pick up the last step.
+- [Feature request #1081](https://github.com/valentderah/totk-pc-recomp/issues/1081) — the technical reasoning and the community references.
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — every reference, its licence and pinned commit.
 
-- VRR
+## Building
 
-## Installing
+This is a fork of an upstream recompilation. Build with the upstream toolchain (MSYS2 UCRT64 Clang, Ninja, `.venv` / `.venv-py314`); see [docs/building.md](docs/building.md) in the upstream tree. `tools/build_game.py` links `libz.a` for the `.txt` reader and the optional `libmeshcodec.a` for the 3D preview; `tools/build_meshcodec.py` builds the decoder.
 
-### Windows
+## Credits and licence
 
-Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
-
-1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
-2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
-3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once. With
-   an NVIDIA RTX GPU it also downloads NVIDIA DLSS, unless you untick *Download NVIDIA DLSS*; turn DLSS on in the
-   menu (F1).
-4. Play `totk.exe` from the install folder.
-
-### Linux
-
-Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3).
-
-1. Download `TotK-Setup-x86_64.AppImage` from [Releases](../../releases/latest), or build it ([docs/installer.md](docs/installer.md), "Linux release").
-2. Make it executable (`chmod +x TotK-Setup-x86_64.AppImage`) and start it. On a Steam Deck, do this in Desktop Mode.
-3. Pick your game files, the language and an install folder, and press *Start*.
-4. Play `totk` from the install folder.
-
-To update, run a newer setup on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
-
-## Credits
-
-TotK Recomp builds on the projects below. What was taken from each, with its license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-- [LAS Recomp](https://github.com/peiikai/LASRecomp)
-- [MacNativeGames](https://github.com/ly05010419/MacNativeGames)
-- [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) and [nxnative](https://github.com/seedds/nxnative)
-- [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp)
-- [Ryujinx](https://github.com/Ryujinx/Ryujinx)
-- [deko3d](https://github.com/devkitPro/deko3d)
-- [hactool](https://github.com/SciresM/hactool)
-- [SDL 3](https://libsdl.org), [Dear ImGui](https://github.com/ocornut/imgui), [AMD FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR), [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator), [libopus](https://opus-codec.org), [libvpx](https://chromium.googlesource.com/webm/libvpx), [Zstandard](https://github.com/facebook/zstd)
-- [Switchbrew](https://switchbrew.org) and the Switch homebrew community
-
-## License
-
-The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
-
-TotK Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *The Legend of Zelda*, *Tears of the Kingdom* and *Nintendo Switch* are trademarks of Nintendo.
-
-## Building from source
-
-[docs/building.md](docs/building.md) lists the toolchain and the steps. Everything the build writes stays under `build\` and `generated\`, which git ignores; run `tools/check_content.py` before a commit. Testers: [docs/tester-guide.md](docs/tester-guide.md).
-
-Most of the code and documentation is written by AI coding agents (Claude Code) under the maintainer's direction; the maintainer plays every build and decides what is merged. [AGENTS.md](AGENTS.md) holds the rules they work under.
+Upstream TotK Recomp is by valentderah and its contributors (MIT). The blueprint work on this branch is community research; all external references are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No game files, keys, extracted data or logs containing them are committed.
