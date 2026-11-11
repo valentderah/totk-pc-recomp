@@ -23,8 +23,8 @@
 //
 // The same read of the open screens tells input.c when a dialogue box is on screen (menu_cursor_dialogue), where the
 // left mouse button presses B (it advances the text and skips its scroll) and the right one A, instead of their
-// bindings (Y by default, which opens the dialogue log, and ZL). TOTK_DIALOGUE_CLICK (live, default 1) switches that
-// on its own: it does not need the pointer.
+// bindings (Y by default, which opens the dialogue log, and ZL). TOTK_DIALOGUE_CLICK (live, default 0: one key per
+// controller button) switches that on its own: it does not need the pointer.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -386,7 +386,7 @@ void menu_cursor_poll(uint64_t *buttons) {
     int dialogue = box || (dialogue_seen && now - dialogue_seen < DIALOGUE_GAP_MS);
     if (dialogue && !dialogue_logged)
         dialogue_logged = 1, rt_log("menu_cursor: a dialogue box is open (" DIALOGUE_SCREEN "): left click is B, "
-                                    "right click A (TOTK_DIALOGUE_CLICK=0 turns it off)");
+                                    "right click A (TOTK_DIALOGUE_CLICK=1)");
     __atomic_store_n(&g_dialogue, dialogue, __ATOMIC_RELAXED);
     if (!cursor) { set_pointer(0); __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED); return; }
     Focus f = focus_now();
