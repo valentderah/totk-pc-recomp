@@ -645,10 +645,24 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             // map's cursor, which the mouse moves there, instead of its binding (Y by default). A press is one or the
             // other from the moment it goes down until it is released, so a button held as the map opens or closes
             // keeps what it pressed.
-            static int click_held, click_a;
-            if (!down[KEY_MOUSE_L]) click_held = click_a = 0;
-            else if (!click_held) click_held = 1, click_a = menu_cursor_map() && cfg_bool("TOTK_MAP_CLICK");
-            if (click_a) down[KEY_MOUSE_L] = 0, b |= 1ull << B_A;
+            static int map_held, map_a;
+            if (!down[KEY_MOUSE_L]) map_held = map_a = 0;
+            else if (!map_held) map_held = 1, map_a = menu_cursor_map() && cfg_bool("TOTK_MAP_CLICK");
+            if (map_a) down[KEY_MOUSE_L] = 0, b |= 1ull << B_A;
+            // While a dialogue box is on screen (menu_cursor.c, TOTK_DIALOGUE_CLICK) the left mouse button presses B,
+            // which advances the text and also shows the rest of a line at once, and the right one presses A, instead
+            // of their bindings: Y by default, which opens the dialogue log there, and ZL. A press is one or the other
+            // from the moment it goes down until it is released, so a click that closes the last box does not turn
+            // into an attack while it is still held, and a button held as the box opens does not skip its first line.
+            // Dialogue choices have the pointer, and their clicks are menu_cursor.c's: a left click there is A.
+            static const uint8_t click_key[2] = {KEY_MOUSE_L, KEY_MOUSE_R}, click_btn[2] = {B_B, B_A};
+            static int click_held[2], click_talk[2];
+            for (int i = 0; i < 2; i++) {
+                int key = click_key[i];
+                if (!down[key]) click_held[i] = click_talk[i] = 0;
+                else if (!click_held[i]) click_held[i] = 1, click_talk[i] = menu_cursor_dialogue();
+                if (click_talk[i]) down[key] = 0, b |= 1ull << click_btn[i];
+            }
             b |= input_map_buttons(down);
             int32_t k[2];
             walk_get();

@@ -23,6 +23,11 @@
 //
 // With TOTK_MAP_CLICK=1 (live, default 0: one key per controller button) input.c makes the left mouse button A on the
 // map (menu_cursor_map), so a click acts at the map's cursor. The map is found only while TOTK_MENU_CURSOR is on.
+//
+// The same read of the open screens tells input.c when a dialogue box is on screen (menu_cursor_dialogue), where the
+// left mouse button presses B (it advances the text and skips its scroll) and the right one A, instead of their
+// bindings (Y by default, which opens the dialogue log, and ZL). TOTK_DIALOGUE_CLICK (live, default 0: one key per
+// controller button) switches that on its own: it does not need the pointer.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -169,8 +174,12 @@ static void layout_name(uint64_t scr, char *out, size_t n) {
 // 1.4.3 constructor keeps). The map has no focus box, so it is found here: the Purah Pad's frame (AppMenuOverlay_00)
 // with AppMap_00 and the menu's background AppMenuBG_00 open. The Scope opens the frame over AppMap_00 without that
 // background (Weeping of the Empire's engine/runtime/totk_menu_cursor.cpp census tells them apart the same way).
+// The dialogue window (DIALOGUE_SCREEN) has no focus box either: the scan remembers its screen for dialogue_shown.
 // TOTK_MENU_CURSOR_LOG=1 logs the open screens whenever the set changes.
 enum { SM_COUNT = 0x8, SM_SCREENS = 0x10 };
+#define DIALOGUE_SCREEN "MessageDialog_00"   // the box a character's lines and the game's messages are shown in
+#define DIALOGUE_GAP_MS 500                  // how long after the box closed a click is still the dialogue's
+static uint64_t dialogue_scr;                // game thread only
 static int map_open(void) {
     uint64_t sm = screen_mgr();
     if (!sm) return 0;
@@ -190,6 +199,7 @@ static int map_open(void) {
         pad |= !strcmp(nm, "AppMenuOverlay_00");
         map |= !strcmp(nm, "AppMap_00");
         bg |= !strcmp(nm, "AppMenuBG_00");
+        if (!strcmp(nm, DIALOGUE_SCREEN)) dialogue_scr = scr;
         if (!verbose) continue;
         for (const char *c = nm; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
         if (len < sizeof list - 64) len += (size_t)snprintf(list + len, sizeof list - len, "%s%s", len ? " " : "", nm);
@@ -198,6 +208,19 @@ static int map_open(void) {
     static int lines;
     if (verbose && h != last && lines < 200) last = h, lines++, rt_log("menu_cursor: open screens: %s", list);
     return pad && map && bg;
+}
+// The dialogue window is open. Read at every pad read from the screen the last scan found open, so a click follows the
+// box without the scan's 100 ms: the game keeps its screens, so the one found once is the one that opens the next time.
+// A screen that is no longer that layout (a reload built the screens again) is forgotten until a scan finds it.
+static int dialogue_shown(void) {
+    uint64_t scr = dialogue_scr;
+    if (!scr) return 0;
+    if (!game_object(scr, SCR_REQUEST + 1)) { dialogue_scr = 0; return 0; }
+    if (rd8(scr + SCR_STATE) != SCR_OPENED) return 0;
+    char nm[48];
+    layout_name(scr, nm, sizeof nm);
+    if (strcmp(nm, DIALOGUE_SCREEN)) { dialogue_scr = 0; return 0; }
+    return 1;
 }
 static void layout_size(uint64_t scr, float *lw, float *lh) {
     *lw = 1920, *lh = 1080;
@@ -283,14 +306,22 @@ static int gameplay_screen(const char *nm) {
 
 static volatile int32_t g_pointer;   // a menu has the pointer: input_cursor_allowed releases the capture
 static volatile int32_t g_map;       // the Purah Pad's map is open (not the Scope): the mouse moves its cursor
+static volatile int32_t g_dialogue;  // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left B, right A
 
 int menu_cursor_pointer(void) { return __atomic_load_n(&g_pointer, __ATOMIC_RELAXED); }
 int menu_cursor_map(void) { return __atomic_load_n(&g_map, __ATOMIC_RELAXED); }
+int menu_cursor_dialogue(void) { return __atomic_load_n(&g_dialogue, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
     const char *v = cfg_get("TOTK_MENU_CURSOR"), *in = cfg_get("TOTK_INPUT");
     return !(v && !strcmp(v, "0")) && !(in && !strcmp(in, "none"));
+}
+// The left click in dialogue: its own setting, on with the menu cursor off too
+static int dialogue_enabled(void) {
+    if (!RT_V143) return 0;
+    const char *in = cfg_get("TOTK_INPUT");
+    return cfg_bool("TOTK_DIALOGUE_CLICK") && !(in && !strcmp(in, "none"));
 }
 
 static void set_pointer(int on) {
@@ -328,15 +359,42 @@ void menu_cursor_poll(uint64_t *buttons) {
         main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
-    if (!enabled()) { set_pointer(0); __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED); return; }
-    Focus f = focus_now();
-    char nm[48] = "";
-    if (f.screen) layout_name(f.screen, nm, sizeof nm);
+    int cursor = enabled(), talk = dialogue_enabled();
+    if (!cursor && !talk) {
+        set_pointer(0);
+        __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_dialogue, 0, __ATOMIC_RELAXED);
+        return;
+    }
     // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries
     uint64_t now = plat_now_ms();
     static uint64_t map_at;
-    static int map, map_logged;
+    static int map, map_logged, dialogue_logged;
     if (!map_at || now - map_at >= 100) map_at = now, map = map_open();
+    // Between two lines of a conversation the game closes the box and opens it again, so a click made in that gap still
+    // counts as dialogue for DIALOGUE_GAP_MS after the box was last open. The first clicks after a conversation fall
+    // in it too and are B or A, as they are for a player who taps the button through the last line.
+    // TOTK_MENU_CURSOR_LOG=1 logs how long each gap was.
+    static uint64_t dialogue_seen;
+    int box = talk && dialogue_shown();
+    if (!talk) dialogue_seen = 0;
+    if (box) {
+        static int gap_lines;
+        const char *e = cfg_get("TOTK_MENU_CURSOR_LOG");
+        uint64_t gap = dialogue_seen ? now - dialogue_seen : 0;
+        if (gap > 30 && gap < 5000 && gap_lines < 100 && e && !strcmp(e, "1"))
+            gap_lines++, rt_log("menu_cursor: the dialogue box was closed for %llu ms", (unsigned long long)gap);
+        dialogue_seen = now;
+    }
+    int dialogue = box || (dialogue_seen && now - dialogue_seen < DIALOGUE_GAP_MS);
+    if (dialogue && !dialogue_logged)
+        dialogue_logged = 1, rt_log("menu_cursor: a dialogue box is open (" DIALOGUE_SCREEN "): left click is B, "
+                                    "right click A (TOTK_DIALOGUE_CLICK=1)");
+    __atomic_store_n(&g_dialogue, dialogue, __ATOMIC_RELAXED);
+    if (!cursor) { set_pointer(0); __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED); return; }
+    Focus f = focus_now();
+    char nm[48] = "";
+    if (f.screen) layout_name(f.screen, nm, sizeof nm);
     if (map && !map_logged) map_logged = 1, rt_log("menu_cursor: the map is open: the mouse moves its cursor");
     __atomic_store_n(&g_map, map, __ATOMIC_RELAXED);
     // With the gamepad as the last device the menus stay as they are on the console: no pointer, the capture kept.
