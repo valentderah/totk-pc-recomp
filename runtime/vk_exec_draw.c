@@ -1709,6 +1709,23 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     return t;
 }
 
+int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img) {
+    const GfxShaderRes *res;
+    int n = fs && img ? gfx_shader_resources(fs, GFX_RES_TEX, &res) : 0, hit = 0;
+    if (!n) return 0;
+    vk_texture_lock();
+    for (int i = 0; i < n && !hit; i++) {
+        if (res[i].separate || res[i].slot < 0) continue;
+        for (int k = 0; k < (res[i].count ? res[i].count : 1) && !hit; k++) {
+            int slot = res[i].slot + k;
+            uint64_t h = slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            hit = h && vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == img;
+        }
+    }
+    vk_texture_unlock();
+    return hit;
+}
+
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin; in a pass larger than it, the scene's light target, once DLSS scaled it this frame, for DLSS's
 // output (vk_dlaa.c).
