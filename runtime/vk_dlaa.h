@@ -49,6 +49,18 @@ void vk_mvcheck_final(VkCommandBuffer cb, uint64_t fence, VkImage mv, VkImage ci
                       uint32_t layer, uint32_t w, uint32_t h, float jx, float jy);
 const char *vk_mvobj_frame_masks(void);   // vk_exec_draw.c: the last motion list, per position and changed banks
 void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh);   // after DLSS on a check frame
+// 1 while the scene is followed and its motion vectors are made: DLSS runs, or the motion blur is on without it
+// (vk_dlaa.c blur_only). vk_usnap.c then keeps a host copy of the uniform snapshot and vk_mvprev.c last frame's blocks.
+int vk_dlaa_motion(void);
+// vk_mblur.c (TOTK_MOTION_BLUR). vk_mblur_wanted: the setting is on and its passes can run on this device (read at each
+// present). vk_mblur_apply blurs the picture *pic_view (ow x oh: DLSS's output, or the scene's light target without
+// DLSS) along the motion vectors mv (w x h, scene pixels) with the scene depth; inv_w gives a pixel's distance (row 3
+// of the inverse view-projection). 1: *pic and *pic_view now name the blurred picture, in the top left ow x oh of an
+// image that may be larger unless exact is set (for a view sampled by normalised coordinates), valid until the next
+// call; 0: the setting is off or the pass cannot run, and they are unchanged.
+int vk_mblur_wanted(void);
+int vk_mblur_apply(VkExec *ex, VkImage *pic, VkImageView *pic_view, uint32_t ow, uint32_t oh, VkImageView mv,
+                   VkImageView depth, uint32_t w, uint32_t h, const double inv_w[4], int exact);
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);

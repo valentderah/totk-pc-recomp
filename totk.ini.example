@@ -262,6 +262,12 @@
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
+# Motion blur, as the percentage of each frame's motion that is blurred (0 = off; 50 is a film camera's half-open
+# shutter): the camera's motion and, with dlaa_objmv, the characters' own, at most 1/15 of the picture's height long.
+# The HUD is drawn after it and stays sharp. It uses the motion vectors made for DLSS; with dlaa = 0, or on a GPU
+# without DLSS, the same vectors are made for the blur alone, which costs some CPU time each frame (dlaa_objmv = 0
+# leaves the camera's motion only, and less of that cost). Changes while the game runs take effect at once.
+# motion_blur = 0
 
 # HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with
 # colour management; without it the picture stays SDR). The game's tonemap keeps highlights up to hdr_peak_nits (your
