@@ -39,6 +39,33 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
   with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
 - Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
 
+## Blueprint import (research)
+
+This fork researches importing *Autobuild* blueprints into the game. **Autobuild** is the in-game ability that rebuilds
+a saved construction from its Zonai-device parts; the official localizations are *ブループリント* (Japanese) and
+*蓝图* (Simplified Chinese). The feature and the format knowledge it is built on live in
+[docs/blueprint-import.md](docs/blueprint-import.md), and a public write-up of the whole feature is published as a
+[gist](https://gist.github.com/kaiyao7/ad158b08a365e0e6020d0db332d96e13).
+
+- **Import.** On the Autobuild screen the ⊕ (Plus) button opens the port's own file picker. Choosing a local `.cai` or
+  `.txt` blueprint writes it into the save data the game holds in memory, so it appears as the newest draft and builds
+  with the game's own preview, rotation and Zonai-energy costs.
+- **Container contents.** Both `.cai` and `.txt` carry the same 6688-byte CAI blob; only the wrapping differs. A `.cai`
+  file is the blob itself; a `.txt` file is the blob gzip-compressed and Base64-encoded inside one JSON member. The blob
+  holds up to 21 actor records (two matrices, six floats and a name each), the bond records and a bounding box.
+- **Container and media parsing.** The `.txt` reader finds the Base64 member with a bounded scan, inflates it with a
+  hard size bound and checks the gzip trailer's CRC32 and length. The `.cai` reader validates magic, version, actor
+  counts, names, matrix floats and the bounding box before anything is written. The model path decodes each part's
+  real model from the player's own RomFS: `Pack/Actor/<actor>.pack.zs` → ModelInfo BYML → `FmdbName` →
+  `Model/<project>.<FmdbName>.bfres.mc` → MeshCodec/BFRES, with a collision-body fallback for parts without a model.
+- **3D preview.** While a file is highlighted, the picker renders the blueprint in one offscreen Vulkan pass with a
+  depth buffer, from each part's real model placed by the CAI's rotation, position and scale. The **Fuse** ability
+  (the one that attaches one material to a weapon or shield; official localizations *スクラビルド*, *余料建造*) is
+  the one area still open: a fused material is drawn intersecting its weapon, and the measured candidate placements
+  and the approaches that already failed are recorded so the last step can be taken by anyone.
+- **Upcoming.** A blueprint editor, and exporting a blueprint back to `.cai`/`.txt`, are the planned next work. They are
+  not implemented yet.
+
 ## Planned
 
 - VRR
