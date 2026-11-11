@@ -38,6 +38,64 @@ Import, in-game use of imported blueprints, and the 3D preview work, and were re
 
 This is a fork of an upstream recompilation. Build with the upstream toolchain (MSYS2 UCRT64 Clang, Ninja, `.venv` / `.venv-py314`); see [docs/building.md](docs/building.md) in the upstream tree. `tools/build_game.py` links `libz.a` for the `.txt` reader and the optional `libmeshcodec.a` for the 3D preview; `tools/build_meshcodec.py` builds the decoder.
 
-## Credits and licence
+## Acknowledgements
 
-Upstream TotK Recomp is by valentderah and its contributors (MIT). The blueprint work on this branch is community research; all external references are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No game files, keys, extracted data or logs containing them are committed.
+**This project is built on the open-source work below.** It is a recompilation port; very little of it
+exists without the tools, format research and format knowledge the community published. Every entry is
+listed with its licence and with the file that carries its notice in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### The port itself
+
+- **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by Peiikai (MIT) — the recompiler lifter, code
+  generator, FP/SIMD lowering, CPU headers, differential tests and the host runtime this port is built on.
+- **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** (MIT) — extraction scripts, host
+  runtime, in-game menu work, frame-rate patches and the verification hashes the build is checked against.
+
+### Blueprint format and model research
+
+This branch's feature would not be possible without the community's work on the formats:
+
+- **[dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec)** by dt-12345 (GPL-2.0) — the reference
+  `.bfres.mc` decoder. It is the only implementation, so it is built outside this repository and linked as
+  `libmeshcodec.a`; a build without it falls back to collision bodies.
+- **[dt-12345/totk_params](https://github.com/dt-12345/totk_params)** by dt-12345 — the parameter files and
+  the `TypedParam` / `.bgyml` parent-resolution rules behind the attachment data the preview reads.
+- **[McSpazzy/cai2json](https://github.com/McSpazzy/cai2json)** and
+  **[cai2json-node](https://github.com/McSpazzy/cai2json-node)** by SuperSpazzy — the CAI / JSON format
+  research and the round-trip tool that established the `CmbAct` layout.
+- **[McSpazzy/totk-gamedata](https://github.com/McSpazzy/totk-gamedata)** by McSpazzy — save-game structure
+  research behind the five Autobuild draft arrays.
+- **[KillzXGaming/Switch-Toolbox](https://github.com/KillzXGaming/Switch-Toolbox)** by KillzXGaming
+  (GPL-3.0) — the BFRES rigid-skinning rule and the Euler-versus-quaternion bone flag.
+- **[bfrespy](https://github.com/Neurociencias/bfrespy)** (GPL-3.0) and
+  **[meshoptimizer](https://github.com/zeux/meshoptimizer)** by Arseny Kapoulkine (MIT) — BFRES field offsets
+  and the index/vertex codec behaviour.
+- **[three.js OrbitControls](https://github.com/mrdoob/three.js)** (MIT) — the drag convention the preview
+  follows.
+- **[Blehditor](https://blehditor.hyruleworks.com)** by SuperSpazzy — the community blueprint viewer this
+  preview is measured against.
+- **[HyruleWorks](https://www.hyruleworks.com)** — the blueprint archive whose real `.cai` files were used as
+  test and preview inputs (inputs only, never committed).
+
+### Upstream and libraries
+
+- **[valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp)** by valentderah and
+  contributors (MIT) — the upstream project this is a fork of.
+- **[Ryujinx](https://github.com/Ryujinx/Ryujinx)** (MIT) and **[deko3d](https://github.com/devkitPro/deko3d)**
+  — shader translator and block-linear layout behaviour.
+- **[SDL 3](https://libsdl.org)**, **[Dear ImGui](https://github.com/ocornut/imgui)**,
+  **[Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)**,
+  **[AMD FidelityFX FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)**, **libopus**, **libvpx**,
+  **[zstd](https://github.com/facebook/zstd)**, **[hactool](https://github.com/SciresM/hactool)** by SciresM
+  (ISC) — libraries and tools the port and its installer use.
+- **[Switchbrew](https://switchbrew.org)** and the Switch homebrew community — the platform documentation the
+  port's reimplementation follows.
+
+Licences: the project's own code is MIT; third-party code keeps its own licence, listed above and in
+`THIRD_PARTY_NOTICES.md`. The MIT licence grants nothing for Nintendo's game. TotK Recomp is an independent,
+non-commercial fan project, not affiliated with or endorsed by Nintendo. *The Legend of Zelda*, *Tears of the
+Kingdom* and *Nintendo Switch* are trademarks of Nintendo.
+
+No game files, keys, extracted data or logs containing them are committed.
+
