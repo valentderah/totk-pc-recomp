@@ -353,6 +353,10 @@
 # right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
 # the map to the keys and the pad. Changes while the game runs.
 # menu_cursor = 1
+# The left mouse button on the Purah Pad's map, 1.4.3 only. 1: it presses A at the map's cursor instead of the button
+# it is bound to (Y by default). Needs menu_cursor = 1, which finds the map. 0 (the default) leaves the left button on
+# its binding there, one key per controller button. Changes while the game runs.
+# map_click = 0
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
