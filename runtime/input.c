@@ -57,7 +57,8 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
     [PAD_LPADDLE2] = SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, [PAD_RPADDLE2] = SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
 };
 
-// TOTK_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
+// TOTK_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]", "<frame> LSTICK|RSTICK <x> <y> [hold]", "<frame> MOUSE
+// <dx> <dy>" or "<frame> WHEEL <notches>" (+ away from the player), ORed into the real input.
 // <frame> and its hold are 60 Hz ticks of game time since the first present (frame_step_ticks: presents at 60 fps), so
 // the title menus get the presses at the same game time at any frame limit. A line "@<ms> ..." is timed instead: <ms>
 // and its hold are milliseconds of the world clock (frame_step_world_us, game time since the loaded save's first
@@ -74,6 +75,7 @@ static ScriptEv *script_ev;
 static int script_n, script_state;   // 0 not loaded, 1 loaded
 static int script_mixed;             // the script has timed lines: its untimed ones end where the world clock starts
 static int32_t script_mouse[2];      // one-shot raw counts, consumed by the camera hook; under lock
+static int32_t script_wheel;         // one-shot wheel notches, taken with the real ones (wheel_stick); under lock
 
 static void script_load(void) {
     script_state = 1;
@@ -96,7 +98,11 @@ static void script_load(void) {
         ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
         long a, b;
         double c;
-        if (!strcmp(name, "MOUSE") || !strcmp(name, "LSTICK") || !strcmp(name, "RSTICK")) {
+        if (!strcmp(name, "WHEEL")) {
+            if (sscanf(line + off, "%ld", &a) != 1) { rt_log("input: script line %d: WHEEL needs notches", ln); continue; }
+            e.stick = 4, e.x = (int32_t)a, e.hold = 1;   // one turn, never held
+            snprintf(e.text, sizeof e.text, "WHEEL %d", e.x);
+        } else if (!strcmp(name, "MOUSE") || !strcmp(name, "LSTICK") || !strcmp(name, "RSTICK")) {
             int n = sscanf(line + off, "%ld %ld %lf", &a, &b, &c);
             if (n < 2) { rt_log("input: script line %d: %s needs x y [hold]", ln, name); continue; }
             e.stick = name[0] == 'M' ? 3 : name[0] == 'L' ? 1 : 2; e.x = (int32_t)a; e.y = (int32_t)b;
@@ -131,14 +137,17 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
         ScriptEv *e = &script_ev[i];
         if (e->timed ? w < 0 : script_mixed && w >= 0) continue;
         uint64_t now = e->timed ? (uint64_t)w : tick;
-        if (now < e->at || (now >= e->at + e->hold && (e->logged || !e->timed))) continue;
-        if (e->stick == 3 && e->logged) continue;
+        // A one-shot (MOUSE, WHEEL) goes in at the first poll at or after its time: a poll that skips a tick (the
+        // game below 60 fps) would otherwise lose it
+        if (e->stick >= 3 ? e->logged || now < e->at
+                          : now < e->at || (now >= e->at + e->hold && (e->logged || !e->timed))) continue;
         if (!e->logged) {
             e->logged = 1;
             if (e->timed) rt_log("input: script frame %llu at %.1f ms: %s", (unsigned long long)fr, w / 1000.0, e->text);
             else rt_log("input: script frame %llu tick %llu: %s", (unsigned long long)fr, (unsigned long long)tick, e->text);
         }
-        if (e->stick == 3) {
+        if (e->stick == 4) script_wheel += e->x;
+        else if (e->stick == 3) {
             int64_t x = (int64_t)script_mouse[0] + e->x, y = (int64_t)script_mouse[1] + e->y;
             script_mouse[0] = (int32_t)(x < INT32_MIN ? INT32_MIN : x > INT32_MAX ? INT32_MAX : x);
             script_mouse[1] = (int32_t)(y < INT32_MIN ? INT32_MIN : y > INT32_MAX ? INT32_MAX : y);
@@ -259,6 +268,17 @@ void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
         fflush(rec);
     }
     plat_mutex_unlock(&lock);
+}
+
+// A turn of the real wheel as a WHEEL line of the recording (one-shot, as a MOUSE line). Under lock.
+static void rec_wheel(int32_t notches) {
+    if (rec_state != 1) return;
+    char what[32];
+    snprintf(what, sizeof what, "WHEEL %d", notches);
+    int64_t w = frame_step_world_us();
+    uint64_t tick = frame_step_ticks();
+    rec_line(tick, w, tick + 1, w, what);
+    fflush(rec);
 }
 
 static float mouse_sens = -1;              // TOTK_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
@@ -541,33 +561,82 @@ static int32_t shake_stick(int held) {
     return (now - from) / SHAKE_SIDE_NS % 2 ? STICK_MAX : -STICK_MAX;
 }
 
-// The scroll wheel on the Purah Pad's map, which zooms with the right stick's y (up: in): each notch is a full-tilt
-// pulse of MAP_ZOOM_PULSE_NS on that stick with MAP_ZOOM_GAP_NS of neutral after it, so a step of the zoom and a
-// held zoom both see one notch as one push. A fast scroll's notches wait their turn (at most MAP_ZOOM_QUEUE), a turn the
-// other way drops them. Returns the stick y for this poll, 0 between pulses and off the map. Under lock.
-#define MAP_ZOOM_PULSE_NS 100000000ull
-#define MAP_ZOOM_GAP_NS 50000000ull
-#define MAP_ZOOM_QUEUE 4
-static int32_t map_zoom_stick(int32_t notches, int on_map) {
+// The scroll wheel (ikb_wheel_take, and an input script's WHEEL lines) as the stick a gamepad player would move:
+//  - on the Purah Pad's map it zooms: the right stick's y, away from the player zooming in;
+//  - while a D-pad strip (weapons, shields, bows, materials) is held open it steps the choice: the right stick's x, away
+//    from the player to the left, towards the player to the right;
+//  - in a menu with the game's focus box (the inventory, shops, Options, the save list; menu_cursor_menu) it steps the
+//    focus: the left stick's y, away from the player up;
+//  - in the Purah Pad's camera (menu_cursor_camera) it zooms: the D-pad's up (away from the player, in) or down, the
+//    buttons its guide shows for the zoom.
+// Each notch is a full-tilt pulse with neutral after it (wheel_timing), so the game sees one notch as one step, and a
+// fast scroll's notches wait their turn (at most WHEEL_QUEUE); a turn the other way drops them. A strip's pulse is the
+// mouse's (input_direct_mouse_row: 32 ms each way); a menu takes the stick on its own update, a frame of the game's
+// 30 Hz or less, so its pulse covers two. Elsewhere, and while the settings menu is open, the notches are dropped.
+enum { WHEEL_NONE, WHEEL_MAP, WHEEL_STRIP, WHEEL_MENU, WHEEL_CAMERA };
+static const struct { uint64_t pulse_ns, gap_ns; } wheel_timing[] = {
+    [WHEEL_MAP] = {100000000ull, 50000000ull}, [WHEEL_STRIP] = {32000000ull, 32000000ull},
+    [WHEEL_MENU] = {70000000ull, 50000000ull}, [WHEEL_CAMERA] = {100000000ull, 50000000ull}};
+#define WHEEL_QUEUE 4
+#define WHEEL_GAP_NS 300000000ull   // a menu's focus gap (a tab switch): queued notches wait this long for its next screen
+
+// The stick value for this poll at the place `where` (WHEEL_*): -STICK_MAX, 0 or STICK_MAX. Under lock.
+static int32_t wheel_stick(int32_t notches, int where) {
     static int32_t queued, dir;
-    static uint64_t until;   // the end of the pulse (dir != 0) or of the neutral after it
+    static int place;
+    static uint64_t until, none_since;   // until: the end of the pulse (dir != 0) or of the neutral after it
     uint64_t now = plat_now_ns();
-    if (!on_map) { queued = dir = 0, until = 0; return 0; }
+    if (where == WHEEL_NONE) {
+        if (!none_since) none_since = now;
+        if (now - none_since > WHEEL_GAP_NS) queued = 0, place = WHEEL_NONE;
+        dir = 0;
+        return 0;
+    }
+    none_since = 0;
+    if (where != place) queued = dir = 0, until = 0, place = where;
     if (notches) {
         if (queued && (notches > 0) != (queued > 0)) queued = 0;
         queued += notches;
-        queued = queued > MAP_ZOOM_QUEUE ? MAP_ZOOM_QUEUE : queued < -MAP_ZOOM_QUEUE ? -MAP_ZOOM_QUEUE : queued;
+        queued = queued > WHEEL_QUEUE ? WHEEL_QUEUE : queued < -WHEEL_QUEUE ? -WHEEL_QUEUE : queued;
     }
     if (dir) {
         if (now < until) return dir * STICK_MAX;
-        dir = 0, until = now + MAP_ZOOM_GAP_NS;
+        dir = 0, until = now + wheel_timing[where].gap_ns;
         return 0;
     }
     if (now < until || !queued) return 0;
     dir = queued > 0 ? 1 : -1;
     queued -= dir;
-    until = now + MAP_ZOOM_PULSE_NS;
+    until = now + wheel_timing[where].pulse_ns;
     return dir * STICK_MAX;
+}
+
+// After the keys, the gamepad and the script: where the wheel goes this poll (b holds the script's D-pad too, so a
+// scripted strip takes scripted notches). Under lock.
+static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
+    uint64_t b = *bp;
+    int32_t real = state > 0 ? ikb_wheel_take() : 0, notches = real + script_wheel;   // the script's under TOTK_INPUT=none too
+    script_wheel = 0;
+    if (menu_is_open()) notches = 0;
+    if (real && notches) {
+        __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);   // the pointer comes to a menu the wheel turns in
+        rec_wheel(real);
+    }
+    // A strip is its D-pad direction held with its screen open; with the menu cursor off (the screens not read,
+    // menu_cursor_shortcut -1) the buttons alone decide, as for the mouse's selectors
+    int sc = b & (1ull << B_UP | 1ull << B_LEFT | 1ull << B_RIGHT) && !(b & 1ull << B_L) ? menu_cursor_shortcut() : 0;
+    int strip = sc == -1 || sc == 1 || (sc == 0 && menu_cursor_strip());
+    int where = menu_cursor_map()      ? WHEEL_MAP
+                : strip                ? WHEEL_STRIP
+                : menu_cursor_camera() ? WHEEL_CAMERA
+                : menu_cursor_menu()   ? WHEEL_MENU
+                                       : WHEEL_NONE;
+    int32_t v = wheel_stick(notches, where);
+    if (!v) return;
+    if (where == WHEEL_CAMERA) *bp |= 1ull << (v > 0 ? B_UP : B_DOWN);
+    else if (where == WHEEL_MAP) pick(&sr[0], &sr[1], 0, v);
+    else if (where == WHEEL_STRIP) pick(&sr[0], &sr[1], -v, 0);
+    else pick(&sl[0], &sl[1], 0, v);
 }
 
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
@@ -680,13 +749,10 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             // Before the screens were read (the menu cursor off) the buttons alone decide, as before.
             if (selector && menu_cursor_shortcut() == 0) selector = 0;
             mouse_camera(k, selector);
-            // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there,
-            // the scroll wheel zooms (map_zoom_stick). Elsewhere the wheel is unbound; its notches are dropped.
-            int map = menu_cursor_map();
-            if (map) pick(&sl[0], &sl[1], k[0], k[1]);
+            // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there
+            // (the scroll wheel zooms, wheel_route)
+            if (menu_cursor_map()) pick(&sl[0], &sl[1], k[0], k[1]);
             else pick(&sr[0], &sr[1], k[0], k[1]);
-            int32_t zoom = map_zoom_stick(ikb_wheel_take(), map);
-            if (zoom) pick(&sr[0], &sr[1], 0, zoom);
             int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
             // A mouse shake (mouse_direct.c) moves the stick with the mouse, side by side, and lets go when it rests
@@ -701,6 +767,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
     script_apply(&b, sl, sr);
+    wheel_route(&b, sl, sr);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
