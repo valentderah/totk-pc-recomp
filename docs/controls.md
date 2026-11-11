@@ -205,7 +205,7 @@ On game 1.4.3, while one of the game's menus has its focus box (the frame the d-
 
 ### Left click on the map
 
-On game 1.4.3, while the Purah Pad's map is open (found as above; the Scope is not the map), the left mouse button presses A at the map's cursor instead of the button it is bound to (Y by default). A press is A or the binding from the moment the button goes down until it is released, so a button held as the map opens or closes keeps what it pressed (`poll_merged` in `runtime/input.c`). `map_click = 0` (`TOTK_MAP_CLICK=0`, live; the *Left click on the map* row of the Controls tab) leaves the left button on its binding there. The map is found only while `menu_cursor` is on.
+With `map_click = 1` (off by default, so each key presses one controller button as everywhere else), on game 1.4.3, while the Purah Pad's map is open (found as above; the Scope is not the map), the left mouse button presses A at the map's cursor instead of the button it is bound to (Y by default). A press is A or the binding from the moment the button goes down until it is released, so a button held as the map opens or closes keeps what it pressed (`poll_merged` in `runtime/input.c`). `map_click = 1` (`TOTK_MAP_CLICK=1`, live; the *Left click on the map* row of the Controls tab) turns it on and `0`, the default, leaves the left button on its binding there. The map is found only while `menu_cursor` is on.
 
 ## Nintendo Switch 2 controllers
 

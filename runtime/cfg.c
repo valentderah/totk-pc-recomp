@@ -156,7 +156,7 @@ static const CfgMeta metas[] = {
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
     {"MOUSE_MODE", "direct", "stick|direct", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MOUSE_AIM_SCALE", "1", "0.1..3", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
-    {"MAP_CLICK", "1", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
+    {"MAP_CLICK", "0", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
