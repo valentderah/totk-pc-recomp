@@ -869,6 +869,8 @@ static void tab_controls(float scale) {
     opt_choice("TOTK_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 2, UI_MENU_MOUSE_MODE_DESC);
     opt_slider("TOTK_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
     opt_toggle("TOTK_MENU_CURSOR", UI_MENU_MENU_CURSOR, UI_MENU_MENU_CURSOR_DESC);
+    opt_toggle("TOTK_MAP_CLICK", UI_MENU_MAP_CLICK, UI_MENU_MAP_CLICK_DESC);
+    opt_toggle("TOTK_DIALOGUE_CLICK", UI_MENU_DIALOGUE_CLICK, UI_MENU_DIALOGUE_CLICK_DESC);
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With

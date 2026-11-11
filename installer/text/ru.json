@@ -5,6 +5,7 @@
  "step.lift": "Перевод кода игры в C",
  "step.compile": "Сборка {game_exe}",
  "step.prepare": "Подготовка шейдеров",
+ "step.pc_prompts": "Рисование подсказок клавиатуры и мыши",
  "step.dlss": "Загрузка NVIDIA DLSS",
  "step.cleanup": "Уборка",
 
@@ -29,6 +30,7 @@
  "phase.compile.compile": "Компиляция",
  "phase.compile.link": "Компоновка {game_exe}",
  "phase.prepare.romfs_patches": "Запись патчей данных игры для 60 кадров/с",
+ "phase.pc_prompts.draw": "Рисование подсказок клавиш и кнопок мыши по назначениям из totk.ini",
  "phase.prepare.seed": "Чтение шейдеров из данных игры",
  "phase.prepare.translate": "Трансляция шейдеров",
  "phase.prepare.libraries": "Сборка шейдеров для драйвера видеокарты",

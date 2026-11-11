@@ -35,6 +35,15 @@ int menu_cursor_shortcut(void);
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
+// a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
+int menu_cursor_dialogue(void);
+// A menu screen (not the ability wheel, a D-pad strip or the map) has the game's focus box, whichever device was used
+// last: input.c turns the scroll wheel into steps of its focus. 0 with the menu cursor off.
+int menu_cursor_menu(void);
+// A D-pad strip's screen (ShortCut_00) is open; it has no focus box while held. 0 with the menu cursor off.
+int menu_cursor_strip(void);
+// The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
+int menu_cursor_camera(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

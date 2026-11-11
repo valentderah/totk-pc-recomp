@@ -43,8 +43,10 @@ romfs-patches-xbox-label-<w>x<h>: the same prompts with that shape's UI layout.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
 (button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
-guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes around the action prompt name the keys
-with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
+guide's images (A, B, X, Y, L, ZL and the stick's two). In the font Y is T, the key that presses it next to the left
+mouse button, which is A in the game's menus (button_icons.PC_TEXT_KEYS); the button guide keeps the left button. The
+one-letter panes around the action prompt name the keys with one character of the Normal font (E, an arrow for Shift,
+a bar for Space, L and R for the mouse buttons).
 
 --reuse <folder>: an overlay made before, such as romfs-patches-pc for romfs-patches-pc-<w>x<h>. Each file of it whose
 contents match the new one is hard-linked (copied where links fail) instead of compressed again; the summary's reused
@@ -403,12 +405,15 @@ if args.prompts:
     assert not missing, f'no {", ".join(missing)} in {icons.TEXT_ARCHIVE}'
     glyphs = icons.text_glyphs(archives[icons.TEXT_ARCHIVE][slice(*text[name])] for name in icons.TEXT_FONTS)
     if pc:
-        binds = icons.pc_binds(args.binds.read_text(encoding='utf-8', errors='replace') if args.binds else None)
+        ini = args.binds.read_text(encoding='utf-8', errors='replace') if args.binds else None
+        binds = icons.pc_binds(ini)
         advances = icons.font_advances(archives[icons.TEXT_ARCHIVE][slice(*text[icons.FONT])])
         drawn = icons.pc_icons(glyphs, advances, binds)
+        # The text prompts show Y as T (button_icons.PC_TEXT_KEYS); the button guide's images keep the left click
+        font_drawn = icons.pc_icons(glyphs, advances, icons.pc_binds(ini, text=True))
         pane_letters = {letter: icons.pc_letter(binds[letter]) for letter in 'ABXY'}
     else:
-        drawn = icons.xbox_icons(glyphs)
+        drawn = font_drawn = icons.xbox_icons(glyphs)
         pane_letters = KEY_LETTERS
     bntx = members['timg/__Combined.bntx'][0]
     letters = {}
@@ -431,7 +436,7 @@ if args.prompts:
         lo, hi = sarc_members(bfarc)[icons.FONT]
         otf, key = icons.bfotf_decode(bfarc[lo:hi])
         if otf not in fonts:
-            fonts[otf] = icons.redraw_font(otf, drawn, KEY_GLYPHS if by_position else ())
+            fonts[otf] = icons.redraw_font(otf, font_drawn, KEY_GLYPHS if by_position else ())
         outputs[path] = sarc_replace(bfarc, {icons.FONT: icons.bfotf_encode(fonts[otf], key, bfarc[lo:hi])})
     messages = {}
     for path in MALS if letter_panes else []:

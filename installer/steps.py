@@ -1098,10 +1098,10 @@ class Prepare(Step):
         # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
         # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
-        # prompts for prompts = pc.
+        # files are missing, so the setup warns once and goes on. The keyboard and mouse prompts are the PcPrompts
+        # step's: they follow totk.ini's bindings.
         failed = None
-        for style in ('xbox', 'xbox-label', 'pc'):
+        for style in ('xbox', 'xbox-label'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
@@ -1116,7 +1116,7 @@ class Prepare(Step):
         # the prompts and the screen's shape. Only the Common archive differs from romfs-patches-<style>; --reuse links
         # the fonts, messages and size table from there instead of compressing them again, so each folder takes
         # seconds and a few MiB. Optional like romfs-patches-<style>, and skipped without it.
-        for style in ('xbox', 'xbox-label', 'pc'):
+        for style in ('xbox', 'xbox-label'):
             plain = dest / f'romfs-patches-{style}'
             for size in ASPECT_SIZES:
                 out = dest / f'romfs-patches-{style}-{size}'
@@ -1165,6 +1165,63 @@ class Prepare(Step):
         if code:
             raise InstallError('prepare.pack_failed', code=code, log=str(log))
         return {'xlate_sha256': file_sha256(xlate)}
+
+
+# ---- 6b. Keyboard and mouse prompts
+
+def bind_lines(dest):
+    """The bind_ lines of the install's totk.ini (the Controls tab writes them), '' without the file."""
+    try:
+        text = (dest / 'totk.ini').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return ''
+    return '\n'.join(s for s in (line.split('#')[0].split(';')[0].strip() for line in text.splitlines())
+                     if s.lower().startswith('bind_'))
+
+
+class PcPrompts(Step):
+    """romfs-patches-pc and romfs-patches-pc-<w>x<h>, for prompts = pc: the prompts drawn as the keys and mouse buttons
+    of totk.ini's bind_ lines (make_romfs_patches.py --prompts pc --binds), the keyboard defaults without them. Its own
+    step, keyed by those lines, so running the setup again after a change of the bindings draws the prompts again and
+    leaves the shaders alone. Optional like the Xbox prompts: a failure warns, and the game keeps the Switch prompts."""
+    id = 'pc_prompts'
+
+    def key(self, ctx):
+        layout = ctx.layout
+        tools = [layout.tools / n for n in ('make_romfs_patches.py', 'ultrawide_layout.py', 'button_icons.py')]
+        return fingerprint('pc-prompts-1', ctx.keys['extract'], *tools, bind_lines(ctx.dest))
+
+    def current(self, ctx, record):
+        return record.get('failed') or (ctx.dest / 'romfs-patches-pc' / 'manifest.tsv').is_file()
+
+    def run(self, ctx):
+        layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
+        rep.progress('pc_prompts', 'draw', force=True)
+        binds = []
+        if bind_lines(dest):
+            binds = ['--binds', dest / 'totk.ini']
+        version = ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs']
+        plain = dest / 'romfs-patches-pc'
+        for out in [plain] + [dest / f'romfs-patches-pc-{size}' for size in ASPECT_SIZES]:
+            remove(out)
+        code, log = run_tool(ctx, 'prepare-pc', layout.tools / 'make_romfs_patches.py',
+                             version + ['--out', plain, '--prompts', 'pc', *binds])
+        failed = (code, log) if code else None
+        # Each shape of ASPECT_SIZES once more, as for the Xbox prompts (Prepare): --reuse links all but the Common
+        # archive from romfs-patches-pc.
+        for size in ASPECT_SIZES if not failed else ():
+            out = dest / f'romfs-patches-pc-{size}'
+            code, log = run_tool(ctx, f'prepare-pc-{size}', layout.tools / 'make_romfs_patches.py',
+                                 version + ['--out', out, '--prompts', 'pc', '--aspect', size, '--reuse', plain, *binds])
+            if code:
+                remove(out)
+                failed = failed or (code, log)
+        if failed:
+            if not (plain / 'manifest.tsv').is_file():
+                remove(plain)
+            rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
+            return {'failed': True}
+        return {}
 
 
 # ---- 7. NVIDIA DLSS
@@ -1310,4 +1367,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Dlss(), Cleanup()]
