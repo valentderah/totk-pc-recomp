@@ -1134,10 +1134,10 @@ site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x
 # holder can be reused memory by then, so the actor points into .rodata, outside the address space or at other heap
 # data, and the game crashes reading 0xffffffffffffffff. UltraTears (kuraeow/ultratears, ability target guard) found
 # the class. The load becomes a call to runtime/ov_ability.c host_ability_target (page+0xf60): x21 is the holder's
-# first word when the holder is readable and the actor passes the live-actor test (its link record [actor+0x1a8]
-# points back to it at +0x40 with its id at +0x48), else 0, which the game's cbz x21 skips for this frame. The answer
-# comes back in x9 and the cbz site moves it to x21: the lifted code keeps x21 (callee-saved) in a C local across the
-# call. x9 is dead after 0x1bd01c8 on every path (written or clobbered by a bl before any read); x30 is saved by the
+# first word, or 0 where the game's own code would fault on the target (holder, actor or component unreadable, the
+# reference word not writable), which the game's cbz x21 skips for this frame. Every other target goes on unchanged.
+# The answer comes back in x9 and the cbz site moves it to x21: the lifted code keeps x21 (callee-saved) in a C local
+# across the call. x9 is dead after 0x1bd01c8 on every path (written or clobbered by a bl before any read); x30 is saved by the
 # prologue and clobbered by the next bl anyway.
 set ability  TOTK_ABILITY_GUARD  1
 site ability main 1bd01c4 f9400115 947c3f67            # ldr x21, [x8] -> bl page+0xf60

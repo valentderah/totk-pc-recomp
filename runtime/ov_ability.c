@@ -2,20 +2,24 @@
 //
 // main+0x1bd0138 on 1.4.3 (main+0x1622b60 on 1.2.1, the same code and actor offsets) runs while an ability picks its
 // target. Once the owner's request says ready, it loads the result holder from the owner (x8 = [x19+0x6b0]), the
-// target actor from the holder (x21 = [x8]), links the actor (main+0x155ec), reads [[x21+0x228]+0xb0]
-// (main+0x9a89d4) and takes a reference on that (main+0x2b8464, an atomic write at +0x90).
-// The holder can be reused memory by then: the actor pointer lands in .rodata, past the address space or on heap
-// memory that holds other data, and the game crashes reading 0xffffffffffffffff (Windows' report of a non-canonical
-// address) minutes to hours into play. UltraTears (kuraeow/ultratears, "ability target guard") found the class and
-// the test below; this code is ours.
+// target actor from the holder (x21 = [x8]), links the actor (main+0x155ec: reads the actor's +0x10, +0x24 and
+// +0x1a8), reads [[x21+0x228]+0xb0] (main+0x9a89d4) and takes a reference on that (main+0x2b8464: an atomic
+// read-modify-write of the word at +0x90). The holder can be reused memory by then, and the game crashes reading
+// 0xffffffffffffffff (Windows' report of a non-canonical address) minutes to hours into play. UltraTears
+// (kuraeow/ultratears, "ability target guard") found the class; this code is ours.
+//
+// A target is dropped only where the game's own code would fault on it: the holder or the actor unreadable, the
+// component pointer unreadable, or the reference word unreadable or in a module's code or read-only data. Every
+// other target goes on exactly as the game reads it, so no target the game can handle is ever lost. UltraTears' test
+// of a live actor (its link record [actor+0x1a8] points back to it at +0x40 and carries its id at +0x48) is not in the
+// game's code: the game links an actor whose link record is null without complaint. It runs here as a log line only,
+// to show in players' logs whether it would ever reject a live target.
 //
 // The first site replaces `ldr x21, [x8]` with a call here; the second, at the game's `cbz x21` right after it, becomes
 // `mov x21, x9; cbz x21`. The answer travels in x9 because the lifted caller keeps x21 (callee-saved) in a C local
 // across the call and reloads only caller-saved registers; x9 is dead there on every path. x9 gets the holder's first
-// word when the holder is readable, and 0 when the holder is unreadable or the actor fails the live-actor test: the
-// actor's link record [actor+0x1a8] points back to it (+0x40) and carries its id (+0x48 == [actor+0x10]), and every
-// pointer the game then follows is readable. The cbz skips a 0 target for this frame, as it skips an empty one. A null
-// or tagged (bit 0) word goes back unchanged: the game skips those itself. No other register changes.
+// word, or 0 for a dropped target, which the cbz skips for this frame as it skips an empty one. A null or tagged
+// (bit 0) word goes back unchanged: the game skips those itself. No other register changes.
 // Only an ability's target pick reaches this (hundreds of calls an hour), so the memory queries cost nothing.
 #include <stdint.h>
 
@@ -28,54 +32,69 @@
 #ifdef RT_PATCH_PAGE
 
 #define HOST_ABILITY_TARGET (RT_PATCH_PAGE + 0xf60)
+#define ACTOR_SPAN 0x230   // the actor fields the function and its callees read: +0x10 .. +0x22f
 
-// 0 when [a, a+8) cannot be read.
-static int rd64(uint64_t a, uint64_t *v) {
-    *v = 0;
-    if (!a || (a & 7) || !mem_guest_readable(a, 8)) return 0;
-    *v = *(volatile uint64_t *)(uintptr_t)a;
-    return 1;
+static int readable(uint64_t a, uint64_t n) { return a && !(a & 3) && mem_guest_readable(a, n); }
+
+static uint64_t u64_at(uint64_t a) { return *(volatile uint64_t *)(uintptr_t)a; }
+static uint32_t u32_at(uint64_t a) { return *(volatile uint32_t *)(uintptr_t)a; }
+
+// [a, a+4) inside a module's code or read-only data: a write there faults.
+static int read_only_module(uint64_t a) {
+    for (int i = 0; i < ldr_count(); i++) {
+        const RtLoaded *m = ldr_module(i);
+        if (a - m->base < m->size) return a - m->base < m->data_off;
+    }
+    return 0;
 }
 
-static int rd32(uint64_t a, uint32_t *v) {
-    *v = 0;
-    if (!a || (a & 3) || !mem_guest_readable(a, 4)) return 0;
-    *v = *(volatile uint32_t *)(uintptr_t)a;
-    return 1;
-}
-
-// NULL when the actor passes, else why it does not.
-static const char *stale(uint64_t actor) {
-    uint64_t link, back, comp, sub, ref;
-    uint32_t link_id, actor_id;
-    if (!rd64(actor + 0x1a8, &link) || !rd32(actor + 0x10, &actor_id)) return "actor not readable";
-    if (!rd64(link + 0x40, &back)) return "link record not readable";
-    if (back != actor) return "link record points elsewhere";
-    if (!rd32(link + 0x48, &link_id) || link_id != actor_id) return "link record has another id";
-    if (!rd64(actor + 0x228, &comp)) return "actor not readable";
+// NULL when the game's code can follow the actor without a fault, else what would fault.
+static const char *faults(uint64_t actor) {
+    if (!readable(actor, ACTOR_SPAN)) return "actor not readable";
+    uint64_t comp = u64_at(actor + 0x228);
     if (!comp) return NULL;   // main+0x9a89d4 returns 0 for it and the game stops there
-    if (!rd64(comp + 0xb0, &sub)) return "component not readable";
-    if (sub && !rd64(sub + 0x90, &ref)) return "component target not readable";
+    if (!readable(comp + 0xb0, 8)) return "component not readable";
+    uint64_t ref = u64_at(comp + 0xb0);
+    if (!ref) return NULL;    // the game's cbz x0 skips the reference
+    if (!readable(ref + 0x90, 4) || read_only_module(ref + 0x90)) return "reference word not writable";
+    return NULL;
+}
+
+// UltraTears' live-actor test, for the log: NULL when it passes.
+static const char *not_live(uint64_t actor) {
+    uint64_t link = u64_at(actor + 0x1a8);
+    if (!readable(link + 0x40, 0x10)) return "link record not readable";
+    if (u64_at(link + 0x40) != actor) return "link record points elsewhere";
+    if (u32_at(link + 0x48) != u32_at(actor + 0x10)) return "link record has another id";
     return NULL;
 }
 
 static void host_ability_target(Cpu *c) {
-    static uint64_t checked, skipped;
+    static uint64_t checked, dropped, mismatched;
     uint64_t holder = c->x[8], actor = 0;
     const char *why = NULL;
-    if (!rd64(holder, &actor)) why = "holder not readable";
-    else if (actor && !(actor & 1)) why = stale(actor);
-    if (!why) {
-        c->x[9] = actor;
-        if (actor && !(actor & 1) && __atomic_add_fetch(&checked, 1, __ATOMIC_RELAXED) == 1)
-            rt_log("ability: first target checked, live (TOTK_ABILITY_GUARD=0: no check)");
+    if (!readable(holder, 8)) why = "holder not readable";
+    else if ((actor = u64_at(holder)) && !(actor & 1)) why = faults(actor);
+    if (why) {
+        c->x[9] = 0;
+        uint64_t n = __atomic_add_fetch(&dropped, 1, __ATOMIC_RELAXED);
+        if (n <= 20 || !(n & (n - 1)))
+            rt_log("ability: target dropped, the game would fault on it (%s): holder %#llx actor %#llx; %llu dropped",
+                   why, (unsigned long long)holder, (unsigned long long)actor, (unsigned long long)n);
         return;
     }
-    c->x[9] = 0;
-    uint64_t n = __atomic_add_fetch(&skipped, 1, __ATOMIC_RELAXED);
+    c->x[9] = actor;
+    if (!actor || (actor & 1)) return;
+    uint64_t k = __atomic_add_fetch(&checked, 1, __ATOMIC_RELAXED);
+    const char *odd = not_live(actor);
+    if (!odd) {
+        if (k == 1) rt_log("ability: first target checked (TOTK_ABILITY_GUARD=0: no check)");
+        return;
+    }
+    uint64_t n = __atomic_add_fetch(&mismatched, 1, __ATOMIC_RELAXED);
     if (n <= 20 || !(n & (n - 1)))
-        rt_log("ability: stale target skipped (%s): holder %#llx actor %#llx; %llu skipped", why,
-               (unsigned long long)holder, (unsigned long long)actor, (unsigned long long)n);
+        rt_log("ability: target kept although the live-actor test fails (%s): actor %#llx; %llu of %llu targets", odd,
+               (unsigned long long)actor, (unsigned long long)n, (unsigned long long)k);
 }
 
 __attribute__((constructor)) static void ability_register(void) {
