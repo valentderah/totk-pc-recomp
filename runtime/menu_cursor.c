@@ -50,6 +50,10 @@ enum { DI_PROJ = 0x10, DI_VIEW = 0x50, LYT_ROOT = 0x18, LYT_SIZE = 0x28, LYT_NAM
 // nn::ui2d::Pane
 enum { PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59, PANE_BASE = 0x5b, PANE_MTX = 0x70 };
 
+// How far the pointer moves, in layout units (1280 x 720 across the picture: 1.5 window pixels at 1080p, 3 at 4K),
+// before it takes back a focus that the wheel, the keys or the pad moved away from it (menu_cursor_poll)
+#define DEAD_ZONE 6.0f
+
 static uint64_t main_lo, main_hi;
 
 static int ok_at(uint64_t p, uint64_t n) {
@@ -324,9 +328,10 @@ static void log_screen(const Focus *f, const char *nm, int n, float lw, float lh
 
 // Once per pad read on the game thread: the pointer's hover and clicks, as pad buttons (A, B) for this read
 void menu_cursor_poll(uint64_t *buttons) {
-    static int inited, pending_a, held_l, held_r;
+    static int inited, pending_a, held_l, held_r, anchored;
     static uint64_t pending_node, pending_until, hold_until, hold_bit, menu_seen;
-    static float last_px = -1, last_py = -1;
+    static uint64_t ptr_node, last_focus;   // the item the pointer last pointed at, the focus at the last read
+    static float last_px = -1, last_py = -1, anchor_px, anchor_py;
     if (!inited) {
         inited = 1;
         main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
@@ -367,7 +372,7 @@ void menu_cursor_poll(uint64_t *buttons) {
         return;
     }
     if (gap) return;   // a click's focus request waits for the next screen
-    if (!menu) { pending_a = 0; last_px = last_py = -1; return; }
+    if (!menu) { pending_a = 0, anchored = 0, ptr_node = last_focus = 0; last_px = last_py = -1; return; }
     if (pending_a) {   // the focus asked for by a click: A once it is there
         if (rd64(f.control + CTL_ACTIVE) == pending_node) {
             pending_a = 0, hold_until = now + 60, hold_bit = 1ull << B_A;
@@ -381,11 +386,21 @@ void menu_cursor_poll(uint64_t *buttons) {
     if (click_r) { hold_until = now + 60, hold_bit = 1ull << B_B; *buttons |= hold_bit; return; }
     float px, py;
     if (!picture_pos(&px, &py)) return;
+    // The focus moved to another item than the pointer's (the scroll wheel, the keys, the pad): the pointer takes it
+    // back only after it has left a dead zone of DEAD_ZONE layout units around where it was then, so a hand resting on
+    // the mouse does not undo a scroll. A click still acts at once.
+    if (f.node != last_focus) {
+        if (f.node != ptr_node) anchored = 1, anchor_px = px, anchor_py = py;
+        last_focus = f.node;
+    }
     int moved = fabsf(px - last_px) > 0.001f || fabsf(py - last_py) > 0.001f;
     if (!moved && !click_l) return;
     last_px = px, last_py = py;
     float lw, lh;
     layout_size(f.screen, &lw, &lh);
+    if (anchored && !click_l && fabsf(px - anchor_px) * lw < DEAD_ZONE && fabsf(py - anchor_py) * lh < DEAD_ZONE)
+        return;
+    anchored = 0;
     Xf xf = screen_xf(f.screen);
     Pt p = {(px - 0.5f) * lw, (0.5f - py) * lh, px * 2 - 1, 1 - py * 2, NULL};
     if (xf.ok && !xf_plain(&xf, lw, lh)) p.t = &xf;
@@ -394,6 +409,7 @@ void menu_cursor_poll(uint64_t *buttons) {
     log_screen(&f, nm, n, lw, lh, p.t, n && stale_hit_panes(n, btn, lw, lh, p.t));
     uint64_t at = n ? node_at(n, node, btn, &p, lw, lh) : 0;
     if (!at) return;
+    ptr_node = at;
     if (at != f.node) move_focus(&f, at);
     if (click_l) {
         if (at == f.node) { hold_until = now + 60, hold_bit = 1ull << B_A; *buttons |= hold_bit; }
