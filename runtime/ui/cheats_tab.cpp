@@ -69,8 +69,9 @@ extern "C" bool tab_cheats(float scale) {
     opt_begin("##cheats", scale);
     static char line[512], desc[768], buttons[192];
     int n = cheats_count();
-    bool have_builtin = builtin_rows();
-    if (!n && !have_builtin) {
+    builtin_rows();
+    opt_group_text("User-supplied");
+    if (!n) {
         snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_NONE), cheats_file()[0] ? cheats_file() : "<build id>.txt");
         opt_text_str(line);
         opt_end();
