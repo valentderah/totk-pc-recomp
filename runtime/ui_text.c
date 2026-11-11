@@ -218,8 +218,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
     [UI_MENU_MODS_CHEATS_FILE] = "Cheats for this game version are read at start from cheats\\%s in this mod.",
     [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
-    [UI_MENU_MODS_OTHER_VERSION] = "%u of its files are made for another game version and are left out. Look for a "
-                                   "version of this mod made for your game version.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u of its files carry another game version in their names. The game reads them only "
+                                   "where something asks for those names. If the mod does nothing, look for a version "
+                                   "of it made for your game version.",
     [UI_MENU_MODS_UNUSED] = "not used",
     [UI_MENU_MODS_FPS60] = "60 FPS patch",
     [UI_MENU_MODS_FPS60_DESC] = "The port's own patch for 60 frames per second. Set it with Frame rate limit on the "
@@ -699,8 +700,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
     [UI_MENU_MODS_CHEATS_FILE] = "Читы для этой версии игры читаются при запуске из cheats\\%s в этом моде.",
     [UI_MENU_MODS_BAD_NAME] = "В имени папки есть символ |, которым список модов разделяет имена. Переименуйте папку.",
-    [UI_MENU_MODS_OTHER_VERSION] = "Файлов для другой версии игры: %u, они пропущены. Поищите версию этого мода для "
-                                   "вашей версии игры.",
+    [UI_MENU_MODS_OTHER_VERSION] = "Файлов с другой версией игры в имени: %u. Игра читает их, только когда что-то "
+                                   "запрашивает эти имена. Если мод не работает, поищите его версию для вашей версии "
+                                   "игры.",
     [UI_MENU_MODS_UNUSED] = "не используется",
     [UI_MENU_MODS_FPS60] = "Патч 60 FPS",
     [UI_MENU_MODS_FPS60_DESC] = "Собственный патч порта для 60 кадров в секунду. Настраивается «Ограничением частоты "
@@ -1029,8 +1031,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Ligue-os na aba Cheats.",
     [UI_MENU_MODS_CHEATS_FILE] = "Os cheats desta versão do jogo são lidos ao iniciar de cheats\\%s neste mod.",
     [UI_MENU_MODS_BAD_NAME] = "O nome da pasta contém |, que a lista de mods usa entre os nomes. Renomeie a pasta.",
-    [UI_MENU_MODS_OTHER_VERSION] = "%u dos seus arquivos são de outra versão do jogo e ficam de fora. Procure uma versão "
-                                   "deste mod feita para a sua versão do jogo.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u dos seus arquivos trazem outra versão do jogo no nome. O jogo só os lê quando algo "
+                                   "pede esses nomes. Se o mod não fizer nada, procure uma versão dele feita para a sua "
+                                   "versão do jogo.",
     [UI_MENU_MODS_UNUSED] = "não usado",
     [UI_MENU_MODS_FPS60] = "Patch de 60 FPS",
     [UI_MENU_MODS_FPS60_DESC] = "O patch do próprio port para 60 quadros por segundo. Ajuste em Limite de quadros na aba "
@@ -1552,7 +1555,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "金手指：%d 个。在“金手指”标签页中开关。",
     [UI_MENU_MODS_CHEATS_FILE] = "此游戏版本的金手指在启动时从此模组的 cheats\\%s 读取。",
     [UI_MENU_MODS_BAD_NAME] = "文件夹名称含有 |，模组列表用它分隔名称。请重命名该文件夹。",
-    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 个文件是为其他游戏版本制作的，已被跳过。请寻找适用于你的游戏版本的此模组。",
+    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 个文件的文件名带有其他游戏版本号。只有在有内容请求这些文件名时，游戏才会读取它们。"
+                                   "如果模组不起作用，请寻找适用于你的游戏版本的此模组。",
     [UI_MENU_MODS_UNUSED] = "未使用",
     [UI_MENU_MODS_FPS60] = "60 FPS 补丁",
     [UI_MENU_MODS_FPS60_DESC] = "移植版自带的 60 帧补丁。在“游戏”页的帧率上限中设置。",

@@ -30,8 +30,9 @@ typedef struct {
     int kind, enabled;
     ModProblem problem;
     uint32_t replaced, added, overridden;   // romfs.c: files served (replacing / added), files a higher mod serves
-    uint32_t other_version;                 // files for another game version (RomFS *.Product.<n>.*, ExeFS patches
-                                            // for another build), not used
+    uint32_t other_version;                 // files named for another game version: RomFS *.Product.<n>.* the RomFS
+                                            // lacks (served under their own names; another version's size table is
+                                            // not) and ExeFS patches for another build (not used)
     char overridden_by[256];                // the first higher mod that took one of its files
     char note[256];                         // MOD_EXEFS_UNSUPPORTED: why
     uint32_t pending, pending_key;          // ExeFS patch files the build lacks; FNV-1a of their names and contents

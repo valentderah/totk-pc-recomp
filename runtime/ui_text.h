@@ -88,7 +88,7 @@ typedef enum {
     UI_MENU_MODS_EXEFS_OTHER,
     UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
     UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
-    UI_MENU_MODS_OTHER_VERSION,  // printf: files made for another game version, left out
+    UI_MENU_MODS_OTHER_VERSION,  // printf: files named for another game version, read only when asked for by name
     UI_MENU_MODS_UNUSED,         // under the switch of a mod the port cannot use
     UI_MENU_MODS_CHEATS,         // printf: its cheats as read at start
     UI_MENU_MODS_CHEATS_FILE,    // printf: <build id>.txt, when none were read
