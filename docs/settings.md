@@ -213,3 +213,17 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `mouse_direct_patch` (default `1`) | Patch set of the hooks in the game's camera code behind `mouse_mode = direct` on game 1.4.3. | `0` stops `mouse_mode = direct` from taking effect; other mouse modes are unaffected. | Safe |
 | `patch_output` (default `0`) | Patch set that makes the game use the configured output size for its swapchain and display configuration. | The resolution code switches this set whenever the output differs from the base size; a manual value is replaced. | Unknown |
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
+
+## Independent controls
+
+Configure experimental controls through the remake Controls page; see [Controls](controls.md).
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `action_sprint` | Shared Sprint binding using key/pad entries. | Changes Sprint in both modes. | Safe |
+| `action_crouch` | Shared Crouch binding using key/pad entries. | Changes Crouch in both modes. | Safe |
+| `action_attack` | Shared Attack binding using key/pad entries. | Changes Attack in both modes. | Safe |
+| `action_bow` | Shared bow aiming binding using key/pad entries. | Changes bow aiming in both modes. | Safe |
+| `action_throw` | Shared Throw binding using key/pad entries. | Changes Throw; Advanced may separately override Dive or rotation. | Safe |
+| `action_guard` | Shared shield/target binding using key/pad entries. | Standard groups shield and targeting; Advanced adds separate targeting. | Safe |
+| `action_advanced_initialized` (default `0`) | Internal marker set after initializing specific Advanced bindings. | Leave it to the Controls UI to preserve existing bindings. | Caution |

@@ -18,6 +18,11 @@ holds only the game; the installer and its tools stay outside it.
 3. Waits for the setup, one time. The window shows each step and its progress.
 4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
 
+The installer automatically includes the optional independent-controls adapter for the verified
+1.4.3 executable. The setup choices and game-file requirements are unchanged. Enable it in F1 → Controls: Standard
+keeps related controls grouped; Advanced reveals specific actions while movement and camera remain shared. No
+logging build or research files are needed. Unsupported versions and overlapping code patches retain native controls.
+
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
 ```

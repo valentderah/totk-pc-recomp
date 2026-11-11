@@ -188,7 +188,7 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
 # functions sit on it). mouse_direct.c also registers host callbacks relative to that version's patch page.
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c'}
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'input_actions_game.c'}
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
@@ -891,6 +891,8 @@ def main():
     if not (gen / 'layout.json').is_file():
         sys.exit(f'{gen / "layout.json"} not found: run the generator first')
 
+    if not args.make_runtime_lib and not (gen / 'input_actions_game_config.h').is_file():
+        sys.exit('Independent-controls configuration missing: regenerate with recomp/gen.py before building')
     layout = read_layout(gen)
     names = [n for n, _, _ in layout]
     wanted = args.modules.split(',') if args.modules else names
