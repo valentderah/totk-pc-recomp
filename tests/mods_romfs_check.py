@@ -154,13 +154,15 @@ def main():
         put(mods, UNI, p2, b'mod-G')
         # a file of another game version's (no RomFS has a Product.999 table): counted, never served
         put(mods, 'Low', 'System/Resource/ResourceSizeTable.Product.999.rsizetable.zs', b'mod-H')
+        # any other file named for another version: counted, and served under its name as an added file
+        put(mods, 'Case', 'Sound/Resource/Named.Product.999.bars', b'mod-J')
         put(mods, 'Lite', 'Lite/added.bin', b'mod-I', part='romfslite')   # TKMM's romfslite folder
 
         code, log = run(args.exe, mods, f'Top|Low|{UNI}|Case')
         check(code == 0, 'probe-fs passes with five mods (served bytes equal the winners\' files)', log)
         for line in ('mods: Top: 2 files served (1 replaced, 1 added), 0 overridden',
                      'mods: Low: 1 files served (1 replaced, 0 added), 2 overridden by Top, 1 for another game version',
-                     'mods: Case: 0 files served (0 replaced, 0 added), 1 overridden by Top',
+                     'mods: Case: 1 files served (0 replaced, 1 added), 1 overridden by Top, 1 for another game version',
                      f'mods: {UNI}: 0 files served (0 replaced, 0 added), 1 overridden by Low',
                      'mods: Lite: 1 files served (0 replaced, 1 added), 0 overridden'):
             check(line in log, line, log)
