@@ -266,13 +266,19 @@ static int ensure_init(void) {
     }
     // TOTK_VK_DYN_VERTEX=0/1 forces dynamic vertex input off or on. Default off on Intel's frozen Windows driver for its
     // older integrated GPUs (UHD 630, Ice Lake: Vulkan 1.3.215 and older), which draws nothing with it; LAS Recomp
-    // turns it off there for the same reason.
+    // turns it off there for the same reason. Also off on Intel's current Windows driver for its integrated GPUs
+    // (vk_caps.intel_igpu_win): on UHD Graphics (i3-1215U, 101.6129; i3-1305U, 101.7088) and Iris Xe (101.7092) it
+    // drew black rectangles over walls, trees and floating islands, and vk_dyn_vertex = 0 removed them (issues #970,
+    // #992, #81). Mesa's ANV on the same GPUs keeps it: a report there (#989) had both switches off and its glitch stayed.
     const char *dv = cfg_get("TOTK_VK_DYN_VERTEX");   // no fixed default: it depends on the GPU, see above
     int intel_legacy = c->props.vendorID == 0x8086 && c->props.apiVersion <= VK_MAKE_API_VERSION(0, 1, 3, 215);
-    int dv_on = dv && *dv ? strcmp(dv, "0") != 0 : !intel_legacy;
+    int dv_on = dv && *dv ? strcmp(dv, "0") != 0 : !intel_legacy && !vk_caps.intel_igpu_win;
     P.dyn_vi = dv_on && c->has_vertex_input_dynamic_state && PROC(set_vi, "vkCmdSetVertexInputEXT");
     if (!dv_on && c->has_vertex_input_dynamic_state)
-        rt_log("vk_pipeline: dynamic vertex input off (%s)", dv && *dv ? "TOTK_VK_DYN_VERTEX=0" : "Intel's older Windows driver draws nothing with it");
+        rt_log("vk_pipeline: dynamic vertex input off (%s)",
+               dv && *dv      ? "TOTK_VK_DYN_VERTEX=0"
+               : intel_legacy ? "Intel's older Windows driver draws nothing with it"
+                              : "Intel's Windows driver for integrated GPUs draws black patches with it");
     if (c->has_eds3) {
         P.dyn_clamp = e3.extendedDynamicState3DepthClampEnable && P.f_depth_clamp && PROC(set_clamp, "vkCmdSetDepthClampEnableEXT");
         P.dyn_poly = e3.extendedDynamicState3PolygonMode && PROC(set_poly, "vkCmdSetPolygonModeEXT");
@@ -285,12 +291,17 @@ static int ensure_init(void) {
     // RDNA 2 and older (vk_caps.amd_sc), which applies alpha to coverage while the dynamic state says off: on an RX 590
     // (24.9.1) TotK, which never turns it on, drew Link and the NPCs with depth but no colour (black silhouettes) and
     // dithered other surfaces into checkerboards (issue #67, RX 470/570/580). Taken out of the dynamic state, it goes
-    // into the pipeline key and the characters draw.
+    // into the pipeline key and the characters draw. Also off on Intel's Windows driver for its integrated GPUs
+    // (vk_caps.intel_igpu_win): UHD Graphics and Iris Xe drew coloured noise on branches, foliage and wood with it, and
+    // vk_dyn_a2c = 0 removed it (issues #970, #992, #419).
     const char *da = cfg_get("TOTK_VK_DYN_A2C");   // no fixed default: it depends on the driver, see above
-    int da_on = da && *da ? strcmp(da, "0") != 0 : !vk_caps.amd_sc;
+    int da_on = da && *da ? strcmp(da, "0") != 0 : !vk_caps.amd_sc && !vk_caps.intel_igpu_win;
     if (!da_on && P.dyn_a2c) {
         P.dyn_a2c = 0;
-        rt_log("vk_pipeline: dynamic alpha to coverage off (%s)", da && *da ? "TOTK_VK_DYN_A2C=0" : "AMD's driver for RDNA 2 and older");
+        rt_log("vk_pipeline: dynamic alpha to coverage off (%s)",
+               da && *da        ? "TOTK_VK_DYN_A2C=0"
+               : vk_caps.amd_sc ? "AMD's driver for RDNA 2 and older"
+                                : "Intel's Windows driver for integrated GPUs draws coloured noise with it");
     }
 #undef PROC
     static const VkDynamicState core[] = {
@@ -3223,10 +3234,11 @@ static void dyn_vals(const VkPipeState *s, DynVals *o) {
     }
 }
 
-// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it (the replay thread only):
-// the values, the inputs of the vertex input and the vertex bindings it reads. Invariant while the caller passes
-// valid 1: cb holds DC.v for every dynamic state of P.dyn, colour attachments [0, DC.v.n) included.
-static struct {
+// What the replay's command buffer holds, as vk_pipeline_set_dynamic_delta last recorded it: the values, the inputs of
+// the vertex input and the vertex bindings it reads. Invariant while the caller passes valid 1: cb holds DC.v for every
+// dynamic state of P.dyn, colour attachments [0, DC.v.n) included. Per thread: the threads of a chunked replay
+// (vk_exec.c) each record their own command buffers, and a new one starts with valid 0.
+static _Thread_local struct {
     DynVals v;
     const GfxShader *vs;
     uint32_t vattr[16];

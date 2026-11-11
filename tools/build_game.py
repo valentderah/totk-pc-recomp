@@ -46,8 +46,9 @@ of its processes (Windows job object accounting: committed private bytes).
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
 from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx, VMA) then come from --deps DIR
-(default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs), and the C++
-runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
+(default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs copied next to
+totk.exe: SDL3.dll, libopus-0.dll and, when SDL3.dll comes from MSYS2, the libiconv-2.dll it imports, without which
+the exe stops at start with 0xc000007b or a missing-DLL error), and the C++ runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
 
 Split build. --make-runtime-lib compiles only runtime/ into <out>/libtotkrt.a (what CI prebuilds). --runtime-lib PATH
 then compiles only the generated C and the install-time files (modules.c and INSTALL_SIDE, which bake the player's
@@ -274,8 +275,8 @@ def copy_romfs_patches(version, out):
     menus' captured background turned black). Copies every romfs-patches* folder of build/<version> that has a
     manifest, the same way when it differs: romfs-patches, romfs-patches-xbox, romfs-patches-xbox-label and
     romfs-patches-pc (the same with Xbox or keyboard and mouse button prompts, make_romfs_patches.py --prompts) and
-    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-pc-<w>x<h> (make_romfs_patches.py --aspect),
-    which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
+    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-<style>-<w>x<h> (make_romfs_patches.py
+    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
     names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*') if p.is_dir())
     for name in names:
         src = ROOT / 'build' / version / name
