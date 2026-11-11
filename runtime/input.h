@@ -40,6 +40,8 @@ int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick i
 int menu_cursor_menu(void);
 // A D-pad strip's screen (ShortCut_00) is open; it has no focus box while held. 0 with the menu cursor off.
 int menu_cursor_strip(void);
+// The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
+int menu_cursor_camera(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

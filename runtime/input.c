@@ -566,15 +566,17 @@ static int32_t shake_stick(int held) {
 //  - while a D-pad strip (weapons, shields, bows, materials) is held open it steps the choice: the right stick's x, away
 //    from the player to the left, towards the player to the right;
 //  - in a menu with the game's focus box (the inventory, shops, Options, the save list; menu_cursor_menu) it steps the
-//    focus: the left stick's y, away from the player up.
+//    focus: the left stick's y, away from the player up;
+//  - in the Purah Pad's camera (menu_cursor_camera) it zooms: the D-pad's up (away from the player, in) or down, the
+//    buttons its guide shows for the zoom.
 // Each notch is a full-tilt pulse with neutral after it (wheel_timing), so the game sees one notch as one step, and a
 // fast scroll's notches wait their turn (at most WHEEL_QUEUE); a turn the other way drops them. A strip's pulse is the
 // mouse's (input_direct_mouse_row: 32 ms each way); a menu takes the stick on its own update, a frame of the game's
 // 30 Hz or less, so its pulse covers two. Elsewhere, and while the settings menu is open, the notches are dropped.
-enum { WHEEL_NONE, WHEEL_MAP, WHEEL_STRIP, WHEEL_MENU };
+enum { WHEEL_NONE, WHEEL_MAP, WHEEL_STRIP, WHEEL_MENU, WHEEL_CAMERA };
 static const struct { uint64_t pulse_ns, gap_ns; } wheel_timing[] = {
     [WHEEL_MAP] = {100000000ull, 50000000ull}, [WHEEL_STRIP] = {32000000ull, 32000000ull},
-    [WHEEL_MENU] = {70000000ull, 50000000ull}};
+    [WHEEL_MENU] = {70000000ull, 50000000ull}, [WHEEL_CAMERA] = {100000000ull, 50000000ull}};
 #define WHEEL_QUEUE 4
 #define WHEEL_GAP_NS 300000000ull   // a menu's focus gap (a tab switch): queued notches wait this long for its next screen
 
@@ -611,7 +613,8 @@ static int32_t wheel_stick(int32_t notches, int where) {
 
 // After the keys, the gamepad and the script: where the wheel goes this poll (b holds the script's D-pad too, so a
 // scripted strip takes scripted notches). Under lock.
-static void wheel_route(uint64_t b, int32_t sl[2], int32_t sr[2]) {
+static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
+    uint64_t b = *bp;
     int32_t real = state > 0 ? ikb_wheel_take() : 0, notches = real + script_wheel;   // the script's under TOTK_INPUT=none too
     script_wheel = 0;
     if (menu_is_open()) notches = 0;
@@ -623,10 +626,15 @@ static void wheel_route(uint64_t b, int32_t sl[2], int32_t sr[2]) {
     // menu_cursor_shortcut -1) the buttons alone decide, as for the mouse's selectors
     int sc = b & (1ull << B_UP | 1ull << B_LEFT | 1ull << B_RIGHT) && !(b & 1ull << B_L) ? menu_cursor_shortcut() : 0;
     int strip = sc == -1 || sc == 1 || (sc == 0 && menu_cursor_strip());
-    int where = menu_cursor_map() ? WHEEL_MAP : strip ? WHEEL_STRIP : menu_cursor_menu() ? WHEEL_MENU : WHEEL_NONE;
+    int where = menu_cursor_map()      ? WHEEL_MAP
+                : strip                ? WHEEL_STRIP
+                : menu_cursor_camera() ? WHEEL_CAMERA
+                : menu_cursor_menu()   ? WHEEL_MENU
+                                       : WHEEL_NONE;
     int32_t v = wheel_stick(notches, where);
     if (!v) return;
-    if (where == WHEEL_MAP) pick(&sr[0], &sr[1], 0, v);
+    if (where == WHEEL_CAMERA) *bp |= 1ull << (v > 0 ? B_UP : B_DOWN);
+    else if (where == WHEEL_MAP) pick(&sr[0], &sr[1], 0, v);
     else if (where == WHEEL_STRIP) pick(&sr[0], &sr[1], -v, 0);
     else pick(&sl[0], &sl[1], 0, v);
 }
@@ -737,7 +745,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
     script_apply(&b, sl, sr);
-    wheel_route(b, sl, sr);
+    wheel_route(&b, sl, sr);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
