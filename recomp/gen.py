@@ -562,8 +562,9 @@ _W = {}  # worker state: 'mods' {name: (path, base)}, 'starts' {name: sorted arr
          # 'reads' {name: [(start, end)]} module bytes read since the last chunk
 
 
-def _worker_init(mods, starts, table, opts, jobs):
+def _worker_init(mods, starts, table, opts, jobs, actions):
     _W['jobs'] = jobs
+    _W['actions'] = actions
     _W['mods'] = mods
     _W['starts'] = starts
     _W['patches'] = table
@@ -577,17 +578,23 @@ def _emitter(name):
     if e is None:
         path, base = _W['mods'][name]
         mod = Module(name, path, base, 'c')
-        # Module.read is how the jump tables (recomp/jumptables.py _eval) read .text and .rodata at lift time: the
-        # bytes it returns become part of the generated code, so <mod>/folded.txt lists them
-        read, reads = mod.read, _W['reads'].setdefault(name, [])
+        options = dict(patched=_W['patches'].for_module(name, base),
+                       spins=_W['patches'].spins_for(name, base), **_W['opts'])
+        starts = set(_W['starts'][name].tolist())
+        if name == 'main' and _W['actions'].get('supported'):
+            import input_actions
+            e = input_actions.emitter(Emitter, mod, starts, _W['actions'], **options)
+        else:
+            e = Emitter(mod, starts, **options)
+        _W['emitters'][name] = e
+        # Record reads on the emitter's actual module: the controls adapter may have made a patched copy.
+        # Jump-table constants still belong in folded.txt so later data patches cannot overwrite them.
+        read, reads = e.mod.read, _W['reads'].setdefault(name, [])
 
         def recorded(a, n, signed=False):
             reads.append((a - base, a - base + n))
             return read(a, n, signed=signed)
-        mod.read = recorded
-        e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
-                                           _W['patches'].for_module(name, base),
-                                           spins=_W['patches'].spins_for(name, base), **_W['opts'])
+        e.mod.read = recorded
     return e
 
 
@@ -718,6 +725,7 @@ def main():
     if unknown:
         raise SystemExit(f'not in {args.exefs}: {", ".join(sorted(unknown))}')
 
+    actions = {'supported': False, 'reason': 'main module not requested'}
     paths, starts_abs, info, tasks = {}, {}, {}, []
     for name, base, _ in mods:
         if name not in want:
@@ -729,6 +737,11 @@ def main():
         starts, dstats = discover(mod)
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
+        if name == 'main':
+            import input_actions
+            actions = input_actions.discover(mod, path, abs_starts.tolist(), table.for_module(name, base))
+            if args.limit:
+                actions = {'supported': False, 'reason': 'partial function emission'}
         n = len(starts) if not args.limit else min(args.limit, len(starts))
         ends = np.append(abs_starts[1:], mod.hi)
         chunks = partition(est[:n], args.chunk_fns, args.chunk_bytes, args.big_fn)
@@ -746,6 +759,17 @@ def main():
               f'{len(chunks)} chunks, discovery {time.perf_counter() - t:.1f}s', file=sys.stderr, flush=True)
         del mod
 
+    # Configuration is generated even for unsupported versions, whose adapter is an explicit native-input fallback.
+    # A partial module refresh must not invalidate an already emitted main module's hooks.
+    config_path = args.out / 'input_actions_game_config.h'
+    if 'main' in want or not config_path.exists():
+        import input_actions
+        write_if_changed(config_path, input_actions.header(actions, GENERATED_MARKER))
+        status = {key: actions[key] for key in ('supported', 'reason', 'main_sha256') if key in actions}
+        status['marker'] = GENERATED_MARKER
+        write_if_changed(args.out / 'input_actions.json', json.dumps(status, indent=2) + '\n')
+        print('independent controls: ' + actions['reason'], file=sys.stderr, flush=True)
+
     # Largest chunks first, so the pool does not end on a long tail.
     tasks.sort(key=lambda t: -t[0])
     results = {name: [] for name in info}
@@ -761,7 +785,7 @@ def main():
         try:
             # Chunk writes are atomic and idempotent, so a chunk lost with a failed pool is simply emitted again.
             # Its folded bytes come with its result: a chunk emitted again reads them again in its new worker.
-            with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts, jobs)) as pool:
+            with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts, jobs, actions)) as pool:
                 for r in pool.imap_unordered(_emit_chunk, pending, chunksize=1):
                     results[r['module']].append(r)
                     folded[r['module']] += r['folded']

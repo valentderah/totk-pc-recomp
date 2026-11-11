@@ -16,6 +16,7 @@
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
+#include "input_actions.h"
 #include "input_wsys.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
@@ -608,20 +609,30 @@ int input_pad_stick_percent(double pct[2]) {
     return ok;
 }
 
+static int actions_allowed(void);
 static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_buttons_last)
 
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
+    uint64_t shortcuts = 0;
+    int action_walk=0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) {
         binds_refresh();
-        if (state == 1) pad_read(&b, sl, sr);
-        int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
-                       abs(sr[1]) > PAD_USED, kbm_used = 0;
+        input_actions_set_native_map(&input_map);
+        uint8_t pd[PAD_COUNT] = {0}, down[KEY_COUNT] = {0};
+        int layout = PAD_LAYOUT_XBOX;
+        if (state == 1 && pad_physical(pd)) {
+            layout = pad_layout_get();
+            stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
+            stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
+        }
+        shortcuts = input_map_pad_buttons(pd, layout);
+        int pad_used = shortcuts || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED ||
+                       abs(sr[0]) > PAD_USED || abs(sr[1]) > PAD_USED, kbm_used = 0;
         if (ikb_foreground()) {
-            uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
             // (the click that refocused the window) is ignored until it is released. While a game menu has the pointer
             // (menu_cursor.c) and it is over the window, the left and right buttons are that menu's A and B, and the
@@ -641,10 +652,20 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 if (!counts || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
-            b |= input_map_buttons(down);
+        }
+        shortcuts |= input_map_buttons(down);
+        uint64_t menu_combo=(1ull<<B_PLUS)|(1ull<<B_MINUS);
+        uint64_t overlay_combo=(1ull<<B_STICK_L)|(1ull<<B_STICK_R);
+        int shortcut=(shortcuts&menu_combo)==menu_combo || (shortcuts&overlay_combo)==overlay_combo;
+        uint64_t routed = input_actions_sample(down, pd, layout, actions_allowed() && !shortcut);
+        b = input_map_buttons(down) | input_map_pad_buttons(pd, layout);
+        b &= ~input_actions_owned_buttons();
+        b |= routed;
+        if (ikb_foreground()) {
             int32_t k[2];
             walk_get();
             int walk = walk_key != KEY_NONE && down[walk_key];
+            action_walk=walk;
             input_map_stick(down, 0, k);
             if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sl[0], &sl[1], k[0], k[1]);
@@ -678,14 +699,21 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
+    int32_t action_axes[4];input_actions_sticks(action_axes);
+    if(action_walk)for(int i=0;i<4;i++)action_axes[i]=(int32_t)(action_axes[i]*walk_scale);
+    pick(&sl[0],&sl[1],action_axes[0],action_axes[1]);
+    pick(&sr[0],&sr[1],action_axes[2],action_axes[3]);
     script_apply(&b, sl, sr);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
-    int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
+    shortcuts |= b;
+    uint64_t original_shortcuts = shortcuts;
+    int toggle = input_menu_gate(&combo_held, menu_is_open(), &shortcuts, st);
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
-    int overlay = input_overlay_gate(&overlay_held, &b);
+    int overlay = input_overlay_gate(&overlay_held, &shortcuts);
+    b &= ~(original_shortcuts & ~shortcuts);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
@@ -701,6 +729,7 @@ uint64_t input_buttons_last(void) { return __atomic_load_n(&g_buttons_last, __AT
 // Text entry (swkbd_*.c): while it is open the game reads no input, as behind the keyboard applet; after it closes
 // the game reads none until every button and stick direction is released, so the press that closed it stays there.
 // g_block: 0 off, 1 text entry open, 2 closed, waiting for the release. The cursor is released while it is open.
+static int actions_allowed(void) { return g_block==0 && g_menu==0 && !menu_is_open(); }
 // When g_block and g_menu last went to 2 (plat_now_ns). The wait for the release ends after RELEASE_WAIT_NS even with
 // something held: an input that never reads as released (a button another program holds down, a key whose release
 // went to another window, a stick that rests outside its dead zone) would otherwise keep the game deaf until restart

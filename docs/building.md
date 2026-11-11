@@ -118,6 +118,16 @@ of them.
    button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
 
+   The independent-controls adapter is part of the normal generation/build steps. For a verified game 1.4.3
+   executable, `gen.py` writes `input_actions_game_config.h` and adds the validated gameplay hooks. It reads the action
+   enum from the user's own executable. Generated configuration and code stay in the output directory; no local
+   research-plan JSON or diagnostic SDK is an input. Unsupported versions or conflicting code patches produce a
+   native-controls fallback instead. Enable the optional feature in F1 → Controls after starting the game.
+
+   Split runtime-library builds use the same path: `input_actions_game.c` is compiled at install time, while the
+   portable state reader and input backend belong to the prebuilt runtime library. Regenerate older generated folders
+   before building; a cached lift without the adapter configuration is not accepted by the installer.
+
    A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
    draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a
    stretched HUD (`runtime/resolution.c`, `shape_fallback`). For the full shape make `romfs-patches-<w>x<h>` once per

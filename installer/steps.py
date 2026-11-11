@@ -885,7 +885,8 @@ class Lift(Step):
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
         stamp = gen / STAMP
-        return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+        return ((gen / 'layout.json').is_file() and (gen / 'input_actions_game_config.h').is_file()
+                and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift'])
 
     def run(self, ctx):
         # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
