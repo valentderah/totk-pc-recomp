@@ -372,6 +372,7 @@ VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocati
 // (vk_texture.c UPLOAD_HELD_MAX) so the GPU starts on it and its buffers come back before the pools need new blocks.
 VkDeviceSize vk_upload_held(void);
 void vk_upload_pools_init(void);   // vk_device.c, after the allocator: the staging and scratch pools and their blocks
+void vk_defer_buffer_until(VkBuffer buf, VmaAllocation alloc, uint64_t tl);   // also not before the GPU reached value tl
 // ---- ASTC (vk_astc.c). TOTK_ASTC = auto | gpu | native | cpu | check; see vk_astc.c.
 enum { VK_ASTC_CPU, VK_ASTC_GPU, VK_ASTC_NATIVE, VK_ASTC_CHECK };
 int vk_astc_mode(void);                 // decided once per device (logged); VK_ASTC_CPU before vk_init
@@ -492,10 +493,16 @@ void vk_sampler_dlss_bias(float bias);           // texture LOD bias added for D
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
+void vk_texture_storage_written(const VkTexImage *img);        // the same without the texture lock held
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img);   // bytes ReadTexels spans; 0 for a bad region
 int vk_texture_small_dirty(void);                   // a small mirrored target holds GPU texels its storage lacks
 void vk_texture_write_back_small(uint64_t fence);   // writes those rendered by work up to fence back to storage
+// vk_sync_submit, after the replay recorded value fence into cb (no render pass open, cb the recorder's part): copies
+// the small targets that value rendered into staging so their write-back later needs no GPU wait (TOTK_WB_EAGER).
+// cb VK_NULL_HANDLE: the value recorded no part, the candidates for it are dropped.
+void vk_texture_eager_record(VkCommandBuffer cb, uint64_t fence);
+void vk_texture_eager_log(void);                     // once at exit: TOTK_WB_EAGER counts
 void vk_texture_debug(const VkTexImage *img, uint32_t *uploads, int *last_change, int *pages_written);   // vk_dump
 int vk_texture_slot_swz(int id, uint8_t swz[4]);    // vk_dump: swizzle of the descriptor in slot id
 int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,

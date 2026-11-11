@@ -60,6 +60,9 @@ typedef struct Tex {
     uint64_t wr_fence;            // any entry: newest submission recorded to write its image (render, copy, clear,
                                   // storage binding); ReadTexels waits for it instead of draining the replay queue
     uint8_t listed;               // in owned[]
+    uint8_t eager_cand;           // in eager_c[]: rendered by the value being recorded, snapshot not taken yet
+    struct EagerSnap *eager;      // wb_eager: the staging copy of the image that value eager->value ended with
+    uint64_t wb_last;             // wb_eager: gpu_fence of the newest render a write-back took (0: never written back)
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
@@ -613,7 +616,10 @@ static void dropped_check(const TexKey *k) {
     dropped[i].hash = 0;
 }
 
+static void eager_forget(Tex *e);
+
 static void destroy_tex(Tex *e) {
+    eager_forget(e);
     own_remove(e);
     tex_gen_bump(e->key.addr);
     nvn_hm_del(&by_key, &e->key);
@@ -1518,6 +1524,56 @@ static void wb_cfg_init(void) {
 // up to 9 frames in a row while a tile loads.
 static int wb_wanted(const Tex *e) { return e->t.L.size <= wb_limit || e->run < WB_RUN; }
 
+// TOTK_WB_EAGER (wb_eager; 0, 1 or check, default 1). The fence write-back (write_back_n) read a target's image through
+// a staging copy submitted at that moment, which queued behind the frame already on the GPU and held the game thread
+// for 4.5 to 7 ms about every 9th frame. With wb_eager the copy is instead recorded at the end of the value that rendered
+// the target (vk_texture_eager_record), so when that value has passed the bytes are already in host-visible staging and
+// the write-back only copies them into the target's storage. Which targets go back, at which fence, and in which order
+// does not change. check also reads the old way and compares (slow, for validation).
+// Only frame-ahead (sync_ahead on and not refused, nvn_sync_ahead_on) makes the game thread stall on these copies in a
+// way that costs frame time, so with it off wb_eager stays EAGER_OFF: no candidates, no staging, one branch per use.
+// A target is snapshotted only while it is being written back: one whose last write-back (wb_last) lies more than
+// EAGER_WINDOW timeline values behind the value being recorded gets none, and its first write-back takes the blocking
+// path. Only where the bytes come from changes, never what goes back to the game or when.
+enum { EAGER_OFF, EAGER_ON, EAGER_CHECK, EAGER_WINDOW = 64 };
+static int wb_eager = -1;
+static Tex **eager_c;   // candidates for the value being recorded (tex_lock)
+static int neager_c, ceager_c;
+static int neager_c_seen;   // neager_c, readable without tex_lock
+static uint64_t eager_allocs, eager_snapshots, eager_taken, eager_fallback, eager_compared, eager_differ;   // tex_lock
+// Why a write-back did not use a snapshot (eager_state), counted in write_back_n.
+enum { EB_READY, EB_NONE, EB_OTHER_VALUE, EB_WR_FENCE, EB_NOT_DONE, EB_N };
+static uint64_t eager_why[EB_N];   // tex_lock
+static uint64_t eager_logged;      // fallbacks logged one by one, up to EAGER_LOG_MAX
+enum { EAGER_LOG_MAX = 20 };
+
+static void eager_release(Tex *e);
+
+static void wb_eager_init(void) {
+    const char *v = cfg_get("TOTK_WB_EAGER");
+    int want = v && !strcmp(v, "0") ? EAGER_OFF : v && !strcmp(v, "check") ? EAGER_CHECK : EAGER_ON;
+    wb_eager = want != EAGER_OFF && !nvn_sync_ahead_on() ? EAGER_OFF : want;
+    if (want != EAGER_OFF && wb_eager == EAGER_OFF)
+        rt_log("vk: wb_eager: off, frame-ahead (sync_ahead) is not in effect");
+}
+
+// tex_lock held, in vk_texture_gpu_written: e was rendered by the value being recorded and will be written back.
+static void eager_candidate(Tex *e) {
+    if (wb_eager < 0) wb_eager_init();
+    if (wb_eager == EAGER_OFF || e->eager_cand || !e->gpu_fence) return;
+    if (!e->wb_last || e->gpu_fence > e->wb_last + EAGER_WINDOW) {   // not written back lately: no snapshot, free the old
+        eager_release(e);
+        return;
+    }
+    if (neager_c == ceager_c) {
+        ceager_c = ceager_c ? 2 * ceager_c : 32;
+        if (!(eager_c = realloc(eager_c, sizeof *eager_c * (size_t)ceager_c))) rt_fatal("vk: out of memory for the eager write-back list");
+    }
+    eager_c[neager_c++] = e;
+    e->eager_cand = 1;
+    __atomic_store_n(&neager_c_seen, neager_c, __ATOMIC_RELEASE);
+}
+
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
@@ -1547,7 +1603,10 @@ void vk_texture_gpu_written(const tex_t *t) {
                 e->run_frame = fr;
             }
             wb_cfg_init();
-            if (wb_wanted(e)) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+            if (wb_wanted(e)) {
+                __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+                eager_candidate(e);
+            } else if (wb_eager > EAGER_OFF) eager_release(e);   // no longer written back at fence waits
             own_add(e);
         }
     }
@@ -1562,6 +1621,7 @@ void vk_texture_release(const tex_t *t) {
     Tex *e = nvn_hm_get(&by_key, &k);
     if (e && !e->released) {
         e->released = 1;
+        eager_forget(e);   // a released target is not written back at fence waits: its staging goes
         e->rel_ms = coarse_ms;
         e->rel_seq = use_counter;
         nreleased++;
@@ -1859,18 +1919,20 @@ typedef struct {
     VmaAllocation sa;
     const uint8_t *stg;
     size_t slice, ib;   // ib: bytes per texel of an expanded RGB image, 0 when the image holds the storage layout
+    size_t bytes;       // the size of the staging buffer: slice times the depth of the region
     uint32_t w;
+    VkImageAspectFlags aspect;
 } TexRead;
 
-static int texels_read_record(Tex *e, const Region *g, const NVNcopyRegion *r, TexRead *t) {
+// The sizes of the staging buffer for a read of region r, and the aspect to copy; 0 when the image cannot be read back.
+static int texels_read_plan(Tex *e, const Region *g, const NVNcopyRegion *r, TexRead *t) {
     static volatile int32_t n_astc, n_ds;
-    VkImageAspectFlags aspect;
     if (e->f.astc_bw) {
         log_limited(&n_astc, "ReadTexels of ASTC texture %#llx: the image holds decoded RGBA8; zeros returned",
                     (unsigned long long)e->pub.addr);
         return 0;
     }
-    if (!read_aspect(e, &aspect)) {
+    if (!read_aspect(e, &t->aspect)) {
         log_limited(&n_ds, "texels of packed depth-stencil format %#x are not copied", e->t.d.format);
         return 0;
     }
@@ -1879,25 +1941,40 @@ static int texels_read_record(Tex *e, const Region *g, const NVNcopyRegion *r, T
     t->w = w;
     t->ib = e->f.expand_rgb ? (size_t)g->bpb / 3 * 4 : 0;
     t->slice = t->ib ? (size_t)w * h * t->ib : g->wb * g->hb;
-    t->stg = vk_staging(t->slice * (size_t)g->nz, &t->sb, &t->sa);
+    t->bytes = t->slice * (size_t)g->nz;
+    return 1;
+}
+
+// The copy of the region from the image into t->sb, with no barriers.
+static void texels_read_copy_cmd(VkCommandBuffer cb, Tex *e, const Region *g, const NVNcopyRegion *r, const TexRead *t) {
     VkBufferImageCopy *rg = calloc((size_t)g->nz, sizeof *rg);
     if (!rg) rt_fatal("vk: out of memory for a texture read");
     for (int z = 0; z < g->nz; z++)
         rg[z] = (VkBufferImageCopy){.bufferOffset = t->slice * (size_t)z,
-                                    .imageSubresource = {aspect, g->level, g->is3d ? 0 : g->layer0 + (uint32_t)r->zoffset + (uint32_t)z, 1},
+                                    .imageSubresource = {t->aspect, g->level, g->is3d ? 0 : g->layer0 + (uint32_t)r->zoffset + (uint32_t)z, 1},
                                     .imageOffset = {r->xoffset, r->yoffset, g->is3d ? r->zoffset + z : 0},
-                                    .imageExtent = {w, h, 1}};
+                                    .imageExtent = {t->w, (uint32_t)r->height, 1}};
+    vkCmdCopyImageToBuffer(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, t->sb, (uint32_t)g->nz, rg);
+    free(rg);
+}
+
+// An image region read through a staging buffer. texels_read_record records the copy into the open upload batch;
+// texels_read_take copies the rows out once that batch is done (vk_upload_flush(1)) and frees the buffer. Several
+// records before one flush cost one GPU round trip instead of one each.
+static int texels_read_record(Tex *e, const Region *g, const NVNcopyRegion *r, TexRead *t) {
+    if (!texels_read_plan(e, g, r, t)) return 0;
+    t->stg = vk_staging(t->bytes, &t->sb, &t->sa);
     VkCommandBuffer cb = vk_upload_begin();
     barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    vkCmdCopyImageToBuffer(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, t->sb, (uint32_t)g->nz, rg);
+    texels_read_copy_cmd(cb, e, g, r, t);
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
             VK_ACCESS_2_HOST_READ_BIT);
     vk_upload_end();
-    free(rg);
     return 1;
 }
 
-static void texels_read_take(const Tex *e, const Region *g, const TexRead *t, uint8_t *mem) {
+// The rows of a finished read into caller memory; the staging buffer stays.
+static void texels_read_rows(const Tex *e, const Region *g, const TexRead *t, uint8_t *mem) {
     VkCtx *c = vk_ctx();
     vmaInvalidateAllocation(c->vma, t->sa, 0, VK_WHOLE_SIZE);
     for (int z = 0; z < g->nz; z++) {
@@ -1908,7 +1985,11 @@ static void texels_read_take(const Tex *e, const Region *g, const TexRead *t, ui
             else memcpy(m + y * g->row, s + y * g->wb, g->wb);
         }
     }
-    vmaDestroyBuffer(c->vma, t->sb, t->sa);
+}
+
+static void texels_read_take(const Tex *e, const Region *g, const TexRead *t, uint8_t *mem) {
+    texels_read_rows(e, g, t, mem);
+    vmaDestroyBuffer(vk_ctx()->vma, t->sb, t->sa);
 }
 
 // Image <-> caller rows through a staging buffer; the GPU copy is waited for.
@@ -2063,52 +2144,251 @@ void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, co
 // Every level and layer of every texture in v is copied to staging in one upload batch with one wait: one GPU round
 // trip per level and layer took 0.1 ms each, and a 260x260 grass map has 9 levels. The storage is then written in the
 // order of v, so where two textures share storage the later one wins.
+// One level and layer of a target to write back: its region and the staging read of it. A part of an eager snapshot
+// carries the staging buffer the GPU filled in advance; else the read is recorded at the write-back.
+typedef struct { Region g; NVNcopyRegion r; TexRead t; } EagerPart;
 typedef struct {
     Tex *e;
-    Region g;
-    NVNcopyRegion r;
-    TexRead t;
+    EagerPart ep;
+    TexRead chk;   // wb_eager = check: the same read made the old way, to compare with ep.t
+    uint8_t snap;  // ep is a part of e's eager snapshot (kept after the take); else a read recorded now
+    uint8_t has_chk;
 } WbPart;
 
+// The levels and layers write-back covers for e, and the region of each.
+static void wb_dims(const Tex *e, uint32_t *levels, uint32_t *layers) {
+    const nvn_texdesc *d = &e->t.d;
+    int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    *levels = linear ? 1 : e->pub.levels;
+    *layers = linear || is3d ? 1 : e->pub.layers;
+}
+
+static int wb_region(const Tex *e, uint32_t lv, uint32_t ly, Region *g, NVNcopyRegion *r) {
+    const nvn_texdesc *d = &e->t.d;
+    int is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    view_t vw = {.set_levels = 1, .set_layers = 1, .base_level = (uint8_t)lv, .min_layer = (uint16_t)ly};
+    *r = (NVNcopyRegion){.width = (int)mip(d->width, lv),
+                         .height = d->target == 0 || d->target == 3 ? 1 : (int)mip(d->height, lv),
+                         .depth = is3d ? (int)mip(d->depth, lv) : 1};
+    return region_of(&e->t, &vw, r, 0, 0, g);
+}
+
+// wb_eager: the staging copy of the image at the end of value `value`, one part per level and layer in the order
+// write_back_n walks them. The buffers belong to the snapshot; the GPU writes them with the copies recorded in `value`.
+// p has room for levels * layers parts (wb_dims of the target when it was made), np of them are in use.
+struct EagerSnap {
+    uint64_t value;
+    uint32_t levels, layers;
+    int np;
+    EagerPart *p;
+};
+
+// Frees a snapshot's buffers once the GPU has passed its value: the copies may still be running.
+static void eager_free_snap(struct EagerSnap *z) {
+    if (!z) return;
+    for (int i = 0; i < z->np; i++) vk_defer_buffer_until(z->p[i].t.sb, z->p[i].t.sa, z->value);
+    free(z->p);
+    free(z);
+}
+
+// tex_lock held: frees e's snapshot, if any, through the deferred path.
+static void eager_release(Tex *e) {
+    eager_free_snap(e->eager);
+    e->eager = NULL;
+}
+
+// tex_lock held, from destroy_tex and vk_texture_release.
+static void eager_forget(Tex *e) {
+    if (e->eager_cand) {
+        for (int i = 0; i < neager_c; i++)
+            if (eager_c[i] == e) {
+                eager_c[i] = eager_c[--neager_c];
+                break;
+            }
+        __atomic_store_n(&neager_c_seen, neager_c, __ATOMIC_RELEASE);
+        e->eager_cand = 0;
+    }
+    eager_release(e);
+}
+
+// Whether e's write-back can take its texels from the snapshot (EB_READY), else the first reason it cannot: no snapshot,
+// one of a value other than the one that last rendered e, a write to its image recorded since (wr_fence: a storage
+// binding, a copy), or the GPU has not finished the snapshot's value.
+static int eager_state(const Tex *e) {
+    const struct EagerSnap *z = e->eager;
+    if (!z) return EB_NONE;
+    if (z->value != e->gpu_fence) return EB_OTHER_VALUE;
+    if (z->value != e->wr_fence) return EB_WR_FENCE;
+    return vk_sync_fence_done() >= z->value ? EB_READY : EB_NOT_DONE;
+}
+
+// tex_lock held, from vk_texture_write_back_small once per fence wait: frees the snapshots that will not be used soon,
+// those of targets no longer written back at fence waits (wb_wanted) and those with no pending write-back whose last
+// one is more than EAGER_WINDOW values behind `now`. A target a candidate list still holds keeps its snapshot: the one
+// being recorded replaces it. owned[] cannot change while tex_lock is held.
+static void eager_sweep(uint64_t now) {
+    for (int i = 0; i < nowned; i++) {
+        Tex *e = owned[i];
+        if (!e->eager || e->eager_cand) continue;
+        if (!wb_wanted(e) || (!e->gpu_dirty && now > e->wb_last + EAGER_WINDOW)) eager_release(e);
+    }
+}
+
+// tex_lock held, cb the recorder's command buffer of the value `fence` with no render pass open: copies e's image
+// into staging buffers. *open: the barrier before the copies is already in cb. When e's previous snapshot has the same
+// level and layer counts and the GPU is done with it (its value has passed on the timeline, so no copy still writes
+// its buffers and no read of them is pending), the snapshot is reused in place and each part keeps its staging buffer
+// if the size matches. A snapshot still in flight is not reused: it is freed after its value and a new one is made.
+static void eager_snapshot(VkCommandBuffer cb, Tex *e, uint64_t fence, int *open) {
+    uint32_t levels, layers;
+    wb_dims(e, &levels, &layers);
+    struct EagerSnap *z = e->eager;
+    int inplace = z && z->levels == levels && z->layers == layers && z->value <= vk_sync_fence_done();
+    int old_np = inplace ? z->np : 0;
+    uint64_t old_value = inplace ? z->value : 0;
+    if (!inplace) {
+        eager_release(e);
+        z = calloc(1, sizeof *z);
+        if (!z || !(z->p = calloc((size_t)levels * layers, sizeof *z->p))) rt_fatal("vk: out of memory for a write-back snapshot");
+        z->levels = levels, z->layers = layers;
+        e->eager = z;
+    }
+    z->value = fence;
+    z->np = 0;
+    for (uint32_t lv = 0; lv < levels; lv++)
+        for (uint32_t ly = 0; ly < layers; ly++) {
+            EagerPart n;
+            memset(&n, 0, sizeof n);
+            if (!wb_region(e, lv, ly, &n.g, &n.r) || !texels_read_plan(e, &n.g, &n.r, &n.t)) continue;
+            EagerPart *q = &z->p[z->np];
+            if (z->np < old_np && q->t.sb && q->t.bytes == n.t.bytes) {
+                n.t.sb = q->t.sb, n.t.sa = q->t.sa, n.t.stg = q->t.stg;   // the part's buffer, kept
+            } else {
+                if (z->np < old_np && q->t.sb) vk_defer_buffer_until(q->t.sb, q->t.sa, old_value);
+                n.t.stg = vk_staging(n.t.bytes, &n.t.sb, &n.t.sa);
+                eager_allocs++;
+            }
+            *q = n;
+            z->np++;
+        }
+    for (int i = z->np; i < old_np; i++) {   // fewer parts than before: the buffers of the others go
+        vk_defer_buffer_until(z->p[i].t.sb, z->p[i].t.sa, old_value);
+        z->p[i].t.sb = VK_NULL_HANDLE;
+    }
+    if (!z->np) {
+        eager_release(e);
+        return;
+    }
+    if (!*open) barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT), *open = 1;
+    for (int i = 0; i < z->np; i++) texels_read_copy_cmd(cb, e, &z->p[i].g, &z->p[i].r, &z->p[i].t);
+    eager_snapshots++;
+}
+
+void vk_texture_eager_record(VkCommandBuffer cb, uint64_t fence) {
+    if (!__atomic_load_n(&neager_c_seen, __ATOMIC_ACQUIRE)) return;
+    lock();
+    int k = 0, open = 0;
+    for (int i = 0; i < neager_c; i++) {
+        Tex *e = eager_c[i];
+        if (e->gpu_fence > fence) {   // rendered by a value that is not recorded yet
+            eager_c[k++] = e;
+            continue;
+        }
+        e->eager_cand = 0;
+        if (cb && e->gpu_fence == fence && e->gpu_dirty) eager_snapshot(cb, e, fence, &open);
+    }
+    neager_c = k;
+    __atomic_store_n(&neager_c_seen, k, __ATOMIC_RELEASE);
+    if (open) barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
+                      VK_ACCESS_2_HOST_READ_BIT);
+    unlock();
+}
+
+void vk_texture_eager_log(void) {
+    static int32_t done;
+    if (wb_eager <= EAGER_OFF || plat_xchg32(&done, 1)) return;
+    rt_log("vk: wb_eager: %llu snapshots, %llu taken without a wait, %llu fell back to the blocking path (%llu staging buffers allocated)",
+           (unsigned long long)eager_snapshots, (unsigned long long)eager_taken, (unsigned long long)eager_fallback,
+           (unsigned long long)eager_allocs);
+    rt_log("vk: wb_eager: fell back because of: no snapshot %llu, snapshot of another value %llu, wr_fence differs %llu, "
+           "value not done %llu", (unsigned long long)eager_why[EB_NONE], (unsigned long long)eager_why[EB_OTHER_VALUE],
+           (unsigned long long)eager_why[EB_WR_FENCE], (unsigned long long)eager_why[EB_NOT_DONE]);
+    if (wb_eager == EAGER_CHECK)
+        rt_log("vk: wb_eager check: %llu compared, %llu differ", (unsigned long long)eager_compared,
+               (unsigned long long)eager_differ);
+}
+
 static void write_back_n(Tex **v, int n) {
-    int np = 0, cap = 0;
+    int np = 0, cap = 0, nrec = 0;
     WbPart *p = NULL;
     for (int i = 0; i < n; i++) {
         Tex *e = v[i];
-        const nvn_texdesc *d = &e->t.d;
-        int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D;
-        uint32_t levels = linear ? 1 : e->pub.levels, layers = linear || is3d ? 1 : e->pub.layers;
+        int why = wb_eager > EAGER_OFF ? eager_state(e) : EB_READY;
+        int use = wb_eager > EAGER_OFF && why == EB_READY;
+        if (use) eager_taken++;
+        else if (wb_eager > EAGER_OFF) {
+            static const char *const why_text[EB_N] = {"", "no snapshot", "snapshot of another value", "wr_fence differs",
+                                                       "value not done"};
+            eager_fallback++, eager_why[why]++;
+            if (eager_logged++ < EAGER_LOG_MAX)
+                rt_log("vk: wb_eager: blocking write-back of %#llx size %llu fmt %#x: %s",
+                       (unsigned long long)e->pub.addr, (unsigned long long)e->t.L.size, e->t.d.format, why_text[why]);
+        }
+        uint32_t levels, layers;
+        wb_dims(e, &levels, &layers);
+        int room = use ? e->eager->np : (int)(levels * layers);   // parts this target adds, at most
+        if (np + room > cap) {
+            cap = np + room + 16;
+            if (!(p = realloc(p, sizeof *p * (size_t)cap))) rt_fatal("vk: out of memory for a texture write-back");
+        }
+        if (use) {
+            const struct EagerSnap *z = e->eager;
+            for (int j = 0; j < z->np; j++, np++) {
+                WbPart *q = &p[np];
+                *q = (WbPart){.e = e, .ep = z->p[j], .snap = 1};
+                if (wb_eager == EAGER_CHECK && texels_read_record(e, &q->ep.g, &q->ep.r, &q->chk)) q->has_chk = 1, nrec++;
+            }
+            continue;
+        }
         for (uint32_t lv = 0; lv < levels; lv++)
             for (uint32_t ly = 0; ly < layers; ly++) {
-                if (np == cap) {
-                    cap = cap ? cap * 2 : 16;
-                    if (!(p = realloc(p, sizeof *p * (size_t)cap))) rt_fatal("vk: out of memory for a texture write-back");
-                }
                 WbPart *q = &p[np];
-                view_t vw = {.set_levels = 1, .set_layers = 1, .base_level = (uint8_t)lv, .min_layer = (uint16_t)ly};
-                q->e = e;
-                q->r = (NVNcopyRegion){.width = (int)mip(d->width, lv),
-                                       .height = d->target == 0 || d->target == 3 ? 1 : (int)mip(d->height, lv),
-                                       .depth = is3d ? (int)mip(d->depth, lv) : 1};
-                if (region_of(&e->t, &vw, &q->r, 0, 0, &q->g) && texels_read_record(e, &q->g, &q->r, &q->t)) np++;
+                q->e = e, q->snap = q->has_chk = 0;
+                if (wb_region(e, lv, ly, &q->ep.g, &q->ep.r) && texels_read_record(e, &q->ep.g, &q->ep.r, &q->ep.t)) np++, nrec++;
             }
     }
-    if (np) vk_upload_flush(1);
+    if (nrec) vk_upload_flush(1);
     for (int i = 0; i < np; i++) {
         WbPart *q = &p[i];
-        size_t bytes = q->g.img * (size_t)q->g.nz;
+        size_t bytes = q->ep.g.img * (size_t)q->ep.g.nz;
         uint8_t *buf = malloc(bytes);
         if (!buf) {   // waits for memory with the texture lock held, after the release that needs no submit
             vk_oom_release();
             buf = rt_realloc_wait(NULL, bytes, "vk: texture write-back buffer");
         }
         if (!buf) rt_fatal("vk: out of memory for a texture write-back");
-        texels_read_take(q->e, &q->g, &q->t, buf);
-        storage_texels(&q->e->t, &q->g, &q->r, buf, 1);
+        if (q->snap) texels_read_rows(q->e, &q->ep.g, &q->ep.t, buf);
+        else texels_read_take(q->e, &q->ep.g, &q->ep.t, buf);
+        if (q->has_chk) {
+            vmaInvalidateAllocation(vk_ctx()->vma, q->chk.sa, 0, VK_WHOLE_SIZE);
+            eager_compared++;
+            if (memcmp(q->ep.t.stg, q->chk.stg, q->ep.t.bytes)) {
+                if (eager_differ++ < 20)
+                    rt_log("vk: wb_eager check: %#llx fmt %#x %ux%u level %u layer %u differs from the blocking read "
+                           "(snapshot of value %llu, gpu_fence %llu)", (unsigned long long)q->e->pub.addr,
+                           q->e->t.d.format, q->e->t.d.width, q->e->t.d.height, q->ep.g.level, q->ep.g.layer0,
+                           (unsigned long long)q->e->eager->value, (unsigned long long)q->e->gpu_fence);
+            }
+            vmaDestroyBuffer(vk_ctx()->vma, q->chk.sb, q->chk.sa);
+        }
+        storage_texels(&q->e->t, &q->ep.g, &q->ep.r, buf, 1);
         free(buf);
     }
     free(p);
-    for (int i = 0; i < n; i++) v[i]->gpu_dirty = 0;
+    for (int i = 0; i < n; i++) {
+        v[i]->gpu_dirty = 0;
+        if (wb_eager > EAGER_OFF && v[i]->gpu_fence > v[i]->wb_last) v[i]->wb_last = v[i]->gpu_fence;   // eager_candidate's window
+    }
 }
 
 // Mirrored textures overlapping [addr, addr+size) that the GPU wrote since their last write-back.
@@ -2130,6 +2410,14 @@ void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
     uint64_t f = vk_exec_recording_fence();
     if (f > e->wr_fence) e->wr_fence = f;
+}
+
+// The same for a caller that does not hold the texture lock (vk_contact.c vk_contact_flush: a compute pass writes the
+// scene colour). The lock is recursive.
+void vk_texture_storage_written(const VkTexImage *img) {
+    lock();
+    vk_texture_storage_bound_locked(img);
+    unlock();
 }
 
 uint64_t vk_texture_last_write(const tex_t *t) {
@@ -2250,6 +2538,7 @@ void vk_texture_write_back_small(uint64_t fence) {
         }
     }
     plat_mutex_unlock_shared(&owned_lock);
+    if (wb_eager > EAGER_OFF) eager_sweep(fence);
     if (later) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
     int k = 0;
     for (int i = 0; i < n; i++) {

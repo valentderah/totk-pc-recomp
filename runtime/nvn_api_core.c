@@ -513,6 +513,7 @@ void nvn_sync_ahead_present(void) {
     __atomic_store_n(&pa_fence[0], nvn_fence_last(), __ATOMIC_RELEASE);
 }
 uint64_t nvn_sync_ahead_guard(void) { return __atomic_load_n(&pa_guard, __ATOMIC_ACQUIRE); }
+int nvn_sync_ahead_on(void) { return sync_ahead(); }
 
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value

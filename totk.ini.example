@@ -64,6 +64,11 @@
 # memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
 # reading instead, which costs part of the gain.
 # shadow_defer = 1
+# With sync_ahead = 1: small images the GPU draws and the game then reads back (grass maps, the Purah Pad camera targets)
+# are copied to memory the CPU can read at the end of the frame that drew them, 0 or 1, check compares with the old way
+# (slow, for testing). Default: on. With 0 the game thread waits for the GPU while it copies them, which costs a few
+# milliseconds about every ninth frame and takes back part of the gain. Without sync_ahead the setting does nothing.
+# wb_eager = 1
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.
