@@ -140,6 +140,17 @@ def linux_kernel():
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def link_output_locked(log):
+    """Whether a build failed because another program holds the exe the linker writes: ld.lld cannot write it and clang
+    cannot remove it (Permission denied). A game started from the temp build folder does that, and so does an
+    antivirus that flagged or quarantined the new totk.exe there (#1122)."""
+    try:
+        text = Path(log).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return 'failed to write output' in text and 'Permission denied' in text
+
+
 def run_tool(ctx, step, script, args, parse=None, cwd=None):
     """Run a tool script with the bundled Python. Its output goes to <temp>/logs/<step>-<script>.log and, line by line,
     to parse(line). Returns (exit code, log path)."""
@@ -1009,6 +1020,8 @@ class Compile(Step):
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
         exe = build / ('totk' + EXE)
+        if code and link_output_locked(log):
+            raise InstallError('compile.exe_locked', path=str(exe), log=str(log))
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:

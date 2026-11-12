@@ -982,7 +982,8 @@ def main():
     code, dt, peak_one, _ = run_measured(base + [flag_path(exe)], env)
     print(f'link: {dt:.1f} s, peak {mib(peak_one)}')
     if code:
-        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running totk.exe from this dir locks it)',
+        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running totk.exe from this dir, or an '
+              f'antivirus that holds the file, locks it)',
               file=sys.stderr)
         sys.exit(code)
     if args.make_runtime_lib:
