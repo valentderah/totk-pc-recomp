@@ -28,6 +28,20 @@ uint64_t input_buttons_last(void);
 // mouse_direct.c: the right stick's side a mouse shake gives while Ultrahand holds an object (-1 / +1), 0 while the
 // mouse does not shake; input.c puts it on the stick
 int input_direct_mouse_shake(void);
+enum {
+    INPUT_CAM_UNCLASSIFIED = 0,
+    INPUT_CAM_FREE_ROAM,
+    INPUT_CAM_AIM,
+    INPUT_CAM_SCOPE,
+    INPUT_CAM_LOCK_ON,
+    INPUT_CAM_MENU_WHEEL,
+    INPUT_CAM_ABILITY,
+    INPUT_CAM_ULTRAHAND_OBJECT,
+    INPUT_CAM_VEHICLE,
+    INPUT_CAM_DISABLED,
+};
+int input_camera_context(void);
+int input_gameplay_active(void);
 // menu_cursor.c: the L ability wheel or a D-pad strip has the focus: 1 / 0, -1 with the menu cursor off (not read)
 int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
