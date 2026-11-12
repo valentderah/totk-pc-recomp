@@ -8,8 +8,10 @@
 // The HDR reconstruction follows RenoDX's TotK defaults more closely than the original recomp implementation:
 // - the game's 1 - e^-x tone curve is extended along its tangent above 0.18;
 // - the vanilla SDR tonemap is kept as a donor for hue and purity;
-// - MacLeod-Boynton hue/purity transfer is performed through XYZ/LMS in BT.2020, using RenoDX's default 70% hue
-//   emulation and 65% SDR blowout;
+// - MacLeod-Boynton hue/purity transfer is performed through XYZ/LMS in BT.2020. hdr.z (TOTK_HDR_HUE, 0..1) scales
+//   both: at its default 0.7 the hue moves 70% and the purity 65% of the way to the SDR donor, RenoDX's defaults
+//   ("Hue Shift" and "SDR Blowout"); at 0 bright colours keep the extended curve's saturation. This replaces the
+//   earlier blend towards the SDR result scaled to the HDR luminance, which the same setting drove;
 // - the game's saturation grade is applied after a temporary neutral max-channel compression, then expanded back;
 // - the result is constrained to non-negative BT.709 and display-mapped with per-channel Neutwo in linear BT.2020;
 // - RenoDX's default 2.2 gamma correction is folded into the native linear path: the Neutwo peak is corrected before
@@ -26,7 +28,7 @@ layout(location = 0) out vec4 color;
 
 layout(set = 0, binding = 0, std140) uniform SupportBuffer {
     vec4 pad[90];
-    vec4 hdr;   // byte 1440 (vk_exec_draw.c support_fill): game white / HUD white, peak / game white
+    vec4 hdr;   // byte 1440 (vk_exec_draw.c support_fill): game white / HUD white, peak / game white, hue correction
 } support_buffer;
 layout(set = 0, binding = 1) uniform sampler2D fp_t_tcb_8;
 layout(set = 0, binding = 2) uniform sampler2D fp_t_tcb_A;
@@ -34,8 +36,7 @@ layout(set = 0, binding = 3, std140) uniform C1 { vec4 v[4096]; } fp_c1;
 layout(set = 0, binding = 4, std140) uniform C3 { vec4 v[4096]; } fp_c3;
 
 const float PIVOT = 0.18;
-const float HUE_STRENGTH = 0.70;
-const float PURITY_STRENGTH = 0.65;
+const float PURITY_PER_HUE = 0.65 / 0.70;   // RenoDX's default SDR blowout against its default hue shift
 const float GAMMA = 2.2;
 const float MB_EPSILON = 1e-20;
 const float MB_INTERVAL_MAX = 1e30;
@@ -67,13 +68,21 @@ const mat3 XYZ_TO_BT2020 = mat3(
     vec3(1.7166511880, -0.6666843518, 0.0176398574),
     vec3(-0.3556707838, 1.6164812366, -0.0427706133),
     vec3(-0.2533662814, 0.0157685458, 0.9421031212));
+// The chains the per-pixel code uses, folded at compile time: one matrix per conversion instead of two.
+const mat3 BT709_TO_BT2020 = XYZ_TO_BT2020 * BT709_TO_XYZ;
+const mat3 BT2020_TO_BT709 = XYZ_TO_BT709 * BT2020_TO_XYZ;
+const mat3 BT2020_TO_LMS = XYZ_TO_LMS_2006 * BT2020_TO_XYZ;
+const mat3 LMS_TO_BT2020 = XYZ_TO_BT2020 * LMS_TO_XYZ_2006;
+// D65 white (x 0.31272, y 0.32903) in LMS, and its MacLeod-Boynton coordinates (l, s) = (L, S) / (L + M).
+const vec3 WHITE_LMS = XYZ_TO_LMS_2006 * vec3(0.31272 / 0.32903, 1.0, (1.0 - 0.31272 - 0.32903) / 0.32903);
+const vec2 MB_WHITE = vec2(WHITE_LMS.x, WHITE_LMS.z) / (WHITE_LMS.x + WHITE_LMS.y);
 
 float maxc(vec3 c) { return max(c.r, max(c.g, c.b)); }
 float minc(vec3 c) { return min(c.r, min(c.g, c.b)); }
 float div_safe(float a, float b, float fallback) { return b == 0.0 ? fallback : a / b; }
 
-vec3 to_bt2020(vec3 c) { return XYZ_TO_BT2020 * (BT709_TO_XYZ * c); }
-vec3 to_bt709(vec3 c) { return XYZ_TO_BT709 * (BT2020_TO_XYZ * c); }
+vec3 to_bt2020(vec3 c) { return BT709_TO_BT2020 * c; }
+vec3 to_bt709(vec3 c) { return BT2020_TO_BT709 * c; }
 
 // RenoDX GammaSafe(c, true, 2.2): sRGBDecode(GammaEncode(c, 2.2)). Used on the peak ratio before Neutwo.
 float srgb_decode(float c) {
@@ -140,12 +149,6 @@ vec3 lms_from_mb_t(vec2 mb, float t) {
     return vec3(mb.x * t, (1.0 - mb.x) * t, mb.y * t);
 }
 
-vec2 mb_white_d65() {
-    const vec2 xy = vec2(0.31272, 0.32903);
-    vec3 xyz = vec3(xy.x / xy.y, 1.0, (1.0 - xy.x - xy.y) / xy.y);
-    return mb_from_lms(XYZ_TO_LMS_2006 * xyz);
-}
-
 void interval_lower_zero(float a, float b, out float lo, out float hi) {
     if (abs(a) < MB_EPSILON) {
         if (b >= 0.0) {
@@ -179,15 +182,15 @@ MBResult mb_apply_bt2020(vec3 rgb, float purity_value) {
     outv.rgb = rgb;
     outv.purity = 0.0;
 
-    vec3 lms = XYZ_TO_LMS_2006 * (BT2020_TO_XYZ * rgb);
+    vec3 lms = BT2020_TO_LMS * rgb;
     float t = lms.x + lms.y;
     if (t <= MB_T_MIN) return outv;
 
-    vec2 white = mb_white_d65();
+    vec2 white = MB_WHITE;
     vec2 direction = mb_from_lms(lms) - white;
     if (dot(direction, direction) < MB_NEAR_WHITE_EPSILON) return outv;
 
-    vec3 rgb_white = XYZ_TO_BT2020 * (LMS_TO_XYZ_2006 * lms_from_mb_t(white, t));
+    vec3 rgb_white = LMS_TO_BT2020 * lms_from_mb_t(white, t);
     vec3 a = rgb - rgb_white;
     float t_lo = 0.0, t_hi = MB_INTERVAL_MAX, lo, hi;
 
@@ -203,7 +206,7 @@ MBResult mb_apply_bt2020(vec3 rgb, float purity_value) {
     outv.purity = t_max > MB_EPSILON ? clamp(1.0 / t_max, 0.0, 1.0) : 0.0;
     float t_final = clamp(purity_value, 0.0, 1.0) * t_max;
     vec3 lms_final = lms_from_mb_t(white + t_final * direction, t);
-    outv.rgb = max(XYZ_TO_BT2020 * (LMS_TO_XYZ_2006 * lms_final), vec3(0.0));
+    outv.rgb = max(LMS_TO_BT2020 * lms_final, vec3(0.0));
     return outv;
 }
 
@@ -223,7 +226,7 @@ vec3 correct_hue_and_purity(vec3 target709, vec3 reference709, float hue_strengt
 
     vec3 target2020 = to_bt2020(target709);
     vec3 reference2020 = to_bt2020(reference709);
-    vec3 target_lms = XYZ_TO_LMS_2006 * (BT2020_TO_XYZ * target2020);
+    vec3 target_lms = BT2020_TO_LMS * target2020;
     float target_t = target_lms.x + target_lms.y;
     if (target_t <= MB_T_MIN) return target709;
 
@@ -231,8 +234,8 @@ vec3 correct_hue_and_purity(vec3 target709, vec3 reference709, float hue_strengt
     float reference_purity = mb_apply_bt2020(reference2020, 1.0).purity;
     float applied_purity = mix(target_purity, reference_purity, clamp(purity_strength, 0.0, 1.0));
 
-    vec3 reference_lms = XYZ_TO_LMS_2006 * (BT2020_TO_XYZ * reference2020);
-    vec2 white = mb_white_d65();
+    vec3 reference_lms = BT2020_TO_LMS * reference2020;
+    vec2 white = MB_WHITE;
     vec2 target_direction = mb_from_lms(target_lms) - white;
     vec2 reference_direction = mb_from_lms(reference_lms) - white;
     float target_len_sq = dot(target_direction, target_direction);
@@ -261,7 +264,7 @@ vec3 correct_hue_and_purity(vec3 target709, vec3 reference709, float hue_strengt
     seed_len = max(seed_len, 1e-6);
 
     vec3 seed_lms = lms_from_mb_t(white + blended_unit * seed_len, target_t);
-    vec3 seed2020 = XYZ_TO_BT2020 * (LMS_TO_XYZ_2006 * seed_lms);
+    vec3 seed2020 = LMS_TO_BT2020 * seed_lms;
     return to_bt709(mb_apply_bt2020(seed2020, applied_purity).rgb);
 }
 
@@ -305,7 +308,8 @@ void main() {
     // Extended HDR carrier plus the original bounded SDR rendering used as RenoDX's color donor.
     vec3 c = extended_vanilla_tonemap(x);
     vec3 donor = clamp(vanilla_tonemap(x), vec3(0.0), vec3(1.0));
-    c = correct_hue_and_purity(c, donor, HUE_STRENGTH * hue_transfer_gate(donor), PURITY_STRENGTH);
+    float hue = clamp(support_buffer.hdr.z, 0.0, 1.0);
+    c = correct_hue_and_purity(c, donor, hue * hue_transfer_gate(donor), hue * PURITY_PER_HUE);
 
     // RenoDX temporarily compresses the largest channel with neutral Neutwo while the original TotK saturation grade
     // runs, then divides the compression back out. This avoids feeding the SDR-authored grade arbitrarily large HDR RGB.
