@@ -118,8 +118,10 @@ static int weapon_wheel_allowed(uint64_t buttons, int right_down, int already_ac
 
     int ctx = input_camera_context();
     if (!already_active) {
-        if (ctx != INPUT_CAM_UNCLASSIFIED && ctx != INPUT_CAM_FREE_ROAM &&
-            ctx != INPUT_CAM_LOCK_ON && ctx != INPUT_CAM_VEHICLE)
+        // Opening needs a camera the mouse_direct hooks saw this moment: an unclassified one is also a paused menu,
+        // 1.2.1's menus or any screen menu_cursor.c does not read, where D-pad right and the right stick would move
+        // the menu instead.
+        if (ctx != INPUT_CAM_FREE_ROAM && ctx != INPUT_CAM_LOCK_ON && ctx != INPUT_CAM_VEHICLE)
             return 0;
     } else {
         if (ctx != INPUT_CAM_UNCLASSIFIED && ctx != INPUT_CAM_MENU_WHEEL &&
