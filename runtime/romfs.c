@@ -1186,8 +1186,32 @@ int romfs_shape_can_prepare(void) {
     return known;
 }
 
+// The folders a generator was started for in this process. The menu thread alone calls romfs_shape_prepare, so no
+// lock. The game picks its overlay at start, so a folder is not started twice before the next start, even when its
+// generator has ended: a second click, or the same size chosen again, starts no second generator writing into it.
+static char shape_started[8][160];
+static int shape_started_n;
+
+static int shape_was_started(const char *folder) {
+    for (int i = 0; i < shape_started_n; i++)
+        if (!strcmp(shape_started[i], folder)) return 1;
+    return 0;
+}
+
+// Starts the generator for folder (a name in dir) unless one was started for it before. 1 when one runs for it, 0 when
+// it could not start. plat_spawn starts it detached and closes its handles without waiting, so a click costs the menu
+// thread one CreateProcess.
+static int shape_spawn(const char *const *argv, const char *dir, const char *folder) {
+    if (shape_was_started(folder)) return 1;
+    if (!plat_spawn(argv, dir)) return 0;
+    if (shape_started_n < (int)(sizeof shape_started / sizeof *shape_started))
+        snprintf(shape_started[shape_started_n++], sizeof *shape_started, "%s", folder);
+    return 1;
+}
+
 int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder) {
-    char python[1024], script[1100], dir[2100], romfs[2200], out[2300], reuse[2300], size[32], version[8], name[128];
+    char python[1024], script[1100], dir[2100], romfs[2200], out[2300], reuse[2300], binds[2300], size[32], version[8],
+        name[128], folder[160];
     unsigned s[2];
     if (!cfg_shape_size(w, h, s) || !prepare_tools(python, sizeof python, script, sizeof script, dir, sizeof dir))
         return 0;
@@ -1196,22 +1220,29 @@ int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder) {
     snprintf(romfs, sizeof romfs, "%s/romfs", dir);
     int started = 0, failed = 0;
     if (!shaped_name(dir, "romfs-patches", w, h, name, sizeof name)) {
-        snprintf(out, sizeof out, "%s/romfs-patches-%s", dir, size);
+        snprintf(folder, sizeof folder, "romfs-patches-%s", size);
+        snprintf(out, sizeof out, "%s/%s", dir, folder);
         const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--aspect", size,
                               NULL};
-        if (plat_spawn(argv, dir)) started++;
+        if (shape_spawn(argv, dir, folder)) started++;
         else failed++;
     }
     snprintf(reuse, sizeof reuse, "%s/%s/manifest.tsv", dir, prompts_folder ? prompts_folder : "");
     if (prompts_folder && plat_file_exists(reuse) && !shaped_name(dir, prompts_folder, w, h, name, sizeof name)) {
+        const char *style = prompts_folder + strlen("romfs-patches-");
         snprintf(reuse, sizeof reuse, "%s/%s", dir, prompts_folder);
-        snprintf(out, sizeof out, "%s/%s-%s", dir, prompts_folder, size);
-        const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--prompts",
-                              prompts_folder + strlen("romfs-patches-"), "--aspect", size, "--reuse", reuse, NULL};
-        if (plat_spawn(argv, dir)) started++;
+        snprintf(folder, sizeof folder, "%s-%s", prompts_folder, size);
+        snprintf(out, sizeof out, "%s/%s", dir, folder);
+        // The keyboard and mouse prompts are drawn from totk.ini's bind_ lines, as the setup's PcPrompts and Shapes
+        // steps draw them (installer/steps.py pc_binds); a file without such lines gives the keyboard defaults.
+        snprintf(binds, sizeof binds, "%s/totk.ini", dir);
+        int pc = !strcmp(style, "pc") && plat_file_exists(binds);
+        const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--prompts", style,
+                              "--aspect", size, "--reuse", reuse, pc ? "--binds" : NULL, binds, NULL};
+        if (shape_spawn(argv, dir, folder)) started++;
         else failed++;
     }
-    rt_log("RomFS overlay: making the layout for %s in the background (%d generators started, %d failed; %s)", size,
+    rt_log("RomFS overlay: making the layout for %s in the background (%d generators running, %d failed; %s)", size,
            started, failed, script);
     return started && !failed;
 }
