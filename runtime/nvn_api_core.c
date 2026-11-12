@@ -653,6 +653,10 @@ static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
 NVN_API(nvnQueueSubmitCommands) {
+    if (gfx_is_closed()) {
+        plat_sleep_ms(50);
+        return;
+    }
     queue_t *q = arg_p(c, 0);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);

@@ -84,6 +84,16 @@ void rt_logf(const char *fmt, ...) {
     va_end(ap);
 }
 
+__attribute__((weak)) int gfx_is_closed(void) { return 0; }
+
+void rt_log_flush(void) {
+    fflush(stderr);
+    int state = __atomic_load_n(&g_log_state, __ATOMIC_ACQUIRE);
+    if (state == LOG_FILE && g_log_file) {
+        plat_append_flush(g_log_file);
+    }
+}
+
 void rt_log(const char *fmt, ...) {
     char buf[2048];
     int n = snprintf(buf, sizeof buf, "[host] ");
@@ -94,6 +104,7 @@ void rt_log(const char *fmt, ...) {
     n = k < 0 ? n : n + k < (int)sizeof buf - 1 ? n + k : (int)sizeof buf - 2;
     buf[n++] = '\n';
     rt_log_raw(buf, n);
+    if (gfx_is_closed()) rt_log_flush();
 }
 
 const char *rt_log_path(void) {

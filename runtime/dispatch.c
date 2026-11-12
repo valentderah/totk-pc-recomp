@@ -55,6 +55,7 @@ void rt_fatal(const char *fmt, ...) {
     kern_free_cores_note();
     fflush(stdout);
     fflush(stderr);
+    rt_log_flush();
     _Exit(70);
 }
 

@@ -3387,7 +3387,7 @@ void vk_pipeline_save(void) { cache_save(1); }
 // runs: at most every 20 s, and only after new pipelines were built. New pipeline keys are appended every 2 s.
 static void autosave_once(void) {
     static uint64_t last_n, last_ms, last_keys;
-    if (!P.ready) return;
+    if (!P.ready || gfx_is_closed()) return;
     uint64_t now = plat_now_ms();
     if (*(volatile uint32_t *)&K.pend_n && now - last_keys >= 2000) last_keys = now, keys_flush();
     gfx_shader_record_flush(0);
@@ -3415,6 +3415,12 @@ void vk_pipeline_autosave(void) {
     if (!P.ready || plat_xchg32(&started, 1)) return;
     if (!plat_thread_spawn(autosave_main, NULL, "pipe autosave", 0))
         rt_log("vk_pipeline: cannot start the autosave thread; the cache is saved at exit only");
+}
+
+void vk_pipeline_drain_workers(void) {
+    if (!P.ready) return;
+    lb_stop();
+    workers_drain();
 }
 
 void vk_pipeline_shutdown(void) {

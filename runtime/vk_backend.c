@@ -308,6 +308,10 @@ static void replay_drain(int why) {
     plat_mutex_unlock(&rl);
 }
 
+void vk_replay_drain(void) {
+    replay_drain(DR_FINISH);
+}
+
 // What made the game wait for the replay: since the last line (every 1800 game frames), or over the run (at exit).
 static void replay_log(uint64_t frame, int total) {
     char buf[1024];

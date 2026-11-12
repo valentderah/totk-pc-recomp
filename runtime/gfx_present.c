@@ -76,6 +76,10 @@ void gfx_window_focus_changed(int in) {
            t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
 }
 
+int gfx_is_closed(void) {
+    return plat_cas32(&g_closed, 0, 0) != 0;
+}
+
 // The window was closed: the process ends with it, as in MNG, once a save Commit still running in the background is
 // done. After gfx_window_request_restart the executable then starts again with the same command line and environment
 // (plat_restart), and the new process waits until this one is gone (main.c) before it moves the log and opens the
@@ -84,14 +88,45 @@ void gfx_window_closed(void) {
     if (plat_cas32(&g_closed, 1, 0) != 0) return;
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    rt_log_flush();
+
     fs_save_flush();
+    rt_log("gfx: exit: save data flushed");
+    rt_log_flush();
+
     input_rumble(0, 0, 0);
+
+    // 1. Drain replay and present queues so in-flight frame commands finish
+    vk_replay_drain();
     vk_present_drain();
-    gfx_window_release_vk();
-    wsys_destroy();
+    rt_log("gfx: exit: replay and present queues drained");
+    rt_log_flush();
+
+    // 2. Stop and drain background pipeline compilation workers
+    vk_pipeline_drain_workers();
+    rt_log("gfx: exit: pipeline workers drained");
+    rt_log_flush();
+
+    // 3. Save pipeline cache, playtime, and profiling while window and Vulkan device are still valid
     vk_pipeline_save();
+    rt_log("gfx: exit: pipeline cache saved");
+    rt_log_flush();
+
     playtime_save();
-    prof_write();   // plat_exit runs no atexit handlers
+    prof_write();
+    rt_log("gfx: exit: playtime and profiling saved");
+    rt_log_flush();
+
+    // 4. Release Vulkan presentation resources (flushes in-flight frame, waits device idle, destroys swapchain & surface)
+    gfx_window_release_vk();
+    rt_log("gfx: exit: Vulkan presentation released");
+    rt_log_flush();
+
+    // 5. Destroy the window handle
+    wsys_destroy();
+    rt_log("gfx: exit: window destroyed");
+    rt_log_flush();
+
     if (restart) {
         plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
