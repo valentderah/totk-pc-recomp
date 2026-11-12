@@ -462,6 +462,19 @@ int plat_ipc_read(PlatIpc *p, void *buf, size_t n, uint32_t ms);
 int plat_ipc_write(PlatIpc *p, const void *buf, size_t n);   // 1 when all n bytes were written, 0 the connection broke
 void plat_ipc_close(PlatIpc *p);
 
+// ---- local TCP: a listener on 127.0.0.1 only, never another address (the control socket, control.c). Sockets of
+// one thread: the caller waits on all of them at once with plat_tcp_wait, then reads the ready ones.
+typedef struct PlatTcp PlatTcp;
+PlatTcp *plat_tcp_listen_local(uint16_t port);   // NULL when the port is taken or sockets are unavailable
+PlatTcp *plat_tcp_accept(PlatTcp *l);            // a connection that is waiting, NULL when there is none
+PlatTcp *plat_tcp_connect_local(uint16_t port);  // a client of 127.0.0.1:port (the probes), NULL when refused
+// Waits at most ms until one of s[0..n) can be read (for a listener: has a connection to accept); ready[i] gets 1 for
+// those, 0 for the rest. The number ready, 0 when the time ran out, -1 on an error. NULL entries are skipped.
+int plat_tcp_wait(PlatTcp *const *s, int n, int *ready, uint32_t ms);
+int plat_tcp_recv(PlatTcp *s, void *buf, size_t n);         // after wait: bytes read, -1 the peer closed or it broke
+int plat_tcp_send(PlatTcp *s, const void *buf, size_t n);   // 1 when all n bytes went (at most 1 s), 0 it broke
+void plat_tcp_close(PlatTcp *s);
+
 // ---- restart: this program again, in a new process that starts once this one is gone
 // Starts this executable again with the same command line, environment and working folder, and no handle of this
 // process. 1 when it started; the caller then exits.

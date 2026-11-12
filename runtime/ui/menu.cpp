@@ -52,6 +52,7 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 int vk_exec_replay_workers(void);
+int control_status(void);   // control.c
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
@@ -959,12 +960,33 @@ static void tab_controls(float scale) {
     restart_confirm();
 }
 
+// The control socket (control.c): Off, or On with its port (7777 when none is set). The change applies at once; the note
+// under the value says whether the socket thread got the port.
+static void row_control(void) {
+    const char *set = cfg_value("TOTK_CONTROL");
+    char *end;
+    long p = strtol(set, &end, 10);
+    bool on = *set && !*end && p >= 1 && p <= 65535;
+    static char port[8], on_name[64];
+    snprintf(port, sizeof port, "%ld", on ? p : 7777L);
+    snprintf(on_name, sizeof on_name, menu_text(UI_MENU_CONTROL_ON), port);
+    const char *vals[] = {"0", port}, *names[] = {menu_text(UI_MENU_OFF), on_name};
+    int st = control_status();
+    const char *note = !on ? nullptr
+                       : st == p ? menu_text(UI_MENU_CONTROL_LISTENING)
+                       : st == -p ? menu_text(UI_MENU_CONTROL_BUSY)
+                                  : nullptr;   // the socket thread has not looked yet
+    opt_choice_list("TOTK_CONTROL", UI_MENU_CONTROL, vals, names, 2, UI_MENU_CONTROL_DESC, on ? 1 : 0, note);
+}
+
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
                                      UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
+    opt_group(UI_MENU_GROUP_COMPANION);
+    row_control();
     opt_end();
 }
 

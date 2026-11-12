@@ -189,8 +189,9 @@ static uint64_t read_ptr(uint64_t a) {
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
 // TOTK_GAME_V121/V143). The 1.1.0 slot was measured from its own dereference chain: 181 scene accesses in that build
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
-// compare) instruction for instruction.
-static int player_pos(float xyz[3]) {
+// compare) instruction for instruction. Reads only (plat_mem_read: 0 instead of a fault), from any host thread: the
+// speed lines, the world clock and control.c.
+uint64_t frame_step_player_actor(void) {
     uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V110 ? 0x4630a68 : 0x4728538)),
              scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;
@@ -202,10 +203,14 @@ static int player_pos(float xyz[3]) {
         uint64_t data = read_ptr(links + (uint64_t)i * 0x70 + 8), actor = data ? read_ptr(data + 0x40) : 0;
         uint64_t name = actor ? read_ptr(actor + 0x218) : 0;
         char text[7];
-        if (name && read_guest(name, text, 7) && !memcmp(text, "Player", 7))
-            return read_guest(actor + 0x2b4, xyz, 12) && isfinite(xyz[0]) && isfinite(xyz[2]);
+        if (name && read_guest(name, text, 7) && !memcmp(text, "Player", 7)) return actor;
     }
     return 0;
+}
+
+int frame_step_player_pos(float xyz[3]) {
+    uint64_t actor = frame_step_player_actor();
+    return actor && read_guest(actor + 0x2b4, xyz, 12) && isfinite(xyz[0]) && isfinite(xyz[2]);
 }
 
 static void speed_report(uint64_t now, double step, int interval) {
@@ -224,7 +229,7 @@ static void speed_report(uint64_t now, double step, int interval) {
     double wall = (double)(now - win_t0) * 1e-9;
     char pos[160] = "";
     float p[3];
-    if (probe && player_pos(p)) {
+    if (probe && frame_step_player_pos(p)) {
         double d = last_pos_ns ? hypot(p[0] - last_pos[0], p[2] - last_pos[2]) : 0,
                s = last_pos_ns ? (double)(now - last_pos_ns) * 1e-9 : 0;
         snprintf(pos, sizeof pos, "; player %.1f %.1f %.1f, %.2f m in %.3f s = %.2f m/s", p[0], p[1], p[2], d, s,
@@ -258,7 +263,7 @@ static void world_clock(double dt, double step) {
     int64_t w = atomic_load_explicit(&world_us, memory_order_relaxed);
     if (w < 0) {
         float p[3];
-        if (!player_pos(p) || fabsf(p[0]) + fabsf(p[2]) < 1.0f) return;   // a few guest reads, until the load ends
+        if (!frame_step_player_pos(p) || fabsf(p[0]) + fabsf(p[2]) < 1.0f) return;   // a few guest reads, until the load ends
         rt_log("frame step: world clock starts at present %llu, %.2f s after the guest started (the player at %.1f %.1f %.1f)",
                (unsigned long long)presents, rt_guest_start_ns ? (kern_now_ns() - rt_guest_start_ns) / 1e9 : 0.0, p[0],
                p[1], p[2]);

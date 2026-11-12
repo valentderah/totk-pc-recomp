@@ -315,6 +315,16 @@
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 
+[companion apps]
+# Control socket: a port number opens a local text endpoint a companion app on this PC (such as a progress map) reads
+# live game state from, such as where Link is and which way he faces, the way Savage Wind's control endpoint works.
+# Off (0) by default. It listens on 127.0.0.1 only, so other machines cannot reach it, and it closes a connection that
+# looks like a web page's request. Read only: its commands (help, pos, state) never change the game. The environment
+# variable TOTK_CONTROL=<port> overrides this line. The F1 menu switches it on the Menu tab ("Connection for map
+# apps", port 7777 unless this line names another) and it takes effect at once: turning it off closes the port and
+# every connection. Protocol: docs/control.md.
+# control = 0
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default
