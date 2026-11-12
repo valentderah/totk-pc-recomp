@@ -8,8 +8,9 @@
 // 0xffffffffffffffff (Windows' report of a non-canonical address) minutes to hours into play. UltraTears
 // (kuraeow/ultratears, "ability target guard") found the class; this code is ours.
 //
-// A target is dropped only where the game's own code would fault on it: the holder or the actor unreadable, the
-// component pointer unreadable, or the reference word unreadable or in a module's code or read-only data. Every
+// A target is dropped only where the game's own code would fault on it: the holder or the actor unreadable, a link
+// record the game follows unreadable or read-only, the component pointer unreadable, or the reference word
+// unreadable or in a module's code or read-only data. Every
 // other target goes on exactly as the game reads it, so no target the game can handle is ever lost. UltraTears' test
 // of a live actor (its link record [actor+0x1a8] points back to it at +0x40 and carries its id at +0x48) is not in the
 // game's code: the game links an actor whose link record is null without complaint. It runs here as a log line only,
@@ -51,6 +52,12 @@ static int read_only_module(uint64_t a) {
 // NULL when the game's code can follow the actor without a fault, else what would fault.
 static const char *faults(uint64_t actor) {
     if (!readable(actor, ACTOR_SPAN)) return "actor not readable";
+    // main+0x155ec (1.2.1: main+0x809ecc) follows a non-null link record unless the actor's state word +0x24 is 7..11:
+    // it stores the record in the owner, updates +0x50 atomically (main+0x15838) and later compares +0x40 and +0x48.
+    uint64_t link = u64_at(actor + 0x1a8);
+    if (link && u32_at(actor + 0x24) - 7 >= 5 &&
+        (!readable(link + 0x40, 0x18) || read_only_module(link + 0x50)))
+        return "link record not writable";
     uint64_t comp = u64_at(actor + 0x228);
     if (!comp) return NULL;   // main+0x9a89d4 returns 0 for it and the game stops there
     if (!readable(comp + 0xb0, 8)) return "component not readable";
