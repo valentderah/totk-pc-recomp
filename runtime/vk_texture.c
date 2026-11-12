@@ -46,6 +46,8 @@ typedef struct Tex {
     uint32_t wgen;                // page generation of the last upload check
     uint32_t checked;             // submit_epoch of the last check from a draw binding
     int uploaded, released;
+    uint32_t rev_epoch, rev_pos;  // the state scan made it live in that submission at that op (vk_texture_revive)
+    uint32_t own_epoch, own_pos;  // a chunk made it GPU-owned in that submission at that op (vk_texture_gpu_written)
     uint32_t n_up;                // uploads of this entry (vk_texture_debug)
     int last_ch;                  // last vk_mem_changed result of make_fresh: 1 written, 0 clean, -1 not tracked
     struct Tex *next_at;          // other entries at the same storage address
@@ -62,6 +64,7 @@ typedef struct Tex {
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
     uint64_t rel_ms;              // while released: when (coarse_ms)
+    uint64_t rel_bytes;           // while released: its own memory, counted in rel_bytes_total
     uint64_t use_seq;             // order of the last creation or take-back among all entries
     uint64_t rel_seq;             // while released: use_seq of the newest entry placed before this release; an entry
                                   // with a later use_seq on overlapping storage replaced this one's bytes
@@ -93,6 +96,7 @@ static SampSlot *sslots;
 static int nsslots;
 static nvn_hmap samplers = {.klen = sizeof(samp_par)};
 static int nreleased;
+static uint64_t rel_bytes_total;   // own memory of the released entries
 static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
 static uint64_t n_uploads, n_reuploads;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
@@ -122,10 +126,12 @@ static uint64_t n_checks;    // draw-binding storage checks (make_fresh_snap) si
 // which emptied every cache keyed on the global generations.
 #define AGEN_N 4096
 static uint32_t agen[AGEN_N];
+static uint32_t arev[AGEN_N];   // per storage address (hashed): the submit_epoch of the state scan's last revival there
 // Per slot id, for vk_texture_slot_token without the lock: the registration serial (bits 16-47; 0: never registered)
 // and the address generation index (bits 0-15), one word so a reader gets a consistent pair. Fixed-size (slot ids are
 // 20 bits), unlike tslots, which moves when it grows.
 static uint64_t *sinfo;
+static uint32_t *sepoch;   // per slot: the submit_epoch its entry was checked in (vk_texture_slot_checked), 0 none
 static uint32_t reg_serial;
 
 static uint32_t agen_idx(uint64_t addr) { return (uint32_t)(addr * 0x9E3779B97F4A7C15ull >> 52); }
@@ -143,11 +149,17 @@ static void tex_init(void *p) {
     __atomic_store_n(&tex_ready, 1, __ATOMIC_RELEASE);
     return;
 }
+static _Thread_local int tex_depth;   // how often this thread holds tex_lock (entry_of releases it for a wait)
+static _Thread_local uint32_t tex_settles;   // entry_of waits of this thread (vk_texture_by_id_locked)
 static void lock(void) {
     if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
     plat_rmutex_lock(&tex_lock);
+    tex_depth++;
 }
-static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
+static void unlock(void) {
+    tex_depth--;
+    plat_rmutex_unlock(&tex_lock);
+}
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static uint32_t mip(uint32_t v, unsigned lv) { return umax(v >> lv, 1); }
@@ -447,8 +459,19 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         }
     }
     if (!img) {
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+        VkResult r = rt_oom_forced(RT_OOM_IMAGE) ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                                 : vk_texture_image(&ci, &img, &e->alloc);
+        // Out of memory: one more try after the headroom blocks and the finished deferred objects are freed
+        // (vk_oom_release, which takes cmd_lock after the texture lock held here); released textures go at the next
+        // submit. No wait: the texture is asked for again at its next use, while a wait would hold the texture lock.
+        if (r == VK_ERROR_OUT_OF_HOST_MEMORY || r == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            static volatile int32_t n_retried;
+            vk_oom_release();
+            VkResult again = vk_texture_image(&ci, &img, &e->alloc);
+            log_limited(&n_retried, "image creation failed (%d), tried again after a memory release: %s (%ux%ux%u fmt %#x)",
+                        (int)r, again == VK_SUCCESS ? "created" : "failed again", w, h, depth, d->format);
+            r = again;
+        }
         if (r != VK_SUCCESS) {
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
                         d->format, w, h, depth, d->target, levels, layers);
@@ -528,7 +551,11 @@ static void own_remove(Tex *e) {
     plat_mutex_unlock(&owned_lock);
 }
 
+static uint64_t own_bytes(const Tex *e);
+
 static void rel_append(Tex *e) {
+    e->rel_bytes = own_bytes(e);
+    rel_bytes_total += e->rel_bytes;
     e->rel_next = NULL;
     e->rel_prev = rel_tail;
     if (rel_tail) rel_tail->rel_next = e;
@@ -537,6 +564,8 @@ static void rel_append(Tex *e) {
 }
 
 static void rel_unlink(Tex *e) {
+    rel_bytes_total -= e->rel_bytes;
+    e->rel_bytes = 0;
     if (e->rel_prev) e->rel_prev->rel_next = e->rel_next;
     else rel_head = e->rel_next;
     if (e->rel_next) e->rel_next->rel_prev = e->rel_prev;
@@ -634,12 +663,19 @@ static void sweep_released(void) {
 // CLEAN_AGE_MS: without the wait a fight re-created about 500 of them per 10 s. Any other render target lives only in its
 // image: dropping one that was merely old brought the texture back empty (black flashes in a Depths boss fight, ~170
 // "left uninitialised" aliases a minute).
+//
+// TOTK_TEX_RELEASED_MIB (default 256; 0 = no cap): the same drops run while the released entries hold more own memory than
+// that, under pressure or not. A 10-minute field run on the RX 9070 kept 818 MiB of them, 730 MiB with their storage
+// taken by a later texture, while 23579 of 23660 take-backs came within a second and none after 120 s. With the
+// cap the same route ended with 216 MiB of them, 1.1 GB less process commit and 1 GB less in VMA blocks; 15 dropped
+// textures were created again, and the slow frames stayed the same.
 #define PRESSURE_STEP 32
 #define CLEAN_AGE_MS 5000u
 #define DEAD_AGE_MS 30000u
 #define DEAD_QUIET_SUBMITS 600u
 #define DEAD_RETRY_QUERIES 8   // budget queries to skip after a search that found nothing
 static int vram_pressure = -1;
+static uint64_t released_cap;
 static uint64_t n_pressure_drops, n_pressure_overwritten;
 
 static int tex_by_addr(const void *a, const void *b) {
@@ -693,16 +729,19 @@ static int dead_candidate(const Tex *e) {
 // Drops overwritten entries until `need` bytes are free or the step is used up. The sort runs only under pressure, while
 // an old enough entry exists, and rests for a while when it finds nothing to drop. Returns the bytes freed.
 static uint64_t pressure_search_ns;   // longest search since the last mem: released line
-static uint64_t drop_overwritten(uint64_t need, int *dropped) {
+// step: PRESSURE_STEP, or OOM_STEP from oom_release, which neither waits out nor starts the rest.
+#define OOM_STEP 256
+static uint64_t drop_overwritten(uint64_t need, int *dropped, int step) {
     static int rest;
-    if (rest > 0) { rest--; return 0; }
+    int urgent = step > PRESSURE_STEP;
+    if (rest > 0 && !urgent) { rest--; return 0; }
     if (!rel_head || coarse_ms - rel_head->rel_ms < DEAD_AGE_MS) return 0;
     uint64_t t0 = plat_now_ns(), freed = 0;
     AddrIndex x;
     if (!addr_index(&x)) return 0;
-    Tex *cand[PRESSURE_STEP];
+    Tex *cand[OOM_STEP];
     int nc = 0;
-    for (Tex *e = rel_head; e && nc < PRESSURE_STEP && coarse_ms - e->rel_ms >= DEAD_AGE_MS; e = e->rel_next) {
+    for (Tex *e = rel_head; e && nc < step && coarse_ms - e->rel_ms >= DEAD_AGE_MS; e = e->rel_next) {
         if (!dead_candidate(e)) continue;
         int lo = 0, hi = x.n;   // the first entry at e's address, then e among those
         while (lo < hi) {
@@ -720,9 +759,22 @@ static uint64_t drop_overwritten(uint64_t need, int *dropped) {
         destroy_tex(cand[i]);
         (*dropped)++, n_pressure_drops++, n_pressure_overwritten++;
     }
-    if (!nc) rest = DEAD_RETRY_QUERIES;
+    if (!nc && !urgent) rest = DEAD_RETRY_QUERIES;
     uint64_t ns = plat_now_ns() - t0;
     if (ns > pressure_search_ns) pressure_search_ns = ns;
+    return freed;
+}
+
+// Clean released entries, oldest first: mirrored ones the GPU never wrote, which come back from their storage.
+static uint64_t drop_clean(uint64_t need, uint64_t freed, int *dropped, int step) {
+    for (Tex *e = rel_head, *next; e && freed < need && *dropped < step && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
+        next = e->rel_next;
+        if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
+        freed += own_bytes(e);
+        dropped_note(e);
+        destroy_tex(e);
+        (*dropped)++, n_pressure_drops++;
+    }
     return freed;
 }
 
@@ -731,24 +783,38 @@ static void sweep_pressure(void) {   // tex_lock held
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
         vram_pressure = s && *s ? atoi(s) : 90;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
-        rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
+        const char *m = cfg_get("TOTK_TEX_RELEASED_MIB");
+        released_cap = (m && *m ? strtoull(m, NULL, 10) : 256) << 20;
+        rt_log("vk: released textures under VRAM pressure: %s%d%%; above %llu MiB of them: %s (TOTK_TEX_RELEASED_MIB)",
+               vram_pressure ? "dropped above " : "off", vram_pressure, (unsigned long long)(released_cap >> 20),
+               released_cap ? "dropped" : "no cap");
     }
-    if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+    if (!rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+    uint64_t need = released_cap && rel_bytes_total > released_cap ? rel_bytes_total - released_cap : 0;
     uint64_t used, budget;
     int exact;
-    if (!vk_mem_vram(&used, &budget, &exact)) return;
-    uint64_t line = budget / 100 * (uint64_t)vram_pressure;
-    if (used <= line) return;
-    int dropped = 0;
-    uint64_t need = used - line, freed = drop_overwritten(need, &dropped);
-    for (Tex *e = rel_head, *next; e && freed < need && dropped < PRESSURE_STEP && coarse_ms - e->rel_ms >= CLEAN_AGE_MS; e = next) {
-        next = e->rel_next;
-        if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
-        freed += own_bytes(e);
-        dropped_note(e);
-        destroy_tex(e);
-        dropped++, n_pressure_drops++;
+    if (vram_pressure && vk_mem_vram(&used, &budget, &exact)) {
+        uint64_t line = budget / 100 * (uint64_t)vram_pressure;
+        if (used > line && used - line > need) need = used - line;
     }
+    if (!need) return;
+    int dropped = 0;
+    uint64_t freed = drop_overwritten(need, &dropped, PRESSURE_STEP);
+    drop_clean(need, freed, &dropped, PRESSURE_STEP);
+}
+
+// rt_oom_request (an allocation failed somewhere, oom.c): the same two kinds as sweep_pressure, as many as OOM_STEP
+// whatever the budget says, and the headroom blocks. Never GPU-written content that lives only in its image. The memory
+// comes back once the submission being recorded is done (destroy_tex defers the images). Texture lock held.
+static void oom_release(void) {
+    int dropped = 0;
+    uint64_t freed = drop_overwritten(UINT64_MAX, &dropped, OOM_STEP);
+    int overwritten = dropped;
+    freed = drop_clean(UINT64_MAX, freed, &dropped, OOM_STEP);
+    vk_headroom_release();
+    static volatile int32_t n_logged;
+    log_limited(&n_logged, "out of memory: %d released textures dropped (%d overwritten, %d clean), %.0f MiB, %d kept",
+                dropped, overwritten, dropped - overwritten, freed / 1048576.0, nreleased);
 }
 
 // ---------------------------------------------------------------- uploads
@@ -1231,10 +1297,20 @@ static int alias_compatible(const Tex *e, const Tex *src) {
     return eb && eb == sb && ew == sw && eh == sh;
 }
 
-// src holds content the storage bytes do not: the GPU wrote it and, for a mirrored texture, it was not written back
-// and the CPU has not rewritten the storage since (the new entry's upload then reads the newer bytes).
-static int alias_has_gpu_content(const Tex *src) {
-    if (!src->pub.gpu_owned) return 0;
+// Whether e is live at op pos of a chunked replay: the state scan is ahead of the chunks, and an entry it revived at a
+// later op is still released for this one. Two 4K targets at one address, RGBA8 and R8 with memory of their own, were
+// swapped whenever the scan got past the second's SET_RT before a chunk sampling the storage got its turn, and large
+// parts of the scene flickered. UINT32_MAX: the state now.
+static int live_at(const Tex *e, uint32_t pos) {
+    return !e->released && !(e->rev_epoch == submit_epoch && e->rev_pos > pos);
+}
+
+// src holds content the storage bytes do not, at op pos of a chunked replay (UINT32_MAX: the state now): the GPU wrote
+// it and, for a mirrored texture, it was not written back and the CPU has not rewritten the storage since (the new
+// entry's upload then reads the newer bytes). A chunk at a later op that rendered src first does not count: in replay
+// order that render comes after the new entry's first use.
+static int alias_has_gpu_content(const Tex *src, uint32_t pos) {
+    if (!src->pub.gpu_owned || (src->own_epoch == submit_epoch && src->own_pos > pos)) return 0;
     if (!src->pub.mirrored) return 1;
     uint32_t now;
     return src->gpu_dirty && !storage_rewritten(src, src->gpu_gen, &now);
@@ -1288,10 +1364,45 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
+static void entry_live(Tex *e) {
+    if (!e->released) return;
+    takeback_n[e->pub.gpu_owned != 0][age_bucket(coarse_ms - e->rel_ms)]++;
+    e->use_seq = ++use_counter;
+    e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(e->key.addr);
+}
+
+// A live colour entry at e's storage of e's size, as of op pos: the new entry may take its content (alias_copy).
+static int alias_candidate(const TexKey *k, const tex_t *t, uint32_t pos) {
+    for (const Tex *p = nvn_hm_get(&by_addr, &k->addr); p; p = p->next_at)
+        if (live_at(p, pos) && !p->f.depth && !p->f.stencil && p->t.L.size == t->L.size) return 1;
+    return 0;
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
+    uint32_t pos = vk_exec_replay_pos();
+    // A chunk of a chunked replay makes the entry as of its own op: whether it takes the content of a texture at its
+    // storage (alias_copy) depends on what the chunks before it render there, and those may still be recording on
+    // other threads. Taken from a render they had not recorded yet, the new image got the storage's old bytes instead:
+    // on an RX 7800 XT the grass near Link was missing in 3 of 29 launches with 4 threads (a map texture drawn once
+    // per tile, kept from then on). With a live colour texture of its size at the storage, the chunk waits until the
+    // chunks before it are recorded, the texture lock released for the wait (as often as this thread holds it).
+    if (!e && pos != UINT32_MAX && tex_alias != 0 && alias_candidate(&k, t, pos) && vk_exec_chunk_behind()) {
+        tex_t own = *t;   // t may point into tslots, which a registration moves while the lock is released
+        t = &own;
+        int d = tex_depth;
+        for (int i = 0; i < d; i++) unlock();
+        vk_exec_chunk_settle();
+        for (int i = 0; i < d; i++) lock();
+        tex_settles++;
+        if ((e = nvn_hm_get(&by_key, &k))) {   // another chunk made it meanwhile
+            entry_live(e);
+            e->t = *t;
+            return e;
+        }
+    }
     if (!e) {
         if (tex_alias < 0) {
             tex_alias = cfg_bool("TOTK_TEX_ALIAS");
@@ -1309,8 +1420,9 @@ static Tex *entry_of(const tex_t *t) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
+            if (!live_at(p, pos)) continue;   // the scan revives it at a later op: released at this chunk's
             if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
-                alias_compatible(e, p) && alias_has_gpu_content(p))
+                alias_compatible(e, p) && alias_has_gpu_content(p, pos))
                 src = p;
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
@@ -1336,11 +1448,7 @@ static Tex *entry_of(const tex_t *t) {
         nvn_hm_put(&by_key, &k, e);
         tex_gen_bump(k.addr);
     }
-    if (e->released) {
-        takeback_n[e->pub.gpu_owned != 0][age_bucket(coarse_ms - e->rel_ms)]++;
-        e->use_seq = ++use_counter;
-        e->released = 0, nreleased--, rel_unlink(e), tex_gen_bump(k.addr);
-    }
+    entry_live(e);
     e->t = *t;
     return e;
 }
@@ -1362,6 +1470,25 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     lock();
     Tex *e = entry_of(t);
     if (e) make_fresh(e);
+    unlock();
+    return e ? &e->pub : NULL;
+}
+
+// The replay's state scan (vk_exec.c): the entry vk_texture_get would return, neither created nor made current; the
+// recording does that. It is revived here, in replay order, and remembers the op it happened at: a chunk may bind a
+// finalized target's slot before the chunk that renders it reached its SET_RT, or long after the scan went past a later
+// target at the same storage, and slot_resolve has to answer as the replay would at the chunk's own op (live_at).
+const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos) {
+    if (!t || !t->mem) return NULL;
+    TexKey k;
+    make_key(t, &k);
+    lock();
+    Tex *e = nvn_hm_get(&by_key, &k);
+    if (e && e->released) {
+        e->rev_epoch = submit_epoch, e->rev_pos = pos;
+        __atomic_store_n(&arev[agen_idx(k.addr)], submit_epoch, __ATOMIC_RELEASE);
+        entry_live(e);
+    }
     unlock();
     return e ? &e->pub : NULL;
 }
@@ -1398,6 +1525,10 @@ void vk_texture_gpu_written(const tex_t *t) {
     Tex *e = entry_of(t);
     if (e) {
         make_fresh(e);   // a partial render keeps what the storage held before
+        if (!e->pub.gpu_owned) {   // entry_of's alias choice of a chunk at an earlier op leaves this render out
+            uint32_t pos = vk_exec_replay_pos();
+            e->own_epoch = pos == UINT32_MAX ? 0 : submit_epoch, e->own_pos = pos;
+        }
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
@@ -1468,7 +1599,9 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     }
     if (!sinfo) {
         uint64_t *p = calloc(1 << 20, sizeof *p);
-        if (!p) rt_fatal("vk: out of memory for texture slot tokens");
+        uint32_t *q = calloc(1 << 20, sizeof *q);
+        if (!p || !q) rt_fatal("vk: out of memory for texture slot tokens");
+        __atomic_store_n(&sepoch, q, __ATOMIC_RELEASE);
         __atomic_store_n(&sinfo, p, __ATOMIC_RELEASE);
     }
     TexSlot *s = &tslots[id];
@@ -1484,15 +1617,15 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     unlock();
 }
 
-// The entry slot s resolves to, and the view and has_view a caller gets with it (the slot's, with the descriptor's
-// swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
-static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
+// The entry slot s resolves to at op pos, and the view and has_view a caller gets with it (the slot's, with the
+// descriptor's swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
+static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view, uint32_t pos) {
     *view = s->v;
     *has_view = s->has_view;
     TexKey k;
     make_key(&s->t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
-    if (!e || e->released) {   // MNG hle_nvn.c: a finalized slot follows the live texture at its storage
+    if (!e || !live_at(e, pos)) {   // MNG hle_nvn.c: a finalized slot follows the live texture at its storage
         // Prefer the live entry that differs from the slot descriptor only in its swizzle: transient render targets
         // share storage, and the newest one at the address is usually another size. The map screen samples its
         // 2250x1080 map target through an (R,G,B,1) descriptor and followed a 960x60 target at the same address.
@@ -1505,13 +1638,14 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
         Tex *own = e, *any = NULL;
         e = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr); p; p = p->next_at) {
-            if (p->released || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
+            if (!live_at(p, pos) || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
             if (!any) any = p;
             if (same_but_swizzle(&p->key, &k)) { e = p; break; }
         }
         if (!e) e = any ? any : own;
     }
-    if (!e) e = s->t.mem ? entry_of(&s->t) : NULL;
+    TexSlot copy;   // entry_of may release the lock (a chunk's wait), and a registration then moves tslots
+    if (!e && s->t.mem) copy = *s, s = &copy, e = entry_of(&s->t);
     // A followed texture is another descriptor at the same storage: its image holds the content, but sampling takes the
     // slot descriptor's swizzle. The UI renders text into RGBA8 and samples it through a (A,A,A,A) descriptor; with the
     // render target's RGBA swizzle the text blur saw R = 1 everywhere and drew solid boxes behind tips and labels.
@@ -1553,14 +1687,38 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view) {
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     if (id < 0 || id >= ntslots || !tslots[id].used) return NULL;
     TexSlot *s = &tslots[id];
-    uint32_t g = agen[sinfo[id] & 0xffff];
+    uint32_t idx = sinfo[id] & 0xffff, g = agen[idx];
+    uint32_t pos = arev[idx] == submit_epoch ? vk_exec_replay_pos() : UINT32_MAX;
+    if (pos != UINT32_MAX) {   // what the storage holds depends on the op: chunks at other ops share no answer in s
+        view_t v;
+        int hv;
+        Tex *f = slot_resolve(s, &v, &hv, pos);
+        s = &tslots[id];   // slot_resolve may have released the lock
+        if (f && (!f->uploaded || f->checked != submit_epoch)) {
+            make_fresh_snap(f);
+            f->checked = submit_epoch;
+        }
+        if (view) *view = has_view ? v : s->v;
+        if (has_view) *has_view = view ? hv : s->has_view;
+        return f ? &f->pub : NULL;
+    }
     if (!s->ce || s->cgen != g) {   // resolved again: an entry at its address was created, dropped or released, or the
         view_t v;                   // slot registered (s->ce cleared); an empty result is not kept: image creation may
         int hv;                     // succeed later
-        s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
+        uint32_t settles = tex_settles;
+        Tex *r = slot_resolve(s, &v, &hv, UINT32_MAX);   // entry_of may create an entry and bump g: g read before it
+        s = &tslots[id];
+        if (settles != tex_settles) {   // the lock was released for a wait: the slot may be another texture by now
+            if (r && (!r->uploaded || r->checked != submit_epoch)) make_fresh_snap(r), r->checked = submit_epoch;
+            if (view) *view = has_view ? v : s->v;
+            if (has_view) *has_view = view ? hv : s->has_view;
+            return r ? &r->pub : NULL;
+        }
+        s->ce = r;
         s->cview = v, s->chas_view = (uint8_t)hv;
         s->cgen = g;
         s->cepoch = 0;
+        __atomic_store_n(&sepoch[id], 0, __ATOMIC_RELAXED);
     }
     Tex *e = s->ce;
     // Bindings of one submit share one check, answered from the submit's write-watch snapshot (guest writes during a
@@ -1572,6 +1730,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
             e->checked = submit_epoch;
         }
         s->cepoch = submit_epoch;
+        __atomic_store_n(&sepoch[id], submit_epoch, __ATOMIC_RELEASE);
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
@@ -1593,11 +1752,26 @@ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
 
 uint32_t vk_texture_epoch(void) { return __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED); }
 
+int vk_texture_slot_moves(int id) {
+    const uint64_t *si = __atomic_load_n(&sinfo, __ATOMIC_ACQUIRE);
+    if (!si || id < 0 || id >= (1 << 20)) return 0;
+    uint64_t v = __atomic_load_n(&si[id], __ATOMIC_RELAXED);
+    return __atomic_load_n(&arev[v & 0xffff], __ATOMIC_ACQUIRE) == __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED);
+}
+
+int vk_texture_slot_checked(int id) {
+    const uint32_t *e = __atomic_load_n(&sepoch, __ATOMIC_ACQUIRE);
+    return e && id >= 0 && id < (1 << 20) &&
+           __atomic_load_n(&e[id], __ATOMIC_ACQUIRE) == __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED);
+}
+
 void vk_texture_new_submit(void) {
     lock();
     if (!++submit_epoch) submit_epoch = 1;
     coarse_ms = plat_now_ms();
     sweep_pressure();
+    if (__atomic_load_n(&rt_oom_req, __ATOMIC_RELAXED) && __atomic_exchange_n(&rt_oom_req, 0, __ATOMIC_ACQUIRE))
+        oom_release();
     static uint64_t log_at;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
     if ((rt_trace & RT_TRACE_PERF) && f != log_at && tex_alias > 0) {
@@ -1624,8 +1798,9 @@ void vk_texture_new_submit(void) {
                (unsigned long long)f * 60, (unsigned long long)ck, (unsigned long long)n_checks, (unsigned long long)calls,
                (unsigned long long)untr);
         n_checks = 0;
-        rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu (%llu overwritten)",
-               (unsigned long long)f * 60, nreleased, (unsigned long long)n_pressure_drops,
+        rt_log("perf: frame %llu: released textures kept %d (%.0f MiB), dropped under VRAM pressure or the cap %llu "
+               "(%llu overwritten)", (unsigned long long)f * 60, nreleased, rel_bytes_total / 1048576.0,
+               (unsigned long long)n_pressure_drops,
                (unsigned long long)n_pressure_overwritten);
         n_pressure_drops = n_pressure_overwritten = 0;
     }
@@ -1921,7 +2096,12 @@ static void write_back_n(Tex **v, int n) {
     if (np) vk_upload_flush(1);
     for (int i = 0; i < np; i++) {
         WbPart *q = &p[i];
-        uint8_t *buf = malloc(q->g.img * (size_t)q->g.nz);
+        size_t bytes = q->g.img * (size_t)q->g.nz;
+        uint8_t *buf = malloc(bytes);
+        if (!buf) {   // waits for memory with the texture lock held, after the release that needs no submit
+            vk_oom_release();
+            buf = rt_realloc_wait(NULL, bytes, "vk: texture write-back buffer");
+        }
         if (!buf) rt_fatal("vk: out of memory for a texture write-back");
         texels_read_take(q->e, &q->g, &q->t, buf);
         storage_texels(&q->e->t, &q->g, &q->r, buf, 1);
@@ -2417,8 +2597,8 @@ void vk_texture_shutdown(void) {
     by_addr = (nvn_hmap){.klen = 8};
     samplers = (nvn_hmap){.klen = sizeof(samp_par)};
     free(tslots), free(sslots);
-    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0;
+    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0, rel_bytes_total = 0;
     rel_head = rel_tail = NULL;
-    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20);   // no slot is registered: tokens 0
+    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sepoch, 0, sizeof *sepoch << 20);   // no slot is registered: tokens 0
     unlock();
 }

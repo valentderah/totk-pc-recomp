@@ -99,6 +99,12 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
 uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
 uint64_t plat_counter_hz(void);
 void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
+int plat_power_full(void);                // opts the process out of OS power throttling: 1 done, 0 refused, -1 no such thing
+// Hybrid CPUs: finds the performance-core logical processors the process may use, once, before any thread asks; returns
+// their count (0: none to prefer, why says which case). plat_thread_perf_core: the calling thread prefers them; 1 done,
+// 0 refused, -1 nothing selected.
+int plat_perf_core_setup(char *why, size_t n);
+int plat_thread_perf_core(void);
 // t * num / den for a fixed num / den without a 128-bit division per call (__udivti3 took 5% of the game's running
 // samples through plat_now_ns and rt_ticks): t * q + (t * f >> 64) with q = num / den and f = (num % den) * 2^64 / den.
 // Monotonic in t and at most one below the exact quotient while t * (num % den) / den fits 64 bits.
@@ -243,7 +249,11 @@ typedef struct {
     const char *module;        // the module holding rip: NULL for this executable, "" for none (a jump to address 0)
     const char *cxx_type;      // a C++ exception from MSVC-built code: the thrown type's decorated name (.?AV...@@)
     const char *cxx_what;      // and what() when the type derives from std::exception; NULL when unknown
+    int has_regs;              // gpr holds the faulting thread's registers (a fault; not abort or invalid parameter)
+    uint64_t gpr[16];          // rax rcx rdx rbx rsp rbp rsi rdi r8..r15, in the x86 encoding order
 } PlatCrash;
+#define PLAT_GPR_NAMES {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", \
+                        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"}
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
 int plat_screen_size(int *w, int *h);                    // the primary display's current mode in pixels; 0 unknown
@@ -423,6 +433,9 @@ void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb);
 // Commit charge in MB: this process's private bytes, the system's commit in use and its limit (RAM plus page files).
 // An allocation fails when the system's reaches the limit, however much physical memory is free. -1 when unknown.
 void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb);
+// What the system can still give, in bytes: commit (Windows: limit minus charge; Linux, which overcommits: UINT64_MAX)
+// and physical memory available without paging. UINT64_MAX when unknown.
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room);
 // This process's memory in bytes: resident (the working set) and private (Windows: committed private bytes; Linux: the
 // resident anonymous pages). 0 when unknown.
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes);

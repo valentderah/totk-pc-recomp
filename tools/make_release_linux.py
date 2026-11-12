@@ -426,6 +426,8 @@ APPRUN = '''#!/bin/sh
 # The AppImage entry: the setup window, run by the bundled Python from the read-only mount (no bytecode written there).
 HERE="$(dirname "$(readlink -f "$0")")"
 export PYTHONDONTWRITEBYTECODE=1
+# Ignore ~/.local/lib/pythonX.Y/site-packages: a user-installed package such as PyPI's `installer` would shadow ours
+export PYTHONNOUSERSITE=1
 export TCL_LIBRARY="$HERE/python/lib/tcl9.0"
 export TK_LIBRARY="$HERE/python/lib/tk9.0"
 exec "$HERE/python/bin/python3" -m installer.gui "$@"

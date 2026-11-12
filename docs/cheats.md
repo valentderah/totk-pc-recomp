@@ -58,7 +58,7 @@ The game's code is compiled ahead of time, so a cheat cannot write new instructi
 |---|---|---|
 | code | Opcode 0 writes into main's code | Built into the game at setup as a patch set (`recomp/patches.py`); switches at once. |
 | key | Code writes inside a button condition (`8` mask, writes, `21` else, the original words, `20`) | A patch set that is on while the cheat is on and the buttons are held. |
-| data | Writes data only: heap, main's data, pointer chains, button conditions | Runs in a cheat VM after dmnt's, opcodes 0 to A, every presented frame while on. |
+| data | Writes data only: heap, main's data, pointer chains, button conditions | Runs in a cheat VM after dmnt's, opcodes 0 to A and C0 to C3, every presented frame while on. |
 | master | `{name}` with code writes | A patch set that is always on. |
 | restore | Writes back only the game's original instructions | Not needed: switching a cheat off restores them. Greyed out. |
 
@@ -66,7 +66,7 @@ A cheat whose code writes call or jump into a code cave the cheat writes itself 
 
 Not supported, and shown greyed out with the reason:
 
-- the 0xC and 0xF opcode extensions;
+- opcode C4 (extended button condition) and the 0xF extensions (FF0 pause, FF1 resume, FFF debug log);
 - opcode 5 with a register offset;
 - code writes mixed with other opcodes, except the button pattern above;
 - code writes that change the CPU flags differently from the game's instruction, or code caves with branches or pc-relative instructions.

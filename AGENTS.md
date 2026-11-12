@@ -29,6 +29,15 @@ This repository is public. Game data lives outside it and every derived file sta
 - Graphics bugs: [docs/maxwell.md](docs/maxwell.md) lists the Maxwell behaviour the Vulkan path must match and the TotK bugs other ports fixed.
 - Comments say what the code does and why, in words that stand on their own. Cite our code by file plus function (a line number may follow as a hint) and upstream code by project, file and function: `refs/` moves, so its line numbers rot. Commit hashes belong to the attribution of copied code.
 
+## Running and debugging
+
+- Running the game, screenshots, frame dumps, timings: [docs/agents/running.md](docs/agents/running.md).
+- Investigating a bug, glitch or crash: search [docs/agents/symptoms.md](docs/agents/symptoms.md) by the player's words first, then follow [docs/agents/debugging.md](docs/agents/debugging.md). Read the code before running the game.
+
+## Pull requests
+
+Preparing a pull request: target `dev`; the checks by changed area, the proof and the performance runs it carries are in [CONTRIBUTING.md](CONTRIBUTING.md), "Pull requests". Reviewing one: [docs/pr-review-kit/](docs/pr-review-kit/).
+
 ## Writing
 
 Code, comments, docs and commit messages are in English. Commit messages are plain sentences without type prefixes.

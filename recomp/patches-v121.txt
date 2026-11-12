@@ -55,6 +55,21 @@ site cloth main 8222f0 9401d7cf @page:x8 bd400104 1e240842 1e240863 9401d7cf   #
 # 100; compare +0x28 * +0x38 (30 / time scale) instead, the same value at 30 Hz and independent of the frame rate.
 site bounce main bda798 bd402900 bd402900 bd403901 1e210800   # ldr s0, [x8, #0x28]; ldr s1, [x8, #0x38]; fmul s0, s0, s1
 
+# Climbing (issues #35, #276, #1001): the climb controller's velocity step (main+0x1918220, the same code as 1.4.3
+# main+0x1f49754) multiplies the requested velocity by a factor that makes up for a movement loss growing with the
+# frame rate: 1.272 - 0.362 (r - 1) clamped to [0.5, 1.5] (r = VFR +0, the 30 Hz ratio times the time scale). Right at
+# 30 fps, 78% of the speed at 60 and 30% at 240. Below r = 1 use 1.4.3's factor, 1.272 + 1.189 (1 - r) at most 2
+# (Nintendo's 60 fps fit), and below r = 0.5 the 1.4.3 set climb's g(r) = 0.66265 / r + 0.4982 + 0.0848 r, at most 8.
+# Without flags: h = max(min(1.4.3 factor, 2), g - 16 max(r - 0.5, 0)), s0 = max(s0, h), s1 = max(1.5, h), and the
+# following fmin s1, s0, s1 gives max(min(s0, 1.5), h). For r >= 1 h is at most the shipping value, so 30 fps and
+# slower keep the factor bit for bit. x8 is dead after the load at 0x19182c0; s5-s7 and s16 are written before any
+# later read in this function.
+# g takes u = max(page +0, r): the patch page's 30 Hz frame ratio without the time scale (runtime/frame_rate.c), so
+# slow motion at 30 or 60 fps keeps the shipping factor and only a real frame rate above 60 raises it; the runtime
+# switches the set off without the real-time step, where the page is not written.
+set climb    TOTK_CLIMB_FIX      1
+site climb main 19182cc 1e2f1001 @page:x8 bd400111 1e296a31 1e2e1005 1e3138a5 52862508 72a7e308 1e270106 1e2608a5 1e2528a5 529a1ca8 72a7f448 1e270106 1e2628a5 1e201006 1e2678a5 52946dc8 72a7e528 1e270106 1e3118c6 52828248 72a7dfe8 1e270107 1e2728c6 529573e8 72a7b5a8 1e270107 1f1118e6 1e283a27 2f00e410 1e3068e7 1e261010 1f1098e6 1e241010 1e3078c6 1e2668a5 1e256800 1e2f1001 1e256821   # fmov s1, #1.5 -> s5 = h(r); s0 = max(s0, s5); s1 = max(1.5, s5)
+
 # Cursor and aim steps (upstream game_patches.c patch_cursor_speed, 363a6eb). These updates read the game's 30 Hz frame
 # ratio for their smoothing but leave it out of the step itself, so the map cursor and the vertical Ultrahand aim moved
 # 2x as fast at 60 fps and 4x at 120 as at the shipping 30 fps (issue #44). Each site multiplies the step by that ratio,
@@ -64,6 +79,22 @@ set cursor   TOTK_HIGHFPS_FIX    1
 site cursor main ec3d9c bd400361 f94002e9 bd400930 1e300800 bd400361   # map pan speed s0 *= [[x23] + 8], then ldr s1, [x27]
 site cursor main 1d48d64 1e2a198c 1e2a198c bd400a90 1e30098c   # fdiv s12, s12, s10, then s12 *= [x20 + 8]: vertical Ultrahand aim
 site cursor main 1d484e4 1e200923 1e200923 bd400a90 1e300863   # fmul s3, s9, s0, then s3 *= [x20 + 8]: vertical gyro aim (Recall)
+
+# Gear rotation check (issues #330, #984). The update of ActorCheckRotateModule (main+0x21350c0; vtable +0x110, called
+# by the AI node dispatchers main+0x11f5a40 / 0x2adbcf8 with x1 = the update context) reports a gear or water wheel as
+# turning when the angle it turned since the previous update is above RotateStartDeg / 30, the angle of one 30 Hz
+# frame. Above 30 fps a gear turns less per update than that, reads as stopped, and the shrine doors that wait on it
+# (Riogok, Turakamik, the Wind Temple) never open. 1.4.3 (main+0x273d080) divides the angle by the context's +8, the
+# frame delta in 30 Hz frames (the AI root sets it from its owner's virtual +0x30, main+0x106acc4, and the frame
+# counter node SelectorGenericFrameCounter, main+0x10b66f8, adds it up per update). 1.2.1 gets the same context and
+# ignores it: the update overwrites x1 with its first instruction. The first site keeps ctx+8 in s12 (the prologue has
+# saved d12, the function first writes it at the second site, and callees preserve it); the second multiplies the
+# threshold by it, which is 1.4.3's test with both sides multiplied by the delta. s4 is free after the fdiv: the next
+# read follows a write in the callee main+0x11c2014. The context follows the measured step with the set realtime and is
+# the whole-vsync ratio without it (0.25 at 120 fps, 0.5 at 60 fps measured), so the set works either way.
+set gears    TOTK_HIGHFPS_FIX    1
+site gears main 21350e0 f9402001 bd40082c f9402001   # ldr x1, [x0, #0x40], after ldr s12, [x1, #8] (frame delta)
+site gears main 21352d0 1e24180c 1e241804 1e2c088c   # fdiv s12, s0, s4 -> fdiv s4, s0, s4; fmul s12, s4, s12
 
 # Output size (upstream games/totk/runtime/game_patches.c patch_output_res; runtime/resolution.c switches the set on).
 # The swapchain size nnMain writes before NvInitializeGraphics comes from page +48 ({w, h} as one 64-bit value), and
@@ -80,6 +111,14 @@ site output main cc3f58 f9400015 f94012b5   # ldr x21, [x0] -> ldr x21, [x21, #3
 site scene main cc3f68 5e21d900 @page:x9    # scvtf s0, s8 -> adrp x9, page
 site scene main cc3f70 bd0cc660 2d420520    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cc3f74 5e21d921 bd0cc660    # scvtf s1, s9 -> str s0, [x19, #0xcc4]
+
+# Fixed scene size (MacNativeGames game_patches_v143.c patch_fixed_res, 1.4.3 main+0x5848a8; runtime/resolution.c
+# res_dynres_live switches the set on unless TOTK_DYNAMIC_RES=1). The game's dynamic resolution controller
+# (main+0xcc26f4, called once per frame from the renderer at main+0xcc0fa0) steps the scene through tiers of 100, 90 and
+# 80 % by a cost model that grows with the scene width squared (runtime/resolution.c res_dynres_live), and the renderer stores scene width * tier / output width at +0xccc (main+0xcc1150).
+# Every path leaves through one epilogue, where the tier's scale moves into the result: 1.0 there makes every tier 100 %.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main cc2c00 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
 
 # Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches.c, the 1.2.1 sites of aspect_install;
 # runtime/resolution.c res_init writes the output's width / height to page +56 and switches the set on). The same four

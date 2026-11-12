@@ -33,9 +33,20 @@
 #define VSYNC_HZ 60
 
 // ---- queue lock
+// The recorder queues the parts it records and submits them later (vk_rec.c rec_submit): the first lock of a thread
+// waits until the parts queued before it are submitted, so whatever it puts on the queue comes after them, as when
+// the submitting thread submitted them itself. Not inside a held lock: the recorder takes this lock to submit.
 static PlatRMutex g_ql;
-void vk_queue_lock(void) { plat_rmutex_lock(&g_ql); }
-void vk_queue_unlock(void) { plat_rmutex_unlock(&g_ql); }
+static _Thread_local int ql_depth;
+void vk_queue_lock(void) {
+    if (!ql_depth) rec_queue_wait();
+    plat_rmutex_lock(&g_ql);
+    ql_depth++;
+}
+void vk_queue_unlock(void) {
+    ql_depth--;
+    plat_rmutex_unlock(&g_ql);
+}
 
 // ---- window state shared with the back end
 static VkSurfaceKHR g_surface;
@@ -236,6 +247,7 @@ static void window_settings_live(void) {
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
+    res_dynres_live();
     const char *e = cfg_value("TOTK_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
