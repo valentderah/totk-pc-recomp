@@ -97,8 +97,9 @@ static int map_zoom_allowed(uint64_t buttons) {
         ctx == INPUT_CAM_ULTRAHAND_OBJECT || ctx == INPUT_CAM_LOCK_ON) {
         return 0;
     }
-    const char *mc = cfg_get("TOTK_MENU_CURSOR");
-    return (mc && !strcmp(mc, "0")) ? 1 : menu_cursor_map();
+    // Only the map menu_cursor.c finds: with menu_cursor = 0 (or on 1.2.1) the map is not read, and a fallback to
+    // "allowed" would push the right stick's Y in free roam, where it tilts the camera.
+    return menu_cursor_map();
 }
 
 static int weapon_wheel_allowed(uint64_t buttons, int right_down, int already_active) {
