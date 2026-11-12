@@ -49,7 +49,7 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 | a host core at 100% while the game waits | game spin loops without system calls | profile: which guest function spins |
 | crash on world load | sizes the game reads from the driver (command memory used) differ from the console's | the sizes the game asks for against the console's |
 | crash with one save only | the save itself; some crash on a real Switch | the same save on another build and, if possible, on hardware |
-| random crash after minutes to hours, access violation reading `0xffffffffffffffff` or a small address such as `0x90` in a game function | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null, or a freed holder whose first word reads as a small number; set `optref` in `recomp/patches-v143.txt` guards main+0x1bd0138 for both | the crash dump's faulting host instruction, the register it loads through and the field that register came from |
+| random crash after minutes to hours, access violation reading `0xffffffffffffffff` a small address such as `0x90`, or `0` (a non-canonical address such as `0xbf80001900000010`) in a game function | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null, or a freed holder whose first word reads as a small number or as reused data; set `optref` in `recomp/patches-v143.txt` guards main+0x1bd0138 for both | the crash dump's faulting host instruction, the register it loads through and the field that register came from |
 
 ## Device lost, hangs, black window
 

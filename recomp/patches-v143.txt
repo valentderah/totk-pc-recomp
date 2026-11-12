@@ -1133,6 +1133,11 @@ site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x
 # holder itself freed: its first word read 0x80, an allocator header, and f_70000155ec faulted reading [0x80 + 0x10].
 # The game already treats a target of 0 as absent (cbz x21 to 0x1bd01f0). Every guest object lies at or above 4 GiB:
 # runtime/memory.c mem_init places the stack, heap, ASLR and alias regions from LOW_SEARCH_FROM (2^32) up and the
-# modules and kernel region near 0x7000000000. So a target below 2^32 is never a live actor and takes the same branch:
-# x9 = x21 >> 32, cbz x9. x9 is already overwritten by the site above on this path.
-site optref main 1bd01c8 b4000155 d360fea9 b4000149   # cbz x21 -> lsr x9, x21, #32; cbz x9
+# modules and kernel region near 0x7000000000, and nothing lies at or above RT_ADDRESS_LIMIT (2^39, runtime/host.h).
+# A freed holder can also be reused before the game reads it: a 0.4.0 crash (main+0x155ec called from 0x1bd01dc) had
+# the holder's memory full of floats (-1.0f) and a target of 0xbf80001900000010, which x86-64 cannot load through. So
+# a target outside [2^32, 2^39) is never a live actor and takes the same branch. The test leaves the flags alone, like
+# the cbz it replaces. With a = x21 >> 32, the target is valid exactly when a is in [1, 127]; x9 = (a - 1) | a is then
+# below 128, while a = 0 gives all ones and a >= 128 keeps a bit at 7 or above, so cbnz (x9 >> 7) takes the absent
+# branch for every invalid target. x9 is already overwritten by the site above on this path.
+site optref main 1bd01c8 b4000155 d360fea9 d1000529 aa558129 d347fd29 b5000149   # cbz x21 -> lsr x9, x21, #32; sub x9, x9, #1; orr x9, x9, x21, lsr #32; lsr x9, x9, #7; cbnz x9
