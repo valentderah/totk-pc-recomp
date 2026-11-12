@@ -86,7 +86,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "bars, or stretch them over the whole picture. Applies from the next movie.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_FOV] = "Field of view",
-    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
+    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0 and 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
     [UI_MENU_SHADOW_RES_DESC] = "Size of the sun's shadow map. The game's own size changes with the view, down to about 400 "
                                 "near the ground, so leaf shadows look blocky and jump; a fixed size keeps them still and "
@@ -584,7 +584,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "растянуть их на всю картинку. Действует со следующего ролика.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_FOV] = "Поле зрения",
-    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
+    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0 и 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
     [UI_MENU_SHADOW_RES_DESC] = "Размер карты теней от солнца. Собственный размер игры меняется вместе с видом, у земли до "
                                 "примерно 400, поэтому тени листвы выглядят квадратными и дёргаются; постоянный размер делает "
@@ -1385,7 +1385,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_FOV] = "Campo de visão",
-    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Só na versão 1.4.3 do "
+    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Nas versões 1.1.0 e 1.4.3 do "
                          "jogo.",
     [UI_MENU_SHADOW_RES] = "Tamanho do mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do jogo muda com a vista, até cerca de "
@@ -1673,7 +1673,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
-                          "仅限游戏版本 1.4.3。",
+                          "支持游戏版本 1.1.0 和 1.4.3。",
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化强度；0 为关闭。",
     [UI_MENU_COLOR] = "色彩",

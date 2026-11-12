@@ -200,7 +200,7 @@
 # does. Read when a movie starts, so a change takes effect at the next movie.
 # movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
-# more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
+# more of the world around Link. Game versions 1.1.0 and 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
 # Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
 # ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
