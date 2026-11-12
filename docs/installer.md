@@ -116,6 +116,11 @@ needs the release folder the setup ran from: a moved or deleted release folder m
 python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--root DIR] [--temp DIR] [--verify]
 ```
 
+- `--game PATH` stands in for `--base` and `--update`, so a script, a launcher or a Steam shortcut can start the setup without
+  anyone moving files: a file is the base game; a folder is searched (not its subfolders) for it and the update. An XCI or
+  XCZ is the base game, an NSP or NSZ is told by the title id its name carries (`[0100F2C0115B6000]` base,
+  `[0100F2C0115B6800]` update, as dumps are named). More than one file of a kind, or a name that says neither, is a usage
+  error that names the files; `--base` and `--update` still take any file. Giving `--game` with either is a usage error.
 - On a folder with `totk-install.json` only `--dest` is needed; the game files only when the extraction must run again.
 - `--firmware DIR` is the folder holding the firmware NCAs: an unpacked firmware, or the emulators' installed
   `Contents/registered` (the parent `Contents` folder works too). It is read only with Chinese, Korean or Traditional
@@ -220,6 +225,31 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 - Building the release needs one game version extracted and lifted (`tools/extract.py`, `recomp/gen.py`, either
   version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
   is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
+
+## For a launcher
+
+`recomplauncher.json` at the top of the release folder (the zip, and `/recomplauncher.json` in the AppImage) tells
+[RecompLauncher](https://recomplauncher.com) what to ask for and what to run. It names three inputs (the base game, the
+update and `prod.keys`) and runs the setup without a window:
+
+```
+pythonpython.exe -m installer --prepare --base FILE --update FILE --keys FILE --dest <release folder>/TotK
+TotK-Setup-x86_64.AppImage -m installer --prepare ...         (Linux; AppRun hands a command line that starts with -m
+                                                              to the bundled Python)
+```
+
+- `--prepare` prints `progress <0-1> <text>` lines instead of the JSON events: the fraction counts the finished steps of
+  the plan plus the share of the running one, and an error prints its text at the fraction reached (`installer/events.py`,
+  `ProgressLines`). The exit codes are those of the command line. `--lang` defaults to `en-US` on a first install; the
+  `lang` key in `totk.ini` changes it later, and the launcher shows it as a setting.
+- The launcher does not pass `--firmware` or `--dlss`: Chinese and Korean text and NVIDIA DLSS stay with the setup window,
+  which can be run on the same folder afterwards.
+- The launcher keeps `prod.keys` in its own folder and passes its path; key values stay out of the output as always.
+- `totk.exe --game DIR` starts the game from an install folder at another place: its `exefs`, `romfs` and `profile`
+  folders become the paths, and `--exefs`, `--romfs` and `--profile` after it still win. A folder without
+  `exefs/main.npdm` or `romfs/romfs.bin` stops with one line that says so. `totk.ini`, the logs, the mods and the
+  caches stay with `totk.exe`'s own folder, and nothing changes without the flag.
+- Without `--prepare` nothing changes: the window and the JSON events are the same.
 
 ## Constraints
 

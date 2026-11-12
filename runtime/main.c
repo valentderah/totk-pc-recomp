@@ -596,7 +596,7 @@ static int probe_crash(int null) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+    fprintf(stderr, "usage: %s [--game DIR] [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
@@ -634,6 +634,32 @@ static void portable_paths(RtConfig *c) {
     c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
     c->romfs = portable_path(exe, "TOTK_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
+}
+
+// --game DIR: an install folder (the layout of docs/installer.md) at another place than next to totk.exe, for a launcher,
+// a script or a Steam shortcut. Its exefs, romfs and profile folders become the three paths; --exefs, --romfs and
+// --profile after it still win. Everything else (totk.ini, logs, mods, caches) stays with totk.exe's own folder.
+static char gp_exefs[PLAT_PATH_MAX * 2], gp_romfs[PLAT_PATH_MAX * 2], gp_profile[PLAT_PATH_MAX * 2];
+
+static int game_folder(RtConfig *c, const char *dir) {
+    char probe[PLAT_PATH_MAX * 3];
+    snprintf(gp_exefs, sizeof gp_exefs, "%s/exefs", dir);
+    snprintf(gp_romfs, sizeof gp_romfs, "%s/romfs", dir);
+    snprintf(gp_profile, sizeof gp_profile, "%s/profile", dir);
+    snprintf(probe, sizeof probe, "%s/main.npdm", gp_exefs);
+    if (!plat_file_exists(probe)) {
+        rt_logf("--game %s: it has no exefs/main.npdm; it is the folder TotK Setup built the game into\n", dir);
+        return 0;
+    }
+    snprintf(probe, sizeof probe, "%s/romfs.bin", gp_romfs);
+    if (!plat_file_exists(probe)) {
+        rt_logf("--game %s: it has no romfs/romfs.bin; it is the folder TotK Setup built the game into\n", dir);
+        return 0;
+    }
+    c->exefs = gp_exefs;
+    c->romfs = gp_romfs;
+    c->profile = gp_profile;
+    return 1;
 }
 
 int main(int argc, char **argv) {
@@ -680,6 +706,9 @@ int main(int argc, char **argv) {
         if (path) {
             if (++i == argc) return usage(argv[0]);
             *path = argv[i];
+        } else if (!strcmp(argv[i], "--game")) {
+            if (++i == argc) return usage(argv[0]);
+            if (!game_folder(&cfg, argv[i])) return 2;
         } else if (!strcmp(argv[i], "--seconds")) {
             char *end;
             if (++i == argc) return usage(argv[0]);
