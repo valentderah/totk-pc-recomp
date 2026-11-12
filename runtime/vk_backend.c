@@ -338,6 +338,7 @@ static void replay_log(uint64_t frame, int total) {
 void gfx_exit_log(void) {
     static int32_t done;
     rec_check_log();
+    vk_texture_eager_log();
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);
 }
 

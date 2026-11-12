@@ -2844,7 +2844,7 @@ uint64_t vk_upload_flush(int wait) {
     return seq;
 }
 
-static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
+static void defer(int kind, uint64_t handle, VmaAllocation alloc, uint64_t min_tl) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
@@ -2860,6 +2860,7 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     // textures.c defer: vk_pending_seq).
     uint64_t tl = tl_noted;
     if (kind != DEAD_HOST && tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
+    if (min_tl > tl) tl = min_tl;   // vk_defer_buffer_until
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
     if (kind != DEAD_HOST)
         rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
@@ -2876,13 +2877,18 @@ static int dead_pending(void) {
 }
 
 void vk_defer_image(VkImage img, VmaAllocation alloc) {
-    if (img) defer(alloc ? DEAD_IMAGE_VMA : DEAD_IMAGE, (uint64_t)(uintptr_t)img, alloc);
+    if (img) defer(alloc ? DEAD_IMAGE_VMA : DEAD_IMAGE, (uint64_t)(uintptr_t)img, alloc, 0);
 }
-void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL); }
+void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL, 0); }
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
-    if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
+    if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc, 0);
 }
-void vk_defer_free(void *p) { if (p) defer(DEAD_HOST, (uint64_t)(uintptr_t)p, NULL); }
+// A buffer a submission of timeline value tl writes or reads that may not be submitted yet (vk_texture.c eager
+// write-back snapshots): it goes once the GPU has reached tl, whatever vk_mem_note_submit has seen.
+void vk_defer_buffer_until(VkBuffer buf, VmaAllocation alloc, uint64_t tl) {
+    if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc, tl);
+}
+void vk_defer_free(void *p) { if (p) defer(DEAD_HOST, (uint64_t)(uintptr_t)p, NULL, 0); }
 
 // The device fault report: no lock, since a thread that holds cmd_lock may be waiting for the report's own lock
 // (vk_upload_flush reports a failed submit with cmd_lock held).

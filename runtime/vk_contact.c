@@ -186,6 +186,7 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
     rec_push(C.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.layout, 0, 2, w);
     vkCmdPushConstants(cb, C.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pcv, pcv);
     vkCmdDispatch(cb, (j->scene.width + 7) / 8, (j->scene.height + 7) / 8, 1);
+    vk_texture_storage_written(j->scene.img);   // the march wrote the scene colour: a fence write-back snapshot made before is stale
     mem_barrier(cb);   // and what follows sees the darkened colour
     ex->recorded += 6;
     vk_exec_draw_new_cb(ex);   // the game's bound compute pipeline and descriptors were replaced: bind them again

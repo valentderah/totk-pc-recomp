@@ -461,6 +461,8 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     ts_begin(s->cb);
     int recorded = vk_exec_record(s->cb, handles, n, fence);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
+    // No render pass is open here (vk_exec_record ended it), and s->cb is the recorder's like the commands before it.
+    vk_texture_eager_record(recorded ? s->cb : VK_NULL_HANDLE, fence);
     if (recorded) ts_end(s->cb, fence);
     else ts_drop();
     // The recorder is done with the part: the end-of-submission crumb, then the end, by the recorder when it records.
