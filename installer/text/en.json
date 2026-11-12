@@ -93,6 +93,7 @@
  "lift.failed": "Translating the game code failed (exit code {code}). Details: {log}",
  "compile.failed": "Compiling {game_exe} failed (exit code {code}). Details: {log}",
  "compile.exe_in_use": "{path} is in use. Close the game and run the installer again.",
+ "compile.exe_locked": "{path} cannot be written: another program holds it, a game started from that folder or an antivirus that flagged the file. Close the game, add the setup's folder and the install folder to the antivirus exclusions, restart Windows, then run the installer again. Details: {log}",
  "prepare.xlate_in_use": "{path} is in use. Close the game, end any totk_xlate process left from an earlier run, then run the installer again.",
  "prepare.shader_list_missing": "The shader list is missing.",
  "prepare.romfs_patches_failed": "Writing the game data patches failed (exit code {code}). Details: {log}",

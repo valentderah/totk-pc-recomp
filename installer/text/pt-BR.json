@@ -93,6 +93,7 @@
  "lift.failed": "Falha ao traduzir o código do jogo (código de saída {code}). Detalhes: {log}",
  "compile.failed": "Falha ao compilar o {game_exe} (código de saída {code}). Detalhes: {log}",
  "compile.exe_in_use": "{path} está em uso. Feche o jogo e execute o instalador de novo.",
+ "compile.exe_locked": "Não é possível gravar {path}: outro programa o está usando, um jogo aberto dessa pasta ou um antivírus que marcou o arquivo. Feche o jogo, adicione a pasta do instalador e a pasta de instalação às exceções do antivírus, reinicie o Windows e execute o instalador de novo. Detalhes: {log}",
  "prepare.xlate_in_use": "{path} está em uso. Feche o jogo, encerre qualquer processo totk_xlate que tenha sobrado de uma execução anterior e execute o instalador de novo.",
  "prepare.shader_list_missing": "A lista de shaders está faltando.",
  "prepare.romfs_patches_failed": "Falha ao gravar os patches nos dados do jogo (código de saída {code}). Detalhes: {log}",

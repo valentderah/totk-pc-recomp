@@ -384,6 +384,57 @@ class LiftRunTest(unittest.TestCase):
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
 
+class CompileLockedTest(unittest.TestCase):
+    """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
+    temp build folder, an antivirus that quarantined it), which gets its own message instead of the plain failure."""
+
+    LLD = ("ld.lld: error: failed to write output 'temp/totk-1/build/totk.exe': Permission denied\n"
+           "clang-23: error: unable to remove file: Permission denied\n")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        dest, temp = base / 'install', base / 'temp'
+        dest.mkdir()
+        temp.mkdir()
+        layout = SimpleNamespace(tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
+                                 ninja=base / 'ninja', dlls=[], runtime_lib_for=lambda cpu: None,
+                                 pgo=lambda version: None, expected=lambda version: base / 'expected.json')
+        self.ctx = SimpleNamespace(dest=dest, temp=temp, layout=layout, state={'version': '1.4.3'},
+                                   reporter=Reporter(out=io.StringIO()))
+        self.addCleanup(self.ctx.reporter.close)
+        self.log_text = ''
+        saved = steps.run_tool
+        self.addCleanup(lambda: setattr(steps, 'run_tool', saved))
+        steps.run_tool = self.run_tool
+
+    def run_tool(self, ctx, step, script, args, parse=None, cwd=None):
+        log = ctx.temp / 'compile.log'
+        log.write_text(self.log_text, encoding='utf-8')
+        return 1, log
+
+    def test_locked_link_output(self):
+        self.log_text = 'link: 0.8 s\n' + self.LLD
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.exe_locked')
+        self.assertTrue(e.exception.params['path'].endswith('totk' + steps.EXE))
+
+    def test_other_failure(self):
+        self.log_text = 'runtime/x.c:1:1: error: expected expression\n'
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.failed')
+
+    def test_message_in_every_language(self):
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertIn('compile.exe_locked', text, path.name)
+            self.assertIn('{path}', text['compile.exe_locked'], path.name)
+            self.assertIn('{log}', text['compile.exe_locked'], path.name)
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
