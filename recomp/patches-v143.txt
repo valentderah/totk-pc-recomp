@@ -1128,3 +1128,11 @@ site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr
 # any read; on the fall-through path x8 is unchanged.
 set optref   TOTK_OPTREF_GUARD   1
 site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
+# The reference at +0x6b0 is the holder of the PlayerVirtualKey request embedded at object +0x678 (vtable 0x7003678900,
+# setHolder main+0x1bd1f78); the holder's first word is the target actor. A later report (LuizDavid48, 0.4.0) shows the
+# holder itself freed: its first word read 0x80, an allocator header, and f_70000155ec faulted reading [0x80 + 0x10].
+# The game already treats a target of 0 as absent (cbz x21 to 0x1bd01f0). Every guest object lies at or above 4 GiB:
+# runtime/memory.c mem_init places the stack, heap, ASLR and alias regions from LOW_SEARCH_FROM (2^32) up and the
+# modules and kernel region near 0x7000000000. So a target below 2^32 is never a live actor and takes the same branch:
+# x9 = x21 >> 32, cbz x9. x9 is already overwritten by the site above on this path.
+site optref main 1bd01c8 b4000155 d360fea9 b4000149   # cbz x21 -> lsr x9, x21, #32; cbz x9
