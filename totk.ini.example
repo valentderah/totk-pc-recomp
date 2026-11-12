@@ -433,6 +433,22 @@
 # Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
 # shared_fonts =
 
+# Gameplay Tweaks: independent live switches.
+[gameplay tweaks]
+# gameplay_tweaks_enabled = 0
+# gameplay_ultrahand_rotate = 1
+# gameplay_ultrahand_c_axis = 1
+# gameplay_ultrahand_distance = 1
+# gameplay_weapon_wheel = 1
+# gameplay_weapon_sensitivity = 1
+# gameplay_item_wheel = 1
+# gameplay_item_ad = 1
+# gameplay_map_zoom = 1
+# gameplay_map_zoom_sensitivity = 1
+# gameplay_rotation_sensitivity = 1
+# gameplay_distance_sensitivity = 1
+# gameplay_item_sensitivity = 1
+
 [cheats]
 # One line per cheat of the mods' cheat files, mods\<mod>\cheats\<build id>.txt (docs/cheats.md); the Cheats tab of
 # the menu writes them. cheat_<hash> = 1 switches a cheat on, the hash being FNV-1a 32 of "<mod folder>/<cheat name>".

@@ -121,6 +121,8 @@ void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMo
 #define HOST_MOUSE_HAND (RT_PATCH_PAGE + 0xf90)
 #define HOST_MOUSE_ORBIT_STATE (RT_PATCH_PAGE + 0xf70)
 static _Thread_local uint64_t mouse_input_object;
+static volatile int32_t cam_blocked, cam_kind;
+static uint64_t cam_kind_at;
 
 // Where a game version keeps what the hooks read and write (recomp/patches-v143.txt, patches-v121.txt). The camera
 // input update keeps its flags in w21, its input object in x20 and y in s10 in both; the free orbit's object is x0 at
@@ -362,6 +364,7 @@ static void camera_input(Cpu *c) {
     const unsigned rx = mouse_layout()->input_x;
     mouse_input_object = 0;
     uint32_t flags = (uint32_t)c->x[21];
+    __atomic_store_n(&cam_blocked, (flags & 1) != 0, __ATOMIC_RELAXED);
     int accept = !(flags & 1) && !input_direct_mouse_selector_active();
     __atomic_store_n(&accepts_mouse, accept, __ATOMIC_RELAXED);
     __atomic_store_n(&last_update, plat_now_ns(), __ATOMIC_RELEASE);
@@ -456,6 +459,8 @@ static void camera_input(Cpu *c) {
 // directly and move its persistent pitch/yaw by the same amounts so the next update starts at the new orientation.
 // The controller still handles its gamepad input, following, collision and focus normally.
 static void orbit_begin(Cpu *c) {
+    __atomic_store_n(&cam_kind, INPUT_CAM_FREE_ROAM, __ATOMIC_RELAXED);
+    __atomic_store_n(&cam_kind_at, plat_now_ns(), __ATOMIC_RELEASE);
     orbit.object = 0;
     uint64_t object = c->x[0];
     if (direct_mode()) {
@@ -1034,6 +1039,45 @@ static void camera_load(Cpu *c) {
         rt_log("mouse: load hook called from main+%#llx, no such site", (unsigned long long)offset);
         abort();
     }
+    int mapped = INPUT_CAM_UNCLASSIFIED;
+    switch (s->mode) {
+    case MODE_AIM:
+    case MODE_LOCKON_AIM:
+        mapped = INPUT_CAM_AIM;
+        break;
+    case MODE_SCOPE:
+    case MODE_FINDER:
+        mapped = INPUT_CAM_SCOPE;
+        break;
+    case MODE_ABILITY:
+    case MODE_ABILITY_OFFSET:
+        mapped = INPUT_CAM_ABILITY;
+        break;
+    case MODE_LOCKON:
+        mapped = INPUT_CAM_LOCK_ON;
+        break;
+    case MODE_HORSE:
+    case MODE_HORSE_LOCKON:
+        mapped = INPUT_CAM_VEHICLE;
+        break;
+    case MODE_TALK:
+    case MODE_TALK_MANUAL:
+        mapped = INPUT_CAM_DISABLED;
+        break;
+    case MODE_CLIMB:
+    case MODE_WAKEBOARD:
+    case MODE_SHIELD:
+    case MODE_WATERFALL:
+    case MODE_TAIL:
+        mapped = INPUT_CAM_FREE_ROAM;
+        break;
+    default:
+        break;
+    }
+    if (mapped != INPUT_CAM_UNCLASSIFIED) {
+        __atomic_store_n(&cam_kind, mapped, __ATOMIC_RELAXED);
+        __atomic_store_n(&cam_kind_at, plat_now_ns(), __ATOMIC_RELEASE);
+    }
     uint64_t at = load_address(c, s->insn);
     if (s->role == ROLE_BASE_STORE) {   // performs the store, of the value plus the degrees when there are any
         uint32_t bits = (uint32_t)c->v[s->insn & 31];
@@ -1099,4 +1143,23 @@ __attribute__((constructor)) static void mouse_direct_register(void) {
     rt_register_host(HOST_MOUSE_HAND, hand_input);
     rt_register_host(HOST_MOUSE_LOAD, camera_load);
 }
+
+int input_camera_context(void) {
+    static int patch_id = -2;
+    if (patch_id == -2) patch_id = rt_patch_set("mouse_direct");
+    if (patch_id < 0 || !rt_patch_enabled(patch_id)) return INPUT_CAM_UNCLASSIFIED;
+    uint64_t now = plat_now_ns();
+    if (hand_active(now)) return INPUT_CAM_ULTRAHAND_OBJECT;
+    uint64_t kat = __atomic_load_n(&cam_kind_at, __ATOMIC_ACQUIRE);
+    int kind = (kat && now - kat < 150000000ull) ? __atomic_load_n(&cam_kind, __ATOMIC_RELAXED) : INPUT_CAM_UNCLASSIFIED;
+    if (kind == INPUT_CAM_SCOPE || kind == INPUT_CAM_AIM) return kind;
+    uint64_t last = __atomic_load_n(&last_update, __ATOMIC_ACQUIRE);
+    int cam_alive = last && now - last < 150000000ull;
+    if (cam_alive && __atomic_load_n(&cam_blocked, __ATOMIC_RELAXED)) return INPUT_CAM_MENU_WHEEL;
+    if (kind != INPUT_CAM_UNCLASSIFIED) return kind;
+    if (cam_alive) return INPUT_CAM_FREE_ROAM;
+    return INPUT_CAM_UNCLASSIFIED;
+}
+#else
+int input_camera_context(void) { return INPUT_CAM_UNCLASSIFIED; }
 #endif

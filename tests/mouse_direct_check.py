@@ -591,6 +591,14 @@ InputMap input_map;
 // Other input entry points are linked by PE unwind metadata; reaching them is outside this script-only test.
 void ikb_cursor_update(void) { abort(); }
 void ikb_menu_closed(void) { abort(); }
+int gameplay_tweaks_capture_needed(void) { return 0; }
+int gameplay_tweaks_map_zoom(void) { return 0; }
+int gameplay_tweaks_strip_wheel(uint64_t b) { (void)b; return 0; }
+void gameplay_tweaks_reset(void) {}
+void gameplay_tweaks_prepare_keys(uint8_t *d, uint64_t b) { (void)d; (void)b; }
+void gameplay_tweaks_apply(uint64_t f, int a, uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    (void)f; (void)a; (void)b; (void)lx; (void)ly; (void)rx; (void)ry;
+}
 int cfg_bool(const char *key) { (void)key; abort(); }
 int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;abort(); }
 int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;abort(); }

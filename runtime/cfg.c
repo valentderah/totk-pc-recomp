@@ -44,7 +44,12 @@ static const char *const known[] = {
     "DUMP_LOG", "DYNAMIC_RES", "DYN_DELTA", "EXEFS", "FEEDBACK", "FIXED_RES_PATCH", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
     "FREEZE_IDLE", "FREE_CORES",
-    "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "GRASS_RANGE", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+    "FULLSCREEN", "FXAA",
+    "GAMEPLAY_DISTANCE_SENSITIVITY", "GAMEPLAY_ITEM_AD", "GAMEPLAY_ITEM_SENSITIVITY", "GAMEPLAY_ITEM_WHEEL",
+    "GAMEPLAY_MAP_ZOOM", "GAMEPLAY_MAP_ZOOM_SENSITIVITY", "GAMEPLAY_ROTATION_SENSITIVITY", "GAMEPLAY_TWEAKS_ENABLED",
+    "GAMEPLAY_ULTRAHAND_C_AXIS", "GAMEPLAY_ULTRAHAND_DISTANCE", "GAMEPLAY_ULTRAHAND_ROTATE", "GAMEPLAY_WEAPON_SENSITIVITY",
+    "GAMEPLAY_WEAPON_WHEEL",
+    "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "GRASS_RANGE", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "KSPIN_US", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MAP_CLICK", "MEMORY", "MENU_LANG", "MENU_TEST",
     "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
@@ -107,6 +112,13 @@ static const struct { const char *key, *section; } sections[] = {
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
     {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_MERGE", "diagnostics"}, {"WB_EXACT", "diagnostics"},
     {"MV_SURVEY", "diagnostics"},
+    {"GAMEPLAY_TWEAKS_ENABLED", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_ROTATE", "gameplay tweaks"},
+    {"GAMEPLAY_ULTRAHAND_C_AXIS", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_DISTANCE", "gameplay tweaks"},
+    {"GAMEPLAY_ITEM_WHEEL", "gameplay tweaks"}, {"GAMEPLAY_ITEM_AD", "gameplay tweaks"},
+    {"GAMEPLAY_MAP_ZOOM", "gameplay tweaks"}, {"GAMEPLAY_MAP_ZOOM_SENSITIVITY", "gameplay tweaks"},
+    {"GAMEPLAY_ROTATION_SENSITIVITY", "gameplay tweaks"}, {"GAMEPLAY_DISTANCE_SENSITIVITY", "gameplay tweaks"},
+    {"GAMEPLAY_ITEM_SENSITIVITY", "gameplay tweaks"},
+    {"GAMEPLAY_WEAPON_WHEEL", "gameplay tweaks"}, {"GAMEPLAY_WEAPON_SENSITIVITY", "gameplay tweaks"},
 };
 
 // The settings the menu shows: the value in effect when the key is unset, and what the key accepts. The only place a
@@ -159,6 +171,14 @@ static const CfgMeta metas[] = {
     {"MAP_CLICK", "0", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
     {"DIALOGUE_CLICK", "0", "0|1", LIVE},   // menu_cursor.c: in a dialogue box left click is B, right click A
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
+    // Gameplay Tweaks
+    {"GAMEPLAY_TWEAKS_ENABLED", "0", "0|1", LIVE},
+    {"GAMEPLAY_ULTRAHAND_ROTATE", "1", "0|1", LIVE}, {"GAMEPLAY_ULTRAHAND_C_AXIS", "1", "0|1", LIVE},
+    {"GAMEPLAY_ULTRAHAND_DISTANCE", "1", "0|1", LIVE}, {"GAMEPLAY_ITEM_WHEEL", "1", "0|1", LIVE},
+    {"GAMEPLAY_ITEM_AD", "1", "0|1", LIVE}, {"GAMEPLAY_MAP_ZOOM", "1", "0|1", LIVE},
+    {"GAMEPLAY_MAP_ZOOM_SENSITIVITY", "1", "0.25..4", LIVE}, {"GAMEPLAY_ROTATION_SENSITIVITY", "1", "0.25..4", LIVE},
+    {"GAMEPLAY_DISTANCE_SENSITIVITY", "1", "0.25..4", LIVE}, {"GAMEPLAY_ITEM_SENSITIVITY", "1", "0.25..4", LIVE},
+    {"GAMEPLAY_WEAPON_WHEEL", "1", "0|1", LIVE}, {"GAMEPLAY_WEAPON_SENSITIVITY", "1", "0.25..4", LIVE},
     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
     // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it.
