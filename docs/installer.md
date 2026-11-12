@@ -72,23 +72,34 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written three times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). Each of the three prompt
-   folders is then laid out once more for each game resolution of another shape, `romfs-patches-<style>-<w>x<h>`
-   (`--prompts <style> --aspect`). Those differ from `romfs-patches-<style>` in the UI archive only, and `--reuse`
-   hard-links the other files from it, so the forty-five folders take seconds and a few MiB each. The prompt folders are optional: when one cannot be made, the
-   setup warns and finishes.
+   and `auto`). The prompt folders are optional: when one cannot be made, the setup warns and finishes.
+   **PC prompts** (step `pc_prompts`): `romfs-patches-pc`, the keyboard and mouse prompts for `prompts = pc`, drawn
+   from the `bind_` lines of `totk.ini` (`--binds`). Its key holds those lines, so a setup run after a change of the
+   bindings draws only these again. Optional like the Xbox prompts. All four 16:9 folders are always written, so a
+   switch of the prompts style at 16:9 needs no setup run.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+7. **Shapes**: the UI laid out for each screen shape this player needs, `romfs-patches-<w>x<h>`
+   (`--aspect`), and with Xbox or PC prompts in `totk.ini` that layout with those prompts too,
+   `romfs-patches-<style>-<w>x<h>` (`--prompts <style> --aspect --reuse romfs-patches-<style>`, which hard-links every
+   file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
+   `xrandr`, else the DRM connectors), of the `output_res` the game defaults to on each, and of the `totk.ini`
+   `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
+   closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
+   same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
+   again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
+   game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
+   background for the next start.
+8. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+9. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
