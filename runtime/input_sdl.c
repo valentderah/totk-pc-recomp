@@ -12,6 +12,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -200,8 +201,37 @@ void ikb_menu_closed(void) {
     if (o & CUR_ESC) plat_cas32(&cur_rel, 0, o);
 }
 
+// pointer_image = 1: the pointer over the window while the cursor is not captured is cursor_art.c's, sized by the
+// window's display scale; 0 (the default) keeps SDL's arrow. Window thread, at the window's creation and whenever the
+// settings change (input_sdl_idle), so the menu switches it live. SDL's arrow stays when SDL refuses the image.
+static void art_cursor(SDL_Window *w) {
+    static SDL_Cursor *art;
+    static int shown = -1, failed;
+    static unsigned seen = ~0u;
+    unsigned v = cfg_version();
+    if (v == seen && shown >= 0) return;
+    seen = v;
+    int want = cfg_bool("TOTK_POINTER_IMAGE");
+    if (want == shown) return;
+    if (want && !art && !failed) {
+        float scale = SDL_GetWindowDisplayScale(w);
+        int size = (int)lrintf(32 * (scale > 0 ? scale : 1)), hot;
+        size = size < 32 ? 32 : size > 128 ? 128 : size;
+        SDL_Surface *s = SDL_CreateSurface(size, size, SDL_PIXELFORMAT_ARGB8888);
+        if (s && s->pitch == size * 4) {
+            cursor_art(s->pixels, size, &hot);
+            art = SDL_CreateColorCursor(s, hot, hot);
+        }
+        if (s) SDL_DestroySurface(s);
+        if (!art) failed = 1, rt_log("input: the pointer's image failed (%s); the arrow stays", SDL_GetError());
+    }
+    SDL_SetCursor(want && art ? art : SDL_GetDefaultCursor());
+    shown = want;
+}
+
 void input_sdl_window(SDL_Window *w) {
     win = w;
+    art_cursor(w);
     wake_event = SDL_RegisterEvents(1);
     plat_xchg32(&focused, (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0);
     __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);   // the pointer's place is unknown until it enters or moves
@@ -210,6 +240,7 @@ void input_sdl_window(SDL_Window *w) {
 
 void input_sdl_idle(void) {
     if (cur_pending) cursor_apply();
+    if (win) art_cursor(win);
     pointer_apply();
 }
 
