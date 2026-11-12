@@ -31,7 +31,7 @@
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
-# The Advanced tab of the settings menu (F1) shows all of them except zstd_native and zstd_check.
+# The Advanced tab of the settings menu (F1) shows all of them except zstd_native, zstd_check and the crash guards.
 
 # Scheduling.
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
@@ -102,6 +102,14 @@
 # the differences (1 = on; slow).
 # zstd_native = 1
 # zstd_check = 0
+
+# Crash guards: game code that crashes on stale data skips it instead (0 = the game's own code).
+# An optional reference holding an invalid value is treated as absent.
+# optref_guard = 1
+# A Recall or Ultrahand target the game would crash on is skipped for that frame.
+# ability_guard = 1
+# A model scene report row with an out-of-range index is skipped for that frame (1.4.3 only).
+# report_guard = 1
 
 # Render fixes.
 # Wait for the game to finish rewriting level-of-detail data before the GPU reads it: stops objects flashing in the

@@ -1128,11 +1128,30 @@ site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr
 # any read; on the fall-through path x8 is unchanged.
 set optref   TOTK_OPTREF_GUARD   1
 site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
-# The reference at +0x6b0 is the holder of the PlayerVirtualKey request embedded at object +0x678 (vtable 0x7003678900,
-# setHolder main+0x1bd1f78); the holder's first word is the target actor. A later report (LuizDavid48, 0.4.0) shows the
-# holder itself freed: its first word read 0x80, an allocator header, and f_70000155ec faulted reading [0x80 + 0x10].
-# The game already treats a target of 0 as absent (cbz x21 to 0x1bd01f0). Every guest object lies at or above 4 GiB:
-# runtime/memory.c mem_init places the stack, heap, ASLR and alias regions from LOW_SEARCH_FROM (2^32) up and the
-# modules and kernel region near 0x7000000000. So a target below 2^32 is never a live actor and takes the same branch:
-# x9 = x21 >> 32, cbz x9. x9 is already overwritten by the site above on this path.
-site optref main 1bd01c8 b4000155 d360fea9 b4000149   # cbz x21 -> lsr x9, x21, #32; cbz x9
+
+# Recall and Ultrahand target that is stale memory. The same function reads the target actor from the holder
+# (ldr x21, [x8]) and follows it into main+0x155ec, main+0x9a89d4 and main+0x2b8464 (an atomic write at +0x90). The
+# holder can be reused memory by then, so the actor points into .rodata, outside the address space or at other heap
+# data, and the game crashes reading 0xffffffffffffffff. UltraTears (kuraeow/ultratears, ability target guard) found
+# the class. The load becomes a call to runtime/ov_ability.c host_ability_target (page+0xf60): x21 is the holder's
+# first word, or 0 where the game's own code would fault on the target (holder, actor or component unreadable, the
+# reference word not writable), which the game's cbz x21 skips for this frame. Every other target goes on unchanged.
+# The answer comes back in x9 and the cbz site moves it to x21: the lifted code keeps x21 (callee-saved) in a C local
+# across the call. x9 is dead after 0x1bd01c8 on every path (written or clobbered by a bl before any read); x30 is saved by the
+# prologue and clobbered by the next bl anyway.
+set ability  TOTK_ABILITY_GUARD  1
+site ability main 1bd01c4 f9400115 947c3f67            # ldr x21, [x8] -> bl page+0xf60
+site ability main 1bd01c8 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21
+
+# Model scene report rows (WoE, daniel-madrid-07/weeping-of-the-empire, MIT, games/totk/patches/sites_v143.py
+# reportguard; their #52 and #73: crashes while using Ultrahand and aiming). gsys::ModelScene::calcGPU_ is inlined in
+# main+0xa1f84; its per-object loop (0xa22bc..0xa234c) takes the object's report handle h (int16 at obj+0x98 + 2 * side),
+# exits for -1 only, reads row 2h+1 and then u32 n from row 2h, and follows n to row 2n with no bound (WoE's crash had
+# n = the float 0.05, a read 32 GB past the rows). n indexes a row pair as h does, so a valid one is below 0x8000.
+# A negative h (other than -1) or n >= 0x8000 goes to 0xa2340, where the game resets the handle to -1 after every use:
+# the object has coverage 0 this frame (stored at 0xa22cc) and the game asks for a new report, as after a normal read.
+# WoE's veneers exit at 0xa2344 instead, which keeps the bad handle for the next frames. No flags change; w4 is never
+# used in main+0xa1f84; x1, x16, x15 and w13, which 0xa2340 reads, hold what they hold on the game's own path there.
+set report   TOTK_REPORT_GUARD   1
+site report  main a22d8 2a010571 2a010571 37f80341            # orr w17, w11, w1, lsl #1; tbnz w1, #31, 0xa2340
+site report  main a2310 531f7821 530f7c24 531f7821 35000184   # lsr w4, w1, #15; lsl w1, w1, #1; cbnz w4, 0xa2340

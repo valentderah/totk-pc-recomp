@@ -1133,6 +1133,10 @@ site grass  main 1a30a98 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr
 # x8 and x9 are dead at the branch target 0x1622c1c, which loads x8 again.
 set optref   TOTK_OPTREF_GUARD   1
 site optref main 1622bec b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
-# The freed-holder case of patches-v143.txt (main+0x1bd01c8): a target below 2^32 is never a live guest object and
-# takes the game's own branch for a null target.
-site optref main 1622bf4 b4000155 d360fea9 b4000149   # cbz x21 -> lsr x9, x21, #32; cbz x9
+
+# Recall and Ultrahand target that is stale memory: set ability in patches-v143.txt, here for 1.2.1's main+0x1622bf0
+# (function main+0x1622b60; the callees main+0x809ecc, 0x842aa4 and 0x842d10 read the same actor offsets). The model
+# scene report-row guard (set report there) has no 1.2.1 site: this version does not have that loop's code shape.
+set ability  TOTK_ABILITY_GUARD  1
+site ability main 1622bf0 f9400115 94c424dc            # ldr x21, [x8] -> bl page+0xf60
+site ability main 1622bf4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)

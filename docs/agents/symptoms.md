@@ -49,13 +49,13 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 | a host core at 100% while the game waits | game spin loops without system calls | profile: which guest function spins |
 | crash on world load | sizes the game reads from the driver (command memory used) differ from the console's | the sizes the game asks for against the console's |
 | crash with one save only | the save itself; some crash on a real Switch | the same save on another build and, if possible, on hardware |
-| random crash after minutes to hours, access violation reading `0xffffffffffffffff` or a small address such as `0x90` in a game function | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null, or a freed holder whose first word reads as a small number; set `optref` in `recomp/patches-v143.txt` guards main+0x1bd0138 for both | the crash dump's faulting host instruction, the register it loads through and the field that register came from |
+| random crash after minutes to hours, access violation reading `0xffffffffffffffff` or a small address such as `0x90` in a game function (Windows reports any non-canonical address as `0xffffffffffffffff`) | an invalid value (-1, `0xffff0000ffffffff`) in an optional reference the game checks only for null; in main+0x1bd0138 (Recall / Ultrahand picking a target) also a reused holder whose actor points into other memory. Sets `optref` and `ability` in `recomp/patches-v143.txt` guard both there | the crash dump's faulting host instruction, the register it loads through and the field that register came from; `ability: target dropped` lines in the log |
+| crash while using Ultrahand or aiming, in the model scene's report loop (1.4.3 main+0xa22bc..0xa234c) | a report row index read from the report buffer with no bound (Weeping of the Empire #52, #73); set `report` sends a negative handle or an index from 0x8000 to the game's own reset | the faulting address against the report rows base (x12) |
 
 ## Device lost, hangs, black window
 
 | Symptom | Usual causes | First check |
 |---|---|---|
-| with `replay_workers` above 0: the picture freezes for good mid-play while the window still closes, or a crash in `chunk_record` reading address 0x8 | the chunked replay's state (`RP` in vk_exec.c) overwritten: the submitting thread waits in `chunks_submit` for a chunk no `vk replay` thread takes (fixed: `tfr_note` walked its oldest-way search past the set, and from the last set into `RP`) | `replay_workers = 0`; `--probe-vkexec`'s target history part |
 | device lost a few frames in, GPU writes to address 0 (older NVIDIA) | present from another thread or queue | every submit and present on one queue under one lock |
 | device lost or garbage on one AMD generation | views the driver branch mishandles (BC block views of 3D textures) | `vk: pass marks`, validation; the formats in the pass |
 | device lost on one scene, every run, one vendor | a shader or pass that driver cannot run | pass marks name the pass; skip shaders by hash to bisect |
