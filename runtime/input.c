@@ -21,6 +21,7 @@
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
+#include "gameplay_tweaks.h"
 
 enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
@@ -33,6 +34,7 @@ static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 o
 enum { PAD_USED = 16384, MOUSE_USED = 6 };
 static volatile int32_t g_kbm_last = 1;
 int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED); }
+int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground() && ikb_captured(); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
 static int pad_rumble;               // the open gamepad has rumble motors
@@ -631,6 +633,8 @@ static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
                 : menu_cursor_camera() ? WHEEL_CAMERA
                 : menu_cursor_menu()   ? WHEEL_MENU
                                        : WHEEL_NONE;
+    if (where == WHEEL_MAP && gameplay_tweaks_map_zoom()) where = WHEEL_NONE;
+    else if (where == WHEEL_STRIP && gameplay_tweaks_strip_wheel(b)) where = WHEEL_NONE;
     int32_t v = wheel_stick(notches, where);
     if (!v) return;
     if (where == WHEEL_CAMERA) *bp |= 1ull << (v > 0 ? B_UP : B_DOWN);
@@ -732,6 +736,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 else if (!click_held[i]) click_held[i] = 1, click_talk[i] = menu_cursor_dialogue();
                 if (click_talk[i]) down[key] = 0, b |= 1ull << click_btn[i];
             }
+            if (cap && !g_menu && !g_block) gameplay_tweaks_prepare_keys(down, b);
+            else gameplay_tweaks_reset();
             b |= input_map_buttons(down);
             int32_t k[2];
             walk_get();
@@ -768,6 +774,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     }
     script_apply(&b, sl, sr);
     wheel_route(&b, sl, sr);
+    gameplay_tweaks_apply(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), input_gameplay_active(), &b, &sl[0], &sl[1], &sr[0], &sr[1]);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
@@ -799,10 +806,12 @@ static volatile uint64_t g_block_closed, g_menu_closed;
 
 int input_cursor_allowed(void) {
     const char *in = cfg_get("TOTK_INPUT");
-    return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none")) && !menu_cursor_pointer();
+    return g_block != 1 && g_menu != 1 && (gameplay_tweaks_capture_needed() || mouse_sens_get() > 0) &&
+           !(in && !strcmp(in, "none")) && !menu_cursor_pointer();
 }
 
 void input_block(int on) {
+    if (on) gameplay_tweaks_reset();
     if (!on) __atomic_store_n(&g_block_closed, plat_now_ns(), __ATOMIC_RELEASE);
     plat_xchg32(&g_block, on ? 1 : 2);
     ikb_cursor_update();
@@ -811,6 +820,7 @@ void input_block(int on) {
 // The in-game menu (ui/menu.cpp) blocks the game's input the same way: g_menu 0 closed, 1 open, 2 closed, waiting for
 // the release. The cursor is released while it is open, for the menu's mouse.
 void input_menu(int open) {
+    if (open) gameplay_tweaks_reset();
     if (!open) __atomic_store_n(&g_menu_closed, plat_now_ns(), __ATOMIC_RELEASE);
     plat_xchg32(&g_menu, open ? 1 : 2);
     if (!open) ikb_menu_closed();   // the capture before Esc comes back

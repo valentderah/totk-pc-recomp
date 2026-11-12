@@ -18,6 +18,7 @@
 #include "input_map.h"
 #include "input_sdl.h"
 #include "input_wsys.h"
+#include "gameplay_tweaks.h"
 #include "platform/platform.h"
 
 static SDL_Window *win;
@@ -145,6 +146,7 @@ static void cursor_apply(void) {
     plat_xchg32(&mouse_dy, 0);
     rem_x = rem_y = 0;
     plat_xchg32(&captured, want);
+    if (!want) gameplay_tweaks_reset();
 }
 
 // The pointer's place in the window (the window thread): x and y are SDL window units, the same space the mouse
@@ -302,6 +304,10 @@ void input_sdl_event(const SDL_Event *e) {
         if (captured || (focused && __atomic_load_n(&ptr_have, __ATOMIC_ACQUIRE))) {
             float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
             plat_add32(&mouse_wheel, (int32_t)(y * 120));
+        }
+        if (input_gameplay_active()) {
+            double delta = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? e->wheel.y : -e->wheel.y;
+            gameplay_tweaks_wheel(delta, ikb_down(KEY_C), ikb_down(KEY_MOUSE_R));
         }
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
