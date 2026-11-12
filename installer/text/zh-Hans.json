@@ -6,6 +6,7 @@
  "step.compile": "编译 {game_exe}",
  "step.prepare": "准备着色器",
  "step.pc_prompts": "绘制键盘和鼠标按键提示",
+ "step.shapes": "为你的显示器调整游戏画面布局",
  "step.dlss": "下载 NVIDIA DLSS",
  "step.cleanup": "清理",
 
@@ -35,6 +36,7 @@
  "phase.prepare.translate": "转译着色器",
  "phase.prepare.libraries": "为显卡驱动构建着色器",
  "phase.prepare.pack": "将着色器缓存打包成一个文件",
+ "phase.shapes.layouts": "为每种显示器比例写入画面布局和按键提示",
  "phase.dlss.download": "从 NVIDIA 的 DLSS SDK 下载 nvngx_dlss.dll",
  "phase.cleanup.ini": "写入 totk.ini",
  "phase.cleanup.temp": "删除临时文件",

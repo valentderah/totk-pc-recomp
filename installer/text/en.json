@@ -6,6 +6,7 @@
  "step.compile": "Compiling {game_exe}",
  "step.prepare": "Preparing the shaders",
  "step.pc_prompts": "Drawing the keyboard and mouse prompts",
+ "step.shapes": "Laying out the game screens for your displays",
  "step.dlss": "Downloading NVIDIA DLSS",
  "step.cleanup": "Cleaning up",
 
@@ -35,6 +36,7 @@
  "phase.prepare.translate": "Translating the shaders",
  "phase.prepare.libraries": "Building the shaders for the graphics driver",
  "phase.prepare.pack": "Packing the shader cache into one file",
+ "phase.shapes.layouts": "Writing the screen layouts and button prompts for each display shape",
  "phase.dlss.download": "Downloading nvngx_dlss.dll from NVIDIA's DLSS SDK",
  "phase.cleanup.ini": "Writing totk.ini",
  "phase.cleanup.temp": "Removing temporary files",

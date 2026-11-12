@@ -370,16 +370,36 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox and keyboard prompts have a folder for each of these sizes (romfs-patches-xbox-<w>x<h>, -xbox-label-<w>x<h>,
-// -pc-<w>x<h>, installer/steps.py Prepare): they keep 1920x1080 only when the one for the display's size is missing,
-// as in a source build without make_romfs_patches.py --prompts <style> --aspect or an install by an older setup,
-// where a default of another shape would trade the prompts the player chose for the Switch ones.
+// Xbox and keyboard prompts need their folder for that size's shape too (romfs-patches-xbox-<w>x<h>, -xbox-label-,
+// -pc-, written by installer/steps.py Shapes for the style totk.ini selects and the connected displays' shapes): they
+// keep 1920x1080 when it is missing, as in a source build without make_romfs_patches.py --prompts <style> --aspect or
+// after a switch of prompts in the menu, where a default of another shape would trade the prompts the player chose for
+// the Switch ones.
 static const unsigned SHAPED[][2] = {
     {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},             // 21:9
     {3840, 1080}, {5120, 1440},                                         // 32:9
     {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},              // 16:10
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
 };
+
+// The folder size of w x h's shape: of SHAPED within 1% of its aspect ratio, the closest, the first of equal ones
+// (5120x2160 takes 2560x1080). The UI layout depends on the aspect ratio alone (tools/ultrawide_layout.py apply), so
+// the setup writes one romfs-patches-<w>x<h> per shape, named after this size (installer/screens.py shape_size, the
+// same rule), and romfs.c overlay_init looks for it. 0 for 16:9 and for a shape without a layout.
+int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
+    if (!w || !h) return 0;
+    double r = (double)w / h, err = 0;
+    if (fabs(r / (16.0 / 9.0) - 1) <= 0.01) return 0;
+    int best = -1;
+    for (int i = 0; i < (int)(sizeof SHAPED / sizeof *SHAPED); i++) {
+        double e = fabs((double)SHAPED[i][0] / SHAPED[i][1] / r - 1);
+        if (e <= 0.01 && (best < 0 || e < err)) best = i, err = e;
+    }
+    if (best < 0) return 0;
+    out[0] = SHAPED[best][0], out[1] = SHAPED[best][1];
+    return 1;
+}
+
 static char screen_res[16];   // set once by cfg_init, "" for none
 // romfs-patches-xbox-, romfs-patches-xbox-label- and romfs-patches-pc-<screen_res> have a manifest (set once by
 // cfg_init)

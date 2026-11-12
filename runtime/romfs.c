@@ -967,11 +967,29 @@ static void overlay_drop(size_t a, size_t b) {
     noverlay -= b - a;
 }
 
+// The folder <prefix>-<w>x<h> the game resolution w x h takes in base: that exact size when it has a manifest (an
+// install by a setup that wrote every size, or make_romfs_patches.py --aspect <w>x<h> in a source build), else the
+// size of its shape (cfg.c cfg_shape_size), the one folder per shape installer/steps.py Shapes writes. name gets the
+// folder found, or the shape's one when neither has a manifest (for the log). 1 when found.
+static int shaped_name(const char *base, const char *prefix, unsigned w, unsigned h, char *name, size_t cap) {
+    char path[2400];
+    unsigned s[2] = {w, h};
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass && !cfg_shape_size(w, h, s)) break;
+        if (pass && s[0] == w && s[1] == h) break;
+        snprintf(name, cap, "%s-%ux%u", prefix, s[0], s[1]);
+        if (snprintf(path, sizeof path, "%s/%s/manifest.tsv", base, name) < (int)sizeof path && plat_file_exists(path))
+            return 1;
+    }
+    return 0;
+}
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
-    // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
-    // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
-    // the layout goes with (res_wants_wide_overlay).
+    // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there (shaped_name: the exact
+    // size, else the folder of its shape): the same overlay with the UI laid out for that shape
+    // (make_romfs_patches.py --aspect), when the game version has the camera aspect patch the layout goes with
+    // (res_wants_wide_overlay).
     // With prompts = xbox, the Xbox prompts' folder for the pad layout in its place (input_prompts_folder): the same
     // patches with Xbox button icons (make_romfs_patches.py --prompts); prompts = pc takes romfs-patches-pc whatever
     // the pad layout. The game reads the archives once at boot, so the prompts stay until restart even though the
@@ -987,23 +1005,29 @@ static void overlay_init(void) {
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
+    unsigned shape[2] = {out[0], out[1]};   // the --aspect of the folder made for this shape
+    cfg_shape_size(out[0], out[1], shape);
     if (!patches && res_wants_wide_overlay(out)) {
-        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
-            plat_file_exists(def)) {
-            def[strlen(def) - strlen("/manifest.tsv")] = 0;
+        char name[128];
+        if (shaped_name(index_dir, "romfs-patches", out[0], out[1], name, sizeof name) &&
+            snprintf(def, sizeof def, "%s/%s", index_dir, name) < (int)sizeof def) {
             patches = def, wide = 1;
+            rt_log("RomFS overlay: the UI layout for %ux%u from %s", out[0], out[1], name);
         } else {
-            rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
-                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+            rt_log("RomFS overlay: no %s for this game resolution, the UI keeps its 16:9 layout (run the setup again, "
+                   "or tools/make_romfs_patches.py --aspect %ux%u)", name, shape[0], shape[1]);
         }
     }
     static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
     for (int i = 0; i < 3; i++) {
         const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
         char *dir = prompts_folders[i].dir;
-        if (wide) snprintf(dir, sizeof prompts_folders[i].dir, "%s-%ux%u", name, out[0], out[1]);
-        else snprintf(dir, sizeof prompts_folders[i].dir, "%s", name);
         prompts_folders[i].name = name;
+        if (wide) {
+            prompts_folders[i].ready = shaped_name(index_dir, name, out[0], out[1], dir, sizeof prompts_folders[i].dir);
+            continue;
+        }
+        snprintf(dir, sizeof prompts_folders[i].dir, "%s", name);
         prompts_folders[i].ready =
             snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, dir) < (int)sizeof path && plat_file_exists(path);
     }
@@ -1035,7 +1059,7 @@ static void overlay_init(void) {
         char why[256];
         if (prompts_off == ROMFS_PROMPTS_SHAPE)
             snprintf(why, sizeof why, "the game resolution has no %s (tools/make_romfs_patches.py --prompts %s "
-                     "--aspect %ux%u)", wanted_dir, prompts_wanted + strlen("romfs-patches-"), out[0], out[1]);
+                     "--aspect %ux%u)", wanted_dir, prompts_wanted + strlen("romfs-patches-"), shape[0], shape[1]);
         else
             snprintf(why, sizeof why, "%s", prompts_off == ROMFS_PROMPTS_PATCHES
                                                 ? "TOTK_ROMFS_PATCHES is set"
@@ -1091,25 +1115,137 @@ static void index_path(char *out, size_t cap) {
     strcpy(out + k, "romfs-index.bin");
 }
 
-// 1 when <prefix>-<w>x<h> has a manifest next to romfs-index.bin. Works before fs_init: index_dir is not set that early
-// (cfg_init, res_init and resolution.c decide run first), so the index path is worked out again here.
-static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h) {
-    char dir[2100], path[2200];
-    index_path(dir, sizeof dir);
+// The folder of romfs-index.bin. Works before fs_init: index_dir is not set that early (cfg_init, res_init and
+// resolution.c decide run first), so the index path is worked out again here.
+static void index_folder(char *dir, size_t cap) {
+    index_path(dir, cap);
     char *sep = plat_last_sep(dir);
     if (sep) *sep = 0;
     else strcpy(dir, ".");
-    return snprintf(path, sizeof path, "%s/%s-%ux%u/manifest.tsv", dir, prefix, w, h) < (int)sizeof path &&
-           plat_file_exists(path);
 }
 
-// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h>, the folder overlay_init
-// looks for.
+// 1 when the folder overlay_init takes for <prefix> at w x h (shaped_name) has a manifest next to romfs-index.bin.
+static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h) {
+    char dir[2100], name[128];
+    index_folder(dir, sizeof dir);
+    return shaped_name(dir, prefix, w, h, name, sizeof name);
+}
+
+// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h> of that size or of its shape,
+// the folder overlay_init looks for.
 int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h); }
 
 // 1 when it has a prompts' folder (input_prompts_folder) with that layout too: <folder>-<w>x<h>, which overlay_init
 // loads in its place with those prompts.
 int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { return shaped_folder_ready(folder, w, h); }
+
+// ---- the layout for a new screen, from the settings menu (ui/menu.cpp row_output_res)
+// The setup writes the shaped folders for the displays connected when it ran (installer/steps.py Shapes). After a
+// monitor change the menu can start the same generator for the shape of the game resolution: the setup's Python and
+// tools/make_romfs_patches.py, which build-cache/rebuild.txt names (installer/steps.py write_rebuild_command: line 1 the
+// Python, pythonw on Windows, so no console opens; line 4 the setup's folder), on the install folder's romfs/. Child
+// processes the game does not wait for: the generator writes manifest.tsv last, so a folder it has not finished is not
+// taken, and the next start loads the finished one.
+static int prepare_tools(char *python, size_t pcap, char *script, size_t scap, char *dir, size_t dcap) {
+    char path[2400];
+    index_folder(dir, dcap);
+    uint64_t n = 0;
+    snprintf(path, sizeof path, "%s/build-cache/rebuild.txt", dir);
+    char *text = (char *)plat_file_read(path, &n);
+    if (!text) return 0;
+    char *lines[5] = {0};
+    int k = 0;
+    for (char *p = text; k < 5 && p < text + n;) {
+        char *e = memchr(p, '\n', (size_t)(text + n - p));
+        if (!e) e = text + n;
+        if (e > p && e[-1] == '\r') e[-1] = 0;
+        *e = 0;
+        lines[k++] = p;
+        p = e + 1;
+    }
+    int ok = k >= 4 && !strcmp(lines[1], "-c") && snprintf(python, pcap, "%s", lines[0]) < (int)pcap &&
+             snprintf(script, scap, "%s/tools/make_romfs_patches.py", lines[3]) < (int)scap;
+    free(text);
+    snprintf(path, sizeof path, "%s/romfs/romfs.bin", dir);
+    return ok && plat_file_exists(python) && plat_file_exists(script) && plat_file_exists(path);
+}
+
+int romfs_shape_missing(unsigned w, unsigned h, const char *prompts_folder) {
+    unsigned out[2] = {w, h};
+    if (!res_wants_wide_overlay(out)) return 0;
+    return !shaped_folder_ready("romfs-patches", w, h) ||
+           (prompts_folder && romfs_prompts_ready(prompts_folder) && !shaped_folder_ready(prompts_folder, w, h));
+}
+
+int romfs_shape_can_prepare(void) {
+    static int known = -1;
+    if (known < 0) {
+        char python[1024], script[1100], dir[2100];
+        known = prepare_tools(python, sizeof python, script, sizeof script, dir, sizeof dir);
+    }
+    return known;
+}
+
+// The folders a generator was started for in this process. The menu thread alone calls romfs_shape_prepare, so no
+// lock. The game picks its overlay at start, so a folder is not started twice before the next start, even when its
+// generator has ended: a second click, or the same size chosen again, starts no second generator writing into it.
+static char shape_started[8][160];
+static int shape_started_n;
+
+static int shape_was_started(const char *folder) {
+    for (int i = 0; i < shape_started_n; i++)
+        if (!strcmp(shape_started[i], folder)) return 1;
+    return 0;
+}
+
+// Starts the generator for folder (a name in dir) unless one was started for it before. 1 when one runs for it, 0 when
+// it could not start. plat_spawn starts it detached and closes its handles without waiting, so a click costs the menu
+// thread one CreateProcess.
+static int shape_spawn(const char *const *argv, const char *dir, const char *folder) {
+    if (shape_was_started(folder)) return 1;
+    if (!plat_spawn(argv, dir)) return 0;
+    if (shape_started_n < (int)(sizeof shape_started / sizeof *shape_started))
+        snprintf(shape_started[shape_started_n++], sizeof *shape_started, "%s", folder);
+    return 1;
+}
+
+int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder) {
+    char python[1024], script[1100], dir[2100], romfs[2200], out[2300], reuse[2300], binds[2300], size[32], version[8],
+        name[128], folder[160];
+    unsigned s[2];
+    if (!cfg_shape_size(w, h, s) || !prepare_tools(python, sizeof python, script, sizeof script, dir, sizeof dir))
+        return 0;
+    snprintf(size, sizeof size, "%ux%u", s[0], s[1]);
+    snprintf(version, sizeof version, "v%d", rt_game_version);
+    snprintf(romfs, sizeof romfs, "%s/romfs", dir);
+    int started = 0, failed = 0;
+    if (!shaped_name(dir, "romfs-patches", w, h, name, sizeof name)) {
+        snprintf(folder, sizeof folder, "romfs-patches-%s", size);
+        snprintf(out, sizeof out, "%s/%s", dir, folder);
+        const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--aspect", size,
+                              NULL};
+        if (shape_spawn(argv, dir, folder)) started++;
+        else failed++;
+    }
+    snprintf(reuse, sizeof reuse, "%s/%s/manifest.tsv", dir, prompts_folder ? prompts_folder : "");
+    if (prompts_folder && plat_file_exists(reuse) && !shaped_name(dir, prompts_folder, w, h, name, sizeof name)) {
+        const char *style = prompts_folder + strlen("romfs-patches-");
+        snprintf(reuse, sizeof reuse, "%s/%s", dir, prompts_folder);
+        snprintf(folder, sizeof folder, "%s-%s", prompts_folder, size);
+        snprintf(out, sizeof out, "%s/%s", dir, folder);
+        // The keyboard and mouse prompts are drawn from totk.ini's bind_ lines, as the setup's PcPrompts and Shapes
+        // steps draw them (installer/steps.py pc_binds); a file without such lines gives the keyboard defaults.
+        snprintf(binds, sizeof binds, "%s/totk.ini", dir);
+        int pc = !strcmp(style, "pc") && plat_file_exists(binds);
+        const char *argv[] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--prompts", style,
+                              "--aspect", size, "--reuse", reuse, pc ? "--binds" : NULL, binds, NULL};
+        if (shape_spawn(argv, dir, folder)) started++;
+        else failed++;
+    }
+    rt_log("RomFS overlay: making the layout for %s in the background (%d generators running, %d failed; %s)", size,
+           started, failed, script);
+    return started && !failed;
+}
 
 static void load_index(void) {
     char path[2100];
