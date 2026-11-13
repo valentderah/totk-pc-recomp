@@ -70,7 +70,7 @@ static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
 static PlatFile *handle_file[NH];    // the handle's open overlay file, when handle_ovl is set
-static uint8_t handle_audio_cat[NH];
+static uint8_t handle_audio_cat[NH];  // the open file's sound category (audio_cat.c), AUDIO_CAT_UNKNOWN when not audio
 static Overlay *overlays;            // sorted by RomFS index after overlay_init
 static size_t noverlay, overlay_cap;
 static char **added;                 // RomFS paths of the added files, sorted; added[k] is index file_count + k
@@ -1397,12 +1397,13 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
         if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
     }
+    // The handle keeps its sound category (audio_cat.c) even while the volume settings are at 100, so a stream opened
+    // before a setting moves is classified by its later reads. A stream may start reading past its header (the
+    // header came with the BARS bank), so the coefficients are taken from the image here.
     int cat = audio_cat_from_path(p);
-    if (cat != AUDIO_CAT_UNKNOWN && !ov && image_map && i != UINT64_MAX) {
+    if (cat != AUDIO_CAT_UNKNOWN && !ov && image_map && audio_cat_active()) {
         Entry e = entry(i);
-        if (e.size >= 0x40) {
-            audio_cat_scan_bwav(image_map + e.offset, e.size < 4096 ? e.size : 4096, cat);
-        }
+        if (e.size >= 0x40) audio_cat_scan_bwav(image_map + e.offset, e.size < 4096 ? e.size : 4096, cat);
     }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
@@ -1461,10 +1462,8 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
     }
     *out = done;
     uint64_t j = h - ROMFS_HANDLE_BASE;
-    if (j < NH && handle_audio_cat[j] != AUDIO_CAT_UNKNOWN && buffer && done > 0) {
-        if (offset == 0 && done >= 0x40) {
-            audio_cat_scan_bwav(buffer, done, handle_audio_cat[j]);
-        }
+    if (handle_audio_cat[j] != AUDIO_CAT_UNKNOWN && done && audio_cat_active()) {
+        if (offset == 0) audio_cat_scan_bwav(buffer, done, handle_audio_cat[j]);
         audio_cat_tag_range((uint64_t)(uintptr_t)buffer, done, handle_audio_cat[j]);
     }
     return 0;

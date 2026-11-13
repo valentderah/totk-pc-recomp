@@ -1,4 +1,19 @@
+// Sound categories (music, effects, voices) for the volume_music / volume_sfx / volume_voice settings.
+//
+// The audio renderer only sees sample memory, so the category is learned where the game loads its sounds:
+//   - RomFS opens and reads of Sound/Resource/ files (romfs.c romfs_open / romfs_read): the file name gives the
+//     category (BGM_* music, NV_* and *_Vo_* / *Voice* voices, the rest effects);
+//   - zstd decodes of BARS banks (ov_zstd.c decode): each bank entry's AMTA name refines the bank's category;
+//   - Opus decodes (ov_media.c ov_decode): the decoded PCM inherits the category of the packet it came from.
+// Two tables answer the mixer (audio_mixer.c voice_category):
+//   - DSP-ADPCM coefficient tables, by a hash of their 32 bytes, read from each BWAV channel header. The game copies
+//     these coefficients next to the voice, so a voice's own table names its sound wherever its samples live;
+//   - guest address ranges of loaded or decoded audio, newest first, for PCM voices (Opus output).
+// Everything here runs only while one of the three settings is below 100 (audio_cat_active): at the defaults no table
+// is written or read. A setting moved during play classifies what loads from then on; sounds loaded before (an area's
+// effect banks, a stream opened earlier) are found when their next stream read lands, otherwise they count as effects.
 #include "audio_cat.h"
+#include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -6,386 +21,269 @@
 #include <string.h>
 #include <strings.h>
 
-#define AUDIO_RANGE_CAP 32768
-#define COEF_TABLE_CAP 65536
+#define RANGE_CAP 4096    // address ranges, a ring: the oldest go first. Lookups scan it, so it stays small
+#define COEF_CAP 65536    // coefficient tables, open addressing; a full probe run drops the new table (it counts as SFX)
+#define COEF_PROBES 64
 
 typedef struct {
-    uint64_t start;
-    uint64_t end;
+    uint64_t start, end;
     uint8_t cat;
-    uint8_t pad[7];
-} AudioRange;
+} Range;
 
-static AudioRange s_ranges[AUDIO_RANGE_CAP];
-static _Atomic uint32_t s_range_head = 0;
-static PlatMutex s_range_lock = PLAT_MUTEX_INIT;
+static Range ranges[RANGE_CAP];
+static uint32_t range_head;              // ranges written so far; under range_lock
+static PlatMutex range_lock = PLAT_MUTEX_INIT;
 
 typedef struct {
-    _Atomic uint64_t hash;
+    _Atomic uint64_t hash;   // 0 = free; a slot is claimed once and never freed
     _Atomic uint8_t cat;
-} CoefEntry;
+} Coef;
 
-static CoefEntry s_coef_table[COEF_TABLE_CAP];
+static Coef coefs[COEF_CAP];
 
 typedef struct {
     uint64_t guest;
     uint8_t cat;
-} DecoderEntry;
+} Decoder;
 
-static DecoderEntry s_decoders[64];
-static PlatMutex s_dec_lock = PLAT_MUTEX_INIT;
+static Decoder decoders[64];             // the category each Opus decoder produced last; under decoder_lock
+static unsigned decoder_next;
+static PlatMutex decoder_lock = PLAT_MUTEX_INIT;
+
+static _Atomic uint64_t coef_count[4], range_count, bars_count;
+
+int audio_cat_active(void) {
+    static _Atomic unsigned seen = ~0u;
+    static _Atomic int on;
+    unsigned ver = cfg_version();
+    if (atomic_load_explicit(&seen, memory_order_acquire) != ver) {
+        int a = cfg_double("TOTK_VOLUME_MUSIC") < 100 || cfg_double("TOTK_VOLUME_SFX") < 100 ||
+                cfg_double("TOTK_VOLUME_VOICE") < 100;
+        atomic_store_explicit(&on, a, memory_order_relaxed);
+        atomic_store_explicit(&seen, ver, memory_order_release);
+    }
+    return atomic_load_explicit(&on, memory_order_relaxed);
+}
 
 static int ci_str_has(const char *haystack, const char *needle) {
-    if (!haystack || !needle) return 0;
     size_t nlen = strlen(needle);
-    for (; *haystack; haystack++) {
+    for (; *haystack; haystack++)
         if (strncasecmp(haystack, needle, nlen) == 0) return 1;
-    }
     return 0;
 }
 
-static int is_all_zero32(const void *data) {
-    const uint8_t *p = (const uint8_t *)data;
-    for (int i = 0; i < 32; i++) {
+static int all_zero32(const uint8_t *p) {
+    for (int i = 0; i < 32; i++)
         if (p[i]) return 0;
-    }
     return 1;
 }
 
-static uint64_t fnv1a_coef32(const void *data) {
-    const uint8_t *p = (const uint8_t *)data;
+static uint64_t fnv1a32(const uint8_t *p) {
     uint64_t h = 14695981039346656037ULL;
     for (int i = 0; i < 32; i++) {
-        h ^= (uint64_t)p[i];
+        h ^= p[i];
         h *= 1099511628211ULL;
     }
-    return h ? h : 1ULL;
+    return h ? h : 1;
 }
 
-static void register_coef32(const void *coef32, int cat) {
-    if (!coef32 || cat <= AUDIO_CAT_UNKNOWN || cat > AUDIO_CAT_VOICE) return;
-    if (is_all_zero32(coef32)) return;
-
-    uint64_t h = fnv1a_coef32(coef32);
-    for (uint32_t step = 0; step < 64; step++) {
-        uint32_t idx = ((uint32_t)h + step) & (COEF_TABLE_CAP - 1);
-        uint64_t cur = atomic_load_explicit(&s_coef_table[idx].hash, memory_order_acquire);
-        if (cur == h) {
-            uint8_t existing = atomic_load_explicit(&s_coef_table[idx].cat, memory_order_relaxed);
-            if (cat == AUDIO_CAT_MUSIC || cat == AUDIO_CAT_VOICE || existing <= AUDIO_CAT_UNKNOWN || existing == AUDIO_CAT_SFX) {
-                atomic_store_explicit(&s_coef_table[idx].cat, (uint8_t)cat, memory_order_release);
-            }
+// A table seen under several categories keeps music or voice over effects: one sample shared by a voice line and an
+// effect bank follows the voice setting.
+static void register_coef32(const uint8_t *coef, int cat) {
+    if (cat <= AUDIO_CAT_UNKNOWN || cat > AUDIO_CAT_VOICE || all_zero32(coef)) return;
+    uint64_t h = fnv1a32(coef);
+    for (uint32_t step = 0; step < COEF_PROBES; step++) {
+        Coef *e = &coefs[((uint32_t)h + step) & (COEF_CAP - 1)];
+        uint64_t cur = atomic_load_explicit(&e->hash, memory_order_acquire);
+        if (cur == 0 && atomic_compare_exchange_strong_explicit(&e->hash, &cur, h, memory_order_acq_rel,
+                                                                memory_order_acquire)) {
+            atomic_store_explicit(&e->cat, (uint8_t)cat, memory_order_release);
+            atomic_fetch_add_explicit(&coef_count[cat], 1, memory_order_relaxed);
             return;
         }
-        if (cur == 0) {
-            if (atomic_compare_exchange_strong_explicit(&s_coef_table[idx].hash, &cur, h, memory_order_acq_rel, memory_order_acquire) || cur == h) {
-                atomic_store_explicit(&s_coef_table[idx].cat, (uint8_t)cat, memory_order_release);
-                return;
-            }
+        if (cur == h) {
+            if (cat != AUDIO_CAT_SFX) atomic_store_explicit(&e->cat, (uint8_t)cat, memory_order_release);
+            return;
         }
     }
 }
 
 int audio_cat_lookup_coef(uint64_t extra_addr, uint64_t extra_size) {
-    if (!extra_addr || extra_size < 32 || extra_addr >= RT_ADDRESS_LIMIT) return AUDIO_CAT_UNKNOWN;
-    if (!mem_guest_readable(extra_addr, 32)) return AUDIO_CAT_UNKNOWN;
-    const void *ptr = (const void *)(uintptr_t)extra_addr;
-    if (is_all_zero32(ptr)) return AUDIO_CAT_UNKNOWN;
-    uint64_t h = fnv1a_coef32(ptr);
-    for (uint32_t step = 0; step < 64; step++) {
-        uint32_t idx = ((uint32_t)h + step) & (COEF_TABLE_CAP - 1);
-        uint64_t cur = atomic_load_explicit(&s_coef_table[idx].hash, memory_order_acquire);
-        if (cur == h) {
-            return (int)atomic_load_explicit(&s_coef_table[idx].cat, memory_order_acquire);
-        }
-        if (cur == 0) return AUDIO_CAT_UNKNOWN;
+    if (!extra_addr || extra_size < 32 || extra_addr >= RT_ADDRESS_LIMIT || !mem_guest_readable(extra_addr, 32))
+        return AUDIO_CAT_UNKNOWN;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)extra_addr;
+    if (all_zero32(p)) return AUDIO_CAT_UNKNOWN;
+    uint64_t h = fnv1a32(p);
+    for (uint32_t step = 0; step < COEF_PROBES; step++) {
+        Coef *e = &coefs[((uint32_t)h + step) & (COEF_CAP - 1)];
+        uint64_t cur = atomic_load_explicit(&e->hash, memory_order_acquire);
+        if (cur == h) return atomic_load_explicit(&e->cat, memory_order_acquire);   // 0 while the writer is midway
+        if (cur == 0) break;
     }
     return AUDIO_CAT_UNKNOWN;
 }
 
+// BWAV: "BWAV", channel count at 0x0E, then 0x4C-byte channel infos from 0x10: codec u16 (1 = DSP-ADPCM) and the 16
+// ADPCM coefficients at +0x10.
 void audio_cat_scan_bwav(const void *data, uint64_t size, int cat) {
     if (!data || size < 0x40 || cat <= AUDIO_CAT_UNKNOWN) return;
-    const uint8_t *b = (const uint8_t *)data;
-    if (*(const uint32_t *)b != 0x56415742u) return;
-
-    uint16_t num_ch = *(const uint16_t *)(b + 0x0E);
-    if (num_ch == 0 || num_ch > 16) return;
-
-    for (uint16_t ch = 0; ch < num_ch; ch++) {
-        uint64_t ch_off = 0x10ull + (uint64_t)ch * 0x4Cull;
-        if (ch_off + 0x30ull > size) break;
-        uint16_t codec = *(const uint16_t *)(b + ch_off);
-        if (codec == 1) {
-            register_coef32(b + ch_off + 0x10, cat);
-        }
+    const uint8_t *b = data;
+    uint32_t magic;
+    uint16_t nch;
+    memcpy(&magic, b, 4);
+    memcpy(&nch, b + 0x0E, 2);
+    if (magic != 0x56415742u || nch == 0 || nch > 16) return;
+    for (uint16_t ch = 0; ch < nch; ch++) {
+        uint64_t at = 0x10ull + ch * 0x4Cull;
+        if (at + 0x30 > size) break;
+        uint16_t codec;
+        memcpy(&codec, b + at, 2);
+        if (codec == 1) register_coef32(b + at + 0x10, cat);
     }
 }
 
+// Every sound bank and stream of the game is under Sound/Resource/ (Sound/Resource/*.bars.zs, Sound/Resource/Stream/
+// *.bwav); everything else is not audio. Creature and player vocal banks (Bokoblin_Voice0, Player_Voice, *_Vo_*)
+// count as voices, as do the NV_* character voice lines.
 int audio_cat_from_path(const char *path) {
-    if (!path) return AUDIO_CAT_UNKNOWN;
-
-    const char *slash = strrchr(path, '/');
-    const char *bslash = strrchr(path, '\\');
-    const char *fname = path;
-    if (slash && slash + 1 > fname) fname = slash + 1;
-    if (bslash && bslash + 1 > fname) fname = bslash + 1;
-    if (strncasecmp(fname, "nv_", 3) == 0 || strncasecmp(fname, "vo_", 3) == 0) {
+    if (!path || strncmp(path, "Sound/Resource/", 15)) return AUDIO_CAT_UNKNOWN;
+    const char *name = strrchr(path, '/') + 1;
+    if (!strncasecmp(name, "nv_", 3) || !strncasecmp(name, "vo_", 3)) return AUDIO_CAT_VOICE;
+    if (ci_str_has(name, "bgm_")) return AUDIO_CAT_MUSIC;
+    if (ci_str_has(name, "_voice") || ci_str_has(name, "voice_") || ci_str_has(name, "_vo_") ||
+        ci_str_has(name, "shoutvoice") || ci_str_has(name, "shoutmsg"))
         return AUDIO_CAT_VOICE;
-    }
-
-    if (!ci_str_has(path, "sound/") &&
-        !ci_str_has(path, "sound\\") &&
-        !ci_str_has(path, "voice/") &&
-        !ci_str_has(path, "voice\\") &&
-        !ci_str_has(path, ".bars") &&
-        !ci_str_has(path, ".bwav") &&
-        !ci_str_has(path, ".bfsar")) {
-        return AUDIO_CAT_UNKNOWN;
-    }
-
-    if (ci_str_has(path, "bgm_") ||
-        ci_str_has(path, "/bgm/") ||
-        ci_str_has(path, "\\bgm\\") ||
-        ci_str_has(path, "sound/bgm") ||
-        ci_str_has(path, "sound\\bgm")) {
-        return AUDIO_CAT_MUSIC;
-    }
-
-    if (ci_str_has(path, "voice/") ||
-        ci_str_has(path, "voice\\") ||
-        ci_str_has(path, "_voice") ||
-        ci_str_has(path, "voice_") ||
-        ci_str_has(path, "player_voice") ||
-        ci_str_has(path, "_vo_") ||
-        ci_str_has(path, "/vo_") ||
-        ci_str_has(path, "\\vo_") ||
-        ci_str_has(path, "/nv_") ||
-        ci_str_has(path, "\\nv_") ||
-        ci_str_has(path, "shoutvoice") ||
-        ci_str_has(path, "eventflowmsg") ||
-        ci_str_has(path, "shoutmsg")) {
-        return AUDIO_CAT_VOICE;
-    }
-
     return AUDIO_CAT_SFX;
 }
 
 void audio_cat_tag_range(uint64_t addr, uint64_t size, int cat) {
     if (!addr || !size || cat <= AUDIO_CAT_UNKNOWN || cat > AUDIO_CAT_VOICE) return;
-
-    plat_mutex_lock(&s_range_lock);
-    uint32_t head = atomic_load_explicit(&s_range_head, memory_order_relaxed);
-    uint32_t search_depth = head < 64 ? head : 64;
-    for (uint32_t k = 0; k < search_depth; k++) {
-        uint32_t idx = (head - 1 - k) & (AUDIO_RANGE_CAP - 1);
-        if (s_ranges[idx].start == addr && s_ranges[idx].end == addr + size) {
-            s_ranges[idx].cat = (uint8_t)cat;
-            plat_mutex_unlock(&s_range_lock);
+    plat_mutex_lock(&range_lock);
+    // A stream refills the same buffers: the same range read again only changes its category.
+    uint32_t depth = range_head < 64 ? range_head : 64;
+    for (uint32_t k = 0; k < depth; k++) {
+        Range *r = &ranges[(range_head - 1 - k) & (RANGE_CAP - 1)];
+        if (r->start == addr && r->end == addr + size) {
+            r->cat = (uint8_t)cat;
+            plat_mutex_unlock(&range_lock);
             return;
         }
     }
-
-    uint32_t idx = head & (AUDIO_RANGE_CAP - 1);
-    s_ranges[idx].start = addr;
-    s_ranges[idx].end = addr + size;
-    s_ranges[idx].cat = (uint8_t)cat;
-    atomic_store_explicit(&s_range_head, head + 1, memory_order_release);
-    plat_mutex_unlock(&s_range_lock);
+    Range *r = &ranges[range_head & (RANGE_CAP - 1)];
+    r->start = addr;
+    r->end = addr + size;
+    r->cat = (uint8_t)cat;
+    range_head++;
+    plat_mutex_unlock(&range_lock);
+    atomic_fetch_add_explicit(&range_count, 1, memory_order_relaxed);
 }
 
+// The newest range holding addr; newer loads into reused memory win over older ones.
 int audio_cat_lookup(uint64_t addr) {
     if (!addr) return AUDIO_CAT_UNKNOWN;
-
-    uint32_t head = atomic_load_explicit(&s_range_head, memory_order_acquire);
-    uint32_t limit = head > AUDIO_RANGE_CAP ? head - AUDIO_RANGE_CAP : 0;
-    for (uint32_t i = head; i > limit; i--) {
-        uint32_t idx = (i - 1) & (AUDIO_RANGE_CAP - 1);
-        uint64_t start = s_ranges[idx].start;
-        uint64_t end = s_ranges[idx].end;
-        if (addr >= start && addr < end) {
-            return (int)s_ranges[idx].cat;
+    int cat = AUDIO_CAT_UNKNOWN;
+    plat_mutex_lock_shared(&range_lock);
+    uint32_t n = range_head < RANGE_CAP ? range_head : RANGE_CAP;
+    for (uint32_t k = 0; k < n; k++) {
+        const Range *r = &ranges[(range_head - 1 - k) & (RANGE_CAP - 1)];
+        if (addr >= r->start && addr < r->end) {
+            cat = r->cat;
+            break;
         }
     }
-
-    if (addr >= 0x40 && addr < RT_ADDRESS_LIMIT) {
-        uint64_t min_check = addr >= 256 ? addr - 256 : 0;
-        min_check &= ~0xFull;
-        for (uint64_t b = addr & ~0xFull; b >= min_check; b -= 16) {
-            if (mem_guest_readable(b, 0x20)) {
-                const uint32_t *p = (const uint32_t *)(uintptr_t)b;
-                if (p[0] == 0x56415742u) {
-                    const uint8_t *bp = (const uint8_t *)p;
-                    uint16_t num_ch = *(const uint16_t *)(bp + 0x0E);
-                    uint16_t codec = *(const uint16_t *)(bp + 0x10);
-                    if (codec == 2) return AUDIO_CAT_VOICE;
-                    if (codec == 1 && num_ch >= 2) return AUDIO_CAT_MUSIC;
-                    return AUDIO_CAT_SFX;
-                }
-            }
-            if (b == 0) break;
-        }
-    }
-
-    return AUDIO_CAT_UNKNOWN;
+    plat_mutex_unlock_shared(&range_lock);
+    return cat;
 }
 
+// BARS: "BARS", entry count at 0x0C, then count CRC32 name hashes and count (AMTA offset, BWAV offset) pairs. The AMTA
+// block holds the entry's name; music and voice names inside an effects bank (a boss bank with its BGM) get their own
+// category. ADPCM entries register their coefficients; other entries tag their bytes.
 void audio_cat_scan_bars(uint64_t dst, uint64_t size, int fallback_cat) {
-    if (!dst || !size) return;
-
-    if (fallback_cat != AUDIO_CAT_UNKNOWN) {
-        audio_cat_tag_range(dst, size, fallback_cat);
-    }
-
-    if (size < 16) return;
+    if (!dst || size < 16) return;
+    atomic_fetch_add_explicit(&bars_count, 1, memory_order_relaxed);
+    if (fallback_cat != AUDIO_CAT_UNKNOWN) audio_cat_tag_range(dst, size, fallback_cat);
     const uint8_t *base = (const uint8_t *)(uintptr_t)dst;
-    if (*(const uint32_t *)base != 0x53524142u) {
-        return;
-    }
-
-    uint32_t count = *(const uint32_t *)(base + 0x0C);
+    uint32_t count;
+    memcpy(&count, base + 0x0C, 4);
     if (count > 16384 || 0x10ull + (uint64_t)count * 12ull > size) return;
-
-    const uint32_t *pairs = (const uint32_t *)(base + 0x10 + count * 4);
+    const uint8_t *pairs = base + 0x10 + (uint64_t)count * 4;
     for (uint32_t k = 0; k < count; k++) {
-        uint32_t amta_off = pairs[k * 2];
-        uint32_t bwav_off = pairs[k * 2 + 1];
+        uint32_t amta_off, bwav_off;
+        memcpy(&amta_off, pairs + k * 8ull, 4);
+        memcpy(&bwav_off, pairs + k * 8ull + 4, 4);
         if (bwav_off >= size) continue;
-
-        int cat = (fallback_cat != AUDIO_CAT_UNKNOWN) ? fallback_cat : AUDIO_CAT_SFX;
-
+        int cat = fallback_cat != AUDIO_CAT_UNKNOWN ? fallback_cat : AUDIO_CAT_SFX;
         if (amta_off < size) {
-            uint32_t amta_scan_limit = 512;
-            if (amta_off + amta_scan_limit > size) {
-                amta_scan_limit = (uint32_t)(size - amta_off);
-            }
-            const char *amta_bytes = (const char *)(base + amta_off);
-            for (uint32_t s = 0; s + 4 <= amta_scan_limit; s++) {
-                if (memcmp(amta_bytes + s, "BGM_", 4) == 0) {
-                    cat = AUDIO_CAT_MUSIC;
-                    break;
-                }
-                if (memcmp(amta_bytes + s, "_Vo_", 4) == 0 || memcmp(amta_bytes + s, "Vo_", 3) == 0 ||
-                    memcmp(amta_bytes + s, "NV_", 3) == 0) {
-                    cat = AUDIO_CAT_VOICE;
-                    break;
-                }
-                if (s + 5 <= amta_scan_limit && memcmp(amta_bytes + s, "Voice", 5) == 0) {
-                    cat = AUDIO_CAT_VOICE;
-                    break;
-                }
-                if (amta_bytes[s] == 'P' && amta_bytes[s + 1] == 'V' &&
-                    amta_bytes[s + 2] >= '0' && amta_bytes[s + 2] <= '9') {
-                    cat = AUDIO_CAT_VOICE;
-                    break;
-                }
+            uint64_t limit = size - amta_off < 512 ? size - amta_off : 512;
+            const char *a = (const char *)(base + amta_off);
+            for (uint64_t s = 0; s + 4 <= limit; s++) {
+                if (!memcmp(a + s, "BGM_", 4)) { cat = AUDIO_CAT_MUSIC; break; }
+                if (!memcmp(a + s, "Vo_", 3) || !memcmp(a + s, "NV_", 3)) { cat = AUDIO_CAT_VOICE; break; }
+                if (s + 5 <= limit && !memcmp(a + s, "Voice", 5)) { cat = AUDIO_CAT_VOICE; break; }
             }
         }
-
-        uint64_t next_off = size;
+        const uint8_t *w = base + bwav_off;
+        uint32_t magic = 0;
+        uint16_t codec = 0;
+        if (bwav_off + 0x40 <= size) {
+            memcpy(&magic, w, 4);
+            memcpy(&codec, w + 0x10, 2);
+        }
+        if (magic == 0x56415742u) audio_cat_scan_bwav(w, size - bwav_off, cat);
+        if (cat == fallback_cat || (magic == 0x56415742u && codec == 1)) continue;
+        // The entry ends where the next BWAV starts: one pass over the offsets, only for the few entries tagged here.
+        uint64_t next = size;
         for (uint32_t j = 0; j < count; j++) {
-            uint32_t o = pairs[j * 2 + 1];
-            if (o > bwav_off && o < next_off) {
-                next_off = o;
-            }
+            uint32_t o;
+            memcpy(&o, pairs + j * 8ull + 4, 4);
+            if (o > bwav_off && o < next) next = o;
         }
-        uint64_t bwav_span = next_off - bwav_off;
-
-        if (bwav_off + 0x40 <= size && *(const uint32_t *)(base + bwav_off) == 0x56415742u) {
-            uint16_t codec = *(const uint16_t *)(base + bwav_off + 0x10);
-            if (codec == 2 && cat == AUDIO_CAT_SFX) {
-                cat = AUDIO_CAT_VOICE;
-            }
-            audio_cat_scan_bwav(base + bwav_off, size - bwav_off, cat);
-            if (codec == 2 || cat != fallback_cat) {
-                audio_cat_tag_range(dst + bwav_off, bwav_span, cat);
-            }
-        } else if (cat != fallback_cat) {
-            audio_cat_tag_range(dst + bwav_off, bwav_span, cat);
-        }
+        audio_cat_tag_range(dst + bwav_off, next - bwav_off, cat);
     }
 }
 
+// The PCM out of one Opus packet takes the packet's category, else the decoder's last one, else effects. Consecutive
+// packets of one decoder fill one buffer, so the output grows the newest matching range instead of adding one each.
 void audio_cat_on_opus_decode(uint64_t decoder_guest, uint64_t in_addr, uint64_t out_addr, uint64_t out_size) {
     if (!out_addr || !out_size) return;
-
     int cat = audio_cat_lookup(in_addr);
-    if (cat == AUDIO_CAT_UNKNOWN) {
-        if (in_addr >= 0x40 && in_addr < RT_ADDRESS_LIMIT) {
-            uint64_t min_check = in_addr >= 256 ? in_addr - 256 : 0;
-            min_check &= ~0xFull;
-            for (uint64_t b = in_addr & ~0xFull; b >= min_check; b -= 16) {
-                if (mem_guest_readable(b, 0x20)) {
-                    const uint32_t *p = (const uint32_t *)(uintptr_t)b;
-                    if (p[0] == 0x56415742u) {
-                        uint16_t codec = *(const uint16_t *)((const uint8_t *)p + 0x10);
-                        if (codec == 2) { cat = AUDIO_CAT_VOICE; break; }
-                    }
-                }
-                if (b == 0) break;
-            }
-        }
-    }
-
-    plat_mutex_lock(&s_dec_lock);
-    if (cat == AUDIO_CAT_UNKNOWN && decoder_guest) {
-        for (int i = 0; i < 64; i++) {
-            if (s_decoders[i].guest == decoder_guest && s_decoders[i].cat != AUDIO_CAT_UNKNOWN) {
-                cat = s_decoders[i].cat;
-                break;
-            }
-        }
-    }
-    if (cat == AUDIO_CAT_UNKNOWN) {
-        cat = AUDIO_CAT_VOICE;
-    }
+    plat_mutex_lock(&decoder_lock);
+    int slot = -1;
+    for (int i = 0; i < 64 && decoder_guest; i++)
+        if (decoders[i].guest == decoder_guest) slot = i;
+    if (cat == AUDIO_CAT_UNKNOWN && slot >= 0) cat = decoders[slot].cat;
+    if (cat == AUDIO_CAT_UNKNOWN) cat = AUDIO_CAT_SFX;
     if (decoder_guest) {
-        int found = 0;
-        for (int i = 0; i < 64; i++) {
-            if (s_decoders[i].guest == decoder_guest) {
-                if (cat != AUDIO_CAT_UNKNOWN) s_decoders[i].cat = (uint8_t)cat;
-                found = 1;
-                break;
-            }
+        if (slot < 0) {
+            slot = (int)(decoder_next++ & 63);
+            decoders[slot].guest = decoder_guest;
         }
-        if (!found) {
-            static int dec_head = 0;
-            int slot = dec_head++ & 63;
-            s_decoders[slot].guest = decoder_guest;
-            s_decoders[slot].cat = (uint8_t)cat;
+        decoders[slot].cat = (uint8_t)cat;
+    }
+    plat_mutex_unlock(&decoder_lock);
+
+    plat_mutex_lock(&range_lock);
+    uint32_t depth = range_head < 32 ? range_head : 32;
+    for (uint32_t k = 0; k < depth; k++) {
+        Range *r = &ranges[(range_head - 1 - k) & (RANGE_CAP - 1)];
+        if (r->cat != (uint8_t)cat) continue;
+        uint64_t lo = r->start > 65536 ? r->start - 65536 : 0, hi = r->end + 65536;
+        if (out_addr >= lo && out_addr + out_size <= hi) {
+            if (out_addr < r->start) r->start = out_addr;
+            if (out_addr + out_size > r->end) r->end = out_addr + out_size;
+            plat_mutex_unlock(&range_lock);
+            return;
         }
     }
-    plat_mutex_unlock(&s_dec_lock);
-
-    plat_mutex_lock(&s_range_lock);
-    uint32_t head = atomic_load_explicit(&s_range_head, memory_order_relaxed);
-    uint32_t check_count = head < 32 ? head : 32;
-    for (uint32_t k = 0; k < check_count; k++) {
-        uint32_t idx = (head - 1 - k) & (AUDIO_RANGE_CAP - 1);
-        if (s_ranges[idx].cat == (uint8_t)cat) {
-            if (out_addr >= s_ranges[idx].start && out_addr + out_size <= s_ranges[idx].end) {
-                plat_mutex_unlock(&s_range_lock);
-                return;
-            }
-            if (out_addr == s_ranges[idx].end) {
-                s_ranges[idx].end = out_addr + out_size;
-                plat_mutex_unlock(&s_range_lock);
-                return;
-            }
-            if (out_addr + out_size == s_ranges[idx].start) {
-                s_ranges[idx].start = out_addr;
-                plat_mutex_unlock(&s_range_lock);
-                return;
-            }
-            if (out_addr >= (s_ranges[idx].start > 65536 ? s_ranges[idx].start - 65536 : 0) &&
-                out_addr + out_size <= s_ranges[idx].end + 65536) {
-                if (out_addr < s_ranges[idx].start) s_ranges[idx].start = out_addr;
-                if (out_addr + out_size > s_ranges[idx].end) s_ranges[idx].end = out_addr + out_size;
-                plat_mutex_unlock(&s_range_lock);
-                return;
-            }
-        }
-    }
-    plat_mutex_unlock(&s_range_lock);
-
+    plat_mutex_unlock(&range_lock);
     audio_cat_tag_range(out_addr, out_size, cat);
+}
+
+void audio_cat_log_tables(void) {
+    rt_log("audio: categories known: coefficient tables music %llu, sfx %llu, voice %llu; address ranges %llu "
+           "(ring %d); BARS banks scanned %llu",
+           (unsigned long long)atomic_load(&coef_count[AUDIO_CAT_MUSIC]),
+           (unsigned long long)atomic_load(&coef_count[AUDIO_CAT_SFX]),
+           (unsigned long long)atomic_load(&coef_count[AUDIO_CAT_VOICE]), (unsigned long long)atomic_load(&range_count),
+           RANGE_CAP, (unsigned long long)atomic_load(&bars_count));
 }

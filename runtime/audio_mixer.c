@@ -85,66 +85,63 @@ static float host_volume(void) {
     return v;
 }
 
-static float host_volume_music(void) {
-    static float v = 1.0f;
+// TOTK_VOLUME_MUSIC / _SFX / _VOICE: per-category volumes in percent on top of TOTK_VOLUME, live like it. Render thread
+// only.
+static float category_volume(int cat) {
+    static const char *const names[4] = {NULL, "TOTK_VOLUME_MUSIC", "TOTK_VOLUME_SFX", "TOTK_VOLUME_VOICE"};
+    static float v[4] = {1, 1, 1, 1};
     static unsigned seen = ~0u;
     unsigned ver = cfg_version();
-    if (ver == seen) return v;
-    seen = ver;
-    double pct = cfg_double("TOTK_VOLUME_MUSIC");
-    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
-    return v;
-}
-
-static float host_volume_sfx(void) {
-    static float v = 1.0f;
-    static unsigned seen = ~0u;
-    unsigned ver = cfg_version();
-    if (ver == seen) return v;
-    seen = ver;
-    double pct = cfg_double("TOTK_VOLUME_SFX");
-    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
-    return v;
-}
-
-static float host_volume_voice(void) {
-    static float v = 1.0f;
-    static unsigned seen = ~0u;
-    unsigned ver = cfg_version();
-    if (ver == seen) return v;
-    seen = ver;
-    double pct = cfg_double("TOTK_VOLUME_VOICE");
-    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
-    return v;
-}
-
-static float voice_category_gain(ServerVoice *v) {
-    int cat = AUDIO_CAT_UNKNOWN;
-    if (v->in.sample_format == FMT_ADPCM && v->in.extra_address && v->in.extra_size >= 32) {
-        cat = audio_cat_lookup_coef(v->in.extra_address, v->in.extra_size);
-    }
-    if (cat == AUDIO_CAT_UNKNOWN) {
-        uint64_t addr = v->buffers[v->index].address;
-        cat = audio_cat_lookup(addr);
-    }
-    if (cat == AUDIO_CAT_UNKNOWN) {
-        for (int b = 0; b < 4; b++) {
-            if (v->valid[b] && v->buffers[b].address) {
-                cat = audio_cat_lookup(v->buffers[b].address);
-                if (cat != AUDIO_CAT_UNKNOWN) break;
-            }
+    if (ver != seen) {
+        seen = ver;
+        for (int k = 1; k < 4; k++) {
+            double pct = cfg_double(names[k]);
+            v[k] = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
         }
     }
-    if (cat == AUDIO_CAT_UNKNOWN && v->in.extra_address) {
-        cat = audio_cat_lookup(v->in.extra_address);
-    }
-    if (cat == AUDIO_CAT_UNKNOWN) {
-        cat = AUDIO_CAT_SFX;
-    }
-    if (cat == AUDIO_CAT_MUSIC) return host_volume_music();
-    if (cat == AUDIO_CAT_VOICE) return host_volume_voice();
-    return host_volume_sfx();
+    return v[cat >= AUDIO_CAT_MUSIC && cat <= AUDIO_CAT_VOICE ? cat : AUDIO_CAT_SFX];
 }
+
+// What the voice plays (audio_cat.c): an ADPCM voice by its coefficient table, any voice by the newest loaded or decoded
+// range holding its current wave buffer, else effects. Kept per voice until it moves to another buffer or table, so a
+// table lookup runs once per wave buffer, not once per frame. The counts feed category_report.
+static uint64_t cat_counts[4], cat_by_coef, cat_by_range, cat_ns;
+static int voice_category(ServerVoice *v) {
+    uint64_t addr = v->buffers[v->index].address, extra = v->in.extra_address;
+    if (v->cat && v->cat_address == addr && v->cat_extra == extra) return v->cat;
+    uint64_t t0 = kern_now_ns();
+    int cat = AUDIO_CAT_UNKNOWN;
+    if (v->in.sample_format == FMT_ADPCM) cat = audio_cat_lookup_coef(extra, v->in.extra_size);
+    if (cat != AUDIO_CAT_UNKNOWN) cat_by_coef++;
+    else if ((cat = audio_cat_lookup(addr)) != AUDIO_CAT_UNKNOWN) cat_by_range++;
+    else cat = AUDIO_CAT_SFX;
+    cat_counts[cat]++;
+    v->cat = (uint8_t)cat;
+    v->cat_address = addr;
+    v->cat_extra = extra;
+    cat_ns += kern_now_ns() - t0;
+    return cat;
+}
+
+// While a category volume is set, once a minute: how the wave buffers played were classified and what it cost.
+static void category_report(void) {
+    static uint64_t next;
+    uint64_t now = kern_now_ns();
+    if (!next) next = now + 60000000000ull;
+    if (now < next) return;
+    next = now + 60000000000ull;
+    uint64_t n = cat_counts[AUDIO_CAT_MUSIC] + cat_counts[AUDIO_CAT_SFX] + cat_counts[AUDIO_CAT_VOICE];
+    rt_log("audio: categories over the last minute: %llu wave buffers, music %llu, sfx %llu, voice %llu; by coefficients "
+           "%llu, by address %llu, unmatched (played as sfx) %llu; %.1f us classifying",
+           (unsigned long long)n, (unsigned long long)cat_counts[AUDIO_CAT_MUSIC],
+           (unsigned long long)cat_counts[AUDIO_CAT_SFX], (unsigned long long)cat_counts[AUDIO_CAT_VOICE],
+           (unsigned long long)cat_by_coef, (unsigned long long)cat_by_range,
+           (unsigned long long)(n - cat_by_coef - cat_by_range), cat_ns / 1000.0);
+    audio_cat_log_tables();
+    memset(cat_counts, 0, sizeof cat_counts);
+    cat_by_coef = cat_by_range = cat_ns = 0;
+}
+
 static unsigned audio_revision(const AudioRenderer *r) { unsigned byte = r->revision >> 24; return byte >= '0' ? byte - '0' : 0; }
 static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
     if (m->reported & (1u << bit)) return;
@@ -874,11 +871,13 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     if (at > m->nbuf) { rt_log("audio: mixes use %d buffers, renderer has %d", at, m->nbuf); rt_fatal("audio mix buffer layout"); }
 
     float (*vs)[MAX_FRAME]=m->voice_scratch,*filtered=m->filter_scratch;
+    const int by_category = audio_cat_active();   // the defaults (all 100) skip the category lookups
+    if (by_category) category_report();
     for (int i = 0; i < r->param.voice_count; i++) {
         ServerVoice *v = &r->voices[i];
         if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
         int cc = (int)v->in.channel_count; if (cc < 1 || cc > 6) { report_once(m, 2, "voice channel count unsupported", cc); continue; }
-        const float vvol = v->in.volume * voice_category_gain(v);
+        const float vvol = by_category ? v->in.volume * category_volume(voice_category(v)) : v->in.volume;
         voice_render(r, v, vs, frames);
         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
             const AudrenBiquad *b = &v->in.biquads[f];

@@ -165,7 +165,7 @@ static void ov_decode(Cpu *c) {
         rt_log("nn::codec: Opus final range %#x != stream %#x (logged once)", (unsigned)final, (unsigned)range);
     *consumed = 8 + n;
     *samples = got;
-    if (got > 0)
+    if (got > 0 && audio_cat_active())   // the PCM's sound category for the music / effects / voice volumes
         audio_cat_on_opus_decode(guest, (uint64_t)(uintptr_t)in, (uint64_t)(uintptr_t)out, (uint64_t)got * (uint64_t)channels * sizeof(int16_t));
     ret_x(c, 0);
 }
