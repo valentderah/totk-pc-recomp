@@ -387,6 +387,8 @@
 # Esc). 1: a gold arrowhead with a dark edge and a turquoise gem, drawn by the port at the window's DPI, instead of
 # the system arrow. 0 (the default) keeps the system arrow. Changes while the game runs.
 # pointer_image = 0
+# The ⊕ Import row in the Autobuild screen's own bottom guide bar. 0 leaves that screen exactly as the game draws it.
+# blueprint_hint = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
@@ -444,6 +446,12 @@
 # tex_heap_extra_mb = 0
 
 [files]
+# Folder the blueprint file dialog opens in. The port remembers the last folder a file was chosen from. Default: none
+# (the shell's last folder). Written by the game when a blueprint is imported.
+# blueprint_dir =
+# Zoom the blueprint preview was last left at, so the next preview opens at it. Written by the game. Default: none
+# (the preview opens framed to the whole build).
+# blueprint_zoom = 
 # Developer overlay: a folder with RomFS files and a manifest.tsv (tools/make_romfs_patches.py format). Players put
 # their mods into the mods folder instead ([mods]). Default: none.
 # romfs_mods =
