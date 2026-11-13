@@ -263,11 +263,12 @@ void mem_init(void) {
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
         .stack = {low + STACK_OFF, STACK_SIZE},
-        .heap = {low + HEAP_OFF, HEAP_CAP + res_tex_heap_extra_bytes()},
+        .heap = {low + HEAP_OFF, HEAP_CAP + res_tex_heap_extra_bytes() + res_grass_heap_extra_bytes()},
         .alias = {alias, ALIAS_SIZE},
         .kernel = {RT_KERNEL_BASE, RT_KERNEL_SIZE},
         .hostfn = {RT_HOSTFN_BASE, RT_HOSTFN_SIZE},
-        .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes() + res_tex_heap_extra_bytes(),
+        .pool = pool ? strtoull(pool, NULL, 0)
+                     : DEFAULT_POOL + res_heap_extra_bytes() + res_tex_heap_extra_bytes() + res_grass_heap_extra_bytes(),
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
 }

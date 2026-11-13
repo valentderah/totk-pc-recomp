@@ -9,6 +9,7 @@
 #include <opus/opus.h>
 
 #include "host.h"
+#include "audio_cat.h"
 #include "platform/platform.h"
 
 #define CODEC_R_INVALID 0x1fcd1u   // MacNativeGames' "invalid argument" result for nn::codec
@@ -153,6 +154,7 @@ static void ov_decode(Cpu *c) {
     int got = opus_decode(d->dec, in + 8, (opus_int32)n, out, (int)capacity, 0);
     opus_uint32 final = 0;
     if (got >= 0) opus_decoder_ctl(d->dec, OPUS_GET_FINAL_RANGE(&final));
+    int channels = d->channels;
     release(d);
     if (got < 0) {
         rt_log("nn::codec: opus_decode: %s", opus_strerror(got));
@@ -163,6 +165,8 @@ static void ov_decode(Cpu *c) {
         rt_log("nn::codec: Opus final range %#x != stream %#x (logged once)", (unsigned)final, (unsigned)range);
     *consumed = 8 + n;
     *samples = got;
+    if (got > 0 && audio_cat_active())   // the PCM's sound category for the music / effects / voice volumes
+        audio_cat_on_opus_decode(guest, (uint64_t)(uintptr_t)in, (uint64_t)(uintptr_t)out, (uint64_t)got * (uint64_t)channels * sizeof(int16_t));
     ret_x(c, 0);
 }
 

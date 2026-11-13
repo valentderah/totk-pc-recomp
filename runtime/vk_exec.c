@@ -528,13 +528,36 @@ static void tfr_note(const VkExecTarget *t, uint64_t stamp) {
     plat_mutex_lock(&tfr_lock);
     TargetFrames *e = tfr_find(t);
     if (!e) {
-        e = tfr_set(t);
+        // the way rendered longest ago, indexed from the set's start: the ways past the last set are RP's words
+        TargetFrames *s = tfr_set(t);
+        e = s;
         for (int i = 1; i < TFR_WAYS; i++)
-            if (e[i].last < e->last) e = &e[i];
+            if (s[i].last < e->last) e = &s[i];
         *e = (TargetFrames){t->image, t->level, t->base_layer, 0, 0};
     }
     if (e->last != stamp) e->prev = e->last, e->last = stamp;
     plat_mutex_unlock(&tfr_lock);
+}
+
+// --probe-vkexec: a new target noted into a full set takes the way rendered longest ago, and the set after it keeps
+// its entries. The ways are stamped so that a search stepping from the way it picked last would leave the set. 1 when
+// it holds; the two sets are cleared afterwards.
+int vk_exec_tfr_check(void) {
+    VkExecTarget t[TFR_WAYS + 1];
+    for (int n = 0, k = 1; n <= TFR_WAYS; k++) {
+        t[n] = (VkExecTarget){.image = (VkImage)(uintptr_t)k};
+        n += tfr_set(&t[n]) == tfr[0];
+    }
+    static const uint64_t last[TFR_WAYS] = {8, 7, 100, 6, 100, 100, 5, 100};
+    TargetFrames next[TFR_WAYS];
+    for (int i = 0; i < TFR_WAYS; i++) tfr[0][i] = (TargetFrames){t[i].image, 0, 0, last[i], 0};
+    memcpy(next, tfr[1], sizeof next);
+    tfr_note(&t[TFR_WAYS], 200);
+    plat_mutex_lock(&tfr_lock);
+    int ok = tfr_find(&t[TFR_WAYS]) == &tfr[0][6] && !memcmp(next, tfr[1], sizeof next);
+    plat_mutex_unlock(&tfr_lock);
+    memset(tfr, 0, sizeof tfr[0] * 2);
+    return ok;
 }
 
 static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {

@@ -11,7 +11,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
-               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
+               runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
@@ -168,10 +168,12 @@ def fetch(name):
 
 
 def unpack(name, member_filter=None):
-    """Extract a pinned archive into toolchain/release-work/<name> (once) and return that directory."""
+    """Extract a pinned archive into toolchain/release-work/<name> and return that directory. The stamp holds the pin's
+    sha256, so a bumped pin unpacks its new archive instead of reusing the old one's files."""
     dest = WORK / name
     stamp = dest / '.unpacked'
-    if stamp.is_file():
+    key = PINS[name][1]
+    if stamp.is_file() and stamp.read_text() == key:
         return dest
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -182,7 +184,7 @@ def unpack(name, member_filter=None):
     else:
         with tarfile.open(path) as t:
             t.extractall(dest, filter='data')
-    stamp.write_text('')
+    stamp.write_text(key)
     return dest
 
 
