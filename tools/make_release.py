@@ -11,7 +11,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
-               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
+               runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example

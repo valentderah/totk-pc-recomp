@@ -15,7 +15,7 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
-               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), totk.png (the window icon),
+               runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), totk.png (the window icon),
                deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
