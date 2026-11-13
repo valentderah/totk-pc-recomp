@@ -86,6 +86,7 @@ static void voice_reset(ServerVoice *v) {
     v->loops_done = 0;
     memset(&v->adpcm, 0, sizeof v->adpcm);
     memset(v->biquad_state, 0, sizeof v->biquad_state);
+    v->cat = 0;
 }
 
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
