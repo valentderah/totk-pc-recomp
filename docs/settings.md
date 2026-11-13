@@ -18,7 +18,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
-| `perf_window` (default `0`) | `1` opens a separate, non-activating performance window on Windows. | Live toggle; requests full hardware sampling and the existing GPU timestamp queries independently of `perf_overlay`. Closing the window writes this setting to 0. If an environment override keeps its effective value at 1, the window still stays closed for this process; remove the override to rearm off/on, or restart to open it again. Other platforms do not open a window or request additional sampling. | Caution |
+| `perf_window` (default `0`) | `1` opens a separate, non-activating performance window on Windows. | Live toggle; requests full hardware sampling and the existing GPU timestamp queries independently of `perf_overlay`. Closing the window writes this setting to 0. If an environment override keeps its effective value at 1, the window still stays closed for this process; remove the override to rearm off/on, or restart to open it again. Linux / 非 Windows 仅提供基础回退：不显示此菜单开关，已有配置仍可读取；不创建独立窗口、不追加采样、不改写配置。游戏内性能浮层继续使用原设置。 | Caution |
 
 ## Diagnostics and logging
 
