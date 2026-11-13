@@ -72,9 +72,6 @@ int vk_caps_gpl(const VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *f,
 void vk_caps_init(VkCtx *c);                          // after it: pretend limits, fallbacks, the boot report
 
 VkCtx *vk_ctx(void);                        // NULL until vk_init() succeeded
-// The device and allocator alone, for UI code that draws with Vulkan but must not include this header's replay macros.
-VkDevice vk_device(void);
-VmaAllocator vk_vma(void);
 int vk_init(void);                          // idempotent; 1 on success, 0 on failure (reason logged with rt_log)
 void vk_shutdown(void);
 int vk_selftest(void);                      // 0 on success

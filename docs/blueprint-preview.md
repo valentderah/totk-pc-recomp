@@ -290,3 +290,42 @@ runs is not yet right (see the table there).
 
 The material is not scaled to fit the weapon's geometry. Fitting one box onto another is a different operation, and it
 stretches the material; a material keeps the size section 10.3 gives it.
+
+## Verification of this half
+
+The fused placement cannot be asserted by a test - it needs a decoded model and the game's own attachment record - so it
+is logged instead. A preview of a build holding a fused part prints one line for each, on the first frames:
+
+```
+preview3d: fuse Item_Enemy_151 on Weapon_Spear_050: bone Bind_Z, scale 0.550, gap along x/y/z 0.000 0.039 0.000 m
+```
+
+`scale` is the fit factor the code computed for this pair, and `gap along x/y/z` is, per axis in the weapon's own model
+space, how far the material's box lies outside the weapon's - **zero when the two overlap as well as when they touch**,
+which is the weakness of this line: it cannot tell a material resting on the weapon from one buried in it. That is why
+the open question in section 10.3.1 is stated in terms of the material's measured span rather than from this line alone.
+
+The measured geometry, from section 10.3.1, for a spear's horn on `Weapon_Spear_050`: the horn spans z 1.285..2.662 under
+the current rule, against a weapon whose visible box ends at z 1.678, so roughly two thirds of it lies past the tip while
+the rest overlaps the shaft. **This is a measurement, not a passing check.** It is recorded here so the next person starts
+from the numbers rather than from a picture.
+
+### The bounds these readers hold
+
+A code review found nine places where one of these readers could read or write past a buffer, or produce a wrong value.
+They are recorded here because each one is a rule the code now follows, and a later change that drops it reintroduces the
+same defect. The five below belong to this half; the other four belong to the import and stay in
+`docs/blueprint-import.md`.
+
+- **A recursion needs a budget, not a range check.** `bfres.c` walks a bone's parent chain, and a skeleton whose parents
+  form a cycle (bone 0 names 1, bone 1 names 0) is in range and infinite. The walk is bounded by the bone count.
+  `model_romfs.c` walks BYML containers, and `byml_open` accepts a container entry that points at a node already on the
+  way down; that walk is bounded by depth 32.
+- **`memcmp` on a name is a fixed-size read.** `bfres_string` guarantees the bytes up to its NUL and nothing past it, so a
+  three-byte compare reads past a one- or two-character name. `strcmp` stops at the NUL.
+- **A uint16 index bounds the vertices it can address.** The preview's index buffer is uint16, so one part cannot exceed
+  65535 vertices; casting a larger base wraps it and draws between unrelated vertices.
+- **`alloca` in a loop is not freed per iteration.** One buffer sized for the largest shape, allocated once, is the same
+  code without the stack growth.
+- **A failure path owns what it created.** The preview's target creation has six failure returns after an image, view,
+  allocation or buffer was made; the pass is built once and never retried, so those are released on the way out.

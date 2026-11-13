@@ -352,9 +352,15 @@ New (across the PR's commits):
 | `runtime/blueprint_hint.h/.cpp` | the entry in the Autobuild screen's own guide bar: its button, the picker, the import, the row |
 | `runtime/blueprint_picker.c` | the picker's C logic: folder listing, path parts, rectangles, pointer/pad/wheel hit tests |
 | `runtime/ui/blueprint_picker.h/.cpp` | the picker's bridge and its draw layer (ImGui draw list only) |
+| `tests/blueprint_cai_main.c`, `tests/blueprint_cai_test.py` | the `.cai` reader: 26 checks over real and damaged blobs |
+| `tests/blueprint_txt_test.py` | the `.txt` container: 12 tests, including each malformed form |
+| `tests/blueprint_rotation_main.c`, `tests/blueprint_rotation_stubs.c`, `tests/blueprint_rotation_test.py` | the insert rule: 339 checks over 0, 1, 2, 3, 8 and 30 favourites and 40 successive imports |
+| `tests/picker_layout_main.c`, `tests/picker_layout_test.py` | the picker's layout and hit tests against the real `runtime/blueprint_picker.c`: 284 checks |
+| `tools/dump_ui_panes.py` | dumps a `.bflyt` pane tree, used to find the guide bar's row while writing the hint |
+| `docs/blueprint-import.md`, `docs/blueprint-preview.md` | this document, and the separate description of the 3D preview |
 
-The settings-menu **Blueprints tab** (`runtime/ui/blueprint_page.h/.cpp`) is **removed** by this PR: the Autobuild screen is
-the only entry point.
+The settings menu never carried a Blueprints tab upstream, so this change adds no tab and removes none: the Autobuild
+screen's guide bar is the only entry point.
 
 Modified:
 
@@ -367,9 +373,10 @@ Modified:
 | `runtime/input.c`, `input.h` | the hint's pad read, `menu_cursor_screen_open` / `menu_cursor_focus_is_tab`, and leaving the wheel to the picker |
 | `runtime/input_win.c` | wheel notches accumulated while the picker is open |
 | `runtime/menu_cursor.c` | `menu_cursor_screen_open` (whole-screen detection), `menu_cursor_focus_is_tab` (which control has the focus), and skipping the game's cursor for the picker |
-| `runtime/cfg.c` | `BLUEPRINT_HINT` and `BLUEPRINT_DIR` |
-| `runtime/gfx_present.c` | the overlay's prepare hook, which the preview needs and which is a no-op while none is built in |
-| `tools/build_game.py` | `libz.a` on the link line (the `.txt` reader), on both the MSVC-style and the llvm-mingw line, and `tools/make_release.py` now packages zlib for the installer's own link |
+| `runtime/cfg.c` | `BLUEPRINT_HINT` in `known[]`, `sections[]` and `metas[]`, and `BLUEPRINT_DIR` in `known[]` and `sections[]` |
+| `totk.ini.example`, `docs/settings.md` | the two blueprint settings, described where `tests/settings_doc_check.py` looks for them |
+| `tools/build_game.py` | `libz.a` on the link line (the `.txt` reader), on both the MSVC-style and the llvm-mingw line |
+| `tools/make_release.py` | zlib pinned and packaged into the release's `deps/`, so the installer's own link has `-l:libz.a` too |
 
 ## 9. Notes for whoever picks this up
 

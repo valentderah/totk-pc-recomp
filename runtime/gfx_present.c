@@ -1,4 +1,4 @@
-﻿// Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus: the window-system-free half of the window
+// Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus: the window-system-free half of the window
 // (the other half: gfx_window_win.c with Win32, gfx_window_sdl.c with SDL, through gfx_wsys.h).
 // Swapchain set-up ported from LAS Recomp, runtime/nvn/vulkan/device.c:254-330 (https://github.com/peiikai/LASRecomp @
 // da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai). Focus and vsync behaviour from
