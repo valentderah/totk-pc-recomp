@@ -195,7 +195,7 @@ PC_BINDS = {
 }
 # What a key shows: its letter, a symbol or a short name (key names as in totk.ini; the rest show their name).
 PC_LABELS = {
-    'lshift': '⇧', 'rshift': '⇧', 'lctrl': 'CTRL', 'rctrl': 'CTRL', 'lalt': 'ALT', 'tab': 'TAB',
+    'lshift': 'SHIFT', 'rshift': 'SHIFT', 'lctrl': 'CTRL', 'rctrl': 'CTRL', 'lalt': 'ALT', 'tab': 'TAB',
     'enter': 'ENT', 'backspace': 'BKSP', 'capslock': 'CAPS', 'insert': 'INS', 'delete': 'DEL', 'home': 'HOME',
     'end': 'END', 'pageup': 'PGUP', 'pagedown': 'PGDN', 'up': '↑', 'down': '↓', 'left': '←',
     'right': '→', 'num_add': '+', 'num_sub': '-', 'num_mul': '*', 'num_div': '/', 'num_decimal': '.',
@@ -283,6 +283,13 @@ def pc_icons(g, adv, binds=PC_BINDS):
             bx0, bx1, by0, by1 = x0 + w * 0.22, x1 - w * 0.22, y0 + h * 0.36, y0 + h * 0.60
             polygon(ReverseContourPen(pen), [(bx0, by0), (bx1, by0), (bx1, by1), (bx1 - t, by1), (bx1 - t, by0 + t),
                                              (bx0 + t, by0 + t), (bx0 + t, by1), (bx0, by1)])
+            return
+        if key in ('lshift', 'rshift'):   # a solid arrow and the name under it: the arrow alone read as a direction
+            cx, ab, at, hw, sw = (x0 + x1) / 2, y0 + h * 0.46, y0 + h * 0.86, w * 0.20, w * 0.09
+            neck = ab + h * 0.18
+            polygon(ReverseContourPen(pen), [(cx - sw, ab), (cx + sw, ab), (cx + sw, neck), (cx + hw, neck), (cx, at),
+                                             (cx - hw, neck), (cx - sw, neck)])
+            g.hole(pen, 'SHIFT', cx, y0 + h * 0.25, h * 0.21, w * 0.84)
             return
         label = PC_LABELS.get(key, key.upper())
         cap = h * (0.52 if len(label) == 1 else 0.36 if len(label) == 2 else 0.26)

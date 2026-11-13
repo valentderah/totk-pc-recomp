@@ -16,9 +16,69 @@ static VkCtx g_vk;
 static int g_ready;
 static PlatMutex g_lock = PLAT_MUTEX_INIT;
 
+// ---- GPU address map for device faults
+// VK_EXT_device_address_binding_report: the driver reports each bind and unbind of an object's GPU virtual range through
+// the debug messenger. The newest AB_N events stay in a ring written without a lock (one atomic add each), so a device
+// fault names the object behind its address and whether it was unbound before the fault, which is memory freed while
+// a submission still used it. One event per image, buffer or memory block made or freed, none per draw.
+// TOTK_ADDR_REPORT=0 turns it off.
+#define AB_N (1u << 15)
+typedef struct { uint64_t seq, base, size, handle, issued, done; int32_t type; uint32_t unbind; } AbEvent;
+static AbEvent *ab_ring;
+static uint64_t ab_head;
+static int ab_want;   // the instance has the messenger for it (create_instance)
+
+static void ab_record(const VkDebugUtilsMessengerCallbackDataEXT *d) {
+    const VkDeviceAddressBindingCallbackDataEXT *b = NULL;
+    for (const VkBaseInStructure *p = d->pNext; p; p = p->pNext)
+        if (p->sType == VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT) b = (const void *)p;
+    if (!b || !ab_ring) return;
+    uint64_t i = __atomic_fetch_add(&ab_head, 1, __ATOMIC_RELAXED);
+    AbEvent *e = &ab_ring[i & (AB_N - 1)];
+    __atomic_store_n(&e->seq, 0, __ATOMIC_RELAXED);
+    e->base = b->baseAddress, e->size = b->size;
+    e->handle = d->objectCount ? d->pObjects[0].objectHandle : 0;
+    e->type = d->objectCount ? (int32_t)d->pObjects[0].objectType : 0;
+    e->unbind = b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_UNBIND_EXT;
+    e->issued = vk_sync_issued(), e->done = vk_sync_fence_done();
+    __atomic_store_n(&e->seq, i + 1, __ATOMIC_RELEASE);
+}
+
+static const char *ab_type_name(int32_t t, char *buf, size_t n) {
+    switch (t) {
+    case VK_OBJECT_TYPE_IMAGE: return "image";
+    case VK_OBJECT_TYPE_BUFFER: return "buffer";
+    case VK_OBJECT_TYPE_DEVICE_MEMORY: return "memory";
+    default: snprintf(buf, n, "object type %d", (int)t); return buf;
+    }
+}
+
+// The newest events whose range meets the precision-aligned range around a fault address, newest first.
+static void ab_report(uint64_t addr, uint64_t precision) {
+    if (!ab_ring) return;
+    uint64_t lo = precision > 1 ? addr & ~(precision - 1) : addr, hi = lo + (precision > 1 ? precision : 1);
+    uint64_t head = __atomic_load_n(&ab_head, __ATOMIC_ACQUIRE), n = head < AB_N ? head : AB_N;
+    int found = 0;
+    for (uint64_t k = 1; k <= n && found < 6; k++) {
+        const AbEvent *e = &ab_ring[(head - k) & (AB_N - 1)];
+        if (__atomic_load_n(&e->seq, __ATOMIC_ACQUIRE) != head - k + 1) continue;
+        if (e->base >= hi || e->base + e->size <= lo) continue;
+        found++;
+        char tn[32];
+        rt_log("vk: fault address %#llx: %s %#llx [%#llx, +%#llx] %s %llu address events before the fault, "
+               "submitted %llu, done %llu", (unsigned long long)addr, ab_type_name(e->type, tn, sizeof tn),(unsigned long long)e->handle,
+               (unsigned long long)e->base, (unsigned long long)e->size, e->unbind ? "unbound" : "bound",
+               (unsigned long long)k, (unsigned long long)e->issued, (unsigned long long)e->done);
+    }
+    if (!found) rt_log("vk: fault address %#llx: no binding in the last %llu address events", (unsigned long long)addr,
+                       (unsigned long long)n);
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT *d, void *user) {
-    (void)type, (void)user;
+    (void)user;
+    if (type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) { ab_record(d); return VK_FALSE; }
+    if (sev < VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) return VK_FALSE;   // info, asked for the address events
     int err = (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
     if (err) plat_inc32(&g_vk.validation_errors);
     static volatile int32_t logged;
@@ -76,7 +136,10 @@ static int create_instance(void) {
         rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
-    if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    const char *ar = cfg_get("TOTK_ADDR_REPORT");
+    ab_want = !(ar && !strcmp(ar, "0")) && instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (ab_want && !ab_ring && !(ab_ring = calloc(AB_N, sizeof *ab_ring))) ab_want = 0;
+    if (validate || ab_want) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
     vk_dlaa_instance_exts(ext, &n_ext, 12);
@@ -89,16 +152,18 @@ static int create_instance(void) {
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.instance);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateInstance failed (%d); is a Vulkan 1.3 driver installed?", (int)r); return 0; }
     g_vk.validation = validate;
-    if (validate) {
+    if (validate || ab_want) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.instance, "vkCreateDebugUtilsMessengerEXT");
         VkDebugUtilsMessengerCreateInfoEXT mi = {
             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                               (ab_want ? VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT : 0),
+            .messageType = (validate ? VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT : 0) |
+                           (ab_want ? VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT : 0),
             .pfnUserCallback = debug_cb};
-        if (f) f(g_vk.instance, &mi, NULL, &g_vk.messenger);
+        if (!f || f(g_vk.instance, &mi, NULL, &g_vk.messenger) != VK_SUCCESS) ab_want = 0;
     }
     return 1;
 }
@@ -217,6 +282,7 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
 } FeatureChain;
 
 static int create_device(void) {
@@ -251,6 +317,13 @@ static int create_device(void) {
     // Ryujinx's SPIR-V declares fragment shader interlock whenever the host reports it (vk_pipeline.c spirv_fixup).
     OPTIONAL_EXT(has_fragment_shader_interlock, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, fsi,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT);
+    // The GPU address map for device faults (ab_record), with the messenger made for it
+    int has_abr = 0;
+    if (ab_want && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME)) {
+        has_abr = 1;
+        ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
+        CHAIN(abr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT);
+    }
     // Feedback loops (vk.h VkCtx.feedback): the layout, and barriers inside dynamic rendering
     int has_fbl = 0, has_lr = 0;
     if (has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
@@ -314,6 +387,10 @@ static int create_device(void) {
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
+    rt_log("vk: GPU address map for device faults: %s",
+           has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report; TOTK_ADDR_REPORT=0 turns it off)"
+           : !ab_want ? "off (TOTK_ADDR_REPORT=0 or no VK_EXT_debug_utils)"
+                      : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
@@ -352,8 +429,14 @@ static int create_device(void) {
     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
     vk_caps_init(&g_vk);
 
+    // Blocks of 64 MiB instead of VMA's 256 (TOTK_VMA_BLOCK_MIB, 0 = VMA's). Since the textures moved to their own pool
+    // (vk_memory.c vk_texture_image), the default device-local blocks hold mirrors and other buffers: on the RX 9070
+    // after 10 minutes in the field one 256 MiB block held 53 MiB of them, and the headroom thread kept half a block of
+    // each device-local type ahead (128 MiB each). Larger buffers than half a block get memory of their own.
+    g_vk.vma_block = (VkDeviceSize)cfg_int("TOTK_VMA_BLOCK_MIB") << 20;
+    if (!g_vk.vma_block) g_vk.vma_block = 256ull << 20;   // VMA_DEFAULT_LARGE_HEAP_BLOCK_SIZE
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3,
+                                 .vulkanApiVersion = VK_API_VERSION_1_3, .preferredLargeHeapBlockSize = g_vk.vma_block,
                                  .flags = (g_vk.has_buffer_device_address ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0) |
                                           (g_vk.has_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0),
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
@@ -376,6 +459,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_astc_release();
+    if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
@@ -397,7 +481,8 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_headroom_start(), vk_dlaa_init();
+        if (create_instance() && pick_device() && create_device())
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
         else destroy_all();
     }
     int ok = g_ready;
@@ -437,6 +522,7 @@ void vk_device_fault_report(VkResult r) {
     done = 1;
     vk_crumbs_report();
     vk_pass_marks_report();
+    vk_mem_fault_log();
     VkCtx *c = vk_ctx();
     PFN_vkGetDeviceFaultInfoEXT get =
         c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")
@@ -461,9 +547,11 @@ void vk_device_fault_report(VkResult r) {
         rt_log("vk: device fault: \"%s\" (%u address infos, %u vendor infos, vendor binary %llu bytes)", info.description,
                n.addressInfoCount, n.vendorInfoCount, (unsigned long long)binary);
         // The faulting access lies in the precision-aligned range around the reported address.
-        for (uint32_t i = 0; i < n.addressInfoCount; i++)
+        for (uint32_t i = 0; i < n.addressInfoCount; i++) {
             rt_log("vk: device fault address %u: %s at %#llx, precision %#llx", i, fault_address_type(ai[i].addressType),
                    (unsigned long long)ai[i].reportedAddress, (unsigned long long)ai[i].addressPrecision);
+            ab_report(ai[i].reportedAddress, ai[i].addressPrecision);
+        }
         for (uint32_t i = 0; i < n.vendorInfoCount; i++)
             rt_log("vk: device fault vendor info %u: \"%s\" code %#llx data %#llx", i, vi[i].description,
                    (unsigned long long)vi[i].vendorFaultCode, (unsigned long long)vi[i].vendorFaultData);

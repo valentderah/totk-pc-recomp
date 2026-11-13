@@ -14,10 +14,11 @@
 // 64-bit word, +40 the renderer (1.2.1) or display configuration (1.4.3) the patched code stores there.
 // +56 the camera's aspect ratio as a float when the output is not 16:9 (set aspect), +60 the field-of-view factor
 // (set fov, res_fov_live).
-// 1.4.3 scales the scene it reads by output width / 1920 (a 2560x1440 output renders its 1600x900 scene at 2128x1200;
-// MacNativeGames measured the same), so its page holds the wanted size divided by that factor and the game's 5/6 needs
-// no scene patch. 1.2.1 renders the size it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and
-// the scene set is on whenever the output differs from 1920x1080.
+// 1.4.3 scales the scene it reads by canvas width / the console mode's base width, 1920 docked and 1280 handheld (a
+// 2560x1440 output renders its 1600x900 scene at 2128x1200 docked; MacNativeGames measured the same), so its page holds
+// the wanted size divided by that factor (scene_scale) and the game's 5/6 needs no scene patch. 1.2.1 renders the size
+// it reads (1600x900 on a 2560x1440 output): its page holds the wanted size, and the scene set is on whenever the
+// output differs from 1920x1080.
 //
 // Heap: agl's DynamicTextureAllocator is one fixed heap, "DynamicTextureAllocatorMem" in
 // System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs (113664 KiB, carved from "Graphics", 201728 KiB). At 2560x1440
@@ -40,6 +41,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "mods.h"
+#include "ov.h"
 #include "platform/platform.h"
 
 #define BASE_W 1920
@@ -48,7 +50,9 @@
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
 #define TEX_HEAP_KIB 506880u // TextureHeap, shipped (1.2.1 and 1.4.3): what a mod's own HeapDef is measured against
-#define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SCENE_MAX 8192       // per side
+#define SCENE_KEEP 4096      // per side: the heap bound shrinks no scene below this (scene_for)
+#define DTA_MAX_KIB 2031616u // DynamicTextureAllocatorMem grown at most to 1984 MiB, under 2 GiB (decide)
 #define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
 static struct {
@@ -91,12 +95,25 @@ static int dlss_dll(void) {
 #endif
 }
 
-// The scene size for a share k of the output, within SCENE_MAX per side.
-static void scene_for(double k, unsigned *w, unsigned *h) {
+static uint64_t shadow_kib(void);
+
+// The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
+// holds next to the output and the shadow map (res_heap_extra_kib's growth). 1.2.1 already misplaced textures in a
+// pool past 2 GiB, where a signed 32-bit offset turns negative (recomp/patches-v121.txt, set pooloff); larger heaps
+// have not been run. The heap bound never takes the scene below 4096 a side, the size earlier builds gave: an output
+// near 8K grows the heap past 2 GiB for its own targets, and its scene stays what it was. Needs R.shadow. 1 when the
+// scene was made smaller than k asks.
+static int scene_for(double k, unsigned *w, unsigned *h) {
     double sw = R.ow * k, sh = R.oh * k;
     double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
+    double keep = fmin(1.0, fmin(SCENE_KEEP / sw, SCENE_KEEP / sh));
+    double room = (double)(DTA_MAX_KIB - shadow_kib()) / DTA_KIB - 1.0 -
+                  fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0);
+    double most = (1.0 + fmax(0.0, room)) * SCENE_W * SCENE_H;   // scene pixels that fit
+    if (sw * sh * fit * fit > most) fit = fmax(keep, sqrt(most / (sw * sh)));
     *w = (unsigned)(sw * fit + 0.5);
     *h = (unsigned)(sh * fit + 0.5);
+    return fit < 1.0;
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
@@ -168,6 +185,12 @@ static void decide(void) {
             rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; game", s);
         }
     }
+    const char *sr = cfg_value("TOTK_SHADOW_RES");
+    if (strcmp(sr, "game")) {
+        unsigned n = (unsigned)atoi(sr);
+        if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
+        else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
+    }
     // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
@@ -178,16 +201,14 @@ static void decide(void) {
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
     double sk = R.dlss_k ? R.dlss_k : k;
-    if (R.live || R.dlss_k || R.ow * sk > SCENE_MAX || R.oh * sk > SCENE_MAX) R.scene_set = 1;
-    scene_for(sk, &R.sw, &R.sh);
+    if (R.live || R.dlss_k) R.scene_set = 1;
+    if (scene_for(sk, &R.sw, &R.sh)) {
+        R.scene_set = 1;
+        rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB "
+               "past 4096 a side); %ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
+    }
     if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
     else R.hw = R.sw, R.hh = R.sh;
-    const char *sr = cfg_value("TOTK_SHADOW_RES");
-    if (strcmp(sr, "game")) {
-        unsigned n = (unsigned)atoi(sr);
-        if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
-        else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
-    }
 }
 
 // Texture heap for a sun shadow map above the base size: the four layers of 2 bytes, three maps in flight (the engine
@@ -207,6 +228,17 @@ uint64_t res_heap_extra_kib(void) {
                   fmax(0.0, (double)R.hw * R.hh / (SCENE_W * SCENE_H) - 1.0);
     uint64_t kib = grow > 0 ? (uint64_t)ceil(DTA_KIB * (1.0 + grow) / 1024.0) * 1024 - DTA_KIB : 0;
     return kib + ((shadow_kib() + 1023) & ~1023ull);   // whole MiB
+}
+
+// 1.4.3's factor between the scene size it reads from the page and the one it renders. The game's scene setter
+// (main+0x585e48 and the code before it) multiplies the page's size by the canvas width (display configuration +0x10)
+// over the current console mode's base width (+0xf4 of the mode's entry, mode 1 handheld: main+0x2dac1c stores
+// GetOperationMode != 1 at +0x546). The base is 1280 handheld and 1920 docked. The canvas is the output whenever the
+// scene patch is on: docked the game's own canvas is 1920, handheld res_init switches the output patch on (a 1280 base
+// with the game's 1280x720 handheld canvas would render R.ow / 1280 times the scene). 1.2.1 renders the size it reads.
+static double scene_scale(void) {
+    if (!RT_V143) return 1.0;
+    return (double)R.ow / (ov_handheld() ? 1280 : BASE_W);
 }
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
@@ -485,15 +517,20 @@ void res_init(void) {
         return;
     }
     uint8_t *page = rt_patch_page();
-    double k = RT_V143 ? (double)R.ow / BASE_W : 1.0;   // 1.4.3's own scaling of the scene with the output width
+    double k = scene_scale();
     int scene_on = R.scene_set || (!RT_V143 && (R.ow != BASE_W || R.oh != BASE_H));
+    // Handheld, 1.4.3 draws a 1280x720 canvas unless the output patch is on, whatever the output setting (measured: a
+    // 1920x1080 output with the patch off composed the frame at 1280x720 and only the swapchain was 1920x1080). With
+    // the scene patch on the output patch is switched on too, so the canvas is the output size that scene_scale and
+    // the heap size (res_heap_extra_kib) assume.
+    int output_on = R.ow != BASE_W || R.oh != BASE_H || (RT_V143 && scene_on && ov_handheld());
     float sc[2] = {(float)(R.sw / k), (float)(R.sh / k)};
     uint64_t out = pack(R.ow, R.oh), none = 0;
     memcpy(page + 16, sc, sizeof sc);
     memcpy(page + 32, &out, 8);
     memcpy(page + 40, &none, 8);
     memcpy(page + 48, &out, 8);
-    rt_patch_switch(output, R.ow != BASE_W || R.oh != BASE_H);
+    rt_patch_switch(output, output_on);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
@@ -562,6 +599,29 @@ void res_fov_live(void) {
     rt_log("resolution: field of view %d%% of the game's", pct);
 }
 
+// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and patches-v143.txt,
+// set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90 or 80 %) mostly
+// from a fixed cost model made for the Switch: one term grows with the object counts, one with (scene width / 1600)
+// squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers that prediction when the
+// GPU is slower than the model says, which a PC GPU never is, so the model alone decides. Measured on 1.2.1: a
+// 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
+// 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
+// stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+void res_dynres_live(void) {
+    static int set = -2, shown = -1;
+    if (set == -2) set = rt_patch_set("fixres");
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
+    if (dyn == shown) return;
+    shown = dyn;
+    if (set < 0) {
+        if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
+        return;
+    }
+    rt_patch_switch(set, !dyn);
+    rt_log("resolution: dynamic resolution %s",
+           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+}
+
 void res_wanted(unsigned out[2]) {
     decide();
     out[0] = R.ow, out[1] = R.oh;
@@ -614,7 +674,7 @@ int res_dlss_mode(const char *m) {
     unsigned w, h;
     scene_for(k ? k : R.base_k, &w, &h);
     if (w == R.sw && h == R.sh) return 0;
-    double s = RT_V143 ? (double)R.ow / BASE_W : 1.0;
+    double s = scene_scale();
     float sc[2] = {(float)(w / s), (float)(h / s)};
     memcpy((uint8_t *)rt_patch_page() + 16, sc, sizeof sc);
     R.sw = w, R.sh = h;

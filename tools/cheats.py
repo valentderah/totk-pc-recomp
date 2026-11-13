@@ -134,6 +134,9 @@ def ops(words):
         else:
             t = (w >> 24) & 0xFF if t == 0xC else (w >> 20) & 0xFFF
             n = 1
+            if t == 0xC0:   # C0TcSX..: an address word for operand types 0 and 2, the value (two at width 8) for 4
+                x = (w >> 8) & 0xF
+                n = 2 if x in (0, 2) else (3 if (w >> 20) & 0xF == 8 else 2) if x == 4 else 1
         if i + n > len(words):
             raise ValueError(f'opcode {w:08X} is cut short')
         out.append((t, words[i:i + n]))
@@ -141,7 +144,7 @@ def ops(words):
     return out
 
 
-VM_TYPES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA}
+VM_TYPES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA, 0xC0, 0xC1, 0xC2, 0xC3}
 
 
 def vm_ok(o):
@@ -151,9 +154,11 @@ def vm_ok(o):
         return f'opcode {w[0]:08X} is not supported'
     if t == 5 and (w[0] >> 12) & 0xF > 1:
         return f'opcode {w[0]:08X} (load from a register offset) is not supported'
-    if t == 0xA and (w[0] >> 8) & 0xF > 5:
+    if t in (0xA, 0xC0) and (w[0] >> 8) & 0xF > 5:
         return f'opcode {w[0]:08X} is not supported'
     if t in (0, 1, 5, 6, 7, 9, 0xA) and (w[0] >> 24) & 0xF not in (1, 2, 4, 8):
+        return f'opcode {w[0]:08X} has a bad width'
+    if t == 0xC0 and (w[0] >> 20) & 0xF not in (1, 2, 4, 8):
         return f'opcode {w[0]:08X} has a bad width'
     return None
 

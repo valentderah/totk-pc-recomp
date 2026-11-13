@@ -56,7 +56,7 @@ static VkQueryPool ts_pool;
 static int ts_state;                       // 0 not set up, 1 on, -1 off
 static double ts_period;                   // ns per tick
 static uint64_t ts_mask;                   // valid bits of a timestamp
-static uint32_t ts_next;                   // submitting thread (sub_lock): next pair
+static uint32_t ts_next;                   // next pair (atomic: parts recorded on other threads take pairs too)
 static volatile uint8_t ts_busy[TS_PAIRS]; // written until the completion thread read the pair
 static int ts_cur = -1;                    // the pair of the part being recorded, -1 untimed
 static uint64_t ts_last_end;               // completion thread: end of the latest part read (ticks)
@@ -175,6 +175,12 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
     free(t);
 }
 
+static int ts_take(void) {
+    uint32_t p = __atomic_fetch_add(&ts_next, 1, __ATOMIC_RELAXED) % TS_PAIRS;
+    if (__atomic_exchange_n(&ts_busy[p], 1, __ATOMIC_ACQUIRE)) { plat_inc64(&ts_missed); return -1; }
+    return (int)p;
+}
+
 // At the start of a command buffer (sub_lock held): the pair it times, -1 untimed.
 static int ts_open(VkCommandBuffer cb) {
     if (ts_state != 1 || !perf_gpu_timing()) {
@@ -182,10 +188,9 @@ static int ts_open(VkCommandBuffer cb) {
         ts_setup(vk_ctx());   // the overlay turned full: timestamps from now on
         if (ts_state != 1) return -1;
     }
-    uint32_t p = ts_next % TS_PAIRS;
-    if (__atomic_load_n(&ts_busy[p], __ATOMIC_ACQUIRE)) { plat_inc64(&ts_missed); return -1; }
-    ts_next++;
-    ts_busy[p] = 1;
+    int t = ts_take();
+    if (t < 0) return -1;
+    uint32_t p = (uint32_t)t;
     vkCmdResetQueryPool(cb, ts_pool, 2 * p, 2);
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, ts_pool, 2 * p);
     return (int)p;
@@ -202,6 +207,17 @@ static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence) {
     t->pair = (uint32_t)pair;
     vk_completion_add(fence, ts_read_cb, t);
 }
+
+int vk_sync_ts_open(VkCommandBuffer cb) {
+    if (__atomic_load_n(&ts_state, __ATOMIC_ACQUIRE) != 1 || !perf_gpu_timing()) return -1;
+    int p = ts_take();
+    if (p < 0) return -1;
+    vkCmdResetQueryPool(cb, ts_pool, 2 * (uint32_t)p, 2);
+    vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, ts_pool, 2 * (uint32_t)p);
+    return p;
+}
+
+void vk_sync_ts_close(VkCommandBuffer cb, int pair, uint64_t fence) { ts_close(cb, pair, fence); }
 
 // The pair of the part being recorded.
 static void ts_begin(VkCommandBuffer cb) { ts_cur = ts_open(cb); }
@@ -309,7 +325,7 @@ void vk_sync_start(void) {
         if (reserved < now) reserved = now;
         stop = 0;
         plat_mutex_unlock(&st_lock);
-        vk_mem_note_submit(now);
+        vk_mem_note_fence(now);
         completion_thread = plat_thread_new(completion_main, c, "vk completion");
         if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
@@ -349,17 +365,50 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // submitted right before the part that needs them and timed like a part; VK_NULL_HANDLE when there are none. After the
 // part was recorded, sub_lock held; may move slots[].
 // First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
-static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
-    vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
-    if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
+// direct: the calling thread records, ends and submits it itself while the part being replayed stays the recorder's
+// (vk_sync_part, which the caller made the recorder idle for).
+static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
+    // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
+    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    vk_mem_shadow_sync(fence);
+    if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
-    rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
+    if (direct) {
+        VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        vkBeginCommandBuffer(cb, &bi);
+    } else {
+        rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
+    }
     int pair = ts_open(cb);
+    vk_mem_shadow_prologue(cb, fence);   // before the mirror copies, which read the shadow these bring up to date
     vk_mem_mirror_prologue(cb);
     ts_close(cb, pair, fence);
-    if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
+    if (direct || !rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
     return cb;
+}
+
+// A chunk of a chunked replay (vk_exec.c chunks_submit), while the submission's own part is open on the recorder. The
+// recorder begins, records, ends and submits the parts it owns (vk_rec.c rec_end_cb), so the prologue stays off it:
+// the recorder is made idle first, as the part pool allows one thread at a time, and the prologue is recorded, ended
+// and submitted here without taking the recorder's part away.
+void vk_sync_part(VkCommandBuffer cb) {
+    VkCtx *c = vk_ctx();
+    vk_upload_flush(0);
+    rec_drain();
+    VkCommandBuffer pro = prologue(c, cur_fence, 1);
+    VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
+                                        {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
+                        .pCommandBufferInfos = pro ? cbi : cbi + 1};
+    vk_queue_lock();
+    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock();
+    if (r != VK_SUCCESS) {
+        vk_device_fault_report(r);
+        rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
+    }
 }
 
 VkCommandBuffer vk_sync_split(void) {
@@ -368,7 +417,7 @@ VkCommandBuffer vk_sync_split(void) {
     ts_end(cb, cur_fence);
     if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);   // every command of the part is in cb, ended by its recorder
     vk_upload_flush(0);   // the uploads this part asked for precede it in queue order
-    VkCommandBuffer pro = prologue(c, cur_fence);
+    VkCommandBuffer pro = prologue(c, cur_fence, 0);
     VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
@@ -379,7 +428,6 @@ VkCommandBuffer vk_sync_split(void) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
     }
-    vk_mem_note_submit(cur_fence);   // objects destroyed from here on may be in use by the part just submitted
     CmdSlot *s = take_slot(c, cur_fence);   // the submitted part keeps its slot until the value is reached
     rec_begin(s->cb, cur_fence, VK_CRUMB_SUBMIT, cur_fence);
     ts_begin(s->cb);
@@ -404,6 +452,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
+    // Before the first object is resolved: what any thread destroys from here on waits for this value (vk_memory.c
+    // defer), since the recording may already name it.
+    vk_mem_note_fence(fence);
     CmdSlot *s = take_slot(c, fence);
     uint64_t t0 = perf_begin();
     rec_begin(s->cb, fence, VK_CRUMB_SUBMIT, fence);   // begun by the recorder when it records the part
@@ -417,7 +468,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     perf_replay(t0);
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     vk_upload_flush(0);
-    VkCommandBuffer pro = prologue(c, fence);
+    VkCommandBuffer pro = prologue(c, fence, 0);
     s = &slots[cur_slot];
     VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
@@ -434,7 +485,6 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
     }
     s->fence = recorded ? fence : 0;
-    vk_mem_note_submit(fence);
     plat_mutex_lock(&st_lock);
     __atomic_store_n(&issued, fence, __ATOMIC_RELEASE);
     plat_cond_broadcast(&cv_work);
@@ -445,8 +495,11 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     return fence;
 }
 
-void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
-    plat_mutex_lock(&st_lock);
+static _Thread_local VkDeferred *deferred;
+
+void vk_completion_defer(VkDeferred *d) { deferred = d; }
+
+static void queue_put(uint64_t fence, void (*fn)(void *), void *arg) {   // st_lock held
     if (qhead + qn == qcap) {
         if (qhead) {
             memmove(queue, queue + qhead, sizeof *queue * (size_t)qn);
@@ -462,7 +515,32 @@ void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
     // The completion thread sleeps only while nothing is issued beyond done: a callback for a later value (the replay's,
     // for the submission it records: counter reports, freed resources) becomes due through the submit, which wakes it.
     if (fence <= done) plat_cond_broadcast(&cv_work);
+}
+
+void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
+    VkDeferred *d = deferred;
+    if (d) {
+        if (d->n == d->cap) {
+            d->cap = d->cap ? d->cap * 2 : 64;
+            d->items = realloc(d->items, sizeof(Pending) * (size_t)d->cap);
+            if (!d->items) rt_fatal("vk: out of memory (completion queue)");
+        }
+        ((Pending *)d->items)[d->n++] = (Pending){fence, fn, arg};
+        return;
+    }
+    plat_mutex_lock(&st_lock);
+    queue_put(fence, fn, arg);
     plat_mutex_unlock(&st_lock);
+}
+
+void vk_completion_flush(VkDeferred *d) {
+    plat_mutex_lock(&st_lock);
+    for (int i = 0; i < d->n; i++) {
+        const Pending *p = &((Pending *)d->items)[i];
+        queue_put(p->fence, p->fn, p->arg);
+    }
+    plat_mutex_unlock(&st_lock);
+    d->n = 0;
 }
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns);

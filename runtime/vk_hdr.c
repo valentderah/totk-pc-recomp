@@ -243,7 +243,9 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
 int vk_hdr_track;                 // vk_exec_draw.c calls vk_hdr_draw: set at the first present with TOTK_HDR=1
 static volatile int32_t g_active;   // the swapchain is HDR10 (gfx_present.c vk_hdr_set_active)
 static PlatMutex rec_lock = PLAT_MUTEX_INIT;
-static struct { VkImage win, src; VkFormat fmt; } recs[4];   // per presented window image: what the last draw copied
+// Per presented window image: what the last draw in replay order copied, and where that draw is. Chunks of a replay
+// record at once, so a draw of an earlier chunk can get here after one of a later chunk.
+static struct { VkImage win, src; VkFormat fmt; uint64_t fence; uint32_t pos; } recs[4];
 static int nrecs;
 
 void vk_hdr_set_active(int on) { plat_xchg32(&g_active, on); }
@@ -272,12 +274,13 @@ void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info) {
     }
     if (ntex == 1 && slot >= 0 && slot < 128 && ex->tex[1][slot]) {
         const VkTexImage *s = vk_texture_by_id(NVN_HANDLE_TEX(ex->tex[1][slot]), NULL, NULL);
-        if (s && is_float(s->format) && s->width == t->width && s->height == t->height && s->samples == 1)
+        if (s && !s->gone && is_float(s->format) && s->width == t->width && s->height == t->height && s->samples == 1)
             src = s->image, fmt = s->format;
     }
     plat_mutex_lock(&rec_lock);
     for (int i = 0; i < nrecs; i++)
-        if (recs[i].win == t->image) recs[i].src = src, recs[i].fmt = fmt;
+        if (recs[i].win == t->image && (ex->fence > recs[i].fence || (ex->fence == recs[i].fence && ex->pos >= recs[i].pos)))
+            recs[i].src = src, recs[i].fmt = fmt, recs[i].fence = ex->fence, recs[i].pos = ex->pos;
     plat_mutex_unlock(&rec_lock);
 }
 
