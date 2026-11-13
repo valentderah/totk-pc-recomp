@@ -187,8 +187,10 @@ LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-li
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
-# functions sit on it). mouse_direct.c also registers host callbacks relative to that version's patch page.
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c'}
+# functions sit on it). mouse_direct.c and ov_ability.c also register host callbacks relative to that version's patch
+# page. A library source that includes one of PER_VERSION_HEADERS stops the library build (library_sources).
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c'}
+PER_VERSION_HEADERS = ('"patches.h"', '"romfs_config.h"')
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
@@ -324,6 +326,19 @@ def runtime_sources(skip=()):
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
+def library_sources(sources):
+    """The runtime sources of libtotkrt.a: all but INSTALL_SIDE. The library is built once per release from one game
+    version's generated headers, so a source that includes a per-version header there bakes that version's addresses
+    into every install: a host function on the 1.2.1 patch page lies inside 1.4.3's sdk and the game stops at start."""
+    lib = [p for p in sources if p.name not in INSTALL_SIDE]
+    baked = [p.name for p in lib if p.suffix in ('.c', '.cpp')
+             and any(h in p.read_text(encoding='utf-8', errors='replace') for h in PER_VERSION_HEADERS)]
+    if baked:
+        sys.exit(f'build_game: library sources with a per-version header ({", ".join(PER_VERSION_HEADERS)}): {", ".join(baked)}; '
+                 'add them to INSTALL_SIDE')
+    return lib
+
+
 def install_stamp(out, runtime_lib):
     """Write obj/runtime/inputs.sha256, one hash over the runtime library, the INSTALL_SIDE sources and every runtime
     header, and return its path. The release zip dates every file 1980-01-01 (make_release.py write_zip), so a new
@@ -451,7 +466,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     rt = []
     sources = runtime_sources(skip)
     if make_lib:
-        sources = [p for p in sources if p.name not in INSTALL_SIDE]
+        sources = library_sources(sources)
     elif runtime_lib:
         sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
     else:
