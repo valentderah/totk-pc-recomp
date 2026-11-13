@@ -52,7 +52,7 @@ static UiWindow *panel_test_open(const char *title,int w,int h,int hz,UiWindowDr
 }
 int panel_test_save(void) { saves++; return 1; }
 // This probe has no RomFS overlays; cfg.c must not infer shaped PC prompts from user assets.
-// 本探针不读取 RomFS，所有形状提示包均视为不可用。
+// This probe reads no RomFS assets and reports every shaped prompt pack as unavailable.
 int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { (void)folder; (void)w; (void)h; return 0; }
 int input_overlay_state(InputOverlayState *s) {
     plat_mutex_lock(&fixture_lock); *s = fixture; plat_mutex_unlock(&fixture_lock); return s->connected;

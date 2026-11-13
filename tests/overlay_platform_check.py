@@ -1,4 +1,4 @@
-"""检查独立窗口的平台菜单开关和兼容配置，无需游戏或图形环境。"""
+"""Check platform-specific panel toggles and compatible settings without game files or graphics."""
 import argparse
 from pathlib import Path
 import re
@@ -30,7 +30,7 @@ def main():
     for key in keys:
         assert '"' + key + '"' in known
         assert re.search(r'\{"' + key + r'", "0", "0\|1", LIVE\}', cfg)
-    print('PASS: Windows 显示窗口开关；非 Windows 隐藏窗口开关但保留游戏内浮层及兼容配置')
+    print('PASS: panel toggles are visible on Windows and hidden elsewhere; the in-game overlay and compatible settings remain available')
 
 
 if __name__ == '__main__':
