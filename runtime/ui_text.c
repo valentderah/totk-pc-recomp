@@ -1,4 +1,4 @@
-// Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
+﻿// Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
 // The software keyboard has every language; the menu has English, Russian, Brazilian Portuguese and Simplified
 // Chinese.
@@ -565,7 +565,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
     [UI_MENU_BLUEPRINT_PICK] = "Import a blueprint",
-    [UI_MENU_BLUEPRINT_NONE] = "none",
     [UI_MENU_BLUEPRINT_HINT] = "Import",
     [UI_MENU_BLUEPRINT_UP] = "Up one folder",
     [UI_MENU_BLUEPRINT_CANCEL] = "Cancel",
@@ -579,8 +578,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Cannot import:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Choose",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Cancel",
-    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Page",
-    [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Scroll",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1118,7 +1115,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
     [UI_MENU_BLUEPRINT_PICK] = "Импорт чертежа",
-    [UI_MENU_BLUEPRINT_NONE] = "нет",
     [UI_MENU_BLUEPRINT_HINT] = "Импорт",
     [UI_MENU_BLUEPRINT_UP] = "На папку выше",
     [UI_MENU_BLUEPRINT_CANCEL] = "Отмена",
@@ -1132,8 +1128,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Не удалось:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Выбрать",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Отмена",
-    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Страница",
-    [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Прокрутка",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1704,7 +1698,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
     [UI_MENU_BLUEPRINT_PICK] = "Importar um projeto",
-    [UI_MENU_BLUEPRINT_NONE] = "nenhum",
     [UI_MENU_BLUEPRINT_HINT] = "Importar",
     [UI_MENU_BLUEPRINT_UP] = "Subir uma pasta",
     [UI_MENU_BLUEPRINT_CANCEL] = "Cancelar",
@@ -1718,8 +1711,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "Falha ao importar:",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "Escolher",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "Cancelar",
-    [UI_MENU_BLUEPRINT_KEY_PAGE] = "Página",
-    [UI_MENU_BLUEPRINT_KEY_SCROLL] = "Rolar",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2375,7 +2366,6 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
     [UI_MENU_BLUEPRINT_PICK] = "导入蓝图",
-    [UI_MENU_BLUEPRINT_NONE] = "无",
     [UI_MENU_BLUEPRINT_HINT] = "导入",
     [UI_MENU_BLUEPRINT_UP] = "上一级文件夹",
     [UI_MENU_BLUEPRINT_CANCEL] = "取消",
@@ -2389,8 +2379,6 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_BLUEPRINT_FAILED] = "导入失败：",
     [UI_MENU_BLUEPRINT_KEY_OPEN] = "确认",
     [UI_MENU_BLUEPRINT_KEY_CANCEL] = "取消",
-    [UI_MENU_BLUEPRINT_KEY_PAGE] = "翻页",
-    [UI_MENU_BLUEPRINT_KEY_SCROLL] = "滚动",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

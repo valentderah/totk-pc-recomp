@@ -96,6 +96,8 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
+    'zlib': (MSYS2 + 'mingw-w64-ucrt-x86_64-zlib-1.3.2-3-any.pkg.tar.zst',   # static libz.a (the .txt blueprint reader)
+             '130e6ef04c654fc2150a177600aa5ed0035087665a893479d2c85ba7485d5704'),
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
@@ -351,6 +353,10 @@ def build_deps(out):
     for name in ('zstd.h', 'zstd_errors.h'):
         shutil.copy2(zstd / 'include' / name, d / 'include')
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
+    # zlib: the .txt blueprint reader inflates a gzip stream (runtime/blueprint_inflate.c), so the link needs libz
+    zlib = unpack('zlib') / 'ucrt64'
+    shutil.copy2(zlib / 'include' / 'zlib.h', d / 'include')
+    shutil.copy2(zlib / 'lib' / 'libz.a', d / 'lib')
 
 
 def collect_licenses(out):
@@ -363,6 +369,7 @@ def collect_licenses(out):
         (unpack('vma') / 'ucrt64' / 'share' / 'licenses' / 'VulkanMemoryAllocator' / 'LICENSE', 'vulkan-memory-allocator-LICENSE.txt'),
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
+        (unpack('zlib') / 'ucrt64' / 'share' / 'licenses' / 'zlib' / 'LICENSE', 'zlib-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),

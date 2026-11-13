@@ -1,4 +1,4 @@
-// The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
+﻿// The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
 // end on our device and the menu's pages. Free of any window system (menu.h). ImGui runs on the present path only,
 // under gfx_present.c's present lock; the event functions only queue.
 //
@@ -50,7 +50,6 @@ extern "C" {
 #include "platform/platform.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
-#include "ui/preview3d.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -411,9 +410,6 @@ static int fonts_up(float scale) {
     for (uint8_t *d : data) free(d);
     rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
     g_font_scale = ok ? scale : 0;
-    // The blueprint preview's offscreen targets and pipeline need the device and the ImGui backend's descriptor pool, so
-    // this is the first moment they can be made. A failure is not fatal: the picker then draws through the draw list.
-    if (ok) preview3d_init();
     return ok;
 }
 
@@ -1756,11 +1752,6 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     return ImGui::GetDrawData()->TotalVtxCount > 0;
 }
 
-extern "C" void menu_overlay_prepare(VkCommandBuffer cb) {
-    // The blueprint preview renders into its own image here, before the overlay's render pass begins: it needs a pass of
-    // its own, and passes cannot be nested. A no-op on frames where nothing changed.
-    preview3d_record(cb);
-}
 
 extern "C" void menu_overlay_draw(VkCommandBuffer cb) {
     uint64_t t0 = plat_now_ns();

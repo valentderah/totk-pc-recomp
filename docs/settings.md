@@ -221,10 +221,4 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
 | `report_guard` (default `1`) | Patch set on 1.4.3 only: in the model scene's report loop (main+0xa22d8, main+0xa2310) an object whose report handle is negative or whose row index is 0x8000 or more gets coverage 0 for that frame and its handle reset, the path the game takes after every read, instead of reading past the report rows. On valid rows the game's code runs unchanged. | `0` runs the game's code as shipped: a bad row index reads far past the rows and crashes, the class Weeping of the Empire met while using Ultrahand and aiming. | Risky |
 
-## Blueprint preview
-
-Written by the game itself; a player has no reason to set these by hand.
-
-| Setting | What it does | Effect of changing it | Safety |
-| --- | --- | --- | --- |
-| `blueprint_zoom` | The zoom the blueprint preview was last left at, so the next preview opens at it. | The next preview opens at the value written here. | Safe |
+| `blueprint_dir` | The folder the blueprint picker opens in. The port remembers the last folder a file was chosen from. | The next picker opens there. | Safe |

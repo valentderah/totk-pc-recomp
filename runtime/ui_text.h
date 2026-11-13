@@ -269,7 +269,7 @@ typedef enum {
     UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
     // The blueprint import has no tab of its own: it is reached from the Autobuild screen's own guide bar, and the file
     // is chosen in the port's own picker (ui/blueprint_picker.cpp). These are what that picker shows.
-    UI_MENU_BLUEPRINT_PICK, UI_MENU_BLUEPRINT_NONE,
+    UI_MENU_BLUEPRINT_PICK,
     // the entry in the Autobuild screen's own bottom guide bar (runtime/blueprint_hint.cpp): one word next to the button
     UI_MENU_BLUEPRINT_HINT,
     // the port's own file picker (ui/blueprint_picker.cpp): no Windows dialog. COUNT carries one %d (the entry count).
@@ -277,9 +277,8 @@ typedef enum {
     UI_MENU_BLUEPRINT_EMPTY, UI_MENU_BLUEPRINT_COUNT, UI_MENU_BLUEPRINT_THIS_PC,
     UI_MENU_BLUEPRINT_PARTS, UI_MENU_BLUEPRINT_INVALID,
     UI_MENU_BLUEPRINT_IMPORTED, UI_MENU_BLUEPRINT_FAILED,
-    UI_MENU_BLUEPRINT_KEY_OPEN, UI_MENU_BLUEPRINT_KEY_CANCEL, UI_MENU_BLUEPRINT_KEY_PAGE,
-    UI_MENU_BLUEPRINT_KEY_SCROLL,
-    UI_MENU_LAST_ID = UI_MENU_BLUEPRINT_KEY_SCROLL,
+    UI_MENU_BLUEPRINT_KEY_OPEN, UI_MENU_BLUEPRINT_KEY_CANCEL,
+    UI_MENU_LAST_ID = UI_MENU_BLUEPRINT_KEY_CANCEL,
     UI_TEXT_COUNT
 } UiTextId;
 

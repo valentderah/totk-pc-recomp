@@ -1,4 +1,4 @@
-// Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus: the window-system-free half of the window
+﻿// Vulkan surface and swapchain, present blit, 60 Hz vsync thread, focus: the window-system-free half of the window
 // (the other half: gfx_window_win.c with Win32, gfx_window_sdl.c with SDL, through gfx_wsys.h).
 // Swapchain set-up ported from LAS Recomp, runtime/nvn/vulkan/device.c:254-330 (https://github.com/peiikai/LASRecomp @
 // da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai). Focus and vsync behaviour from
@@ -896,9 +896,6 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImageView menu_view = overlay && g_sc_hdr ? vk_hdr_ui_target(cb, g_sc_ext.width, g_sc_ext.height) : VK_NULL_HANDLE;
     if (overlay && g_sc_hdr && !menu_view) overlay = 0;
     if (overlay) {
-        // The overlay's own passes (the preview's image first) go before this pass: a render pass cannot start inside
-        // another one, so anything with a pass of its own has to be recorded here.
-        menu_overlay_prepare(cb);
         sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, last_stage, last_write,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
