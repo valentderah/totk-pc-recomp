@@ -1090,9 +1090,19 @@ static int scene_color(VkFormat f) {
 // then a half-size scene colour target and its mips, and only then the light target with the scene depth. Level 1 of
 // those mips is a quarter of the scene's width; taken for the bloom it ended the scene before anything was armed, DLSS
 // skipped those frames, and the picture flickered between anti-aliased frames and plain ones as the view changed.
+// The pass also has the scene's shape (resolution.c's scene size, within 5 %) and no depth. In rain by a waterfall the
+// game drew two transparents into the light target with the scene depth before its sky lookups (25x25 and 256x256
+// RGBA16F) and its quarter-size particles (960x540 RGBA16F with a depth of their own), which then ended the armed
+// scene: DLSS ran before the mist and most transparents, which were drawn over its picture unprocessed, on runs of
+// frames, and the mist in the distance darkened or brightened for a frame wherever a frame in between came out whole.
 static int bloom_start(const VkExec *ex, uint32_t scene_w) {
     const VkExecTarget *c = &ex->color[0];
-    return ex->pass_w && ex->pass_w * 4 <= scene_w && c->image && scene_color(c->format) && !c->level;
+    if (!ex->pass_w || ex->pass_w * 4 > scene_w || !c->image || !scene_color(c->format) || c->level || ex->depth.image)
+        return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)ex->pass_w * s[1], b = (uint64_t)ex->pass_h * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
