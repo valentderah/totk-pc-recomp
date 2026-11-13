@@ -34,6 +34,7 @@
 
 #include <SDL3/SDL_clipboard.h>
 
+#include "cfg.h"
 #include "platform.h"
 
 // The write-watch ABI of Linux 6.7 (uapi linux/fs.h and linux/userfaultfd.h), for headers older than it: the release
@@ -1255,7 +1256,135 @@ const char *plat_user_locale(void) {
     return tag;
 }
 
-// Noto CJK as the common distributions and SteamOS install it; one collection covers every CJK language.
+// A CJK font for the menu: the file that draws this language on this system.
+//
+// The languages the catalog has (ja, ko, zh-Hans, zh-Hant) are not covered by the font built into the menu, so their
+// glyphs are merged in from a system file. Distributions disagree on where Noto CJK lives, and a sandboxed build
+// (Flatpak, Snap, an AppImage on a host whose fonts are mounted at /run/host/fonts) may have no Noto CJK where the
+// fixed paths expect it while the host still has CJK fonts that would do. So ask fontconfig first: it is the database
+// Tk/Xft and every other Linux toolkit reads, it knows /app/share/fonts, the XDG data dirs, /run/host/fonts and the
+// per-user dirs, and adding a font there is enough -- the menu does not need to learn about it. The fixed
+// distribution paths stay as the fallback for a system without fontconfig, and TOTK_MENU_FONT overrides both.
+//
+// fontconfig is loaded with dlopen rather than linked, so a host without libfontconfig (a bare container) still builds
+// and runs and just takes the fallback. The runtime already links -ldl for the NVIDIA libraries.
+
+static int cjk_lang(const char *lang) {
+    return !strcmp(lang, "ja") || !strcmp(lang, "ko") || !strcmp(lang, "zh-Hans") || !strcmp(lang, "zh-Hant");
+}
+
+// The fontconfig language tag of a catalog language. GL says zh-Hans/zh-Hant, but fontconfig and OpenType name the
+// faces zh-cn/zh-tw (Noto Sans CJK SC is lang=zh-cn), and a pattern naming only zh-hans does not reach it.
+static const char *cjk_lang_tag(const char *lang) {
+    if (!strcmp(lang, "ja")) return "ja";
+    if (!strcmp(lang, "ko")) return "ko";
+    if (!strcmp(lang, "zh-Hans")) return "zh-cn";
+    return "zh-tw";
+}
+
+// The handful of fontconfig calls used here (2.0 ABI, unchanged since). Loaded once, kept for the process: the menu
+// rebuilds its atlas when the window height changes and must not dlopen on every rebuild.
+typedef struct _FcPattern FcPattern;
+typedef struct _FcCharSet FcCharSet;
+typedef struct _FcConfig FcConfig;
+
+typedef struct {
+    int state;   // 0 untried, 1 usable, -1 no fontconfig on this system
+    FcPattern *(*NameParse)(const unsigned char *);
+    void (*PatternDestroy)(FcPattern *);
+    int (*PatternAddCharSet)(FcPattern *, const char *, const FcCharSet *);
+    int (*PatternGetString)(const FcPattern *, const char *, int, unsigned char **);
+    FcCharSet *(*CharSetCreate)(void);
+    int (*CharSetAddChar)(FcCharSet *, unsigned int);
+    void (*CharSetDestroy)(FcCharSet *);
+    FcPattern *(*FontMatch)(FcConfig *, FcPattern *, int *);   // 3 args: (config, pattern, FcResult *)
+    int (*PatternGetCharSet)(const FcPattern *, const char *, int, FcCharSet **);
+    int (*CharSetHasChar)(const FcCharSet *, unsigned int);
+    FcConfig *(*ConfigGetCurrent)(void);
+    int (*Init)(void);
+} Fc;
+
+static Fc fc;
+
+static int fc_load(void) {
+    if (fc.state) return fc.state > 0;
+    void *lib = plat_lib_open("libfontconfig.so.1");
+    if (!lib) lib = plat_lib_open("libfontconfig.so");
+    if (!lib) { fc.state = -1; return 0; }
+    fc.NameParse = (FcPattern *(*)(const unsigned char *))plat_lib_sym(lib, "FcNameParse");
+    fc.PatternDestroy = (void (*)(FcPattern *))plat_lib_sym(lib, "FcPatternDestroy");
+    fc.PatternAddCharSet = (int (*)(FcPattern *, const char *, const FcCharSet *))plat_lib_sym(lib, "FcPatternAddCharSet");
+    fc.PatternGetString = (int (*)(const FcPattern *, const char *, int, unsigned char **))plat_lib_sym(lib, "FcPatternGetString");
+    fc.CharSetCreate = (FcCharSet *(*)(void))plat_lib_sym(lib, "FcCharSetCreate");
+    fc.CharSetAddChar = (int (*)(FcCharSet *, unsigned int))plat_lib_sym(lib, "FcCharSetAddChar");
+    fc.CharSetDestroy = (void (*)(FcCharSet *))plat_lib_sym(lib, "FcCharSetDestroy");
+    fc.FontMatch = (FcPattern *(*)(FcConfig *, FcPattern *, int *))plat_lib_sym(lib, "FcFontMatch");
+    fc.PatternGetCharSet = (int (*)(const FcPattern *, const char *, int, FcCharSet **))plat_lib_sym(lib, "FcPatternGetCharSet");
+    fc.CharSetHasChar = (int (*)(const FcCharSet *, unsigned int))plat_lib_sym(lib, "FcCharSetHasChar");
+    fc.ConfigGetCurrent = (FcConfig *(*)(void))plat_lib_sym(lib, "FcConfigGetCurrent");
+    fc.Init = (int (*)(void))plat_lib_sym(lib, "FcInit");
+    if (!fc.NameParse || !fc.PatternDestroy || !fc.PatternAddCharSet || !fc.PatternGetString || !fc.CharSetCreate ||
+        !fc.CharSetAddChar || !fc.CharSetDestroy || !fc.FontMatch || !fc.ConfigGetCurrent ||
+        !fc.PatternGetCharSet || !fc.CharSetHasChar) {
+        fc.state = -1;
+        return 0;
+    }
+    // FcInit loads the configuration and the font set; FcConfigGetCurrent is NULL before it, and FcFontMatch asserts
+    // on a NULL config. Idempotent, so the second call of a rebuild costs a flag check.
+    if (fc.Init) fc.Init();
+    if (!fc.ConfigGetCurrent()) {
+        fc.state = -1;
+        return 0;
+    }
+    fc.state = 1;
+    return 1;
+}
+
+// The file fontconfig picks for this language, or 0. Asks for the generic CJK-capable family with the language set and
+// one representative character of that language in the charset, so a Latin-only or Japanese face cannot win by default.
+static int fc_font_for(const char *lang, char *out, size_t cap) {
+    static const struct { const char *lang; unsigned int cp; } probe[] = {
+        {"ja", 0x65E5},        // 日
+        {"ko", 0xD55C},        // 한
+        {"zh-Hans", 0x8BBE},   // 设
+        {"zh-Hant", 0x8A2D},   // 設
+    };
+    unsigned int cp = 0;
+    for (size_t i = 0; i < sizeof probe / sizeof *probe; i++)
+        if (!strcmp(probe[i].lang, lang)) cp = probe[i].cp;
+    if (!cp || !fc_load()) return 0;
+    char query[64];
+    snprintf(query, sizeof query, "sans-serif:lang=%s", cjk_lang_tag(lang));
+    FcPattern *pat = fc.NameParse((const unsigned char *)query);
+    if (!pat) return 0;
+    FcCharSet *cs = fc.CharSetCreate();
+    int ok = 0;
+    if (cs) {
+        fc.CharSetAddChar(cs, cp);
+        if (fc.PatternAddCharSet(pat, "charset", cs)) {
+            int result = 0;   // FcResult; FcFontMatch asserts when this pointer is NULL
+            FcPattern *m = fc.FontMatch(fc.ConfigGetCurrent(), pat, &result);
+            unsigned char *file = NULL;
+            if (m) {
+                // fontconfig returns the closest pattern even when nothing covers the character, so check the charset
+                // before trusting it: without this a Latin-only system hands back DejaVu Sans and the menu merges no
+                // glyphs while believing it did.
+                FcCharSet *got = NULL;
+                if (result == 0 /* FcResultMatch */ &&
+                    fc.PatternGetCharSet(m, "charset", 0, &got) == 0 && got && fc.CharSetHasChar(got, cp) &&
+                    fc.PatternGetString(m, "file", 0, &file) == 0 && file)
+                    ok = snprintf(out, cap, "%s", (const char *)file) < (int)cap;
+                fc.PatternDestroy(m);
+            }
+        }
+        fc.CharSetDestroy(cs);
+    }
+    fc.PatternDestroy(pat);
+    return ok;
+}
+
+// See platform.h. TOTK_MENU_FONT names a file to use for every CJK language; then fontconfig; then the fixed paths,
+// which are the normal layout on SteamOS and the distributions that predate fontconfig's own lookup.
 int plat_font_path(const char *lang, char *out, size_t cap) {
     static const char *files[] = {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -1264,7 +1393,14 @@ int plat_font_path(const char *lang, char *out, size_t cap) {
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     };
-    if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
+    if (!cjk_lang(lang)) return 0;
+    char override[PATH_MAX];
+    if (plat_getenv("TOTK_MENU_FONT", override, sizeof override) && plat_file_exists(override))
+        return snprintf(out, cap, "%s", override) < (int)cap;
+    // menu_font_fontconfig=0 skips the fontconfig lookup and keeps the five fixed paths, for a player whose fontconfig
+    // resolves to a face the font parser cannot read. Read through cfg_bool like every other switch, so totk.ini and
+    // the TOTK_ variable both work and the menu can grey it out.
+    if (cfg_bool("TOTK_MENU_FONT_FONTCONFIG") && fc_font_for(lang, out, cap) && plat_file_exists(out)) return 1;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
         if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
     return 0;

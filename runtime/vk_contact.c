@@ -163,7 +163,10 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
     VkImageView out = vk_exec_target_view(j->scene.img, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_IMAGE_VIEW_TYPE_2D,
                                           VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
     if (!in || !out) return;
-    vk_exec_pass_end(ex);
+    // A full barrier that also takes the images in the feedback layout back to GENERAL (vk_exec.c barrier_to): the
+    // G-buffer's linear depth and scene colour are such images once a draw sampled them in their own pass, and the march
+    // binds them in GENERAL. A memory barrier alone left them in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT.
+    vk_exec_barrier(ex);
     VkCommandBuffer cb = ex->cb;
     float pcv[16];
     memcpy(pcv, j->pc, sizeof pcv);
@@ -173,7 +176,6 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
         rt_log("vk: contact shadows on a %ux%u scene, sun toward %.3f %.3f %.3f (view space), far %g", j->scene.width, j->scene.height,
                pcv[4], pcv[5], pcv[6], pcv[2]);
     }
-    mem_barrier(cb);   // the compose passes' writes, before the march reads and writes them
     VkDescriptorImageInfo ii = {C.sampler, in, VK_IMAGE_LAYOUT_GENERAL}, oi = {VK_NULL_HANDLE, out, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w[2] = {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,

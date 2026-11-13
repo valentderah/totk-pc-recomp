@@ -368,8 +368,10 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // direct: the calling thread records, ends and submits it itself while the part being replayed stays the recorder's
 // (vk_sync_part, which the caller made the recorder idle for).
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
-    vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
-    if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
+    // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
+    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    vk_mem_shadow_sync(fence);
+    if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
     VkCommandBuffer cb = slots[i].cb;
     if (direct) {
@@ -380,6 +382,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
         rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     }
     int pair = ts_open(cb);
+    vk_mem_shadow_prologue(cb, fence);   // before the mirror copies, which read the shadow these bring up to date
     vk_mem_mirror_prologue(cb);
     ts_close(cb, pair, fence);
     if (direct || !rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
@@ -471,12 +474,20 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
                                  .value = fence, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkLatencySubmissionPresentIdNV lsid = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+        .pNext = NULL,
+        .presentID = vk_reflex_submit_id()
+    };
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .pNext = (c->has_nv_reflex) ? &lsid : NULL,
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
+    if (recorded && c->has_nv_reflex) vk_reflex_marker(2, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
     VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
+    if (recorded && c->has_nv_reflex) vk_reflex_marker(3, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);

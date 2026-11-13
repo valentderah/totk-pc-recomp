@@ -168,10 +168,12 @@ def fetch(name):
 
 
 def unpack(name, member_filter=None):
-    """Extract a pinned archive into toolchain/release-work/<name> (once) and return that directory."""
+    """Extract a pinned archive into toolchain/release-work/<name> and return that directory. The stamp holds the pin's
+    sha256, so a bumped pin unpacks its new archive instead of reusing the old one's files."""
     dest = WORK / name
     stamp = dest / '.unpacked'
-    if stamp.is_file():
+    key = PINS[name][1]
+    if stamp.is_file() and stamp.read_text() == key:
         return dest
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -182,7 +184,7 @@ def unpack(name, member_filter=None):
     else:
         with tarfile.open(path) as t:
             t.extractall(dest, filter='data')
-    stamp.write_text('')
+    stamp.write_text(key)
     return dest
 
 
@@ -392,7 +394,7 @@ def profiles():
     tree = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:recomp'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', 'recomp'], capture_output=True,
                            text=True).stdout.strip()
-    retrain = 'build without a profile; retrain (docs/building.md, "Profile-guided build")'
+    retrain = 'build without a profile; retrain (docs/pgo.md)'
     found = {}
     for p in sorted(PGO_DIR.glob('pgo-*.profdata')):
         rec = p.with_suffix('.json')

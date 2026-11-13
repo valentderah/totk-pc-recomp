@@ -242,6 +242,8 @@ unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+static void reflex_apply_locked(void);
+
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
@@ -250,13 +252,190 @@ static void window_settings_live(void) {
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
+    res_dynres_live();
     const char *e = cfg_value("TOTK_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started) gfx_window_apply_settings();
+    reflex_apply_locked();
     started = 1;
+}
+
+// ---- NVIDIA Reflex Low Latency (VK_NV_low_latency2)
+static PFN_vkSetLatencySleepModeNV g_reflex_set_mode;
+static PFN_vkLatencySleepNV g_reflex_sleep;
+static PFN_vkSetLatencyMarkerNV g_reflex_marker;
+static VkSemaphore g_reflex_sem;
+static uint64_t g_reflex_val;
+// Present IDs (VK_KHR_present_id, VK_NV_low_latency2): each frame gets its ID once, when the game acquires its window
+// texture (SIMULATION_START, vk_reflex_frame_begin), and the frame carries it to its input sample, its submissions
+// (vk_reflex_submit_id: the game thread's current frame, or the frame a replay or present thread set for the work it
+// does) and its present (PresentJob.pid, vk_reflex_present_frame, flip_locked), so the driver can match every marker
+// of a frame to the present of that frame.
+static uint64_t g_reflex_frame_next;            // the last ID handed out
+static uint64_t g_reflex_frame;                 // the frame the game simulates now
+static _Thread_local uint64_t t_reflex_submit;  // the frame whose work this thread submits; 0: g_reflex_frame
+static uint64_t g_blit_pid, g_flip_pid;         // the frame of the blit being made and of the present waiting (g_pl)
+static uint64_t g_last_pid;                     // the last present ID presented (g_pl): present IDs only go up
+static int g_reflex_mode = -1;   // 0=off, 1=on, 2=boost
+static uint32_t g_reflex_min_us = 1;
+
+static int reflex_mode_from_cfg(void) {
+    const char *v = cfg_value("TOTK_REFLEX");
+    if (!v || !strcmp(v, "off") || !strcmp(v, "0")) return 0;
+    if (!strcmp(v, "boost") || !strcmp(v, "2")) return 2;
+    return 1;
+}
+
+static void reflex_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_sc) return;
+    if (!g_reflex_set_mode) {
+        g_reflex_set_mode = (PFN_vkSetLatencySleepModeNV)vkGetDeviceProcAddr(c->device, "vkSetLatencySleepModeNV");
+        g_reflex_sleep = (PFN_vkLatencySleepNV)vkGetDeviceProcAddr(c->device, "vkLatencySleepNV");
+        g_reflex_marker = (PFN_vkSetLatencyMarkerNV)vkGetDeviceProcAddr(c->device, "vkSetLatencyMarkerNV");
+    }
+    if (!g_reflex_set_mode) return;
+    if (!g_reflex_sem) {
+        VkSemaphoreTypeCreateInfo ti = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+            .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+            .initialValue = 0
+        };
+        VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &ti};
+        if (vkCreateSemaphore(c->device, &si, NULL, &g_reflex_sem) != VK_SUCCESS) return;
+    }
+    int mode = reflex_mode_from_cfg();
+    uint32_t min_us = 0;
+    int limit = cfg_int("TOTK_FPS_LIMIT");
+    if (limit > 0) min_us = (uint32_t)(1000000 / limit);
+    if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
+    g_reflex_mode = mode;
+    g_reflex_min_us = min_us;
+    VkLatencySleepModeInfoNV mi = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
+        .lowLatencyMode = mode > 0 ? VK_TRUE : VK_FALSE,
+        .lowLatencyBoost = mode == 2 ? VK_TRUE : VK_FALSE,
+        .minimumIntervalUs = min_us
+    };
+    VkResult r = g_reflex_set_mode(c->device, g_sc, &mi);
+    rt_log("REFLEX: NVIDIA Reflex Low Latency -> %s (minInterval=%u us, VK_NV_low_latency2=%s)",
+           mode == 2 ? "ON + BOOST" : mode == 1 ? "ON" : "OFF", min_us, r == VK_SUCCESS ? "OK" : "ERR");
+}
+
+int vk_has_reflex(void) {
+    VkCtx *c = vk_ctx();
+    return c && c->has_nv_reflex;
+}
+
+// TOTK_TRACE=perf, every LAT_EVERY presents: the time from a frame's start (its window texture acquired) to its
+// present call on the host, with Reflex off or on, and with Reflex on the driver's own reports of the same frames
+// (vkGetLatencyTimingsNV): how many came back with every marker matched to their present, and their simulation start
+// to GPU render end. The frame's start is kept by its ID, so it also shows that a present carries its frame's ID.
+#define LAT_RING 64
+#define LAT_EVERY 600
+static struct { uint64_t id, start_ns; } g_lat_start[LAT_RING];
+static struct { uint64_t n, ns, presents; } g_lat;
+static PFN_vkGetLatencyTimingsNV g_reflex_timings;
+
+uint64_t vk_reflex_frame_begin(void) {
+    uint64_t id = __atomic_add_fetch(&g_reflex_frame_next, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_reflex_frame, id, __ATOMIC_RELAXED);
+    if (rt_trace & RT_TRACE_PERF) g_lat_start[id % LAT_RING].start_ns = kern_now_ns(), g_lat_start[id % LAT_RING].id = id;
+    return id;
+}
+
+// g_pl held, after the present of frame pid
+static void latency_note(VkCtx *c, uint64_t pid) {
+    if (!(rt_trace & RT_TRACE_PERF) || !pid) return;
+    if (g_lat_start[pid % LAT_RING].id == pid) g_lat.n++, g_lat.ns += kern_now_ns() - g_lat_start[pid % LAT_RING].start_ns;
+    if (++g_lat.presents % LAT_EVERY) return;
+    char drv[200] = "";
+    if (g_reflex_mode > 0 && g_sc) {
+        if (!g_reflex_timings) g_reflex_timings = (PFN_vkGetLatencyTimingsNV)vkGetDeviceProcAddr(c->device, "vkGetLatencyTimingsNV");
+        static VkLatencyTimingsFrameReportNV rep[64];
+        VkGetLatencyMarkerInfoNV gi = {.sType = VK_STRUCTURE_TYPE_GET_LATENCY_MARKER_INFO_NV};
+        if (g_reflex_timings) {
+            g_reflex_timings(c->device, g_sc, &gi);   // the count first
+            if (gi.timingCount > 64) gi.timingCount = 64;
+            for (uint32_t i = 0; i < gi.timingCount; i++)
+                rep[i] = (VkLatencyTimingsFrameReportNV){.sType = VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV};
+            gi.pTimings = rep;
+            if (gi.timingCount) g_reflex_timings(c->device, g_sc, &gi);
+            uint32_t full = 0;
+            double sum = 0;
+            for (uint32_t i = 0; i < gi.timingCount; i++) {
+                const VkLatencyTimingsFrameReportNV *r = &rep[i];
+                if (r->simStartTimeUs && r->simEndTimeUs && r->renderSubmitStartTimeUs && r->presentStartTimeUs &&
+                    r->gpuRenderEndTimeUs > r->simStartTimeUs)
+                    full++, sum += (double)(r->gpuRenderEndTimeUs - r->simStartTimeUs);
+            }
+            snprintf(drv, sizeof drv, "; driver reports: %u of %u frames with every marker, simulation start to GPU render "
+                     "end %.2f ms", full, gi.timingCount, full ? sum / full / 1000.0 : 0.0);
+        }
+    }
+    rt_log("reflex: frame start to present %.2f ms over %llu frames (reflex %s)%s", g_lat.n ? g_lat.ns / 1e6 / g_lat.n : 0.0,
+           (unsigned long long)g_lat.n, g_reflex_mode == 2 ? "boost" : g_reflex_mode == 1 ? "on" : "off", drv);
+    g_lat.n = g_lat.ns = 0;
+}
+
+uint64_t vk_reflex_frame(void) { return __atomic_load_n(&g_reflex_frame, __ATOMIC_RELAXED); }
+
+void vk_reflex_submit_frame(uint64_t id) { t_reflex_submit = id; }
+
+uint64_t vk_reflex_submit_id(void) { return t_reflex_submit ? t_reflex_submit : vk_reflex_frame(); }
+
+// The present thread, before the blit of frame id: the present of that blit carries id.
+void vk_reflex_present_frame(uint64_t id) {
+    // g_blit_pid feeds flip_locked's VkPresentIdKHR (Reflex) and latency_note (TOTK_TRACE=perf); with neither, the
+    // present skips the lock
+    if (!vk_has_reflex() && !(rt_trace & RT_TRACE_PERF)) return;
+    plat_rmutex_lock(&g_pl);
+    g_blit_pid = id;
+    plat_rmutex_unlock(&g_pl);
+}
+
+void vk_reflex_marker(int marker, uint64_t pid) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_marker || g_reflex_mode <= 0 || !g_sc || !pid) return;
+    plat_rmutex_lock(&g_pl);
+    if (g_sc && g_reflex_marker) {
+        VkSetLatencyMarkerInfoNV mi = {
+            .sType = VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV,
+            .presentID = pid,
+            .marker = (VkLatencyMarkerNV)marker
+        };
+        g_reflex_marker(c->device, g_sc, &mi);
+    }
+    plat_rmutex_unlock(&g_pl);
+}
+
+void vk_reflex_sleep(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_sleep || !g_reflex_sem || g_reflex_mode <= 0 || !g_sc) return;
+    uint64_t val = __atomic_add_fetch(&g_reflex_val, 1, __ATOMIC_RELAXED);
+    VkLatencySleepInfoNV si = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
+        .signalSemaphore = g_reflex_sem,
+        .value = val
+    };
+    // vkLatencySleepNV uses the swapchain, which Vulkan wants externally synchronised with the acquire and the present
+    // (they run under g_pl on the present thread). The wait for the semaphore stays outside the lock.
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    plat_rmutex_lock(&g_pl);
+    if (g_sc) r = g_reflex_sleep(c->device, g_sc, &si);
+    plat_rmutex_unlock(&g_pl);
+    if (r == VK_SUCCESS) {
+        VkSemaphoreWaitInfo wi = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+            .semaphoreCount = 1,
+            .pSemaphores = &g_reflex_sem,
+            .pValues = &val
+        };
+        vkWaitSemaphores(c->device, &wi, 100000000ULL);
+    }
 }
 
 // ---- swapchain
@@ -291,12 +470,29 @@ static void flip_locked(void) {
     if (!g_flip_on) return;
     g_flip_on = 0;
     if (!g_sc) return;
-    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
+    VkCtx *c = vk_ctx();
+    uint64_t pid = 0;
+    VkPresentIdKHR pid_info = {0};
+    if (c && c->has_nv_reflex) {
+        // The frame's own ID; a present without one (a probe, a skipped frame's neighbour) takes the next free value,
+        // as present IDs must grow on a swapchain
+        pid = g_flip_pid > g_last_pid ? g_flip_pid : g_last_pid + 1;
+        g_last_pid = pid;
+        pid_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+        pid_info.swapchainCount = 1;
+        pid_info.pPresentIds = &pid;
+        vk_reflex_marker(4, pid);   // VK_LATENCY_MARKER_PRESENT_START_NV
+    }
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                           .pNext = (c && c->has_nv_reflex) ? &pid_info : NULL,
+                           .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
-    VkResult r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
+    VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
     vk_queue_unlock();
+    if (c && c->has_nv_reflex) vk_reflex_marker(5, pid);   // VK_LATENCY_MARKER_PRESENT_END_NV
+    if (c) latency_note(c, pid ? pid : g_flip_pid);
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
 }
@@ -340,8 +536,14 @@ static int build_swapchain(void) {
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     VkSwapchainKHR old = g_sc;
+    VkSwapchainLatencyCreateInfoNV sci = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV,
+        .latencyModeEnable = VK_TRUE
+    };
     VkSwapchainCreateInfoKHR ci = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext = (c->has_nv_reflex) ? &sci : NULL,
+        .surface = g_surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // every surface supports it (the menu overlay draws into it)
@@ -378,6 +580,10 @@ static int build_swapchain(void) {
     }
     free_capture();
     vk_queue_unlock();
+    // The Reflex sleep mode belongs to the swapchain: a new one (resize, fullscreen, out of date) starts with low
+    // latency off, so the mode is set on it again even though the setting did not change.
+    g_reflex_mode = -1;
+    reflex_apply_locked();
     return 1;
 }
 
@@ -749,6 +955,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (r == VK_SUCCESS) {
         g_flip_on = 1;
         g_flip_idx = idx;
+        g_flip_pid = g_blit_pid;   // the frame this blit shows (vk_reflex_present_frame)
         if (!defer) flip_locked();
     } else {
         vk_device_fault_report(r);
@@ -803,6 +1010,11 @@ void gfx_window_release_vk(void) {
         vk_color_release();
         vk_hdr_release();
         vk_contact_release();
+        if (g_reflex_sem) {
+            vkDestroySemaphore(c->device, g_reflex_sem, NULL);
+            g_reflex_sem = VK_NULL_HANDLE;
+        }
+        g_reflex_mode = -1;
         free_capture();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {

@@ -497,42 +497,84 @@ static void free_views(void *arg) {   // completion thread, once the submission 
 // The presented frame (gfx_counters.frames + 1; 0: never) each target subresource was last rendered into, and the one
 // before. prepare_draw lets a draw into a target the previous frame did not render (a one-shot draw: a volume or LUT
 // generated once) wait for its shaders and pipeline instead of skipping it. Per subresource, not per image: a volume
-// may be generated a few slices per frame. Direct-mapped: a slot another subresource took reads as not rendered, so a
-// collision makes a draw wait rather than skip.
+// may be generated a few slices per frame. TFR_WAYS-way sets: a new subresource takes the way rendered longest ago, so
+// the targets a frame renders keep their entries; a direct-mapped table lost a few each frame to collisions, and a draw
+// into a lost target waited as one-shot instead of skipping a frame.
+#define TFR_SETS 512
+#define TFR_WAYS 8
 typedef struct { VkImage image; uint32_t level, layer; uint64_t last, prev; } TargetFrames;
-static TargetFrames tfr[1024];
+static TargetFrames tfr[TFR_SETS][TFR_WAYS];
 static PlatMutex tfr_lock = PLAT_MUTEX_INIT;   // the recording threads of a chunked replay
 
-static TargetFrames *tfr_slot(const VkExecTarget *t) {
+static TargetFrames *tfr_set(const VkExecTarget *t) {
     uint64_t h = ((uint64_t)(uintptr_t)t->image ^ (uint64_t)t->level << 56 ^ (uint64_t)t->base_layer << 40) *
                  0x9E3779B97F4A7C15ull;
-    return &tfr[h >> 54];
+    return tfr[h >> 55];
 }
 
 static int tfr_match(const TargetFrames *e, const VkExecTarget *t) {
     return e->image == t->image && e->level == t->level && e->layer == t->base_layer;
 }
 
+// The entry of t, NULL when it has none (tfr_lock held).
+static TargetFrames *tfr_find(const VkExecTarget *t) {
+    TargetFrames *s = tfr_set(t);
+    for (int i = 0; i < TFR_WAYS; i++)
+        if (tfr_match(&s[i], t)) return &s[i];
+    return NULL;
+}
+
 static void tfr_note(const VkExecTarget *t, uint64_t stamp) {
-    TargetFrames *e = tfr_slot(t);
     plat_mutex_lock(&tfr_lock);
-    if (!tfr_match(e, t)) *e = (TargetFrames){t->image, t->level, t->base_layer, 0, 0};
+    TargetFrames *e = tfr_find(t);
+    if (!e) {
+        // the way rendered longest ago, indexed from the set's start: the ways past the last set are RP's words
+        TargetFrames *s = tfr_set(t);
+        e = s;
+        for (int i = 1; i < TFR_WAYS; i++)
+            if (s[i].last < e->last) e = &s[i];
+        *e = (TargetFrames){t->image, t->level, t->base_layer, 0, 0};
+    }
     if (e->last != stamp) e->prev = e->last, e->last = stamp;
     plat_mutex_unlock(&tfr_lock);
 }
 
-static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
-    const TargetFrames *e = tfr_slot(t);
+// --probe-vkexec: a new target noted into a full set takes the way rendered longest ago, and the set after it keeps
+// its entries. The ways are stamped so that a search stepping from the way it picked last would leave the set. 1 when
+// it holds; the two sets are cleared afterwards.
+int vk_exec_tfr_check(void) {
+    VkExecTarget t[TFR_WAYS + 1];
+    for (int n = 0, k = 1; n <= TFR_WAYS; k++) {
+        t[n] = (VkExecTarget){.image = (VkImage)(uintptr_t)k};
+        n += tfr_set(&t[n]) == tfr[0];
+    }
+    static const uint64_t last[TFR_WAYS] = {8, 7, 100, 6, 100, 100, 5, 100};
+    TargetFrames next[TFR_WAYS];
+    for (int i = 0; i < TFR_WAYS; i++) tfr[0][i] = (TargetFrames){t[i].image, 0, 0, last[i], 0};
+    memcpy(next, tfr[1], sizeof next);
+    tfr_note(&t[TFR_WAYS], 200);
     plat_mutex_lock(&tfr_lock);
-    int r = tfr_match(e, t) && (e->last == stamp ? e->prev : e->last) == stamp - 1;
+    int ok = tfr_find(&t[TFR_WAYS]) == &tfr[0][6] && !memcmp(next, tfr[1], sizeof next);
+    plat_mutex_unlock(&tfr_lock);
+    memset(tfr, 0, sizeof tfr[0] * 2);
+    return ok;
+}
+
+static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
+    plat_mutex_lock(&tfr_lock);
+    const TargetFrames *e = tfr_find(t);
+    int r = e && (e->last == stamp ? e->prev : e->last) == stamp - 1;
     plat_mutex_unlock(&tfr_lock);
     return r;
 }
 
-// No frame before the current one rendered the target (a slot another subresource took reads the same).
+// No frame before the current one rendered the target.
 static int tfr_first(const VkExecTarget *t, uint64_t stamp) {
-    const TargetFrames *e = tfr_slot(t);
-    return !tfr_match(e, t) || !(e->last == stamp ? e->prev : e->last);
+    plat_mutex_lock(&tfr_lock);
+    const TargetFrames *e = tfr_find(t);
+    int r = !e || !(e->last == stamp ? e->prev : e->last);
+    plat_mutex_unlock(&tfr_lock);
+    return r;
 }
 
 // With any, a recent depth target alone does not make the pass per-frame when a colour target is rendered for the
@@ -562,11 +604,13 @@ void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap) {
     for (int i = 0; i < 9 && n < cap; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if (!t->image) continue;
-        const TargetFrames *e = tfr_slot(t);
-        int m = tfr_match(e, t);
+        plat_mutex_lock(&tfr_lock);
+        const TargetFrames *e = tfr_find(t);
+        uint64_t last = e ? e->last : 0, prev = e ? e->prev : 0;
+        plat_mutex_unlock(&tfr_lock);
         int w = snprintf(buf + n, cap - n, "%s%c%d fmt %d %ux%u L%u seen %llu/%llu", n ? "; " : "", i < 8 ? 'c' : 'd',
                          i < 8 ? i : 0, (int)t->format, t->width, t->height, t->base_layer,
-                         (unsigned long long)(m ? e->last : 0), (unsigned long long)(m ? e->prev : 0));
+                         (unsigned long long)last, (unsigned long long)prev);
         if (w < 0) break;
         n += (size_t)w;
     }

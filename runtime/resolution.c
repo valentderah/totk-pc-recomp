@@ -50,7 +50,9 @@
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
 #define TEX_HEAP_KIB 506880u // TextureHeap, shipped (1.2.1 and 1.4.3): what a mod's own HeapDef is measured against
-#define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SCENE_MAX 8192       // per side
+#define SCENE_KEEP 4096      // per side: the heap bound shrinks no scene below this (scene_for)
+#define DTA_MAX_KIB 2031616u // DynamicTextureAllocatorMem grown at most to 1984 MiB, under 2 GiB (decide)
 #define SHADOW_BASE 960      // the sun shadow map's base size (its cascades: a D16 array of 4 layers)
 
 static struct {
@@ -93,12 +95,25 @@ static int dlss_dll(void) {
 #endif
 }
 
-// The scene size for a share k of the output, within SCENE_MAX per side.
-static void scene_for(double k, unsigned *w, unsigned *h) {
+static uint64_t shadow_kib(void);
+
+// The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
+// holds next to the output and the shadow map (res_heap_extra_kib's growth). 1.2.1 already misplaced textures in a
+// pool past 2 GiB, where a signed 32-bit offset turns negative (recomp/patches-v121.txt, set pooloff); larger heaps
+// have not been run. The heap bound never takes the scene below 4096 a side, the size earlier builds gave: an output
+// near 8K grows the heap past 2 GiB for its own targets, and its scene stays what it was. Needs R.shadow. 1 when the
+// scene was made smaller than k asks.
+static int scene_for(double k, unsigned *w, unsigned *h) {
     double sw = R.ow * k, sh = R.oh * k;
     double fit = fmin(1.0, fmin(SCENE_MAX / sw, SCENE_MAX / sh));
+    double keep = fmin(1.0, fmin(SCENE_KEEP / sw, SCENE_KEEP / sh));
+    double room = (double)(DTA_MAX_KIB - shadow_kib()) / DTA_KIB - 1.0 -
+                  fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0);
+    double most = (1.0 + fmax(0.0, room)) * SCENE_W * SCENE_H;   // scene pixels that fit
+    if (sw * sh * fit * fit > most) fit = fmax(keep, sqrt(most / (sw * sh)));
     *w = (unsigned)(sw * fit + 0.5);
     *h = (unsigned)(sh * fit + 0.5);
+    return fit < 1.0;
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
@@ -170,6 +185,12 @@ static void decide(void) {
             rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; game", s);
         }
     }
+    const char *sr = cfg_value("TOTK_SHADOW_RES");
+    if (strcmp(sr, "game")) {
+        unsigned n = (unsigned)atoi(sr);
+        if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
+        else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
+    }
     // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
@@ -180,16 +201,14 @@ static void decide(void) {
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
     double sk = R.dlss_k ? R.dlss_k : k;
-    if (R.live || R.dlss_k || R.ow * sk > SCENE_MAX || R.oh * sk > SCENE_MAX) R.scene_set = 1;
-    scene_for(sk, &R.sw, &R.sh);
+    if (R.live || R.dlss_k) R.scene_set = 1;
+    if (scene_for(sk, &R.sw, &R.sh)) {
+        R.scene_set = 1;
+        rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB "
+               "past 4096 a side); %ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
+    }
     if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
     else R.hw = R.sw, R.hh = R.sh;
-    const char *sr = cfg_value("TOTK_SHADOW_RES");
-    if (strcmp(sr, "game")) {
-        unsigned n = (unsigned)atoi(sr);
-        if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
-        else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
-    }
 }
 
 // Texture heap for a sun shadow map above the base size: the four layers of 2 bytes, three maps in flight (the engine
@@ -223,6 +242,23 @@ static double scene_scale(void) {
 }
 
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
+
+// TOTK_GRASS_RANGE (percent, 50 to 400; 100 = the game's): how far around the camera grass blades grow. The near grass
+// map (the grass patch set, recomp/patches-v121.txt and patches-v143.txt) covers 62.5 m and draws into 256x256 and
+// 128x128 textures; other values scale the extent, its step and both textures together, so the grass keeps its detail
+// per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for them (at 200 %
+// without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in 1.4.3, times
+// the textures' growth in area (k^2 - 1).
+#define GRASS_HEAP_KIB 9318
+static int grass_pct(void) {
+    int pct = cfg_int("TOTK_GRASS_RANGE");
+    return pct < 50 ? 50 : pct > 400 ? 400 : pct;
+}
+uint64_t res_grass_heap_extra_kib(void) {
+    int pct = grass_pct();
+    return pct > 100 ? (uint64_t)GRASS_HEAP_KIB * (uint64_t)(pct * pct - 10000) / 10000 : 0;
+}
+uint64_t res_grass_heap_extra_bytes(void) { return ((res_grass_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
 
 // TOTK_TEX_HEAP_EXTRA_MB (0 to 4096): more room in "TextureHeap" and its parent "ゲームグラフィックス", the heap the
 // world's textures stream into. HD texture packs made for emulators with 8 GB of DRAM grow it by about 3.3 GiB in their
@@ -378,9 +414,9 @@ int res_heapdef_plain(const void *in, size_t n) {
 }
 
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
-    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib();
+    uint64_t extra = res_heap_extra_kib(), tex = tex_heap_extra_kib(), grass = res_grass_heap_extra_kib();
     *out = NULL;
-    if (!extra && !tex) return 0;
+    if (!extra && !tex && !grass) return 0;
     Byml b;
     uint32_t heaps = 0;
     size_t dta_at = 0, gfx_at = 0;
@@ -419,6 +455,17 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
                 return 0;
             }
         }
+    }
+    if (grass) {
+        size_t at = heap_size_field(&b, heaps, "\xe8\x8d\x89");   // 草, the grass heap
+        if (at) {
+            int32_t g, g2;
+            memcpy(&g, b.p + at, 4);
+            g2 = g + (int32_t)grass;
+            memcpy(b.p + at, &g2, 4);
+            rt_log("resolution: HeapDef grass heap %d -> %d KiB (TOTK_GRASS_RANGE)", g, g2);
+        } else
+            rt_log("resolution: the HeapDef table has no grass heap; grass_range may run out of grass memory");
     }
     size_t cap = ZSTD_compressBound(b.n);
     void *z = malloc(cap);
@@ -480,8 +527,29 @@ static void res_shadow_range(void) {
     rt_log("resolution: shadow cascades end at %g, %g, %g and %g m", d[0], d[1], d[2], d[3]);
 }
 
+// The grass map's values on page +128..+144 (the grass patch set): extent, step, the two texture sizes, and the
+// half extent main+0x206340c picks instead of the extent. Texture sizes stay multiples of 32.
+static void res_grass_range(void) {
+    int pct = grass_pct(), set = rt_patch_set("grass");
+    if (pct == 100) return;
+    if (set < 0) {
+        rt_log("resolution: this game version has no grass patch set; grass_range stays 100");
+        return;
+    }
+    float k = pct / 100.0f, f[2] = {62.5f * k, 3.90625f * k}, half = 31.25f * k;
+    uint32_t t[2] = {(uint32_t)(256 * pct / 100 + 16) / 32 * 32, (uint32_t)(128 * pct / 100 + 16) / 32 * 32};
+    uint8_t *page = rt_patch_page();
+    memcpy(page + 128, f, sizeof f);
+    memcpy(page + 136, t, sizeof t);
+    memcpy(page + 144, &half, sizeof half);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: grass map %g m, textures %ux%u and %ux%u (TOTK_GRASS_RANGE=%d)", f[0], t[0], t[0], t[1], t[1],
+           pct);
+}
+
 void res_init(void) {
     res_shadow_range();
+    res_grass_range();
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         shadow_init(rt_patch_page());
@@ -578,6 +646,29 @@ void res_fov_live(void) {
     memcpy((uint8_t *)rt_patch_page() + 60, &k, sizeof k);   // before the switch: a site that sees it on reads k
     rt_patch_switch(set, pct != 100);
     rt_log("resolution: field of view %d%% of the game's", pct);
+}
+
+// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and patches-v143.txt,
+// set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90 or 80 %) mostly
+// from a fixed cost model made for the Switch: one term grows with the object counts, one with (scene width / 1600)
+// squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers that prediction when the
+// GPU is slower than the model says, which a PC GPU never is, so the model alone decides. Measured on 1.2.1: a
+// 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
+// 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
+// stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+void res_dynres_live(void) {
+    static int set = -2, shown = -1;
+    if (set == -2) set = rt_patch_set("fixres");
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
+    if (dyn == shown) return;
+    shown = dyn;
+    if (set < 0) {
+        if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
+        return;
+    }
+    rt_patch_switch(set, !dyn);
+    rt_log("resolution: dynamic resolution %s",
+           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {

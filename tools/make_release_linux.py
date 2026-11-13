@@ -103,9 +103,11 @@ def run(cmd, **kw):
 
 
 def tar_extract(name, dest, members, strip=0):
-    """Extract only members (path prefixes inside the archive) of a pinned tarball with the system tar, once."""
+    """Extract only members (path prefixes inside the archive) of a pinned tarball with the system tar. The stamp holds
+    the pin's sha256 and the members, so a bumped pin or a changed member list extracts again."""
     stamp = dest / '.unpacked'
-    if stamp.is_file():
+    key = '\n'.join((mr.PINS[name][1], str(strip), *members))
+    if stamp.is_file() and stamp.read_text() == key:
         return dest
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -114,7 +116,7 @@ def tar_extract(name, dest, members, strip=0):
     run(['tar', '-xf', path, '-C', dest, f'--strip-components={strip}', '--wildcards', '--no-wildcards-match-slash',
          *members])
     print(f'{name}: unpacked in {time.time() - t0:.0f} s')
-    stamp.write_text('')
+    stamp.write_text(key)
     return dest
 
 

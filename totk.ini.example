@@ -26,10 +26,12 @@
 # cloth_realtime = 1
 # Fix for physics that bounce at high frame rates.
 # highfps_fix = 1
+# Climbing walls and ladders at full speed above 60 fps; 30 and 60 fps are unchanged. Needs realtime = 1.
+# climb_fix = 1
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
-# The Advanced tab of the settings menu (F1) shows all of them except zstd_native and zstd_check.
+# The Advanced tab of the settings menu (F1) shows all of them except zstd_native, zstd_check and the crash guards.
 
 # Scheduling.
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
@@ -49,6 +51,19 @@
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
+
+# One frame ahead of the GPU.
+# Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
+# game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
+# instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
+# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
+# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage, which is on by default on Linux and Wine and needs
+# the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and the log says so.
+# sync_ahead = 0
+# With sync_ahead = 1: when the game changes memory the GPU still reads, queue the copy into the GPU's shadow of that
+# memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
+# reading instead, which costs part of the gain.
+# shadow_defer = 1
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.
@@ -88,6 +103,14 @@
 # zstd_native = 1
 # zstd_check = 0
 
+# Crash guards: game code that crashes on stale data skips it instead (0 = the game's own code).
+# An optional reference holding an invalid value is treated as absent.
+# optref_guard = 1
+# A Recall or Ultrahand target the game would crash on is skipped for that frame.
+# ability_guard = 1
+# A model scene report row with an out-of-range index is skipped for that frame (1.4.3 only).
+# report_guard = 1
+
 # Render fixes.
 # Wait for the game to finish rewriting level-of-detail data before the GPU reads it: stops objects flashing in the
 # wrong place and a flat far field for a frame.
@@ -114,7 +137,8 @@
 # Vulkan.
 # Vulkan validation layer: checks every call and slows the game down a lot. Needs the layer installed (Vulkan SDK).
 # vk_validation = 0
-# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on, except on AMD GPUs.
+# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on. Set 0 if an AMD GPU shows a black
+# screen or stops with VK_ERROR_DEVICE_LOST.
 # vk_recorder = 1
 # Dynamic vertex input, 0 or 1. Default: on, except on Intel's Windows driver for integrated GPUs (UHD, Iris Xe),
 # which draws black patches with it.
@@ -159,12 +183,19 @@
 # fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
 # tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
 # display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = pc too; with
-# prompts = xbox it stays 1920x1080, the only shape the setup builds those prompts for.
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
+# too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
-# a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
+# a percentage (25 to 400); above 100 supersamples the scene (anti-aliasing). The scene stays within 8192 pixels a side
+# and within a texture heap under 2 GiB (8192x2304 at most on a 5120x1440 output); the log says when it is smaller.
+# Read at start.
 # render_scale = game
+# Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
+# by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
+# scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.2.1 and 1.4.3. Changes in
+# the menu take effect at once.
+# dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
@@ -179,7 +210,7 @@
 # does. Read when a movie starts, so a change takes effect at the next movie.
 # movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
-# more of the world around Link. Game version 1.4.3 only. Changes while the game runs take effect at once.
+# more of the world around Link. Game versions 1.1.0 and 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
 # Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
 # ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
@@ -207,6 +238,11 @@
 # Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
 # the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
 # shadow_range = 100
+# How far around the camera grass grows, in percent of the game's (its near grass map covers 62.5 m), 50 to 400.
+# Higher keeps the grass in meadows further out instead of growing it in a short way in front of you, and draws more of
+# it; the grass map's textures grow with it, so its detail per metre stays the game's, and the grass heap grows by about
+# 9 MiB times (percent / 100)^2 - 1. Lower draws less grass. Read at start.
+# grass_range = 100
 # Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
@@ -240,6 +276,9 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
+# Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
+# reflex = off
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
@@ -329,6 +368,21 @@
 # right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and
 # the map to the keys and the pad. Changes while the game runs.
 # menu_cursor = 1
+# The left mouse button on the Purah Pad's map, 1.4.3 only. 1: it presses A at the map's cursor instead of the button
+# it is bound to (Y by default). Needs menu_cursor = 1, which finds the map. 0 (the default) leaves the left button on
+# its binding there, one key per controller button. Changes while the game runs.
+# map_click = 0
+# The mouse buttons in dialogue, 1.4.3 only. 1: while a dialogue box is open left click presses B (it continues the
+# text and skips its scroll) and right click presses A, instead of their bindings (Y by default, which opens the
+# dialogue log, and ZL). Dialogue choices keep the pointer, where left click picks. Works with menu_cursor = 0 too. The
+# clicks stay B and A for half a second after a box closes, as the game closes the box between two lines of a
+# conversation. 0 (the default) leaves both buttons on their bindings there, one key per controller button. Changes
+# while the game runs.
+# dialogue_click = 0
+# The mouse pointer over the game window while the cursor is not captured (the game's menus, the settings menu, after
+# Esc). 1: a gold arrowhead with a dark edge and a turquoise gem, drawn by the port at the window's DPI, instead of
+# the system arrow. 0 (the default) keeps the system arrow. Changes while the game runs.
+# pointer_image = 0
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
@@ -392,6 +446,22 @@
 # Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
 # Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
 # shared_fonts =
+
+# Gameplay Tweaks: independent live switches.
+[gameplay tweaks]
+# gameplay_tweaks_enabled = 0
+# gameplay_ultrahand_rotate = 1
+# gameplay_ultrahand_c_axis = 1
+# gameplay_ultrahand_distance = 1
+# gameplay_weapon_wheel = 1
+# gameplay_weapon_sensitivity = 1
+# gameplay_item_wheel = 1
+# gameplay_item_ad = 1
+# gameplay_map_zoom = 1
+# gameplay_map_zoom_sensitivity = 1
+# gameplay_rotation_sensitivity = 1
+# gameplay_distance_sensitivity = 1
+# gameplay_item_sensitivity = 1
 
 [cheats]
 # One line per cheat of the mods' cheat files, mods\<mod>\cheats\<build id>.txt (docs/cheats.md); the Cheats tab of

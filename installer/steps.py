@@ -1,4 +1,5 @@
-"""The eight setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, dlss, cleanup.
+"""The ten setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, pc_prompts, shapes, dlss,
+cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -8,7 +9,8 @@ with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
 and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
-romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-pc-<w>x<h>/, totk_xlate.exe, the
+romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<w>x<h>/ and romfs-patches-<style>-<w>x<h>/ (for the
+screen shapes and the prompts style this player needs, installer/screens.py), totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
@@ -35,7 +37,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import ini
+from . import ini, screens
 from .layout import EXE, SUPPORTED, version_tag
 from .runner import InstallError, Step
 
@@ -139,6 +141,17 @@ def linux_kernel():
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def link_output_locked(log):
+    """Whether a build failed because another program holds the exe the linker writes: ld.lld cannot write it and clang
+    cannot remove it (Permission denied). A game started from the temp build folder does that, and so does an
+    antivirus that flagged or quarantined the new totk.exe there (#1122)."""
+    try:
+        text = Path(log).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return 'failed to write output' in text and 'Permission denied' in text
+
+
 def run_tool(ctx, step, script, args, parse=None, cwd=None):
     """Run a tool script with the bundled Python. Its output goes to <temp>/logs/<step>-<script>.log and, line by line,
     to parse(line). Returns (exit code, log path)."""
@@ -168,7 +181,8 @@ def run_tool(ctx, step, script, args, parse=None, cwd=None):
 def free_bytes(path):
     """Free bytes on the disk of path (its nearest existing parent) and that parent's device."""
     p = Path(path)
-    while not p.exists():
+    # An unavailable drive or share has no existing ancestor: let disk_usage report its OS error at the root.
+    while not p.exists() and p.parent != p:
         p = p.parent
     return shutil.disk_usage(p).free, os.stat(p).st_dev
 
@@ -1007,6 +1021,8 @@ class Compile(Step):
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
         exe = build / ('totk' + EXE)
+        if code and link_output_locked(log):
+            raise InstallError('compile.exe_locked', path=str(exe), log=str(log))
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:
@@ -1027,12 +1043,7 @@ TRANSLATED = re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs')
 SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics driver crashed')
 
 
-# The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
-# 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2 screens (Surface and Framework laptops and
-# tablets)
-ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
-                '1280x800', '1680x1050', '1920x1200', '2560x1600',
-                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000')
+ASPECT_SIZES = screens.ASPECT_SIZES
 
 
 class Prepare(Step):
@@ -1082,47 +1093,19 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same overlay with the UI laid out for each game resolution of another shape the settings menu offers
-        # (runtime/romfs.c overlay_init picks the one that matches; the camera's side is the patch set aspect,
-        # recomp/patches-v<ver>.txt).
-        for size in ASPECT_SIZES:
-            remove(dest / f'romfs-patches-{size}')
-            code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                                  dest / f'romfs-patches-{size}', '--aspect', size])
-            if code:
-                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
         # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
         # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
         # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
-        # prompts for prompts = pc.
+        # files are missing, so the setup warns once and goes on. The keyboard and mouse prompts are the PcPrompts
+        # step's: they follow totk.ini's bindings.
         failed = None
-        for style in ('xbox', 'xbox-label', 'pc'):
+        for style in ('xbox', 'xbox-label'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
                                  ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
                                   '--prompts', style])
-            if code:
-                remove(out)
-                failed = failed or (code, log)
-        # The PC prompts once more for each shape of ASPECT_SIZES, romfs-patches-pc-<w>x<h> with that shape's UI layout
-        # (--prompts pc --aspect), which runtime/romfs.c overlay_init loads in place of romfs-patches-<w>x<h>: without
-        # it a player with prompts = pc on a screen that is not 16:9 chose between the prompts and the screen's shape.
-        # Only the Common archive differs from romfs-patches-pc; --reuse links the fonts, messages and size table from
-        # there instead of compressing them again, so the fifteen folders take seconds and a few MiB each. Optional
-        # like romfs-patches-pc, and skipped without it.
-        pc = dest / 'romfs-patches-pc'
-        for size in ASPECT_SIZES:
-            out = dest / f'romfs-patches-pc-{size}'
-            remove(out)
-            if not (pc / 'manifest.tsv').is_file():
-                continue
-            code, log = run_tool(ctx, f'prepare-pc-{size}', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', out,
-                                  '--prompts', 'pc', '--aspect', size, '--reuse', pc])
             if code:
                 remove(out)
                 failed = failed or (code, log)
@@ -1162,6 +1145,121 @@ class Prepare(Step):
         if code:
             raise InstallError('prepare.pack_failed', code=code, log=str(log))
         return {'xlate_sha256': file_sha256(xlate)}
+
+
+# ---- 6b. Keyboard and mouse prompts
+
+def bind_lines(dest):
+    """The bind_ lines of the install's totk.ini (the Controls tab writes them), '' without the file."""
+    try:
+        text = (dest / 'totk.ini').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return ''
+    return '\n'.join(s for s in (line.split('#')[0].split(';')[0].strip() for line in text.splitlines())
+                     if s.lower().startswith('bind_'))
+
+
+def pc_binds(dest):
+    """make_romfs_patches.py's --binds argument for the keyboard and mouse prompts: totk.ini when it has bind_ lines."""
+    return ['--binds', dest / 'totk.ini'] if bind_lines(dest) else []
+
+
+class PcPrompts(Step):
+    """romfs-patches-pc (16:9), for prompts = pc: the prompts drawn as the keys and mouse buttons of totk.ini's bind_
+    lines (make_romfs_patches.py --prompts pc --binds), the keyboard defaults without them. Its own step, keyed by those
+    lines, so running the setup again after a change of the bindings draws the prompts again and leaves the shaders
+    alone. The shaped romfs-patches-pc-<w>x<h> are the Shapes step's, which follows this key. Optional like the Xbox
+    prompts: a failure warns, and the game keeps the Switch prompts."""
+    id = 'pc_prompts'
+
+    def key(self, ctx):
+        layout = ctx.layout
+        tools = [layout.tools / n for n in ('make_romfs_patches.py', 'ultrawide_layout.py', 'button_icons.py')]
+        return fingerprint('pc-prompts-1', ctx.keys['extract'], *tools, bind_lines(ctx.dest))
+
+    def current(self, ctx, record):
+        return record.get('failed') or (ctx.dest / 'romfs-patches-pc' / 'manifest.tsv').is_file()
+
+    def run(self, ctx):
+        layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
+        rep.progress('pc_prompts', 'draw', force=True)
+        plain = dest / 'romfs-patches-pc'
+        remove(plain)
+        code, log = run_tool(ctx, 'prepare-pc', layout.tools / 'make_romfs_patches.py',
+                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', plain,
+                              '--prompts', 'pc', *pc_binds(dest)])
+        if code:
+            remove(plain)
+            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
+            return {'failed': True}
+        return {}
+
+
+# ---- 6b. screen shapes
+
+SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-xbox|-xbox-label|-pc)?-\d+x\d+$')
+
+
+class Shapes(Step):
+    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox or PC prompts
+    in totk.ini, romfs-patches-<style>-<w>x<h> (that layout with those prompts), for the shapes this player needs:
+    those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
+    game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15
+    sizes for every prompts style, 64 folders. The key holds the shapes and the style, so a run of the setup after a
+    monitor or settings change (or its rebuild mode) writes only these again; the game's settings menu can also start
+    the generator for the shape in use (runtime/ui/menu.cpp row_output_res)."""
+
+    id = 'shapes'
+
+    def wanted(self, ctx):
+        if not hasattr(ctx, 'shapes_wanted'):
+            ctx.shapes_wanted = screens.wanted(ctx.dest)
+        return ctx.shapes_wanted
+
+    def key(self, ctx):
+        sizes, style = self.wanted(ctx)
+        # The pc prompts' shaped folders are drawn from the same bindings as romfs-patches-pc, so they follow its key
+        prompts = ctx.keys.get('pc_prompts', '') if style == 'pc' else ''
+        return fingerprint('shapes-2', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', *sizes)
+
+    def current(self, ctx, record):
+        return all((ctx.dest / name / 'manifest.tsv').is_file() for name in record.get('folders', []))
+
+    def run(self, ctx):
+        layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
+        sizes, style = self.wanted(ctx)
+        rep.log(f'shapes: displays {screens.displays()}, layouts for {sizes or "none"}, prompts {style or "nintendo"}')
+        for old in dest.iterdir() if dest.is_dir() else ():
+            if old.is_dir() and SHAPED_FOLDER.match(old.name):
+                remove(old)
+        version = version_tag(game_version(ctx))
+        plain = dest / f'romfs-patches-{style}' if style else None
+        folders, failed = [], None
+        for i, size in enumerate(sizes):
+            rep.progress('shapes', 'layouts', i, len(sizes), 'shapes', force=True)
+            out = dest / f'romfs-patches-{size}'
+            code, log = run_tool(ctx, 'shapes', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--aspect', size])
+            if code:
+                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+            folders.append(out.name)
+            # Only the Common archive differs from romfs-patches-<style>: --reuse links the fonts, messages and size
+            # table from there. Optional like that folder: the game keeps the Switch prompts with this layout.
+            if not plain or not (plain / 'manifest.tsv').is_file():
+                continue
+            out = dest / f'romfs-patches-{style}-{size}'
+            code, log = run_tool(ctx, f'shapes-{style}', layout.tools / 'make_romfs_patches.py',
+                                 ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--prompts', style,
+                                  '--aspect', size, '--reuse', plain, *(pc_binds(dest) if style == 'pc' else ())])
+            if code:
+                remove(out)
+                failed = failed or (code, log)
+            else:
+                folders.append(out.name)
+        rep.progress('shapes', 'layouts', len(sizes), len(sizes), 'shapes', force=True)
+        if failed:
+            rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
+        return {'folders': folders, 'sizes': sizes, 'style': style}
 
 
 # ---- 7. NVIDIA DLSS
@@ -1307,4 +1405,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Cleanup()]

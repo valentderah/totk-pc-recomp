@@ -30,6 +30,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "layout.h"
 #include "platform/platform.h"
 #include "sha256.h"
 
@@ -284,6 +285,41 @@ static void crash_memory(const PlatCrash *x, const Cpu *c) {
                     (unsigned long long)s[i + 1], (unsigned long long)s[i + 2], (unsigned long long)s[i + 3]);
 }
 
+// 1.2.1: a fault right after a compound physics shape was asked for its first child's material (the call returning to
+// main+0xe056d4 reads the result without a check). The shape (vtable main+0x45e1218, built by main+0x7359fc) is in x20
+// there. It returns null when no child slot is both live (bitmap at +0x88) and filled (shape pointer at +0 of the
+// 0x78-byte records at +0x80). Every child is filled when the shape is built, so the list tells children removed later
+// (null shape) from children switched off (clear bit), and the names name the object. Runs only in the crash handler.
+static void crash_compound_shape(const Cpu *c) {
+    if (!c || rt_game_version != 121 || c->x[30] != MOD_MAIN_BASE + 0xe056d4) return;
+    uint64_t shape = c->x[20];
+    if (!readable(shape, 0x1a0) || LD64(shape) != MOD_MAIN_BASE + 0x45e1218) {
+        rt_logf("  compound shape: x20 %#llx is not one\n", (unsigned long long)shape);
+        return;
+    }
+    uint32_t children = LD32(shape + 0x190), records = LD32(shape + 0x78);
+    uint64_t rec = LD64(shape + 0x80);
+    rt_logf("  compound shape %#llx (holder %#llx): %u children, %u records at %#llx, live bits:",
+            (unsigned long long)shape, (unsigned long long)(c->x[21] - 0x38), children, records,
+            (unsigned long long)rec);
+    uint32_t n = children > 0x400 ? 0x400 : children;   // the bitmap holds 0x400 bits
+    for (uint32_t w = 0; w < (n + 31) / 32; w++) rt_logf(" %08x", LD32(shape + 0x88 + 4 * w));
+    rt_log_raw("\n", 1);
+    if (records > 0x400 || !readable(rec, (uint64_t)records * 0x78)) return;
+    for (uint32_t i = 0; i < records; i++) {
+        uint64_t r = rec + (uint64_t)i * 0x78, child = LD64(r), s = LD64(r + 8);
+        char name[33];
+        size_t k = 0;
+        for (; k < 32 && readable(s + k, 1); k++) {
+            name[k] = *(const char *)(uintptr_t)(s + k);
+            if (!name[k]) break;
+        }
+        name[k] = 0;
+        int live = LD32(shape + 0x88 + 4 * (i >> 5)) >> (i & 31) & 1;
+        rt_logf("    child %3u: shape %#llx%s \"%s\"\n", i, (unsigned long long)child, live ? "" : " (off)", name);
+    }
+}
+
 static void crash_handler(const PlatCrash *x) {
     static volatile int32_t busy;
     if (plat_xchg32(&busy, 1)) plat_exit(71);
@@ -349,6 +385,7 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf("  not on a guest thread\n");
     }
     crash_memory(x, c);
+    crash_compound_shape(c);
     kern_free_cores_note();
     fflush(stderr);
     plat_exit(71);

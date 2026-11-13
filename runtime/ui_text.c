@@ -73,6 +73,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Dynamic resolution",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Lets the game lower the 3D scene to 90 or 80 %. It judges by an estimate made for the Switch that ignores your GPU, so wide scenes drop even on a fast PC. Off keeps the render scale.",
     [UI_MENU_UPSCALER] = "Scaling to the window",
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
@@ -86,7 +88,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "bars, or stretch them over the whole picture. Applies from the next movie.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_FOV] = "Field of view",
-    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game version 1.4.3 only.",
+    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0 and 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
     [UI_MENU_SHADOW_RES_DESC] = "Size of the sun's shadow map. The game's own size changes with the view, down to about 400 "
                                 "near the ground, so leaf shadows look blocky and jump; a fixed size keeps them still and "
@@ -141,6 +143,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Moves the steps where shadows turn softer (the game's 20, 40, 80 and 160 m) further "
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
                                   "Takes effect at the next start.",
+    [UI_MENU_GRASS_RANGE] = "Grass range",
+    [UI_MENU_GRASS_RANGE_DESC] = "How far around the camera grass grows (the game's: 62.5 m). Higher keeps the "
+                                 "grass in meadows further out instead of growing it in just in front of you; lower "
+                                 "draws less of it. Takes effect at the next start.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
@@ -166,6 +172,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Reduces system latency on NVIDIA GPUs using VK_NV_low_latency2. On + Boost keeps GPU clocks high in CPU-bound scenes.",
+    [UI_MENU_REFLEX_OFF] = "Off",
+    [UI_MENU_REFLEX_ON] = "On",
+    [UI_MENU_REFLEX_BOOST] = "On + Boost",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -183,6 +194,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Steps cloth and hair by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrects physics that misbehave above 30 frames per second, and objects that stay see-through or invisible above 60.",
+    [UI_MENU_CLIMB_FIX] = "Climbing speed fix",
+    [UI_MENU_CLIMB_FIX_DESC] = "Keeps climbing walls and ladders at full speed above 60 frames per second, so Link reaches the top.",
     [UI_MENU_GAME_LANG] = "Game language", [UI_MENU_GAME_LANG_DESC] = "Language of the game's text and voices.",
     [UI_MENU_GAME_LANG_AUTO] = "Automatic",
     [UI_MENU_OPERATION_MODE] = "Console mode",
@@ -216,8 +229,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
     [UI_MENU_MODS_CHEATS_FILE] = "Cheats for this game version are read at start from cheats\\%s in this mod.",
     [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
-    [UI_MENU_MODS_OTHER_VERSION] = "%u of its files are made for another game version and are left out. Look for a "
-                                   "version of this mod made for your game version.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u of its files carry another game version in their names. The game reads them only "
+                                   "where something asks for those names. If the mod does nothing, look for a version "
+                                   "of it made for your game version.",
     [UI_MENU_MODS_UNUSED] = "not used",
     [UI_MENU_MODS_FPS60] = "60 FPS patch",
     [UI_MENU_MODS_FPS60_DESC] = "The port's own patch for 60 frames per second. Set it with Frame rate limit on the "
@@ -262,7 +276,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "off at a game resolution not 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "off at this game resolution (no layout made for it)",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "no layout made for this shape: run the setup again",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "layout being made in the background; used at the next start",
+    [UI_MENU_SHAPE_PREPARE] = "Prepare the layout for this screen",
+    [UI_MENU_SHAPE_PREPARE_DESC] = "Makes the interface layout and the chosen button prompts for this game resolution's shape in the background, with the setup's tools, as the setup does for the displays it saw. The game keeps running; it uses them from its next start.",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "the setup's tools did not start: run the setup again",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
     [UI_MENU_RESTART] = "Restart now",
@@ -281,6 +300,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Mouse in the game's menus",
     [UI_MENU_MENU_CURSOR_DESC] = "In the game's own menus (title, inventory, shops, dialogue choices) the pointer shows: the item under it is selected, left click confirms, right click goes back. Only after the mouse or a key was used last, so a gamepad sees the menus unchanged (game 1.4.3).",
+    [UI_MENU_MAP_CLICK] = "Left click on the map",
+    [UI_MENU_MAP_CLICK_DESC] = "On the Purah Pad's map, the left mouse button presses A at the map's cursor instead of the button it is bound to (Y by default). Needs Mouse in the game's menus (game 1.4.3).",
+    [UI_MENU_DIALOGUE_CLICK] = "Clicks in dialogue",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "While a dialogue box is open, left click presses B (it continues the text and skips its scroll) and right click presses A, instead of the buttons they are bound to (Y by default, which opens the dialogue log, and ZL). Dialogue choices keep the pointer: left click picks (game 1.4.3).",
+    [UI_MENU_POINTER_IMAGE] = "Game pointer",
+    [UI_MENU_POINTER_IMAGE_DESC] = "While the cursor is not captured (the game's menus, this menu, after Esc), the window shows a gold arrowhead of its own instead of the system arrow, sized for the screen's scale.",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
     [UI_MENU_WALK_KEY] = "Walk key",
@@ -290,6 +315,33 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Walk scale",
     [UI_MENU_WALK_SCALE_DESC] = "The tilt the keyboard's sticks get while the walk key is held. Half is a walk, the "
                                 "full tilt a run.",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Gameplay tweaks",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Gameplay tweaks",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Mouse wheel controls for Ultrahand rotation and distance, item and weapon switching, and smooth map zoom.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "Ultrahand wheel rotation",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "Turn objects held by Ultrahand directly with the mouse wheel.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "Ultrahand C rotation axis",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "Hold C while scrolling to turn held objects around the alternate axis.",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "Ultrahand rotation sensitivity",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "How fast the mouse wheel turns held objects.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "Ultrahand wheel distance",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "Right-click + mouse wheel pushes or pulls held objects.",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "Ultrahand distance sensitivity",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "How fast the mouse wheel changes object distance.",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "Weapon wheel selection",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "Scroll mouse wheel in free roam to switch weapons. Confirm with E.",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "Weapon wheel sensitivity",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "Scroll steps needed to advance to the next weapon.",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "Quick menu wheel selection",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "Scroll mouse wheel to browse items while a quick-selection menu is open.",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "Quick menu wheel sensitivity",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "Scroll steps needed to advance through items in quick-selection menus.",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "Quick menu A / D navigation",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "Press A / D to navigate left and right in quick-selection menus.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "Smooth map zoom",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "Smooth inertial zoom on the Purah Pad map using the mouse wheel.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "Map zoom sensitivity",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "How fast the mouse wheel zooms the map.",
     [UI_MENU_STICK_SENS] = "Stick camera speed",
     [UI_MENU_STICK_SENS_DESC] = "Multiplies the game's own right-stick camera speed, top speed included, at each of the "
                                 "game's five camera sensitivities. The mouse keeps its own setting.",
@@ -553,6 +605,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Динамическое разрешение",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Игра снижает 3D-сцену до 90 или 80 %. Она судит по оценке для Switch, не учитывающей вашу видеокарту, поэтому широкие сцены снижаются даже на быстром ПК. Выключено: остаётся масштаб отрисовки.",
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
     [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
                               "детали чётче билинейного.",
@@ -566,7 +620,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "растянуть их на всю картинку. Действует со следующего ролика.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_FOV] = "Поле зрения",
-    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Только для версии игры 1.4.3.",
+    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0 и 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
     [UI_MENU_SHADOW_RES_DESC] = "Размер карты теней от солнца. Собственный размер игры меняется вместе с видом, у земли до "
                                 "примерно 400, поэтому тени листвы выглядят квадратными и дёргаются; постоянный размер делает "
@@ -622,6 +676,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Отодвигает границы, за которыми тени становятся мягче (в игре 20, 40, 80 и 160 м). "
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
                                   "разрешение теней. Действует после перезапуска.",
+    [UI_MENU_GRASS_RANGE] = "Дальность травы",
+    [UI_MENU_GRASS_RANGE_DESC] = "Как далеко вокруг камеры растёт трава (в игре 62,5 м). Выше: трава на лугах видна "
+                                 "дальше и не вырастает прямо перед вами; ниже: травы меньше. Действует после "
+                                 "перезапуска.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
@@ -647,6 +705,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Снижает задержку системы на видеокартах NVIDIA с помощью VK_NV_low_latency2. «Вкл + Ускорение» удерживает высокие частоты GPU при упоре в процессор.",
+    [UI_MENU_REFLEX_OFF] = "Выкл",
+    [UI_MENU_REFLEX_ON] = "Вкл",
+    [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -663,6 +726,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Исправляет физику, которая ломается при частоте выше 30 кадров в секунду, и объекты, которые выше 60 остаются полупрозрачными или невидимыми.",
+    [UI_MENU_CLIMB_FIX] = "Исправление скорости лазания",
+    [UI_MENU_CLIMB_FIX_DESC] = "Сохраняет нормальную скорость лазания по стенам и лестницам выше 60 кадров в секунду, чтобы Линк добирался до верха.",
     [UI_MENU_GAME_LANG] = "Язык игры", [UI_MENU_GAME_LANG_DESC] = "Язык текста и озвучки игры.",
     [UI_MENU_GAME_LANG_AUTO] = "Автоматически",
     [UI_MENU_OPERATION_MODE] = "Режим консоли",
@@ -695,8 +760,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
     [UI_MENU_MODS_CHEATS_FILE] = "Читы для этой версии игры читаются при запуске из cheats\\%s в этом моде.",
     [UI_MENU_MODS_BAD_NAME] = "В имени папки есть символ |, которым список модов разделяет имена. Переименуйте папку.",
-    [UI_MENU_MODS_OTHER_VERSION] = "Файлов для другой версии игры: %u, они пропущены. Поищите версию этого мода для "
-                                   "вашей версии игры.",
+    [UI_MENU_MODS_OTHER_VERSION] = "Файлов с другой версией игры в имени: %u. Игра читает их, только когда что-то "
+                                   "запрашивает эти имена. Если мод не работает, поищите его версию для вашей версии "
+                                   "игры.",
     [UI_MENU_MODS_UNUSED] = "не используется",
     [UI_MENU_MODS_FPS60] = "Патч 60 FPS",
     [UI_MENU_MODS_FPS60_DESC] = "Собственный патч порта для 60 кадров в секунду. Настраивается «Ограничением частоты "
@@ -740,7 +806,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при разрешении игры не 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при этом разрешении игры (для него нет раскладки)",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "для этой формы нет раскладки: запустите установщик снова",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "раскладка создаётся в фоне; будет при следующем запуске",
+    [UI_MENU_SHAPE_PREPARE] = "Подготовить раскладку для этого экрана",
+    [UI_MENU_SHAPE_PREPARE_DESC] = "Создаёт в фоне раскладку интерфейса и выбранные подсказки кнопок для формы этого разрешения игры инструментами установщика, как установщик делает для мониторов, которые видел. Игра продолжает работать; раскладка будет со следующего запуска.",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "инструменты установщика не запустились: запустите установщик снова",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
     [UI_MENU_RESTART] = "Перезапустить сейчас",
@@ -759,6 +830,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MOUSE_DIRECT] = "Прямое",
     [UI_MENU_MENU_CURSOR] = "Мышь в меню игры",
     [UI_MENU_MENU_CURSOR_DESC] = "В меню самой игры (заставка, инвентарь, магазины, варианты ответа) появляется указатель: пункт под ним выбирается, левый щелчок подтверждает, правый возвращает назад. Только если последними использовались мышь или клавиатура, поэтому с геймпадом меню не меняются (версия игры 1.4.3).",
+    [UI_MENU_MAP_CLICK] = "Левый щелчок на карте",
+    [UI_MENU_MAP_CLICK_DESC] = "На карте игры левая кнопка мыши нажимает A у курсора карты, а не назначенную ей кнопку (по умолчанию Y). Нужна «Мышь в меню игры» (версия игры 1.4.3).",
+    [UI_MENU_DIALOGUE_CLICK] = "Щелчки в диалоге",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "Пока открыто окно диалога, левый щелчок нажимает B (продолжает текст и пропускает его прокрутку), а правый — A, вместо назначенных им кнопок (по умолчанию Y, она открывает журнал диалога, и ZL). В вариантах ответа по-прежнему работает указатель: левый щелчок выбирает (версия игры 1.4.3).",
+    [UI_MENU_POINTER_IMAGE] = "Игровой курсор",
+    [UI_MENU_POINTER_IMAGE_DESC] = "Пока курсор не захвачен (меню игры, это меню, после Esc), окно показывает собственный золотой наконечник вместо системной стрелки, по масштабу экрана.",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
@@ -768,6 +845,33 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Сила шага",
     [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
                                 "отклонение — бег.",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Геймплей",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Настройки геймплея",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Управление колесом мыши: вращение и дистанция предметов в Ультраруке, выбор оружия и предметов, плавный зум карты.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "Вращение колесом (Ультрарука)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "Вращение удерживаемых Ультрарукой предметов колесом мыши без удержания R.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "Ось C для вращения (Ультрарука)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "Удерживайте C при прокрутке колеса для вращения объекта вокруг третьей оси.",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "Скорость вращения (Ультрарука)",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "Как быстро колесо мыши поворачивает удерживаемый предмет.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "Дистанция колесом (Ультрарука)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "Правая кнопка мыши + колесо приближает или отдаляет предмет.",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "Скорость дистанции (Ультрарука)",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "Как быстро колесо мыши меняет дистанцию до предмета.",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "Выбор оружия колесом",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "Прокрутите колесо в свободной игре для выбора оружия. Подтверждение клавишей E.",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "Чувствительность выбора оружия",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "Шаги колеса для переключения на следующее оружие.",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "Выбор в быстром меню колесом",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "Прокрутка колеса листает предметы в открытом меню быстрого выбора.",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "Чувствительность быстрого меню",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "Шаги колеса для перехода к следующему предмету в быстром меню.",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "Навигация A / D в быстром меню",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "Клавиши A / D для выбора влево и вправо в меню быстрого выбора.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "Плавный зум карты",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "Плавное инерционное приближение карты Планшета путеводителя колесом мыши.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "Скорость зума карты",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "Как быстро колесо мыши масштабирует карту.",
     [UI_MENU_STICK_SENS] = "Скорость камеры (стик)",
     [UI_MENU_STICK_SENS_DESC] = "Умножает скорость поворота камеры правым стиком, включая наибольшую, при каждой из пяти "
                                 "чувствительностей камеры в игре. На мышь не влияет.",
@@ -1027,8 +1131,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Ligue-os na aba Cheats.",
     [UI_MENU_MODS_CHEATS_FILE] = "Os cheats desta versão do jogo são lidos ao iniciar de cheats\\%s neste mod.",
     [UI_MENU_MODS_BAD_NAME] = "O nome da pasta contém |, que a lista de mods usa entre os nomes. Renomeie a pasta.",
-    [UI_MENU_MODS_OTHER_VERSION] = "%u dos seus arquivos são de outra versão do jogo e ficam de fora. Procure uma versão "
-                                   "deste mod feita para a sua versão do jogo.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u dos seus arquivos trazem outra versão do jogo no nome. O jogo só os lê quando algo "
+                                   "pede esses nomes. Se o mod não fizer nada, procure uma versão dele feita para a sua "
+                                   "versão do jogo.",
     [UI_MENU_MODS_UNUSED] = "não usado",
     [UI_MENU_MODS_FPS60] = "Patch de 60 FPS",
     [UI_MENU_MODS_FPS60_DESC] = "O patch do próprio port para 60 quadros por segundo. Ajuste em Limite de quadros na aba "
@@ -1072,6 +1177,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "tamanho. Acima de 100 % suaviza bordas serrilhadas (supersampling) com alto custo de "
                                   "GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Jogo (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Resolução dinâmica",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Deixa o jogo reduzir a cena 3D para 90 ou 80 %. Ele decide por uma estimativa feita para o Switch que ignora sua GPU, então cenas largas caem mesmo num PC rápido. Desligada, mantém a escala da renderização.",
     [UI_MENU_UPSCALER] = "Escala para a janela",
     [UI_MENU_UPSCALER_DESC] = "Como a imagem é ampliada quando a janela é maior que a resolução do jogo. O FSR mantém "
                               "bordas e detalhes mais nítidos que o bilinear.",
@@ -1107,6 +1214,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_CLOTH_REALTIME_DESC] = "Avança tecidos e cabelos pelo tempo real também.",
     [UI_MENU_HIGHFPS_FIX] = "Correções para alta taxa de quadros",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrige a física que se comporta mal acima de 30 quadros por segundo e objetos que ficam transparentes ou invisíveis acima de 60.",
+    [UI_MENU_CLIMB_FIX] = "Correção da velocidade de escalada",
+    [UI_MENU_CLIMB_FIX_DESC] = "Mantém a escalada de paredes e escadas na velocidade normal acima de 60 quadros por segundo, para que Link chegue ao topo.",
     [UI_MENU_GAME_LANG] = "Idioma do jogo", [UI_MENU_GAME_LANG_DESC] = "Idioma dos textos e das vozes do jogo.",
     [UI_MENU_GAME_LANG_AUTO] = "Automático",
     [UI_MENU_OPERATION_MODE] = "Modo do console",
@@ -1346,7 +1455,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_FOV] = "Campo de visão",
-    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Só na versão 1.4.3 do "
+    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Nas versões 1.1.0 e 1.4.3 do "
                          "jogo.",
     [UI_MENU_SHADOW_RES] = "Tamanho do mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do jogo muda com a vista, até cerca de "
@@ -1410,10 +1519,21 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MOUSE_DIRECT] = "Direta",
     [UI_MENU_MENU_CURSOR] = "Mouse nos menus do jogo",
     [UI_MENU_MENU_CURSOR_DESC] = "Nos menus do próprio jogo (título, inventário, lojas, escolhas de diálogo) o ponteiro aparece: o item sob ele fica selecionado, o clique esquerdo confirma e o direito volta. Só depois de usar o mouse ou uma tecla por último, então com um controle os menus ficam como antes (jogo 1.4.3).",
+    [UI_MENU_MAP_CLICK] = "Clique esquerdo no mapa",
+    [UI_MENU_MAP_CLICK_DESC] = "No mapa do jogo, o botão esquerdo do mouse aperta A no cursor do mapa, em vez do botão ao qual está atribuído (Y por padrão). Requer Mouse nos menus do jogo (jogo 1.4.3).",
+    [UI_MENU_DIALOGUE_CLICK] = "Cliques no diálogo",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "Enquanto uma caixa de diálogo está aberta, o clique esquerdo aperta B (continua o texto e pula a rolagem) e o direito aperta A, em vez dos botões aos quais estão atribuídos (Y por padrão, que abre o registro do diálogo, e ZL). As escolhas de diálogo continuam com o ponteiro: o clique esquerdo escolhe (jogo 1.4.3).",
+    [UI_MENU_POINTER_IMAGE] = "Ponteiro do jogo",
+    [UI_MENU_POINTER_IMAGE_DESC] = "Enquanto o cursor não está capturado (os menus do jogo, este menu, depois de Esc), a janela mostra uma ponta de flecha dourada própria em vez da seta do sistema, no tamanho da escala da tela.",
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados numa resolução de jogo que não é 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados nesta resolução de jogo (sem layout feito para ela)",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "sem layout feito para este formato: rode o instalador de novo",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "layout sendo feito em segundo plano; usado na próxima vez que o jogo abrir",
+    [UI_MENU_SHAPE_PREPARE] = "Preparar o layout para esta tela",
+    [UI_MENU_SHAPE_PREPARE_DESC] = "Faz em segundo plano o layout da interface e os botões escolhidos para o formato desta resolução de jogo, com as ferramentas do instalador, como o instalador faz para os monitores que viu. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "as ferramentas do instalador não abriram: rode o instalador de novo",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
     [UI_MENU_RESTART] = "Reiniciar agora",
@@ -1433,6 +1553,33 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Intensidade do andar",
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Ajustes de jogabilidade",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Ajustes de jogabilidade",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Controles com a roda do mouse para rotação e distância na Ultramão, seleção de armas e itens, e zoom suave no mapa.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "Rotação com roda (Ultramão)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "Gira objetos segurados pela Ultramão diretamente com a roda do mouse.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "Eixo de rotação C (Ultramão)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "Segure C ao rolar a roda do mouse para girar o objeto no terceiro eixo.",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "Sensibilidade de rotação (Ultramão)",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "Define a velocidade de rotação do objeto com a roda do mouse.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "Distância com roda (Ultramão)",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "Botão direito do mouse + roda aproxima ou afasta o objeto.",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "Sensibilidade de distância (Ultramão)",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "Define a velocidade de ajuste de distância com a roda do mouse.",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "Seleção de armas com a roda",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "Role a roda do mouse no modo livre para trocar de arma. Confirme com E.",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "Sensibilidade de seleção de armas",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "Passos da roda necessários para avançar para a próxima arma.",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "Seleção do menu rápido com a roda",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "Role a roda do mouse para navegar por itens com o menu rápido aberto.",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "Sensibilidade do menu rápido",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "Passos da roda necessários para avançar itens nos menus rápidos.",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "Navegação A / D no menu rápido",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "Teclas A / D para navegar para esquerda e direita nos menus rápidos.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "Zoom suave no mapa",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "Zoom inercial suave no mapa do Purah Pad usando a roda do mouse.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "Sensibilidade do zoom no mapa",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "Define a velocidade de zoom no mapa com a roda do mouse.",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (o FSR só amplia)",
     [UI_MENU_HDR_HUE] = "Correção de matiz dos realces",
     [UI_MENU_HDR_HUE_DESC] = "Cores fortes como fogo e faíscas vão para o branco como na imagem SDR do próprio jogo e "
@@ -1445,6 +1592,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Afasta os degraus em que as sombras ficam mais suaves (20, 40, 80 e 160 m no "
                                   "jogo). Espalha o mapa de sombras por mais terreno: aumente a Resolução das sombras "
                                   "junto. Vale no próximo início.",
+    [UI_MENU_GRASS_RANGE] = "Alcance da grama",
+    [UI_MENU_GRASS_RANGE_DESC] = "Até onde a grama cresce ao redor da câmera (62,5 m no jogo). Mais alto mantém a "
+                                 "grama dos campos mais longe em vez de ela surgir logo à sua frente; mais baixo "
+                                 "desenha menos grama. Vale no próximo início.",
     [UI_MENU_CONTACT_SHADOWS] = "Sombras de contato",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequenas sombras do sol que os mapas de sombra não pegam: nos pés, sob pedras, "
                                      "na grama e em dobras. Traçadas na tela depois da iluminação. Vale no próximo "
@@ -1480,6 +1631,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Reduz a latência do sistema em GPUs NVIDIA usando VK_NV_low_latency2. Ligado + Boost mantém os clocks da GPU altos quando limitado pela CPU.",
+    [UI_MENU_REFLEX_OFF] = "Desligado",
+    [UI_MENU_REFLEX_ON] = "Ligado",
+    [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -1548,7 +1704,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CHEATS] = "金手指：%d 个。在“金手指”标签页中开关。",
     [UI_MENU_MODS_CHEATS_FILE] = "此游戏版本的金手指在启动时从此模组的 cheats\\%s 读取。",
     [UI_MENU_MODS_BAD_NAME] = "文件夹名称含有 |，模组列表用它分隔名称。请重命名该文件夹。",
-    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 个文件是为其他游戏版本制作的，已被跳过。请寻找适用于你的游戏版本的此模组。",
+    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 个文件的文件名带有其他游戏版本号。只有在有内容请求这些文件名时，游戏才会读取它们。"
+                                   "如果模组不起作用，请寻找适用于你的游戏版本的此模组。",
     [UI_MENU_MODS_UNUSED] = "未使用",
     [UI_MENU_MODS_FPS60] = "60 FPS 补丁",
     [UI_MENU_MODS_FPS60_DESC] = "移植版自带的 60 帧补丁。在“游戏”页的帧率上限中设置。",
@@ -1601,6 +1758,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                   "游戏的 FSR 会将其缩放到该尺寸。"
                                   "高于 100% 会平滑锯齿边缘（超采样），但 GPU 开销很高。",
     [UI_MENU_RENDER_SCALE_GAME] = "游戏（83%）",
+    [UI_MENU_DYNAMIC_RES] = "动态分辨率",
+    [UI_MENU_DYNAMIC_RES_DESC] = "让游戏把 3D 场景降到 90 % 或 80 %。它依据为 Switch 制定的估算，不考虑你的显卡，因此即使在高性能 PC 上宽场景也会降低。关闭时保持渲染比例。",
     [UI_MENU_UPSCALER] = "放大到窗口",
     [UI_MENU_UPSCALER_DESC] = "窗口大于游戏分辨率时画面的放大方式。"
                               "FSR 比双线性更能保留边缘和细节。",
@@ -1618,7 +1777,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
-                          "仅限游戏版本 1.4.3。",
+                          "支持游戏版本 1.1.0 和 1.4.3。",
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化强度；0 为关闭。",
     [UI_MENU_COLOR] = "色彩",
@@ -1658,6 +1817,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX] = "高帧率修正",
     [UI_MENU_HIGHFPS_FIX_DESC] = "修正帧率高于 30 时出现异常的物理效果，"
                                  "以及帧率高于 60 时一直半透明或不可见的物体。",
+    [UI_MENU_CLIMB_FIX] = "攀爬速度修正",
+    [UI_MENU_CLIMB_FIX_DESC] = "帧率高于 60 时让攀爬墙壁和梯子保持正常速度，林克能爬到顶。",
     [UI_MENU_GAME_LANG] = "游戏语言",
     [UI_MENU_GAME_LANG_DESC] = "游戏文本和语音的语言。",
     [UI_MENU_GAME_LANG_AUTO] = "自动",
@@ -2037,10 +2198,21 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MOUSE_DIRECT] = "直接",
     [UI_MENU_MENU_CURSOR] = "在游戏菜单中使用鼠标",
     [UI_MENU_MENU_CURSOR_DESC] = "在游戏自身的菜单中（标题、背包、商店、对话选项）显示指针：指针下的项目被选中，左键确认，右键返回。仅在最后使用的是鼠标或键盘时生效，因此使用手柄时菜单保持不变（游戏 1.4.3）。",
+    [UI_MENU_MAP_CLICK] = "在地图上左键单击",
+    [UI_MENU_MAP_CLICK_DESC] = "在游戏地图上，鼠标左键在地图光标处按下 A 键，而不是按下它所绑定的按键（默认为 Y）。需要开启“在游戏菜单中使用鼠标”（游戏 1.4.3）。",
+    [UI_MENU_DIALOGUE_CLICK] = "对话中的鼠标点击",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "对话框打开时，鼠标左键按下 B 键（继续对话并跳过文字滚动），右键按下 A 键，而不是它们所绑定的按键（默认为 Y，会打开对话记录；以及 ZL）。对话选项仍使用指针：左键选择（游戏 1.4.3）。",
+    [UI_MENU_POINTER_IMAGE] = "游戏指针",
+    [UI_MENU_POINTER_IMAGE_DESC] = "光标未被捕获时（游戏菜单、本菜单、按 Esc 之后），窗口显示自带的金色箭头，而不是系统箭头，大小随屏幕缩放。",
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "游戏分辨率不是 16:9 时关闭",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "此游戏分辨率下关闭（未为其制作布局）",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "未为此比例制作布局：请重新运行安装程序",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "布局正在后台制作；下次启动时使用",
+    [UI_MENU_SHAPE_PREPARE] = "为此屏幕准备布局",
+    [UI_MENU_SHAPE_PREPARE_DESC] = "使用安装程序的工具，在后台为此游戏分辨率的比例制作界面布局和所选按键提示，与安装程序为其检测到的显示器所做的相同。游戏继续运行；下次启动时生效。",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "安装程序的工具未能启动：请重新运行安装程序",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",
     [UI_MENU_RESTART] = "立即重启",
@@ -2055,6 +2227,33 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_KEY_TAKEN] = "同时为 %s",
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "游戏操作微调",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "启用操作微调",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "使用鼠标滚轮控制究极手物体旋转与距离、武器与道具切换以及地图平滑缩放。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "究极手滚轮旋转",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "究极手抓取物体时直接使用鼠标滚轮旋转物体，无需按住 R 键。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "究极手 C 轴旋转",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "滚动滚轮时按住 C 键可绕第三轴旋转物体。",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "究极手旋转灵敏度",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "鼠标滚轮旋转物体的灵敏度倍率。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "究极手滚轮推拉距离",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "按住鼠标右键滚动滚轮可推远或拉近物体。",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "究极手距离灵敏度",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "鼠标滚轮推拉物体距离的灵敏度倍率。",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "自由状态滚轮切换武器",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "在自由行动时滚动鼠标滚轮切换武器，按 E 键确认。",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "武器切换滚轮灵敏度",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "滚轮切换下一个武器所需的滚动步数灵敏度。",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "快捷菜单滚轮选择",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "快捷菜单打开时通过鼠标滚轮快速切换选择物品。",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "快捷菜单滚轮灵敏度",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "在快捷菜单中切换下一个物品所需的滚轮灵敏度。",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "快捷菜单 A / D 键切换",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "快捷菜单打开时按 A / D 键向左或向右切换选择物品。",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "地图平滑缩放",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "在普尔亚平板地图上使用鼠标滚轮进行平滑惯性缩放。",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "地图缩放灵敏度",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "鼠标滚轮缩放地图的灵敏度倍率。",
     [UI_MENU_OV_SCALE_DOWN] = "双线性（FSR 只能放大）",
     [UI_MENU_HDR_HUE] = "高光色调校正",
     [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像游戏自身的 SDR 画面一样趋向白色，与它们发出的光一致；0 保持完全饱和。",
@@ -2062,6 +2261,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_SCALE_DESC] = "将太阳阴影贴图的每条边绘制为游戏 960x960 的若干倍：阴影边缘和树叶阴影更清晰。下次启动时生效。",
     [UI_MENU_SHADOW_RANGE] = "阴影级联范围",
     [UI_MENU_SHADOW_RANGE_DESC] = "把阴影变柔和的分界（游戏中为 20、40、80 和 160 米）推得更远。阴影贴图会覆盖更大的地面，请同时提高阴影分辨率。下次启动时生效。",
+    [UI_MENU_GRASS_RANGE] = "草地范围",
+    [UI_MENU_GRASS_RANGE_DESC] = "镜头周围长草的距离（游戏中为 62.5 米）。调高后草地延伸得更远，不会在你面前才长出来；调低则少画一些草。下次启动时生效。",
     [UI_MENU_CONTACT_SHADOWS] = "接触阴影",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
@@ -2088,6 +2289,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex 低延迟",
+    [UI_MENU_REFLEX_DESC] = "在支持 VK_NV_low_latency2 的 NVIDIA 显卡上降低系统延迟。开 + 增强 (On + Boost) 会在 CPU 瓶颈时保持 GPU 高频率。",
+    [UI_MENU_REFLEX_OFF] = "关",
+    [UI_MENU_REFLEX_ON] = "开",
+    [UI_MENU_REFLEX_BOOST] = "开 + 增强",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"

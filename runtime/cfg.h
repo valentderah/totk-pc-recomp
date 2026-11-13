@@ -23,6 +23,9 @@ unsigned cfg_version(void);
 int cfg_from_env(const char *name);
 // 1 when the player set name (the environment or totk.ini), 0 when cfg_get gives a device profile's default or NULL.
 int cfg_is_set(const char *name);
+// The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones), the
+// one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and for a shape without a UI layout.
+int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]);
 // The device profile in use, "deck" or "desktop" (TOTK_DEVICE_PROFILE, else what the machine is).
 const char *cfg_device_profile(void);
 // Writes the keys cfg_set changed since the last save into totk.ini next to totk.exe (cfg_save_to: the file at path).

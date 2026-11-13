@@ -279,6 +279,8 @@ int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, 
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
 void cam_pack_served(void);                                // romfs.c serves the multiplied pack
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
+uint64_t res_grass_heap_extra_kib(void);                   // TOTK_GRASS_RANGE: added to the HeapDef grass heap; 0 = none
+uint64_t res_grass_heap_extra_bytes(void);                 // the same, added to the application pool, 2 MiB steps
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
 uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTRA_MB: added to the application pool and
@@ -301,9 +303,11 @@ int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x<h> has a manifest (romfs.c; works
                                                            // before fs_init)
-int romfs_shaped_pc_ready(unsigned w, unsigned h);         // the same for romfs-patches-pc-<w>x<h>
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h);   // the same for <folder>-<w>x<h>, a
+                                                           // prompts' folder (romfs-patches-xbox, -xbox-label, -pc)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
+void res_dynres_live(void);                                // TOTK_DYNAMIC_RES to the game (set fixres); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
