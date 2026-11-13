@@ -771,6 +771,9 @@ static void tab_game(float scale) {
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
     opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
+    opt_slider("TOTK_VOLUME_MUSIC", UI_MENU_VOLUME_MUSIC, 0, 100, UI_MENU_VOLUME_MUSIC_DESC, 5, "%.0f %%");
+    opt_slider("TOTK_VOLUME_SFX", UI_MENU_VOLUME_SFX, 0, 100, UI_MENU_VOLUME_SFX_DESC, 5, "%.0f %%");
+    opt_slider("TOTK_VOLUME_VOICE", UI_MENU_VOLUME_VOICE, 0, 100, UI_MENU_VOLUME_VOICE_DESC, 5, "%.0f %%");
     static const UiTextId channels[] = {UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51};
     opt_choice("TOTK_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
     opt_end();
