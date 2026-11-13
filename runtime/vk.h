@@ -559,6 +559,9 @@ void vk_present_drain(void);               // returns once every queued present 
 void vk_replay_drain(void);                // returns once every queued replay item was replayed and submitted
 int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 0): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
+void vk_backend_quiesce(void);             // waits for any in-flight guest backend call to finish after gfx_is_closed()
+void vk_exec_draw_shutdown(void);          // vk_exec_draw.c: stand-ins and depth twins; device must be idle
+void vk_exec_xfer_shutdown(void);          // vk_exec_xfer.c: occlusion query pool; device must be idle
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order
 
 // ---- pipelines (vk_pipeline.c)

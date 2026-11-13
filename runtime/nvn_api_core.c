@@ -517,6 +517,11 @@ uint64_t nvn_sync_ahead_guard(void) { return __atomic_load_n(&pa_guard, __ATOMIC
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value
 NVN_API(nvnSyncWait) {
+    if (gfx_is_closed()) {
+        plat_sleep_ms(50);
+        ret_x(c, NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
+        return;
+    }
     const sync_t *s = arg_p(c, 0);
     uint64_t timeout = arg_x(c, 1);
     if (!s->fenced) { ret_x(c, NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED); return; }

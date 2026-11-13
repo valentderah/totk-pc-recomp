@@ -96,20 +96,20 @@ void gfx_window_closed(void) {
 
     input_rumble(0, 0, 0);
 
-    // 1. Drain replay and present queues so in-flight frame commands finish
+    // 1. Wait for any in-flight guest backend calls to exit; g_closed=1 blocks new ones
+    vk_backend_quiesce();
+    rt_log("gfx: exit: backend quiesced");
+    rt_log_flush();
+
+    // 2. Drain replay and present queues so in-flight frame commands finish
     vk_replay_drain();
     vk_present_drain();
     rt_log("gfx: exit: replay and present queues drained");
     rt_log_flush();
 
-    // 2. Stop and drain background pipeline compilation workers
-    vk_pipeline_drain_workers();
-    rt_log("gfx: exit: pipeline workers drained");
-    rt_log_flush();
-
-    // 3. Save pipeline cache, playtime, and profiling while window and Vulkan device are still valid
-    vk_pipeline_save();
-    rt_log("gfx: exit: pipeline cache saved");
+    // 3. Stop pipeline workers, save pipeline cache, and destroy pipelines/layouts/cache while device & window are valid
+    vk_pipeline_shutdown();
+    rt_log("gfx: exit: pipeline cache saved and pipelines destroyed");
     rt_log_flush();
 
     playtime_save();
@@ -117,10 +117,15 @@ void gfx_window_closed(void) {
     rt_log("gfx: exit: playtime and profiling saved");
     rt_log_flush();
 
-    // 4. Release Vulkan presentation resources (flushes in-flight frame, waits device idle, destroys swapchain & surface)
-    gfx_window_release_vk();
-    rt_log("gfx: exit: Vulkan presentation released");
-    rt_log_flush();
+    // 4. Destroy exec stand-ins, query pools, sync, memory/textures, headroom, VMA, VkDevice, VkInstance
+    //    (vk_shutdown also releases the swapchain and surface via gfx_window_release_vk)
+    if (vk_ctx()) {
+        vk_exec_draw_shutdown();
+        vk_exec_xfer_shutdown();
+        vk_backend_shutdown();
+        rt_log("gfx: exit: Vulkan backend destroyed");
+        rt_log_flush();
+    }
 
     // 5. Destroy the window handle
     wsys_destroy();

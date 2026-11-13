@@ -342,7 +342,28 @@ void gfx_exit_log(void) {
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);
 }
 
+static volatile int32_t g_be_inflight;
+
+static int be_enter(void) {
+    __atomic_add_fetch(&g_be_inflight, 1, __ATOMIC_SEQ_CST);
+    if (gfx_is_closed()) {
+        __atomic_sub_fetch(&g_be_inflight, 1, __ATOMIC_RELEASE);
+        return 0;
+    }
+    return 1;
+}
+
+static void be_leave(void) {
+    __atomic_sub_fetch(&g_be_inflight, 1, __ATOMIC_RELEASE);
+}
+
+void vk_backend_quiesce(void) {
+    for (int i = 0; i < 2000 && __atomic_load_n(&g_be_inflight, __ATOMIC_ACQUIRE) > 0; i++)
+        plat_sleep_ms(1);
+}
+
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
+    if (!be_enter()) return;
     static _Thread_local int pcore;   // the game's render thread: the one that presents
     if (!pcore) pcore = 1, perf_core_thread(PCORE_RENDER);
     vk_sync_start();
@@ -350,6 +371,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
         present_image(t, crop, at_ns, kern_now_ns(), frame, 0);
+        be_leave();
         return;
     }
     // Frame bound: the replay thread handled the previous present before this one is queued.
@@ -371,32 +393,38 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
         for (int i = 0; i < 4; i++) it.crop[i] = crop[i];
     }
     replay_enqueue(&it);
+    be_leave();
 }
 
 // vk_pipeline.c drops a released program's pipelines here.
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
 
-static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
-static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
+static int vk_be_pool_init(pool_t *p) { if (!be_enter()) return 1; vk_sync_start(); int r = vk_pool_init(p); be_leave(); return r; }
+static void vk_be_pool_fini(pool_t *p) { if (!be_enter()) return; vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); be_leave(); }
 static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
+    if (!be_enter()) return 1;
     vk_sync_start();
     replay_drain(DR_MAP_VIRTUAL);
     vk_present_drain();
-    return vk_pool_map_virtual(v, n, requests);
+    int r = vk_pool_map_virtual(v, n, requests);
+    be_leave();
+    return r;
 }
-static void vk_be_texture_register(int id, const tex_t *t, const view_t *v) { vk_sync_start(); vk_texture_register(id, t, v); }
-static void vk_be_sampler_register(int id, const samp_par *s) { vk_sync_start(); vk_sampler_register(id, s); }
+static void vk_be_texture_register(int id, const tex_t *t, const view_t *v) { if (!be_enter()) return; vk_sync_start(); vk_texture_register(id, t, v); be_leave(); }
+static void vk_be_sampler_register(int id, const samp_par *s) { if (!be_enter()) return; vk_sync_start(); vk_sampler_register(id, s); be_leave(); }
 // Asynchronous: the release is queued behind the submissions before it, so their replay still resolves the texture's
 // slots to its image (a released slot follows another live texture at the storage), and the ones after it see it
 // released, the order of the synchronous replay. vk_texture_release reads only the object's key fields: a copy.
 static void vk_be_texture_release(const tex_t *t) {
+    if (!be_enter()) return;
     vk_sync_start();
     if (!gfx_replay_async()) {
         vk_present_drain();
         vk_texture_release(t);
+        be_leave();
         return;
     }
-    if (!t || !t->mem) return;
+    if (!t || !t->mem) { be_leave(); return; }
     tex_t *copy = malloc(sizeof *copy);
     if (!copy) rt_fatal("vk: out of memory (replay queue)");
     *copy = *t;
@@ -405,12 +433,14 @@ static void vk_be_texture_release(const tex_t *t) {
     dr_calls[DR_TEX_RELEASE]++, dr_tcalls[DR_TEX_RELEASE]++;
     plat_mutex_unlock(&rl);
     replay_enqueue(&it);
+    be_leave();
 }
-static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
+static void vk_be_program_release(const prog_t *p) { if (!be_enter()) return; replay_drain(DR_PROG_RELEASE); vk_program_release(p); be_leave(); }
 // Asynchronous: the handles (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued;
 // the value returned is the one the replay will signal.
 static uint64_t vk_be_submit(const uint64_t *handles, int n) {
-    if (!gfx_replay_async()) return submit_sync(handles, n);
+    if (!be_enter()) return 0;
+    if (!gfx_replay_async()) { uint64_t r = submit_sync(handles, n); be_leave(); return r; }
     vk_sync_start();
     ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count()};
     if (n > 0) {
@@ -418,9 +448,23 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
         memcpy(it.h, handles, sizeof *it.h * (size_t)n);
     }
-    return replay_enqueue(&it);
+    uint64_t r = replay_enqueue(&it);
+    be_leave();
+    return r;
 }
-static void vk_be_finish(void) { vk_sync_start(); replay_drain(DR_FINISH); vk_present_drain(); vk_sync_finish(); }
+static int vk_be_fence_wait(uint64_t value, uint64_t timeout_ns) {
+    if (!be_enter()) return 1;
+    int r = vk_sync_fence_wait(value, timeout_ns);
+    be_leave();
+    return r;
+}
+static uint64_t vk_be_fence_done(void) {
+    if (!be_enter()) return UINT64_MAX;
+    uint64_t r = vk_sync_fence_done();
+    be_leave();
+    return r;
+}
+static void vk_be_finish(void) { if (!be_enter()) return; vk_sync_start(); replay_drain(DR_FINISH); vk_present_drain(); vk_sync_finish(); be_leave(); }
 static int replay_check(void) {
     static int on = -1;
     if (on < 0) {
@@ -438,9 +482,11 @@ static int replay_check(void) {
 // value covers replay and GPU, so a read the game synchronised sees them. TOTK_REPLAY_CHECK compares with a full drain.
 static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,
                               uint64_t img) {
+    if (!be_enter()) return;
     vk_sync_start();
     if (!gfx_replay_async()) {
         vk_read_texels(t, v, r, dst, row, img);
+        be_leave();
         return;
     }
     uint64_t f = vk_texture_last_write(t);
@@ -458,10 +504,10 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
         plat_mutex_unlock(&rl);
     }
     vk_read_texels(t, v, r, dst, row, img);
-    if (!replay_check()) return;
+    if (!replay_check()) { be_leave(); return; }
     size_t n = vk_texture_texel_span(t, v, r, row, img);
     uint8_t *again = n ? malloc(n) : NULL;
-    if (!again) return;
+    if (!again) { be_leave(); return; }
     memcpy(again, dst, n);   // bytes between the rows stay the caller's
     uint64_t f0 = vk_texture_last_write(t);
     replay_drain(DR_CHECK);
@@ -486,21 +532,25 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
     }
     plat_mutex_unlock(&rl);
     free(again);
+    be_leave();
 }
 static void vk_be_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row,
                                uint64_t img) {
+    if (!be_enter()) return;
     vk_sync_start();
     replay_drain(DR_WRITE_TEXELS);
     vk_present_drain();
     vk_write_texels(t, v, r, src, row, img);
+    be_leave();
 }
-static void vk_be_guest_written(uint64_t addr, uint64_t size) { vk_sync_start(); vk_guest_written(addr, size); }
+static void vk_be_guest_written(uint64_t addr, uint64_t size) { if (!be_enter()) return; vk_sync_start(); vk_guest_written(addr, size); be_leave(); }
 // A CPU read of GPU-written mirrored storage (memcpy, pool invalidate). With the replay queued it waits for the newest
 // submission recorded to write the textures there, not for the whole queue: the write-back copy then runs after their
 // renders, and clears gpu_dirty only for content that is on the queue. Submissions not replayed yet render after the
 // copy, as on hardware when the GPU has not reached them; they mark the texture dirty again for a later read.
 static void vk_be_guest_read(uint64_t addr, uint64_t size) {
-    if (!vk_texture_cpu_stale(addr, size)) return;
+    if (!be_enter()) return;
+    if (!vk_texture_cpu_stale(addr, size)) { be_leave(); return; }
     vk_sync_start();
     if (gfx_replay_async()) {
         uint64_t f = vk_texture_dirty_fence(addr, size);
@@ -520,14 +570,17 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     }
     vk_present_drain();
     vk_texture_write_back(addr, size);
+    be_leave();
 }
 // After a fence wait: the value is done, so its replay is too; a later submission the replay records meanwhile marks
 // its targets with a later fence, which write_back_small leaves alone. No drain.
 static void vk_be_cpu_synced(uint64_t fence) {
-    if (!vk_texture_small_dirty()) return;
+    if (!be_enter()) return;
+    if (!vk_texture_small_dirty()) { be_leave(); return; }
     vk_sync_start();
     vk_present_drain();
     vk_texture_write_back_small(fence);
+    be_leave();
 }
 
 const GfxBackend gfx_vulkan_backend = {
@@ -540,8 +593,8 @@ const GfxBackend gfx_vulkan_backend = {
     .texture_release = vk_be_texture_release,
     .program_release = vk_be_program_release,
     .submit = vk_be_submit,
-    .fence_wait = vk_sync_fence_wait,
-    .fence_done = vk_sync_fence_done,
+    .fence_wait = vk_be_fence_wait,
+    .fence_done = vk_be_fence_done,
     .present = vk_be_present,
     .finish = vk_be_finish,
     .read_texels = vk_be_read_texels,
