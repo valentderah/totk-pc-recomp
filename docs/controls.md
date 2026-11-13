@@ -1,6 +1,6 @@
 # Controls
 
-Input comes from the first SDL3 gamepad, the keyboard and the mouse, merged into one Switch controller (`runtime/input_win.c`). Buttons are ORed; each stick takes the source with the larger deflection. Keys and mouse buttons count only while the game window is in the foreground. `TOTK_INPUT=none` disables both (automated runs). `TOTK_*` settings can also be set in `totk.ini` next to `totk.exe` (`input = none`, `motion = 0`, `rumble = 0`); the environment overrides the file. `TOTK_RUMBLE_STRENGTH` is the rumble strength in percent (0 to 300, default 130; 0 is the same as `rumble = 0`). `TOTK_RUMBLE_CURVE` is the exponent applied to the amplitude before the strength (0.2 to 1.5, default 0.6; lower makes weak pulses stronger, 1 is linear). `TOTK_RUMBLE_TRIGGERS=1` also drives the impulse triggers of an Xbox pad.
+Input comes from the first SDL3 gamepad, the keyboard and the mouse, merged into one Switch controller (`runtime/input_win.c`). Buttons are ORed; each stick takes the source with the larger deflection. Keys and mouse buttons count only while the game window is in the foreground. `TOTK_INPUT=none` disables both (automated runs). `TOTK_*` settings can also be set in `totk.ini` next to `totk.exe` (`input = none`, `motion = 0`, `rumble = 0`); the environment overrides the file. `TOTK_RUMBLE_STRENGTH` is the rumble strength in percent (0 to 300, default 130; 0 is the same as `rumble = 0`). `TOTK_RUMBLE_CURVE` is the exponent applied to the amplitude before the strength (0.2 to 1.5, default 0.6; lower makes weak pulses stronger, 1 is linear). `TOTK_RUMBLE_TRIGGERS=1` also drives the impulse triggers of an Xbox pad and makes the adaptive triggers of a DualSense vibrate ("DualSense adaptive triggers" below).
 
 `TOTK_PAD_LAYOUT` (`pad_layout`, the *Button layout* row on the Controls tab, live) picks which face button is Switch A:
 
@@ -224,6 +224,19 @@ With `gameplay_tweaks_enabled = 1` (`TOTK_GAMEPLAY_TWEAKS_ENABLED=1`, live; off 
 - **Smooth map zoom**: the mouse wheel performs continuous inertial zooming on the Purah Pad map (`gameplay_map_zoom = 1`, sensitivity `gameplay_map_zoom_sensitivity = 1`).
 
 All sub-toggles default to 1 and sensitivities to 1 (range 0.25 to 4.0), so enabling `gameplay_tweaks_enabled` activates the full suite immediately while allowing individual features to be toggled or tuned.
+
+## DualSense adaptive triggers
+
+A DualSense or DualSense Edge the game opens itself, over USB or Bluetooth, can have its triggers resist and vibrate (`runtime/dualsense.c`, `runtime/input.c` `triggers_update`). Neither needs `renhdrum.dll`. Both settings are off by default, live, and on the Controls tab of the menu (F1):
+
+- `dualsense_triggers` (`TOTK_DUALSENSE_TRIGGERS`), 0 to 8, default 0: how hard the triggers resist, from 1 (light) to 8 (heavy). On R2 the resistance starts a fifth of the way into the pull and is two steps heavier from half way, where the game takes ZR as pressed: the pull that draws the bow is felt, the drawn bow holds harder, and so is the let-go that shoots. L2, held through whole fights for the shield and the lock-on, resists two steps less and evenly. The effect is set once and does not follow what the game is doing; the triggers are the physical L2 and R2 whatever the `bind_` lines put on them.
+- `rumble_triggers` (`TOTK_RUMBLE_TRIGGERS`): the game's rumble also vibrates both triggers, at one of eight levels, for as long as the rumble lasts: the level of the light motor's value with the standard rumble, of the stronger side's high band with the DualSense haptics (`dualsense_haptics`). A trigger has one effect at a time, so the resistance of `dualsense_triggers` is off during a rumble and back after it.
+
+With both at 0 the controller is sent no trigger effect and behaves as before. The log says `input: DualSense trigger effects on` when the first effect is sent, and `input: "<name>" took no trigger effect` when the controller refuses it (the triggers are then left alone until it is connected again).
+
+A controller keeps its trigger effect until it is told otherwise or powers off, so the game frees the triggers when it exits (`input_haptics_stop`: closing the window, the game's own exit). After a crash they stay as they were: turn the controller off and on, or start the game again and close it.
+
+The game must see the DualSense itself. Steam Input and DS4Windows present it as a virtual Xbox pad, which has no adaptive triggers: turn Steam Input off for the game, or close the bridge.
 
 ## Nintendo Switch 2 controllers
 

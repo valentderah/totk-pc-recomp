@@ -4,7 +4,8 @@
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
+// thread of its own (input_motion_start). A DualSense gets its trigger effects from that thread too (triggers_update).
+// Every SDL call on the gamepad is made under `lock`.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "dualsense.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -39,6 +41,17 @@ int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground()
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
 static int pad_rumble;               // the open gamepad has rumble motors
+// The open gamepad is a DualSense whose triggers take effects (dualsense.h). All under lock.
+static int pad_ds5;
+static int ds_live;                              // ... and it was sent the effects in ds_sent (right, left)
+static uint8_t ds_sent[2][DS_TRIGGER_BYTES];
+static int ds_stopped;                           // input_haptics_stop freed the triggers: the process is ending
+static int ds_strength = -1, ds_rumble;          // TOTK_DUALSENSE_TRIGGERS 0..8, TOTK_RUMBLE_TRIGGERS; live (cfg_version)
+static unsigned ds_cfg_seen;
+static int ds_vibration;                         // trigger vibration level of the last rumble, 0 none ...
+static uint64_t ds_vibration_until;              // ... and when it ends, plat_now_ns
+static uint16_t rumble_low, rumble_high;         // the DualSense's last input_rumble ...
+static uint64_t rumble_until;                    // ... and when it ends, plat_now_ns
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
 static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
@@ -586,16 +599,78 @@ static void dsp_push_target(RenHdcDualSenseDsp *dsp, int side, float left_al, fl
     plat_mutex_unlock(&dsp_lock);
 }
 
+// Under lock: give a DualSense the trigger effects the settings ask for (ds_triggers_pick), when they differ from the
+// ones it has. TOTK_DUALSENSE_TRIGGERS (0..8, live) is the resistance; with TOTK_RUMBLE_TRIGGERS the level the last
+// rumble left in ds_vibration replaces it until that rumble ends. Nothing is sent to a pad that never needed an
+// effect, so with both settings off a DualSense is left as it was. keep_rumble: send the SDL rumble in effect again
+// behind the trigger report, as the controller is not known to keep its emulated rumble across a report that does
+// not carry it; input_rumble passes 0 and sends its own.
+static void triggers_update(uint64_t now, int keep_rumble) {
+    if (!pad_ds5 || ds_stopped) return;
+    unsigned ver = cfg_version();
+    if (ds_strength < 0 || ver != ds_cfg_seen) {
+        ds_cfg_seen = ver;
+        int v = cfg_int("TOTK_DUALSENSE_TRIGGERS");
+        ds_strength = v < 0 ? 0 : v > DS_LEVEL_MAX ? DS_LEVEL_MAX : v;
+        ds_rumble = input_rumble_triggers_enabled();
+    }
+    DsTriggerState s = {.strength = ds_strength, .vibration = ds_rumble && now < ds_vibration_until ? ds_vibration : 0};
+    uint8_t want[2][DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
+    ds_triggers_pick(&s, want[0], want[1]);
+    if (ds_live ? !memcmp(want, ds_sent, sizeof want) : want[0][0] == DS_MODE_OFF && want[1][0] == DS_MODE_OFF) return;
+    ds_report_triggers(report, want[0], want[1]);
+    if (!SDL_SendGamepadEffect(pad, report, sizeof report)) {
+        // SDL waits 10 ms in each call on a pad it cannot switch to enhanced reports: one try per connection
+        rt_log("input: \"%s\" took no trigger effect (%s); its triggers stay as they are", SDL_GetGamepadName(pad), SDL_GetError());
+        pad_ds5 = 0;
+        return;
+    }
+    if (!ds_live)
+        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, rumble_triggers = %d)", ds_strength, ds_rumble);
+    memcpy(ds_sent, want, sizeof want);
+    ds_live = 1;
+    if (keep_rumble && now < rumble_until && (rumble_low || rumble_high))
+        SDL_RumbleGamepad(pad, rumble_low, rumble_high, (uint32_t)((rumble_until - now) / 1000000u) + 1);
+}
+
+// Under lock: the haptics took a rumble (input_hd_rumble), so input_rumble does not see it. The triggers vibrate at
+// the level of amp, the stronger side's high band amplitude (0..1), until the game's next value or for as long as
+// haptics_main lets a side sound that the game left alone. No SDL rumble is in effect then, so none is sent again:
+// it would switch the controller from its haptics to the emulated rumble.
+static void triggers_hd_rumble(uint64_t now, float amp) {
+    if (!pad_ds5) return;
+    rumble_low = rumble_high = 0, rumble_until = 0;
+    ds_vibration = ds_vibration_level((uint16_t)((amp > 0 ? amp < 1 ? amp : 1 : 0) * 65535.0f + 0.5f));
+    ds_vibration_until = now + 250000000ull;
+    triggers_update(now, 0);
+}
+
+// Under lock, before the gamepad is closed for good: a DualSense that was given trigger effects gets its triggers
+// back free, as the controller keeps an effect until it is told otherwise or powers off. SDL writes the report from
+// a thread of its own; SDL_CloseGamepad waits for it (SDL, src/joystick/hidapi/SDL_hidapijoystick.c,
+// HIDAPI_JoystickClose: up to 30 ms). Nothing is sent to any other gamepad.
+static void triggers_stop(void) {
+    ds_stopped = 1;   // a poll may open the gamepad again before the process is gone: no effect for it
+    if (!pad || !ds_live) return;
+    uint8_t off[DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
+    ds_trigger_off(off);
+    ds_report_triggers(report, off, off);
+    SDL_SendGamepadEffect(pad, report, sizeof report);
+    ds_live = 0;
+    rt_log("input: DualSense trigger effects off");
+}
+
 static void renhdrum_close_pad(SDL_Gamepad *closing_pad);
 static void renhdrum_open_pad(SDL_Gamepad *opened_pad);
 static void renhdrum_sync_cfg(void);
 
 // plat_exit runs no atexit handlers: the exit paths (gfx_window_closed, svc ExitProcess, the end of a --seconds run)
 // call this first so the controller is left silent, wired USB Switch Pro Controllers exit 0x30 mode (SDL_CloseGamepad),
-// and the DSP / engine are destroyed.
+// a DualSense's triggers are free again (triggers_stop), and the DSP / engine are destroyed.
 void input_haptics_stop(void) {
     plat_mutex_lock(&lock);
     renhdrum_close_pad(pad);
+    triggers_stop();
     if (pad) {
         SDL_CloseGamepad(pad);
         pad = NULL;
@@ -1173,6 +1248,7 @@ static void scan_pads(void) {
         // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
         motion_bias_reset(motion_global());
         calib_pad_name[0] = 0;
+        pad_ds5 = 0;
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
@@ -1183,6 +1259,10 @@ static void scan_pads(void) {
     SDL_free(ids);
     if (!pad) return;
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    // The real type: a mapping that presents the pad as another kind does not change what its triggers can do. A
+    // controller that powered off and came back has no effect any more, so the first update sends them again.
+    pad_ds5 = SDL_GetRealGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5;
+    ds_live = 0, ds_vibration_until = 0, rumble_until = 0;
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     for (int i = 0; i < 4; i++) {
         SDL_GamepadButtonLabel lb = SDL_GetGamepadButtonLabel(pad, pad_sdl[PAD_SOUTH + i]);
@@ -1403,6 +1483,7 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
     SDL_UpdateGamepads();
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
+    if (motion_thread != 1) triggers_update(plat_now_ns(), 1);   // the motion thread does it once the game started it
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
     pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
@@ -1717,6 +1798,7 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
                     handled = 1;
                 }
             }
+            if (handled) triggers_hd_rumble(now, left_ah > right_ah ? left_ah : right_ah);
         } else if (steam_dsp && steam_hid) {
             dsp_push_target(steam_dsp, side, left_al, left_fl, left_ah, left_fh,
                             right_al, right_fl, right_ah, right_fh);
@@ -1760,8 +1842,16 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
     if (state == 1 && pad && pad_rumble) {
+        if (pad_ds5) {
+            // A DualSense has no trigger motors (SDL_RumbleGamepadTriggers is unsupported on it): its adaptive
+            // triggers vibrate instead, with an effect sent before the rumble it belongs to.
+            uint64_t now = plat_now_ns();
+            rumble_low = low, rumble_high = high, rumble_until = now + ms * 1000000ull;
+            ds_vibration = ds_vibration_level(high), ds_vibration_until = rumble_until;
+            triggers_update(now, 0);
+        }
         ok = SDL_RumbleGamepad(pad, low, high, ms);
-        if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
+        if (triggers && !pad_ds5) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
     }
     plat_mutex_unlock(&lock);
     return ok;
@@ -1857,9 +1947,9 @@ int input_motion_enabled(void) {
     return on;
 }
 
-// 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
-// sensor reads at rest.
+// 250 Hz: the gamepads update (reports read, rumble expiry), a DualSense's trigger effects follow the settings and
+// the rumble (triggers_update), and the newest gyro and accelerometer sample goes into the fusion. Without a gamepad
+// with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
     for (;;) {
@@ -1869,6 +1959,7 @@ static void motion_main(void *arg) {
         plat_mutex_lock(&lock);
         if (pad && SDL_GamepadConnected(pad)) {
             SDL_UpdateGamepads();
+            triggers_update(plat_now_ns(), 1);
             have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
         }

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "dualsense.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -140,6 +141,8 @@ int probe_cfg(void) {
           "meta: prefix and case are accepted");
     m = cfg_meta("RUMBLE_STRENGTH");
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
+    m = cfg_meta("DUALSENSE_TRIGGERS");
+    CHECK(m && EQ(m->def, "0") && EQ(m->values, "0..8") && m->live, "meta: dualsense_triggers is live, off by default");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
@@ -221,6 +224,57 @@ int probe_cfg(void) {
     CHECK(rumble_motor(0.25f, 1, 1) > 16000 && rumble_motor(0.25f, 1, 1) < 16800, "rumble: curve 1, strength 100% is linear");
     CHECK(rumble_motor(0.1f, 0.6f, 1.3f) > rumble_motor(0.1f, 1, 1.3f), "rumble: curve lifts weak values");
     CHECK(rumble_motor(0.3f, 0.6f, 1.3f) > rumble_motor(0.3f, 0.6f, 1), "rumble: strength scales");
+    // DualSense trigger effects (dualsense.c). The expected bytes are worked out by hand from the documented layout:
+    // a bit per active zone in bytes 1..2, three bits per zone (the level minus one) in bytes 3..6.
+    static const uint8_t ds_off[DS_TRIGGER_BYTES] = {0x05};
+    static const uint8_t ds_mixed[DS_TRIGGER_BYTES] = {0x21, 0x01, 0x02, 0x00, 0x00, 0x00, 0x38};   // zone 0 at 1, zone 9 at 8
+    static const uint8_t ds_zr1[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03, 0x00, 0x00, 0x49, 0x12};     // zones 2..4 at 1, 5..9 at 3
+    static const uint8_t ds_zl1[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03};                             // zones 2..9 at 1
+    static const uint8_t ds_zr4[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03, 0xc0, 0xb6, 0xb6, 0x2d};     // zones 2..4 at 4, 5..9 at 6
+    static const uint8_t ds_zl4[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03, 0x40, 0x92, 0x24, 0x09};     // zones 2..9 at 2
+    static const uint8_t ds_zr8[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03, 0xc0, 0xff, 0xff, 0x3f};     // zones 2..9 at 8
+    static const uint8_t ds_zl8[DS_TRIGGER_BYTES] = {0x21, 0xfc, 0x03, 0x40, 0xdb, 0xb6, 0x2d};     // zones 2..9 at 6
+    static const uint8_t ds_vib3[DS_TRIGGER_BYTES] = {0x26, 0xff, 0x03, 0x92, 0x24, 0x49, 0x12, 0, 0, 40};
+    static const uint8_t ds_vib8[DS_TRIGGER_BYTES] = {0x26, 0xff, 0x03, 0xff, 0xff, 0xff, 0x3f, 0, 0, 65};
+    static const uint8_t ds_vib72[DS_TRIGGER_BYTES] = {0x26, 0x80, 0x03, 0x00, 0x00, 0x20, 0x09, 0, 0, 30};   // zones 7..9 at 2
+    static const uint8_t ds_free[DS_ZONES] = {0}, ds_ends[DS_ZONES] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 99};
+    uint8_t tr[DS_TRIGGER_BYTES], tl[DS_TRIGGER_BYTES], rep[DS_REPORT_BYTES];
+    #define DS_IS(got, want) (!memcmp((got), (want), DS_TRIGGER_BYTES))
+    ds_trigger_off(tr);
+    ds_trigger_feedback(tl, ds_free);
+    CHECK(DS_IS(tr, ds_off) && DS_IS(tl, ds_off), "dualsense: off is mode 0x05 and zeros; feedback in no zone is off");
+    ds_trigger_feedback(tr, ds_ends);
+    CHECK(DS_IS(tr, ds_mixed), "dualsense: feedback bytes per zone, a strength above 8 counts as 8");
+    ds_trigger_vibration(tr, 0, 3, 40);
+    ds_trigger_vibration(tl, 7, 2, 30);
+    CHECK(DS_IS(tr, ds_vib3) && DS_IS(tl, ds_vib72), "dualsense: vibration bytes from a zone on, the frequency in byte 9");
+    ds_trigger_vibration(tr, 0, 3, 0);
+    ds_trigger_vibration(tl, 0, 0, 40);
+    CHECK(DS_IS(tr, ds_off) && DS_IS(tl, ds_off), "dualsense: vibration at 0 Hz or amplitude 0 is off");
+    ds_report_triggers(rep, ds_zr4, ds_vib3);
+    int ds_rest = 0;
+    for (int i = 1; i < DS_REPORT_BYTES; i++)
+        if (i < 10 || i >= 32) ds_rest |= rep[i];
+    CHECK(rep[0] == 0x0c && DS_IS(rep + 10, ds_zr4) && DS_IS(rep + 21, ds_vib3) && !ds_rest,
+          "dualsense: the report enables the two trigger effects only, right at 10, left at 21");
+    CHECK(ds_vibration_level(0) == 0 && ds_vibration_level(1) == 1 && ds_vibration_level(8191) == 1 &&
+          ds_vibration_level(8192) == 2 && ds_vibration_level(32768) == 5 && ds_vibration_level(57343) == 7 &&
+          ds_vibration_level(57344) == 8 && ds_vibration_level(65535) == 8, "dualsense: vibration level rounds up to eighths");
+    ds_triggers_pick(&(DsTriggerState){0, 0}, tr, tl);
+    CHECK(DS_IS(tr, ds_off) && DS_IS(tl, ds_off), "dualsense: strength 0 without rumble frees both triggers");
+    ds_triggers_pick(&(DsTriggerState){4, 0}, tr, tl);
+    CHECK(DS_IS(tr, ds_zr4) && DS_IS(tl, ds_zl4), "dualsense: strength 4 gives ZR 4 then 6 past the press, ZL 2");
+    ds_triggers_pick(&(DsTriggerState){1, 0}, tr, tl);
+    CHECK(DS_IS(tr, ds_zr1) && DS_IS(tl, ds_zl1), "dualsense: the lightest setting keeps ZL at 1");
+    ds_triggers_pick(&(DsTriggerState){8, 0}, tr, tl);
+    CHECK(DS_IS(tr, ds_zr8) && DS_IS(tl, ds_zl8), "dualsense: the heaviest setting stays at 8 past the press");
+    ds_triggers_pick(&(DsTriggerState){99, 0}, tr, tl);
+    CHECK(DS_IS(tr, ds_zr8) && DS_IS(tl, ds_zl8), "dualsense: a strength above 8 counts as 8");
+    ds_triggers_pick(&(DsTriggerState){4, 3}, tr, tl);
+    CHECK(DS_IS(tr, ds_vib3) && DS_IS(tl, ds_vib3), "dualsense: a rumble vibrates both triggers in place of the resistance");
+    ds_triggers_pick(&(DsTriggerState){0, 8}, tr, tl);
+    CHECK(DS_IS(tr, ds_vib8) && DS_IS(tl, ds_vib8), "dualsense: trigger vibration works with the resistance off");
+    #undef DS_IS
     // Keyboard and mouse bindings (input_map.c)
     uint8_t dn[KEY_COUNT] = {0};
     int32_t st[2];

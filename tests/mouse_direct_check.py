@@ -586,6 +586,7 @@ int main(void) {
 INPUT_HARNESS = r'''
 #include <assert.h>
 #include "input.c"
+#include "dualsense.c"
 GfxStats gfx_counters;
 InputMap input_map;
 // Other input entry points are linked by PE unwind metadata; reaching them is outside this script-only test.
@@ -600,6 +601,7 @@ void gameplay_tweaks_apply(uint64_t f, int a, uint64_t *b, int32_t *lx, int32_t 
     (void)f; (void)a; (void)b; (void)lx; (void)ly; (void)rx; (void)ry;
 }
 int cfg_bool(const char *key) { (void)key; abort(); }
+int cfg_int(const char *key) { (void)key; abort(); }
 int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;abort(); }
 int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;abort(); }
 int menu_is_open(void) { abort(); }

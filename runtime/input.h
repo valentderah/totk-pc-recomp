@@ -110,7 +110,8 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
 // vibration (skipping basic ERM downmixing), 0 to fall back to input_rumble. Callable from any thread.
 int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
                     float right_al, float right_fl, float right_ah, float right_fh);
-// Leaves the controller silent (neutral HD rumble packet / silent DualSense report 0x32 / zero Xbox motors / Steam grip off) and
+// Leaves the controller silent (neutral HD rumble packet / silent DualSense report 0x32 / zero Xbox motors / Steam grip
+// off), frees the triggers of a DualSense that was given trigger effects (TOTK_DUALSENSE_TRIGGERS, TOTK_RUMBLE_TRIGGERS) and
 // destroys the RenHDrum DSP and engines. The exit paths call it before plat_exit, which runs no atexit handlers. Any thread.
 void input_haptics_stop(void);
 // The HD rumble / haptics controller connected now (for the Controls tab's "in use" notes); any thread.
@@ -118,7 +119,9 @@ enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, H
 int input_hd_pad_kind(void);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
-// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
+// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value; on a
+// DualSense, which has no trigger motors, its adaptive triggers vibrate at the level of that value (dualsense.h),
+// and at the level of the high band while input_hd_rumble plays the rumble.
 int input_rumble_triggers_enabled(void);
 
 // Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
