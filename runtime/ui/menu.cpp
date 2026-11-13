@@ -703,8 +703,10 @@ static void tab_screen(float scale) {
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+#ifdef _WIN32
     opt_toggle("TOTK_PERF_WINDOW", UI_MENU_PERF_WINDOW, UI_MENU_PERF_WINDOW_DESC);
     opt_toggle("TOTK_INPUT_WINDOW", UI_MENU_INPUT_WINDOW, UI_MENU_INPUT_WINDOW_DESC);
+#endif
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
