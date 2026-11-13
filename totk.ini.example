@@ -295,7 +295,7 @@
 # hdr_ui_nits = 203
 # Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
 # picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
-# hdr_hue = 80
+# hdr_hue = 70
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
@@ -326,6 +326,12 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# Music, sound effects and voices (characters, creatures, Link) in percent, on top of volume. Live like volume. Below
+# 100 the port tells the three apart by the sound files the game loads; a value moved during play reaches sounds
+# loaded after the change at once and earlier ones by their next stream read, the rest count as effects.
+# volume_music = 100
+# volume_sfx = 100
+# volume_voice = 100
 # Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
 # game is told the same channel count and mixes for it. Takes effect at the next start.
 # audio_channels = stereo

@@ -254,6 +254,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                     "at 60 FPS.",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Master volume of the game.",
+    [UI_MENU_VOLUME_MUSIC] = "Music volume", [UI_MENU_VOLUME_MUSIC_DESC] = "Volume of background music.",
+    [UI_MENU_VOLUME_SFX] = "SFX volume", [UI_MENU_VOLUME_SFX_DESC] = "Volume of sound effects.",
+    [UI_MENU_VOLUME_VOICE] = "Voice volume", [UI_MENU_VOLUME_VOICE_DESC] = "Volume of character voices.",
     [UI_MENU_AUDIO_CHANNELS] = "Speakers",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Stereo or 5.1 surround output. Automatic picks 5.1 when the Windows speaker setup "
                                     "has six or more channels. Applies after a restart.",
@@ -794,6 +797,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_QUICKMENU_DESC] = "Исправление порта: чёрный фон меню оружия, щитов и материалов при 60 FPS.",
 
     [UI_MENU_VOLUME] = "Громкость", [UI_MENU_VOLUME_DESC] = "Общая громкость игры.",
+    [UI_MENU_VOLUME_MUSIC] = "Громкость музыки", [UI_MENU_VOLUME_MUSIC_DESC] = "Громкость фоновой музыки.",
+    [UI_MENU_VOLUME_SFX] = "Громкость эффектов", [UI_MENU_VOLUME_SFX_DESC] = "Громкость звуковых эффектов.",
+    [UI_MENU_VOLUME_VOICE] = "Громкость голосов", [UI_MENU_VOLUME_VOICE_DESC] = "Громкость голосов персонажей.",
     [UI_MENU_AUDIO_CHANNELS] = "Динамики",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Стерео или объёмный звук 5.1. Автоматически выбирается 5.1, если в Windows "
                                     "настроено шесть каналов или больше. Применяется после перезапуска.",
@@ -1253,6 +1259,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODE_DOCKED] = "Modo TV", [UI_MENU_MODE_HANDHELD] = "Modo portátil",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Volume geral do jogo.",
+    [UI_MENU_VOLUME_MUSIC] = "Volume da música", [UI_MENU_VOLUME_MUSIC_DESC] = "Volume da música de fundo.",
+    [UI_MENU_VOLUME_SFX] = "Volume dos efeitos", [UI_MENU_VOLUME_SFX_DESC] = "Volume dos efeitos sonoros.",
+    [UI_MENU_VOLUME_VOICE] = "Volume das vozes", [UI_MENU_VOLUME_VOICE_DESC] = "Volume das vozes dos personagens.",
     [UI_MENU_AUDIO_CHANNELS] = "Alto-falantes",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Saída estéreo ou surround 5.1. Automático escolhe 5.1 quando a configuração de "
                                     "alto-falantes do Windows tem seis canais ou mais. Vale após reiniciar.",
@@ -1873,6 +1882,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                   "这样被打断的读取可能会永久卡住。",
     [UI_MENU_VOLUME] = "音量",
     [UI_MENU_VOLUME_DESC] = "游戏的主音量。",
+    [UI_MENU_VOLUME_MUSIC] = "音乐音量",
+    [UI_MENU_VOLUME_MUSIC_DESC] = "背景音乐的音量。",
+    [UI_MENU_VOLUME_SFX] = "音效音量",
+    [UI_MENU_VOLUME_SFX_DESC] = "声音特效的音量。",
+    [UI_MENU_VOLUME_VOICE] = "语音音量",
+    [UI_MENU_VOLUME_VOICE_DESC] = "角色语音的音量。",
     [UI_MENU_AUDIO_CHANNELS] = "扬声器",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "立体声或 5.1 环绕声输出。选择自动时，若 Windows 扬声器设置有六个或更多声道则使用 5.1。重启后生效。",
     [UI_MENU_CHANNELS_AUTO] = "自动", [UI_MENU_CHANNELS_STEREO] = "立体声", [UI_MENU_CHANNELS_51] = "5.1 环绕声",
