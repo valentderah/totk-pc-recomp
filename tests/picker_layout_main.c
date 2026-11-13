@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "ui/blueprint_picker.h"
+#include "bfres.h"
+#include "blueprint_attach.h"
+#include "model_romfs.h"
 
 #define FAKE_ENTRIES 40
 
@@ -79,6 +82,37 @@ int32_t ikb_wheel_take(void) { return 0; }
 int plat_dir_exists(const char *p) { (void)p; return 1; }
 void rt_log(const char *fmt, ...) { (void)fmt; }
 
+// The runtime model source (model_romfs.c + bfres.c) is not linked into this test: there is no RomFS and no MeshCodec
+// bridge, so every part falls through to the collision-shape fallback and then the box. These stubs only have to link.
+const BfresModel *model_romfs_resolve(const char *actor) { (void)actor; return NULL; }
+const BfresModel *model_romfs_resolve_model(const char *model_name) { (void)model_name; return NULL; }
+int bfres_shape_triangles(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
+int bfres_shape_name(const BfresModel *m, int index, char *name, size_t cap) {
+    (void)m; (void)index;
+    if (name && cap) name[0] = 0;
+    return 0;
+}
+int bfres_shape_vertices(const BfresModel *m, int index) { (void)m; (void)index; return 0; }
+int bfres_shape_geometry(const BfresModel *m, int index, float *verts, int max_verts, uint16_t *tris, int max_tris) {
+    (void)m; (void)index; (void)verts; (void)max_verts; (void)tris; (void)max_tris; return 0;
+}
+// The fused-material path needs the game's attachment data and the weapon's skeleton, neither of which this test has. A
+// part with no model never reaches them anyway, so these only have to link.
+int bp_attach_resolve(const char *weapon, const char *material, BpAttach *out) {
+    (void)weapon; (void)material;
+    if (out) memset(out, 0, sizeof *out);
+    return 0;
+}
+void bp_attach_matrix(const BpAttach *a, const float bone_world[16], float fit_scale, float out[16]) {
+    (void)a; (void)bone_world; (void)fit_scale;
+    memset(out, 0, sizeof(float) * 16);
+    out[0] = out[5] = out[10] = out[15] = 1.0f;
+}
+float model_romfs_extent(const BfresModel *m) { (void)m; return 0.0f; }
+int bfres_bone_find(const BfresModel *m, const char *name) { (void)m; (void)name; return -1; }
+int bfres_bone_world(const BfresModel *m, int index, float out[16]) {
+    (void)m; (void)index; (void)out; return 0;
+}
 
 // The picker uses this for the double-click window on the preview's camera. A monotonic counter is enough here: the
 // test never depends on the wall clock, only on the value changing between calls.
@@ -277,6 +311,19 @@ int main(void) {
                   f.preview_x + f.preview_w <= f.x + f.w && f.preview_y + f.preview_h <= f.y + f.h, msg);
             printf("preview: %d kinds, title '%s', note '%s'\n", f.preview_kinds, f.preview_title, f.preview_note);
 
+            // Turning the view marks the rendered image stale. The projection cache in preview_load is keyed on the
+            // file, the build's turn and the whole framing - the camera angle included - so a drag that changes only the
+            // angle re-projects; this checks the stamp half of that, which is what a renderer reads.
+            {
+                const unsigned before = bp_picker_preview_stamp();
+                float yaw = 0, pitch = 0;
+                bp_picker_camera(&yaw, &pitch);
+                bp_picker_camera_set(yaw + 0.35f, pitch);
+                snprintf(msg, sizeof msg, "preview: a camera turn marks the image stale");
+                check(bp_picker_preview_stamp() != before, msg);
+                bp_picker_camera_reset();
+                bp_picker_layout(&f, 1920, 1080, 1.0f);
+            }
         } else {
             printf("preview: the cursor did not land on the file row (row selected, no preview)\n");
             check(0, "preview: a file row should have produced a preview");
@@ -304,6 +351,100 @@ int main(void) {
         snprintf(msg, sizeof msg, "dot folder: drawn as a folder (icon %d, want %d)", row_icon, BP_ICON_FOLDER);
         check(row_icon == BP_ICON_FOLDER, msg);
     }
+
+    // ---- the preview follows the pointer, not the pad cursor. This is the path a mouse actually takes, and the one
+    // the column was silently missing on: the layout asked for the previous frame's hover flags, so the preview needed
+    // a frame to catch up and never appeared at all when the pad cursor sat on a folder.
+    {
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        char msg[192];
+        // Scroll to the end so the file row (which sorts last) is on screen, then point at it.
+        bp_picker_wheel(-99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+
+        int fx = -1, fy = -1;
+        {
+            int rowseen = 0;
+            for (int k = 0; k < f.nrect; k++) {
+                if (f.rect[k].kind != BP_RECT_ROW) continue;
+                if (f.scroll + rowseen == f.count - 1) {   // the file is the last entry
+                    fx = f.rect[k].x + f.rect[k].w / 2;
+                    fy = f.rect[k].y + f.rect[k].h / 2;
+                }
+                rowseen++;
+            }
+        }
+        snprintf(msg, sizeof msg, "pointer preview: the file row is on screen (%d,%d)", fx, fy);
+        check(fx >= 0, msg);
+
+        if (fx >= 0) {
+            // Pointing at the file must show the preview on this very frame, with no pad press in between.
+            bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
+            snprintf(msg, sizeof msg, "pointer preview: appears while hovering the file (%d kinds)", f.preview_kinds);
+            check(f.preview && f.preview_kinds > 0, msg);
+        }
+    }
+
+    // ---- dragging inside the preview must not change which file is previewed. The pointer sits in the preview column at
+    // a height that lies over a different row; the file under the cursor must stay the one the player focused, because
+    // the column is not the list. This was a real bug: the layout pass asked the rows before they had been narrowed to
+    // clear the column, so every point in the column landed on the row at that height and the preview swapped files as
+    // the pointer moved.
+    {
+        bp_picker_camera_reset();
+        bp_picker_wheel(99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        bp_picker_wheel(-99999);
+        bp_picker_input(&f, -1, -1);
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+
+        // Point at the file row so the column is reserved and the file is the focus.
+        int fx = -1, fy = -1, rowseen = 0;
+        for (int k = 0; k < f.nrect; k++) {
+            if (f.rect[k].kind != BP_RECT_ROW) continue;
+            if (f.scroll + rowseen == f.count - 1) {
+                fx = f.rect[k].x + f.rect[k].w / 2;
+                fy = f.rect[k].y + f.rect[k].h / 2;
+            }
+            rowseen++;
+        }
+        char msg[192];
+        snprintf(msg, sizeof msg, "drag: the file row is on screen (%d,%d)", fx, fy);
+        check(fx >= 0, msg);
+        if (fx < 0) goto drag_done;
+
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
+        bp_picker_input(&f, fx, fy);
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, fx, fy);
+        const int had_faces = f.preview_faces;
+        char before[128];
+        snprintf(before, sizeof before, "%s", f.preview_note);
+        snprintf(msg, sizeof msg, "drag: the file previews before the drag (%d faces, '%s')", had_faces, before);
+        check(f.preview && before[0] != 0, msg);
+
+        // The pointer inside the column, at the height of the first listed row (a folder, not the file).
+        int cx = f.preview_x + f.preview_w / 2, cy = -1;
+        for (int k = 0; k < f.nrect; k++)
+            if (f.rect[k].kind == BP_RECT_ROW) { cy = f.rect[k].y + f.rect[k].h / 2; break; }
+        snprintf(msg, sizeof msg, "drag: a point inside the column over a folder row (%d,%d)", cx, cy);
+        check(cy >= 0 && cx > f.preview_x && cx < f.preview_x + f.preview_w, msg);
+
+        // Layout with the pointer there: the same file must still be the preview, and the pointer must not have moved the
+        // focus onto that folder row.
+        const int focus_before = bp_picker_selected_row();
+        bp_picker_layout_at(&f, 1920, 1080, 1.0f, cx, cy);
+        snprintf(msg, sizeof msg, "drag: the column keeps the same file ('%s' -> '%s')", before, f.preview_note);
+        check(f.preview && !strcmp(before, f.preview_note), msg);
+        snprintf(msg, sizeof msg, "drag: the column keeps its faces (%d -> %d)", had_faces, f.preview_faces);
+        check(f.preview_faces > 0 || had_faces == 0, msg);
+        bp_picker_input(&f, cx, cy);
+        snprintf(msg, sizeof msg, "drag: the pointer in the column does not move the focus (%d -> %d)", focus_before,
+                 bp_picker_selected_row());
+        check(focus_before == bp_picker_selected_row(), msg);
+    }
+drag_done:
 
     // ---- one focus for both devices: a row the pointer left focused is where the pad continues from, so A acts on the
     // row the mouse was on rather than on something the pad picked independently.
@@ -353,6 +494,7 @@ int main(void) {
     // set the focus on every frame it lay on a row, so the D-pad moved the focus and the pointer put it back one frame
     // later, and A acted on the row under the mouse rather than the one the pad was on.
     {
+        bp_picker_camera_reset();
         bp_picker_wheel(99999);
         bp_picker_input(&f, -1, -1);
         bp_picker_layout(&f, 1920, 1080, 1.0f);
@@ -426,7 +568,34 @@ int main(void) {
         check(!has_r, msg);
         snprintf(msg, sizeof msg, "prompts: A and B are always offered (%d prompts)", prompts);
         check(prompts >= 2 && !strcmp(f.prompt[0].key, "A") && !strcmp(f.prompt[1].key, "B"), msg);
+    }
 
+    // ---- the camera: a drag turns it, the projection follows, and it stays inside its poles.
+    {
+        char msg[192];
+        float yaw = 0, pitch = 0;
+        bp_picker_camera_reset();
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: the default view is the documented three-quarter angle (%.2f, %.2f)", yaw,
+                 pitch);
+        check(yaw > 0.60f && yaw < 0.62f && pitch > 0.48f && pitch < 0.50f, msg);
+
+        // Pitch is no longer clamped: the view can tip past the poles and read the build from the other side, so an
+        // out-of-range pitch is stored verbatim.
+        bp_picker_camera_set(0.0f, 99.0f);
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: pitch passes through unclamped (%.2f)", pitch);
+        check(pitch > 98.9f && pitch < 99.1f, msg);
+        bp_picker_camera_set(0.0f, -99.0f);
+        bp_picker_camera(&yaw, &pitch);
+        snprintf(msg, sizeof msg, "camera: pitch passes through unclamped the other way (%.2f)", pitch);
+        check(pitch < -98.9f && pitch > -99.1f, msg);
+
+        bp_picker_camera_reset();
+        bp_picker_layout(&f, 1920, 1080, 1.0f);
+        snprintf(msg, sizeof msg, "camera: the reset restores the default view");
+        bp_picker_camera(&yaw, &pitch);
+        check(yaw > 0.60f && yaw < 0.62f && pitch > 0.48f && pitch < 0.50f, msg);
     }
 
     printf("picker layout: %d checks, %d failures\n", checks, failures);

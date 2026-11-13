@@ -1,4 +1,4 @@
-﻿// The blueprint picker's draw layer: it paints only the rectangles and text runtime/blueprint_picker.c computed, through
+// The blueprint picker's draw layer: it paints only the rectangles and text runtime/blueprint_picker.c computed, through
 // ImGui's draw list. There is no ImGui widget and no ImGui layout here on purpose: the picker's state, hit tests, layout
 // and every visual distinction (icon, hover, selection) live in C, so this file cannot trip ImGui's layout checks. The
 // earlier all-widget version aborted the game there.
@@ -14,6 +14,7 @@
 #include "imgui.h"
 
 #include "ui/blueprint_picker.h"
+#include "ui/preview3d.h"
 
 extern "C" {
 #include "host.h"
@@ -137,31 +138,70 @@ int bp_picker_draw(float width, float height, float scale, int px, int py) {
              f.error ? kGold : kTextDim, s2);
     }
 
-    // ---- the detail column: what the highlighted file holds. It shows the part count and the distinct part names, read
-    // from the file itself, so the player can tell two drafts apart and a damaged file is refused before they press
-    // anything. The 3D view of the build is a later change; this column has no geometry in it.
+    // ---- the preview column: a small 3D view of the highlighted blueprint, drawn before the rows so their plates never
+    // sit on top of it. The CAI format stores each part's placement and nothing else, so a part is a box at its own
+    // position and angle rather than its real model; the C layer has already projected every visible face, shaded it and
+    // sorted the lot far to near. This only fills them in.
     if (f.preview) {
         const float px = (float)f.preview_x, py = (float)f.preview_y;
         const float pw = (float)f.preview_w, ph = (float)f.preview_h;
-        // A recessed panel, so the column reads as its own area rather than as part of the list.
+        // A recessed panel for the view, with a faint grid floor so the build reads as standing on something.
         plate(dl, px - 8 * s, py - 8 * s, pw + 16 * s, ph + 16 * s, 10 * s, IM_COL32(0, 0, 0, 70), kRowEdge, 1 * s);
-        // The headline (part count or "not a blueprint"), then the file name or the reason, then the part names. All of
-        // it is clipped to the column: a long file name used to run out of the panel.
-        const float tx = px;
-        float ty = py;
-        dl->PushClipRect(ImVec2(tx - 2 * s, ty - fs * 0.3f), ImVec2(px + pw, py + ph), true);
-        text(dl, font, fs * 0.94f, tx, ty, f.preview_title[0] && f.preview_kinds > 0 ? kGold : kTextDim, f.preview_title);
+        for (int i = 1; i < 4; i++) {
+            const float gy = py + ph * (float)i / 4.0f;
+            dl->AddLine(ImVec2(px, gy), ImVec2(px + pw, gy), IM_COL32(255, 255, 255, 10), 1 * s);
+        }
+        // The 3D view. When the GPU preview is ready it is one textured quad: the parts were rendered offscreen with a
+        // real depth buffer, which is what makes the build read as solid. The CPU face list stays as the fallback for a
+        // machine where the preview could not be created.
+        const int gpu = preview3d_ready();
+        bp_picker_use_gpu(gpu);
+        if (gpu) {
+            // The camera is the picker's own state: feed it to the renderer every frame, which re-renders only when it
+            // actually changed. A different file also invalidates the cached image through the picker's stamp.
+            float yaw = 0, pitch = 0;
+            bp_picker_camera(&yaw, &pitch);
+            preview3d_set_camera(yaw, pitch, bp_picker_zoom());
+            const unsigned stamp = bp_picker_preview_stamp();
+            static unsigned last_stamp;
+            if (stamp != last_stamp) {
+                last_stamp = stamp;
+                preview3d_invalidate();
+            }
+        }
+        if (gpu && preview3d_resize((int)pw, (int)ph) && preview3d_texture()) {
+            dl->PushClipRect(ImVec2(px, py), ImVec2(px + pw, py + ph), true);
+            float u = 1.0f, v = 1.0f;
+            preview3d_uv(&u, &v);
+            dl->AddImage((ImTextureID)preview3d_texture(), ImVec2(px, py), ImVec2(px + pw, py + ph),
+                         ImVec2(0, 0), ImVec2(u, v));
+            dl->PopClipRect();
+        } else if (f.preview_faces > 0) {
+            // Quad corners are placed analytically and can land outside the box when a build is viewed at an angle, so
+            // the draw is clipped to the view: AddQuadFilled itself does not clip.
+            dl->PushClipRect(ImVec2(px, py), ImVec2(px + pw, py + ph), true);
+            for (int k = 0; k < f.preview_faces; k++) {
+                const float sh = f.preview_face[k].shade;
+                // The actor's own colour, the way the game's viewer paints a draft when "Show Colors" is on; the shade
+                // is the lighting. A real model and a collision-shape fallback share the colour, so the build reads as one
+                // object rather than as two kinds of thing.
+                const ImU32 fill = actor_color(f.preview_face[k].color, sh);
+                dl->AddQuadFilled(ImVec2(px + f.preview_face[k].x[0] * pw, py + f.preview_face[k].y[0] * ph),
+                                  ImVec2(px + f.preview_face[k].x[1] * pw, py + f.preview_face[k].y[1] * ph),
+                                  ImVec2(px + f.preview_face[k].x[2] * pw, py + f.preview_face[k].y[2] * ph),
+                                  ImVec2(px + f.preview_face[k].x[3] * pw, py + f.preview_face[k].y[3] * ph), fill);
+            }
+            dl->PopClipRect();
+        }
+        // The headline (part count or "not a blueprint") under the box, then the file name or the reason. Both are clipped
+        // to the column: a long file name used to run out of the panel and across the 3D view, which reads as the picture
+        // being broken rather than as a long name.
+        const float tx = px - 8 * s;
+        float ty = py + ph + 20 * s;
+        dl->PushClipRect(ImVec2(tx - 2 * s, ty - fs * 0.3f), ImVec2(px + pw, ty + fs * 2.1f), true);
+        text(dl, font, fs * 0.94f, tx, ty, f.preview_faces > 0 ? kGold : kTextDim, f.preview_title);
         ty += fs * 1.15f;
         text(dl, font, fs * 0.80f, tx, ty, kTextDim, f.preview_note);
-        ty += fs * 1.35f;
-        // One line per distinct part name, most used first, with its count. Past the bottom of the column the list stops
-        // rather than growing: what is cut off is the tail of a long build, not the start of it.
-        for (int k = 0; k < f.preview_kinds && ty + fs * 1.05f < py + ph; k++) {
-            char line[160];
-            snprintf(line, sizeof line, "%dx %s", f.preview_kind[k].count, f.preview_kind[k].name);
-            text(dl, font, fs * 0.76f, tx, ty, kText, line);
-            ty += fs * 1.05f;
-        }
         dl->PopClipRect();
     }
 

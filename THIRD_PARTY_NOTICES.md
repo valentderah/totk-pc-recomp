@@ -1,15 +1,21 @@
-﻿# Third-party notices
+# Third-party notices
 
 Code copied or adapted from another project is listed here with its source, the exact commit, its license, and the files it went into. Each copied file keeps its original copyright header.
 
 | Component | Source and commit | License | Used in |
 |---|---|---|---|
-| HyruleWorks blueprint archive: real `.cai` files used as import and test inputs | https://www.hyruleworks.com | not stated | test inputs only, not committed |
+| MeshCodec reference `.bfres.mc` decoder (MCPK container, FMSH frame chain, index and vertex-attribute entropy decoding), compiled into a static library outside this repository from `build/` and never committed; only its C door `runtime/model_meshcodec.c` is in the tree - see the license note below this table before shipping a build | https://github.com/dt-12345/MeshCodec @ `b3600954872dbc2893a1bcc9e851c1e364f303ab`, Copyright (c) dt-12345 | GPL-2.0 | `tools/build_meshcodec.py` fetches the decoder at a pinned commit and archives it with this repository's own C door `tools/meshcodec_bridge.cpp`; the library it writes, `build/<version>/libmeshcodec.a`, is what `totk.exe` links, and this repository does not distribute it
+| meshoptimizer index and vertex codec, read for behaviour while implementing the blend-index and Node_Array path (the vbyte index format and the block API surface; no code copied) | https://github.com/zeux/meshoptimizer @ `v0.22`, Copyright (c) 2016-2025 Arseny Kapoulkine | MIT | `runtime/bfres.c` (rigid skinning and stride handling, written from behaviour) |
+| bfrespy BFRES reader, read for the container field offsets (`FVTX`, `FSHP`, the mesh record, the `FSKL` skeleton block, the `ResDict` attribute dictionary, the `_i0` blend-index attribute and the bone rigid/smooth indices; no code copied) | https://github.com/Neurociencias/bfrespy (Blender add-on), read for the layout | GPL-3.0 | `runtime/bfres.c` (field offsets; the parsing code is our own) |
+| Switch-Toolbox BFRES reader, read for the rigid-skinning rule (a bone with `RigidMatrixIndex != -1` transforms its vertices, and a vertex's blend index is a Node_Array slot) and for the Euler-versus-quaternion bone flag; no code copied | https://github.com/KillzXGaming/Switch-Toolbox @ `a1084a70273dfb0e6ef0e2e5afb7eb452ed01cea`, Copyright (c) KillzXGaming and contributors | GPL-3.0 | `runtime/bfres.c` (the skinning rule and the Euler flag check; the code is our own) |
+| Blehditor, the community blueprint viewer this preview is measured against: its per-part 21-colour palette, its two-sided grey material, `fuseInfo` as a uniform scale, and its orbit convention | https://blehditor.hyruleworks.com, by SuperSpazzy | not stated | `runtime/ui/preview3d.cpp`, `runtime/blueprint_picker.c` (behaviour reference only; no code copied) |
+| three.js `OrbitControls`, the drag convention this preview follows: one full turn per view **height** on both axes, and the damping that carries a release on and decays it | https://github.com/mrdoob/three.js @ `dev` (`examples/jsm/controls/OrbitControls.js`), Copyright (c) 2010-2025 three.js authors | MIT | `runtime/blueprint_picker.c` (the drag and damping behaviour; the code is our own) |
+| HyruleWorks blueprint archive: real `.cai` files used as preview and test inputs | https://www.hyruleworks.com | not stated | test inputs only, not committed |
 | HyruleWorks build page, used only as a reference for what a shared community build looks like; no file from it was added to the repository | https://www.hyruleworks.com/builds/228 | not stated | reference only, no code or data copied |
 | McSpazzy/cai2json, CAI / JSON format research: the `CmbAct` layout, actor records and the structured JSON representation; read for the format only | https://github.com/McSpazzy/cai2json @ `37814eeb8d505f8357b255ba7fad62f158dc85bc`, Copyright (c) SuperSpazzy | no licence | `runtime/blueprint_cai.c` (the parser is written here; no code copied) |
 | McSpazzy/totk-gamedata, save-game structure research behind the five Autobuild draft arrays; read for the structure only | https://github.com/McSpazzy/totk-gamedata @ `5bf06e5077aa24348eb1a1fb1ef1ef110081fb2a`, Copyright (c) McSpazzy | no licence | `runtime/blueprint_import.c` (array shapes read from the game; no code copied) |
 | McSpazzy/cai2json-node, a JavaScript CAI / JSON tool read to compare the JSON representation | https://github.com/McSpazzy/cai2json-node @ `7c90b7ddf10cd5367aa5a27a1bc70660adebd907`, Copyright (c) SuperSpazzy | MIT | read for behaviour only, no code copied |
-| dt-12345/totk_params, game 1.2.1 parameter files; its `AttachmentParam` and `ShapeParam` rules belong to the 3D preview, proposed separately (see `docs/blueprint-preview.md`) | https://github.com/dt-12345/totk_params @ `95c3d1acc7c9687c29cd8513906b2db7c37dae86` | no licence | preview only, not used by this change |
+| dt-12345/totk_params, game 1.2.1 parameter files and the `TypedParam` / `.bgyml` parent-resolution rules behind a material's `AttachmentParam` `$parent` chain and the `ShapeParam` BYML collision-body fallback; contains no game assets | https://github.com/dt-12345/totk_params @ `95c3d1acc7c9687c29cd8513906b2db7c37dae86`, Copyright (c) dt-12345 | no licence | `runtime/blueprint_attach.c`, `runtime/blueprint_shape.c`, `runtime/byml.c` (read for the format only; no code copied) |
 | MacNativeGames extraction scripts and verification hashes | https://github.com/ly05010419/MacNativeGames @ `b75be8cfa704df3701e86130c8ced268e79d6b11`, Copyright (c) 2026 MacNativeGames contributors | MIT | `tools/vendor/macnativegames/` (unmodified), `tools/data/expected-v*.json` |
 | LAS Recomp lifter, code generator, FP/SIMD lowering, CPU headers and differential tests | https://github.com/peiikai/LASRecomp @ `da35b83a9611d046a9a681aae668d7085954d37f`, Copyright (c) 2026 Peiikai | MIT | `recomp/lifter.py`, `recomp/simd_c.py`, `recomp/nso.py`, `recomp/gen.py`, `recomp/module.py`, `tests/jumptables_check.py`, `runtime/cpu.h`, `runtime/simd.h`, `runtime/simd_fp.h`, `tests/diff/` |
 | LAS Recomp host runtime: NSO loader, host-function table, guest-space reservation and re-execution, guest thread start | https://github.com/peiikai/LASRecomp @ `da35b83a9611d046a9a681aae668d7085954d37f`, Copyright (c) 2026 Peiikai | MIT | `runtime/loader.c`, `runtime/hostfn.c`, `runtime/memory.c`; `runtime/kernel.c`, `runtime/boot.c`; `runtime/vk_device.c`, `runtime/gfx_window.c`, `runtime/tex_astc.c` (`runtime/nvn/astc.c`; its decode ported to GLSL in `runtime/shaders/astc_decode.comp`, compiled into `runtime/astc_decode_spv.h`, and its tables copied into `runtime/vk_astc.c`), `runtime/vk_formats.c` (format table of `runtime/nvn/vulkan/textures.c`), `runtime/vk_memory.c` (page write generations of `runtime/nvn/vulkan/exec.c`, deferred destruction of `textures.c`), `runtime/vk_texture.c` (image creation, uploads and samplers of `runtime/nvn/vulkan/textures.c`), `runtime/vk_sync.c` (timeline submissions and waits of `runtime/nvn/vulkan/exec.c`), `runtime/vk_pipeline.c` (blend, compare and stencil mappings, vertex format table with its 3-component fallback and pipeline cache file of `runtime/nvn/vulkan/exec.c` and `device.c`), `runtime/vk_exec.c` (pass begin and end, scissor clip and attachment clears of `runtime/nvn/vulkan/exec.c`), `runtime/vk_exec_xfer.c` (copies of `runtime/nvn/vulkan/exec.c`), `runtime/vk_exec_draw.c` (uniform buffer spans, texture and sampler descriptors and dispatch flow of `runtime/nvn/vulkan/exec.c`); in-game menu: `runtime/ui/menu.cpp` (Dear ImGui Vulkan set-up of `runtime/nvn/vulkan/imgui_glue.cpp`) |
@@ -49,6 +55,29 @@ Code copied or adapted from another project is listed here with its source, the 
 | musl `fma.c`, `fmaf.c` and `scalbn.c`, adapted into one file for the x86-64-v2 build | https://github.com/kraj/musl @ `5a56ad13e1e0790c06122978aad2a14d6b9efc1a` (mirror of https://git.musl-libc.org/cgit/musl), Copyright (c) 2005-2020 Rich Felker and contributors | MIT | `runtime/fma.c` (the correctly rounded fma/fmaf the FP lowering needs on CPUs without FMA3) |
 | MacNativeGames texture pool offset fix: widen the 32-bit texture storage and packaged-data offsets unsigned | https://github.com/ly05010419/MacNativeGames @ `ca311e2d` (`games/totk/runtime/game_patches.c` patch_pool_offset), Copyright (c) 2026 MacNativeGames contributors | MIT | `recomp/patches-v110.txt` (set pooloff; sites located again in 1.1.0) |
 
+## The model decoder and the GPL
+
+The preview of a blueprint's parts draws each part's **real model**, decoded at runtime. Decoding a Tears of the
+Kingdom `.bfres.mc` means MeshCodec, Nintendo's mesh compression, and the only implementation of it is
+[dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec), which is **GPL-2.0**. That decoder is therefore kept
+**out of this repository**: it is built from `build/` into a static library beside `totk.exe`, the repository
+carries only the C door over it (`runtime/model_meshcodec.c`, `runtime/model_meshcodec.h`), and no GPL source is
+committed here.
+
+What that means in practice, and it is worth being explicit:
+
+- A build of this repository **as published** links the decoder, so the resulting `totk.exe` is a GPL-2.0 work.
+  Redistributing that binary means honouring GPL-2.0 for it, including the source of the decoder.
+- A build that does not want that can drop `runtime/model_meshcodec.c` from the link; the preview then falls back
+  to each part's collision body (`runtime/blueprint_shape.c`), which is a real, if coarse, picture - the same
+  fallback the community viewer uses for the parts it has no model for.
+- Nothing here re-licenses the rest of the port. The alternative to GPL-2.0 would be a clean-room
+  reimplementation of MeshCodec, which has not been done.
+
+The layout knowledge in `runtime/bfres.c` (the container, the shape records, the skeleton, the attribute
+dictionary, the skinning rule) was read from bfrespy and Switch-Toolbox, both GPL-3.0, and from meshoptimizer
+(MIT); the parsing code in this repository is written here rather than copied, which is the reason it is listed
+as a behaviour reference in the table above rather than as copied code.
 
 ## Compiler runtime in a source build
 

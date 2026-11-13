@@ -14,11 +14,15 @@
 
 #include "ui/blueprint_picker.h"
 
+#include "bfres.h"
+#include "blueprint_attach.h"
 #include "blueprint_dir.h"
 #include "blueprint_file.h"
+#include "blueprint_shape.h"
 #include "cfg.h"
 #include "host.h"
 #include "input.h"
+#include "model_romfs.h"
 #include "input_map.h"
 #include "input_wsys.h"
 #include "platform/platform.h"
@@ -73,17 +77,34 @@ static int32_t g_wheel;
 static int32_t g_back_pending;
 // A scrollbar drag: the pointer's y within the thumb when the drag began, so the thumb does not jump under the cursor.
 static int g_dragging, g_drag_grab_y;
-// A camera drag is gone with the preview; the scrollbar drag above is the only drag the picker has now.
+// A camera drag inside the preview: the pointer at the previous frame, so each frame turns the view by how far the pointer
+// moved. Kept apart from the scrollbar drag because the two live in different parts of the panel.
+static int g_cam_dragging, g_cam_last_x, g_cam_last_y;
 // 1 once the pointer has moved this session: a pointer parked on a row must not keep pulling the focus back to that row
-// while the pad walks the list.
+// while the pad walks the list, and it must not swap the preview when it rests in the preview column.
 static int g_pointer_moved;
 static int g_pointer_x, g_pointer_y;
 
-// ---- the file under the pointer or the pad cursor
+// ---- the preview of the file under the pointer or the pad cursor
 //
 // Reading a blueprint means opening the file and parsing it, so it is done once per file, not per frame: the cache is
-// keyed by the file's full path and only rebuilt when the highlighted entry changes. What the panel shows about a file
-// comes from the file itself: whether it parses, how many parts it has, and which part names it uses.
+// keyed by the file's full path and only rebuilt when the highlighted entry changes.
+//
+// The CAI format stores each part's placement (a rotation and a position) and nothing else - no meshes - so the preview
+// is a 3D view of boxes rather than of models: every part becomes a small box at its own position, turned by its own
+// rotation, and the whole thing is projected through one fixed camera. That is honest about what the file contains and
+// still reads as the shape of the build, which a flat scatter could not.
+// One projected face: its four corners in the view box (0..1) and how lit it is. Faces are painted far to near, which
+// is the whole depth solution a draw list needs - it has no depth buffer. A triangle folds its fourth corner onto the
+// third, so one quad fill paints both.
+typedef struct {
+    float x[4], y[4];
+    float shade;
+    float depth;   // mean corner depth, for the sort only
+    int approx;    // 1 when the face came from a collision shape rather than the part's own model
+    int color;     // the actor's palette index, as the game's own viewer colours a build (0..20)
+} PickFace;
+
 // One distinct part name and how often the blueprint uses it.
 typedef struct {
     char name[96];
@@ -92,14 +113,391 @@ typedef struct {
 
 typedef struct {
     char path[PICK_PATH_MAX];      // the file the data below belongs to; "" when nothing is read yet
-    char good[PICK_PATH_MAX];      // the last file that actually loaded
+    char good[PICK_PATH_MAX];      // the last file that actually loaded: a refused file must not blank the view
     int ok;                        // 1: a real blueprint; 0: refused (note says why)
     int actors;                    // parts, when ok
     char note[96];                 // the file name when ok, else the reason it cannot be imported
     int kinds;                     // distinct part names, most used first
     PickKind kind[BPC_PICK_MAX_KINDS];
+    int nfaces;
+    PickFace face[BPC_PICK_MAX_FACES];   // far first
+    // What the faces below were projected with. Turning the build changes the rotation stamp and the framing, and a
+    // window resize changes the aspect, so the cache is only good while all three still agree and a turn re-projects the
+    // same file instead of needing a new path to invalidate it.
+    unsigned rot_stamp;
+    float cam_yaw, cam_pitch, cam_zoom;
+    float aspect;                  // the view's width/height, so a window resize also re-projects
+    BpcBlueprint bp;               // the parsed file, kept across turns: a drag must not re-read it from disk
 } PickPreview;
 static PickPreview g_preview;
+
+// The camera: a three-quarter view, looking down at the build from slightly above and to one side. A blueprint is built
+// on a plane (its bbox is wide in x/z and thin in y), so this is the angle that shows the layout - the same reasoning a
+// player would use when turning a build in the Autobuild screen. The default is 35 degrees of yaw and 28 of pitch; the
+// pointer can drag it round (a picker-wide setting, kept across files so a player who turned one build keeps that view).
+static struct { float yaw, pitch, zoom; } g_cam = {0.610865f, 0.488692f, 2.4f};
+// The build's own rotation, accumulated by dragging, in row-major order and applied to blueprint space before the camera.
+// The camera itself does not move: a drag turns the BUILD. That is what makes a drag keep working all the way round - a
+// camera carried on two angles (yaw and pitch) has a pole, and past it the picture turns over, so a drag that follows the
+// pointer has to reverse and then feels stuck. A rotation matrix has no pole: dragging up keeps tipping the build the
+// same way for as long as the button is held.
+static float g_rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+static unsigned g_rot_stamp;   // bumped on every change, so the cached face list and GPU image know they are stale
+// The bounding box of the ROTATED build, recomputed each frame: the camera frames this instead of the flat layout box, so
+// a build stays inside the panel at every angle instead of being clipped when it tips towards the viewer.
+static float g_rot_lo[3], g_rot_hi[3];
+// The orbit's leftover momentum, in radians, replayed and decayed after the button is released. three.js' OrbitControls
+// calls this damping and it is what gives a drag weight: the build keeps turning for a fraction of a second and settles,
+// instead of stopping dead the instant the pointer stops. Releasing fast therefore carries the view a little further,
+// which is the behaviour people expect from every 3D viewer they have used.
+static float g_cam_vel_yaw, g_cam_vel_pitch;
+#define BP_CAM_DAMPING 0.12f   // the fraction of the leftover turn applied per step; OrbitControls' default is 0.05
+// The 3D view's aspect ratio (width / height). A square view is 1; a tall view shrinks the x scale so a round part stays
+// round instead of being stretched to the window. Set by layout_preview before the projection runs.
+static float g_preview_aspect = 1.0f;
+#define BP_CAM_DEFAULT_YAW 0.610865f
+#define BP_CAM_DEFAULT_PITCH 0.488692f
+// The default framing fills the panel: 0.36 * 2.4 is about 0.86 of the normalised half-extent, so a build is readable
+// on open instead of needing a wheel first. The wheel zooms freely in both directions; only a floor against zero and
+// negative values remains, because a zero or negative zoom would flip the projection inside out.
+#define BP_CAM_DEFAULT_ZOOM 2.4f
+
+// The preview's camera and what it shows are the picker's own state, not a frame's: a frame is a throwaway copy for the
+// draw layer, so keeping the camera there meant a pad move or a drag changed data that was then discarded, and the
+// renderer never learned its image was stale.
+static struct {
+    int shown;                 // 1 when the preview is up
+    unsigned stamp;            // rises when the file or the camera changes; the renderer invalidates on it
+    char path[PICK_PATH_MAX];  // the file on show
+    int actors, modelled, approximated, hidden;
+} g_view;
+
+// 1 when the draw layer renders the preview on the GPU (ui/preview3d.cpp). The CPU projection and face list then have no
+// consumer, and doing them anyway cost more than the whole preview.
+static int g_gpu_preview;
+
+void bp_picker_use_gpu(int on) { g_gpu_preview = on != 0; }
+int bp_picker_gpu_in_use(void) { return g_gpu_preview; }
+unsigned bp_picker_preview_stamp(void) { return g_view.stamp; }
+
+// ---- the build's rotation ---------------------------------------------------------------------------------------------
+// Row-major 3x3 matrices: out = a * b, and a vector turns as v' = m * v.
+static void mat3_mul(const float a[9], const float b[9], float out[9]) {
+    float t[9];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            t[i * 3 + j] = a[i * 3 + 0] * b[0 * 3 + j] + a[i * 3 + 1] * b[1 * 3 + j] + a[i * 3 + 2] * b[2 * 3 + j];
+    memcpy(out, t, sizeof t);
+}
+
+// A rotation of `ang` radians about `axis` (a unit vector), right-handed.
+static void mat3_axis_angle(const float axis[3], float ang, float out[9]) {
+    const float c = cosf(ang), s = sinf(ang), t = 1.0f - c;
+    const float x = axis[0], y = axis[1], z = axis[2];
+    out[0] = c + x * x * t;      out[1] = x * y * t - z * s;  out[2] = x * z * t + y * s;
+    out[3] = x * y * t + z * s;  out[4] = c + y * y * t;      out[5] = y * z * t - x * s;
+    out[6] = x * z * t - y * s;  out[7] = y * z * t + x * s;  out[8] = c + z * z * t;
+}
+
+static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]);
+
+// Composes one rotation about a world axis onto the build's own turn. The step happens in the world, so it multiplies on
+// the left of whatever the build had turned to already.
+static void rotate_about(const float axis[3], float ang) {
+    if (ang == 0.0f) return;
+    float step[9];
+    mat3_axis_angle(axis, ang, step);
+    mat3_mul(step, g_rot, g_rot);
+    g_rot_stamp++;
+    g_view.stamp++;
+}
+
+// The two world axes a drag turns about, fixed for as long as the camera is: the world's up and the camera's right.
+static void drag_axes(float up[3], float right[3]) {
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    right[0] = cosf(g_cam.yaw); right[1] = 0.0f; right[2] = sinf(g_cam.yaw);
+}
+
+// Turns the build by one drag step. `dx` and `dy` are pointer pixels; the horizontal turn is about the world's up axis and
+// the vertical one about the camera's right vector, so both follow the pointer exactly, at every orientation and with no
+// pole to run into.
+static void rotate_build(float dx, float dy, float per_px) {
+    float up[3], right[3];
+    drag_axes(up, right);
+    rotate_about(up, -dx * per_px);
+    rotate_about(right, -dy * per_px);
+}
+
+// The bounding box of the build as it is now turned. The camera frames this, so nothing is clipped at any angle.
+static void rotated_bounds(const BpcBlueprint *bp, float lo[3], float hi[3]) {
+    for (int a = 0; a < 3; a++) {
+        lo[a] = 1e30f;
+        hi[a] = -1e30f;
+    }
+    for (int c = 0; c < 8; c++) {
+        const float p[3] = {(c & 1) ? bp->bbox_max[0] : bp->bbox_min[0],
+                            (c & 2) ? bp->bbox_max[1] : bp->bbox_min[1],
+                            (c & 4) ? bp->bbox_max[2] : bp->bbox_min[2]};
+        for (int a = 0; a < 3; a++) {
+            const float w = g_rot[a * 3 + 0] * p[0] + g_rot[a * 3 + 1] * p[1] + g_rot[a * 3 + 2] * p[2];
+            if (w < lo[a]) lo[a] = w;
+            if (w > hi[a]) hi[a] = w;
+        }
+    }
+}
+
+// The rotation and the rotated bounds, for the GPU renderer: it has to frame and turn the build the same way the CPU
+// projection does, or the picture would jump between the two paths.
+void bp_picker_preview_rot(float out[9]) { memcpy(out, g_rot, sizeof g_rot); }
+void bp_picker_preview_bounds(float lo[3], float hi[3]) {
+    memcpy(lo, g_rot_lo, sizeof g_rot_lo);
+    memcpy(hi, g_rot_hi, sizeof g_rot_hi);
+}
+// The blueprint on show, for the GPU renderer (ui/preview3d.cpp). Its storage is preview_load's own static, so the
+// pointer is only valid until another file is loaded.
+static const BpcBlueprint *g_shown;
+const BpcBlueprint *bp_picker_blueprint(void) { return g_preview.ok ? g_shown : NULL; }
+
+// Returns the point in 0..1 of the view box (x right, y down) and its depth, larger being further from the camera.
+// The point arrives already turned by the build's own rotation, and is framed by that rotation's own bounds, so the build
+// fills the panel at every angle.
+static void preview_project(const float p[3], float *sx, float *sy, float *depth) {
+    // Centre on the box's middle and scale all three axes by ONE factor, the box's largest side. Normalising each axis by
+    // its own span stretched the build: a round wheel came out oval. One factor keeps the proportions; only the overall
+    // size is normalised.
+    float centre[3], half = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        centre[i] = 0.5f * (g_rot_lo[i] + g_rot_hi[i]);
+        const float span = g_rot_hi[i] - g_rot_lo[i];
+        if (span > half) half = span;
+    }
+    half *= 0.5f;
+    if (half < 0.0005f) half = 0.0005f;
+    // Turn the point by the build's own rotation, then frame it in the turned box.
+    const float rp[3] = {
+        g_rot[0] * p[0] + g_rot[1] * p[1] + g_rot[2] * p[2],
+        g_rot[3] * p[0] + g_rot[4] * p[1] + g_rot[5] * p[2],
+        g_rot[6] * p[0] + g_rot[7] * p[1] + g_rot[8] * p[2],
+    };
+    float n[3];
+    for (int i = 0; i < 3; i++) n[i] = (rp[i] - centre[i]) / half;
+    const float cy = cosf(g_cam.yaw), syn = sinf(g_cam.yaw);
+    const float cp = cosf(g_cam.pitch), sp = sinf(g_cam.pitch);
+    const float x1 = cy * n[0] + syn * n[2];
+    const float z1 = -syn * n[0] + cy * n[2];
+    const float y1 = cp * n[1] - sp * z1;
+    const float z2 = sp * n[1] + cp * z1;
+    const float d = 4.0f;                          // camera distance in normalised units
+    const float k = d / (d + z2);                  // perspective: near parts grow, far ones shrink
+    // The x scale is divided by the aspect ratio, so a round part stays round in a window that is not square: the view
+    // box is normalised to -1..1 in x and y, but it is drawn over width x height pixels, so one unit of y covers more
+    // pixels than one unit of x in a tall window.
+    const float scale = 0.36f * g_cam.zoom;
+    const float sxscale = scale / (g_preview_aspect > 0.01f ? g_preview_aspect : 1.0f);
+    *sx = 0.5f + x1 * sxscale * k;
+    *sy = 0.5f - y1 * scale * k;
+    *depth = z2;
+}
+
+// A part vertex in blueprint space: fuseInfo scales the whole part, the rotation (row-major) turns it, the position moves it.
+// `placement_only` leaves fuseInfo out, for the material fused onto the part (fuseInfo is the weapon's own scale).
+static void part_point_ex(const BpcBlueprint *bp, int k, const float v[3], int placement_only, float out[3]) {
+    // A part is drawn at its fuseInfo scale unless it carries a fused material (see part_matrix_ex in ui/preview3d.cpp).
+    const int fused = bp->sub_names[k] && *bp->sub_names[k];
+    const float s = (!placement_only && !fused) ? bp->scale[k] : 1.0f;
+    const float p[3] = {v[0] * s, v[1] * s, v[2] * s};
+    for (int i = 0; i < 3; i++)
+        out[i] = bp->pos[k][i] + bp->rot[k][i][0] * p[0] + bp->rot[k][i][1] * p[1] + bp->rot[k][i][2] * p[2];
+}
+
+static void part_point(const BpcBlueprint *bp, int k, const float v[3], float out[3]) {
+    part_point_ex(bp, k, v, 0, out);
+}
+
+// One triangle, projected and emitted into the face list, with the actor's own colour and a face normal lit by the key
+// light. No back-face culling: several of these models are single-sided sheets (sails, flags, nets) that must show from
+// both sides, and the painter's order still hides the far side behind the near one.
+static void emit_triangle(const BpcBlueprint *bp, int k, const float *a, const float *b, const float *c, int approx) {
+    if (g_preview.nfaces >= BPC_PICK_MAX_FACES) return;
+    float wa[3], wb[3], wc[3];
+    part_point(bp, k, a, wa);
+    part_point(bp, k, b, wb);
+    part_point(bp, k, c, wc);
+    float q[4][2];
+    float depth = 0.0f;
+    preview_project(wa, &q[0][0], &q[0][1], &depth);
+    float d2 = 0.0f, d3 = 0.0f;
+    preview_project(wb, &q[1][0], &q[1][1], &d2);
+    preview_project(wc, &q[2][0], &q[2][1], &d3);
+    depth = (depth + d2 + d3) / 3.0f;
+    // The face's normal from the world-space cross product, lit by a fixed key light.
+    float u[3] = {wb[0] - wa[0], wb[1] - wa[1], wb[2] - wa[2]};
+    float v[3] = {wc[0] - wa[0], wc[1] - wa[1], wc[2] - wa[2]};
+    float nrm[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    const float nl = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+    const float light[3] = {0.40f, 0.82f, 0.41f};
+    float lit = nl > 1e-6f ? (nrm[0] * light[0] + nrm[1] * light[1] + nrm[2] * light[2]) / nl : 1.0f;
+    if (lit < 0.0f) lit = -lit;   // two-sided: a face turned away is lit as brightly as one turned toward the light
+    float shade = 0.30f + 0.70f * lit;
+    if (shade < 0.12f) shade = 0.12f;
+    if (shade > 1.0f) shade = 1.0f;
+    PickFace *dst = &g_preview.face[g_preview.nfaces++];
+    for (int i = 0; i < 3; i++) {
+        dst->x[i] = q[i][0];
+        dst->y[i] = q[i][1];
+    }
+    dst->x[3] = q[2][0];   // fold the fourth corner on the third: one quad fill paints a triangle
+    dst->y[3] = q[2][1];
+    dst->shade = shade;
+    dst->depth = depth;
+    dst->approx = approx;
+    dst->color = k % 21;
+}
+
+// A fused material, drawn on the socket the game names for it. Same source of truth as the GPU path
+// (runtime/blueprint_attach.c), so the two previews agree: the socket is a bone of the weapon model, and the material's
+// own rotation, scale and offset go under it.
+static void emit_fused_material(const BpcBlueprint *bp, int k, const BfresModel *weapon, int budget) {
+    const char *sub = bp->sub_names[k];
+    if (!sub || !*sub || !weapon) return;
+    BpAttach at;
+    if (!bp_attach_resolve(bp->names[k], sub, &at)) return;
+
+    float bone[16], place[16];
+    // The weapon's extent and socket are read BEFORE the material's model is resolved: the model cache holds 24 entries and
+    // evicts round-robin, so resolving the material can free the buffer `weapon` points at, and reading it afterwards gives
+    // garbage. That is what drew streaks radiating from a part in a large blueprint.
+    const float weapon_extent = model_romfs_extent(weapon);
+    const int bi = bfres_bone_find(weapon, at.bone);
+    int have_bone = (bi >= 0) ? bfres_bone_world(weapon, bi, bone) : 0;
+    if (!have_bone) have_bone = bfres_bone_world(weapon, 0, bone);   // the root bone exists on every model
+    if (!have_bone) {
+        memset(bone, 0, sizeof bone);
+        bone[0] = bone[5] = bone[10] = bone[15] = 1.0f;
+    }
+
+    const BfresModel *mat = model_romfs_resolve_model(at.model);
+    if (!mat) return;
+    // Size: BoundBoxLength when the class names one, else the record's own factors, else a CAP to the weapon - shrink a
+    // material bigger than the weapon, leave a smaller one alone. See the same rule in ui/preview3d.cpp; the two paths must
+    // agree or the preview jumps between them.
+    float fit = 1.0f;
+    {
+        const float mat_extent = model_romfs_extent(mat);
+        if (at.bound_box_length > 0.0f && mat_extent > 0.0005f) {
+            fit = at.bound_box_length / mat_extent;
+        } else if (mat_extent > 0.0005f && !(at.scale < 1.0f) && at.scale_xyz[0] == 1.0f && at.scale_xyz[1] == 1.0f &&
+                   at.scale_xyz[2] == 1.0f) {
+            if (weapon_extent > 0.0005f && mat_extent > weapon_extent) fit = weapon_extent / mat_extent;
+        }
+    }
+    bp_attach_matrix(&at, bone, fit, place);
+
+    const int limit = g_preview.nfaces + budget;
+    for (int s = 0; s < mat->count && g_preview.nfaces < limit; s++) {
+        const int ntris = bfres_shape_triangles(mat, s);
+        const int nverts = bfres_shape_vertices(mat, s);
+        if (ntris <= 0 || nverts <= 0) continue;
+        float *verts = malloc((size_t)nverts * 3 * sizeof(float));
+        uint16_t *tris = malloc((size_t)ntris * 3 * sizeof(uint16_t));
+        if (!verts || !tris) { free(verts); free(tris); continue; }
+        const int vc = bfres_shape_geometry(mat, s, verts, nverts, tris, ntris);
+        if (vc > 0) {
+            // Into the weapon's model space: the material's vertices go through the socket once, then the part's own
+            // blueprint placement applies to all of them as usual. The part's fuseInfo is the WEAPON's scale, so it is
+            // divided back out here: a fuse joins two objects that each keep their own size.
+            const float inv_scale = 1.0f;   // parts are drawn at their own size, so nothing has to be divided out
+            for (int v = 0; v < vc; v++) {
+                const float p[3] = {verts[3 * v], verts[3 * v + 1], verts[3 * v + 2]};
+                for (int a = 0; a < 3; a++)
+                    verts[3 * v + a] = (place[a * 4 + 0] * p[0] + place[a * 4 + 1] * p[1] + place[a * 4 + 2] * p[2] +
+                                        place[a * 4 + 3]) * inv_scale;
+            }
+            for (int t = 0; t < ntris && g_preview.nfaces < limit; t++) {
+                const uint16_t *idx = tris + (size_t)t * 3;
+                emit_triangle(bp, k, verts + (size_t)idx[0] * 3, verts + (size_t)idx[1] * 3, verts + (size_t)idx[2] * 3,
+                              0);
+            }
+        }
+        free(verts);
+        free(tris);
+    }
+}
+
+// One part's whole mesh, or its collision shapes when the pack has no model for it. The part may spend at most `budget`
+// triangles, so a build of several detailed parts cannot starve the ones after it.
+// A shape whose material is one of the model's `_Hide` materials: the blade of a weapon, which the game stops drawing once
+// a material is fused onto it. The shape name carries its material after "__" (Weapon_Lsword_147_Blade__Mt_Blade_Hide), so
+// the test is on the model's own naming and works for any weapon without a list of items.
+static int shape_hidden_when_fused(const BfresModel *m, int index) {
+    char name[128];
+    if (!bfres_shape_name(m, index, name, sizeof name)) return 0;
+    const char *mat = strstr(name, "__");
+    return mat && strstr(mat, "_Hide") != NULL;
+}
+
+static void emit_part(const BpcBlueprint *bp, int k, int budget) {
+    const char *nm = bp->names[k];
+    if (!nm || !*nm) return;
+    const int limit = g_preview.nfaces + budget;
+    const int fused = bp->sub_names[k] && *bp->sub_names[k];
+    // A part that carries a fused material loses the shapes that fusion covers; one with none keeps everything (see
+    // shape_hidden_when_fused in ui/preview3d.cpp).
+    const int replaces = fused;
+
+    // The runtime model source first: read the .bfres.mc from the RomFS and decode it. The BFRES reader hands back each
+    // shape's vertices and indices, which are then projected like any other mesh.
+    const BfresModel *model = model_romfs_resolve(nm);
+    if (model) {
+        g_view.modelled++;
+        rt_log("blueprint: %s from runtime decode (%d shapes)", nm, model->count);
+        for (int s = 0; s < model->count && g_preview.nfaces < limit; s++) {
+            if (replaces && shape_hidden_when_fused(model, s)) continue;
+            const int ntris = bfres_shape_triangles(model, s);
+            const int nverts = bfres_shape_vertices(model, s);
+            if (ntris <= 0 || nverts <= 0) continue;
+            float *verts = malloc((size_t)nverts * 3 * sizeof(float));
+            uint16_t *tris = malloc((size_t)ntris * 3 * sizeof(uint16_t));
+            if (!verts || !tris) { free(verts); free(tris); continue; }
+            const int vc = bfres_shape_geometry(model, s, verts, nverts, tris, ntris);
+            if (vc > 0) {
+                // one diagnostic per shape: the bone transform should make a stick's Y extent the tall one
+                if (!strcmp(nm, "SpObj_ControlStick_A_01")) {
+                    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+                    for (int v = 0; v < vc; v++)
+                        for (int a = 0; a < 3; a++) {
+                            if (verts[3 * v + a] < lo[a]) lo[a] = verts[3 * v + a];
+                            if (verts[3 * v + a] > hi[a]) hi[a] = verts[3 * v + a];
+                        }
+                    rt_log("blueprint: stick shape%d Y %.2f..%.2f X %.2f..%.2f", s, lo[1], hi[1], lo[0], hi[0]);
+                }
+                for (int t = 0; t < ntris && g_preview.nfaces < limit; t++) {
+                    const uint16_t *idx = tris + (size_t)t * 3;
+                    emit_triangle(bp, k, verts + (size_t)idx[0] * 3, verts + (size_t)idx[1] * 3,
+                                  verts + (size_t)idx[2] * 3, 0);
+                }
+            }
+            free(verts);
+            free(tris);
+        }
+        // The material fused onto this part, drawn under the same part colour: without it a fused weapon or shield is a
+        // bare one, which is the wrong object.
+        emit_fused_material(bp, k, model, budget);
+        return;
+    }
+
+    const BpShapeMesh *body = bp_shape_resolve(nm);
+    if (body) {
+        g_view.approximated++;
+        for (int t = 0; t < body->ntris && g_preview.nfaces < limit && g_preview.nfaces < BPC_PICK_MAX_FACES; t++) {
+            const uint16_t *idx = body->tris + (size_t)t * 3;
+            emit_triangle(bp, k, body->verts + (size_t)idx[0] * 3, body->verts + (size_t)idx[1] * 3,
+                          body->verts + (size_t)idx[2] * 3, 1);
+        }
+        return;
+    }
+    g_view.hidden++;
+}
 
 // ---- the folder
 
@@ -223,10 +621,10 @@ static void split_path(void) {
 }
 
 // Reads the blueprint at path into g_preview, unless it is the file already cached. Failure is not an error: a file the
-// Reads the blueprint at path and records what the file is, so the panel can say which build is about to be imported and
-// refuse a damaged one before anything is written. Failure is not an error: a file the parser refuses still gets a note
-// saying so, which is exactly what the player needs to see before pressing anything.
+// parser refuses still gets a note saying so, which is exactly what the player needs to see before pressing anything.
 static void preview_load(const char *path) {
+    // The parsed blueprint is kept across re-projections, so turning the build re-projects what is already in memory
+    // instead of reading the file again on every frame of a drag. It is only re-read when the path changes.
     static uint8_t storage[BPF_READ_MAX];
     static BpcBlueprint bp;
     static char parsed_path[PICK_PATH_MAX];
@@ -234,33 +632,56 @@ static void preview_load(const char *path) {
     if (!path || !*path) {
         g_preview.path[0] = 0;
         g_preview.ok = 0;
+        g_preview.nfaces = 0;
         g_preview.actors = 0;
         g_preview.note[0] = 0;
         return;
     }
-    if (!strcmp(g_preview.path, path)) return;
+    // The cache holds one file under one turn of the build and one framing: a different file needs the geometry again, and
+    // the same file after it was turned needs the projection again. Only the framing work below is shared by both.
+    // The yaw and pitch are part of that key: turning the view without turning the build leaves rot_stamp alone, so a
+    // cache keyed on the zoom only would keep drawing the projection made at the old angle.
+    if (!strcmp(g_preview.path, path) && g_preview.cam_yaw == g_cam.yaw && g_preview.cam_pitch == g_cam.pitch &&
+        g_preview.cam_zoom == g_cam.zoom && g_preview.aspect == g_preview_aspect && g_preview.rot_stamp == g_rot_stamp)
+        return;
 
     snprintf(g_preview.path, sizeof g_preview.path, "%s", path);
     g_preview.ok = 0;
+    g_preview.nfaces = 0;
     g_preview.actors = 0;
     enum BpcResult r;
     if (!strcmp(parsed_path, path)) {
-        r = BPC_OK;   // the same file, already parsed
+        r = BPC_OK;   // the same file, already parsed: only the projection is stale
     } else {
         r = bp_file_read(path, storage, &bp);
         // Only a file that parsed is remembered: caching the path of a refused file would make the next frame claim it
-        // succeeded, and the note would then be blank.
+        // succeeded, and the note would then be blank over an empty view.
         if (r == BPC_OK) {
             snprintf(parsed_path, sizeof parsed_path, "%s", path);
+            g_shown = &bp;
         } else {
             parsed_path[0] = 0;
+            g_shown = NULL;
         }
     }
+    // The framing follows the turned build, so the CPU projection and the GPU renderer both frame what is on screen.
+    if (r == BPC_OK) rotated_bounds(&bp, g_rot_lo, g_rot_hi);
+    g_preview.rot_stamp = g_rot_stamp;
+    g_preview.cam_yaw = g_cam.yaw;
+    g_preview.cam_pitch = g_cam.pitch;
+    g_preview.cam_zoom = g_cam.zoom;
+    g_preview.aspect = g_preview_aspect;
 
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     if (r != BPC_OK) {
-        rt_log("blueprint: %s refused (%s)", path, bpc_result_text(r));
+        // Say why once, then put the last good file back: the column keeps its picture and its drag target instead of
+        // showing a note over an empty view (which read as "the preview is broken" while the picture was still there).
+        rt_log("blueprint: preview: %s refused (%s); keeping the last file that loaded", path, bpc_result_text(r));
+        if (g_preview.good[0] && strcmp(g_preview.good, path)) {
+            preview_load(g_preview.good);
+            return;
+        }
         snprintf(g_preview.note, sizeof g_preview.note, "%s", bpc_result_text(r));
         return;
     }
@@ -268,10 +689,17 @@ static void preview_load(const char *path) {
     g_preview.actors = bp.actors;
     snprintf(g_preview.good, sizeof g_preview.good, "%s", path);
     snprintf(g_preview.note, sizeof g_preview.note, "%s", base);
-    rt_log("blueprint: %s read (%d parts)", path, bp.actors);
+    rt_log("blueprint: preview: %s loaded (%d parts, %d faces%s)", path, bp.actors, g_preview.nfaces,
+           g_gpu_preview ? ", GPU" : "");
+    g_view.actors = bp.actors;
+    g_view.shown = 1;
+    if (strcmp(g_view.path, path)) {
+        snprintf(g_view.path, sizeof g_view.path, "%s", path);
+        g_view.stamp++;   // a different build is on show
+    }
 
     // The part list: distinct names grouped by how often the build uses them, most used first. This is what the text
-    // beside the list shows; it comes from the file itself and is true of any CAI.
+    // under the view shows; it comes from the file itself and is true of any CAI, model or not.
     g_preview.kinds = 0;
     for (int k = 0; k < bp.actors; k++) {
         const char *nm = bp.names[k];
@@ -289,12 +717,51 @@ static void preview_load(const char *path) {
     }
     // Most used first, stable for equal counts.
     for (int a = 1; a < g_preview.kinds; a++) {
-        const PickKind kk = g_preview.kind[a];
+        const PickKind k = g_preview.kind[a];
         int b = a - 1;
-        while (b >= 0 && g_preview.kind[b].count < kk.count) { g_preview.kind[b + 1] = g_preview.kind[b]; b--; }
-        g_preview.kind[b + 1] = kk;
+        while (b >= 0 && g_preview.kind[b].count < k.count) { g_preview.kind[b + 1] = g_preview.kind[b]; b--; }
+        g_preview.kind[b + 1] = k;
     }
+
+    // With the GPU preview on, nothing reads the projected faces: the renderer reads the blueprint straight from
+    // bp_picker_blueprint() and rasterises with a depth buffer. The whole projection pass below is skipped.
+    if (g_gpu_preview) {
+        g_preview.nfaces = 0;
+        g_preview.cam_yaw = g_cam.yaw;
+        g_preview.cam_pitch = g_cam.pitch;
+        g_preview.cam_zoom = g_cam.zoom;
+        g_preview.aspect = g_preview_aspect;
+        return;
+    }
+
+    // Every part draws its own model, or its collision shapes when the pack has no model for it. Each part gets an equal
+    // share of the remaining budget, so a build of several detailed parts cannot starve the ones after it - the earlier
+    // first-come-first-served code hid a hanging board and four wheels because three carts and a cannon spent the whole
+    // 24000-face budget first. A part that needs less than its share leaves the rest for the ones that follow.
+    g_preview.nfaces = 0;
+    g_view.modelled = g_view.approximated = g_view.hidden = 0;
+    for (int k = 0; k < bp.actors; k++) {
+        const int left = bp.actors - k;
+        int share = (BPC_PICK_MAX_FACES - g_preview.nfaces) / (left > 0 ? left : 1);
+        if (share < 128) share = 128;   // never below a visible sliver, even near the end of a large build
+        emit_part(&bp, k, share);
+    }
+    // Insertion sort by descending depth.
+    for (int i = 1; i < g_preview.nfaces; i++) {
+        const PickFace p = g_preview.face[i];
+        int j = i - 1;
+        while (j >= 0 && g_preview.face[j].depth < p.depth) {
+            g_preview.face[j + 1] = g_preview.face[j];
+            j--;
+        }
+        g_preview.face[j + 1] = p;
+    }
+    g_preview.cam_yaw = g_cam.yaw;
+    g_preview.cam_pitch = g_cam.pitch;
+    g_preview.cam_zoom = g_cam.zoom;
+    g_preview.aspect = g_preview_aspect;
 }
+
 static void list_folder(void) {
     g_count = 0;
     g_error[0] = 0;
@@ -328,6 +795,13 @@ static void finish(const char *path) {
     // The game gets its input back the way the settings menu gives it back: nothing reaches it until every button and
     // stick is released, so the press that closed the picker cannot act in the game.
     input_menu(0);
+    // Remember the zoom for the next visit, and to totk.ini so it survives a restart.
+    {
+        char buf[32];
+        snprintf(buf, sizeof buf, "%.4f", (double)g_cam.zoom);
+        cfg_set("BLUEPRINT_ZOOM", buf);
+        cfg_save();
+    }
     if (done) done(path, ctx);
 }
 
@@ -388,6 +862,14 @@ int bp_picker_open(const char *start, BpPickDone done, void *ctx) {
     list_folder();
     g_open = 1;
     input_menu(1);
+    // The zoom the player left it at, from totk.ini: one zoom is enough, not one per visit.
+    {
+        const char *z = cfg_get("BLUEPRINT_ZOOM");
+        if (z && *z) {
+            const double v = atof(z);
+            if (v > 0.001 && v < 100.0) g_cam.zoom = (float)v;
+        }
+    }
     rt_log("blueprint: picker opens at %s (%d entries)", g_dir, g_count);
     return 1;
 }
@@ -406,20 +888,38 @@ void bp_picker_back(void) {
     if (g_open) __atomic_store_n(&g_back_pending, 1, __ATOMIC_RELEASE);
 }
 
-// The preview's camera lives with the preview. These entry points stay so the draw layer does not have to know whether a
-// preview is built in; without one they hold the default and changing them does nothing.
+// The preview's camera (blueprint_picker.h): readable, settable, resettable, so a caller can restore the default view and
+// a test can check that a drag moves it.
 void bp_picker_camera(float *yaw, float *pitch) {
-    if (yaw) *yaw = 0.0f;
-    if (pitch) *pitch = 0.0f;
+    if (yaw) *yaw = g_cam.yaw;
+    if (pitch) *pitch = g_cam.pitch;
 }
 
-void bp_picker_camera_set(float yaw, float pitch) { (void)yaw; (void)pitch; }
+void bp_picker_camera_set(float yaw, float pitch) {
+    g_cam.yaw = yaw;
+    g_cam.pitch = pitch;   // no clamp: the view can tip past the poles and read the build from the other side
+    g_view.stamp++;   // the camera changed: any rendered image is stale
+}
 
-void bp_picker_camera_reset(void) {}
+void bp_picker_camera_reset(void) {
+    g_cam.yaw = BP_CAM_DEFAULT_YAW;
+    g_cam.pitch = BP_CAM_DEFAULT_PITCH;
+    g_cam.zoom = BP_CAM_DEFAULT_ZOOM;
+    // The build goes back to its authored orientation too: "reset the view" means the picture the player started from,
+    // and after a few turns the default camera alone would not show that.
+    static const float ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    memcpy(g_rot, ident, sizeof g_rot);
+    g_rot_stamp++;
+    g_cam_vel_yaw = g_cam_vel_pitch = 0.0f;
+    g_view.stamp++;
+}
 
-float bp_picker_zoom(void) { return 1.0f; }
+float bp_picker_zoom(void) { return g_cam.zoom; }
 
-void bp_picker_zoom_set(float zoom) { (void)zoom; }
+void bp_picker_zoom_set(float zoom) {
+    g_cam.zoom = zoom < 0.001f ? 0.001f : zoom;   // only a floor against zero/negative, no upper or lower limit
+    g_view.stamp++;
+}
 
 
 // ---- layout: every rectangle the draw layer needs, in UI pixels
@@ -664,8 +1164,7 @@ have_preview_path: ;
     const int pad_in = (int)(12 * sc);
     const int vw = preview_w - pad_in * 2;
     const int vh = (f->row_bottom - f->row_top) - text_h - pad_in * 2;
-    // What the file holds: its part count and the distinct part names, most used first. Read from the file itself, so a
-    // damaged one is reported here before the player presses anything.
+    if (vw > 0 && vh > 0) g_preview_aspect = (float)vw / (float)vh;
     preview_load(path);
 
     const int right = f->x + f->w - pad;
@@ -673,16 +1172,30 @@ have_preview_path: ;
     const int box_y = f->row_top;
 
     f->preview = 1;
+    // The 3D view occupies the upper part of the column; the text sits under it.
     f->preview_x = box_x + pad_in;
     f->preview_y = box_y + pad_in;
     f->preview_w = vw;
     f->preview_h = vh;
     if (f->preview_h < (int)(40 * sc)) f->preview_h = (int)(40 * sc);
+    f->preview_faces = g_preview.nfaces;
     f->preview_kinds = g_preview.kinds;
     for (int k = 0; k < g_preview.kinds; k++) {
         snprintf(f->preview_kind[k].name, sizeof f->preview_kind[k].name, "%s", g_preview.kind[k].name);
         f->preview_kind[k].count = g_preview.kind[k].count;
     }
+    for (int k = 0; k < g_preview.nfaces; k++) {
+        for (int i = 0; i < 4; i++) {
+            f->preview_face[k].x[i] = g_preview.face[k].x[i];
+            f->preview_face[k].y[i] = g_preview.face[k].y[i];
+        }
+        f->preview_face[k].shade = g_preview.face[k].shade;
+        f->preview_face[k].approx = g_preview.face[k].approx;
+        f->preview_face[k].color = g_preview.face[k].color;
+    }
+    f->preview_modelled = g_view.modelled;
+    f->preview_approx = g_view.approximated;
+    f->preview_hidden = g_view.hidden;
     if (g_preview.ok) {
         snprintf(f->preview_title, sizeof f->preview_title, menu_text(UI_MENU_BLUEPRINT_PARTS), g_preview.actors);
     } else {
@@ -719,6 +1232,25 @@ void bp_picker_layout(BPickFrame *f, int screen_w, int screen_h, float scale) {
 // picker handled a press this frame (the draw layer then refreshes what it needs).
 int bp_picker_input(BPickFrame *f, int px, int py) {
     int acted = 0;
+
+    // The orbit's leftover momentum from the previous drag step. It decays geometrically and stops once it is too small
+    // to see, so a fast release glides to a halt and a slow one barely moves - the damping behaviour of the orbit
+    // controls every 3D viewer ships. While the button is still down the drag path below overwrites it, so this only
+    // takes effect after a release. It replays the same two turns the drag made, about the same two axes, so the glide
+    // continues the motion the hand started.
+    if (!g_cam_dragging && (g_cam_vel_yaw != 0.0f || g_cam_vel_pitch != 0.0f)) {
+        float up[3], right[3];
+        drag_axes(up, right);
+        rotate_about(up, g_cam_vel_yaw * BP_CAM_DAMPING);
+        rotate_about(right, g_cam_vel_pitch * BP_CAM_DAMPING);
+        g_cam_vel_yaw *= 1.0f - BP_CAM_DAMPING;
+        g_cam_vel_pitch *= 1.0f - BP_CAM_DAMPING;
+        // Below a thousandth of a radian per step the glide is invisible: stop it, so the view settles and the renderer
+        // can go idle instead of redrawing for a turn nobody can see.
+        if (fabsf(g_cam_vel_yaw) < 1e-5f) g_cam_vel_yaw = 0.0f;
+        if (fabsf(g_cam_vel_pitch) < 1e-5f) g_cam_vel_pitch = 0.0f;
+        acted = 1;
+    }
 
     // A right click (bp_picker_back) is only flagged by the window thread; the folder walk happens here, on the present
     // thread that owns the picker's state, and the caller re-lays out from the new folder.
@@ -764,6 +1296,43 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     const int l = ikb_down(KEY_MOUSE_L);
     const int click = l && !held_l;
     held_l = l;
+
+    // ---- camera drag: turning the preview. Checked before the scrollbar because a press inside the view must not be
+    // read as a scrollbar grab if the two ever overlap, and because the view is the thing the player is aiming at.
+    const int in_preview = f->preview && px >= f->preview_x && px < f->preview_x + f->preview_w &&
+                           py >= f->preview_y && py < f->preview_y + f->preview_h;
+    if (click && in_preview) {
+        // A second click soon after the first puts the view back: the way out of a camera the player has lost track of,
+        // without a button for it in the footer.
+        static uint64_t last_click;
+        const uint64_t now = plat_now_ns();
+        if (now - last_click < 400ull * 1000000ull) {
+            bp_picker_camera_reset();
+            last_click = 0;
+        } else {
+            last_click = now;
+        }
+        g_cam_dragging = 1;
+        g_cam_last_x = px;
+        g_cam_last_y = py;
+    }
+    if (!l) g_cam_dragging = 0;
+    if (g_cam_dragging) {
+        // The build turns by the pointer's movement, one full circle per view height. Dividing by the height instead of the
+        // width is what fixes the "dizzy" feel here - this panel is tall and narrow, so a width divisor made the same pixel
+        // of movement turn the build nearly twice as far as it should.
+        const float dx = (float)(px - g_cam_last_x), dy = (float)(py - g_cam_last_y);
+        g_cam_last_x = px;
+        g_cam_last_y = py;
+        const int span = f->preview_h > 0 ? f->preview_h : (f->preview_w > 0 ? f->preview_w : 1);
+        const float per_px = 6.28318531f / (float)span;
+        rotate_build(dx, dy, per_px);   // the build turns, not the camera: no pole to run into, so a drag never locks
+        // Remember this step as momentum, so a release carries the turn a little further instead of stopping dead.
+        g_cam_vel_yaw = -dx * per_px;
+        g_cam_vel_pitch = -dy * per_px;
+        acted = 1;   // the projection changed, so the caller re-lays out and the faces are rebuilt
+        return acted;
+    }
 
     // ---- scrollbar drag: clicking the grab column starts it, moving the pointer while held maps y to the first visible
     // entry through the same scroll_max the wheel uses. g_drag_grab_y keeps the thumb from jumping to the cursor.
@@ -825,10 +1394,16 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
     // visible row count decides how far it may go so the list never scrolls past its end.
     int32_t wheel = __atomic_exchange_n(&g_wheel, 0, __ATOMIC_SEQ_CST);
     if (wheel) {
-        g_scroll -= wheel;   // away from the player scrolls down
-        if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
-        if (g_scroll < 0) g_scroll = 0;
-        f->scroll = g_scroll;
+        // Over the 3D view the wheel zooms the camera, the way the reference viewer's orbit controls do; over the list
+        // it scrolls, so neither meaning is lost.
+        if (in_preview) {
+            bp_picker_zoom_set(g_cam.zoom * (wheel > 0 ? 1.15f : 1.0f / 1.15f));
+        } else {
+            g_scroll -= wheel;   // away from the player scrolls down
+            if (g_scroll > f->scroll_max) g_scroll = f->scroll_max;
+            if (g_scroll < 0) g_scroll = 0;
+            f->scroll = g_scroll;
+        }
         acted = 1;
     }
 
@@ -866,9 +1441,18 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
             } else {
                 stick_repeat_ns = 0;
             }
+            // L2 / R2 zoom the preview, as a rate while held: the wheel's own field, with its floor against zero intact.
+            if (pad & ((1ull << B_ZL) | (1ull << B_ZR))) {
+                const float step = 0.02f;
+                if (pad & (1ull << B_ZR)) g_cam.zoom *= 1.0f + step;
+                if (pad & (1ull << B_ZL)) g_cam.zoom /= 1.0f + step;
+                if (g_cam.zoom < 0.001f) g_cam.zoom = 0.001f;
+                g_view.stamp++;   // the zoom changed: any rendered image is stale
+                acted = 1;
+            }
             // The folder walk is a pair of shoulders, not the stick: a stick nudged while the player is lining up a row fired
             // the step again and again. A shoulder is one press, so one press is one action. L1 up a folder, R1 into the row's
-            // folder.
+            // folder (R2 belongs to the zoom).
             if (down & (1ull << B_L)) {
                 if (go_up()) return 1;
                 acted = 1;
@@ -879,6 +1463,13 @@ int bp_picker_input(BPickFrame *f, int px, int py) {
                     activate(g_focus_row);
                     return 1;
                 }
+                acted = 1;
+            }
+            if (f->preview && (rx > kStickOn || rx < -kStickOn || ry > kStickOn || ry < -kStickOn)) {
+                // A rate, in the same units the drag uses: a full deflection turns the build about 130 degrees a second.
+                const int span = f->preview_h > 0 ? f->preview_h : 1;
+                const float per_frame = 6.28318531f / (float)span * 2.2f;
+                rotate_build((float)rx / 32767.0f, -(float)ry / 32767.0f, per_frame);
                 acted = 1;
             }
         }

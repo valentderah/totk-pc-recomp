@@ -33,6 +33,9 @@ def main():
                str(RUNTIME / 'blueprint_cai.c'),
                str(RUNTIME / 'blueprint_txt.c'),
                str(RUNTIME / 'blueprint_inflate.c'),
+               str(RUNTIME / 'blueprint_shape.c'),
+               str(RUNTIME / 'byml.c'),
+               str(RUNTIME / 'hull.c'),
 ]
     # Compile each source to an object, then link, because clang in this environment cannot make the temporary files a
     # single multi-input invocation needs.

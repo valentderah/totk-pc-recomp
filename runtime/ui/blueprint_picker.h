@@ -23,6 +23,10 @@ extern "C" {
 // The preview's part list: (part name, how many times the blueprint uses it). A 21-actor draft has at most 21 distinct
 // names, so this is the worst case.
 #define BPC_PICK_MAX_KINDS 21
+// The 3D view's faces: every part contributes the triangles that face the camera. A blueprint's parts are real meshes
+// from the mesh pack (up to a few thousand triangles each) or their collision shapes, and a convex body shows about
+// half its surface, so this covers a 21-part build; past it the view stops adding faces rather than growing.
+#define BPC_PICK_MAX_FACES 24000
 
 // done gets the chosen path (UTF-8) or NULL when the player cancelled.
 typedef void (*BpPickDone)(const char *path, void *ctx);
@@ -93,13 +97,29 @@ typedef struct {
     int nprompt;
     struct { char key[8]; char label[64]; int primary; } prompt[4];   // primary: the accept key, drawn in gold
 
-    int preview;               // 1 when there is a file detail column to draw
-    int preview_x, preview_y, preview_w, preview_h;   // the column's box
+    // ---- the preview of the file under the pointer (or the pad cursor). Filled by the C layer so the draw layer only
+    // paints. A CAI file stores each part's name and placement and nothing else - no meshes, no sizes - so a preview
+    // drawn from the file alone can only ever be abstract. What it can say honestly is what the build is made of: the
+    // parts it uses and how many of each ("4x Wooden Wheel, 1x Cannon"), which is what a player needs to tell one draft
+    // from another. The thumbnail of a draft the game has already rendered is shown separately by the page.
+    int preview;               // 1 when there is a blueprint preview to draw
+    int preview_x, preview_y, preview_w, preview_h;   // the 3D view's box
     int preview_kinds;         // distinct part names, most used first
     struct {
         char name[96];         // the actor name from the CAI, as the game spells it
         int count;             // how many times the build uses it
     } preview_kind[BPC_PICK_MAX_KINDS];
+    int preview_faces;         // how many projected faces follow, far first
+    struct {
+        float x[4], y[4];      // the face's corners, in 0..1 of the view box
+        float shade;           // 0 (turned away from the light) to 1 (facing it)
+        int approx;            // 1 when the face came from a collision shape, not the part's model
+        int color;             // the actor's palette index, as the game's own viewer colours a build (0..20)
+    } preview_face[BPC_PICK_MAX_FACES];
+    int preview_modelled;      // parts drawn from their own model
+    int preview_approx;        // parts drawn from their collision shape
+    int preview_hidden;        // parts with no geometry at all, left out of the view
+    int preview_list_y, preview_list_h;   // the part list's area under the 3D view
     char preview_title[160];   // the blueprint's headline: part count
     char preview_note[96];     // a second line: the file name, or why it cannot be imported
 } BPickFrame;
@@ -134,17 +154,30 @@ void bp_picker_back(void);
 
 // The draw layer's colours need to know which rows and parts are under the pointer and which entry the pad is on.
 int bp_picker_hover_part(void);
+// Set by the draw layer once the GPU preview is ready; from then on the CPU projection and face list are skipped.
+void bp_picker_use_gpu(int on);
+int bp_picker_gpu_in_use(void);
+// Rises when a different file is shown, so a renderer knows the image it holds is stale.
+unsigned bp_picker_preview_stamp(void);
+// The build's own rotation (row-major 3x3, applied to blueprint space) and the bounds of the rotated build. A drag turns
+// the build rather than moving the camera, so the renderer has to apply this turn and frame these bounds, or its picture
+// would disagree with the CPU projection and with what the pointer is doing.
+void bp_picker_preview_rot(float out[9]);
+void bp_picker_preview_bounds(float lo[3], float hi[3]);
 
 int bp_picker_selected_row(void);
 int bp_picker_scroll(void);
 
-// The preview's camera, in radians. These are kept for the draw layer's benefit and do nothing until a preview is
-// built in; the picker no longer has a 3D view of its own.
+// The preview's camera, in radians: a drag inside the view turns it, the wheel over the view zooms it, a double click
+// puts it back. These let a caller read the angle back and reset it.
 void bp_picker_camera(float *yaw, float *pitch);
 void bp_picker_camera_set(float yaw, float pitch);   // pitch is clamped short of the poles
 void bp_picker_camera_reset(void);                   // back to the three-quarter default
 float bp_picker_zoom(void);                          // 1.0 is the default distance
 void bp_picker_zoom_set(float zoom);                 // clamped to the min/max range
+
+// The blueprint on show, for the GPU renderer, or NULL when nothing is previewed. Valid until another file is loaded.
+const BpcBlueprint *bp_picker_blueprint(void);
 
 // Paints the panel into the overlay's draw list, in a width x height image, at the menu's pixel scale, with the pointer
 // at (px, py) in the same pixels (-1, -1 when there is none). Defined in ui/blueprint_picker.cpp, the only C++ part of
