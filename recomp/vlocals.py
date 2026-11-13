@@ -20,6 +20,9 @@ NOTES.md has the measurements.
 import re
 from collections import Counter
 
+# Default K: 8 cut guest time 3.9-6.2% in the town on a 7900X against K = 0 (build/v143-vloc NOTES.md, series s1 and g1).
+LOCALS = 8
+
 # runtime/simd.h helpers that take VCTX, with their parameters after c. Register-number parameters are d (written,
 # also read by some), n, m, a (read) and t (the first of up to 4 consecutive registers; written by the sl_ld* loads).
 HELPERS = {

@@ -39,6 +39,7 @@ from unicorn import arm64_const as A
 from common import BUF, BUF_SIZE, MSYS_BIN, ROOT, Emu, compiler, diff_state, rand_fpcr, rand_v, rand_x, run_harness
 import gen
 import patches
+import vlocals
 from layout import layout
 from module import Module
 
@@ -346,7 +347,8 @@ def main():
     ap.add_argument('--show', type=int, default=20)
     ap.add_argument('--patches', type=Path, help='patch table whose spin waits are emitted with their gates')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '')
-    ap.add_argument('--v-locals', type=int, default=0, help='gen.py --v-locals: V registers per function in locals')
+    ap.add_argument('--v-locals', type=int, default=vlocals.LOCALS,
+                    help='gen.py --v-locals: V registers per function in locals')
     ap.add_argument('--v-trust', action='store_true', help='gen.py --v-trust: V8-V15 not reloaded after a call')
     ap.add_argument('--work', type=Path, default=ROOT / 'build' / 'test' / 'func',
                     help='work directory (chunks, harness, images); one per concurrent run')

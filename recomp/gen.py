@@ -212,8 +212,8 @@ def partition(est, max_fns, max_bytes, big_fn):
 class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
-    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None, v_locals=0,
-                 v_trust=False):
+    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
+                 v_locals=vlocals.LOCALS, v_trust=False):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
@@ -712,9 +712,9 @@ def main():
     ap.add_argument('--no-callee-saved-trust', action='store_true',
                     help='reload X19-X29 and SP after every call too, instead of trusting AAPCS64 (slower; for '
                          'telling a broken callee from a generator bug)')
-    ap.add_argument('--v-locals', type=int, default=0,
+    ap.add_argument('--v-locals', type=int, default=vlocals.LOCALS,
                     help='V registers per function kept in C locals that clang holds in XMM registers, the most used '
-                         'ones (recomp/vlocals.py; default 0: all in the Cpu, the output as before)')
+                         f'ones (recomp/vlocals.py; default {vlocals.LOCALS}, 0: all in the Cpu)')
     ap.add_argument('--v-trust', action='store_true',
                     help='with --v-locals: do not reload V8-V15 after a call (AAPCS64: the callee preserves their low '
                          '64 bits)')
