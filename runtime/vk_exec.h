@@ -54,6 +54,9 @@ typedef struct {
 // TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t barrier_bit[8];                  // the game's Barrier calls that carry NVN barrier bit 0..7 (TOTK_TRACE=gfx)
+    uint64_t barrier_merged;                  // the game's Barrier calls the open pass went on through (barrier_merge)
+    uint64_t pass_end_rt, pass_end_barrier;   // passes ended by other render targets, by the game's own Barrier (TOTK_TRACE=gfx)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
@@ -155,6 +158,7 @@ typedef struct VkExec {
     int nfbl;
     uint32_t fbl_mask;                   // attachments of the open pass in that layout: bit i colour i, bit 8 depth
     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
+    uint8_t pass_storage;                // a draw of the open pass has a shader that may write a storage buffer or image (barrier_merge)
                                          // or the last in-pass barrier
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
