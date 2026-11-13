@@ -22,7 +22,7 @@
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "vk.h"
-#include "platform/platform.h"
+#include "gameplay_tweaks.h"
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.0 and 1.2.1 from this port's analysis of main;
@@ -347,6 +347,7 @@ void rt_boot(void) {
     rt_patches_init();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on
     frame_step_init();
+    gameplay_tweaks_init();
     res_init();
     cheats_init();   // after the patch sets: a cheat's set follows its setting
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);

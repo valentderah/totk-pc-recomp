@@ -1,9 +1,9 @@
 """The mods folder served as RomFS overlays (runtime/romfs.c, runtime/mods.c): load order, added files, case, Unicode.
 
-    .venv\\Scripts\\python tests\\mods_romfs_check.py --exe build\\v121-<tag>\\totk.exe --version v121
+    .venv\\Scripts\\python tests\\mods_romfs_check.py --exe build\\v121-<tag>\\totk.exe --version v121 [--romfs <dir>]
 
 Builds a mods folder in a temp directory with files of its own bytes at real RomFS paths (from
-build/extracted/<version>/romfs/index.json), runs `totk.exe --probe-fs` on it and reads the `mods:` lines of the log.
+build/extracted/<version>/romfs/index.json unless --romfs says otherwise), runs `totk.exe --probe-fs` on it and reads the `mods:` lines of the log.
 --probe-fs compares the bytes it reads through the RomFS with every overlay file, so a wrong winner fails it too.
 A second folder checks the merged resource size table the start writes to the profile (runtime/romfs.c
 restbl_overlay): a grown file's entry, an added file's, a shipped table's and another version's table's.
@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 UNI = 'Ж мод'
 
 
-def pick_paths(version):
-    index = json.loads((ROOT / 'build/extracted' / version / 'romfs/index.json').read_text())
+def pick_paths(version, romfs):
+    index = json.loads((romfs / 'index.json').read_text(encoding='utf-8'))
     paths = [f['path'] for f in index['files'] if 1024 <= f['size'] <= 65536]
     have = set(f['path'] for f in index['files'])
     p1 = next(p for p in paths if any(c.isalpha() for c in p.rsplit('/', 1)[-1]))
@@ -83,8 +83,7 @@ def key(path):
     return zlib.crc32((path[:-3] if path.endswith(('.zs', '.mc')) else path).encode())
 
 
-def restbl_case(exe, version, check, tmp):
-    romfs = ROOT / 'build/extracted' / version / 'romfs'
+def restbl_case(exe, version, romfs, check, tmp):
     index = json.loads((romfs / 'index.json').read_text())
     files = {f['path']: f for f in index['files']}
     table_path = next(p for p in files if p.startswith('System/Resource/ResourceSizeTable.') and
@@ -129,8 +128,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exe', type=Path, required=True)
     ap.add_argument('--version', choices=('v121', 'v143'), required=True)
+    ap.add_argument('--romfs', type=Path,
+                    default=ROOT / 'build/extracted' / 'v143' / 'romfs',
+                    help='the extracted romfs (its index.json names the real file paths)')
     args = ap.parse_args()
-    p1, p2, p1case = pick_paths(args.version)
+    p1, p2, p1case = pick_paths(args.version, args.romfs)
     fails = 0
 
     def check(ok, what, log=None):
@@ -152,13 +154,15 @@ def main():
         put(mods, UNI, p2, b'mod-G')
         # a file of another game version's (no RomFS has a Product.999 table): counted, never served
         put(mods, 'Low', 'System/Resource/ResourceSizeTable.Product.999.rsizetable.zs', b'mod-H')
+        # any other file named for another version: counted, and served under its name as an added file
+        put(mods, 'Case', 'Sound/Resource/Named.Product.999.bars', b'mod-J')
         put(mods, 'Lite', 'Lite/added.bin', b'mod-I', part='romfslite')   # TKMM's romfslite folder
 
         code, log = run(args.exe, mods, f'Top|Low|{UNI}|Case')
         check(code == 0, 'probe-fs passes with five mods (served bytes equal the winners\' files)', log)
         for line in ('mods: Top: 2 files served (1 replaced, 1 added), 0 overridden',
                      'mods: Low: 1 files served (1 replaced, 0 added), 2 overridden by Top, 1 for another game version',
-                     'mods: Case: 0 files served (0 replaced, 0 added), 1 overridden by Top',
+                     'mods: Case: 1 files served (0 replaced, 1 added), 1 overridden by Top, 1 for another game version',
                      f'mods: {UNI}: 0 files served (0 replaced, 0 added), 1 overridden by Low',
                      'mods: Lite: 1 files served (0 replaced, 1 added), 0 overridden'):
             check(line in log, line, log)
@@ -169,7 +173,7 @@ def main():
         check('mods: Low: 3 files served (2 replaced, 1 added), 0 overridden' in log, 'Low serves P1 and the added file', log)
         check('mods: Top: ' not in log.replace('mods: Top: off', ''), 'a switched-off mod serves nothing', log)
 
-        restbl_case(args.exe, args.version, check, tmp)
+        restbl_case(args.exe, args.version, args.romfs, check, tmp)
     print('mods_romfs_check:', 'FAIL' if fails else 'ok')
     return 1 if fails else 0
 

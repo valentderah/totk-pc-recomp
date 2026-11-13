@@ -218,16 +218,13 @@ typedef struct { VkCommandBuffer cb; int begin, crumb; uint64_t n; } A_BeginCb;
 void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
     static int mode = -1;
     if (mode < 0) {
-        // Default off on AMD GPUs. With the recorder those drivers lost the device or hung the GPU at startup on
-        // RDNA 2, 3 and 4, under AMD's Windows driver and under RADV (issues #5, #40, #277 and #283: a black screen,
-        // or VK_ERROR_DEVICE_LOST with a breadcrumb naming a part of a replay submission, and vk_recorder = 0 gets
-        // past it). Keeping objects until their submission completed and ending a part from the recorder
-        // (rec_end_cb) fixed the white scene on an RX 6700 XT, but not this: 0.2.8 turned the recorder on for every
-        // GPU and the AMD reports came back the same day. TOTK_VK_RECORDER=1 turns it on for an A/B run.
-        const char *set = cfg_get("TOTK_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
-        if (!mode && vk_caps.amd && !(set && *set))
-            rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
+        // On by default on every GPU. 0.2.8 turned it on for AMD too, and some RDNA 2, 3 and 4 systems lost the device
+        // or hung the GPU at startup (issues #5, #40, #277 and #283: a black screen, or VK_ERROR_DEVICE_LOST with a
+        // breadcrumb naming a part of a replay submission), so 0.3.x kept it off on AMD. Since then the recorder
+        // begins, ends and submits its own parts (TOTK_REC_END, which ended a GPU hang on AMD at split submissions),
+        // and AMD players who turned it on reported more FPS, so it is on again; TOTK_VK_RECORDER=0 turns it off
+        // where the device is still lost.
+        mode = rt_knob("VK_RECORDER", "1");
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
@@ -297,7 +294,7 @@ void rec_end(void) {
 // submission was split (vk_sync.c vk_sync_split): the GPU hung or the scene turned green, then white. Moving the end
 // fixed that; begin and submit followed. TOTK_REC_END=0 brings the old split back: the submitting thread begins,
 // ends and submits every part.
-// The line is written only when a part was recorded by the recorder: with the recorder off (the default on AMD) the
+// The line is written only when a part was recorded by the recorder: with the recorder off (TOTK_VK_RECORDER=0) the
 // switch changes nothing, and reports read an unconditional line as proof that the recorder was running (#315).
 typedef struct { int kind; uint64_t n; } A_EndCb;
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
@@ -321,8 +318,14 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     return 1;
 }
 
-// At most two command buffers and one signal: the shape vk_sync.c submits.
-typedef struct { uint32_t ncb, nsig; VkCommandBufferSubmitInfo cbi[2]; VkSemaphoreSubmitInfo sig; } A_Submit;
+// At most two command buffers and one signal: the shape vk_sync.c submits. The only pNext it chains is Reflex's
+// VkLatencySubmissionPresentIdNV (vk_sync_submit), carried as its present ID.
+typedef struct {
+    uint32_t ncb, nsig, has_pid;
+    uint64_t present_id;
+    VkCommandBufferSubmitInfo cbi[2];
+    VkSemaphoreSubmitInfo sig;
+} A_Submit;
 VkResult rec_submit(const VkSubmitInfo2 *si) {
     if (!sub_pending) {
         vk_queue_lock();
@@ -331,12 +334,16 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
         return r;
     }
     sub_pending = 0;
-    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount || si->pNext)
+    const VkBaseInStructure *nx = si->pNext;
+    int pid = nx && nx->sType == VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV && !nx->pNext;
+    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount ||
+        (nx && !pid))
         rt_fatal("vk_rec: a submission of %u command buffers, %u waits and %u signals the recorder cannot carry",
                  si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
     A_Submit *a = put(R_Submit, sizeof *a);
     memset(a, 0, sizeof *a);
     a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
+    if (pid) a->has_pid = 1, a->present_id = ((const VkLatencySubmissionPresentIdNV *)nx)->presentID;
     for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
     if (a->nsig) a->sig = si->pSignalSemaphoreInfos[0];
     __atomic_store_n(&q_subs, q_subs + 1, __ATOMIC_RELEASE);
@@ -357,7 +364,10 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
 }
 
 static void submit_run(const A_Submit *a) {
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb,
+    VkLatencySubmissionPresentIdNV lsid = {.sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+                                           .presentID = a->present_id};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .pNext = a->has_pid ? &lsid : NULL,
+                        .commandBufferInfoCount = a->ncb,
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
                         .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
     vk_queue_lock();

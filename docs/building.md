@@ -160,35 +160,9 @@ folder. The folder holds code and data derived from your game: for your own mach
 
 ### Profile-guided build
 
-`build_game.py --pgo <file>.profdata` compiles the generated code at -O2 with an execution profile, and the runtime
-with it too: hot paths laid out straight, hot calls inlined, code that never ran compiled for size. On 1.4.3 the fight
-bench ran 12-15% faster per frame and a fight outside the training about 6%. The installer builds with
-`data/pgo-<ver>.profdata` of the release when the update has one, else at -O1.
-
-A profile only fits the code it was trained on: functions are matched by name and control-flow hash, so a function
-whose code changes loses its counts without a warning. That code is the generated C plus the runtime headers it
-includes (`cpu.h`, `simd.h`, `simd_fp.h`), whose inline helpers become part of every lifted function: a change to the
-floating-point helpers once left a profile with a fifth of its weight and 2% of its gain. Retrain after a lifter or
-generator change or a change to those headers, from a clean `recomp/`. The instrumented build needs llvm-mingw, as
-MSYS2's clang has no profile runtime:
-
-```powershell
-$llvm = "toolchain\llvm-mingw-<date>\llvm-mingw-<date>-ucrt-x86_64"
-.venv\Scripts\python tools\build_game.py --version v143 --out build\v143-pgogen --toolchain $llvm --pgo gen
-```
-
-Play `build\v143-pgogen\totk.exe` through varied scenes (fights, towns, riding, building, the Depths, menus) for 20-30
-minutes; it is slower than a normal build. It writes `build\v143-pgogen\pgo\*.profraw` every minute and at exit.
-Scripted runs from saves (`tools/run_game.py`) add to the same file. Then:
-
-```powershell
-.venv\Scripts\python tools\pgo.py merge build\v143-pgogen --version v143
-```
-
-writes `build\pgo\pgo-v143.profdata` and its record (`.json`: the `recomp/` tree it fits and the digests of the runtime
-headers the generated C included, read from the build's Ninja deps log). Merge from the checkout the instrumented build
-was made in. `make_release.py` ships every profile of `build\pgo` in `data\` and warns when a record names another
-`recomp/` tree than the one released or a header differs.
+`build_game.py --pgo <file>.profdata` compiles the generated code and the runtime at -O2 with an execution
+profile, 6-12% shorter frames. Which build uses which profile, when to retrain, where and how to train and how to
+measure a new profile: [pgo.md](pgo.md).
 
 ## Linux (in progress)
 

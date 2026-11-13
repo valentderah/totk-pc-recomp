@@ -28,6 +28,20 @@ uint64_t input_buttons_last(void);
 // mouse_direct.c: the right stick's side a mouse shake gives while Ultrahand holds an object (-1 / +1), 0 while the
 // mouse does not shake; input.c puts it on the stick
 int input_direct_mouse_shake(void);
+enum {
+    INPUT_CAM_UNCLASSIFIED = 0,
+    INPUT_CAM_FREE_ROAM,
+    INPUT_CAM_AIM,
+    INPUT_CAM_SCOPE,
+    INPUT_CAM_LOCK_ON,
+    INPUT_CAM_MENU_WHEEL,
+    INPUT_CAM_ABILITY,
+    INPUT_CAM_ULTRAHAND_OBJECT,
+    INPUT_CAM_VEHICLE,
+    INPUT_CAM_DISABLED,
+};
+int input_camera_context(void);
+int input_gameplay_active(void);
 // menu_cursor.c: the L ability wheel or a D-pad strip has the focus: 1 / 0, -1 with the menu cursor off (not read)
 int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
@@ -35,6 +49,15 @@ int menu_cursor_shortcut(void);
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
+// a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
+int menu_cursor_dialogue(void);
+// A menu screen (not the ability wheel, a D-pad strip or the map) has the game's focus box, whichever device was used
+// last: input.c turns the scroll wheel into steps of its focus. 0 with the menu cursor off.
+int menu_cursor_menu(void);
+// A D-pad strip's screen (ShortCut_00) is open; it has no focus box while held. 0 with the menu cursor off.
+int menu_cursor_strip(void);
+// The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
+int menu_cursor_camera(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

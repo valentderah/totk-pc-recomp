@@ -528,7 +528,12 @@ class PromptsTest(unittest.TestCase):
                 drawn = font(sarc_files(romfs.read(out, DEFAULT_FONT))['scft/External.bfotf'])
                 advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
                 pc = icons.pc_icons(icons.text_glyphs(romfs.text_fonts), advances)
+                text = icons.pc_icons(icons.text_glyphs(romfs.text_fonts), advances, icons.pc_binds(text=True))
                 self.assertIn(0xE05E, pc)   # the left stick's W A S D
+                # In the font Y is T (PC_TEXT_KEYS); the button guide's Y image below stays the left mouse button
+                otf = unbfotf(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                t = TTFont(io.BytesIO(icons.redraw_font(otf, {0xE043: text[0xE043]})))
+                self.assertEqual(glyph(drawn, 0xE043)[0], glyph(t, 0xE043)[0])
                 for cp in range(0xE040, 0xE069):
                     outline, advance = glyph(drawn, cp)
                     if cp in pc:
@@ -564,6 +569,16 @@ class PromptsTest(unittest.TestCase):
         panes = pane_texts(sarc_files(romfs.read(out, romfs.common))['blyt/DoCommand_00.bflyt'])
         self.assertEqual({b: panes[f'T_{b}_00'] for b in PC_PANES}, {**PC_PANES, 'A': 'F'})
         self.assertEqual(icons.pc_binds(ini.read_text(encoding='utf-8')), {**icons.PC_BINDS, 'A': 'f'})
+
+    def test_pc_text_prompts_show_y_as_its_first_key_that_is_not_a_mouse_button(self):
+        def y(line=None, text=True):
+            return icons.pc_binds(f'[input]\n{line}\n' if line else None, text=text)['Y']
+        self.assertEqual((y(), y(text=False)), ('t', 'mouse_l'))
+        self.assertEqual(y('bind_Y = pad:north, key:mouse_l, key:h'), 'h')
+        self.assertEqual(y('bind_Y = key:g, key:mouse_l'), 'g')
+        self.assertEqual(y('bind_Y = key:mouse_l'), 'mouse_l')   # no key besides the mouse: the mouse button
+        self.assertEqual(y('bind_Y = key:default'), 't')
+        self.assertEqual(y('bind_Y = key:h, key:mouse_l', text=False), 'h')
 
     def test_same_input_same_output_and_the_older_flag(self):
         romfs = self.romfs['v121']

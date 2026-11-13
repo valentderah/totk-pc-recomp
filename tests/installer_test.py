@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state, steps  # noqa: E402
+from installer import ini, runner, screens, state, steps  # noqa: E402
 from installer.events import Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
@@ -384,6 +384,57 @@ class LiftRunTest(unittest.TestCase):
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
 
+class CompileLockedTest(unittest.TestCase):
+    """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
+    temp build folder, an antivirus that quarantined it), which gets its own message instead of the plain failure."""
+
+    LLD = ("ld.lld: error: failed to write output 'temp/totk-1/build/totk.exe': Permission denied\n"
+           "clang-23: error: unable to remove file: Permission denied\n")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        dest, temp = base / 'install', base / 'temp'
+        dest.mkdir()
+        temp.mkdir()
+        layout = SimpleNamespace(tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
+                                 ninja=base / 'ninja', dlls=[], runtime_lib_for=lambda cpu: None,
+                                 pgo=lambda version: None, expected=lambda version: base / 'expected.json')
+        self.ctx = SimpleNamespace(dest=dest, temp=temp, layout=layout, state={'version': '1.4.3'},
+                                   reporter=Reporter(out=io.StringIO()))
+        self.addCleanup(self.ctx.reporter.close)
+        self.log_text = ''
+        saved = steps.run_tool
+        self.addCleanup(lambda: setattr(steps, 'run_tool', saved))
+        steps.run_tool = self.run_tool
+
+    def run_tool(self, ctx, step, script, args, parse=None, cwd=None):
+        log = ctx.temp / 'compile.log'
+        log.write_text(self.log_text, encoding='utf-8')
+        return 1, log
+
+    def test_locked_link_output(self):
+        self.log_text = 'link: 0.8 s\n' + self.LLD
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.exe_locked')
+        self.assertTrue(e.exception.params['path'].endswith('totk' + steps.EXE))
+
+    def test_other_failure(self):
+        self.log_text = 'runtime/x.c:1:1: error: expected expression\n'
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.failed')
+
+    def test_message_in_every_language(self):
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertIn('compile.exe_locked', text, path.name)
+            self.assertIn('{path}', text['compile.exe_locked'], path.name)
+            self.assertIn('{log}', text['compile.exe_locked'], path.name)
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
@@ -489,6 +540,29 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
 
 
+class FreeSpaceTest(unittest.TestCase):
+    def test_missing_folders_use_the_nearest_existing_parent(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = Path(d)
+            path = parent / 'missing' / 'install'
+            with mock.patch.object(steps.shutil, 'disk_usage', return_value=SimpleNamespace(free=1234)) as usage:
+                self.assertEqual(steps.free_bytes(path), (1234, parent.stat().st_dev))
+            usage.assert_called_once_with(parent)
+            self.assertFalse(path.parent.exists())
+
+    def test_missing_root_reports_the_filesystem_error(self):
+        path = Path(ROOT.anchor) / 'missing' / 'install'
+        root = Path(path.anchor)
+        error = FileNotFoundError(2, 'No such file or directory', str(root))
+        # Bound the failed existence checks so the old parent walk cannot hang the test suite.
+        with mock.patch.object(Path, 'exists', side_effect=[False] * (len(path.parents) + 1)):
+            with mock.patch.object(steps.shutil, 'disk_usage', side_effect=error) as usage:
+                with self.assertRaises(FileNotFoundError) as raised:
+                    steps.free_bytes(path)
+        self.assertIs(raised.exception, error)
+        usage.assert_called_once_with(root)
+
+
 class BaseGameCheckTest(unittest.TestCase):
     """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
     BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
@@ -512,6 +586,92 @@ class BaseGameCheckTest(unittest.TestCase):
         records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(3, self.BASE)]
         self.assertIsNone(steps.base_misuse(records))
         self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
+
+
+class ShapesTest(unittest.TestCase):
+    """installer/screens.py and the shapes step: one folder per screen shape, only for the displays and the prompts
+    style this player has (runtime/cfg.c cfg_shape_size maps the game resolution the same way)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = Path(self.tmp.name)
+        self.ctx = SimpleNamespace(dest=self.dest, keys={'prepare': 'p'}, layout=SimpleNamespace(tools=ROOT / 'tools'),
+                                   reporter=Reporter(out=io.StringIO()))
+        self.saved = steps.run_tool, steps.game_version, screens.displays
+        steps.game_version = lambda ctx: '1.4.3'
+        self.calls = []
+
+        def run(ctx, step, script, args, parse=None, cwd=None):
+            self.calls.append([str(a) for a in args])
+            out = Path(args[args.index('--out') + 1])
+            out.mkdir(parents=True)
+            (out / 'manifest.tsv').write_text('#\n')
+            return 0, None
+        steps.run_tool = run
+
+    def tearDown(self):
+        steps.run_tool, steps.game_version, screens.displays = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def test_shape_rule(self):
+        self.assertEqual([screens.shape_size(*s) for s in ((5120, 2160), (3440, 1440), (1920, 800), (2560, 1600),
+                                                           (1920, 1080), (1024, 768))],
+                         ['2560x1080', '3440x1440', '3840x1600', '1280x800', None, None])
+        self.assertEqual(screens.default_size(3440, 1440), '2560x1080')   # runtime/cfg.c screen_default
+        self.assertEqual(screens.default_size(1280, 800), '1280x800')
+
+    def test_prompts_style_as_the_game_picks_it(self):
+        self.assertEqual([screens.prompts_style(t) for t in ('', 'prompts = pc', 'prompts = xbox',
+                                                             'pad_layout = nintendo\nprompts = xbox',
+                                                             'pad_layout = xbox_prompts', 'prompts = nintendo')],
+                         [None, 'pc', 'xbox-label', 'xbox', 'xbox', None])
+
+    def test_wanted_from_displays_and_ini(self):
+        (self.dest / 'totk.ini').write_text('[display]\noutput_res = 3000x2000\n[input]\nprompts = pc\n')
+        self.assertEqual(screens.wanted(self.dest, [(3440, 1440), (1920, 1080), (800, 1280)]),
+                         (['2560x1080', '3440x1440', '1280x800', '1920x1280'], 'pc'))
+        self.assertEqual(screens.wanted(self.dest / 'none', [(2560, 1440)]), ([], None))
+
+    def test_run_writes_only_the_wanted_folders(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = nintendo\nprompts = xbox\n')
+        for old in ('romfs-patches-3440x1440', 'romfs-patches-pc-1280x800', 'romfs-patches-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-xbox' / 'manifest.tsv').write_text('#\n')
+        step = steps.Shapes()
+        step.key(self.ctx)
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-xbox', 'romfs-patches-xbox-2560x1080'])
+        self.assertEqual(self.calls[0][-2:], ['--aspect', '2560x1080'])
+        self.assertTrue(step.current(self.ctx, record))
+
+    def test_pc_prompts_shapes_follow_the_bindings(self):
+        screens.displays = lambda: [(3440, 1440)]
+        (self.dest / 'totk.ini').write_text('[input]\nprompts = pc\nbind_attack = key:f\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        step = steps.Shapes()
+        self.ctx.keys['pc_prompts'] = 'a'
+        key = step.key(self.ctx)
+        self.ctx.keys['pc_prompts'] = 'b'
+        self.assertNotEqual(step.key(self.ctx), key)
+        record = step.run(self.ctx)
+        # the display's own shape and that of the 2560x1080 the game defaults to on it (runtime/cfg.c screen_default)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-pc-2560x1080',
+                                             'romfs-patches-3440x1440', 'romfs-patches-pc-3440x1440'])
+        self.assertEqual(self.calls[1][-4:], ['--reuse', str(self.dest / 'romfs-patches-pc'), '--binds',
+                                              str(self.dest / 'totk.ini')])
+        self.assertNotIn('--binds', self.calls[0])
+
+    def test_pc_prompts_writes_only_the_16_9_folder(self):
+        (self.dest / 'totk.ini').write_text('[input]\nbind_attack = key:f\n')
+        self.assertEqual(steps.PcPrompts().run(self.ctx), {})
+        self.assertEqual([p.name for p in self.dest.iterdir() if p.is_dir()], ['romfs-patches-pc'])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][-2:], ['--binds', str(self.dest / 'totk.ini')])
 
 
 class FontsTest(unittest.TestCase):
@@ -552,7 +712,7 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()

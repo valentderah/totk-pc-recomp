@@ -44,10 +44,16 @@ void menu_perf_cycle(void) { abort(); }
 MotionFusion *motion_global(void) { abort(); }
 void motion_feed(MotionFusion *m, const double a[3], const double g[3], uint64_t ns) { (void)m; (void)a; (void)g; (void)ns; abort(); }
 uint64_t kern_now_ns(void) { abort(); }
+// 菜单与阻塞通知允许重置；快照不得触发 gameplay 输入变换。
+static int gameplay_resets;
+void gameplay_tweaks_reset(void) { gameplay_resets++; }
+int gameplay_tweaks_capture_needed(void) { abort(); }
+int32_t ikb_wheel_take(void) { abort(); }
 GfxStats gfx_counters;
 void ikb_cursor_update(void) {}
 void ikb_menu_closed(void) {}
-int romfs_shaped_pc_ready(unsigned w, unsigned h) { (void)w; (void)h; return 0; }
+// 本探针不读取 RomFS，所有形状提示包均视为不可用。
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { (void)folder; (void)w; (void)h; return 0; }
 #define CHECK(c) do { if (!(c)) { fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#c); exit(1); } } while (0)
 
 static SDL_JoystickID attach(SDL_Joystick **joy) {
@@ -177,8 +183,11 @@ int main(void) {
     sample(&s);
     uint64_t combo = (1ull<<B_MINUS)|(1ull<<B_PLUS)|(1ull<<B_STICK_L)|(1ull<<B_STICK_R);
     CHECK((s.buttons & combo) == combo);
+    int resets_before = gameplay_resets;
     PlatThread *a = plat_thread_new(worker,NULL,"overlay-test-a"), *b = plat_thread_new(worker,NULL,"overlay-test-b");
     CHECK(a && b); plat_thread_join(a); plat_thread_join(b);
+    CHECK(gameplay_resets == resets_before);
+    puts("PASS: 快照不消费鼠标滚轮、不请求 gameplay 捕获且不重置 gameplay 状态");
     CHECK(script_state == 0 && script_ev == NULL && rec_state == 0 && rec == NULL);
     SDL_CloseJoystick(joy); CHECK(SDL_DetachVirtualJoystick(id));
     CHECK(!input_overlay_state(&s));
