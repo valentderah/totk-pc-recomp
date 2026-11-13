@@ -47,6 +47,10 @@ int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
+// 1 when the game's focus box is on one of this screen's tab buttons rather than on its content: the tabs sit in a row
+// near the top of the screen and a feature that belongs to them (the Autobuild import row) has to tell them apart from
+// the card list below. Any thread.
+int menu_cursor_focus_is_tab(const char *screen);
 int menu_cursor_pointer(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
@@ -58,6 +62,12 @@ int menu_cursor_menu(void);
 int menu_cursor_strip(void);
 // The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
 int menu_cursor_camera(void);
+// The layout name of the screen the game shows now ("AutoBuilder_00"), "" when no menu is up or the name cannot be read:
+// what a feature that belongs to one screen of the game (runtime/blueprint_hint.cpp) tests. Any thread.
+int menu_cursor_screen_name(char *out, int n);
+// 1 when a screen with this layout name is open, whatever has the game's focus box: the Autobuild screen is not focused
+// on a list row all the time, and a feature that belongs to the screen must work whenever it is up. Any thread.
+int menu_cursor_screen_open(const char *want);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
@@ -71,6 +81,8 @@ void input_menu(int open);
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
+// The same sample with the right stick as well, for the screens that use it (the blueprint picker turns its preview with it).
+int input_pad_sticks(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full

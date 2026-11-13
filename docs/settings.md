@@ -22,6 +22,7 @@ Many rows below are developer tools that only act together with another setting 
 | `bind_stats` | `1` counts bindings and descriptors per draw of each stage and how much of the bound state changes between draws. | Adds per-draw bookkeeping to the render thread and extra log output; frames get slower. | Caution |
 | `contact_debug` | `1` draws the contact-shadow factor in grey in place of the picture. | The frame shows a grey debug image while it is set; has no effect when contact shadows are off. | Caution |
 | `core_diag` | `1` records why ready guest threads wait for a virtual core and for how long, with a histogram every 60 presents. | Turns on host-call and SVC depth tracking and writes many log lines (one per present over 25 ms); frames get slower. | Caution |
+| `deswizzle` | `auto` (the default) deswizzles a block-linear texture on the GPU when its storage is an imported pool and on the CPU otherwise; `gpu` and `cpu` force one path; `check` uses the GPU and also deswizzles every upload on the CPU, comparing the two. | `cpu` and `gpu` pin the work to one side, which is how a suspected driver difference is told apart; `check` waits for the GPU on every upload, so frames get much slower and it is for testing only. | Caution with `check` |
 | `menu_cursor_log` | `1` logs what the menu cursor code reads at every screen change. | Only adds log lines. | Safe |
 | `perf_slow_ms` (default `50`) | Frames at least this many milliseconds long get a `perf: slow frame` log line with the time blocked per cause. | Changes how many frames are logged; a small value fills the log. | Safe |
 | `replay_check` | `1` reads every texture read-back a second time after a full drain of the replay queue and compares the two. | Stalls the replay queue at every read-back, so frames get much slower; mismatches are only counted and logged. | Caution |
@@ -73,6 +74,7 @@ Many rows below are developer tools that only act together with another setting 
 | `menu_test_dir` | Folder for the `menu_test` screenshots; the default is the working directory. | Only moves the output. | Safe |
 | `menu_test_set` | `<frame>:<key>=<value>[,...][;...]` changes settings live at that frame, with or without the menu open; `SAVE=1` also writes `totk.ini`. | Settings change during play without input, and `SAVE=1` rewrites the file. | Caution |
 | `probe_movie` | Text that picks the movie for `totk.exe --probe-movie`: the first file whose path contains it. | Only used by the movie decoder probe; ignored in normal play. | Safe |
+| `probe_movie_bench` (default `0`) | `1` also times each frame the movie probe decodes, on top of the picture samples it takes. | Only used by the movie decoder probe; ignored in normal play. | Safe |
 | `probe_movie_shot` | Path of a `.ppm` file that the movie probe writes the middle frame to. | Only used by the movie decoder probe. | Safe |
 | `probe_movie_bench` | `1` makes the movie probe also time the resampler that fits a movie to a game resolution of another shape, and print the time per frame. | Only used by the movie decoder probe. | Safe |
 | `swkbd_answer` | `<text>`, `<cancel>` or `<initial>`: answers the on-screen keyboard (for example a horse name) without opening a window. | The game gets that answer every time it asks for text. | Caution |
@@ -218,3 +220,11 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `patch_output` (default `0`) | Patch set that makes the game use the configured output size for its swapchain and display configuration. | The resolution code switches this set whenever the output differs from the base size; a manual value is replaced. | Unknown |
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
 | `report_guard` (default `1`) | Patch set on 1.4.3 only: in the model scene's report loop (main+0xa22d8, main+0xa2310) an object whose report handle is negative or whose row index is 0x8000 or more gets coverage 0 for that frame and its handle reset, the path the game takes after every read, instead of reading past the report rows. On valid rows the game's code runs unchanged. | `0` runs the game's code as shipped: a bad row index reads far past the rows and crashes, the class Weeping of the Empire met while using Ultrahand and aiming. | Risky |
+
+## Blueprint preview
+
+Written by the game itself; a player has no reason to set these by hand.
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `blueprint_zoom` | The zoom the blueprint preview was last left at, so the next preview opens at it. | The next preview opens at the value written here. | Safe |

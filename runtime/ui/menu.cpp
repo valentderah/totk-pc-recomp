@@ -33,19 +33,24 @@ static int g_font_bad;
 #include "ui/amiibo_page.h"
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "blueprint_hint.h"
+#include "ui/blueprint_picker.h"
 
 extern "C" {
 #include "amiibo.h"
 #include "cheats.h"
 #include "cfg.h"
 #include "fs.h"
+#include "gfx_wsys.h"
 #include "input.h"
+#include "input_wsys.h"
 #include "input_map.h"
 #include "mods.h"
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
+#include "ui/preview3d.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -108,7 +113,9 @@ static Ev ev_q[EV_MAX];
 static int ev_n;
 
 static void push(Ev e) {
-    if (!menu_is_open()) return;
+    // The overlay takes these events for the settings menu and for the port's own file picker, which is drawn by the
+    // same overlay with the menu closed. Dropping them when only the picker is open is why its rows could not be pressed.
+    if (!menu_is_open() && !bp_picker_is_open()) return;
     plat_mutex_lock(&ev_lock);
     if (e.type == EV_POS && ev_n && ev_q[ev_n - 1].type == EV_POS) ev_q[ev_n - 1] = e;   // only the newest position
     else if (ev_n < EV_MAX) ev_q[ev_n++] = e;
@@ -117,11 +124,43 @@ static void push(Ev e) {
 
 extern "C" void menu_event_key(int key, int down) { push({EV_KEY, key, down, 0, 0}); }
 extern "C" void menu_event_mouse_pos(float x, float y) { push({EV_POS, 0, 0, x, y}); }
-extern "C" void menu_event_mouse_button(int button, int down) { push({EV_BUTTON, button, down, 0, 0}); }
-extern "C" void menu_event_wheel(float dx, float dy) { push({EV_WHEEL, 0, 0, dx, dy}); }
+extern "C" void menu_event_mouse_button(int button, int down) {
+    // The picker takes the wheel and the right button from the same window events ImGui receives: raw input wheel
+    // messages stop once the cursor capture is released for the picker's pointer, and a right click is the familiar
+    // "go up one folder" gesture. Every press edge is one action; the settings menu is unaffected.
+    if (button == 1 && down && bp_picker_is_open() && !menu_is_open()) bp_picker_back();
+    push({EV_BUTTON, button, down, 0, 0});
+}
+extern "C" void menu_event_wheel(float dx, float dy) {
+    // dy is in wheel notches (Win32 divides WHEEL_DELTA, SDL reports notches). Round so a slow or high-resolution
+    // scroll's fraction is not lost; the picker's list scrolls by whole rows.
+    if (bp_picker_is_open() && !menu_is_open()) {
+        int notches = (int)(dy >= 0 ? dy + 0.5f : dy - 0.5f);
+        if (notches) bp_picker_wheel(notches);
+    }
+    push({EV_WHEEL, 0, 0, dx, dy});
+}
 extern "C" void menu_event_focus(int focused) { push({EV_FOCUS, focused, 0, 0, 0}); }
 
 static void drain_events(ImGuiIO &io) {
+    // The window system reports the pointer in client pixels, while the overlay is laid out in swapchain pixels and
+    // io.DisplaySize is that size. At a display scale above 100% the two differ (1280x720 client, 1920x1080 swapchain at
+    // 150%): without this ratio every click lands short of its row and nothing in the port's own UI can be pressed.
+    float sx = 1.0f, sy = 1.0f;
+    {
+        int cw = 0, ch = 0;
+        wsys_client_size(&cw, &ch);
+        if (cw > 0 && ch > 0 && io.DisplaySize.x > 0 && io.DisplaySize.y > 0) {
+            sx = io.DisplaySize.x / (float)cw;
+            sy = io.DisplaySize.y / (float)ch;
+        }
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("menu: pointer scale %.3f,%.3f (swapchain %.0fx%.0f, client %dx%d)", sx, sy, io.DisplaySize.x,
+                   io.DisplaySize.y, cw, ch);
+        }
+    }
     Ev q[EV_MAX];
     plat_mutex_lock(&ev_lock);
     int n = ev_n;
@@ -132,7 +171,7 @@ static void drain_events(ImGuiIO &io) {
         const Ev &e = q[i];
         switch (e.type) {
         case EV_KEY: io.AddKeyEvent((ImGuiKey)e.a, e.b != 0); break;
-        case EV_POS: io.AddMousePosEvent(e.x, e.y); break;
+        case EV_POS: io.AddMousePosEvent(e.x * sx, e.y * sy); break;
         case EV_BUTTON: io.AddMouseButtonEvent(e.a, e.b != 0); break;
         case EV_WHEEL: io.AddMouseWheelEvent(e.x, e.y); break;
         case EV_FOCUS: io.AddFocusEvent(e.a != 0); break;
@@ -372,6 +411,9 @@ static int fonts_up(float scale) {
     for (uint8_t *d : data) free(d);
     rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
     g_font_scale = ok ? scale : 0;
+    // The blueprint preview's offscreen targets and pipeline need the device and the ImGui backend's descriptor pool, so
+    // this is the first moment they can be made. A failure is not fatal: the picker then draws through the draw list.
+    if (ok) preview3d_init();
     return ok;
 }
 
@@ -386,7 +428,8 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS,
+       TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -1152,6 +1195,7 @@ static void tab_advanced(float scale) {
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
                                               UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
+
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -1609,6 +1653,7 @@ static void perf_draw(const MenuTarget *t, float scale) {
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
+    bp_hint_frame();       // the Autobuild screen's import entry: its button, and a file the dialog returned
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
@@ -1623,8 +1668,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
-            return 0;
+        } else if (!g_perf_mode && !bp_hint_active() && !bp_picker_is_open()) {
+            return 0;   // the port's own file picker keeps the overlay alive on its own
         }
     }
     if (g_failed_flag()) {
@@ -1662,8 +1707,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     double dt = g_last_ns ? (t0 - g_last_ns) / 1e9 : 1 / 60.0;
     io.DeltaTime = (float)(dt < 1e-4 ? 1e-4 : dt > 0.1 ? 0.1 : dt);
     g_last_ns = t0;
-    if (!open) {   // the overlay alone: no input reaches ImGui
+    if (!open && !bp_picker_is_open()) {   // the overlay alone: no input reaches ImGui
     } else if (g_test.page < 0) {
+        // The settings menu or the port's own file picker: both take the pointer and the pad.
         drain_events(io);
         pad_events(io, reset);
     } else {   // the test hook's pages: the user's input in a background test window must not change settings
@@ -1675,6 +1721,23 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    bp_hint_draw((int)t->width, (int)t->height, scale);   // the Autobuild screen's import row, when that screen is up
+    // The picker's pointer position: ikb_pointer reports it 0..1 over the client area, and the panel is laid out in
+    // swapchain pixels, so it is scaled here. Its own hit tests are in C (runtime/blueprint_picker.c).
+    {
+        float nx = 0, ny = 0;
+        const int have = ikb_pointer(&nx, &ny);
+        const int px = have ? (int)(nx * (float)t->width) : -1;
+        const int py = have ? (int)(ny * (float)t->height) : -1;
+        bp_picker_draw((float)t->width, (float)t->height, scale, px, py);
+    }
+    // Escape closes the file picker the way it closes the settings menu: one key, no conflict, because the picker is open
+    // only when the menu is closed. The picker's own input is raw (ikb_down/input_pad_read), so the key is read from ImGui
+    // here and the picker is cancelled outright (B in the picker already walks up one folder first, which Escape must not
+    // duplicate).
+    if (bp_picker_is_open() && !open &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+        bp_picker_cancel();
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;
@@ -1691,6 +1754,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         }
     }
     return ImGui::GetDrawData()->TotalVtxCount > 0;
+}
+
+extern "C" void menu_overlay_prepare(VkCommandBuffer cb) {
+    // The blueprint preview renders into its own image here, before the overlay's render pass begins: it needs a pass of
+    // its own, and passes cannot be nested. A no-op on frames where nothing changed.
+    preview3d_record(cb);
 }
 
 extern "C" void menu_overlay_draw(VkCommandBuffer cb) {
