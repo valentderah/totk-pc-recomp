@@ -1,7 +1,7 @@
-"""验证 1.1.0 攀爬/齿轮的数值、开关、全宽寄存器与局部栈契约。
+"""Check the 1.1.0 climb/gear numeric, switch, full-width register and local-stack contracts.
 
-合成测试不需要游戏；--exefs 额外验证本地原指令及语义锚点。
-使用公共差分 harness 的 CC、Windows/Linux 后缀和映射实现，不固定宿主路径。
+Synthetic checks need no game; --exefs also checks local original words and semantic anchors.
+Uses the shared differential harness CC selection, Windows/Linux suffixes and mappings, without fixed host paths.
 """
 import argparse
 import math
@@ -40,7 +40,7 @@ def scalar(x):
 
 
 def shipping(r):
-    # 按 v110 的乘法、加倍、截距顺序舍入，不能合并为一次 -0.362 乘法。
+    # Round in v110 order: multiply, double, then add the intercept; do not fuse the -0.362 multiplication.
     t = f32(f32(r - 1.0) * f32(-0.181))
     return f32(f32(t + t) + f32(1.272))
 
@@ -65,7 +65,7 @@ def extract_function(text, name):
 
 
 def gating_check(work, table):
-    # 直接编译真实 patches.c 和 frame_step_init/step_store；只替换配置与内存平台边界。
+    # Compile the real patches.c and frame_step_init/step_store; stub only config and platform memory boundaries.
     cfg = (ROOT / 'runtime' / 'cfg.c').read_text(encoding='utf-8')
     for key in ('CLIMB_FIX', 'HIGHFPS_FIX', 'REALTIME'):
         assert '{"' + key + '", "1", "0|1"' in cfg, key
@@ -125,6 +125,7 @@ static void frame_limit_live(void) {}
     subprocess.run([compiler(), '-std=gnu11', '-O1', '-UNDEBUG', str(c), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
     fixture = work / 'unicode-patch.txt'
+    # Chinese fixture data intentionally tests UTF-8 decoding independently of the host encoding.
     fixture.write_text('# 中文注释，不依赖宿主默认代码页' + NL + 'set test TEST 1' + NL, encoding='utf-8')
     assert patches.load(fixture, [('main', 0x7000000000, 4096)]).sets == [('test', 'TEST', 1)]
 
@@ -134,10 +135,10 @@ def local_check(exefs, table, mods):
         patches.check(table, Module(name, exefs / name, base), name)
     main = Module('main', exefs / 'main', mods[0][1])
     base = mods[0][1]
-    # 小范围语义锚点：原始系数、d12 已保存、虚表指向与三处相同比较/分支。
+    # Local semantic anchors: original coefficients, saved d12, vtable target and three matching compares/branches.
     assert main.read(base + 0x3816770, 4) == bits(-0.181)
     assert main.read(base + 0x3816774, 4) == bits(1.272)
-    assert main.word(base + CLIMB - 8) == 0x1e202800  # 原因子先 fadd s0,s0,s0
+    assert main.word(base + CLIMB - 8) == 0x1e202800  # The shipping factor first doubles with fadd s0,s0,s0.
     assert main.word(base + 0x213eec8) == 0xfd002bec  # str d12,[sp,#0x50]
     assert main.read(base + 0x347e9f8, 8) == 0x213eec4
     for off, target in zip(COMPARES, (0x213f148, 0x213f13c, 0x213f13c)):
@@ -151,8 +152,8 @@ def local_check(exefs, table, mods):
 
 def preservation(ex, esp, ev, x, sp, v, allowed_x, allowed_v):
     assert esp == sp and sp % 16 == 0
-    assert all(ex[i] == x[i] for i in range(31) if i not in allowed_x), 'GPR 保真'
-    assert all(ev[i] == v[i] for i in range(32) if i not in allowed_v), 'SIMD 全128位保真'
+    assert all(ex[i] == x[i] for i in range(31) if i not in allowed_x), 'GPR preservation'
+    assert all(ev[i] == v[i] for i in range(32) if i not in allowed_v), 'Full 128-bit SIMD preservation'
 
 
 def main():
@@ -185,11 +186,11 @@ def main():
         on, off = [], []
         for address in spec:
             if address == GEAR_SCALE and len(spec) == 3:
-                # 模拟合法 callee 破坏 q12 高64位；增量只能依赖 d12 的低位保留契约。
+                # Model a legal callee clobbering the upper 64 bits of q12; delta must rely only on preserved d12.
                 on += [0x4e181d0c]  # mov v12.d[1],x8
                 off += [0x4e181d0c]
             if address in COMPARES:
-                # 手写的 cset 记录该站 b.le 的真假，不复制游戏函数或跳过真实条件。
+                # A handwritten cset records this b.le condition without copying a game function or skipping its test.
                 pair = [0x1e2c2100, 0x1a9fc7f8]
                 on += pair
                 off += pair
@@ -222,15 +223,15 @@ def main():
                     for r in (0.0, 1e-8, 0.125, 0.25, 0.5, 0.75, 1.0, 2.0, 16.0):
                         r = f32(r)
                         for edge in (-1, 0, 1):
-                            # x30 是测试开关，其他 GPR/向量高位均使用各不相同的哨兵。
+                            # x30 selects the test path; other GPRs and vector upper bits have distinct sentinels.
                             x = [0x1234567800000000 + i * 0x101 for i in range(31)]
                             x[0], x[1], x[30] = BUF + 0x2000, BUF + 0x3000, enabled
                             v = [((0xfedcba987654321001234567 + i) << 32) | bits(3.0 + i) for i in range(32)]
                             for reg, value in ((0, shipping(r)), (4, 30.0), (9, r), (12, raw)):
                                 v[reg] = (v[reg] & ~0xffffffff) | bits(value)
-                            assert all(v[reg] >> 64 for reg in (4, 8, 9)), 'SIMD 高64位哨兵必须非零'
+                            assert all(v[reg] >> 64 for reg in (4, 8, 9)), 'Upper 64-bit SIMD sentinels must be nonzero'
                             threshold = f32(f32(shipping(r) / 30) * raw) if enabled else f32(shipping(r) / 30)
-                            # 相邻 ULP 覆盖严格大于与相等/小于的三处分支门槛。
+                            # Adjacent ULPs exercise greater-than, equal and less-than at all three branch thresholds.
                             tb = bits(threshold)
                             v[8] = (v[8] & ~0xffffffff) | (bits(0.5) if k == 0 else max(0, tb + edge))
                             sp, nzcv = BUF + BUF_SIZE - 0x100, ((total + len(cases)) % 16) << 28
@@ -259,7 +260,7 @@ def main():
                                     assert math.isclose(scalar(ev[reg]), want, rel_tol=2e-6, abs_tol=2e-7), (reg, r, raw, scalar(ev[reg]), want)
                                     assert ev[reg] >> 32 == 0
                                 if r >= 1 and raw <= r:
-                                    assert ev[0] & 0xffffffff == v[0] & 0xffffffff and ev[1] == bits(1.5), '30Hz/慢帧原因子逐位不变'
+                                    assert ev[0] & 0xffffffff == v[0] & 0xffffffff and ev[1] == bits(1.5), 'Shipping factor bits unchanged at 30 Hz and slower steps'
                             if not enabled and k == 0:
                                 assert ev[0] == v[0] and ev[1] == bits(1.5)
                             if enabled and GEAR_SCALE in spec:
@@ -272,7 +273,7 @@ def main():
                                 assert ev[12] == bits(raw)
                             if len(spec) == 3:
                                 angle, limit = scalar(v[8]), scalar(ev[12])
-                                # ARM64 b.le 对 unordered 也成立（N != V），不同于 Python 的 NaN <=。
+                                # ARM64 b.le also accepts unordered (N != V), unlike Python NaN <= comparisons.
                                 want_branch = math.isnan(angle) or math.isnan(limit) or angle <= limit
                                 assert ex[24] == want_branch, (spec, enabled, raw, r, edge, ex[24], angle, limit, hex(enz))
                             want_mem = bytearray(mem)
@@ -280,7 +281,7 @@ def main():
                                 at = address - BUF
                                 want_mem[at:at + len(data)] = data
                             actual_mem = bytes(emu.mu.mem_read(BUF, BUF_SIZE))
-                            assert actual_mem == want_mem, '仅精确保存槽可写，其他内存/对齐空隙/canary 必须不变'
+                            assert actual_mem == want_mem, 'Only exact save slots may change; all other memory, gaps and canaries must stay intact'
                             assert actual_mem[sp - BUF - 112:sp - BUF - 96] == mem[sp - BUF - 112:sp - BUF - 96]
                             assert actual_mem[sp - BUF:sp - BUF + 16] == mem[sp - BUF:sp - BUF + 16]
                             cases.append((k, 0, x, sp, nzcv, v, True))
