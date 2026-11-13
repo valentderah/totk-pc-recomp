@@ -83,7 +83,7 @@ def simd_mask(w):
     return ((w & 0x0E000000) == 0x0E000000) | (((w & 0x0A000000) == 0x08000000) & (((w >> 26) & 1) == 1))
 
 
-def pick_functions(name, mod, count, r, spins=None):
+def pick_functions(name, mod, count, r, spins=None, **opts):
     """[(entry, end, tags)] of up to count functions of mod, plus the Emitter that will emit them. spins: {spin wait
     back-edge: head}, emitted with gates."""
     starts, _ = gen.discover(mod)
@@ -107,7 +107,7 @@ def pick_functions(name, mod, count, r, spins=None):
     with_spin = sorted({int(i) for i in gated} & set(cand.tolist()))
     for pool in (with_spin, with_br, with_call, rest):
         r.shuffle(pool)
-    emitter = gen.Emitter(mod, set((mod.lo + starts * 4).tolist()), spins=spins)
+    emitter = gen.Emitter(mod, set((mod.lo + starts * 4).tolist()), spins=spins, **opts)
     picks, tags_seen = [], Counter()
     # Functions with a spin wait first, then with a br (jump tables, fallbacks), at most a quarter of the picks each;
     # then functions with calls, at most half.
@@ -346,12 +346,16 @@ def main():
     ap.add_argument('--show', type=int, default=20)
     ap.add_argument('--patches', type=Path, help='patch table whose spin waits are emitted with their gates')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '')
+    ap.add_argument('--v-locals', type=int, default=0, help='gen.py --v-locals: V registers per function in locals')
+    ap.add_argument('--v-trust', action='store_true', help='gen.py --v-trust: V8-V15 not reloaded after a call')
+    ap.add_argument('--work', type=Path, default=ROOT / 'build' / 'test' / 'func',
+                    help='work directory (chunks, harness, images); one per concurrent run')
     args = ap.parse_args()
     r = random.Random(args.seed)
     t0 = time.time()
     want = args.modules.split(',')
 
-    work = ROOT / 'build' / 'test' / 'func'
+    work = args.work
     work.mkdir(parents=True, exist_ok=True)
     images, emitted, tags = [], [], []
     mods = layout(args.exefs)
@@ -363,7 +367,8 @@ def main():
         img = work / f'{name}.img'
         img.write_bytes(mod.image)
         images.append((base, img, mod.image))
-        picks, emitter = pick_functions(name, mod, args.functions, r, table.spins_for(name, base))
+        picks, emitter = pick_functions(name, mod, args.functions, r, table.spins_for(name, base),
+                                        v_locals=args.v_locals, v_trust=args.v_trust)
         for entry, end, t in picks:
             emitted.append((name, entry, end, emitter))
             tags.append(t)
