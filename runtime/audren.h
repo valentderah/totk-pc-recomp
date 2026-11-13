@@ -145,6 +145,8 @@ typedef struct {
     uint32_t consumed, drops;
     struct { int16_t history[2]; int32_t buffer; uint64_t at; } adpcm;   // DSP-ADPCM decode cursor (buffer slot, next sample) and history
     float biquad_state[2][6][2];   // filter, channel: transposed direct-form II delays
+    uint64_t cat_address, cat_extra;   // the wave buffer and coefficients voice_category (audio_mixer.c) last classified
+    uint8_t cat;                       // their AUDIO_CAT_*, 0 until classified; voice_reset clears it
 } ServerVoice;
 enum { SV_STOPPED, SV_STARTED, SV_PAUSED, SV_STOPPING };
 
