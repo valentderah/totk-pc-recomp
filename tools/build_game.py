@@ -845,6 +845,8 @@ def main():
                     help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
                          '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
                          '.profdata (tools/pgo.py merge)')
+    ap.add_argument('--gen-o2', action='store_true',
+                    help='compile the generated code at -O2 without a profile (the --pgo level), for A/B builds')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -857,6 +859,8 @@ def main():
             sys.exit('--pgo gen: MSYS2 UCRT64 clang ships no profile runtime (clang_rt.profile); pass --toolchain with '
                      'an llvm-mingw directory')
         set_pgo(args.pgo, out)
+    elif args.gen_o2:
+        GEN_FLAGS[GEN_FLAGS.index('-O1')] = '-O2'
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
