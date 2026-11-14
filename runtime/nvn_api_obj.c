@@ -721,5 +721,6 @@ NVN_API(nvnQueuePresentTexture) {
     o->ticket[idx] = o->presents;
     o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
+    control_frame(slot);                      // control.c: the control socket's queued commands, between frames
     rt_frame_presented(t, o->presents);
 }

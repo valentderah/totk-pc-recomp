@@ -321,6 +321,9 @@ void frame_step_init(void);                                // after rt_patches_i
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
 double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown
+uint64_t frame_step_player_actor(void);                     // the guest address of the Player actor, 0 when none
+int frame_step_player_pos(float xyz[3]);                   // the Player actor's world position (y up); 0 when
+                                                           // there is none (title screen, loading)
 int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
                                                            // (TOTK_FPS_LIMIT, live)
 uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
@@ -349,12 +352,16 @@ void rt_boot(void);                                        // boot.c
 int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
+void control_init(void);                                   // control.c: the local control socket (TOTK_CONTROL), game runs only
+void control_frame(uint64_t display_ns);                   // control.c: once per present, runs the queued commands
+int control_status(void);                                  // control.c: the port it listens on, -port when that failed, 0 off
 void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
 void playtime_init(void);                                  // playtime.c: the play time thread, game runs only
 void playtime_save(void);                                  // playtime.c: writes <profile>/playtime.txt; at exit
 int playtime_get(uint64_t *total_s, uint64_t *session_s); // playtime.c: all runs and this one; 0 without a profile
 int probe_playtime(void);                                  // playtime.c: the file, the ticks and the save
 int probe_discord(void);                                   // discord_rpc.c
+int probe_control(void);                                   // control.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
 int probe_vkdevice(void);                                 // vk_device.c

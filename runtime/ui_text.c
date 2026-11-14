@@ -431,6 +431,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "Shows \"Playing TotK Recomp\" with the play time in your Discord status while the "
                                  "game runs. discord_app_id and discord_image in totk.ini choose the application.",
+    [UI_MENU_GROUP_COMPANION] = "Companion apps", [UI_MENU_CONTROL] = "Connection for map apps",
+    [UI_MENU_CONTROL_DESC] = "Lets a map or another app on this PC follow Link: it can read where he is and which way "
+                             "he faces. Only programs on this PC can connect, and they cannot change anything in the "
+                             "game. Another port: control in totk.ini.",
+    [UI_MENU_CONTROL_ON] = "On, port %s", [UI_MENU_CONTROL_LISTENING] = "listening",
+    [UI_MENU_CONTROL_BUSY] = "port in use",
 
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
@@ -966,6 +972,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "Пока игра запущена, показывает «Играю в TotK Recomp» со временем игры в статусе "
                                  "Discord. Приложение выбирают discord_app_id и discord_image в totk.ini.",
+    [UI_MENU_GROUP_COMPANION] = "Программы-компаньоны", [UI_MENU_CONTROL] = "Подключение для карт",
+    [UI_MENU_CONTROL_DESC] = "Позволяет карте или другой программе на этом ПК следить за Линком: она может узнать, где "
+                             "он и куда смотрит. Подключиться могут только программы на этом ПК, и они ничего не могут "
+                             "изменить в игре. Другой порт: control в totk.ini.",
+    [UI_MENU_CONTROL_ON] = "Вкл., порт %s", [UI_MENU_CONTROL_LISTENING] = "работает",
+    [UI_MENU_CONTROL_BUSY] = "порт занят",
 
     [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
     [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",
@@ -1350,6 +1362,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC_DESC] = "Mostra \"Jogando TotK Recomp\" com o tempo de jogo no seu status do Discord "
                                  "enquanto o jogo roda. discord_app_id e discord_image no totk.ini escolhem a "
                                  "aplicação.",
+    [UI_MENU_GROUP_COMPANION] = "Apps complementares", [UI_MENU_CONTROL] = "Conexão para apps de mapa",
+    [UI_MENU_CONTROL_DESC] = "Permite que um mapa ou outro app neste PC acompanhe o Link: ele pode ler onde o Link "
+                             "está e para onde olha. Só programas neste PC podem se conectar, e eles não podem mudar "
+                             "nada no jogo. Outra porta: control no totk.ini.",
+    [UI_MENU_CONTROL_ON] = "Ligado, porta %s", [UI_MENU_CONTROL_LISTENING] = "ativa",
+    [UI_MENU_CONTROL_BUSY] = "porta em uso",
 
     [UI_MENU_ADV_WARNING] = "Estas configurações são para testes e solução de problemas. Altere-as só quando souber "
                             "por quê.",
@@ -2016,6 +2034,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
     [UI_MENU_DISCORD_RPC_DESC] = "游戏运行时在 Discord 状态中显示“正在玩 TotK Recomp”及游戏时长。totk.ini 中的 "
                                  "discord_app_id 和 discord_image 选择应用。",
+    [UI_MENU_GROUP_COMPANION] = "配套应用", [UI_MENU_CONTROL] = "地图应用连接",
+    [UI_MENU_CONTROL_DESC] = "让本机上的地图或其他应用跟随林克：它可以读取林克的位置和朝向。只有本机上的程序可以连接，"
+                             "且无法更改游戏中的任何内容。更换端口：totk.ini 中的 control。",
+    [UI_MENU_CONTROL_ON] = "开，端口 %s", [UI_MENU_CONTROL_LISTENING] = "监听中",
+    [UI_MENU_CONTROL_BUSY] = "端口被占用",
     [UI_MENU_ADV_WARNING] = "这些设置用于测试和排查问题，请在了解原因后再修改。",
     [UI_MENU_GROUP_SCHED] = "调度",
     [UI_MENU_GROUP_SHADERS] = "着色器和管线",
