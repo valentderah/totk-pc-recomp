@@ -942,6 +942,18 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// A target of the scene's shape (resolution.c's scene size, within 5 %; the dynamic resolution tiers keep it). In the
+// inventory the game renders the items' icons as the slots fill in, each through a G-buffer and a light target of its
+// own with a D32F depth, square (432x432 or 426x426 at a 3840x2160 scene) and with no wider G-buffer before it in the
+// frame; DLSS armed on that, scaled it to the output and wrote it over the menu, so a weapon filled the screen on the
+// frames an icon was drawn.
+static int scene_shaped(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)c->width * s[1], b = (uint64_t)c->height * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -1149,7 +1161,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     // first pair to arm; DLSS then scaled the effects into the light target, which filled the lens with garbage in the
     // DLAA mode.
     if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w &&
+        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w && scene_shaped(c) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d) {
         int first = !D.armed;
