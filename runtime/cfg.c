@@ -57,7 +57,7 @@ static const char *const known[] = {
     "MV_SURVEY",
     "ONE_PER_CORE", "OPERATION_MODE", "OPTREF_GUARD", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POINTER_IMAGE",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "QUICKLOAD_KEY", "QUICKSAVE", "QUICKSAVE_KEY", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
     "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "REPORT_GUARD", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
@@ -94,7 +94,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"QUICKSAVE", "input"}, {"QUICKSAVE_KEY", "input"}, {"QUICKLOAD_KEY", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -172,6 +172,8 @@ static const CfgMeta metas[] = {
     {"MAP_CLICK", "0", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
     {"DIALOGUE_CLICK", "0", "0|1", LIVE},   // menu_cursor.c: in a dialogue box left click is B, right click A
     {"POINTER_IMAGE", "0", "0|1", LIVE},    // input_win.c / input_sdl.c: the game window's own pointer (cursor_art.c)
+    {"QUICKSAVE", "0", "0|1", LIVE},        // quicksave.c: a key saves through the game's System tab, another loads it
+    {"QUICKSAVE_KEY", "f6", NULL, LIVE}, {"QUICKLOAD_KEY", "f7", NULL, LIVE},   // Half-Life's keys; a key name or none
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     // Gameplay Tweaks
     {"GAMEPLAY_TWEAKS_ENABLED", "0", "0|1", LIVE},

@@ -100,7 +100,10 @@ static void script_load(void) {
         ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
         long a, b;
         double c;
-        if (!strcmp(name, "WHEEL")) {
+        if (!strcmp(name, "QUICKSAVE") || !strcmp(name, "QUICKLOAD")) {
+            e.stick = name[5] == 'S' ? 5 : 6, e.hold = 1;   // once, as quicksave's keys
+            snprintf(e.text, sizeof e.text, "%s", name);
+        } else if (!strcmp(name, "WHEEL")) {
             if (sscanf(line + off, "%ld", &a) != 1) { rt_log("input: script line %d: WHEEL needs notches", ln); continue; }
             e.stick = 4, e.x = (int32_t)a, e.hold = 1;   // one turn, never held
             snprintf(e.text, sizeof e.text, "WHEEL %d", e.x);
@@ -148,7 +151,8 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
             if (e->timed) rt_log("input: script frame %llu at %.1f ms: %s", (unsigned long long)fr, w / 1000.0, e->text);
             else rt_log("input: script frame %llu tick %llu: %s", (unsigned long long)fr, (unsigned long long)tick, e->text);
         }
-        if (e->stick == 4) script_wheel += e->x;
+        if (e->stick >= 5) quicksave_request(e->stick == 6);
+        else if (e->stick == 4) script_wheel += e->x;
         else if (e->stick == 3) {
             int64_t x = (int64_t)script_mouse[0] + e->x, y = (int64_t)script_mouse[1] + e->y;
             script_mouse[0] = (int32_t)(x < INT32_MIN ? INT32_MIN : x > INT32_MAX ? INT32_MAX : x);
@@ -736,6 +740,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 else if (!click_held[i]) click_held[i] = 1, click_talk[i] = menu_cursor_dialogue();
                 if (click_talk[i]) down[key] = 0, b |= 1ull << click_btn[i];
             }
+            // The quick save and quick load keys are quicksave's while it is on (quicksave.c): they reach no binding
+            // then, and do nothing while the settings menu or a text entry is open
+            if (quicksave_on()) quicksave_keys(down, !g_menu && !g_block);
             if (cap && !g_menu && !g_block) gameplay_tweaks_prepare_keys(down, b);
             else gameplay_tweaks_reset();
             b |= input_map_buttons(down);
@@ -847,7 +854,9 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    if (!g_block && !g_menu) menu_cursor_poll(buttons);
+    // While quicksave drives the game's menus the pointer leaves them alone and the game gets only its presses
+    if (!g_block && !g_menu && !quicksave_busy()) menu_cursor_poll(buttons);
+    if (!g_block && !g_menu && quicksave_poll(buttons, lx, ly, rx, ry)) return;
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
         menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);

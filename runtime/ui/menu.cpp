@@ -806,6 +806,21 @@ static int key_action(const InputMap *m, int key) {
     return -1;
 }
 
+// "also <action>" when the bindings also use the key the setting names, else NULL; note holds the text
+static const char *key_taken(const char *setting, char *note, size_t size) {
+    const char *cur = cfg_value(setting);
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT; k++) {
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a < 0 || !input_action_name(a)) return nullptr;
+        snprintf(note, size, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a));
+        return note;
+    }
+    return nullptr;
+}
+
 // The walk key as the handful of keys a player is likely to pick. "none" rather than an empty value closes it: an
 // unset key falls back to the default in the settings table, the same as a fresh installation. totk.ini takes any name
 // input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
@@ -813,18 +828,23 @@ static int key_action(const InputMap *m, int key) {
 static void row_walk_key(void) {
     static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
     const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
-    const char *cur = cfg_value("TOTK_WALK_KEY");
     static char note[64];
-    const char *n = nullptr;
-    InputMap m;
-    input_map_snapshot(&m);
-    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
-        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
-        int a = key_action(&m, k);
-        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
-    }
     opt_choice_list("TOTK_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
-                    -1, n);
+                    -1, key_taken("TOTK_WALK_KEY", note, sizeof note));
+}
+
+// Quick save's two keys (quicksave.c) as the function keys the menu and the window leave free (F1, F8, F10 and F11 are
+// theirs), F6 and F7 first as Half-Life has them. totk.ini takes any key name input_map.c knows; the row shows such a
+// name as written. A key the bindings also use says which action it presses: while quick save is on it no longer does.
+static void row_quicksave_keys(void) {
+    static const char *const keys[] = {"f6", "f7", "f5", "f9", "f2", "f3", "f4", "f12", "none"};
+    enum { N = sizeof keys / sizeof *keys };
+    const char *names[N] = {"F6", "F7", "F5", "F9", "F2", "F3", "F4", "F12", menu_text(UI_MENU_OFF)};
+    static char note[2][64];
+    opt_choice_list("TOTK_QUICKSAVE_KEY", UI_MENU_QUICKSAVE_KEY, keys, names, N, UI_MENU_QUICKSAVE_KEY_DESC, -1,
+                    key_taken("TOTK_QUICKSAVE_KEY", note[0], sizeof note[0]));
+    opt_choice_list("TOTK_QUICKLOAD_KEY", UI_MENU_QUICKLOAD_KEY, keys, names, N, UI_MENU_QUICKSAVE_KEY_DESC, -1,
+                    key_taken("TOTK_QUICKLOAD_KEY", note[1], sizeof note[1]));
 }
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
@@ -938,6 +958,8 @@ static void tab_controls(float scale) {
     opt_toggle("TOTK_MAP_CLICK", UI_MENU_MAP_CLICK, UI_MENU_MAP_CLICK_DESC);
     opt_toggle("TOTK_DIALOGUE_CLICK", UI_MENU_DIALOGUE_CLICK, UI_MENU_DIALOGUE_CLICK_DESC);
     opt_toggle("TOTK_POINTER_IMAGE", UI_MENU_POINTER_IMAGE, UI_MENU_POINTER_IMAGE_DESC);
+    opt_toggle("TOTK_QUICKSAVE", UI_MENU_QUICKSAVE, UI_MENU_QUICKSAVE_DESC);
+    row_quicksave_keys();
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     rows_gameplay_tweaks();

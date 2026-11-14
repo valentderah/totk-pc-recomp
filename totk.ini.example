@@ -391,6 +391,18 @@
 # Esc). 1: a gold arrowhead with a dark edge and a turquoise gem, drawn by the port at the window's DPI, instead of
 # the system arrow. 0 (the default) keeps the system arrow. Changes while the game runs.
 # pointer_image = 0
+# Quick save and quick load, 1.4.3 only. 1: quicksave_key saves the game and quickload_key loads the save it made (F6
+# and F7 by default, as in Half-Life). Both go through the game's own pause menu, which opens for a few seconds: Plus,
+# the System tab, Save (or Load and the newest manual save) and yes. Quick save writes the game's one manual save, the
+# same one Save in the System tab writes, so it replaces that save; quick load loads it, never an autosave. Where the
+# game does not allow saving, or while the HUD is hidden (a cutscene, an event) or a dialogue box is open, nothing is
+# saved and the log says why. While it is on, the two keys do nothing else. 0 (the default) leaves both keys alone.
+# Changes while the game runs.
+# quicksave = 0
+# The keys of quick save and quick load: a key name of the bind_ lines below (f2-f7 f9 f12, letters, ...) or none.
+# An unknown name is logged and the default is used. Changes while the game runs.
+# quicksave_key = f6
+# quickload_key = f7
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
