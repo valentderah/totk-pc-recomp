@@ -123,7 +123,7 @@ int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
 }
 
 // hide_hud: 0 shows the HUD, 1 hides it, auto hides it once no input came for hide_hud_idle minutes
-// (input.c input_active_ns) and shows it again at the next press, stick or mouse move. Before any input the idle time
+// (input.c input_active_ns) and shows it again at the next press or left-stick move; turning the camera counts as neither. Before any input the idle time
 // counts from the first frame.
 static int wanted(void) {
     // The game's menus, the map and dialogue are drawn the way the HUD is: while one is on screen (1.4.3,
