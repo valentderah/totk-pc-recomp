@@ -30,6 +30,7 @@
 #include "vk_exec.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_hud.h"
 
 #define WEAK __attribute__((weak))
 
@@ -105,6 +106,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     static volatile int32_t n_skipped;
     vk_exec_frame_log(t, frame);
     vk_dlaa_frame();
+    vk_hud_frame();
     vk_mvsurvey_frame();
     vk_mvprev_frame();
     vk_mem_census(frame);
