@@ -170,7 +170,7 @@
 # cycles the modes in game, as do both stick clicks (L3 + R3) on a controller.
 # perf_overlay = off
 # 1 hides the game's HUD; auto hides it after hide_hud_idle minutes (1 to 60) without input and shows it again at the
-# next input. The game's menus, map and dialogue stay visible on game 1.4.3; on other versions they hide with it.
+# next button or movement (turning the camera does not count). The game's menus, map and dialogue stay visible on game 1.4.3; on other versions they hide with it.
 # hide_hud = 0
 # hide_hud_idle = 5
 # Which GPU to use: its index in the log, or part of its name. Default: the first discrete GPU with Vulkan 1.3.

@@ -63,8 +63,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_HIDE_HUD] = "Hide HUD",
     [UI_MENU_HIDE_HUD_DESC] = "Hides the game's HUD (hearts, stamina wheel, map, button prompts). When idle hides it after a "
-                              "time without input and shows it again at the next button, stick or mouse move. The game's menus "
-                              "and dialogue stay visible (game 1.4.3).",
+                              "time without input and shows it again at the next button or movement; moving the camera does "
+                              "not. The game's menus and dialogue stay visible (game 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "When idle",
     [UI_MENU_HIDE_HUD_IDLE] = "Hide HUD after",
     [UI_MENU_HIDE_HUD_IDLE_DESC] = "Minutes without input before the HUD hides.",
@@ -604,8 +604,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_HIDE_HUD] = "Скрыть интерфейс",
     [UI_MENU_HIDE_HUD_DESC] = "Скрывает интерфейс игры (сердца, круг выносливости, карту, подсказки кнопок). «При бездействии» "
-                              "скрывает его после времени без ввода и возвращает при следующем нажатии, движении стика или "
-                              "мыши. Меню и диалоги игры остаются видны (игра 1.4.3).",
+                              "скрывает его после времени без ввода и возвращает при следующем нажатии или движении; поворот камеры "
+                              "не считается. Меню и диалоги игры остаются видны (игра 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "При бездействии",
     [UI_MENU_HIDE_HUD_IDLE] = "Скрывать через",
     [UI_MENU_HIDE_HUD_IDLE_DESC] = "Минуты без ввода, после которых интерфейс скрывается.",
@@ -1184,8 +1184,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_HIDE_HUD] = "Ocultar HUD",
     [UI_MENU_HIDE_HUD_DESC] = "Oculta o HUD do jogo (corações, roda de vigor, mapa, dicas de botões). Quando ocioso o oculta "
-                              "após um tempo sem comandos e o mostra de novo no próximo botão, analógico ou movimento do "
-                              "mouse. Os menus e diálogos do jogo continuam visíveis (jogo 1.4.3).",
+                              "após um tempo sem comandos e o mostra de novo no próximo botão ou movimento; mover a câmera "
+                              "não conta. Os menus e diálogos do jogo continuam visíveis (jogo 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "Quando ocioso",
     [UI_MENU_HIDE_HUD_IDLE] = "Ocultar HUD após",
     [UI_MENU_HIDE_HUD_IDLE_DESC] = "Minutos sem comandos até o HUD sumir.",
@@ -1773,7 +1773,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_HIDE_HUD] = "隐藏 HUD",
     [UI_MENU_HIDE_HUD_DESC] = "隐藏游戏的 HUD（心、精力轮、地图、按键提示）。“闲置时”在一段时间无输入后隐藏，下次按"
-                              "键、摇杆或鼠标移动时恢复显示。游戏的菜单和对话仍会显示（游戏 1.4.3）。",
+                              "键或移动时恢复显示，转动镜头不算。游戏的菜单和对话仍会显示（游戏 1.4.3）。",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "闲置时",
     [UI_MENU_HIDE_HUD_IDLE] = "隐藏 HUD 前等待",
     [UI_MENU_HIDE_HUD_IDLE_DESC] = "无输入多少分钟后隐藏 HUD。",
