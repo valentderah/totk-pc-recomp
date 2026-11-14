@@ -587,6 +587,14 @@ static void row_grass_range(void) {
     opt_choice_list("TOTK_GRASS_RANGE", UI_MENU_GRASS_RANGE, vals, names, 6, UI_MENU_GRASS_RANGE_DESC);
 }
 
+// Model detail range (resolution.c res_lod_range): how far models keep their detailed levels, in percent of the game's
+// depths, or max for the most detailed level at any depth.
+static void row_lod_range(void) {
+    static const char *const vals[] = {"100", "150", "200", "300", "max"};
+    const char *names[] = {"1x", "1.5x", "2x", "3x", menu_text(UI_MENU_LOD_RANGE_MAX)};
+    opt_choice_list("TOTK_LOD_RANGE", UI_MENU_LOD_RANGE, vals, names, 5, UI_MENU_LOD_RANGE_DESC);
+}
+
 static void row_gpu(void) {
     const char *vals[MAX_GPUS + 1], *names[MAX_GPUS + 1];
     char idx[MAX_GPUS][4];
@@ -716,11 +724,11 @@ static void tab_screen(float scale) {
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
     opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);
-    opt_toggle("TOTK_LOD_DETAIL", UI_MENU_LOD_DETAIL, UI_MENU_LOD_DETAIL_DESC);
-    opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     row_shadow_scale();
     row_shadow_range();
     row_grass_range();
+    row_lod_range();
+    opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);

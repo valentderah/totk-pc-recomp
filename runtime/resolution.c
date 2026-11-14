@@ -547,9 +547,33 @@ static void res_grass_range(void) {
            pct);
 }
 
+// TOTK_LOD_RANGE (100, 150, 200, 300 or max; 100 = the game's): how far models keep their detailed levels. The game
+// sets each model's level depth B when it sets the model up and derives the slope of its coarser levels from it (the
+// lodrange patch set, recomp/patches-v121.txt); the set replaces B with k * B + c from page +96 and +100. A percent
+// moves every level transition about that many times farther (c = 0); max keeps the most detailed level at any depth
+// (k = 1, c = 1e30, far past any depth the pick compares).
+static void res_lod_range(void) {
+    const char *v = cfg_get("TOTK_LOD_RANGE");
+    int max = v && !strcasecmp(v, "max"), pct = max ? 0 : cfg_int("TOTK_LOD_RANGE");
+    if (!max && (pct <= 100 || pct > 300)) return;
+    int set = rt_patch_set("lodrange");
+    if (set < 0) {
+        rt_log("resolution: this game version has no lodrange patch set; lod_range stays 100");
+        return;
+    }
+    float f[2] = {max ? 1.0f : pct / 100.0f, max ? 1e30f : 0.0f};
+    memcpy((uint8_t *)rt_patch_page() + 96, f, sizeof f);
+    rt_patch_switch(set, 1);
+    if (max)
+        rt_log("resolution: models keep their most detailed level at any depth (TOTK_LOD_RANGE=max)");
+    else
+        rt_log("resolution: model level depths x%g (TOTK_LOD_RANGE=%d)", f[0], pct);
+}
+
 void res_init(void) {
     res_shadow_range();
     res_grass_range();
+    res_lod_range();
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         shadow_init(rt_patch_page());

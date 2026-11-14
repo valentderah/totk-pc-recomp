@@ -13,11 +13,14 @@ set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
 set grass    TOTK_PATCH_GRASS    0
-# Distant detail (patches-v121.txt explains both). The level picker main+0x1ee8424 is 1.2.1's main+0x27d225c with the
-# same first words, and its early b.eq goes straight to the ret, so the 1.2.1 site words fit as they are.
-set lod      TOTK_LOD_DETAIL     0
-site lod     main 1ee842c 71000520 5100052b 4b0b03ec 2a0b018c 131f7d8c b9402840 0a0c0000 6b00001f   # subs w0, w9, #1 -> the 1.2.1 words (one-level mask, floor in w0, cmp w0, w0: b.eq taken)
-# The graphics settings setup (main+0x5868c4) inlines the three getters 1.2.1 calls: the value 1.2.1 reads at
+# Model level of detail (patches-v121.txt explains the set; runtime/resolution.c res_lod_range switches it on). The
+# setter main+0xc3dbe4 (1.2.1 0x10eca28) takes B in s0 and computes S = 1/(B - 1) after its entry compare, and
+# main+0x3b8490 (1.2.1 0x925808) is its inlined copy; both scale B before the compare, so S follows.
+set lodrange TOTK_PATCH_LODRANGE 0
+site lodrange main c3dbe4 1e212000 @page:x8 2d4c1103 1f031000 1e212000   # fcmp s0, s1 -> ldp s3, s4, [page+96]; fmadd s0, s0, s3, s4; fcmp s0, s1 (x8 written before any read, s3 written at +0xc, s4 unused)
+site lodrange main 3b84d0 1e212000 @page:x8 2d4c0d02 1f020c00 1e212000   # fcmp s0, s1 -> ldp s2, s3, [page+96]; fmadd s0, s0, s2, s3; fcmp s0, s1 (x8 reloaded at +0x18, s2/s3 dead)
+# Load-dependent quality (patches-v121.txt, set steady). The graphics settings setup (main+0x5868c4) inlines the
+# three getters 1.2.1 calls: the value 1.2.1 reads at
 # main+0xc7eb24 is the ldr w10, [x10, #0x38] at main+0x58692c, and the getters' slow paths (main+0x586bc8, 0x586c18,
 # 0x586f44) come back before the compare. So the site is the compare, which every path reaches: w10 = 9 skips the
 # list walk to the epilogue (main+0x58729c), which does not read w10.
