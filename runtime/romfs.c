@@ -38,6 +38,7 @@
 #include "mods.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
+#include "audio_cat.h"
 #include "platform/platform.h"
 #include "restbl.h"
 #include "sha256.h"
@@ -69,6 +70,7 @@ static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
 static PlatFile *handle_file[NH];    // the handle's open overlay file, when handle_ovl is set
+static uint8_t handle_audio_cat[NH];
 static Overlay *overlays;            // sorted by RomFS index after overlay_init
 static size_t noverlay, overlay_cap;
 static char **added;                 // RomFS paths of the added files, sorted; added[k] is index file_count + k
@@ -1249,12 +1251,40 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
         if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
     }
+    int cat = audio_cat_from_path(p);
+    if (cat != AUDIO_CAT_UNKNOWN) {
+        uint8_t hdr_buf[1280];
+        if (ov && f) {
+            const Overlay *o = &overlays[ov - 1];
+            uint64_t hdr_len = o->size < sizeof(hdr_buf) ? o->size : sizeof(hdr_buf);
+            if (hdr_len >= 0x40) {
+                int64_t r = read_at(f, hdr_buf, (uint32_t)hdr_len, 0);
+                if (r >= 0x40) {
+                    audio_cat_scan_bwav(hdr_buf, (uint64_t)r, cat);
+                }
+            }
+        } else if (!ov && i != UINT64_MAX) {
+            Entry e = entry(i);
+            uint64_t hdr_len = e.size < sizeof(hdr_buf) ? e.size : sizeof(hdr_buf);
+            if (hdr_len >= 0x40) {
+                if (image_map) {
+                    audio_cat_scan_bwav(image_map + e.offset, hdr_len, cat);
+                } else if (image) {
+                    int64_t r = read_at(image, hdr_buf, (uint32_t)hdr_len, e.offset);
+                    if (r >= 0x40) {
+                        audio_cat_scan_bwav(hdr_buf, (uint64_t)r, cat);
+                    }
+                }
+            }
+        }
+    }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
         if (!handles[j]) {
             handles[j] = i + 1;
             handle_ovl[j] = ov;
             handle_file[j] = f;
+            handle_audio_cat[j] = (uint8_t)cat;
             *out = ROMFS_HANDLE_BASE + j;
             plat_mutex_unlock(&lock);
             return 0;
@@ -1304,6 +1334,13 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         done += (uint64_t)r;
     }
     *out = done;
+    uint64_t j = h - ROMFS_HANDLE_BASE;
+    if (j < NH && handle_audio_cat[j] != AUDIO_CAT_UNKNOWN && buffer && done > 0) {
+        if (offset == 0 && done >= 0x40) {
+            audio_cat_scan_bwav(buffer, done, handle_audio_cat[j]);
+        }
+        audio_cat_tag_range((uint64_t)(uintptr_t)buffer, done, handle_audio_cat[j]);
+    }
     return 0;
 }
 
@@ -1326,6 +1363,7 @@ void romfs_close(uint64_t h) {
     handles[j] = 0;
     handle_ovl[j] = 0;
     handle_file[j] = NULL;
+    handle_audio_cat[j] = 0;
     plat_mutex_unlock(&lock);
     if (of) plat_file_close(of);
 }

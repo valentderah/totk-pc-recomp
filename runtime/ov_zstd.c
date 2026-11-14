@@ -20,6 +20,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "audio_cat.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
@@ -234,6 +235,12 @@ static void decode(Cpu *c, uint64_t dict, uint64_t dict_size, uint64_t ddict, ui
         return;
     }
     c->x[0] = r;
+    if (r > 0) {
+        int cat = audio_cat_lookup(src);
+        if (cat != AUDIO_CAT_UNKNOWN || (r >= 16 && memcmp((const void *)(uintptr_t)dst, "BARS", 4) == 0)) {
+            audio_cat_scan_bars(dst, (uint64_t)r, cat);
+        }
+    }
     count(size, r, kern_now_ns() - t0);
 }
 

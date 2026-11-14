@@ -28,6 +28,7 @@
 #include "cfg.h"
 #include "audio_effects.h"
 #include "audio_reverb.h"
+#include "audio_cat.h"
 #include "audren.h"
 #include "host.h"
 #include "ipc.h"
@@ -82,6 +83,67 @@ static float host_volume(void) {
     double pct = cfg_double("TOTK_VOLUME");
     v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
     return v;
+}
+
+static float host_volume_music(void) {
+    static float v = 1.0f;
+    static unsigned seen = ~0u;
+    unsigned ver = cfg_version();
+    if (ver == seen) return v;
+    seen = ver;
+    double pct = cfg_double("TOTK_VOLUME_MUSIC");
+    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
+    return v;
+}
+
+static float host_volume_sfx(void) {
+    static float v = 1.0f;
+    static unsigned seen = ~0u;
+    unsigned ver = cfg_version();
+    if (ver == seen) return v;
+    seen = ver;
+    double pct = cfg_double("TOTK_VOLUME_SFX");
+    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
+    return v;
+}
+
+static float host_volume_voice(void) {
+    static float v = 1.0f;
+    static unsigned seen = ~0u;
+    unsigned ver = cfg_version();
+    if (ver == seen) return v;
+    seen = ver;
+    double pct = cfg_double("TOTK_VOLUME_VOICE");
+    v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
+    return v;
+}
+
+static float voice_category_gain(ServerVoice *v) {
+    int cat = AUDIO_CAT_UNKNOWN;
+    if (v->in.sample_format == FMT_ADPCM && v->in.extra_address && v->in.extra_size >= 32) {
+        cat = audio_cat_lookup_coef(v->in.extra_address, v->in.extra_size);
+    }
+    if (cat == AUDIO_CAT_UNKNOWN) {
+        uint64_t addr = v->buffers[v->index].address;
+        cat = audio_cat_lookup(addr);
+    }
+    if (cat == AUDIO_CAT_UNKNOWN) {
+        for (int b = 0; b < 4; b++) {
+            if (v->valid[b] && v->buffers[b].address) {
+                cat = audio_cat_lookup(v->buffers[b].address);
+                if (cat != AUDIO_CAT_UNKNOWN) break;
+            }
+        }
+    }
+    if (cat == AUDIO_CAT_UNKNOWN && v->in.extra_address) {
+        cat = audio_cat_lookup(v->in.extra_address);
+    }
+    if (cat == AUDIO_CAT_UNKNOWN) {
+        cat = AUDIO_CAT_SFX;
+    }
+    if (cat == AUDIO_CAT_MUSIC) return host_volume_music();
+    if (cat == AUDIO_CAT_VOICE) return host_volume_voice();
+    return host_volume_sfx();
 }
 static unsigned audio_revision(const AudioRenderer *r) { unsigned byte = r->revision >> 24; return byte >= '0' ? byte - '0' : 0; }
 static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
@@ -816,6 +878,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
         ServerVoice *v = &r->voices[i];
         if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
         int cc = (int)v->in.channel_count; if (cc < 1 || cc > 6) { report_once(m, 2, "voice channel count unsupported", cc); continue; }
+        const float vvol = v->in.volume * voice_category_gain(v);
         voice_render(r, v, vs, frames);
         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
             const AudrenBiquad *b = &v->in.biquads[f];
@@ -841,13 +904,13 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 SplitDest *d = &m->dest[s->ids[k]];
                 if (!d->used || !mix_valid(r, d->dest)) continue;
                 const float *source=splitter_filter(d,vs[c],filtered,frames);
-                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames);
+                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * vvol, frames);
             }
         } else if (mix_valid(r, v->in.mix_id)) {
             for (int c = 0; c < cc; c++) {
                 int32_t id = v->in.channel_ids[c]; if (id < 0 || id >= r->param.voice_count * 6) continue;
                 const AudrenChannelIn *ch = &r->channels[id];
-                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[v->in.mix_id] + b, vs[c], ch->mix[b] * v->in.volume, frames);
+                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[v->in.mix_id] + b, vs[c], ch->mix[b] * vvol, frames);
             }
         }
     }
