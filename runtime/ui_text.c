@@ -394,6 +394,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PAD_DPAD_DOWN] = "D-pad down", [UI_PAD_ZL] = "Left trigger", [UI_PAD_ZR] = "Right trigger",
     [UI_PAD_LPADDLE1] = "Left back button", [UI_PAD_RPADDLE1] = "Right back button",
     [UI_PAD_LPADDLE2] = "Left back button 2", [UI_PAD_RPADDLE2] = "Right back button 2",
+    [UI_PAD_TOUCHPAD] = "Touchpad click",
     [UI_PAD_CROSS] = "Cross", [UI_PAD_CIRCLE] = "Circle", [UI_PAD_SQUARE] = "Square", [UI_PAD_TRIANGLE] = "Triangle",
 
     [UI_MENU_AMIIBO_DIR] = "Amiibo folder",
@@ -929,6 +930,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PAD_ZR] = "Правый курок",
     [UI_PAD_LPADDLE1] = "Левая задняя кнопка", [UI_PAD_RPADDLE1] = "Правая задняя кнопка",
     [UI_PAD_LPADDLE2] = "Левая задняя кнопка 2", [UI_PAD_RPADDLE2] = "Правая задняя кнопка 2",
+    [UI_PAD_TOUCHPAD] = "Нажатие на тачпад",
     [UI_PAD_CROSS] = "Крест", [UI_PAD_CIRCLE] = "Круг", [UI_PAD_SQUARE] = "Квадрат", [UI_PAD_TRIANGLE] = "Треугольник",
 
     [UI_MENU_AMIIBO_DIR] = "Папка amiibo",
@@ -1312,6 +1314,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_PAD_ZL] = "Gatilho esquerdo", [UI_PAD_ZR] = "Gatilho direito",
     [UI_PAD_LPADDLE1] = "Botão traseiro esquerdo", [UI_PAD_RPADDLE1] = "Botão traseiro direito",
     [UI_PAD_LPADDLE2] = "Botão traseiro esquerdo 2", [UI_PAD_RPADDLE2] = "Botão traseiro direito 2",
+    [UI_PAD_TOUCHPAD] = "Clique do touchpad",
     [UI_PAD_CROSS] = "Cruz", [UI_PAD_CIRCLE] = "Círculo", [UI_PAD_SQUARE] = "Quadrado", [UI_PAD_TRIANGLE] = "Triângulo",
 
     [UI_MENU_AMIIBO_DIR] = "Pasta de amiibo",
@@ -1975,6 +1978,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_PAD_RPADDLE1] = "右背键",
     [UI_PAD_LPADDLE2] = "左背键 2",
     [UI_PAD_RPADDLE2] = "右背键 2",
+    [UI_PAD_TOUCHPAD] = "触摸板按下",
     [UI_PAD_CROSS] = "叉键",
     [UI_PAD_CIRCLE] = "圆圈键",
     [UI_PAD_SQUARE] = "方块键",

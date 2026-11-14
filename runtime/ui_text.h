@@ -169,10 +169,10 @@ typedef enum {
     UI_KEY_ENTER, UI_KEY_BACKSPACE, UI_KEY_RSHIFT, UI_KEY_RCTRL, UI_KEY_LALT, UI_KEY_CAPSLOCK, UI_KEY_INSERT,
     UI_KEY_DELETE, UI_KEY_HOME, UI_KEY_END, UI_KEY_PAGEUP, UI_KEY_PAGEDOWN,
     UI_KEY_NUM_FMT,           // "Num %s": a numpad key
-    // gamepad buttons, in pad id order PAD_SOUTH .. PAD_RPADDLE2, then the PlayStation face labels
+    // gamepad buttons, in pad id order PAD_SOUTH .. PAD_TOUCHPAD, then the PlayStation face labels
     UI_PAD_SOUTH, UI_PAD_EAST, UI_PAD_WEST, UI_PAD_NORTH, UI_PAD_LSTICK, UI_PAD_RSTICK, UI_PAD_L, UI_PAD_R,
     UI_PAD_START, UI_PAD_BACK, UI_PAD_DPAD_LEFT, UI_PAD_DPAD_UP, UI_PAD_DPAD_RIGHT, UI_PAD_DPAD_DOWN, UI_PAD_ZL,
-    UI_PAD_ZR, UI_PAD_LPADDLE1, UI_PAD_RPADDLE1, UI_PAD_LPADDLE2, UI_PAD_RPADDLE2,
+    UI_PAD_ZR, UI_PAD_LPADDLE1, UI_PAD_RPADDLE1, UI_PAD_LPADDLE2, UI_PAD_RPADDLE2, UI_PAD_TOUCHPAD,
     UI_PAD_CROSS, UI_PAD_CIRCLE, UI_PAD_SQUARE, UI_PAD_TRIANGLE,
 
     // Amiibo tab (ui/amiibo_page.cpp): the dump folder and its files, the emulated NFC reader and its state, the
