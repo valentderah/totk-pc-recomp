@@ -1085,6 +1085,26 @@ static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+// The bloom chain's first pass: at most a quarter of the scene's width, into level 0 of a scene colour target. At some
+// views (seen in the yard of Lookout Landing) the game draws a full-screen pass without depth into the light target,
+// then a half-size scene colour target and its mips, and only then the light target with the scene depth. Level 1 of
+// those mips is a quarter of the scene's width; taken for the bloom it ended the scene before anything was armed, DLSS
+// skipped those frames, and the picture flickered between anti-aliased frames and plain ones as the view changed.
+// The pass also has the scene's shape (resolution.c's scene size, within 5 %) and no depth. In rain by a waterfall the
+// game drew two transparents into the light target with the scene depth before its sky lookups (25x25 and 256x256
+// RGBA16F) and its quarter-size particles (960x540 RGBA16F with a depth of their own), which then ended the armed
+// scene: DLSS ran before the mist and most transparents, which were drawn over its picture unprocessed, on runs of
+// frames, and the mist in the distance darkened or brightened for a frame wherever a frame in between came out whole.
+static int bloom_start(const VkExec *ex, uint32_t scene_w) {
+    const VkExecTarget *c = &ex->color[0];
+    if (!ex->pass_w || ex->pass_w * 4 > scene_w || !c->image || !scene_color(c->format) || c->level || ex->depth.image)
+        return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)ex->pass_w * s[1], b = (uint64_t)ex->pass_h * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
     if (!dl_active() || D.done) return 0;
@@ -1116,8 +1136,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (D.gbuf && !D.armed && !D.ended && !z->image && ex->pass_ncolor == 1 && c->image && scene_color(c->format) &&
         c->width >= D.gbuf_w && !c->level)
         D.nodepth = c->image;
-    if (D.nodepth && !D.armed && !D.ended && ex->pass_w && ex->pass_w * 4 <= D.gbuf_w && c->image &&
-        scene_color(c->format)) {
+    if (D.nodepth && !D.armed && !D.ended && bloom_start(ex, D.gbuf_w)) {
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
     }
@@ -1141,11 +1160,11 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     }
     if (!D.armed) return 0;
     if (!D.ended) {
-        // The bloom chain's first pass ends the scene: a pass at most a quarter of the scene's width into a scene
-        // colour target. With the camera rune or the scope open the game draws a 160-wide depth-only pass and 160x90
-        // RG16F and RGBA8 passes right after the lighting, then more geometry and the transparents; DLSS ended the
-        // scene at those, the next G-buffer pass disarmed it and the scaling pass found nothing to evaluate.
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width || !c->image || !scene_color(c->format)) return 0;
+        // The bloom chain's first pass ends the scene (bloom_start). With the camera rune or the scope open the game
+        // draws a 160-wide depth-only pass and 160x90 RG16F and RGBA8 passes right after the lighting, then more
+        // geometry and the transparents; DLSS ended the scene at those, the next G-buffer pass disarmed it and the
+        // scaling pass found nothing to evaluate.
+        if (!bloom_start(ex, D.color.width)) return 0;
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
         unsigned o[2], s[2];
