@@ -12,6 +12,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
+set grass    TOTK_PATCH_GRASS    0
 
 # 60 fps: the adaptive present-interval controller (main+0x2db174, 1.2.1 0x8f26c8) gets the minimum interval 1.
 site fps60 main 2db204 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -82,6 +83,13 @@ site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
 
+# Fixed scene size (MacNativeGames game_patches_v143.c patch_fixed_res; runtime/resolution.c res_dynres_live switches
+# the set on unless TOTK_DYNAMIC_RES=1). The dynamic resolution controller (main+0x584300, 1.2.1 0xcc26f4) steps the
+# scene through tiers of 100, 90 and 80 % by a cost model that grows with the scene width squared; at its one epilogue the tier's scale moves into
+# the result, and 1.0 there makes every tier 100 %. The original word is MacNativeGames' check against 1.4.3.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main 5848a8 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
 # Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
 # aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
 # switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
@@ -111,6 +119,8 @@ site mouse_direct main 874cb4 bd042289 94c9acc7
 site mouse_direct main 874d7c 6d40a3e9 94c9ac91
 site mouse_direct main 18e444 f9400408 94e546db
 site mouse_direct main 18f108 bd4047ec 94e543a6
+# Keep native camera-distance easing when direct mouse orbit bypasses the stick integrators.
+site mouse_direct main 18ea34 b9418a88 94e5454f   # orbit state: ldr w8, [x20, #0x188]
 site mouse_direct main 1d59460 b9004be8 94761acc
 # The aiming, scope, ability, horse and Purah Pad camera cameras: per axis, the float load the stick turn is computed
 # from (the gamepad's part only) and the load of the angle it is added to (plus the mouse's degrees), each a bl to page
@@ -1077,3 +1087,71 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+
+# Climbing (issues #35, #276, #1001): the climb controller's velocity step (main+0x1f49754, shared by wall and ladder
+# climbing, climb jumps and climb-overs) multiplies the requested velocity by a factor that makes up for a movement loss
+# growing with the frame rate. Below ratio 1 the factor is 1.272 + 1.189 (1 - r) clamped to [1, 2] (r = VFR +0, the
+# 30 Hz ratio times the time scale): Nintendo's fit for 30 and 60 fps, flat at 2 from about 77 fps, so Link climbs at
+# 63% of the speed at 120 fps and 34% at 240. Below r = 0.5 take g(r) = 0.66265 / r + 0.4982 + 0.0848 r instead,
+# fitted to the replayed ladder climb at 120 and 240 fps and equal to the shipping 1.8665 at r = 0.5; at most 8. The
+# site computes g with 16 * max(r - 0.5, 0) subtracted, so g stays under the shipping factor for r >= 0.5, and folds it
+# into the existing clamp without flags: s0 = max(s0, g) (the value clamped), s1 = max(2, g) (the bound). r >= 0.5
+# keeps the shipping factor bit for bit. x8 is dead after the constant load at 0x1f497e8, s2-s4 are loaded again at
+# 0x1f49844 before any read.
+# g takes u = max(page +0, r): the patch page's 30 Hz frame ratio without the time scale (runtime/frame_rate.c), so
+# slow motion at 30 or 60 fps keeps the shipping factor and only a real frame rate above 60 raises it; the runtime
+# switches the set off without the real-time step, where the page is not written.
+set climb    TOTK_CLIMB_FIX      1
+site climb main 1f497f4 1e201001 @page:x8 bd400104 1e286884 52946dc8 72a7e528 1e270102 1e241842 52828248 72a7dfe8 1e270103 1e232842 529573e8 72a7b5a8 1e270103 1f040862 1e2a3883 2f00e404 1e246863 1e261004 1f048862 1e241004 1e247842 1e226800 1e201001 1e226821   # fmov s1, #2.0 -> s2 = g(u); s0 = max(s0, s2); s1 = max(2.0, s2)
+
+
+# Grass range (runtime/resolution.c res_grass_range switches the set on). Grass blades grow from the near grass map, a
+# square texture the game draws around the camera (GrassShader.sharcb). Its constructor (main+0xa38e58) gives it a
+# 62.5 m extent, a 3.90625 m step (1/16 of it) and 256x256 and 128x128 textures; main+0x206340c later sets the extent
+# to 62.5 or 31.25 m. With the set on all of them come from page +128..+144, scaled together so the map keeps its
+# texels per metre; resolution.c grows the grass heap of the HeapDef for the larger textures.
+site grass  main a38e58 52a84f48 @page:x8 b9408108   # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main a38e64 52a80f48 @page:x8 b9408508   # mov w8, #3.90625   -> ldr w8, [page+132]
+site grass  main a38e94 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr w2, [page+136]
+site grass  main a38ef4 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
+site grass  main 2063454 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+
+
+# Optional reference with an invalid value (#1005). main+0x1bd0138 reads an optional reference at object +0x6b0 (null or
+# a holder whose first word is the target, bit 0 a tag) and checks it only for null: ldr x8, [x19, #0x6b0]; cbz x8;
+# ldr x21, [x8]. Players' crash reports show the field holding 0xffffffffffffffff after minutes to hours of play, and
+# the load of the holder faults. MacNativeGames (games/totk/runtime/loader.c, crash) met the same field holding
+# 0xffff0000ffffffff during a save load and treats the reference as absent there. Every valid holder is a heap address
+# below 2^63, so the cbz becomes a test for null or negative: x9 = x8 >> 63 (arithmetic, all ones when negative),
+# x8 &= ~x9, cbz x8. Both x8 and x9 are dead at the branch target 0x1bd01f0, which loads x8 again and writes x9 before
+# any read; on the fall-through path x8 is unchanged.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 1bd01c0 b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
+
+# Recall and Ultrahand target that is stale memory. The same function reads the target actor from the holder
+# (ldr x21, [x8]) and follows it into main+0x155ec, main+0x9a89d4 and main+0x2b8464 (an atomic write at +0x90). The
+# holder can be reused memory by then, so the actor points into .rodata, outside the address space or at other heap
+# data, and the game crashes reading 0xffffffffffffffff. UltraTears (kuraeow/ultratears, ability target guard) found
+# the class. The load becomes a call to runtime/ov_ability.c host_ability_target (page+0xf60): x21 is the holder's
+# first word, or 0 where the game's own code would fault on the target (holder, actor or component unreadable, the
+# reference word not writable), which the game's cbz x21 skips for this frame. Every other target goes on unchanged.
+# The answer comes back in x9 and the cbz site moves it to x21: the lifted code keeps x21 (callee-saved) in a C local
+# across the call. x9 is dead after 0x1bd01c8 on every path (written or clobbered by a bl before any read); x30 is saved by the
+# prologue and clobbered by the next bl anyway.
+set ability  TOTK_ABILITY_GUARD  1
+site ability main 1bd01c4 f9400115 947c3f67            # ldr x21, [x8] -> bl page+0xf60
+site ability main 1bd01c8 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21
+
+# Model scene report rows (WoE, daniel-madrid-07/weeping-of-the-empire, MIT, games/totk/patches/sites_v143.py
+# reportguard; their #52 and #73: crashes while using Ultrahand and aiming). gsys::ModelScene::calcGPU_ is inlined in
+# main+0xa1f84; its per-object loop (0xa22bc..0xa234c) takes the object's report handle h (int16 at obj+0x98 + 2 * side),
+# exits for -1 only, reads row 2h+1 and then u32 n from row 2h, and follows n to row 2n with no bound (WoE's crash had
+# n = the float 0.05, a read 32 GB past the rows). n indexes a row pair as h does, so a valid one is below 0x8000.
+# A negative h (other than -1) or n >= 0x8000 goes to 0xa2340, where the game resets the handle to -1 after every use:
+# the object has coverage 0 this frame (stored at 0xa22cc) and the game asks for a new report, as after a normal read.
+# WoE's veneers exit at 0xa2344 instead, which keeps the bad handle for the next frames. No flags change; w4 is never
+# used in main+0xa1f84; x1, x16, x15 and w13, which 0xa2340 reads, hold what they hold on the game's own path there.
+set report   TOTK_REPORT_GUARD   1
+site report  main a22d8 2a010571 2a010571 37f80341            # orr w17, w11, w1, lsl #1; tbnz w1, #31, 0xa2340
+site report  main a2310 531f7821 530f7c24 531f7821 35000184   # lsr w4, w1, #15; lsl w1, w1, #1; cbnz w4, 0xa2340

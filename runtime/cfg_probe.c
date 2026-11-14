@@ -230,6 +230,16 @@ int probe_cfg(void) {
     dn[KEY_MOUSE_R] = dn[KEY_Z] = 1;
     CHECK(input_map_buttons(dn) == (1ull << B_Y | 1ull << B_ZL), "keys: right mouse button and Z both press ZL");
     memset(dn, 0, sizeof dn);
+    dn[KEY_T] = 1;
+    CHECK(input_map_buttons(dn) == 1ull << B_Y, "keys: T is Y too (the left button is A in the menus)");
+    plat_setenv("TOTK_BIND_X", "key:t");
+    input_map_configure();
+    CHECK(input_map_buttons(dn) == 1ull << B_X, "bind: bind_X = key:t takes T from Y's defaults");
+    dn[KEY_T] = 0, dn[KEY_MOUSE_L] = 1;
+    CHECK(input_map_buttons(dn) == 1ull << B_Y, "bind: Y keeps the left mouse button");
+    plat_setenv("TOTK_BIND_X", NULL);
+    input_map_reset();
+    memset(dn, 0, sizeof dn);
     dn[KEY_X] = dn[KEY_TAB] = dn[KEY_M] = dn[KEY_LCTRL] = dn[KEY_3] = 1;
     CHECK(input_map_buttons(dn) == (1ull << B_ZR | 1ull << B_PLUS | 1ull << B_MINUS | 1ull << B_STICK_L | 1ull << B_RIGHT),
           "keys: X ZR, Tab Plus, M Minus, Left Ctrl stick click, 3 D-pad right");
@@ -328,6 +338,38 @@ int probe_cfg(void) {
         int a_east = input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_EAST] = 1}, input_pad_layout_pick(layouts[i], 0)) == 1ull << B_A;
         CHECK(a_east == EQ(input_prompts_folder(PROMPTS_XBOX, layouts[i]), "romfs-patches-xbox"),
               "prompts: the folder names A as B exactly when the layout puts A on the button labelled B");
+    }
+    // One folder per screen shape (cfg.c cfg_shape_size, installer/screens.py shape_size): the closest aspect ratio of
+    // SHAPED within 1%, the first of equal ones; 16:9 and unlisted shapes have none.
+    unsigned sz[2] = {0, 0};
+    CHECK(cfg_shape_size(5120, 2160, sz) && sz[0] == 2560 && sz[1] == 1080, "shape: 5120x2160 takes 2560x1080's folder");
+    CHECK(cfg_shape_size(3440, 1440, sz) && sz[0] == 3440 && sz[1] == 1440, "shape: 3440x1440 keeps its own (0.8% off 2560x1080)");
+    CHECK(cfg_shape_size(1920, 800, sz) && sz[0] == 3840 && sz[1] == 1600, "shape: 1920x800 takes 3840x1600's folder");
+    CHECK(cfg_shape_size(2560, 1600, sz) && sz[0] == 1280 && sz[1] == 800 && cfg_shape_size(3000, 2000, sz) &&
+              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080,
+          "shape: 16:10, 3:2 and 32:9 take their first size");
+    CHECK(!cfg_shape_size(1920, 1080, sz) && !cfg_shape_size(2560, 1440, sz) && !cfg_shape_size(1024, 768, sz),
+          "shape: none for 16:9 and 4:3");
+    // romfs.c shaped_name: the exact size's folder (an older setup wrote every size) wins, else the shape's
+    {
+        char dir[1100], f[1200];
+        snprintf(dir, sizeof dir, "%.*scfg-probe-shapes", (int)(cut + 1 - path), path);
+        static const char *const made[] = {"romfs-patches-2560x1080", "romfs-patches-xbox-5120x2160"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(f, sizeof f, "%s/%s", dir, made[i]);
+            plat_file_mkdir_p(f);
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, made[i]);
+            plat_file_write(f, "#\n", 2);
+        }
+        snprintf(f, sizeof f, "%s/romfs-index.bin", dir);
+        plat_setenv("TOTK_ROMFS_INDEX", f);
+        CHECK(romfs_shaped_ready(2560, 1080) && romfs_shaped_ready(5120, 2160) && !romfs_shaped_ready(3440, 1440),
+              "shape: 5120x2160 finds 2560x1080's layout folder, 3440x1440 does not");
+        CHECK(romfs_shaped_prompts_ready("romfs-patches-xbox", 5120, 2160) &&
+                  !romfs_shaped_prompts_ready("romfs-patches-xbox", 2560, 1080) &&
+                  !romfs_shaped_prompts_ready("romfs-patches-pc", 5120, 2160),
+              "shape: an older install's exact-size prompts folder serves that size only");
+        plat_setenv("TOTK_ROMFS_INDEX", NULL);
     }
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;

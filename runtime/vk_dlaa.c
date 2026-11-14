@@ -11,9 +11,6 @@
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
-#ifdef _WIN32
-#include <windows.h>
-#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,31 +112,19 @@ int vk_dlaa_wanted(void) {
 static int core_load(void) {
     if (N.tried) return N.loaded;
     N.tried = 1;
-#ifdef _WIN32
-    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
-    DWORD n = sizeof dir;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
-                     NULL, dir, &n) != ERROR_SUCCESS) {
+    char path[PLAT_PATH_MAX];
+    if (!plat_ngx_core_path(path, sizeof path)) {
         rt_log("dlaa: the driver has no NGX core (registry NGXCore missing): DLAA off");
         return 0;
     }
-    snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
-    N.core = LoadLibraryA(path);
-    if (!N.core) {
-        rt_log("dlaa: cannot load %s (error %lu): DLAA off", path, GetLastError());
-        return 0;
-    }
-#define FN(f, name) N.f = (void *)GetProcAddress((HMODULE)N.core, name)
-#else
-    // The driver's NGX core; the dynamic loader finds it where the driver put it (/usr/lib, /usr/lib/x86_64-linux-gnu).
-    const char *path = "libnvidia-ngx.so.1";
     N.core = plat_lib_open(path);
     if (!N.core) {
-        rt_log("dlaa: cannot load %s (not an NVIDIA driver, or one without NGX): DLAA off", path);
+        char why[256];
+        plat_lib_error(why, sizeof why);
+        rt_log("dlaa: cannot load %s (%s; not an NVIDIA driver, or one without NGX): DLAA off", path, why);
         return 0;
     }
 #define FN(f, name) N.f = plat_lib_sym(N.core, name)
-#endif
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
@@ -203,46 +188,14 @@ static int vtable_ok(void) {
     return ok;
 }
 
-#ifndef _WIN32
-// UTF-8 to UTF-32 wchar_t, without the C library's locale (the runtime never sets one, so mbstowcs would stop at the
-// first non-ASCII byte). Returns 0 on malformed input or when out has no room.
-static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
-    const unsigned char *u = (const unsigned char *)in;
-    size_t n = 0;
-    while (*u) {
-        unsigned c = *u++, more = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 4;
-        if (more == 4) return 0;
-        if (more) c &= 0x3F >> more;
-        for (unsigned k = 0; k < more; k++, u++) {
-            if ((*u & 0xC0) != 0x80) return 0;
-            c = c << 6 | (*u & 0x3F);
-        }
-        if (n + 1 >= cap) return 0;
-        out[n++] = (wchar_t)c;
-    }
-    out[n] = 0;
-    return 1;
-}
-#endif
-
 void vk_dlaa_init(void) {
     if (!vk_dlaa_wanted() || !core_load()) return;
-#ifdef _WIN32
-    wchar_t wdir[MAX_PATH];
-    DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
-    while (len && wdir[len - 1] != L'\\') len--;
-    wdir[len] = 0;
-#else
-    // The executable's folder, where NGX looks for libnvidia-ngx-dlss.so and writes its logs, as a wchar_t string:
-    // 32-bit code points here, as the Linux core expects.
-    char dir[PLAT_PATH_MAX];
+    // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
-    char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
-    if (!cut || !utf8_to_wide((cut[1] = 0, dir), wdir, PLAT_PATH_MAX)) {
+    if (!plat_exe_dir_wide(wdir, PLAT_PATH_MAX)) {
         rt_log("dlaa: cannot name the executable's folder for NGX: DLAA off");
         return;
     }
-#endif
     // 231313132: the application id NVIDIA's DLSS samples use for builds without an NVIDIA-issued id
     const VkCtx *c = vk_ctx();
     NgxResult r = N.init(231313132ull, wdir, c->instance, c->phys, c->device, vkGetInstanceProcAddr,
@@ -289,7 +242,11 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 static struct {
     VkExecTarget color, depth;   // the armed pair, valid in the frame it was armed
     int armed, done, gbuf;       // this frame: armed on the light target, DLAA ran, the G-buffer was drawn
+    uint32_t gbuf_w;             // the widest G-buffer's width this frame
+    VkImage nodepth;             // this frame: a G-buffer-size target drawn without depth while nothing was armed
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
+    uint64_t end_fence;          // a chunked replay: the submission and op the scan ended the scene at (ended_at)
+    uint32_t end_pos;
     struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
         uint32_t w, h, ow, oh;   // render size, output size
         VkImage out, mv;
@@ -337,6 +294,7 @@ static struct {
     unsigned cfg_seen;           // cfg_version when preset was read
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
+#define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
@@ -604,7 +562,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
     VkDescriptorBufferInfo cam;
-    if (!mv_init() || !D.cam_addr || !vk_usnap_find(D.cam_addr, CAM_BLOCK, 4, &cam)) {
+    if (!mv_init() || !D.cam_addr || !vk_usnap_find(D.cam_addr, CAM_BLOCK, UINT32_MAX, 4, &cam)) {
         D.mv_none++;
         D.cam_prev_ok = 0;
         e->chars_ok = 0;
@@ -824,10 +782,9 @@ static struct Snap *snap_for(VkCommandBuffer cb, uint32_t w, uint32_t h, VkForma
 }
 
 // At arming: the light target as it is before the transparents, outside any pass.
-static void mask_snapshot(VkExec *ex) {
+static void mask_snapshot(VkExec *ex, const VkExecTarget *t) {
     R.cur = NULL;
     if (mask_init() <= 0) return;
-    const VkExecTarget *t = &D.color;
     struct Snap *s = snap_for(ex->cb, t->width, t->height, t->format);
     if (!s) return;
     vk_exec_barrier(ex);
@@ -876,14 +833,33 @@ static float halton(uint32_t i, uint32_t b) {
     return r;
 }
 
+// The scene is drawn at the op ex records. A chunked replay's scan ends it ahead of the chunks that still record the
+// scene's draws, so a chunk compares its op with the scan's (the chunks after it are taken once the scan is past their
+// ops); a later submission of the frame is past it.
+static int ended_at(const VkExec *ex) {
+    if (!__atomic_load_n(&D.ended, __ATOMIC_ACQUIRE)) return 0;
+    return !ex->chunked || ex->fence != D.end_fence || ex->pos >= D.end_pos;
+}
+
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
-    if (!D.jit_ok || D.ended || !ex->depth.image || ex->depth.image != D.jdepth) return;
+    if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
-    D.ux = D.jx, D.uy = D.jy, D.jit_used = 1;
+    D.ux = D.jx, D.uy = D.jy;
+    __atomic_store_n(&D.jit_used, 1, __ATOMIC_RELAXED);
+}
+
+// The scene camera: c4 of the last scene draw before the scene ends. A chunked replay's scan notes it in replay order
+// (vk_dlaa_scan_draw): chunks recording side by side would leave the block of whichever drew last.
+static void note_camera(const VkExec *ex) {
+    const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
+    const VkExecTarget *z = &ex->depth;
+    if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
+        (!D.jdepth || z->image == D.jdepth))
+        D.cam_addr = b->addr;
 }
 
 void vk_dlaa_draw(VkExec *ex) {
-    if (!dl_active() || D.ended) return;
+    if (!dl_active() || ended_at(ex)) return;
     static int survey = -1;   // TOTK_DLAA_SURVEY=1 (test): what is drawn into the armed light target
     if (survey < 0) survey = rt_knob("DLAA_SURVEY", "0");
     static uint64_t dfn[16];   // scene draws writing depth, by depth test (reversed depth: GREATER/GEQUAL)
@@ -914,11 +890,11 @@ void vk_dlaa_draw(VkExec *ex) {
             }
         }
     }
-    const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
-    const VkExecTarget *z = &ex->depth;
-    if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
-        D.cam_addr = b->addr;
+    if (!ex->chunked) note_camera(ex);
+}
+
+void vk_dlaa_scan_draw(const VkExec *ex) {
+    if (dl_active() && !D.ended) note_camera(ex);
 }
 
 // The jitter moves on right after DLAA ran, not at the present: the replay can record the next frame's scene before
@@ -966,6 +942,18 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// A target of the scene's shape (resolution.c's scene size, within 5 %; the dynamic resolution tiers keep it). In the
+// inventory the game renders the items' icons as the slots fill in, each through a G-buffer and a light target of its
+// own with a D32F depth, square (432x432 or 426x426 at a 3840x2160 scene) and with no wider G-buffer before it in the
+// frame; DLSS armed on that, scaled it to the output and wrote it over the menu, so a weapon filled the screen on the
+// frames an icon was drawn.
+static int scene_shaped(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)c->width * s[1], b = (uint64_t)c->height * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -974,7 +962,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
-        for (int i = 0; i < 3; i++)
+        for (size_t i = 0; i < DLSS_SIZES; i++)
             if (D.sizes[i].out) free_size(&D.sizes[i]);
         D.last = NULL, D.preset_dirty = 0;
     }
@@ -1092,7 +1080,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     full_barrier(cb);
     if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
-    vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
+    vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
@@ -1105,55 +1093,143 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
 }
 
+// More than half the scene size resolution.c set, on each side (the dynamic resolution tiers go down to 80 %). Around
+// the quick weapon menu the only G-buffer before the scene's end is at times the half-size one (1920x1080 at a
+// 3840x2160 scene), and the half-size RGBA16F effects target with its D32F depth armed; DLSS scaled the effects to the
+// output in place of the scene, which showed dark and blurred for that frame.
+static int scene_large(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    return c->width * 2 > s[0] && c->height * 2 > s[1];
+}
+
 static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
-void vk_dlaa_pass(VkExec *ex) {
+// The bloom chain's first pass: at most a quarter of the scene's width, into level 0 of a scene colour target. At some
+// views (seen in the yard of Lookout Landing) the game draws a full-screen pass without depth into the light target,
+// then a half-size scene colour target and its mips, and only then the light target with the scene depth. Level 1 of
+// those mips is a quarter of the scene's width; taken for the bloom it ended the scene before anything was armed, DLSS
+// skipped those frames, and the picture flickered between anti-aliased frames and plain ones as the view changed.
+// The pass also has the scene's shape (resolution.c's scene size, within 5 %) and no depth. In rain by a waterfall the
+// game drew two transparents into the light target with the scene depth before its sky lookups (25x25 and 256x256
+// RGBA16F) and its quarter-size particles (960x540 RGBA16F with a depth of their own), which then ended the armed
+// scene: DLSS ran before the mist and most transparents, which were drawn over its picture unprocessed, on runs of
+// frames, and the mist in the distance darkened or brightened for a frame wherever a frame in between came out whole.
+static int bloom_start(const VkExec *ex, uint32_t scene_w) {
+    const VkExecTarget *c = &ex->color[0];
+    if (!ex->pass_w || ex->pass_w * 4 > scene_w || !c->image || !scene_color(c->format) || c->level || ex->depth.image)
+        return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)ex->pass_w * s[1], b = (uint64_t)ex->pass_h * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
+int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
-    if (!dl_active() || D.done) return;
+    if (!dl_active() || D.done) return 0;
     // The G-buffer: several colour targets with a D32F depth of at least DLAA_SCENE_MIN_W wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
     if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W) {
+        D.gbuf_w = D.gbuf && D.gbuf_w > z->width ? D.gbuf_w : z->width;
         D.gbuf = 1, D.armed = 0;
         // target 0 is the object-class buffer (RGBA8, the scene size): the characters' bias mask reads its green. A
         // smaller pass of the same shape (640x360, seen while loading) does not replace the scene's in the same frame.
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
             c->samples <= 1 && !c->is3d && (!D.ids_ok || c->width >= D.ids.width))
             D.ids = *c, D.ids_ok = 1;
-        return;
+        return 0;
+    }
+    // A pass into one scene colour target of the G-buffer's size or larger without depth while nothing is armed ends
+    // the scene once the bloom chain follows with still nothing armed: in the inventory (1.4.3) the preview's light
+    // target is drawn that way before the bloom, and with the scene depth only after it, while the menu is composed;
+    // DLAA ran on the finished menu picture with the previous frame's history, which left stray dark pixels around Link.
+    // Arming cancels the end, on that target too: at some camera angles the field's effects composite (a full-screen
+    // draw without depth into the light target) comes before the first pass with the scene depth, and with that target
+    // barred from arming DLSS stopped for as long as the view held (in the inventory the bloom chain always ended the
+    // scene first, in both modes, menu opening included). While the scope zooms in, a second G-buffer pass disarms the
+    // frame, the scene is copied into an output-sized target without depth, and only then is the light target drawn
+    // again with the scene depth.
+    // The G-buffer's width is the widest of the frame: the game also draws a half-size G-buffer, after which a
+    // half-size pass without depth ended the scene at some camera angles.
+    if (D.gbuf && !D.armed && !D.ended && !z->image && ex->pass_ncolor == 1 && c->image && scene_color(c->format) &&
+        c->width >= D.gbuf_w && !c->level)
+        D.nodepth = c->image;
+    if (D.nodepth && !D.armed && !D.ended && bloom_start(ex, D.gbuf_w)) {
+        D.end_fence = ex->fence, D.end_pos = ex->pos;
+        __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
     }
     // the scene depth is D32F; a D16 target of the scene size also serves one composite pass before the transparents.
     // A smaller pair never takes over an armed one: the camera rune draws a half-size RGBA16F target with a half-size
     // D32F depth after the lighting (852x480 under a 1704x960 scene), and DLSS ran on that and wrote its picture into
-    // the scene's own light target, which left every object black.
-    if (D.gbuf && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W &&
+    // the scene's own light target, which left every object black. Nor does a pair narrower than the frame's widest
+    // G-buffer arm at all: the game draws its particles into a half-size RGBA16F target with a half-size D32F depth, and
+    // with the scope open, where the light target is drawn with a D16 depth and never arms, that effects pass was the
+    // first pair to arm; DLSS then scaled the effects into the light target, which filled the lens with garbage in the
+    // DLAA mode.
+    if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
+        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w && scene_shaped(c) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
-        c->samples <= 1 && !c->is3d) {
+        c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
-        D.color = *c, D.depth = *z, D.armed = 1;
-        if (first) mask_snapshot(ex);   // the lit scene, before the transparents (reactive mask)
-        return;
+        D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
+        if (!first) return 0;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS_MASK, .scene = *c};   // the lit scene, before the transparents (reactive mask)
+        return 1;
     }
-    if (!D.armed) return;
+    if (!D.armed) return 0;
     if (!D.ended) {
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width) return;
-        D.ended = 1;
+        // The bloom chain's first pass ends the scene (bloom_start). With the camera rune or the scope open the game
+        // draws a 160-wide depth-only pass and 160x90 RG16F and RGBA8 passes right after the lighting, then more
+        // geometry and the transparents; DLSS ended the scene at those, the next G-buffer pass disarmed it and the
+        // scaling pass found nothing to evaluate.
+        if (!bloom_start(ex, D.color.width)) return 0;
+        D.end_fence = ex->fence, D.end_pos = ex->pos;
+        __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
         unsigned o[2], s[2];
         res_sizes(o, s);
-        if (D.color.width >= o[0]) D.done = 1, evaluate(ex, NULL);   // DLAA in place; else wait for the scaling pass
-        return;
+        if (D.color.width < o[0]) return 0;   // wait for the scaling pass
+        D.done = 1;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place
+        return 1;
     }
     // the game's scaling pass: one colour target of the output size, no depth
     unsigned o[2], s[2];
     res_sizes(o, s);
     if (ex->pass_ncolor == 1 && c->image && !z->image && scene_color(c->format) && c->width > D.color.width &&
         c->width == o[0] && c->height == o[1] && c->samples <= 1 && !c->is3d) {
-        D.done = D.up = 1;
-        evaluate(ex, c);
+        D.done = 1;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS, .scene = *c};
+        return 1;
     }
+    return 0;
+}
+
+// The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
+// now, as the scan's pointers may be stale by then.
+static void target_now(VkExecTarget *t) {
+    const VkTexImage *i = t->tex ? vk_texture_get(t->tex) : NULL;
+    if (i) t->img = i, t->image = i->image;
+}
+
+void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
+    VkExecTarget t = j->scene;
+    if (ex->chunked) {
+        target_now(&t), target_now(&D.color), target_now(&D.depth);
+        if (D.ids_ok) target_now(&D.ids);
+    }
+    if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
+    if (!t.tex) return evaluate(ex, NULL);
+    D.up = 1;
+    evaluate(ex, &t);
+}
+
+void vk_dlaa_pass(VkExec *ex) {
+    VkExecJob j;
+    if (!ex->chunked && vk_dlaa_plan(ex, &j)) vk_dlaa_exec(ex, &j);
 }
 
 // TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
@@ -1196,6 +1272,7 @@ void vk_dlaa_frame(void) {
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
+        D.nodepth = VK_NULL_HANDLE;
         D.hold = 0;
         return;
     }
@@ -1204,7 +1281,7 @@ void vk_dlaa_frame(void) {
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0;
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0, D.nodepth = VK_NULL_HANDLE;
     D.cam_addr = 0;
 }
 
@@ -1225,18 +1302,29 @@ void vk_dlaa_frame(void) {
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull};
 
+// Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
+// added under the lock.
 static uint64_t spirv_hash(const GfxShader *s) {
     static struct { const GfxShader *s; uint64_t h; } tab[8192];
+    static PlatMutex lk = PLAT_MUTEX_INIT;
     uintptr_t k = ((uintptr_t)s >> 4) * 0x9E3779B97F4A7C15ull;
     for (uint32_t i = 0, j = (uint32_t)(k >> 51); i < 8192; i++, j = (j + 1) & 8191) {
-        if (tab[j].s == s) return tab[j].h;
-        if (!tab[j].s) {
+        const GfxShader *e = __atomic_load_n(&tab[j].s, __ATOMIC_ACQUIRE);
+        if (e == s) return tab[j].h;
+        if (e) continue;
+        plat_mutex_lock(&lk);
+        e = tab[j].s;
+        if (!e) {
             uint64_t words = 0, h = 0xcbf29ce484222325ull;
             const uint8_t *b = (const uint8_t *)gfx_shader_spirv(s, &words);
             for (uint64_t n = 0; b && n < words * 4; n++) h = (h ^ b[n]) * 0x100000001b3ull;
-            tab[j].s = s, tab[j].h = h;
+            tab[j].h = h;
+            __atomic_store_n(&tab[j].s, s, __ATOMIC_RELEASE);
+            plat_mutex_unlock(&lk);
             return h;
         }
+        plat_mutex_unlock(&lk);
+        if (e == s) return tab[j].h;
     }
     return 0;   // table full: no skip
 }
@@ -1259,6 +1347,21 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     }
     if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
+    // 1.2.1 scales the light target to the output with an upscaler of its own (12 texelFetch taps around the source
+    // pixel, fragment shader e6f7ae35b8479ef3 with this build's translator), not with the FXAA one, in a pass without
+    // depth. It addresses its source in the scene's pixels (constant bank 3), so DLSS's output-sized picture swapped in
+    // (tex_info) showed only its top-left part, the scene's share of the output (two thirds at DLSS quality), over
+    // the whole screen (#1106). DLSS already wrote its picture into that pass's target
+    // (evaluate), so on 1.2.1 a draw there that samples the light target is skipped instead; the HUD drawn later into
+    // the same target samples other textures and stays. On 1.4.3 a tonemap can be the draw that scales (the comment
+    // above struct D), and it keeps the swap.
+    if (D.up && !RT_V143 && !ex->depth.image && vk_dlaa_swap_img && ex->pass_w > vk_dlaa_swap_img->width + 1 &&
+        vk_exec_draw_samples(ex, fs, vk_dlaa_swap_img)) {
+        static int logged;
+        if (!logged) logged = 1, rt_log("dlaa: DLSS replaces the game's scaling draw (fragment shader %016llx)",
+                                        (unsigned long long)spirv_hash(fs));
+        return 1;
+    }
     uint64_t h = spirv_hash(fs);
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];

@@ -46,8 +46,9 @@ of its processes (Windows job object accounting: committed private bytes).
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
 from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx, VMA) then come from --deps DIR
-(default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs), and the C++
-runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
+(default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs copied next to
+totk.exe: SDL3.dll, libopus-0.dll and, when SDL3.dll comes from MSYS2, the libiconv-2.dll it imports, without which
+the exe stops at start with 0xc000007b or a missing-DLL error), and the C++ runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
 
 Split build. --make-runtime-lib compiles only runtime/ into <out>/libtotkrt.a (what CI prebuilds). --runtime-lib PATH
 then compiles only the generated C and the install-time files (modules.c and INSTALL_SIDE, which bake the player's
@@ -186,8 +187,10 @@ LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-li
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
-# functions sit on it). mouse_direct.c also registers host callbacks relative to that version's patch page.
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c'}
+# functions sit on it). mouse_direct.c and ov_ability.c also register host callbacks relative to that version's patch
+# page. A library source that includes one of PER_VERSION_HEADERS stops the library build (library_sources).
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c'}
+PER_VERSION_HEADERS = ('"patches.h"', '"romfs_config.h"')
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
@@ -274,8 +277,8 @@ def copy_romfs_patches(version, out):
     menus' captured background turned black). Copies every romfs-patches* folder of build/<version> that has a
     manifest, the same way when it differs: romfs-patches, romfs-patches-xbox, romfs-patches-xbox-label and
     romfs-patches-pc (the same with Xbox or keyboard and mouse button prompts, make_romfs_patches.py --prompts) and
-    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-pc-<w>x<h> (make_romfs_patches.py --aspect),
-    which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
+    the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-<style>-<w>x<h> (make_romfs_patches.py
+    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
     names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*') if p.is_dir())
     for name in names:
         src = ROOT / 'build' / version / name
@@ -323,6 +326,39 @@ def runtime_sources(skip=()):
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
+def library_sources(sources):
+    """The runtime sources of libtotkrt.a: all but INSTALL_SIDE. The library is built once per release from one game
+    version's generated headers, so a source that includes a per-version header there bakes that version's addresses
+    into every install: a host function on the 1.2.1 patch page lies inside 1.4.3's sdk and the game stops at start."""
+    lib = [p for p in sources if p.name not in INSTALL_SIDE]
+    baked = [p.name for p in lib if p.suffix in ('.c', '.cpp')
+             and any(h in p.read_text(encoding='utf-8', errors='replace') for h in PER_VERSION_HEADERS)]
+    if baked:
+        sys.exit(f'build_game: library sources with a per-version header ({", ".join(PER_VERSION_HEADERS)}): {", ".join(baked)}; '
+                 'add them to INSTALL_SIDE')
+    return lib
+
+
+def install_stamp(out, runtime_lib):
+    """Write obj/runtime/inputs.sha256, one hash over the runtime library, the INSTALL_SIDE sources and every runtime
+    header, and return its path. The release zip dates every file 1980-01-01 (make_release.py write_zip), so a new
+    release extracted over an old Setup folder has sources and a library older than the objects and the totk.exe the
+    last install left there. Ninja compares mtimes only: it kept the old install-side objects and linked them with the
+    new library (undefined symbols), or skipped the link and kept the old totk.exe. The install-side objects and the
+    link depend on this file, which is rewritten only when the hash changes, so new contents rebuild them whatever the
+    file dates are."""
+    files = sorted((p for p in RUNTIME.rglob('*') if p.is_file() and
+                    (p.suffix in ('.h', '.inc') or (p.parent == RUNTIME and p.name in INSTALL_SIDE))),
+                   key=lambda p: p.relative_to(RUNTIME).as_posix())
+    h = hashlib.sha256()
+    for p in files:
+        h.update(f'{p.relative_to(RUNTIME).as_posix()} {file_sha256(p)}\n'.encode())
+    h.update(f'{LIB_NAME} {file_sha256(runtime_lib)}\n'.encode())
+    path = out / 'obj' / 'runtime' / 'inputs.sha256'
+    write_if_changed(path, h.hexdigest() + '\n')
+    return path
+
+
 def runtime_object(out, src):
     """obj/runtime/<path below runtime>.o, so platform/win32.c cannot collide with a top-level win32.c."""
     src = Path(src)
@@ -368,10 +404,11 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, stamp=None):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
-    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
+    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE. stamp: the
+    install_stamp file, an extra input of the runtime objects and of the link."""
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
@@ -429,7 +466,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     rt = []
     sources = runtime_sources(skip)
     if make_lib:
-        sources = [p for p in sources if p.name not in INSTALL_SIDE]
+        sources = library_sources(sources)
     elif runtime_lib:
         sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
     else:
@@ -440,7 +477,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}')
+            stamp_dep = (' | ' if not pgo_dep else ' ') + ninja_path(stamp) if stamp else ''
+            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}{stamp_dep}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
@@ -459,7 +497,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
                   f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out',
                   '  rspfile = $out.rsp', '  rspfile_content = $in_newline', '  description = LINK $out']
     lines += ['', f'build {ninja_path(exe)}: {rule} ' + ' '.join(ninja_path(o) for o in every) +
-              (f' | {ninja_path(runtime_lib)}' if runtime_lib else ''),
+              (f' | {ninja_path(runtime_lib)}' if runtime_lib else '') + (f' {ninja_path(stamp)}' if stamp else ''),
               'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
     return '\n'.join(lines), objs, exe
 
@@ -807,6 +845,8 @@ def main():
                     help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
                          '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
                          '.profdata (tools/pgo.py merge)')
+    ap.add_argument('--gen-o2', action='store_true',
+                    help='compile the generated code at -O2 without a profile (the --pgo level), for A/B builds')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -819,6 +859,8 @@ def main():
             sys.exit('--pgo gen: MSYS2 UCRT64 clang ships no profile runtime (clang_rt.profile); pass --toolchain with '
                      'an llvm-mingw directory')
         set_pgo(args.pgo, out)
+    elif args.gen_o2:
+        GEN_FLAGS[GEN_FLAGS.index('-O1')] = '-O2'
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
@@ -926,8 +968,9 @@ def main():
     if runtime_lib and missing:
         sys.exit(f'build_game: {", ".join(missing)} missing from {flag_path(RUNTIME)}: the release must ship every '
                  f'INSTALL_SIDE source beside {runtime_lib.name}')
+    stamp = install_stamp(out, runtime_lib) if runtime_lib else None
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+                                 args.make_runtime_lib, stamp)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -958,7 +1001,8 @@ def main():
     code, dt, peak_one, _ = run_measured(base + [flag_path(exe)], env)
     print(f'link: {dt:.1f} s, peak {mib(peak_one)}')
     if code:
-        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running totk.exe from this dir locks it)',
+        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running totk.exe from this dir, or an '
+              f'antivirus that holds the file, locks it)',
               file=sys.stderr)
         sys.exit(code)
     if args.make_runtime_lib:

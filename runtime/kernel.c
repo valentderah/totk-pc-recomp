@@ -246,6 +246,44 @@ static void wake_sync_waiters(void) {
     }
 }
 
+// ---- a short poll before a sleep
+// Most guest waits and waits for a virtual core end within microseconds. The thread polls for TOTK_KSPIN_US (default
+// 20) with G released before it sleeps on its condition variable: a wake in that time costs no OS wake-up (4-12 us
+// on a desktop Ryzen, more from a deep C-state) and the waker's signal finds nobody asleep. Off with fewer than 6 logical
+// processors, where the poll would take a CPU that a running thread needs; TOTK_KSPIN_US=0 turns it off. Savage Wind
+// Recomp polls the same way before it parks (runtime/ksync.c cond_wait). TOTK_KSPIN_US=ab polls 20 us in the
+// B blocks of TOTK_AB only.
+static int64_t g_kspin_ns = -1;
+static int g_kspin_ab;
+
+static uint64_t kspin_ns(void) {
+    int64_t v = __atomic_load_n(&g_kspin_ns, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char *e = cfg_get("TOTK_KSPIN_US");
+        g_kspin_ab = e && !strcmp(e, "ab");
+        long long us = e && *e && !g_kspin_ab ? atoll(e) : 20;
+        uint32_t cpus = plat_cpu_usable();
+        v = us <= 0 || cpus < 6 ? 0 : us * 1000;
+        __atomic_store_n(&g_kspin_ns, v, __ATOMIC_RELAXED);
+        rt_log("kernel: waits poll %lld us before they sleep%s (TOTK_KSPIN_US, %u logical processors)",
+               (long long)(v / 1000), g_kspin_ab ? " in the B blocks" : "", cpus);
+    }
+    return v && (!g_kspin_ab || rt_ab()) ? (uint64_t)v : 0;
+}
+
+// Holding G: releases it and polls *p until it reaches at_least or ns pass, then takes G again. 1 if it was reached.
+static int kspin(const int *p, int at_least, uint64_t ns) {
+    uint64_t end = kern_now_ns() + ns;
+    int ok = 0;
+    unlock();
+    for (unsigned i = 1; !(ok = __atomic_load_n(p, __ATOMIC_ACQUIRE) >= at_least); i++) {
+        plat_pause();
+        if (!(i & 31) && kern_now_ns() >= end) break;
+    }
+    lock();
+    return ok;
+}
+
 // SleepConditionVariableSRW counts milliseconds: round up (late is legal, early is not) and re-check the deadline
 // against the performance counter, because the wait may also end early.
 static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
@@ -262,6 +300,8 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
     uint64_t now = kern_now_ns();
     int forever = ns < 0 || (uint64_t)ns > UINT64_MAX - now;
     uint64_t deadline = forever ? 0 : now + (uint64_t)ns;
+    uint64_t poll = kspin_ns();
+    if (poll) kspin(&t->woke, 1, forever || poll < (uint64_t)ns ? poll : (uint64_t)ns);
     while (!t->woke) {
         if (forever) {
             plat_cond_wait(&t->cv, &G);
@@ -991,6 +1031,9 @@ static void core_take(RtThread *t) {
         while (__atomic_load_n(&t->cur_core, __ATOMIC_RELAXED) < 0 && kern_now_ns() < end) plat_pause();
         lock();
         if (t->cur_core >= 0) g_ap_spin_ok++;
+    } else if (t->cur_core < 0) {   // a holder may block or yield any moment (kspin_ns)
+        uint64_t poll = kspin_ns();
+        if (poll) kspin(&t->cur_core, 0, poll);
     }
     int sampled = 0;
     while (t->cur_core < 0) {
@@ -1518,6 +1561,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
     t->cpu->sp = t->stack_top;
     t->tid = plat_thread_id();
     perf_main_thread();
+    perf_core_thread(PCORE_MAIN);
     PlatIntr *self = ap_open_self();
     lock();
     t->hthr = self;

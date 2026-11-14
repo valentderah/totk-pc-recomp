@@ -2,10 +2,12 @@
 // handles of a submission, keeps render targets, passes, clears and fixed-function state; draws, binds and dispatches
 // (vk_exec_draw.c) and copies, counters, events and conditional rendering (vk_exec_xfer.c) plug in through the two
 // hooks at the bottom.
-// Runs on the submitting thread under vk_sync_submit's lock: no locking inside.
+// Runs on the submitting thread under vk_sync_submit's lock; a chunked replay (TOTK_REPLAY_WORKERS, vk_exec.c) records
+// on several threads, each with a VkExec of its own, and shares only the locked tables named where they are declared.
 // The op loop follows MacNativeGames nvn_mtl.m (MIT, Copyright (c) 2026 jhaizhou) and the pass handling LAS Recomp
 // (MIT, Copyright (c) 2026 Peiikai); vk_exec.c names the sources.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #include "nvn_api.h"
@@ -38,8 +40,36 @@ typedef struct {
     uint8_t scale;                       // VkTexImage.scale
 } VkExecTarget;
 
-// The replay state. One instance lives for the run: NVN state is queue state and carries over from one submission to
-// the next, as in MacNativeGames' and LAS Recomp's replays. The "per command buffer" fields are reset by vk_exec_record.
+// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
+typedef struct {
+    uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
+                                                               // their pass, in-pass barriers, pass restarts, layout
+                                                               // transitions
+} VkExecFrame;
+
+// A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
+// decides it in replay order, vk_contact_exec records it), or DLSS's copy of the lit scene or its evaluation
+// (vk_dlaa.c: vk_dlaa_plan, vk_dlaa_exec). The chunk that holds the op records it.
+enum { VK_JOB_CONTACT, VK_JOB_DLSS_MASK, VK_JOB_DLSS };
+typedef struct VkExecJob {
+    const void *op;                      // vk_exec.c: the op it precedes in a scanned submission
+    int kind;                            // VK_JOB_*
+    int chunk;                           // vk_exec.c: the chunk that holds the op
+    VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
+                                         // (mask) or the scaling pass's target (evaluation; no tex: in place)
+    float pc[16];                        // the march's push constants
+} VkExecJob;
+
+// An OP_UPDATE_UB of the submission: [lo, hi) of guest memory takes data (vk_exec_draw.c ubo_ptr reads them).
+typedef struct { uint64_t lo, hi; const uint8_t *data; } VkExecUpd;
+
+struct VkExecDraw;   // vk_exec_draw.c: the memos and command buffer state of one recording context
+
+// The replay state and one recording context. NVN state is queue state and carries over from one submission to the
+// next, as in MacNativeGames' and LAS Recomp's replays. The "per command buffer" fields are reset by vk_exec_record.
+// The fields from rt up to views are that queue state (VK_EXEC_STATE_BEGIN/END); the rest belongs to the context that
+// records with it.
 typedef struct VkExec {
     // ---- per command buffer
     VkCommandBuffer cb;                  // being recorded
@@ -94,8 +124,14 @@ typedef struct VkExec {
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
     p_render_cond render_cond;           // last OP_RENDER_COND
     int has_render_cond;
+    // samples-passed counting (vk_exec_xfer.c): a reset since the last report, a report since the last reset, the game
+    // reported twice without a reset (every draw counts from then on)
+    int oq_counting, oq_reported, oq_keep;
 
     // ---- internal to vk_exec.c
+    VkExecFrame fr;                      // counters of this context, added to vk_exec_frame at the end of a submission
+    int split_draws, part_start;         // draws and dispatches since the last part; recorded at its start
+    uint64_t part_t0;                    // replay time at its start
     void *views;                         // image views created for this command buffer (freed at its fence)
     int nviews, cap_views;
     int barrier_at;                      // recorded right after the last full barrier (-1: none yet)
@@ -112,7 +148,29 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+
+    // ---- vk_exec_xfer.c: the occlusion query of the open pass and the queries closed since the last report or reset
+    int oq_open;                         // slot of the active query, -1 none
+    uint32_t *oq_seg, oq_nseg, oq_capseg;
+    int oq_lost;                         // the segment missed a draw (ring full)
+
+    struct VkExecDraw *draw;             // vk_exec_draw.c, made on the context's first draw op
+
+    // ---- a chunk of a scanned submission (vk_exec.c): the scan's answers, taken in op order
+    int chunked;                         // records a chunk: what depends on earlier chunks comes from the scan
+    const VkExecUpd *upd;                // the submission's inline uniform updates
+    const uint8_t *cond;                 // its RENDER_COND results (1 renders)
+    const VkExecJob *jobs;               // its planned records (contact shadows, DLSS)
+    uint32_t njobs;
+    uint32_t upd_n, cond_i, job_i;       // updates, results and records before the op being recorded
+    uint32_t drop_n;                     // ops before it that may write uniform ranges (vk_usnap_drop_at)
+    const uint32_t *wpos;                // the positions of the draws and dispatches among those ops (vk_exec_draw_writes)
+    uint32_t wpos_i, wpos_end;           // the next of them, and the end of the chunk's
+    uint32_t pos;                        // ops of the submission up to and with it (the scan's too)
 } VkExec;
+
+#define VK_EXEC_STATE_BEGIN offsetof(VkExec, rt)
+#define VK_EXEC_STATE_END offsetof(VkExec, fr)
 
 // Begins dynamic rendering with the current targets unless a pass is open (a full memory barrier precedes it). Call
 // before a draw or an attachment clear.
@@ -136,9 +194,19 @@ VkCommandBuffer vk_exec_inline_begin(int *reopen);
 void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
-void vk_exec_draw_new_cb(void);
+void vk_exec_draw_new_cb(VkExec *ex);
+// vk_exec_draw.c: the fragment stage of the draw being recorded samples img through one of its bound combined
+// textures (OP_BIND_TEX, the handles tex_info swaps; vk_dlaa.c vk_dlaa_skip_draw). Takes the texture lock.
+int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img);
+// The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
+// submission read it (the settings menu shows it).
+int vk_exec_replay_workers(void);
+// vk_exec_draw.c, for the state scan of a chunked replay: the storage ranges the shaders of a draw (dispatch 0) or a
+// dispatch at state s write, as {address, size} into out; their count, or -1 when there are more than max or a stage's
+// shader is not known yet (no context has translated it). Reads uniform blocks through s->upd like a chunk.
+int vk_exec_draw_writes(const VkExec *s, int dispatch, uint64_t (*out)[2], int max);
 // vk_exec_draw.c: the vertex and fragment shader of the last draw recorded into this command buffer (NULL: none yet).
-void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs);
+void vk_exec_draw_shaders(const VkExec *ex, const GfxShader **vs, const GfxShader **fs);
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);
 // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
 void vk_exec_bc_gone(VkImage image);
@@ -154,17 +222,17 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass s
 int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
+int vk_exec_tfr_check(void);   // --probe-vkexec: a new target replaces a way of its own set; 1 when it does
 
-// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
-typedef struct {
-    uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
-    uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
-                                                               // their pass, in-pass barriers, pass restarts, layout
-                                                               // transitions
-} VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
+uint32_t vk_exec_replay_pos(void);                             // the op this thread records in a chunk, else UINT32_MAX
+// A chunk that is about to make a texture entry whose content depends on the textures at its storage (vk_texture.c
+// entry_of): whether a chunk before it is still being recorded, and the wait until none is. The caller holds no lock
+// but the texture lock, which it releases for the wait.
+int vk_exec_chunk_behind(void);
+void vk_exec_chunk_settle(void);
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
 
 // TOTK_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
@@ -188,6 +256,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
 // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
+int vk_exec_bind(VkExec *ex, uint32_t op, const void *payload);   // a bind op's writes into ex; 1: VkExecDraw.bind_gen
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
@@ -199,10 +268,26 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // sample DLSS's output vk_dlaa_swap_view in its place, so the game's scaling draw scales DLSS's picture.
 extern const VkTexImage *vk_dlaa_swap_img;
 extern VkImageView vk_dlaa_swap_view;
-// vk_contact.c: a pass about to begin (its targets resolved, no pass open), and a dispatch or copy about to be recorded
+// The state scan's part of the transfer ops: render enable, conditional rendering (returns the condition: 1 renders),
+// samples-passed counting state and the pending reports conditions read. Returns 1 for every other op.
+// The state scan of a chunked replay (vk_exec.c): the textures op uses go live in replay order (vk_texture_revive); pos:
+// the op's place in the submission. 1 when one of them has no entry yet.
+int vk_exec_xfer_revive(uint32_t op, const void *payload, uint32_t pos);
+int vk_exec_xfer_scan(VkExec *ex, uint32_t op, const void *payload);
+// The guest memory a COPY_B2B, COPY_T2B or CLEAR_BUF op makes the GPU write, as far as the scan can tell without the
+// texture's image: [*addr, *addr + return value).
+uint64_t vk_exec_xfer_written(const VkExec *ex, uint32_t op, const void *payload, uint64_t *addr);
+// vk_contact.c: a pass about to begin (its targets resolved, no pass open), and a dispatch or copy about to be recorded.
+// vk_contact_plan is what they do in replay order (pass: the first; else the second), for the scan; 1: a march is due (j).
 void vk_contact_pass_begin(VkExec *ex);
 void vk_contact_flush(VkExec *ex);
+int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j);
+void vk_contact_exec(VkExec *ex, const VkExecJob *j);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+void vk_exec_oq_forget(VkExec *ex);
+void vk_exec_oq_flush(VkExec *ex);    // the end of a chunk: its closed queries counted as a segment without a report   // vk_exec_xfer_shutdown: the context's queries belonged to the old pool
+// vk_exec.c: fn on every recording context (teardown, the device idle).
+void vk_exec_contexts(void (*fn)(VkExec *ex));

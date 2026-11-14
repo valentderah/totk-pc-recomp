@@ -18,7 +18,9 @@ start, MacNativeGames found).
 The button guide in play (bottom right) draws its buttons, L and ZL among them, from images of the common layout
 archive instead (timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00): bntx_redraw paints the same icons into them,
 the size unchanged. The Xbox prompts redraw L and ZL, the keyboard and mouse ones every image (PC_HUD_TEXTURES: A, B, X,
-Y, L, ZL and the stick's two). Prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
+Y, L, ZL and the stick's two) with the keys of pc_binds. The font's glyphs use pc_binds(text=True): a text prompt shows
+Y as T, the button guide the left mouse button. Prompts drawn as fixed images (some tutorial animations) keep the
+Switch icons.
 
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
@@ -195,7 +197,7 @@ PC_BINDS = {
 }
 # What a key shows: its letter, a symbol or a short name (key names as in totk.ini; the rest show their name).
 PC_LABELS = {
-    'lshift': '⇧', 'rshift': '⇧', 'lctrl': 'CTRL', 'rctrl': 'CTRL', 'lalt': 'ALT', 'tab': 'TAB',
+    'lshift': 'SHIFT', 'rshift': 'SHIFT', 'lctrl': 'CTRL', 'rctrl': 'CTRL', 'lalt': 'ALT', 'tab': 'TAB',
     'enter': 'ENT', 'backspace': 'BKSP', 'capslock': 'CAPS', 'insert': 'INS', 'delete': 'DEL', 'home': 'HOME',
     'end': 'END', 'pageup': 'PGUP', 'pagedown': 'PGDN', 'up': '↑', 'down': '↓', 'left': '←',
     'right': '→', 'num_add': '+', 'num_sub': '-', 'num_mul': '*', 'num_div': '/', 'num_decimal': '.',
@@ -212,12 +214,18 @@ PC_HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX
                    'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE052,
                    'Nt_KeyTexLSt_01': 0xE05E}
 PC_MOUSE = ('mouse_l', 'mouse_r', 'mouse_m')
+# The text prompts (the button font: the menus' guides, the dialogue log's) show Y as T, the key runtime/input_map.c
+# binds next to the left mouse button: while a game menu has the pointer the left button is that menu's A
+# (runtime/menu_cursor.c), and T presses Y everywhere. The button guide in play and the action prompt keep the left
+# button (PC_BINDS), which attacks there.
+PC_TEXT_KEYS = {'Y': 't'}
 
 
-def pc_binds(ini_text=None):
+def pc_binds(ini_text=None, text=False):
     """PC_BINDS with the first key of each bind_<action> line of a totk.ini text over it (a line without a key entry,
-    or with key:default, keeps the default)."""
-    binds = dict(PC_BINDS)
+    or with key:default, keeps the default). text: the binds the button font is drawn with, where a button of
+    PC_TEXT_KEYS shows its first key that is not a mouse button (PC_TEXT_KEYS's without a line)."""
+    binds = dict(PC_BINDS, **(PC_TEXT_KEYS if text else {}))
     for line in (ini_text or '').splitlines():
         line = line.split('#')[0].split(';')[0].strip()
         if not line.lower().startswith('bind_') or '=' not in line:
@@ -225,8 +233,11 @@ def pc_binds(ini_text=None):
         action, value = (s.strip() for s in line.split('=', 1))
         keys = [e.strip()[4:].strip().lower() for e in value.split(',') if e.strip().lower().startswith('key:')]
         keys = [k for k in keys if k != 'default']
-        if keys and action[5:].upper() in binds:
-            binds[action[5:].upper()] = keys[0]
+        button = action[5:].upper()
+        if text and button in PC_TEXT_KEYS:
+            keys = [k for k in keys if not k.startswith('mouse_')] or keys
+        if keys and button in binds:
+            binds[button] = keys[0]
     return binds
 
 
@@ -283,6 +294,13 @@ def pc_icons(g, adv, binds=PC_BINDS):
             bx0, bx1, by0, by1 = x0 + w * 0.22, x1 - w * 0.22, y0 + h * 0.36, y0 + h * 0.60
             polygon(ReverseContourPen(pen), [(bx0, by0), (bx1, by0), (bx1, by1), (bx1 - t, by1), (bx1 - t, by0 + t),
                                              (bx0 + t, by0 + t), (bx0 + t, by1), (bx0, by1)])
+            return
+        if key in ('lshift', 'rshift'):   # a solid arrow and the name under it: the arrow alone read as a direction
+            cx, ab, at, hw, sw = (x0 + x1) / 2, y0 + h * 0.46, y0 + h * 0.86, w * 0.20, w * 0.09
+            neck = ab + h * 0.18
+            polygon(ReverseContourPen(pen), [(cx - sw, ab), (cx + sw, ab), (cx + sw, neck), (cx + hw, neck), (cx, at),
+                                             (cx - hw, neck), (cx - sw, neck)])
+            g.hole(pen, 'SHIFT', cx, y0 + h * 0.25, h * 0.21, w * 0.84)
             return
         label = PC_LABELS.get(key, key.upper())
         cap = h * (0.52 if len(label) == 1 else 0.36 if len(label) == 2 else 0.26)

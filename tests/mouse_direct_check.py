@@ -18,7 +18,7 @@ const int rt_game_version = TEST_GAME_VERSION;
 static int raw_x, raw_y, takes, captured=1, foreground=1, allowed=1, mode=1, patched=1, selecting;
 static float ratio=0.5f;
 static uint64_t now=1000000000;
-static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook, load_hook;
+static GuestFn hook, activity_hook, begin_hook, angles_hook, hand_hook, load_hook, state_hook;
 const char *cfg_get(const char *key) { (void)key; return mode ? "direct" : "stick"; }
 const char *cfg_value(const char *key) { return cfg_get(key); }
 double cfg_double(const char *key) { (void)key; return 1; }
@@ -40,13 +40,14 @@ void *rt_patch_page(void) { return &ratio; }
 void rt_register_host(uint64_t addr, GuestFn fn) {
     if(addr==HOST_MOUSE_DIRECT) hook=fn; else if(addr==HOST_MOUSE_ACTIVITY) activity_hook=fn;
     else if(addr==HOST_MOUSE_ORBIT_BEGIN) begin_hook=fn; else if(addr==HOST_MOUSE_ORBIT_ANGLES) angles_hook=fn;
-    else if(addr==HOST_MOUSE_HAND) hand_hook=fn; else if(addr==HOST_MOUSE_LOAD) load_hook=fn; else abort();
+    else if(addr==HOST_MOUSE_ORBIT_STATE) state_hook=fn; else if(addr==HOST_MOUSE_HAND) hand_hook=fn; else if(addr==HOST_MOUSE_LOAD) load_hook=fn; else abort();
 }
 void plat_mutex_lock(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 void rt_log(const char *fmt, ...) { (void)fmt; }
 float cam_speed_applied(void) { return 1; }
-uint64_t input_buttons_last(void) { return 0; }
+static uint64_t buttons;
+uint64_t input_buttons_last(void) { return buttons; }
 int mem_guest_readable(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // no player: on-foot gains
 static float scalar(__uint128_t v) { float f; memcpy(&f,&v,4); return f; }
 #if TEST_GAME_VERSION == 143
@@ -109,6 +110,7 @@ int main(void) {
     uint64_t input_address=(uintptr_t)target; memcpy(camera+0x20,&input_address,8);
     for(int rate=0;rate<3;rate++) {
         memset(orbit_seen,0,sizeof orbit_seen);
+        guest_float_store((uintptr_t)camera+0x15c,0);
         ratio=30/rates[rate]; c.x[20]=(uintptr_t)target; c.x[21]=0; c.v[9]=c.v[10]=0;
         raw_x=100; raw_y=-50; hook(&c);
         guest_float_store((uintptr_t)camera+0x108,30); guest_float_store((uintptr_t)camera+0x120,40);
@@ -118,16 +120,16 @@ int main(void) {
         c.x[20]=(uintptr_t)camera; c.sp=(uintptr_t)frame; angles_hook(&c);
         assert(fabsf(guest_float((uintptr_t)frame+0x44)-(30-50*DEG_PER_COUNT))<0.0001f);
         assert(fabsf(guest_float((uintptr_t)frame+0x48)-(40-100*DEG_PER_COUNT))<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(30-50*DEG_PER_COUNT))<0.0001f);
+        assert(guest_float((uintptr_t)camera+0x15c)==0);
         c.x[0]=(uintptr_t)camera; begin_hook(&c); angles_hook(&c);
         assert(fabsf(guest_float((uintptr_t)frame+0x48)-(40-100*DEG_PER_COUNT))<0.0001f); // one sample cannot repeat next update
-        // The next input frame is stationary and the game's parameter update rewrites the old default target.
-        // Restoring the mouse's desired target makes the camera filter stay at the new pitch, not spring to zero.
+        // The native target remains available for the distance controller.
+        // Holding pitch happens at the final output, after the native filter.
         c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; raw_x=raw_y=0; hook(&c);
         guest_float_store((uintptr_t)camera+0x15c,0);
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
         float current=guest_float((uintptr_t)camera+0x108), goal=guest_float((uintptr_t)camera+0x15c);
-        assert(fabsf(goal-(30-50*DEG_PER_COUNT))<0.0001f && fabsf((current+goal)*0.5f-(30-50*DEG_PER_COUNT))<0.0001f);
+        assert(goal==0 && fabsf(current-(30-50*DEG_PER_COUNT))<0.0001f);
         // A later game filter overwrites the pitch after the begin hook. Neither a stationary frame nor the next
         // tiny mouse delta may integrate from that recentered result.
         guest_float_store((uintptr_t)camera+0x108,0);
@@ -137,7 +139,7 @@ int main(void) {
         guest_float_store((uintptr_t)frame+0x44,0);
         c.x[20]=(uintptr_t)camera; angles_hook(&c);
         assert(fabsf(guest_float((uintptr_t)frame+0x44)-(30-50*DEG_PER_COUNT))<0.0001f);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-((30-50*DEG_PER_COUNT)-19))<0.0001f);
+        assert(guest_float((uintptr_t)camera+0x15c)==0);
         assert(fabsf(guest_float((uintptr_t)camera+0x108)-((30-50*DEG_PER_COUNT)-14))<0.0001f);
         for(int i=0;i<100;i++) {
             guest_float_store((uintptr_t)frame+0x44,0); angles_hook(&c);
@@ -161,15 +163,75 @@ int main(void) {
         guest_float_store((uintptr_t)camera+0x108,3);   // the game left the pitch at 3 + the offset 14
         c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; hook(&c);
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(17-14-5))<0.0001f);
+        assert(guest_float((uintptr_t)camera+0x15c)==0);
         guest_float_store((uintptr_t)frame+0x44,0);
         c.x[20]=(uintptr_t)camera; angles_hook(&c);
         assert(fabsf(guest_float((uintptr_t)frame+0x44)-17)<0.0001f);
         guest_float_store((uintptr_t)camera+0x15c,0);   // the game's parameter update writes its default target
         c.x[20]=(uintptr_t)target; hook(&c);
         c.x[0]=(uintptr_t)camera; begin_hook(&c);
-        assert(fabsf(guest_float((uintptr_t)camera+0x15c)-(17-14-5))<0.0001f);
+        assert(guest_float((uintptr_t)camera+0x15c)==0);
+        // Aim/close-up handoff: the native camera can replace its parameter
+        // reference on every frame. Mouse pitch hold must never overwrite it,
+        // nor restore a stale reference when a controller takes over later.
+        for(int i=0;i<20;i++) {
+            float native_target=5+i, native_radius=2+i*0.1f;
+            guest_float_store((uintptr_t)camera+0x15c,native_target);
+            guest_float_store((uintptr_t)camera+0x164,native_radius);
+            guest_float_store((uintptr_t)camera+0x130,native_radius-0.5f);
+            c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; hook(&c);
+            c.x[0]=(uintptr_t)camera; begin_hook(&c);
+            assert(guest_float((uintptr_t)camera+0x15c)==native_target);
+            guest_float_store((uintptr_t)frame+0x44,0); // native pitch filter
+            c.x[20]=(uintptr_t)camera; angles_hook(&c);
+            assert(fabsf(guest_float((uintptr_t)frame+0x44)-17)<0.0001f);
+            assert(guest_float((uintptr_t)camera+0x15c)==native_target);
+            assert(guest_float((uintptr_t)camera+0x164)==native_radius);
+            assert(guest_float((uintptr_t)camera+0x130)==native_radius-0.5f);
+        }
+        float pad_pitch=0.5f; c.x[20]=(uintptr_t)target;
+        memcpy(&c.v[10],&pad_pitch,4); hook(&c);
+        c.x[0]=(uintptr_t)camera; begin_hook(&c);
+        assert(guest_float((uintptr_t)camera+0x15c)==24);
+        c.v[10]=0;
         memset(camera+0x88,0,4); memset(camera+0x10c,0,4); memset(camera+0x11c,0,4);
+    }
+    // The native manual-orbit branch keeps the distance it inherited from
+    // aiming. Mouse-owned orbit must select the native automatic-distance
+    // transition, before initialization; controller and scripted modes keep
+    // their own state. The host hook never writes a distance or position.
+    {
+        assert(state_hook);
+        c.x[20]=(uintptr_t)target; c.x[21]=0; c.v[9]=c.v[10]=0;
+        raw_x=1; raw_y=0; hook(&c);
+        c.x[0]=(uintptr_t)camera; begin_hook(&c);
+        c.x[20]=(uintptr_t)camera; angles_hook(&c);
+        uint32_t manual=4, override=0;
+        memcpy(camera+0x180,&manual,4); memcpy(camera+0x188,&override,4);
+        c.x[10]=4; expected=c; state_hook(&c);
+        expected.x[8]=0; expected.x[10]=3;
+        assert(!memcmp(&expected,&c,sizeof c));
+        uint32_t unchanged; memcpy(&unchanged,camera+0x180,4); assert(unchanged==4);
+        // The game's transition initializer, rather than this hook, owns the state.
+        for(int state=0;state<=5;state++) if(state!=4) {
+            c.x[10]=state; state_hook(&c); assert(c.x[10]==(uint64_t)state);
+        }
+        buttons=1ull<<B_ZR; c.x[10]=4; state_hook(&c); assert(c.x[10]==4);
+        buttons=1ull<<B_R; state_hook(&c); assert(c.x[10]==4); buttons=0;
+        uint8_t forced=0x40; memcpy(target+0x15c,&forced,1);
+        state_hook(&c); assert(c.x[10]==4); forced=0; memcpy(target+0x15c,&forced,1);
+        uint64_t recenter=0x20; memcpy(target+0x148,&recenter,8);
+        state_hook(&c); assert(c.x[10]==4); recenter=0; memcpy(target+0x148,&recenter,8);
+        override=1; memcpy(camera+0x188,&override,4);
+        state_hook(&c); assert(c.x[10]==4 && c.x[8]==1);
+        override=0; memcpy(camera+0x188,&override,4);
+        // Any real controller input retains the native manual-distance behaviour.
+        c.x[20]=(uintptr_t)target; float pad=0.25f;
+        memcpy(&c.v[9],&pad,4); c.v[10]=0; hook(&c);
+        c.x[20]=(uintptr_t)camera; c.x[10]=4; state_hook(&c); assert(c.x[10]==4);
+        c.x[20]=(uintptr_t)target; c.v[9]=c.v[10]=0; hook(&c);
+        c.x[20]=(uintptr_t)camera; c.x[10]=4; now+=150000000ull;
+        state_hook(&c); assert(c.x[10]==4); now++;
     }
     // A gamepad-only step (no mouse motion, no pitch hold) leaves the camera input and the angles as the game made them.
     memset(orbit_seen,0,sizeof orbit_seen);
@@ -233,7 +295,7 @@ int main(void) {
     assert(takes==before && raw_x==42); selecting=0; raw_x=0;
     puts("direct mouse: register contract, routing, linearity, frame ratio and capture checks passed");
     puts("direct mouse: final orbit angles, single-count motion, equal axes and held-object routing passed");
-    puts("direct mouse: persistent pitch target, radial cursor hold and gamepad-only steps untouched passed");
+    puts("direct mouse: pitch hold with native distance reference, radial cursor hold and gamepad-only steps untouched passed");
     puts("direct mouse: final-pitch recenter rejection, explicit handoff and bounded quick-list steps passed");
     // A shake: two direction changes of swings of at least 10 degrees within 0.35 s, then the stick follows the mouse
     // side by side and lets go when it rests; nothing plays on after the mouse
@@ -437,7 +499,7 @@ int main(void) {
 #else
 // 1.2.1: the same hooks with that version's registers and stack slots (MouseLayout layout_121) and its load sites
 int main(void) {
-    assert(hook && activity_hook && begin_hook && angles_hook && hand_hook && load_hook);
+    assert(hook && activity_hook && begin_hook && angles_hook && hand_hook && load_hook && !state_hook);
     (void)takes;
     Cpu c, expected;
     unsigned char target[0x500]={0}, camera[0x300]={0}, hand[0x300]={0};
@@ -529,6 +591,14 @@ InputMap input_map;
 // Other input entry points are linked by PE unwind metadata; reaching them is outside this script-only test.
 void ikb_cursor_update(void) { abort(); }
 void ikb_menu_closed(void) { abort(); }
+int gameplay_tweaks_capture_needed(void) { return 0; }
+int gameplay_tweaks_map_zoom(void) { return 0; }
+int gameplay_tweaks_strip_wheel(uint64_t b) { (void)b; return 0; }
+void gameplay_tweaks_reset(void) {}
+void gameplay_tweaks_prepare_keys(uint8_t *d, uint64_t b) { (void)d; (void)b; }
+void gameplay_tweaks_apply(uint64_t f, int a, uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    (void)f; (void)a; (void)b; (void)lx; (void)ly; (void)rx; (void)ry;
+}
 int cfg_bool(const char *key) { (void)key; abort(); }
 int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;abort(); }
 int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;abort(); }

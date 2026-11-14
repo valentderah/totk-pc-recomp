@@ -10,6 +10,8 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set shadow   TOTK_PATCH_SHADOW   0
+set cascade  TOTK_PATCH_CASCADE  0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 90e978 6b08015f 7100055f  # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -65,6 +67,50 @@ site output main cea5d0 f9400015 f94012b5  # ldr x21, [x0] -> ldr x21, [x21, #32
 site scene main cea5e0 5e21d900 @page:x9  # scvtf s0, s8 -> adrp x9, page
 site scene main cea5e8 bd0cc660 2d420520  # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cea5ec 5e21d921 bd0cc660  # scvtf s1, s9 -> str s0, [x19, #0xcc4]
+
+# Equipment-switch cooldown (issue #18): the player update tests state +0x109c against FLT_EPSILON,
+# while the equipment gate (main+0x7f0134) blocks changes above zero. Step every positive remainder through
+# main+0xa26bb0, including (0, FLT_EPSILON], so a measured frame ratio cannot leave equipment locked.
+site realtime main a20518 1e270101 1e2703e1   # fmov s1, w8 (FLT_EPSILON) -> fmov s1, wzr
+
+# Cursor and aim steps (MacNativeGames game_patches.c patch_cursor_speed, 363a6eb): use the same 30 Hz ratio
+# already read by these updates for smoothing. x9 / s16 are scratch at the map site; x20 holds the aim clock.
+set cursor   TOTK_HIGHFPS_FIX    1
+site cursor main f31e80 bd400361 f94002e9 bd400930 1e300800 bd400361   # map pan s0 *= [[x23] + 8]
+site cursor main 1d55f24 1e2a198c 1e2a198c bd400a90 1e30098c   # vertical ability aim s12 *= [x20 + 8]
+site cursor main 1d556a4 1e200923 1e200923 bd400a90 1e300863   # vertical gyro aim s3 *= [x20 + 8]
+
+# Camera aspect (Hor+): two camera projection updates and the two copies of the viewport projection routine.
+# The camera sites were matched against 1.0.0 by instruction windows; both viewport copies match the same
+# 193-word normalized window. Page +56 is set by runtime/resolution.c. Save x10 instead of assuming it dead.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main cdbf30 bd414260 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 1261a64 bd414260 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 19c2260 1e211800 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 1ed8fa4 1e211800 f81f0fea @page:x10 bd403940 f84107ea
+
+# Field of view: load the camera's vertical angle as before and multiply by page +60. The following projection
+# setup overwrites s8 before reading it; s1 (the half-angle multiplier) stays intact. x10 is saved on the stack.
+set fov      TOTK_FOV_PATCH      0
+site fov main cdbef8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea
+site fov main 1261a2c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea
+
+# Texture pool offsets above 2 GiB (MacNativeGames game_patches.c patch_pool_offset, ca311e2d): the loader
+# passes w25 to SetStorage and SetPackagedTextureData. Widen unsigned to cover the complete 32-bit pool offset.
+set pooloff  TOTK_POOL_OFFSET_PATCH 1
+site pooloff main 9b93a8 93407f22 2a1903e2
+site pooloff main 9b93c4 8b39c101 8b394101
+
+# Sun shadow map: the size rounded here is used for width (+0x3d8), height (+0x3f8) and viewport together.
+# runtime/resolution.c shadow_init supplies the fixed size at page +92; the default remains the game's size.
+site shadow main d0760c 11001d6b @page:x11 b9405d6b 11001d6b
+
+# Sun shadow cascade parameter defaults: depth_shadow_near_0_1..3 and depth_shadow_far_0. The constructor
+# stores 20, 40, 80 and 160 metres; runtime/resolution.c res_shadow_range supplies page +64..+76.
+site cascade main 1157fb8 52a83408 @page:x8 b9404108
+site cascade main 1158040 52a84408 @page:x8 b9404508
+site cascade main 11580c8 52a85408 @page:x8 b9404908
+site cascade main 115814c 52a86408 @page:x8 b9404d08
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.

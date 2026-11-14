@@ -12,18 +12,21 @@
 
 #include <SDL3/SDL.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
 #include "input_sdl.h"
 #include "input_wsys.h"
+#include "gameplay_tweaks.h"
 #include "platform/platform.h"
 
 static SDL_Window *win;
 static volatile uint8_t key_held[KEY_COUNT];
 static volatile int32_t esc_held, f8_held, focused;
 static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
-static volatile int32_t mouse_wheel;          // wheel turned while captured, in 1/120 notches (ikb_wheel_take)
+static volatile int32_t mouse_wheel;          // wheel turned while captured or over the window, in 1/120 notches
+                                              // (ikb_wheel_take)
 static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
 static volatile int32_t mouse_travel;         // raw counts moved in total, captured or not (ikb_mouse_travel)
 static float travel_rem;                      // window thread: the fraction of a count beyond mouse_travel
@@ -143,6 +146,7 @@ static void cursor_apply(void) {
     plat_xchg32(&mouse_dy, 0);
     rem_x = rem_y = 0;
     plat_xchg32(&captured, want);
+    if (!want) gameplay_tweaks_reset();
 }
 
 // The pointer's place in the window (the window thread): x and y are SDL window units, the same space the mouse
@@ -199,8 +203,37 @@ void ikb_menu_closed(void) {
     if (o & CUR_ESC) plat_cas32(&cur_rel, 0, o);
 }
 
+// pointer_image = 1: the pointer over the window while the cursor is not captured is cursor_art.c's, sized by the
+// window's display scale; 0 (the default) keeps SDL's arrow. Window thread, at the window's creation and whenever the
+// settings change (input_sdl_idle), so the menu switches it live. SDL's arrow stays when SDL refuses the image.
+static void art_cursor(SDL_Window *w) {
+    static SDL_Cursor *art;
+    static int shown = -1, failed;
+    static unsigned seen = ~0u;
+    unsigned v = cfg_version();
+    if (v == seen && shown >= 0) return;
+    seen = v;
+    int want = cfg_bool("TOTK_POINTER_IMAGE");
+    if (want == shown) return;
+    if (want && !art && !failed) {
+        float scale = SDL_GetWindowDisplayScale(w);
+        int size = (int)lrintf(32 * (scale > 0 ? scale : 1)), hot;
+        size = size < 32 ? 32 : size > 128 ? 128 : size;
+        SDL_Surface *s = SDL_CreateSurface(size, size, SDL_PIXELFORMAT_ARGB8888);
+        if (s && s->pitch == size * 4) {
+            cursor_art(s->pixels, size, &hot);
+            art = SDL_CreateColorCursor(s, hot, hot);
+        }
+        if (s) SDL_DestroySurface(s);
+        if (!art) failed = 1, rt_log("input: the pointer's image failed (%s); the arrow stays", SDL_GetError());
+    }
+    SDL_SetCursor(want && art ? art : SDL_GetDefaultCursor());
+    shown = want;
+}
+
 void input_sdl_window(SDL_Window *w) {
     win = w;
+    art_cursor(w);
     wake_event = SDL_RegisterEvents(1);
     plat_xchg32(&focused, (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0);
     __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);   // the pointer's place is unknown until it enters or moves
@@ -209,6 +242,7 @@ void input_sdl_window(SDL_Window *w) {
 
 void input_sdl_idle(void) {
     if (cur_pending) cursor_apply();
+    if (win) art_cursor(win);
     pointer_apply();
 }
 
@@ -266,9 +300,14 @@ void input_sdl_event(const SDL_Event *e) {
         __atomic_store_n(&ptr_have, 0, __ATOMIC_RELEASE);
         break;
     case SDL_EVENT_MOUSE_WHEEL:   // notches, + away from the player (a flipped wheel reports the other sign)
-        if (captured) {
+        // Captured, or released over the focused window: a game menu with the pointer takes it (input.c)
+        if (captured || (focused && __atomic_load_n(&ptr_have, __ATOMIC_ACQUIRE))) {
             float y = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
             plat_add32(&mouse_wheel, (int32_t)(y * 120));
+        }
+        if (input_gameplay_active()) {
+            double delta = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? e->wheel.y : -e->wheel.y;
+            gameplay_tweaks_wheel(delta, ikb_down(KEY_C), ikb_down(KEY_MOUSE_R));
         }
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
