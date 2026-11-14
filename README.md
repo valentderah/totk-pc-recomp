@@ -93,10 +93,10 @@ TotK Recomp is an independent, non-commercial fan project, not affiliated with o
 
 Most of the code and documentation is written by AI coding agents (Claude Code) under the maintainer's direction; the maintainer plays every build and decides what is merged. [AGENTS.md](AGENTS.md) holds the rules they work under.
 
-## Windows Optimizer & Fluid Mouse Look Tool
+## Hardware Optimizer & PC Mouse Look Improvement
 
-This repository includes an automated hardware optimizer and fluid mouse patch for Windows:
+This repository includes a cross-platform hardware optimizer and native PC mouse camera improvements:
 
-Launcher: [Optimize_TotK_PC.bat]
-Features: 133% SSAA / 90 FPS profiles, native 16:10 / 21:9 support, fluid PC camera tracking (removes 33% rotation cap), and laptop Advanced Optimus / GPU display switching fix.
-For full setup and configuration details, see [OPTIMIZER_README.md].
+- **Native Mouse Look:** Preserves 100% stick deflection in `runtime/input.c` and tunes `MOUSE_FULL_CPS` to `1800.0` in `runtime/input_map.c`.
+- **Hardware Optimizer:** `optimize_totk.py` / `Optimize_TotK_PC.bat` detects CPU/GPU and configures `totk.ini` with tailored performance tiers (Enthusiast, Balanced, Integrated APU) and aspect ratio matching.
+- For full details, see [OPTIMIZER_README.md](OPTIMIZER_README.md).
