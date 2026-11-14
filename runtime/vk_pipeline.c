@@ -49,6 +49,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "memx.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
 #include "tex.h"
@@ -1187,7 +1188,7 @@ static uint32_t vs_outs(const GfxShader *vs, const GfxShader *fs, GfxShaderIo io
 
 static Pipe *pipe_find(const void *key, size_t size, uint64_t h) {
     for (Pipe *p = pipes[h % PIPE_BUCKETS]; p; p = p->next)
-        if (p->hash == h && p->key_size == size && !memcmp(p->key, key, size)) return p;
+        if (p->hash == h && p->key_size == size && MX_EQ(p->key, key, size)) return p;
     return NULL;
 }
 
@@ -3278,7 +3279,7 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
     if (v.restart != o->restart) vkCmdSetPrimitiveRestartEnable(cb, v.restart), k++;
     // The vertex input is made from the vertex shader's inputs and the attribute and stream states alone
     // (vertex_input): a draw that keeps all three keeps it, and the bindings it reads.
-    if (s->vs != DC.vs || memcmp(s->vattr, DC.vattr, sizeof DC.vattr) || memcmp(s->vstream, DC.vstream, sizeof DC.vstream)) {
+    if (s->vs != DC.vs || MX_NE(s->vattr, DC.vattr, sizeof DC.vattr) || MX_NE(s->vstream, DC.vstream, sizeof DC.vstream)) {
         uint32_t streams = VK_PIPE_ALL_BINDINGS;
         if (s->vs) {
             VtxInput vi;
@@ -3288,7 +3289,7 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
             for (uint32_t i = 0; i < vi.n_bind; i++) streams |= 1u << vi.b[i].binding;
         }
         DC.vs = s->vs, DC.streams = streams;
-        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+        MX_CPY(DC.vattr, s->vattr, sizeof DC.vattr), MX_CPY(DC.vstream, s->vstream, sizeof DC.vstream);
     }
     if (P.dyn_clamp && v.clamp != o->clamp) rec_bool(P.set_clamp, cb, v.clamp), k++;
     if (P.dyn_poly && v.poly != o->poly) rec_polygon_mode(P.set_poly, cb, v.poly), k++;
@@ -3297,10 +3298,10 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
     // One with fewer leaves the ones past its count as they were, which no draw of it reads.
     uint32_t n = (uint32_t)v.n;
     int all = v.n > o->n;
-    if (n && P.dyn_blend_en && (all || memcmp(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
-    if (n && P.dyn_blend_eq && (all || memcmp(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
-    if (n && P.dyn_wmask && (all || memcmp(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
-    DC.v = v;   // the invariant now covers [0, v.n) only
+    if (n && P.dyn_blend_en && (all || MX_NE(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
+    if (n && P.dyn_blend_eq && (all || MX_NE(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
+    if (n && P.dyn_wmask && (all || MX_NE(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
+    MX_CPY(&DC.v, &v, sizeof v);   // the invariant now covers [0, v.n) only
     *cmds = k;
     return DC.streams;
 }
