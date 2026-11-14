@@ -1093,6 +1093,16 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
 }
 
+// More than half the scene size resolution.c set, on each side (the dynamic resolution tiers go down to 80 %). Around
+// the quick weapon menu the only G-buffer before the scene's end is at times the half-size one (1920x1080 at a
+// 3840x2160 scene), and the half-size RGBA16F effects target with its D32F depth armed; DLSS scaled the effects to the
+// output in place of the scene, which showed dark and blurred for that frame.
+static int scene_large(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    return c->width * 2 > s[0] && c->height * 2 > s[1];
+}
+
 static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
@@ -1163,7 +1173,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
         c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w && scene_shaped(c) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
-        c->samples <= 1 && !c->is3d) {
+        c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
         D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
         if (!first) return 0;
