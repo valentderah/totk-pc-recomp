@@ -9,6 +9,7 @@ VkSurfaceKHR wsys_surface(VkInstance inst);   // a new Vulkan surface of the win
 void wsys_client_size(int *w, int *h);     // the drawable area in pixels
 int wsys_minimized(void);                  // nothing to present into
 void wsys_resize(int w, int h);            // gfx_window_resize: the drawable area becomes w x h
+void wsys_destroy(void);                   // destroys the window on exit
 // --probe-window (gfx_window_probe.c): synthetic window events, handled on the window thread before these return.
 void wsys_probe_focus(int in);             // the window gains (1) or loses (0) the focus
 void wsys_probe_escape(void);              // Esc pressed

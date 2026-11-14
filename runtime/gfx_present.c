@@ -22,6 +22,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
+#include "input.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
@@ -52,6 +53,7 @@ void vk_queue_unlock(void) {
 static VkSurfaceKHR g_surface;
 static volatile int32_t g_dirty;               // the window was resized; swapchain stale
 static volatile int32_t g_restart;             // gfx_window_request_restart: closing the window starts the game again
+static volatile int32_t g_closed;              // gfx_window_closed: exit or restart in progress, present drops frames
 static volatile int32_t g_focused = 1;
 static volatile int32_t g_focus_msgs;
 static PlatRMutex g_start_lock;       // gfx_window_start / vsync start
@@ -74,17 +76,62 @@ void gfx_window_focus_changed(int in) {
            t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
 }
 
+int gfx_is_closed(void) {
+    return plat_cas32(&g_closed, 0, 0) != 0;
+}
+
 // The window was closed: the process ends with it, as in MNG, once a save Commit still running in the background is
 // done. After gfx_window_request_restart the executable then starts again with the same command line and environment
 // (plat_restart), and the new process waits until this one is gone (main.c) before it moves the log and opens the
 // RomFS and the saves.
 void gfx_window_closed(void) {
+    if (plat_cas32(&g_closed, 1, 0) != 0) return;
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    rt_log_flush();
+
     fs_save_flush();
-    vk_pipeline_save();
+    rt_log("gfx: exit: save data flushed");
+    rt_log_flush();
+
+    input_rumble(0, 0, 0);
+
+    // 1. Wait for any in-flight guest backend calls to exit; g_closed=1 blocks new ones
+    vk_backend_quiesce();
+    rt_log("gfx: exit: backend quiesced");
+    rt_log_flush();
+
+    // 2. Drain replay and present queues so in-flight frame commands finish
+    vk_replay_drain();
+    vk_present_drain();
+    rt_log("gfx: exit: replay and present queues drained");
+    rt_log_flush();
+
+    // 3. Stop pipeline workers, save pipeline cache, and destroy pipelines/layouts/cache while device & window are valid
+    vk_pipeline_shutdown();
+    rt_log("gfx: exit: pipeline cache saved and pipelines destroyed");
+    rt_log_flush();
+
     playtime_save();
-    prof_write();   // plat_exit runs no atexit handlers
+    prof_write();
+    rt_log("gfx: exit: playtime and profiling saved");
+    rt_log_flush();
+
+    // 4. Destroy exec stand-ins, query pools, sync, memory/textures, headroom, VMA, VkDevice, VkInstance
+    //    (vk_shutdown also releases the swapchain and surface via gfx_window_release_vk)
+    if (vk_ctx()) {
+        vk_exec_draw_shutdown();
+        vk_exec_xfer_shutdown();
+        vk_backend_shutdown();
+        rt_log("gfx: exit: Vulkan backend destroyed");
+        rt_log_flush();
+    }
+
+    // 5. Destroy the window handle
+    wsys_destroy();
+    rt_log("gfx: exit: window destroyed");
+    rt_log_flush();
+
     if (restart) {
         plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
@@ -584,10 +631,13 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 }
 
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
+    if (plat_cas32(&g_closed, 0, 0)) return;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
+    if (plat_cas32(&g_closed, 0, 0)) return;
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
+    if (plat_cas32(&g_closed, 0, 0)) { plat_rmutex_unlock(&g_pl); return; }
     flip_locked();
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
@@ -791,10 +841,11 @@ void gfx_window_release_vk(void) {
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     if (c && g_started) {
+        if (g_flip_on) flip_locked();
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
-        g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
+        g_flip_on = 0;
         menu_vk_release();
         vk_fsr_release();
         vk_color_release();
@@ -821,7 +872,9 @@ void gfx_window_release_vk(void) {
 }
 
 void gfx_window_start(void) {
+    if (plat_cas32(&g_closed, 0, 0)) return;
     plat_rmutex_lock(&g_start_lock);
+    if (plat_cas32(&g_closed, 0, 0)) { plat_rmutex_unlock(&g_start_lock); return; }
     if (!g_started) {
         if (!vk_init()) rt_fatal("gfx: no usable Vulkan device (see the vk: lines above)");
         VkCtx *c = vk_ctx();

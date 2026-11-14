@@ -556,8 +556,12 @@ void rdoc_init(void);                     // runtime/rdoc.c: TOTK_RDOC debug cap
 int rdoc_active(void);
 void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
+void vk_replay_drain(void);                // returns once every queued replay item was replayed and submitted
 int vk_replay_async(void);                 // TOTK_REPLAY_ASYNC (default 0): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
+void vk_backend_quiesce(void);             // waits for any in-flight guest backend call to finish after gfx_is_closed()
+void vk_exec_draw_shutdown(void);          // vk_exec_draw.c: stand-ins and depth twins; device must be idle
+void vk_exec_xfer_shutdown(void);          // vk_exec_xfer.c: occlusion query pool; device must be idle
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order
 
 // ---- pipelines (vk_pipeline.c)
@@ -676,6 +680,7 @@ int vk_pipeline_set_indep(int on);
 typedef struct { uint64_t graphics, compute, failures, hits, layouts, push_layouts, async_built, pending_skips; } VkPipeStats;
 void vk_pipeline_stats(VkPipeStats *s);
 void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to totk.exe
+void vk_pipeline_drain_workers(void);      // stops and drains prebuild and async pipeline workers
 void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 s, when pipelines were built since
 void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the
                                            // cache; before vk_shutdown

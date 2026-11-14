@@ -723,6 +723,11 @@ int plat_append_write(PlatAppend *f, const void *data, size_t n) {
     return k == (ssize_t)n;
 }
 
+void plat_append_flush(PlatAppend *f) {
+    int fd = (int)(intptr_t)f - 1;
+    if (fd >= 0) fdatasync(fd);
+}
+
 // Flushes the directory holding path, so a rename into it survives a crash.
 static void sync_dir_of(const char *path) {
     char dir[PATH_MAX];

@@ -586,6 +586,10 @@ int plat_append_write(PlatAppend *f, const void *data, size_t n) {
     return WriteFile((HANDLE)f, data, (DWORD)n, &put, &o) && put == n;
 }
 
+void plat_append_flush(PlatAppend *f) {
+    if (f) FlushFileBuffers((HANDLE)f);
+}
+
 int plat_file_replace(const char *from, const char *to) {
     wchar_t a[WPATH], b[WPATH];
     if (!widen(from, a, WPATH) || !widen(to, b, WPATH)) return 0;
@@ -1010,6 +1014,7 @@ void plat_exit(int code) {
 #endif
     fflush(stdout);
     fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
     ExitProcess((UINT)code);
 }
 
