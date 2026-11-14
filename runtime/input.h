@@ -51,6 +51,9 @@ int menu_cursor_shortcut(void);
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
+// menu_cursor.c, 1.4.3: a game menu with a focus box (the title, the inventory, shops, Options), the map or a dialogue
+// box is on screen, whatever TOTK_MENU_CURSOR says (vk_hud.c keeps the HUD drawn then). 0 on other versions. Any thread.
+int menu_cursor_ui_open(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
 int menu_cursor_dialogue(void);
