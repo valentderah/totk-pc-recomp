@@ -215,10 +215,8 @@ int audio_cat_lookup(uint64_t addr) {
                 const uint32_t *p = (const uint32_t *)(uintptr_t)b;
                 if (p[0] == 0x56415742u) {
                     const uint8_t *bp = (const uint8_t *)p;
-                    uint16_t num_ch = *(const uint16_t *)(bp + 0x0E);
                     uint16_t codec = *(const uint16_t *)(bp + 0x10);
                     if (codec == 2) return AUDIO_CAT_VOICE;
-                    if (codec == 1 && num_ch >= 2) return AUDIO_CAT_MUSIC;
                     return AUDIO_CAT_SFX;
                 }
             }
@@ -253,16 +251,34 @@ void audio_cat_scan_bars(uint64_t dst, uint64_t size, int fallback_cat) {
 
         int cat = (fallback_cat != AUDIO_CAT_UNKNOWN) ? fallback_cat : AUDIO_CAT_SFX;
 
-        if (amta_off < size) {
-            uint32_t amta_scan_limit = 512;
+        if (amta_off < size && amta_off + 12 <= size && *(const uint32_t *)(base + amta_off) == 0x41544D41u) {
+            uint32_t amta_hdr_size = *(const uint32_t *)(base + amta_off + 8);
+            uint32_t amta_scan_limit = amta_hdr_size ? amta_hdr_size : 256;
+            if (amta_scan_limit > 256) amta_scan_limit = 256;
             if (amta_off + amta_scan_limit > size) {
                 amta_scan_limit = (uint32_t)(size - amta_off);
             }
+            for (uint32_t j = 0; j < count; j++) {
+                uint32_t ao = pairs[j * 2];
+                if (ao > amta_off && ao - amta_off < amta_scan_limit) {
+                    amta_scan_limit = ao - amta_off;
+                }
+                uint32_t bo = pairs[j * 2 + 1];
+                if (bo > amta_off && bo - amta_off < amta_scan_limit) {
+                    amta_scan_limit = bo - amta_off;
+                }
+            }
+
             const char *amta_bytes = (const char *)(base + amta_off);
             for (uint32_t s = 0; s + 4 <= amta_scan_limit; s++) {
                 if (memcmp(amta_bytes + s, "BGM_", 4) == 0) {
-                    cat = AUDIO_CAT_MUSIC;
-                    break;
+                    char prev = s > 0 ? amta_bytes[s - 1] : '\0';
+                    int is_alnum_or_under = (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+                                            (prev >= '0' && prev <= '9') || prev == '_';
+                    if (!is_alnum_or_under) {
+                        cat = AUDIO_CAT_MUSIC;
+                        break;
+                    }
                 }
                 if (memcmp(amta_bytes + s, "_Vo_", 4) == 0 || memcmp(amta_bytes + s, "Vo_", 3) == 0 ||
                     memcmp(amta_bytes + s, "NV_", 3) == 0) {

@@ -1252,10 +1252,30 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
     }
     int cat = audio_cat_from_path(p);
-    if (cat != AUDIO_CAT_UNKNOWN && !ov && image_map && i != UINT64_MAX) {
-        Entry e = entry(i);
-        if (e.size >= 0x40) {
-            audio_cat_scan_bwav(image_map + e.offset, e.size < 4096 ? e.size : 4096, cat);
+    if (cat != AUDIO_CAT_UNKNOWN) {
+        uint8_t hdr_buf[1280];
+        if (ov && f) {
+            const Overlay *o = &overlays[ov - 1];
+            uint64_t hdr_len = o->size < sizeof(hdr_buf) ? o->size : sizeof(hdr_buf);
+            if (hdr_len >= 0x40) {
+                int64_t r = read_at(f, hdr_buf, (uint32_t)hdr_len, 0);
+                if (r >= 0x40) {
+                    audio_cat_scan_bwav(hdr_buf, (uint64_t)r, cat);
+                }
+            }
+        } else if (!ov && i != UINT64_MAX) {
+            Entry e = entry(i);
+            uint64_t hdr_len = e.size < sizeof(hdr_buf) ? e.size : sizeof(hdr_buf);
+            if (hdr_len >= 0x40) {
+                if (image_map) {
+                    audio_cat_scan_bwav(image_map + e.offset, hdr_len, cat);
+                } else if (image) {
+                    int64_t r = read_at(image, hdr_buf, (uint32_t)hdr_len, e.offset);
+                    if (r >= 0x40) {
+                        audio_cat_scan_bwav(hdr_buf, (uint64_t)r, cat);
+                    }
+                }
+            }
         }
     }
     plat_mutex_lock(&lock);
