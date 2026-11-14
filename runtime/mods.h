@@ -3,6 +3,8 @@
 // atmosphere/exefs_patches/<name>/*.ips) or TKMM's merged output (romfs or romfslite, exefs, cheats). ExeFS patch
 // files (.ips, .pchtxt) for the game's main are patch sets the setup builds into the game (tools/exefs_patches.py),
 // switched with their mod (mods_exefs_switch), and data writes stored into main before the game runs (mods_exefs_data).
+// A code module (exefs/subsdk*) of a plugin build the port knows runs as the port's own code: the setup builds its
+// hooks in as a patch set (tools/plugins.py), plugins.c has the handlers.
 // The list is scanned once at start (romfs.c overlay_init);
 // its order and switches live in totk.ini [mods] (TOTK_MODS_ORDER: names top first, separated by '|';
 // TOTK_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
@@ -13,10 +15,13 @@ enum { MOD_ROMFS = 1, MOD_EXEFS = 2, MOD_SUBSDK = 4, MOD_CHEATS = 8 };   // ModI
 typedef enum {
     MOD_OK,
     MOD_EMPTY,          // no RomFS file, no ExeFS patch, no cheat file
-    MOD_PLUGIN,         // has code modules (exefs/subsdk*, a replaced exefs/main): the port has no module loader, so the
-                        // whole mod stays off (its RomFS files may expect that code)
-    MOD_EXEFS_LATER,    // has ExeFS patches for this game's main that the game was built without: the rebuild at the
-                        // next start builds them in; the whole mod stays off until then
+    MOD_PLUGIN,         // has code modules the port cannot run (exefs/subsdk* of a build it does not know, a replaced
+                        // exefs/main): it has no module loader, so the whole mod stays off (its RomFS files may expect
+                        // that code); with TOTK_MODS_WITHOUT_CODE=1 the rest of such a mod is used, without those code
+                        // modules (ModInfo.code names them)
+    MOD_EXEFS_LATER,    // has ExeFS patches for this game's main, or a plugin build the port runs as its own code,
+                        // that the game was built without: the rebuild at the next start builds them in; the whole mod
+                        // stays off until then
     MOD_EXEFS_UNSUPPORTED,   // an ExeFS patch file the port cannot apply (note says why): the whole mod stays off
     MOD_EXEFS_OTHER,    // only ExeFS patches, all for another game version
     MOD_BAD_NAME,       // its folder name holds '|', the separator of the order keys
@@ -27,7 +32,17 @@ typedef struct {
     char romfs[2048];      // UTF-8 path of its RomFS root; "" none
     char exefs[2048];      // UTF-8 path of its ExeFS folder; "" none
     char cheats[2048];     // UTF-8 path of its cheats folder; "" none
-    int kind, enabled;
+    int kind, enabled;     // kind: MOD_SUBSDK for any code module, run or not
+    char code[64];         // its code modules in exefs the port cannot run ("subsdk9", "main, subsdk9"): never loaded
+    int nplugins;
+    struct {
+        char module[16];   // its code modules the port runs as its own code: the file name in exefs ("subsdk9"),
+        char name[96];     // the build's name (tools/plugins.py), the patch set of its hooks (none with 0 hooks: the
+        uint32_t set;      // build installs none on this game version, as on the Switch)
+        int hooks;
+        char shadowed[64]; // mods_exefs_switch: the mod higher in the list whose code module of that name the Switch
+                           // would load instead ("" when this one runs)
+    } plugin[4];
     ModProblem problem;
     uint32_t replaced, added, overridden;   // romfs.c: files served (replacing / added), files a higher mod serves
     uint32_t other_version;                 // files named for another game version: RomFS *.Product.<n>.* the RomFS
@@ -76,8 +91,8 @@ long mods_exefs_data(const ModInfo *m, uint64_t base, uint64_t size, uint64_t co
 // fresh scan at the next mods_scan.
 void mods_probe_cache(const char *status, const char *data);
 void mods_rescan(void);
-// The ExeFS patch files of the enabled mods that the build lacks, their FNV-1a mixed into *key (cheats.c starts the
-// rebuild for them).
+// The ExeFS files of the enabled mods that the build lacks (patch files, code modules of known plugin builds), their
+// FNV-1a mixed into *key (cheats.c starts the rebuild for them).
 int mods_exefs_pending(uint32_t *key);
 // The hex of the game main's build id (64 digits), "" when exefs/main cannot be read.
 const char *mods_main_build_id(void);

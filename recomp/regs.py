@@ -5,7 +5,7 @@ and stores memory, and the C compiler cannot keep a register in a host register 
 through pointers that may alias the Cpu. A generated function instead copies the LOCALS registers it uses most into
 locals at its entry (xN, sp_), works on those, and syncs with the Cpu only where something else reads or writes them:
 before a call, an SVC, a trap, a return or a tail exit it stores the registers it changed since the last sync (spill),
-and after an SVC it loads them all again (reload). The other registers stay in the Cpu.
+and after an SVC or a host hook it loads them all again (reload). The other registers stay in the Cpu.
 
 After a call it reloads only X0-X18 and X30: AAPCS64 has the callee preserve X19-X29 and SP, so their locals still
 hold what the Cpu holds. What would break that does not occur in TotK: main and subsdk0 import neither longjmp nor
@@ -24,8 +24,9 @@ from collections import Counter
 
 REG = re.compile(r'c->x\[(\d+)\]|c->sp\b')
 WRITE = re.compile(r'c->(?:x\[(\d+)\]|(sp))\s*=(?!=)')
-# Lifted instructions that hand the Cpu to the runtime: SVCs return, BRK and undefined words do not.
-ESCAPE = re.compile(r'\brt_(?:svc|brk|udf)\(c\b')
+# Lifted instructions that hand the Cpu to the runtime: SVCs and host hooks (recomp/patches.py `@hook:`, which may
+# change any register) return, BRK and undefined words do not.
+ESCAPE = re.compile(r'\brt_(?:svc|brk|udf|hook)\(c\b')
 SP = 31   # index of SP in the register sets
 # Markers gen.py puts where the Cpu must be current, resolved by Plan.resolve(): spill before; reload all, or reload
 # what a call may change, after.
