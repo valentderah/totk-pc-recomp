@@ -11,7 +11,7 @@
 
 #define STICK_MAX 32767
 #define DIAGONAL 23170   // STICK_MAX / sqrt(2)
-#define MOUSE_FULL_CPS 3000.0
+#define MOUSE_FULL_CPS 1800.0
 
 #define DEFAULT_KEYS \
     {KEY_W, B_SL_UP}, {KEY_A, B_SL_LEFT}, {KEY_S, B_SL_DOWN}, {KEY_D, B_SL_RIGHT},                  /* move */ \

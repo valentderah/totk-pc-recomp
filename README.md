@@ -92,3 +92,11 @@ TotK Recomp is an independent, non-commercial fan project, not affiliated with o
 [docs/building.md](docs/building.md) lists the toolchain and the steps. Everything the build writes stays under `build\` and `generated\`, which git ignores; run `tools/check_content.py` before a commit. Testers: [docs/tester-guide.md](docs/tester-guide.md).
 
 Most of the code and documentation is written by AI coding agents (Claude Code) under the maintainer's direction; the maintainer plays every build and decides what is merged. [AGENTS.md](AGENTS.md) holds the rules they work under.
+
+## Hardware Optimizer & PC Mouse Look Improvement
+
+This repository includes a cross-platform hardware optimizer and native PC mouse camera improvements:
+
+- **Native Mouse Look:** Preserves 100% stick deflection in `runtime/input.c` and tunes `MOUSE_FULL_CPS` to `1800.0` in `runtime/input_map.c`.
+- **Hardware Optimizer:** `optimize_totk.py` / `Optimize_TotK_PC.bat` detects CPU/GPU and configures `totk.ini` with tailored performance tiers (Enthusiast, Balanced, Integrated APU) and aspect ratio matching.
+- For full details, see [OPTIMIZER_README.md](OPTIMIZER_README.md).

@@ -324,7 +324,7 @@ static int mouse_selector;
 int input_direct_mouse_selector_active(void) { return __atomic_load_n(&mouse_selector, __ATOMIC_RELAXED) != 0; }
 
 // Selector 1 is a radial wheel, 2..4 are distinct horizontal quick lists; only a wheel retains a virtual cursor.
-// Under `lock`.
+// Under `lock`. Full stick deflection is preserved so mouse camera look achieves 100% deflection without being throttled by the camera speed multiplier.
 static void mouse_camera(int32_t out[2], int selector) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
@@ -372,7 +372,7 @@ static void mouse_camera(int32_t out[2], int selector) {
             held[0] = held[1] = 0;   // frames stopped: do not hold a deflection
         }
     }
-    double k = cam_speed_applied(), x = held[0] / k, y = held[1] / k, len = sqrt(x * x + y * y);
+    double x = held[0], y = held[1], len = sqrt(x * x + y * y);
     if (len > STICK_MAX) x *= STICK_MAX / len, y *= STICK_MAX / len;
     out[0] = (int32_t)lround(x);
     out[1] = (int32_t)lround(y);
