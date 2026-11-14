@@ -19,7 +19,8 @@
 // meter's disc, in a frame dump of 1.4.3 at a 1600x900 scene and 1920x1080 output), so a plain-colour overlay drawn
 // at that point, such as a fade, is hidden with it. The final copy into the 8-bit window texture is never skipped, so
 // the HDR path (vk_hdr.c) finds it as before.
-// The game's menus, dialogue and text are drawn the same way as the HUD and are hidden with it. A loading screen or
+// The game's menus, dialogue and text are drawn the same way as the HUD; on 1.4.3 nothing is hidden while one is open
+// (wanted), on other versions they are hidden with it. A loading screen or
 // a movie has no scene, so nothing there is skipped.
 #include "vk_hud.h"
 
@@ -125,6 +126,10 @@ int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
 // (input.c input_active_ns) and shows it again at the next press, stick or mouse move. Before any input the idle time
 // counts from the first frame.
 static int wanted(void) {
+    // The game's menus, the map and dialogue are drawn the way the HUD is: while one is on screen (1.4.3,
+    // menu_cursor.c menu_cursor_ui_open) nothing is hidden, so they stay usable. The read lags the screen by up to
+    // 100 ms, so a menu's first frames can open without its layer.
+    if (menu_cursor_ui_open()) return 0;
     const char *v = cfg_value("TOTK_HIDE_HUD");
     if (strcmp(v, "auto")) return strcmp(v, "0") != 0;
     static uint64_t first;

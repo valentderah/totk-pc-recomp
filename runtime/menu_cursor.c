@@ -319,6 +319,7 @@ static volatile int32_t g_pointer;   // a menu has the pointer: input_cursor_all
 static volatile int32_t g_map;       // the Purah Pad's map is open (not the Scope): the mouse moves its cursor
 static volatile int32_t g_dialogue;  // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left B, right A
 static volatile int32_t g_menu;      // a menu screen has the focus box, from either device (the scroll wheel's steps)
+static volatile int32_t g_ui_open;   // a game menu, the map or a dialogue box is on screen (menu_cursor_ui_open)
 static volatile int32_t g_strip;     // a D-pad strip's screen is open (the scroll wheel's steps along it)
 static volatile int32_t g_camera;    // the Purah Pad's camera is open (the scroll wheel zooms it)
 
@@ -328,6 +329,7 @@ int menu_cursor_dialogue(void) { return __atomic_load_n(&g_dialogue, __ATOMIC_RE
 int menu_cursor_menu(void) { return __atomic_load_n(&g_menu, __ATOMIC_RELAXED); }
 int menu_cursor_strip(void) { return __atomic_load_n(&g_strip, __ATOMIC_RELAXED); }
 int menu_cursor_camera(void) { return __atomic_load_n(&g_camera, __ATOMIC_RELAXED); }
+int menu_cursor_ui_open(void) { return __atomic_load_n(&g_ui_open, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
@@ -378,6 +380,19 @@ void menu_cursor_poll(uint64_t *buttons) {
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
     int cursor = enabled(), talk = dialogue_enabled();
+    // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries. On 1.4.3 the
+    // scan runs whatever the settings say, for menu_cursor_ui_open.
+    uint64_t now = plat_now_ms();
+    static uint64_t map_at;
+    static int map, map_logged, dialogue_logged, strip, camera, ui_menu;
+    if (RT_V143 && (!map_at || now - map_at >= 100)) {
+        map_at = now, map = map_open(&strip, &camera);
+        Focus uf = focus_now();
+        char un[48] = "";
+        if (uf.screen) layout_name(uf.screen, un, sizeof un);
+        ui_menu = uf.screen && !gameplay_screen(un);
+    }
+    __atomic_store_n(&g_ui_open, RT_V143 && (ui_menu || map || dialogue_shown()), __ATOMIC_RELAXED);
     if (!cursor && !talk) {
         set_pointer(0);
         __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
@@ -387,11 +402,6 @@ void menu_cursor_poll(uint64_t *buttons) {
         __atomic_store_n(&g_camera, 0, __ATOMIC_RELAXED);
         return;
     }
-    // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries
-    uint64_t now = plat_now_ms();
-    static uint64_t map_at;
-    static int map, map_logged, dialogue_logged, strip, camera;
-    if (!map_at || now - map_at >= 100) map_at = now, map = map_open(&strip, &camera);
     // Between two lines of a conversation the game closes the box and opens it again, so a click made in that gap still
     // counts as dialogue for DIALOGUE_GAP_MS after the box was last open. The first clicks after a conversation fall
     // in it too and are B or A, as they are for a player who taps the button through the last line.
