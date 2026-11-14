@@ -13,12 +13,6 @@ set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
 set grass    TOTK_PATCH_GRASS    0
-# Model level of detail (patches-v121.txt explains the set; runtime/resolution.c res_lod_range switches it on). The
-# setter main+0xc3dbe4 (1.2.1 0x10eca28) takes B in s0 and computes S = 1/(B - 1) after its entry compare, and
-# main+0x3b8490 (1.2.1 0x925808) is its inlined copy; both scale B before the compare, so S follows.
-set lodrange TOTK_PATCH_LODRANGE 0
-site lodrange main c3dbe4 1e212000 @page:x8 2d4c1103 1f031000 1e212000   # fcmp s0, s1 -> ldp s3, s4, [page+96]; fmadd s0, s0, s3, s4; fcmp s0, s1 (x8 written before any read, s3 written at +0xc, s4 unused)
-site lodrange main 3b84d0 1e212000 @page:x8 2d4c0d02 1f020c00 1e212000   # fcmp s0, s1 -> ldp s2, s3, [page+96]; fmadd s0, s0, s2, s3; fcmp s0, s1 (x8 reloaded at +0x18, s2/s3 dead)
 # Load-dependent quality (patches-v121.txt, set steady). The graphics settings setup (main+0x5868c4) inlines the
 # three getters 1.2.1 calls: the value 1.2.1 reads at
 # main+0xc7eb24 is the ldr w10, [x10, #0x38] at main+0x58692c, and the getters' slow paths (main+0x586bc8, 0x586c18,

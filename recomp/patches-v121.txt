@@ -143,17 +143,6 @@ set pooloff  TOTK_POOL_OFFSET_PATCH 1
 site pooloff main ad43f0 93407f22 2a1903e2   # sxtw x2, w25 -> mov w2, w25 (SetStorage offset)
 site pooloff main ad440c 8b39c101 8b394101   # add x1, x8, w25, sxtw -> add x1, x8, w25, uxtw (packaged data source)
 
-# Model level of detail (runtime/resolution.c res_lod_range switches the set on). Each model unit keeps one record per
-# view with a depth B, a second value 1.0 and a slope S = 1/(B - 1); the level pick (the virtual method main+0x27d225c
-# and its inlined copies in the culling passes) keeps the most detailed level while the depth along the camera axis is
-# within B and moves to coarser levels evenly up to B + 1/S. Most picks run the inlined copies, so the sites are where
-# B is computed at model setup instead: the setter main+0x10eca28 (it saves B in s9 and derives S from it) and its
-# inlined copy in main+0x925808. Both replace B with k * B + c from page +96 and +100 (k = 1.5, 2 or
-# 3 with c = 0 moves every transition about k times farther; k = 1, c = 1e30 keeps the most detailed level at any
-# depth). The models of an area take the value when they are set up, so a change shows after a restart.
-set lodrange TOTK_PATCH_LODRANGE 0
-site lodrange main 10eca44 4ea01c09 @page:x8 2d4c0d02 1f020c00 4ea01c09   # mov v9.16b, v0.16b -> ldp s2, s3, [page+96]; fmadd s0, s0, s2, s3; mov v9.16b, v0.16b (x8, s2, s3 free here)
-site lodrange main 925838 1e292100 @page:x8 2d4c0500 1f000508 1e292100    # fcmp s8, s9 -> ldp s0, s1, [page+96]; fmadd s8, s8, s0, s1; fcmp s8, s9 (x8 reloaded at +0x18, s0/s1 rewritten before use)
 # Load-dependent quality, after the emulator mod "Disable LOD Quality Reduction" (main-1.2.1.pchtxt), which turns a
 # conditional branch into an unconditional one; the generator patches only plain instructions (recomp/gen.py, the
 # emitter's patch), so the site feeds the branch instead. The graphics settings setup (main+0xc7e9xx, it also reads the

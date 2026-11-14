@@ -96,9 +96,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "Texture filtering",
     [UI_MENU_ANISO_DESC] = "Anisotropic filtering of surface textures: ground, roads and walls seen at a shallow angle stay sharp into the distance instead of blurring. Game: the level the game asks for, as on the Switch.",
     [UI_MENU_ANISO_GAME] = "Game",
-    [UI_MENU_LOD_RANGE] = "Model detail range",
-    [UI_MENU_LOD_RANGE_DESC] = "How far models keep their detailed versions before the game switches to simpler ones. Higher keeps cliffs, ruins and sky islands detailed further out; Max never simplifies them. Costs GPU time, more on weaker graphics cards. Grass has its own range above. Takes effect at the next start.",
-    [UI_MENU_LOD_RANGE_MAX] = "Max",
     [UI_MENU_LOD_STEADY] = "Steady detail under load",
     [UI_MENU_LOD_STEADY_DESC] = "Skips the game's setup for lowering model and texture detail when the frame rate drops, as the emulator mod Disable LOD Quality Reduction does. Game versions 1.2.1 and 1.4.3. Leave it off on weak PCs: there this drop keeps the frame rate up.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
@@ -634,9 +631,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "Фильтрация текстур",
     [UI_MENU_ANISO_DESC] = "Анизотропная фильтрация текстур поверхностей: земля, дороги и стены под острым углом остаются чёткими вдали, а не размываются. Игра: уровень, который запрашивает игра, как на Switch.",
     [UI_MENU_ANISO_GAME] = "Игра",
-    [UI_MENU_LOD_RANGE] = "Дальность детализации моделей",
-    [UI_MENU_LOD_RANGE_DESC] = "Как далеко модели остаются подробными, прежде чем игра заменит их упрощёнными. Выше: скалы, руины и небесные острова подробны дальше; «Максимум»: модели не упрощаются никогда. Нагружает видеокарту, слабую сильнее. У травы своя дальность выше. Действует после перезапуска.",
-    [UI_MENU_LOD_RANGE_MAX] = "Максимум",
     [UI_MENU_LOD_STEADY] = "Стабильная детализация под нагрузкой",
     [UI_MENU_LOD_STEADY_DESC] = "Пропускает настройку игры, снижающую детализацию моделей и текстур при падении частоты кадров, как эмуляторный мод Disable LOD Quality Reduction. Только для версий игры 1.2.1 и 1.4.3. На слабых ПК не включайте: там это снижение и держит частоту кадров.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
@@ -1482,9 +1476,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                            "ângulo raso continuam nítidos ao longe em vez de borrar. Jogo: o nível que o jogo pede, "
                            "como no Switch.",
     [UI_MENU_ANISO_GAME] = "Jogo",
-    [UI_MENU_LOD_RANGE] = "Alcance do detalhe dos modelos",
-    [UI_MENU_LOD_RANGE_DESC] = "Até onde os modelos mantêm as versões detalhadas antes de o jogo trocá-las por versões mais simples. Mais alto mantém penhascos, ruínas e ilhas do céu detalhados mais longe; Máximo nunca os simplifica. Custa tempo de GPU, mais em placas fracas. A grama tem o próprio alcance acima. Vale no próximo início.",
-    [UI_MENU_LOD_RANGE_MAX] = "Máximo",
     [UI_MENU_LOD_STEADY] = "Detalhe estável sob carga",
     [UI_MENU_LOD_STEADY_DESC] = "Pula a configuração do jogo que reduz o detalhe de modelos e texturas quando a taxa "
                                 "de quadros cai, como faz o mod de emulador Disable LOD Quality Reduction. Só nas "
@@ -2198,9 +2189,6 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "纹理过滤",
     [UI_MENU_ANISO_DESC] = "表面纹理的各向异性过滤：以小角度看到的地面、道路和墙壁在远处依然清晰，而不会模糊。游戏：使用游戏请求的级别，与 Switch 上相同。",
     [UI_MENU_ANISO_GAME] = "游戏",
-    [UI_MENU_LOD_RANGE] = "模型细节范围",
-    [UI_MENU_LOD_RANGE_DESC] = "模型在游戏换成简化版本之前保持细节的距离。调高后悬崖、遗迹和天空岛在更远处仍保持细节；“最大”则从不简化。会占用显卡时间，显卡越弱影响越大。草地在上方有单独的范围设置。下次启动时生效。",
-    [UI_MENU_LOD_RANGE_MAX] = "最大",
     [UI_MENU_LOD_STEADY] = "负载下保持细节",
     [UI_MENU_LOD_STEADY_DESC] = "跳过游戏在帧率下降时降低模型和纹理细节的设置，与模拟器模组 Disable LOD Quality "
                                 "Reduction 的作用相同。仅适用于游戏版本 1.2.1 和 1.4.3。低配电脑请勿开启：在那里正是这种降低维持了帧率。",

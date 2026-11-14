@@ -12,9 +12,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
-# Model level of detail and load-dependent quality (patches-v121.txt explains both): no sites found in this version
-# yet, so the settings do nothing.
-set lodrange TOTK_PATCH_LODRANGE 0
+# Load-dependent quality (patches-v121.txt explains it): no sites found in this version yet, so the setting does nothing.
 set steady   TOTK_LOD_STEADY     0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.

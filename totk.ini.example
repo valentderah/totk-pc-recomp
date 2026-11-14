@@ -249,11 +249,6 @@
 # it; the grass map's textures grow with it, so its detail per metre stays the game's, and the grass heap grows by about
 # 9 MiB times (percent / 100)^2 - 1. Lower draws less grass. Read at start.
 # grass_range = 100
-# How far models keep their detailed levels before the game switches them to simpler ones: 100 (the game's), 150, 200
-# or 300 percent of its depths, or max for the most detailed level at any depth (recomp/patches-v121.txt, set
-# lodrange). Higher keeps cliffs, ruins and sky islands detailed further out and costs GPU time. Game versions 1.2.1
-# and 1.4.3. Read at start.
-# lod_range = 100
 # Steady detail under load: 1 skips the game's setup for lowering model and texture detail when the frame rate drops,
 # as the emulator mod "Disable LOD Quality Reduction" does (set steady); 0 (the default) leaves it. Leave it off on weak
 # PCs, where that drop keeps the frame rate up. Game versions 1.2.1 and 1.4.3. Read at start.
