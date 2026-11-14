@@ -400,6 +400,9 @@ static void ap_init(void) {
     if (g_ap >= 0) return;
     const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
     g_ap = strcmp(e, "0") != 0;
+#if !defined(__x86_64__)
+    g_ap = 0;   // the stub above is x86 only
+#endif
     g_ap_int = g_ap && strcmp(e, "2") != 0;
     if (g_ap) {
         RtModule m[16];
@@ -553,6 +556,10 @@ __asm__(".text\n"
         "    leaq 8(%rsp), %rsp\n"
         "    jmpq *-8(%rsp)\n"
         ".seh_endproc\n");
+#elif !defined(__x86_64__)
+// shortcut: no aarch64 version of the stub yet, so asynchronous preemption stays off there (ap_init); write one
+// (save x0-x18, q0-q7, NZCV, FPCR) before turning it on.
+void kern_ap_stub(void) {}
 #else
 // The System V version: rsi and rdi are volatile there too, and the interrupted code may keep data in the 128 bytes
 // below its stack pointer (the red zone), so the return slot and the saves go below that. Without a red zone in the
