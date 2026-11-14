@@ -9,6 +9,9 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
 int input_kbm_last(void);
+// plat_now_ns of the last poll that carried input (vk_hud.c, hide_hud = auto): a button or key, a stick a quarter of the
+// way or more, mouse travel or mouse camera counts, script input included. 0 before the first one. Any thread.
+uint64_t input_active_ns(void);
 // Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
 // accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
 // separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.

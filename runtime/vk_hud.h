@@ -1,4 +1,5 @@
-// Hide the game's HUD (vk_hud.c): TOTK_HIDE_HUD (totk.ini hide_hud = 1), read at each present.
+// Hide the game's HUD (vk_hud.c): TOTK_HIDE_HUD (totk.ini hide_hud = 0, 1 or auto) and TOTK_HIDE_HUD_IDLE, read at each
+// present.
 #pragma once
 #include "vk.h"
 
