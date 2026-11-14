@@ -700,6 +700,7 @@ static void tab_screen(float scale) {
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+    opt_toggle("TOTK_HIDE_HUD", UI_MENU_HIDE_HUD, UI_MENU_HIDE_HUD_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();

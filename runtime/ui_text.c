@@ -61,6 +61,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_MENU_HIDE_HUD] = "Hide HUD",
+    [UI_MENU_HIDE_HUD_DESC] = "Hides the game's HUD (hearts, stamina wheel, map, button prompts) for clean screenshots "
+                              "and video. The game's menus and dialogue are hidden with it; turn it off to play.",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
@@ -594,6 +597,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
+    [UI_MENU_HIDE_HUD] = "Скрыть интерфейс",
+    [UI_MENU_HIDE_HUD_DESC] = "Скрывает интерфейс игры (сердца, круг выносливости, карту, подсказки кнопок) для чистых "
+                              "скриншотов и видео. Меню и диалоги игры скрываются вместе с ним; для игры выключите.",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
@@ -1166,6 +1172,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "renderização. F10 alterna os modos.",
     [UI_MENU_PERF_OFF] = "Desligado", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Completo",
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_MENU_HIDE_HUD] = "Ocultar HUD",
+    [UI_MENU_HIDE_HUD_DESC] = "Oculta o HUD do jogo (corações, roda de vigor, mapa, dicas de botões) para capturas e "
+                              "vídeos limpos. Os menus e diálogos do jogo somem junto; desligue para jogar.",
     [UI_MENU_GRAPHICS] = "Imagem",
     [UI_MENU_OUTPUT_RES] = "Resolução do jogo",
     [UI_MENU_OUTPUT_RES_DESC] = "O tamanho em que o jogo desenha a imagem e a interface. Acima de 1920 x 1080 o jogo "
@@ -1747,6 +1756,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_FULL] = "完整",
 
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_MENU_HIDE_HUD] = "隐藏 HUD",
+    [UI_MENU_HIDE_HUD_DESC] = "隐藏游戏的 HUD（心、精力轮、地图、按键提示），用于干净的截图和录像。游戏的菜单和对话也会一起隐藏；"
+                              "游玩时请关闭。",
 
     [UI_MENU_GRAPHICS] = "画面",
     [UI_MENU_OUTPUT_RES] = "游戏分辨率",

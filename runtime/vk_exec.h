@@ -198,6 +198,10 @@ void vk_exec_draw_new_cb(VkExec *ex);
 // vk_exec_draw.c: the fragment stage of the draw being recorded samples img through one of its bound combined
 // textures (OP_BIND_TEX, the handles tex_info swaps; vk_dlaa.c vk_dlaa_skip_draw). Takes the texture lock.
 int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img);
+// The same walk over the bound combined textures with a test of each image (vk_hud.c): 1 when pick says 1 for one of
+// them, -1 when a texture is separate, out of the slot range or names no image, else 0 (also when nothing is sampled).
+int vk_exec_draw_samples_any(VkExec *ex, const GfxShader *fs, int (*pick)(const VkTexImage *t, const void *arg),
+                             const void *arg);
 // The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
 // submission read it (the settings menu shows it).
 int vk_exec_replay_workers(void);

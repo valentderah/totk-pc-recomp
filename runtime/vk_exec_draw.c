@@ -30,6 +30,7 @@
 #include "vk_exec.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_hud.h"
 
 #define MAX_BINDINGS 128
 #define MAX_DESC 1024
@@ -1709,21 +1710,38 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
     return t;
 }
 
-int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img) {
+int vk_exec_draw_samples_any(VkExec *ex, const GfxShader *fs, int (*pick)(const VkTexImage *t, const void *arg),
+                             const void *arg) {
     const GfxShaderRes *res;
-    int n = fs && img ? gfx_shader_resources(fs, GFX_RES_TEX, &res) : 0, hit = 0;
+    int n = fs ? gfx_shader_resources(fs, GFX_RES_TEX, &res) : 0, hit = 0, unknown = 0;
     if (!n) return 0;
     vk_texture_lock();
     for (int i = 0; i < n && !hit; i++) {
-        if (res[i].separate || res[i].slot < 0) continue;
+        if (res[i].separate || res[i].slot < 0) {
+            unknown = 1;
+            continue;
+        }
         for (int k = 0; k < (res[i].count ? res[i].count : 1) && !hit; k++) {
             int slot = res[i].slot + k;
-            uint64_t h = slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
-            hit = h && vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == img;
+            if (slot >= 128) {
+                unknown = 1;
+                break;
+            }
+            uint64_t h = ex->tex[NVN_STAGE_FS][slot];
+            if (!h) continue;   // nothing bound there: nothing sampled
+            const VkTexImage *t = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+            if (!t) unknown = 1;
+            else hit = pick(t, arg);
         }
     }
     vk_texture_unlock();
-    return hit;
+    return hit ? 1 : unknown ? -1 : 0;
+}
+
+static int is_img(const VkTexImage *t, const void *img) { return t == img; }
+
+int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img) {
+    return img && vk_exec_draw_samples_any(ex, fs, is_img, img) == 1;
 }
 
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
@@ -2511,6 +2529,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (!vs || (has_fs && !fs)) return 0;
     if (vk_dlaa_skip_draw(ex, fs)) return 0;   // the game's FXAA off, or its scaling replaced by DLSS (vk_dlaa.c)
+    if (vk_hud_skip_draw(ex, fs)) return 0;    // the HUD while hide_hud is on (vk_hud.c)
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
