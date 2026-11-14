@@ -700,7 +700,6 @@ static void tab_screen(float scale) {
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
-    opt_toggle("TOTK_HIDE_HUD", UI_MENU_HIDE_HUD, UI_MENU_HIDE_HUD_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
@@ -765,6 +764,12 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    // hide_hud: 0, 1, auto (vk_hud.c); the idle time only matters, and is only shown, for auto
+    static const UiTextId hud[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_HIDE_HUD_WHEN_IDLE};
+    opt_choice("TOTK_HIDE_HUD", UI_MENU_HIDE_HUD, hud, 3, UI_MENU_HIDE_HUD_DESC);
+    if (!strcmp(cfg_value("TOTK_HIDE_HUD"), "auto"))
+        opt_slider("TOTK_HIDE_HUD_IDLE", UI_MENU_HIDE_HUD_IDLE, 1, 60, UI_MENU_HIDE_HUD_IDLE_DESC, 1,
+                   menu_text(UI_MENU_HIDE_HUD_IDLE_FMT));
     row_play_time();
     opt_end();
 }

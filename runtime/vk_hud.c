@@ -1,5 +1,6 @@
 // Hide the game's HUD (TOTK_HIDE_HUD, totk.ini hide_hud, live): hearts, stamina wheel, map, prompts and the rest of
-// what the game lays over the world, for clean screenshots and video. Off by default.
+// what the game lays over the world. 0 (the default) shows it, 1 hides it, auto hides
+// it after TOTK_HIDE_HUD_IDLE minutes without input (wanted).
 //
 // Where the HUD is in a frame (measured for frame generation in PR #1089 from a frame dump of 1.4.3, and for DLSS in
 // vk_dlaa.c, "where DLAA runs in TotK's frame"): the G-buffer passes draw several colour targets with the scene's D32F
@@ -11,7 +12,7 @@
 // the 8-bit window texture.
 //
 // So a draw is skipped as HUD when, after the bloom chain ended the scene, it draws into one float colour target at
-// least the scene's size in a pass without depth, and its fragment shader samples nothing that could be the picture:
+// least the size of the scene or of the output, whichever is smaller, in a pass without depth, and its fragment shader samples nothing that could be the picture:
 // no float or depth render target (the scaling draw, a tonemap and the bloom composite read those), no storage image,
 // and no texture the replay cannot name. Every doubt keeps the draw: a HUD element that reads a float target stays
 // on screen, the 3D picture never goes missing. A draw that samples no texture at all there is HUD too (the noise
@@ -22,11 +23,15 @@
 // a movie has no scene, so nothing there is skipped.
 #include "vk_hud.h"
 
+#include <string.h>
+
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "input.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "platform/platform.h"
 
 static struct {
     int on;                      // hide_hud as read at the last present
@@ -93,9 +98,14 @@ static int picture_like(const VkTexImage *t, const void *arg) {
 
 int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
     if (!__atomic_load_n(&H.on, __ATOMIC_RELAXED) || !fs || !ended_at(ex)) return 0;
+    // The HUD's target is the output's size or the scene's, whichever is smaller: a render scale above 100 % draws the
+    // scene larger than the output (5120x2880 for 2560x1440 at 200 %) and scales it down into the HUD's target.
+    unsigned o[2], sc[2];
+    res_sizes(o, sc);
+    uint32_t min_w = H.scene_w < o[0] ? H.scene_w : o[0], min_h = H.scene_h < o[1] ? H.scene_h : o[1];
     const VkExecTarget *c = &ex->color[0];
     if (ex->pass_ncolor != 1 || ex->depth.image || !c->image || !scene_color(c->format) || c->level || c->is3d ||
-        c->samples > 1 || c->width < H.scene_w || c->height < H.scene_h)
+        c->samples > 1 || c->width < min_w || c->height < min_h)
         return 0;
     const GfxShaderRes *res;
     if (gfx_shader_resources(fs, GFX_RES_IMG, &res)) return 0;
@@ -111,6 +121,31 @@ int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
     return 1;
 }
 
+// hide_hud: 0 shows the HUD, 1 hides it, auto hides it once no input came for hide_hud_idle minutes
+// (input.c input_active_ns) and shows it again at the next press, stick or mouse move. Before any input the idle time
+// counts from the first frame.
+static int wanted(void) {
+    const char *v = cfg_value("TOTK_HIDE_HUD");
+    if (strcmp(v, "auto")) return strcmp(v, "0") != 0;
+    static uint64_t first;
+    static int was;
+    uint64_t now = plat_now_ns(), last = input_active_ns();
+    if (!first) first = now;
+    if (!last) last = first;
+    double idle_min = cfg_double("TOTK_HIDE_HUD_IDLE");
+    int hide = now > last && (double)(now - last) >= idle_min * 60e9;
+    if (hide != was) {   // the first few changes, for a run's log
+        static int logs;
+        if (logs < 4) {
+            logs++;
+            if (hide) rt_log("hud: hide_hud = auto hides the HUD after %.1f min without input", (now - last) / 60e9);
+            else rt_log("hud: hide_hud = auto shows the HUD again: input");
+        }
+        was = hide;
+    }
+    return hide;
+}
+
 void vk_hud_frame(void) {
     // hide_hud on for a minute of frames (3600) with a scene in each and no draw skipped: the frame no longer looks
     // like the one measured, say so once
@@ -124,5 +159,5 @@ void vk_hud_frame(void) {
     if (H.hid) missed = 0;
     H.gbuf = H.armed = H.hid = 0, H.gbuf_w = H.scene_w = H.scene_h = 0;
     __atomic_store_n(&H.ended, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&H.on, cfg_bool("TOTK_HIDE_HUD"), __ATOMIC_RELAXED);
+    __atomic_store_n(&H.on, wanted(), __ATOMIC_RELAXED);
 }

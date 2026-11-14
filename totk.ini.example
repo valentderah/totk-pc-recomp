@@ -169,10 +169,10 @@
 # Performance overlay in the top right corner: off, fps, or full (frame rate, mean and longest frame time). F10
 # cycles the modes in game, as do both stick clicks (L3 + R3) on a controller.
 # perf_overlay = off
-# 1 hides the game's HUD (hearts, stamina wheel, map, button prompts) for screenshots and video. The game's menus,
-# dialogue and other text are drawn the same way and are hidden with it, so turn it off to play. The performance
-# overlay and the F1 menu stay. Changes while the game runs take effect at the next frame.
+# 1 hides the game's HUD; auto hides it after hide_hud_idle minutes (1 to 60) without input and shows it again at the
+# next input. The game's menus and dialogue are hidden with it.
 # hide_hud = 0
+# hide_hud_idle = 5
 # Which GPU to use: its index in the log, or part of its name. Default: the first discrete GPU with Vulkan 1.3.
 # gpu_index = 0
 # gpu_name = NVIDIA
