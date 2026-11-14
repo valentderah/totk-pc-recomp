@@ -75,7 +75,7 @@ def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
     sets, index, sites, spins = [], {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
-    for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
+    for no, raw in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
         f = raw.split('#', 1)[0].split()
         if not f:
             continue

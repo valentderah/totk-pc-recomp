@@ -112,6 +112,23 @@ site cascade main 1158040 52a84408 @page:x8 b9404508
 site cascade main 11580c8 52a85408 @page:x8 b9404908
 site cascade main 115814c 52a86408 @page:x8 b9404d08
 
+# High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
+# The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.
+# For r<1 use the 1.2.1 climb h(r,u), u=max(page+0,r); the normal 30 Hz factor stays unchanged.
+# runtime/frame_rate.c disables climb when realtime=0; TOTK_CLIMB_FIX=0 keeps the original instruction.
+# A 96-byte, 16-byte-aligned stack frame saves x8 and full q5/q6/q7/q16/q17; only s0/s1 are outputs.
+set climb    TOTK_CLIMB_FIX      1
+site climb main 19279f0 1e2f1001 d10183ff f90003e8 ad009be5 ad01c3e7 3d8017f1 @page:x8 bd400111 1e296a31 1e2e1005 1e3138a5 52862508 72a7e308 1e270106 1e2608a5 1e2528a5 529a1ca8 72a7f448 1e270106 1e2628a5 1e201006 1e2678a5 52946dc8 72a7e528 1e270106 1e3118c6 52828248 72a7dfe8 1e270107 1e2728c6 529573e8 72a7b5a8 1e270107 1f1118e6 1e283a27 2f00e410 1e3068e7 1e261010 1f1098e6 1e241010 1e3078c6 1e2668a5 1e256800 1e2f1001 1e256821 3dc017f1 ad41c3e7 ad409be5 f94003e8 910183ff
+
+# Gear rotation check (#330, #984): main+0x213eec4, vtable 0x347e8e8 slot +0x110.
+# AI dispatchers 0x1205b90 / 0x2ae29ac pass a context with frame delta at +8; keep it in the already-saved s12.
+# Scale RotateStartDeg/30 by that delta for all three angle compares: 0x213f10c/0x213f174/0x213f1b0.
+# The second site saves full q4 in a 16-byte stack slot, without relying on a later callee killing it.
+# This set does not read the patch page and works with realtime=0; TOTK_HIGHFPS_FIX=0 keeps both original sites.
+set gears    TOTK_HIGHFPS_FIX    1
+site gears main 213eee4 f9402001 bd40082c f9402001
+site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
