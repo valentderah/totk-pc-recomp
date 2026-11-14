@@ -127,7 +127,7 @@ void tab_items(float scale, float bottom) {
                           item.category == "Bows" ||
                           item.category == "Shields";
         ImGui::BeginDisabled(!item.pack || !grant_type || !items_inventory_ready() || items_busy());
-        if (ImGui::Button("Add to inventory") && items_inventory_request(item.id.c_str())) {
+        if (ImGui::Button("Add to inventory") && items_inventory_request(item.id.c_str(), count)) {
             recent.erase(std::remove(recent.begin(), recent.end(), item.id), recent.end());
             recent.insert(recent.begin(), item.id);
             if (recent.size() > 20) recent.resize(20);
@@ -136,7 +136,7 @@ void tab_items(float scale, float bottom) {
         ImGui::EndDisabled();
         if (!items_inventory_ready()) ImGui::TextWrapped("Pick up any item once after loading to enable inventory adds.");
         else if (!grant_type) ImGui::TextWrapped("Inventory add is unavailable for this item.");
-        else ImGui::TextWrapped("Adds one item. Resume play to complete the request.");
+        else ImGui::TextWrapped("Adds %d item(s) to inventory. Resume play to complete the request.", count);
     } else ImGui::TextWrapped("Choose an item from the list.");
     ImGui::Separator();
     char status[256]; items_status(status, sizeof status); ImGui::TextWrapped("%s", status);

@@ -56,8 +56,8 @@ int items_request(const char *actor, int count) {
     return 1;
 }
 
-int items_inventory_request(const char *actor) {
-    if (!items_inventory_ready() || !actor || !*actor || strlen(actor) >= sizeof request) return 0;
+int items_inventory_request(const char *actor, int count) {
+    if (!items_inventory_ready() || !actor || !*actor || strlen(actor) >= sizeof request || count < 1 || count > 10) return 0;
     for (const char *p = actor; *p; ++p) if (!isalnum((unsigned char)*p) && *p != '_') return 0;
     if (!strcmp(actor, "Player") || !strcmp(actor, "PouchPlayer")) return 0;
     plat_mutex_lock(&lock);
@@ -65,10 +65,10 @@ int items_inventory_request(const char *actor) {
     strcpy(request, actor);
     inventory_actor = 0;
     atomic_store(&inventory_request, 1);
-    remaining = 1;
-    snprintf(message, sizeof message, "Adding %s when play resumes.", actor);
+    remaining = count;
+    snprintf(message, sizeof message, "Adding %d x %s when play resumes.", count, actor);
     plat_mutex_unlock(&lock);
-    rt_log("items: queued live inventory grant for %s", actor);
+    rt_log("items: queued live inventory grant %d x %s", count, actor);
     return 1;
 }
 
@@ -190,8 +190,16 @@ static void grant_spawned_item(Cpu *c, uint64_t actor, uint64_t component) {
     rt_fpcr_sync(c);
     rt_log("items: live inventory grant actor %s manager %#llx result %llu pickup cleanup %llu",
            request, (unsigned long long)manager, (unsigned long long)ok, (unsigned long long)cleanup);
-    status(ok ? "Item added to inventory." : "Could not add the item. It remains near Link.");
-    remaining = 0;
+    if (ok) {
+        plat_mutex_lock(&lock);
+        int left = --remaining;
+        if (left > 0) snprintf(message, sizeof message, "Added %s (%d remaining)...", request, left);
+        else snprintf(message, sizeof message, "Added %s to inventory.", request);
+        plat_mutex_unlock(&lock);
+    } else {
+        status("Could not add the item. It remains near Link.");
+        remaining = 0;
+    }
 }
 
 void items_sync_tick(Cpu *c, uint64_t sync) {
