@@ -106,9 +106,13 @@ A cancelled or failed setup resumes from the last finished step (`totk-install.j
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
-Ninja recompiles only those: a new or edited code cheat costs the lift (under a minute on 24 cores, a few minutes on 4)
-and a few dozen chunks, not a full compile, and the shaders stay prepared.
+The generated C and the objects stay in the temp folder. The next lift lifts again only the chunks whose inputs
+changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices) and rewrites only
+those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds of lift
+(discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the whole lift)
+and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A cheat set added
+or removed before others in the patch file moves their set indices, so the chunks of their sites are lifted too. A
+change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`

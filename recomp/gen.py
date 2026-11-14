@@ -3,12 +3,14 @@
 
 Usage: gen.py --exefs build/extracted/v121/exefs --out generated/v121 [--modules main,subsdk0,sdk] [--jobs N]
               [--limit N] [--chunk-fns N] [--chunk-bytes B] [--big-fn B] [--patches FILE] [--v-locals K [--v-trust]]
+              [--no-cache]
 
 Output, under --out:
   layout.h, layout.json        module bases (recomp/layout.py)
   <mod>/<mod>_NNNN.c           one `void f_<addr>(Cpu *c)` per guest function, about --chunk-bytes of C per file
   <mod>/<mod>_table.c          sorted <mod>_fn_addrs[] / <mod>_fn_ptrs[] / <mod>_fn_count for rt_dispatch
   <mod>/manifest.json          chunk list, function count, statistics and timings
+  <mod>/lift_cache.json        per chunk: the key of its inputs, its file's SHA-256, size and mtime, and its results
   <mod>/folded.txt             the module's bytes the generated code took as constants: what the jump tables read at
                                lift time, as module offsets [start, end); tools/exefs_patches.py keeps a mod's data
                                writes off them
@@ -24,8 +26,20 @@ Emission runs in worker processes, one chunk per task. Each worker loads the mod
 time and resolves its jump tables (recomp/jumptables.py), so memory per worker does not grow with the module.
 Chunks are sized from a per-instruction estimate of the C they produce, so their names and contents only depend on
 the input; a chunk whose text did not change is not rewritten and keeps its mtime.
+
+A chunk is not lifted again when its inputs did not change. Its text depends only on the generator (recomp/*.py,
+GENERATED_MARKER, the Emitter options), the module (its file, its base, and the function starts discovered from it),
+the chunk's number and functions, and the patch sites and spin waits inside the chunk's address range: the per-module
+caches of recomp/jumptables.py are derived from the module's bytes and base, and its per-function state is reset for
+each function. The SHA-256 of all of these is the chunk's key. <mod>/lift_cache.json records the key of each chunk
+with the SHA-256, size and mtime of the file it wrote and the results the manifest and folded.txt need, under a
+digest of the entry. A chunk whose entry is intact, whose key matches and whose file still has that size, mtime and
+hash is reused as it is; any other chunk is lifted. So a rebuild after a change to one cheat lifts only the chunks
+holding its sites. --no-cache, or TOTK_LIFT_CACHE=0 in the environment, lifts every chunk.
 """
 import argparse
+import bisect
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -33,6 +47,7 @@ import re
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -210,7 +225,8 @@ def partition(est, max_fns, max_bytes, big_fn):
 # ------------------------------------------------------------------------------------------------ emission
 
 class Emitter:
-    """C for the functions of one module. starts is the set of every function start of the module."""
+    """C for the functions of one module. starts is the set of every function start of the module. A new input of
+    the C (an argument here, or anything else it reads) must go into the lift cache's key: chunk_key."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
                  v_locals=vlocals.LOCALS, v_trust=False):
@@ -532,9 +548,10 @@ def chunk_text(name, number, emitter, fns):
             + '\n' + '\n\n'.join(body) + '\n')
 
 
-def write_if_changed(path, text):
+def write_if_changed(path, text, wait=True):
     """Returns True if the file was written. An unchanged file keeps its mtime, so the build skips it. A changed one
-    is written under a temporary name and renamed into place, so a reader never sees it half written."""
+    is written under a temporary name and renamed into place, so a reader never sees it half written. wait: retry
+    the rename while another process holds the file (_retry); without it the first failure raises."""
     data = text.encode()
     try:
         if path.stat().st_size == len(data) and path.read_bytes() == data:
@@ -544,7 +561,10 @@ def write_if_changed(path, text):
     tmp = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
     tmp.write_bytes(data)
     try:
-        _retry(os.replace, tmp, path)
+        if wait:
+            _retry(os.replace, tmp, path)
+        else:
+            os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
@@ -610,8 +630,8 @@ def merge_ranges(ranges):
 
 
 def _emit_chunk(task):
-    """Worker: write one chunk. Returns its statistics."""
-    name, number, path, fns = task
+    """Worker: write one chunk. Returns its statistics, and the SHA-256, size and mtime of its file for the cache."""
+    name, number, path, fns, key = task
     t0 = time.perf_counter()
     # Test hook: a pool wider than this raises the MemoryError a busy machine does, so the retry can be exercised.
     limit = os.environ.get('TOTK_LIFT_TEST_OOM_ABOVE')
@@ -621,17 +641,20 @@ def _emit_chunk(task):
     e.stats.clear()
     e.unsupported.clear()
     text = chunk_text(name, number, e, fns)
-    error = None
+    error, st = None, None
     try:
         written = write_if_changed(Path(path), text)
+        st = os.stat(path)
     except OSError as ex:
         written, error = False, f'{path}: {ex}'
     reads = _W['reads'].get(name, [])
     folded = merge_ranges(reads)
     reads.clear()
     return {'module': name, 'number': number, 'file': Path(path).name, 'functions': len(fns), 'bytes': len(text),
-            'written': written, 'error': error, 'seconds': time.perf_counter() - t0, 'stats': dict(e.stats),
-            'unsupported': dict(e.unsupported), 'folded': folded}
+            'written': written, 'reused': False, 'error': error, 'seconds': time.perf_counter() - t0,
+            'stats': dict(e.stats), 'unsupported': dict(e.unsupported), 'folded': folded, 'key': key,
+            'sha256': _sha256(text.encode()), 'size': st.st_size if st else None,
+            'mtime_ns': st.st_mtime_ns if st else None}
 
 
 # ------------------------------------------------------------------------------------------------ driver
@@ -668,6 +691,120 @@ def remove_stale(moddir, name, nchunks, errors):
             except OSError as ex:
                 errors.append(f'{p}: {ex}')
     return removed
+
+
+# ------------------------------------------------------------------------------------------------ lift cache
+
+CACHE_FILE = 'lift_cache.json'
+CACHE_VERSION = 1   # raise when the cache's format or the meaning of its key changes
+# Per-chunk results the cache keeps beside the key: what the manifest, folded.txt and the reuse check need.
+CACHED = ('functions', 'bytes', 'stats', 'unsupported', 'folded', 'sha256', 'size', 'mtime_ns')
+
+
+def _sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _key(*parts):
+    """SHA-256 of JSON-encodable parts."""
+    return _sha256(json.dumps(parts, separators=(',', ':')).encode())
+
+
+def generator_key(opts):
+    """Key of everything the chunk text depends on besides the module and the patches: the generator's sources
+    (recomp/*.py, not the patch tables beside them), the marker in each header, the Emitter options, the Python
+    version that runs them."""
+    srcs = [[p.name, _sha256(p.read_bytes())] for p in sorted((ROOT / 'recomp').glob('*.py'))]
+    return _key('gen', CACHE_VERSION, list(sys.version_info[:2]), GENERATED_MARKER, sorted(opts.items()), srcs)
+
+
+def module_key(gen_key, name, path, base, abs_starts):
+    """Key of one module's inputs: the generator, the module's file and base, and the function starts discovered
+    from them (they decide which branches become direct calls)."""
+    return _key(gen_key, name, _sha256(Path(path).read_bytes()), base, _sha256(abs_starts.tobytes()))
+
+
+def in_span(addrs, lo, hi):
+    """The addresses of the sorted list addrs in [lo, hi)."""
+    return addrs[bisect.bisect_left(addrs, lo):bisect.bisect_left(addrs, hi)]
+
+
+def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs):
+    """Key of one chunk: its module, number (in its header) and functions, and the patch sites (set index and
+    replacement words, @page resolved, so the patch page is in them) and spin waits inside its address range. Every
+    input of the chunk text that is not in generator_key or module_key must be added here, with a case in
+    tests/lift_cache_test.py."""
+    lo, hi = fns[0][0], fns[-1][1]
+    sites = [[a, [[k, words] for k, words in patched[a]]] for a in in_span(site_addrs, lo, hi)]
+    return _key(mod_key, number, fns, sites, [[b, spins[b]] for b in in_span(spin_addrs, lo, hi)])
+
+
+def _entry_check(file, entry):
+    """Digest of a cache entry: its chunk file name, key and results. The results go into the manifest and folded.txt
+    as they are, so a changed value in the cache file must not be taken (tools/exefs_patches.py --folded keeps a
+    mod's data writes off the folded bytes)."""
+    return _key(file, entry['key'], [entry[k] for k in CACHED])
+
+
+def load_cache(moddir):
+    """{chunk file name: entry} from <mod>/lift_cache.json: the entries whose digest matches; empty when the file is
+    missing or unreadable."""
+    try:
+        data = json.loads((moddir / CACHE_FILE).read_text())
+        if data.get('version') != CACHE_VERSION or not isinstance(data.get('chunks'), dict):
+            return {}
+        out = {}
+        for file, e in data['chunks'].items():
+            try:
+                if e['check'] == _entry_check(file, e):
+                    out[file] = e
+            except (KeyError, TypeError):
+                pass
+        return out
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _intact(path, entry):
+    """True when the file at path still is the one the entry recorded: same size and mtime, then same SHA-256 (a bit
+    flipped in a kept file would otherwise stay forever, as tools/build_game.py check_objects says of objects)."""
+    try:
+        st = path.stat()
+        if st.st_size != entry['size'] or st.st_mtime_ns != entry['mtime_ns']:
+            return False
+        return _sha256(path.read_bytes()) == entry['sha256']
+    except (OSError, KeyError, TypeError):
+        return False
+
+
+def reuse(tasks, caches):
+    """The results of the tasks whose chunk can be reused: its recorded key equals the task's and its file is intact.
+    The files are hashed on threads (hashlib releases the GIL), about 1 GB in all for the three modules."""
+    cands = []
+    for name, number, path, fns, key in tasks:
+        e = caches.get(name, {}).get(Path(path).name)
+        if e is not None and e['key'] == key:
+            cands.append((name, number, Path(path), key, e))
+    with ThreadPoolExecutor(min(16, os.cpu_count() or 4)) as ex:
+        ok = list(ex.map(lambda c: _intact(c[2], c[4]), cands))
+    out = []
+    for (name, number, path, key, e), good in zip(cands, ok):
+        if good:
+            out.append({'module': name, 'number': number, 'file': path.name, 'written': False, 'reused': True,
+                        'error': None, 'seconds': 0.0, 'key': key, **{k: e[k] for k in CACHED}})
+    return out
+
+
+def cache_text(name, results):
+    """<mod>/lift_cache.json for this run's chunks; a chunk that could not be written gets no entry. Keys keep their
+    order (no sort_keys), so a reused chunk's `unsupported` merges into the census as it did when it was lifted."""
+    chunks = {}
+    for r in results:
+        if not r['error'] and r['size'] is not None:
+            e = {'key': r['key'], **{k: r[k] for k in CACHED}}
+            chunks[r['file']] = {**e, 'check': _entry_check(r['file'], e)}
+    return json.dumps({'module': name, 'marker': GENERATED_MARKER, 'version': CACHE_VERSION, 'chunks': chunks},
+                      separators=(',', ':')) + '\n'
 
 
 # Peak memory of one emit worker on 1.4.3 is 1.3 GiB (1.5 GiB with margin); the parent holds about 0.7 GiB.
@@ -718,9 +855,16 @@ def main():
     ap.add_argument('--v-trust', action='store_true',
                     help='with --v-locals: do not reload V8-V15 after a call (AAPCS64: the callee preserves their low '
                          '64 bits)')
+    ap.add_argument('--no-cache', action='store_true',
+                    help=f'lift every chunk, also those whose inputs match <mod>/{CACHE_FILE} (it is written anew); '
+                         'so does the environment variable TOTK_LIFT_CACHE=0')
     args = ap.parse_args()
+    # The installer's lift step passes no --no-cache; the environment reaches it, as TOTK_LIFT_JOBS does (pick_jobs)
+    no_cache = ('--no-cache' if args.no_cache else
+                'TOTK_LIFT_CACHE=0' if os.environ.get('TOTK_LIFT_CACHE', '').strip() == '0' else None)
     opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust, 'v_locals': args.v_locals,
             'v_trust': args.v_trust}
+    gen_key = generator_key(opts)
 
     t0 = time.perf_counter()
     mods = layout(args.exefs)
@@ -748,9 +892,13 @@ def main():
         chunks = partition(est[:n], args.chunk_fns, args.chunk_bytes, args.big_fn)
         moddir = args.out / name
         moddir.mkdir(parents=True, exist_ok=True)
+        mkey = module_key(gen_key, name, path, base, abs_starts)
+        patched, spins = table.for_module(name, base), table.spins_for(name, base)
+        site_addrs, spin_addrs = sorted(patched), sorted(spins)
         for number, (i0, i1) in enumerate(chunks):
             fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist()))
-            tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
+            key = chunk_key(mkey, number, fns, patched, site_addrs, spins, spin_addrs)
+            tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns, key)))
         paths[name] = (str(path), base)
         starts_abs[name] = abs_starts
         info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi, 'emitted': abs_starts[:n].tolist(),
@@ -769,9 +917,23 @@ def main():
     ctx = mp.get_context('spawn')
     jobs, why = pick_jobs(args.jobs)
     pending = [t for _, t in tasks]
-    emitted = 0
-    while True:
-        print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
+    reused = [] if no_cache else reuse(pending, {name: load_cache(d['moddir']) for name, d in info.items()})
+    for r in reused:
+        results[r['module']].append(r)
+        folded[r['module']] += r['folded']
+    skip = {(r['module'], r['number']) for r in reused}
+    pending = [t for t in pending if (t[0], t[1]) not in skip]
+    emitted = len(reused)
+    print(f'reusing {len(reused)} of {len(tasks)} chunks (inputs unchanged), {time.perf_counter() - t_emit:.1f}s'
+          if not no_cache else f'lifting every chunk ({no_cache})', file=sys.stderr, flush=True)
+    if reused or not pending:
+        # installer/steps.py EMITTED reads these lines for its progress bar: the reused chunks count as done, and a
+        # run with nothing to lift still reaches M/M
+        print(f'emitted {emitted}/{len(tasks)} chunks, 0s', file=sys.stderr, flush=True)
+    if len(pending) < jobs:
+        jobs, why = max(1, len(pending)), f'{len(pending)} chunk{"s" if len(pending) != 1 else ""} to lift'
+    while pending:
+        print(f'emitting with {jobs} worker{"s" if jobs != 1 else ""} ({why})', file=sys.stderr, flush=True)
         try:
             # Chunk writes are atomic and idempotent, so a chunk lost with a failed pool is simply emitted again.
             # Its folded bytes come with its result: a chunk emitted again reads them again in its new worker.
@@ -841,6 +1003,7 @@ def main():
                 'c_bytes': sum(r['bytes'] for r in rs),
                 'largest_chunk_bytes': max((r['bytes'] for r in rs), default=0),
                 'chunks_written': sum(r['written'] for r in rs) + table_written,
+                'chunks_reused': sum(r['reused'] for r in rs),
                 'stale_chunks_removed': removed,
                 **{k: v for k, v in sorted(stats.items()) if k.startswith('v_')},   # --v-locals only
             },
@@ -853,8 +1016,17 @@ def main():
             },
         }
         write_if_changed(moddir / 'manifest.json', json.dumps(manifest, indent=1) + '\n')
+        # The cache goes last, after every output it describes. It only saves time, so a failed write warns and the
+        # lift still succeeds, without waiting for a holder of the file: the previous cache stays, and its entries
+        # for the chunks this run rewrote no longer match their files' size, mtime and hash. A run stopped before
+        # here leaves it the same way.
+        try:
+            write_if_changed(moddir / CACHE_FILE, cache_text(name, rs), wait=False)
+        except OSError as ex:
+            print(f'{name}: {CACHE_FILE} not written, the next lift reuses less: {ex}', file=sys.stderr, flush=True)
         s = manifest['stats']
-        print(f'{name}: {s["emitted_functions"]} functions, {len(rs)} chunks, {s["c_bytes"] / 1e6:.0f} MB of C, '
+        print(f'{name}: {s["emitted_functions"]} functions, {len(rs)} chunks ({s["chunks_reused"]} reused), '
+              f'{s["c_bytes"] / 1e6:.0f} MB of C, '
               f'{s["jump_tables"]} jump tables, {s["all_label_fallbacks"]} all-label fallbacks, '
               f'{s["br_dispatch"]} br via dispatch, {s["traps"]} traps ({s["unsupported"]} unsupported)',
               file=sys.stderr)
