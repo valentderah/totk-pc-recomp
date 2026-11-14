@@ -64,6 +64,7 @@ static bool iequals(std::string_view a, std::string_view b) {
 static void set_current_dir(const std::string &path) {
     g_current_dir = path;
     cfg_set("TOTK_AMIIBO_DIR", g_current_dir.c_str());
+    opt_save_soon();
 }
 
 // The host's folder dialog (folder_pick.h) answers on its own thread; the page takes the answer when it draws.
@@ -101,8 +102,9 @@ static void refresh_dir(void) {
         g_entries.push_back({"..", true});
     }
 
-    for (const auto &entry : fs::directory_iterator(dir_path, fs::directory_options::skip_permission_denied, ec)) {
-        if (ec) break;
+    fs::directory_iterator it(dir_path, fs::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto &entry = *it;
         std::error_code status_ec;
         bool is_dir = entry.is_directory(status_ec);
         if (status_ec) continue;
@@ -121,7 +123,7 @@ static void refresh_dir(void) {
     }
 
     std::sort(g_entries.begin(), g_entries.end(), [](const FileEntry &a, const FileEntry &b) {
-        if (a.name == "..") return true;
+        if (a.name == "..") return b.name != "..";
         if (b.name == "..") return false;
         if (a.is_dir != b.is_dir) return a.is_dir;
         return a.name < b.name;
@@ -129,6 +131,64 @@ static void refresh_dir(void) {
     
     // Request font rebuild to include any new filenames
     amiibo_request_font_rebuild();
+}
+
+// The scan picker never changes the configured root; folders are navigated for this scan only.
+bool amiibo_picker(bool opening) {
+    static bool focus;
+    static std::string settings_dir;
+    if (opening) {
+        settings_dir = g_current_dir;
+        const char *dir = cfg_get("TOTK_AMIIBO_DIR");
+        g_current_dir = dir && *dir ? dir : kDefaultAmiiboDir;
+        set_status(UI_MENU_AMIIBO_READY);
+        refresh_dir();
+        focus = true;
+        ImGui::SetNextWindowFocus();
+    }
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(size.x * 0.65f, size.y * 0.75f), ImGuiCond_Always);
+    ImGui::Begin("##amiibo_picker", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted(menu_text(UI_MENU_AMIIBO_PICK));
+    ImGui::TextWrapped("%s", g_current_dir.c_str());
+    bool done = false; // Reader retries do not dismiss the picker; only a selection or explicit cancel does.
+    ImGui::BeginChild("##scan_files", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3), true);
+    bool focus_first = focus;
+    focus = false;
+    size_t first_file = 0;
+    while (first_file < g_entries.size() && g_entries[first_file].is_dir) ++first_file;
+    if (first_file == g_entries.size()) first_file = 0;
+    for (size_t i = 0; i < g_entries.size(); ++i) {
+        const FileEntry e = g_entries[i];
+        ImGui::PushID((int)i);
+        if (focus_first && i == first_file) ImGui::SetKeyboardFocusHere();
+        bool activate = ImGui::Selectable((e.is_dir ? e.name + "/" : e.name).c_str());
+        ImGui::PopID();
+        if (!activate) continue;
+        if (e.is_dir) {
+            g_current_dir = (fs::path(g_current_dir) / e.name).lexically_normal().string();
+            refresh_dir();
+            focus = true;
+        } else {
+            tap(g_current_dir, e.name);
+            done = g_status_id == UI_MENU_AMIIBO_TAPPED;
+        }
+        break;
+    }
+    if (g_entries.empty()) ImGui::TextUnformatted(menu_text(UI_MENU_AMIIBO_NO_FILE));
+    ImGui::EndChild();
+    char status[512];
+    snprintf(status, sizeof status, menu_text(g_status_id), g_status_arg.c_str());
+    ImGui::TextWrapped("%s", status);
+    if (ImGui::Button(menu_text(UI_MENU_CONTINUE)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) done = true;
+    ImGui::End();
+    if (done) {
+        g_current_dir = settings_dir;
+        refresh_dir();
+    }
+    return done;
 }
 
 void tab_amiibo(float scale) {

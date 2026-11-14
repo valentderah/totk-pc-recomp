@@ -73,6 +73,7 @@ static const unsigned char roboto_ttf[] = {
 // ---- open state, any thread
 static std::atomic<int> g_open;     // the menu is open
 static std::atomic<int> g_reset;    // opened or closed since the last laid-out frame: drop stale input
+static bool g_amiibo_picker;
 
 // g_open, the input block and the log line change together under open_lock, so they cannot disagree when the window thread
 // (F1, Esc), the polling thread (combo) and the present path (Continue, B) race.
@@ -1614,6 +1615,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     if (g_perf_save.exchange(0)) cfg_save();
     perf_tick(plat_now_ns(), t);
     amiibo_tick();
+    bool picker_opening = amiibo_take_picker_request() && !g_amiibo_picker;
+    if (picker_opening) {
+        g_amiibo_picker = true;
+        set_open(1);
+        g_reset.store(1);
+    }
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
@@ -1673,7 +1680,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
-    if (open) layout_menu(t->width, t->height, scale);
+    if (open && g_amiibo_picker) {
+        if (amiibo_picker(picker_opening)) {
+            g_amiibo_picker = false;
+            set_open(0);
+        }
+    } else if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
