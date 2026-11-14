@@ -106,7 +106,7 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
 - Resolution. Patch sets make the game read its output, swapchain and scene sizes from the patch page
   (MacNativeGames' sites); `resolution.c` sets them from `output_res` and `render_scale` and grows the texture heap
   and the application pool to match. When the window is larger than the output, `vk_fsr.c` runs AMD FSR 1 (EASU,
-  RCAS) on the present. An `output_res` that is not 16:9 (more than 1% off, `res_is_16x9`) also switches on the
+  RCAS) on the present; before it, `antialiasing = smaa` runs SMAA 1x (`vk_smaa.c`) on the picture at the game resolution. An `output_res` that is not 16:9 (more than 1% off, `res_is_16x9`) also switches on the
   `aspect` patch set, which hands the output's ratio to the camera, and `romfs.c` `overlay_init` loads the
   `romfs-patches-<w>x<h>` overlay for it when it exists (`tools/make_romfs_patches.py --aspect`, laid out by
   `tools/ultrawide_layout.py`; the installer builds fifteen sizes: 21:9 2560x1080, 3440x1440, 3840x1600, 5120x2160,
