@@ -67,8 +67,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                               "not. The game's menus and dialogue stay visible (game 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "When idle",
     [UI_MENU_HIDE_HUD_IDLE] = "Hide HUD after",
-    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Minutes without input before the HUD hides.",
-    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f min",
+    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Time without input before the HUD hides.",
+    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f min", [UI_MENU_HIDE_HUD_IDLE_SEC_FMT] = "%.0f s",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
@@ -608,8 +608,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                               "не считается. Меню и диалоги игры остаются видны (игра 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "При бездействии",
     [UI_MENU_HIDE_HUD_IDLE] = "Скрывать через",
-    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Минуты без ввода, после которых интерфейс скрывается.",
-    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f мин",
+    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Время без ввода, после которого интерфейс скрывается.",
+    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f мин", [UI_MENU_HIDE_HUD_IDLE_SEC_FMT] = "%.0f с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
@@ -1188,8 +1188,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                               "não conta. Os menus e diálogos do jogo continuam visíveis (jogo 1.4.3).",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "Quando ocioso",
     [UI_MENU_HIDE_HUD_IDLE] = "Ocultar HUD após",
-    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Minutos sem comandos até o HUD sumir.",
-    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f min",
+    [UI_MENU_HIDE_HUD_IDLE_DESC] = "Tempo sem comandos até o HUD sumir.",
+    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f min", [UI_MENU_HIDE_HUD_IDLE_SEC_FMT] = "%.0f s",
     [UI_MENU_GRAPHICS] = "Imagem",
     [UI_MENU_OUTPUT_RES] = "Resolução do jogo",
     [UI_MENU_OUTPUT_RES_DESC] = "O tamanho em que o jogo desenha a imagem e a interface. Acima de 1920 x 1080 o jogo "
@@ -1776,8 +1776,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                               "键或移动时恢复显示，转动镜头不算。游戏的菜单和对话仍会显示（游戏 1.4.3）。",
     [UI_MENU_HIDE_HUD_WHEN_IDLE] = "闲置时",
     [UI_MENU_HIDE_HUD_IDLE] = "隐藏 HUD 前等待",
-    [UI_MENU_HIDE_HUD_IDLE_DESC] = "无输入多少分钟后隐藏 HUD。",
-    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f 分钟",
+    [UI_MENU_HIDE_HUD_IDLE_DESC] = "无输入多久后隐藏 HUD。",
+    [UI_MENU_HIDE_HUD_IDLE_FMT] = "%.0f 分钟", [UI_MENU_HIDE_HUD_IDLE_SEC_FMT] = "%.0f 秒",
 
     [UI_MENU_GRAPHICS] = "画面",
     [UI_MENU_OUTPUT_RES] = "游戏分辨率",

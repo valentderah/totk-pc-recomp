@@ -132,7 +132,7 @@ static const CfgMeta metas[] = {
     {"FULLSCREEN", "0", "0|1", LIVE}, {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
-    {"HIDE_HUD", "0", "0|1|auto", LIVE}, {"HIDE_HUD_IDLE", "5", "1..60", LIVE},   // vk_hud.c, read at each present
+    {"HIDE_HUD", "0", "0|1|auto", LIVE}, {"HIDE_HUD_IDLE", "300", "30|60|120|300|600|900|1800|3600", LIVE},   // vk_hud.c, read at each present
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
