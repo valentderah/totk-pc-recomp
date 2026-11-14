@@ -942,6 +942,18 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// A target of the scene's shape (resolution.c's scene size, within 5 %; the dynamic resolution tiers keep it). In the
+// inventory the game renders the items' icons as the slots fill in, each through a G-buffer and a light target of its
+// own with a D32F depth, square (432x432 or 426x426 at a 3840x2160 scene) and with no wider G-buffer before it in the
+// frame; DLSS armed on that, scaled it to the output and wrote it over the menu, so a weapon filled the screen on the
+// frames an icon was drawn.
+static int scene_shaped(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)c->width * s[1], b = (uint64_t)c->height * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -1081,8 +1093,38 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
 }
 
+// More than half the scene size resolution.c set, on each side (the dynamic resolution tiers go down to 80 %). Around
+// the quick weapon menu the only G-buffer before the scene's end is at times the half-size one (1920x1080 at a
+// 3840x2160 scene), and the half-size RGBA16F effects target with its D32F depth armed; DLSS scaled the effects to the
+// output in place of the scene, which showed dark and blurred for that frame.
+static int scene_large(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    return c->width * 2 > s[0] && c->height * 2 > s[1];
+}
+
 static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
+}
+
+// The bloom chain's first pass: at most a quarter of the scene's width, into level 0 of a scene colour target. At some
+// views (seen in the yard of Lookout Landing) the game draws a full-screen pass without depth into the light target,
+// then a half-size scene colour target and its mips, and only then the light target with the scene depth. Level 1 of
+// those mips is a quarter of the scene's width; taken for the bloom it ended the scene before anything was armed, DLSS
+// skipped those frames, and the picture flickered between anti-aliased frames and plain ones as the view changed.
+// The pass also has the scene's shape (resolution.c's scene size, within 5 %) and no depth. In rain by a waterfall the
+// game drew two transparents into the light target with the scene depth before its sky lookups (25x25 and 256x256
+// RGBA16F) and its quarter-size particles (960x540 RGBA16F with a depth of their own), which then ended the armed
+// scene: DLSS ran before the mist and most transparents, which were drawn over its picture unprocessed, on runs of
+// frames, and the mist in the distance darkened or brightened for a frame wherever a frame in between came out whole.
+static int bloom_start(const VkExec *ex, uint32_t scene_w) {
+    const VkExecTarget *c = &ex->color[0];
+    if (!ex->pass_w || ex->pass_w * 4 > scene_w || !c->image || !scene_color(c->format) || c->level || ex->depth.image)
+        return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)ex->pass_w * s[1], b = (uint64_t)ex->pass_h * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
@@ -1116,8 +1158,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (D.gbuf && !D.armed && !D.ended && !z->image && ex->pass_ncolor == 1 && c->image && scene_color(c->format) &&
         c->width >= D.gbuf_w && !c->level)
         D.nodepth = c->image;
-    if (D.nodepth && !D.armed && !D.ended && ex->pass_w && ex->pass_w * 4 <= D.gbuf_w && c->image &&
-        scene_color(c->format)) {
+    if (D.nodepth && !D.armed && !D.ended && bloom_start(ex, D.gbuf_w)) {
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
     }
@@ -1130,9 +1171,9 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     // first pair to arm; DLSS then scaled the effects into the light target, which filled the lens with garbage in the
     // DLAA mode.
     if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w &&
+        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w && scene_shaped(c) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
-        c->samples <= 1 && !c->is3d) {
+        c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
         D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
         if (!first) return 0;
@@ -1141,11 +1182,11 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     }
     if (!D.armed) return 0;
     if (!D.ended) {
-        // The bloom chain's first pass ends the scene: a pass at most a quarter of the scene's width into a scene
-        // colour target. With the camera rune or the scope open the game draws a 160-wide depth-only pass and 160x90
-        // RG16F and RGBA8 passes right after the lighting, then more geometry and the transparents; DLSS ended the
-        // scene at those, the next G-buffer pass disarmed it and the scaling pass found nothing to evaluate.
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width || !c->image || !scene_color(c->format)) return 0;
+        // The bloom chain's first pass ends the scene (bloom_start). With the camera rune or the scope open the game
+        // draws a 160-wide depth-only pass and 160x90 RG16F and RGBA8 passes right after the lighting, then more
+        // geometry and the transparents; DLSS ended the scene at those, the next G-buffer pass disarmed it and the
+        // scaling pass found nothing to evaluate.
+        if (!bloom_start(ex, D.color.width)) return 0;
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
         unsigned o[2], s[2];
