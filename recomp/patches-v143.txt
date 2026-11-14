@@ -42,6 +42,13 @@ site realtime main 2daa78 1e210800 d503201f   # fmul s0, s0, s1 -> nop
 # keeps equipment locked until a load. Stepping while above 0 takes the remainder below 0 like any other last step.
 site realtime main 2b036c 0f016681 0f000401   # movi v1.2s, #0x34, lsl #24 (FLT_EPSILON) -> movi v1.2s, #0
 
+# Charged-attack hit records above 60 fps: the weapon's hit pool holds 10 records and one charged swing at a high
+# frame rate fills it; the insert then fails and the list of hits made this frame stays empty. The game reads the
+# empty list's slot (main+0x2906de0) and dereferences it before its own count == 0 check, which faults. Send both
+# count == 0 branches to that check (main+0x2906df0) instead; a non-empty list is unchanged.
+site realtime main 2906d98 34000248 340002c8   # cbz w8, 0x2906de0 -> 0x2906df0 (first loop's empty check)
+site realtime main 2906dc0 34000108 34000188   # cbz w8, 0x2906de0 -> 0x2906df0 (second loop's empty check)
+
 # Hair and cloth: the actor animation update builds a second clock {seconds = factor / 30, ratio = factor} per
 # rendered frame. 1.4.3 inlines it in two actor paths, where the factor was just stored to the ratio slot: the
 # replacement stores measured ratio * factor there and computes measured seconds * factor. Two other callers share the
