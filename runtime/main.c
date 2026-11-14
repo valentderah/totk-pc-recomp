@@ -568,6 +568,7 @@ static int selftest(void) {
     CHECK(s.functions > 0, "no functions linked");
     Cpu *c = plat_aligned_alloc(sizeof(Cpu), 64);
     memset(c, 0, sizeof *c);
+    rt_fpcr_threshold(c);
     uint64_t r = rt_call(c, probe, 1, (uint64_t)7);
     CHECK(rt_dispatch_lookup(probe) && r == 42 && host_probe_hits == 1 && c->x[30] == 0,
           "a registered host function does not dispatch through rt_call");
