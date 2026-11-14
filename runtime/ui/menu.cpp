@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,6 +47,7 @@ extern "C" {
 #include "platform/platform.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
+#include "stats.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -383,10 +385,12 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST=<frame>[:<frames per page>]: at that presented frame the menu opens on its first tab; each tab stays
 // <frames per page> frames (default 30) and its last frame's swapchain image goes to TOTK_MENU_TEST_DIR (default: the
 // working directory) as menu-test-<frame>-<page>.png; after the last tab the menu closes.
+// TOTK_MENU_TEST_FOCUS=<row id>: the row of that id ("##ach20") takes the cursor when its page is drawn, so the shot of
+// that page shows the page scrolled to it.
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_ACHIEVEMENTS, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -765,6 +769,194 @@ static void tab_game(float scale) {
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
     row_play_time();
+    opt_end();
+}
+
+// Achievements: the statistics of the save the game wrote last and the achievements on them (stats.c). Read only.
+static void ach_date(uint64_t when, char *out, size_t n) {
+    time_t t = (time_t)when;
+    struct tm tm;
+#ifdef _WIN32
+    if (localtime_s(&tm, &t)) tm = {};
+#else
+    if (!localtime_r(&t, &tm)) tm = {};
+#endif
+    strftime(out, n, "%Y-%m-%d %H:%M", &tm);
+}
+
+// A statistic; with a total (weapons 90 / 144) the row is a bar of how much of it the save has.
+static void ach_count_row(const char *id, UiTextId label, uint32_t have, uint32_t max, UiTextId desc) {
+    char value[48];
+    if (max) snprintf(value, sizeof value, "%u / %u", have, max);
+    else snprintf(value, sizeof value, "%u", have);
+    if (max) opt_progress_row(id, menu_text(label), value, nullptr, menu_text(desc), (float)have / (float)max, have >= max);
+    else opt_text_row(id, menu_text(label), value, nullptr, menu_text(desc), false);
+}
+
+// The achievement categories of the tab, by what an achievement counts.
+enum { ACH_CATS = 6 };
+static int ach_cat(StatsKind k) {
+    switch (k) {
+    case STATS_KILLS:
+    case STATS_KINDS: return 0;        // monsters
+    case STATS_FAMILY: return 1;       // hunting, family by family
+    case STATS_MEALS:
+    case STATS_ELIXIRS:
+    case STATS_SIMPLE:
+    case STATS_DUBIOUS: return 3;      // the kitchen: the recipe book
+    case STATS_DISTANCE:
+    case STATS_DIST_SKY:
+    case STATS_DIST_DEPTHS: return 4;  // travel: the Hero's Path
+    case STATS_HEARTS:
+    case STATS_STAMINA: return 5;      // the hero
+    default: return 2;                 // collection: weapons, armor, sets, materials, compendium
+    }
+}
+
+// The description pane of an achievement: its title, what it counts, the progress and when it was unlocked.
+static void ach_desc(const StatsAch *a, const char *title, char *out, size_t n) {
+    static const UiTextId kinds[] = {UI_ACH_D_KILLS,  UI_ACH_D_KINDS,    UI_ACH_D_FAMILY,     UI_ACH_D_WEAPONS,
+                                     UI_ACH_D_ARMOR,  UI_ACH_D_SETS,     UI_ACH_D_ITEMS,      UI_ACH_D_COMPENDIUM,
+                                     UI_ACH_D_MEALS,  UI_ACH_D_ELIXIRS,  UI_ACH_D_SIMPLE,     UI_ACH_D_DUBIOUS,
+                                     UI_ACH_D_KM,     UI_ACH_D_KM_SKY,   UI_ACH_D_KM_DEPTHS,
+                                     UI_ACH_D_HEARTS, UI_ACH_D_STAMINA};   // in StatsKind order
+    uint32_t have = a->progress < a->target ? a->progress : a->target;
+    char progress[96], state[96];
+    snprintf(progress, sizeof progress, menu_text(UI_ACH_PROGRESS), have, a->target,
+             a->target ? (unsigned)(100ull * have / a->target) : 0u);
+    if (a->unlocked > 1) {
+        char when[32];
+        ach_date(a->unlocked, when, sizeof when);
+        snprintf(state, sizeof state, menu_text(UI_ACH_UNLOCKED_AT), when);
+    } else {
+        snprintf(state, sizeof state, "%s", menu_text(a->unlocked ? UI_ACH_UNLOCKED : UI_ACH_LOCKED));
+    }
+    snprintf(out, n, "%s\n\n%s\n\n%s\n%s\n\n%s", title, menu_text(kinds[a->kind]), progress, state, menu_text(UI_ACH_KEEPS));
+}
+
+static void ach_title(const StatsView *s, const StatsAch *a, char *out, size_t n) {
+    switch (a->kind) {
+    case STATS_KILLS:
+        if (a->target == 1) snprintf(out, n, "%s", menu_text(UI_ACH_T_KILLS_FIRST));
+        else snprintf(out, n, menu_text(UI_ACH_T_KILLS), a->target);
+        break;
+    case STATS_KINDS: snprintf(out, n, menu_text(UI_ACH_T_KINDS), a->target); break;
+    case STATS_FAMILY: snprintf(out, n, menu_text(UI_ACH_T_FAMILY), s->family[a->family].name, a->target); break;
+    case STATS_WEAPONS: snprintf(out, n, menu_text(UI_ACH_T_WEAPONS), a->target); break;
+    case STATS_ARMOR: snprintf(out, n, menu_text(UI_ACH_T_ARMOR), a->target); break;
+    case STATS_SETS:
+        if (a->target == 1) snprintf(out, n, "%s", menu_text(UI_ACH_T_SETS_FIRST));
+        else snprintf(out, n, menu_text(UI_ACH_T_SETS), a->target);
+        break;
+    case STATS_ITEMS: snprintf(out, n, menu_text(UI_ACH_T_ITEMS), a->target); break;
+    case STATS_COMPENDIUM: snprintf(out, n, menu_text(UI_ACH_T_COMPENDIUM), a->target); break;
+    case STATS_MEALS: snprintf(out, n, menu_text(UI_ACH_T_MEALS), a->target); break;
+    case STATS_ELIXIRS: snprintf(out, n, menu_text(UI_ACH_T_ELIXIRS), a->target); break;
+    case STATS_SIMPLE: snprintf(out, n, menu_text(UI_ACH_T_SIMPLE), a->target); break;
+    case STATS_DUBIOUS: snprintf(out, n, "%s", menu_text(UI_ACH_T_DUBIOUS)); break;
+    case STATS_DISTANCE: snprintf(out, n, menu_text(UI_ACH_T_KM), a->target); break;
+    case STATS_DIST_SKY: snprintf(out, n, menu_text(UI_ACH_T_KM_SKY), a->target); break;
+    case STATS_DIST_DEPTHS: snprintf(out, n, menu_text(UI_ACH_T_KM_DEPTHS), a->target); break;
+    case STATS_HEARTS: snprintf(out, n, menu_text(UI_ACH_T_HEARTS), a->target); break;
+    case STATS_STAMINA: snprintf(out, n, menu_text(UI_ACH_T_STAMINA), a->target); break;
+    }
+}
+
+static void tab_achievements(float scale) {
+    static StatsView s;   // a copy per frame: stats.c updates it on its own thread
+    opt_begin("##achievements", scale);
+    opt_toggle("TOTK_ACHIEVEMENTS", UI_ACH_SWITCH, UI_ACH_SWITCH_DESC);
+    if (!cfg_bool("TOTK_ACHIEVEMENTS")) {   // off: only the switch, and stats.c reads and writes nothing
+        opt_end();
+        return;
+    }
+    stats_init();   // switched on in this run: starts the thread the first time (stats.c)
+    stats_view(&s);
+    opt_group(UI_ACH_GROUP_STATS);
+    if (!s.valid) {
+        opt_text(UI_ACH_NO_SAVE);
+    } else {
+        char when[32], note[256];   // the Russian text is about 150 bytes of UTF-8
+        ach_date(s.when, when, sizeof when);
+        snprintf(note, sizeof note, menu_text(s.live ? UI_ACH_LIVE : UI_ACH_FROM_SAVE), when);
+        opt_text_str(note);
+        ach_count_row("##st_kills", UI_ACH_KILLS, s.kills, 0, UI_ACH_STATS_DESC);
+        ach_count_row("##st_kinds", UI_ACH_KINDS, s.kinds, s.kinds_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_weapons", UI_ACH_WEAPONS, s.weapons, s.weapons_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_armor", UI_ACH_ARMOR, s.armor, s.armor_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_sets", UI_ACH_SETS, s.sets, s.sets_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_items", UI_ACH_ITEMS, s.items, s.items_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_compendium", UI_ACH_COMPENDIUM, s.compendium, s.compendium_max, UI_ACH_STATS_DESC);
+        ach_count_row("##st_hearts", UI_ACH_HEARTS, s.hearts, 0, UI_ACH_STATS_DESC);
+        char wheels[32];
+        snprintf(wheels, sizeof wheels, "%.1f", s.stamina_wheels);
+        opt_text_row("##st_stamina", menu_text(UI_ACH_STAMINA), wheels, nullptr, menu_text(UI_ACH_STATS_DESC), false);
+        opt_group(UI_ACH_CAT_KITCHEN);
+        ach_count_row("##st_meals", UI_ACH_MEALS, s.meals, s.meals_max, UI_ACH_KITCHEN_DESC);
+        ach_count_row("##st_elixirs", UI_ACH_ELIXIRS, s.elixirs, s.elixirs_max, UI_ACH_KITCHEN_DESC);
+        ach_count_row("##st_simple", UI_ACH_SIMPLE, s.simple, s.simple_max, UI_ACH_KITCHEN_DESC);
+        opt_text_row("##st_dubious", menu_text(UI_ACH_DUBIOUS), menu_text(s.dubious ? UI_ACH_YES : UI_ACH_NO), nullptr,
+                     menu_text(UI_ACH_D_DUBIOUS), false);
+        opt_group(UI_ACH_CAT_TRAVEL);
+        const UiTextId km_rows[4] = {UI_ACH_KM, UI_ACH_KM_SKY, UI_ACH_KM_SURFACE, UI_ACH_KM_DEPTHS};
+        const uint32_t km_vals[4] = {s.dist_m, s.dist_layer_m[0], s.dist_layer_m[1], s.dist_layer_m[2]};
+        for (int k = 0; k < 4; k++) {
+            char id[24], km[32];
+            snprintf(id, sizeof id, "##st_km%d", k);
+            snprintf(km, sizeof km, menu_text(UI_ACH_KM_VALUE), km_vals[k] / 1000.0);
+            opt_text_row(id, menu_text(km_rows[k]), km, nullptr, menu_text(UI_ACH_TRAVEL_DESC), false);
+        }
+        ach_count_row("##st_deaths", UI_ACH_DEATHS, s.deaths, 0, UI_ACH_TRAVEL_DESC);
+        ach_count_row("##st_warps", UI_ACH_WARPS, s.warps, 0, UI_ACH_TRAVEL_DESC);
+        opt_group(UI_ACH_GROUP_FAMILIES);
+        for (int f = 0; f < STATS_FAMILIES; f++) {
+            if (!s.family[f].name[0]) continue;
+            char id[24], value[24];
+            snprintf(id, sizeof id, "##st_family%d", f);
+            snprintf(value, sizeof value, "%u", s.family[f].count);
+            opt_text_row(id, s.family[f].name, value, nullptr, menu_text(UI_ACH_FAMILY_DESC), false);
+        }
+    }
+    // Categories: stats.c defines the achievements of one category together, so a heading goes before each run, with
+    // how many of the category are unlocked.
+    int unlocked[ACH_CATS] = {0}, total[ACH_CATS] = {0};
+    for (int i = 0; i < s.nach; i++) {
+        const StatsAch *a = &s.ach[i];
+        if (a->kind == STATS_FAMILY && !s.family[a->family].name[0]) continue;
+        total[ach_cat(a->kind)]++;
+        unlocked[ach_cat(a->kind)] += a->unlocked != 0;
+    }
+    int shown_cat = -1;
+    for (int i = 0; i < s.nach; i++) {
+        const StatsAch *a = &s.ach[i];
+        if (a->kind == STATS_FAMILY && !s.family[a->family].name[0]) continue;
+        int cat = ach_cat(a->kind);
+        if (cat != shown_cat) {
+            static const UiTextId names[ACH_CATS] = {UI_ACH_CAT_MONSTERS, UI_ACH_CAT_HUNT, UI_ACH_CAT_COLLECTION,
+                                                     UI_ACH_CAT_KITCHEN, UI_ACH_CAT_TRAVEL, UI_ACH_CAT_HERO};
+            char heading[128];
+            snprintf(heading, sizeof heading, "%s  %d / %d", menu_text(names[cat]), unlocked[cat], total[cat]);
+            opt_group_text(heading);
+            shown_cat = cat;
+        }
+        char id[24], title[160], value[48], note[64] = "", desc[1536];
+        snprintf(id, sizeof id, "##ach%d", i);
+        ach_title(&s, a, title, sizeof title);
+        if (a->unlocked) {
+            snprintf(value, sizeof value, "%s", menu_text(UI_ACH_UNLOCKED));
+            if (a->unlocked > 1) {
+                char when[32];
+                ach_date(a->unlocked, when, sizeof when);
+                snprintf(note, sizeof note, menu_text(UI_ACH_DONE), when);
+            }
+        } else {
+            snprintf(value, sizeof value, "%u / %u", a->progress < a->target ? a->progress : a->target, a->target);
+        }
+        ach_desc(a, title, desc, sizeof desc);
+        uint32_t have = a->progress < a->target ? a->progress : a->target;
+        opt_progress_row(id, title, value, note[0] ? note : nullptr, desc, a->target ? (float)have / (float)a->target : 0.0f,
+                         a->unlocked != 0);
+    }
     opt_end();
 }
 
@@ -1149,7 +1341,7 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_ACHIEVEMENTS, UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
                                               UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
@@ -1299,6 +1491,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             switch (k) {
             case TAB_SCREEN: tab_screen(scale); break;
             case TAB_GAME: tab_game(scale); break;
+            case TAB_ACHIEVEMENTS: tab_achievements(scale); break;
             case TAB_MODS: tab_mods(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
@@ -1621,6 +1814,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_test.opened = frame;
             g_test.page = 0;
             g_tab_request = 0;
+            if (const char *row = cfg_get("TOTK_MENU_TEST_FOCUS")) opt_focus_key(row);
             set_open(1);
             open = true;
         } else if (!g_perf_mode) {

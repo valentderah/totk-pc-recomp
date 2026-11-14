@@ -1,0 +1,41 @@
+// Statistics and achievements read from the game's save (stats.c), for the Achievements tab (ui/menu.cpp).
+#pragma once
+
+#include <stdint.h>
+
+#define STATS_FAMILIES 18   // monster families with a defeat count of their own (stats.c kFamilies)
+#define STATS_ACH_MAX 96
+
+typedef enum {
+    STATS_KILLS, STATS_KINDS, STATS_FAMILY, STATS_WEAPONS, STATS_ARMOR, STATS_SETS, STATS_ITEMS, STATS_COMPENDIUM,
+    STATS_MEALS, STATS_ELIXIRS, STATS_SIMPLE, STATS_DUBIOUS, STATS_DISTANCE, STATS_DIST_SKY, STATS_DIST_DEPTHS,
+    STATS_HEARTS, STATS_STAMINA
+} StatsKind;
+
+typedef struct {
+    StatsKind kind;
+    int family;          // STATS_FAMILY: index into StatsView.family
+    uint32_t target, progress;
+    uint64_t unlocked;   // Unix time of the unlock, 0 while locked
+} StatsAch;
+
+typedef struct {
+    int valid;           // 1 once a save was read
+    int live;            // 1: read from the game's memory, else from the save (when: its write time)
+    uint64_t when;       // the save's write time, Unix seconds
+    uint32_t kills, kinds, kinds_max;
+    struct { uint32_t count; char name[64]; } family[STATS_FAMILIES];   // name: the game's, in its language
+    uint32_t weapons, weapons_max, armor, armor_max, sets, sets_max, items, items_max, compendium, compendium_max;
+    uint32_t meals, meals_max, elixirs, elixirs_max, simple, simple_max, dubious;   // the recipe book: kinds cooked
+    // The Hero's Path (footprint.sav): metres travelled on each layer (sky, surface, Depths), deaths, fast travels
+    uint32_t dist_m, dist_layer_m[3], deaths, warps, footprints;
+    uint32_t hearts;
+    float stamina_wheels;
+    int nach;
+    StatsAch ach[STATS_ACH_MAX];
+} StatsView;
+
+void stats_init(void);              // the reading thread, once TOTK_ACHIEVEMENTS is on; game runs only (main.c,
+                                    // and the Achievements tab when the player switches it on)
+void stats_save_changed(void);      // fs_host.c: a save commit changed files
+void stats_view(StatsView *out);    // a copy of the latest statistics
