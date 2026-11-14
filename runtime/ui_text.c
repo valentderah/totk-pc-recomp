@@ -249,6 +249,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Stereo or 5.1 surround output. Automatic picks 5.1 when the Windows speaker setup "
                                     "has six or more channels. Applies after a restart.",
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
+    [UI_MENU_AUDIO_DEVICE] = "Output device",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Where the sound plays. System default follows the Windows default device. A chosen "
+                                  "device that is unplugged falls back to the system default until it is back. "
+                                  "Applies at once.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "System default",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
@@ -781,6 +786,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Стерео или объёмный звук 5.1. Автоматически выбирается 5.1, если в Windows "
                                     "настроено шесть каналов или больше. Применяется после перезапуска.",
     [UI_MENU_CHANNELS_AUTO] = "Автоматически", [UI_MENU_CHANNELS_STEREO] = "Стерео", [UI_MENU_CHANNELS_51] = "Объёмный 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Устройство вывода",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Куда выводится звук. Системное по умолчанию следует за устройством по умолчанию "
+                                  "в Windows. Если выбранное устройство отключить, звук идёт на системное, пока оно "
+                                  "не вернётся. Применяется сразу.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Системное по умолчанию",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
@@ -1232,6 +1242,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Saída estéreo ou surround 5.1. Automático escolhe 5.1 quando a configuração de "
                                     "alto-falantes do Windows tem seis canais ou mais. Vale após reiniciar.",
     [UI_MENU_CHANNELS_AUTO] = "Automático", [UI_MENU_CHANNELS_STEREO] = "Estéreo", [UI_MENU_CHANNELS_51] = "Surround 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Dispositivo de saída",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Onde o som toca. Padrão do sistema segue o dispositivo padrão do Windows. Um "
+                                  "dispositivo escolhido que for desconectado volta ao padrão do sistema até "
+                                  "reaparecer. Vale na hora.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Padrão do sistema",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
@@ -1846,6 +1861,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS] = "扬声器",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "立体声或 5.1 环绕声输出。选择自动时，若 Windows 扬声器设置有六个或更多声道则使用 5.1。重启后生效。",
     [UI_MENU_CHANNELS_AUTO] = "自动", [UI_MENU_CHANNELS_STEREO] = "立体声", [UI_MENU_CHANNELS_51] = "5.1 环绕声",
+    [UI_MENU_AUDIO_DEVICE] = "输出设备",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "声音从哪个设备播放。系统默认跟随 Windows 的默认设备。所选设备被拔出时改用系统默认，"
+                                  "设备重新连接后恢复。立即生效。",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "系统默认",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",

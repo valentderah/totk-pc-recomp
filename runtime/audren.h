@@ -186,6 +186,10 @@ void audio_mixer_render(AudioRenderer *r, double seconds);   // after audio_voic
 // many ns (the ring is at its target), -1 leaves the pace to the render thread's timer (no device, renderer stopped,
 // device stalled).
 int64_t audio_mixer_pace_ns(AudioRenderer *r, uint64_t now);
+// The playback devices SDL lists now, by name (TOTK_AUDIO_DEVICE takes one), at most max; 0 while SDL audio is not up
+// (TOTK_AUDIO=none). Any thread; the Sound tab of the menu lists them.
+enum { AUDIO_DEVICE_NAME_MAX = 256 };
+int audio_output_devices(char (*names)[AUDIO_DEVICE_NAME_MAX], int max);
 uint64_t audio_voice_consumed(const AudioRenderer *r, ServerVoice *v, int frames);   // source samples over one frame; advances v->fraction
 int audio_buffer_empty(const AudrenWaveBuffer *b);   // no samples to decode: played as soon as it is reached
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // IAudioDevice

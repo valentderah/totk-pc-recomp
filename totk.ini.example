@@ -339,6 +339,10 @@
 # Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
 # game is told the same channel count and mixes for it. Takes effect at the next start.
 # audio_channels = stereo
+# Output device: its name as the Sound tab of the menu lists it (SDL's name, e.g. Speakers (Realtek(R) Audio)), or
+# empty / default for the system default device, which follows the Windows default. A named device that is not
+# connected plays on the system default until it is back. Changes while the game runs take effect at once.
+# audio_device = default
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
