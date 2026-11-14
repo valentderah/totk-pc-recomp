@@ -58,6 +58,24 @@ int menu_cursor_menu(void);
 int menu_cursor_strip(void);
 // The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
 int menu_cursor_camera(void);
+// menu_cursor.c, the game's menus by name for quicksave.c (game thread, 1.4.3): a screen of that layout is open; the
+// screen with the focus box (its layout name) and the focused node, 0 with none; the focused screen's shown button of
+// parts layout parts with root pane root (usable_out: it can be pressed), 0 none; the load list's manual save entry;
+// the focus to node (1 once it is there)
+int menu_ui_open(const char *layout);
+int menu_ui_focus(char *screen, size_t n, uint64_t *node);
+uint64_t menu_ui_button(const char *parts, const char *root, int *usable_out);
+uint64_t menu_ui_manual_save(void);
+int menu_ui_focus_to(uint64_t node);
+// quicksave.c (TOTK_QUICKSAVE): keys: the keys held now, its two keys (TOTK_QUICKSAVE_KEY, TOTK_QUICKLOAD_KEY) start
+// it when pressed and act is set, and are cleared from down either way; request: save (0) or load
+// (1), as the keys and the script lines QUICKSAVE / QUICKLOAD do; poll: once per game pad read, 1 while it drives the
+// game's menus with its own presses in place of the input; busy: it runs
+int quicksave_on(void);   // TOTK_QUICKSAVE is on and the game is 1.4.3
+void quicksave_keys(uint8_t *down, int act);
+void quicksave_request(int load);
+int quicksave_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+int quicksave_busy(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

@@ -86,6 +86,9 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `bind_<button>` | Remaps one Switch button or stick direction to `pad:<name>` or `key:<name>` entries; covers `bind_a`, `bind_b`, `bind_x`, `bind_y`, `bind_l`, `bind_r`, `bind_zl`, `bind_zr`, `bind_plus`, `bind_minus`, `bind_left`, `bind_up`, `bind_right`, `bind_down`, `bind_lclick`, `bind_rclick`, `bind_lstick_left`, `bind_lstick_up`, `bind_lstick_right`, `bind_lstick_down`, `bind_rstick_left`, `bind_rstick_up`, `bind_rstick_right`, `bind_rstick_down` and `bind_shake`. | A line replaces every default of that button; button prompts in the game still show the default layout. The Controls tab of the menu writes these lines; `docs/controls.md` lists the entry names. | Safe |
+| `quicksave` (default `0`) | `1`: `quicksave_key` saves and `quickload_key` loads the game's manual save through the game's own pause menu (`runtime/quicksave.c`, game 1.4.3; `docs/controls.md`, "Quick save"). | The pause menu opens by itself for a few seconds on each key; quick save replaces the game's one manual save, as Save in its System tab does, and quick load reloads it, losing the progress since. | Save risk |
+| `quicksave_key` (default `f6`) | The key of quick save with `quicksave = 1`: a key name of the remapping list (`docs/controls.md`, "Remapping") or `none`; an unknown name is logged and `f6` is used. | While `quicksave = 1` the key reaches no binding. | Safe |
+| `quickload_key` (default `f7`) | The key of quick load with `quicksave = 1`, as `quicksave_key`; an unknown name is logged and `f7` is used, the same key as `quicksave_key` leaves loading without a key. | While `quicksave = 1` the key reaches no binding; it reloads the manual save, losing the progress since. | Safe |
 
 ## Paths and files
 

@@ -499,3 +499,104 @@ int menu_cursor_shortcut(void) {
     if (f.screen) layout_name(f.screen, nm, sizeof nm);
     return f.screen && (!strcmp(nm, "ShortCutMainItem_00") || !strcmp(nm, "ShortCut_00"));
 }
+
+// ---- The game's menus for quicksave.c, on the game thread: the same reads and focus writes as above, by name
+static void main_range(void) {
+    if (!main_lo) main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
+}
+// nn::ui2d::Pane: its name (+0xb0, 24 characters) and its children, an intrusive list whose links (+0x8 in each
+// child) start at +0x20
+enum { PANE_CHILDREN = 0x20, PANE_LINK = 0x8, PANE_NAME = 0xb0, PANE_NAME_MAX = 24 };
+static int pane_named(uint64_t pane, const char *name) {
+    if (!ok_at(pane, PANE_NAME + PANE_NAME_MAX)) return 0;
+    char nm[PANE_NAME_MAX + 1];
+    memcpy(nm, (const void *)(uintptr_t)(pane + PANE_NAME), PANE_NAME_MAX);
+    nm[PANE_NAME_MAX] = 0;
+    return !strcmp(nm, name);
+}
+// The pane called name in the tree under pane, depth first, 0: none
+static uint64_t pane_find(uint64_t pane, const char *name, int depth) {
+    if (pane_named(pane, name)) return pane;
+    if (depth >= 6 || !ok_at(pane, PANE_NAME + PANE_NAME_MAX)) return 0;
+    uint64_t head = pane + PANE_CHILDREN;
+    int n = 0;
+    for (uint64_t link = rd64(head); link != head && n < 64; link = rd64(link), n++) {
+        if (!ok_at(link, 16)) return 0;
+        uint64_t child = link - PANE_LINK;
+        if (!ok_at(child, PANE_NAME + PANE_NAME_MAX) || rd64(child + PANE_PARENT) != pane) return 0;
+        uint64_t hit = pane_find(child, name, depth + 1);
+        if (hit) return hit;
+    }
+    return 0;
+}
+
+int menu_ui_open(const char *layout) {
+    main_range();
+    uint64_t sm = screen_mgr();
+    if (!sm) return 0;
+    int32_t n = (int32_t)rd32(sm + SM_COUNT);
+    uint64_t arr = rd64(sm + SM_SCREENS);
+    if (n <= 0 || n > 1024 || !ok_at(arr, 8ull * (uint64_t)n)) return 0;
+    for (int32_t i = 0; i < n; i++) {
+        uint64_t scr = rd64(arr + 8ull * (uint64_t)i);
+        if (!game_object(scr, SCR_REQUEST + 1) || rd8(scr + SCR_STATE) != SCR_OPENED) continue;
+        char nm[48];
+        layout_name(scr, nm, sizeof nm);
+        if (!strcmp(nm, layout)) return 1;
+    }
+    return 0;
+}
+
+int menu_ui_focus(char *screen, size_t n, uint64_t *node) {
+    main_range();
+    Focus f = focus_now();
+    screen[0] = 0, *node = f.node;
+    if (f.screen) layout_name(f.screen, screen, n);
+    return f.screen != 0;
+}
+
+uint64_t menu_ui_button(const char *parts, const char *root, int *usable_out) {
+    main_range();
+    Focus f = focus_now();
+    if (!f.screen) return 0;
+    static uint64_t node[MAX_NODES], btn[MAX_NODES];
+    int n = nodes_of(f.screen, node, btn);
+    for (int i = 0; i < n; i++) {
+        uint64_t pane = root_pane(btn[i]);
+        char nm[48];
+        layout_name(btn[i] - SCR_LAYOUT + BTN_LAYOUT, nm, sizeof nm);   // the button's parts layout
+        if (strcmp(nm, parts) || !pane_named(pane, root) || !pane_shown(pane)) continue;
+        if (usable_out) *usable_out = usable(btn[i]);
+        return node[i];
+    }
+    return 0;
+}
+
+// SystemLoadList_00 lists the saves as PaDataFileBtn_00 entries, newest first: an autosave shows its N_AutoSave_00
+// label, an entry without a save fades N_Disable_00 out (and is not shown when the list is shorter)
+uint64_t menu_ui_manual_save(void) {
+    main_range();
+    Focus f = focus_now();
+    if (!f.screen) return 0;
+    static uint64_t node[MAX_NODES], btn[MAX_NODES];
+    int n = nodes_of(f.screen, node, btn);
+    for (int i = 0; i < n; i++) {
+        uint64_t pane = root_pane(btn[i]);
+        char nm[48];
+        layout_name(btn[i] - SCR_LAYOUT + BTN_LAYOUT, nm, sizeof nm);
+        if (strcmp(nm, "PaDataFileBtn_00") || !usable(btn[i]) || !pane_shown(pane)) continue;
+        uint64_t autosave = pane_find(pane, "N_AutoSave_00", 0), filled = pane_find(pane, "N_Disable_00", 0);
+        if (!autosave || !filled) continue;
+        if (!(rd8(autosave + PANE_FLAG) & 1) && rd8(filled + PANE_ALPHA) >= 128) return node[i];
+    }
+    return 0;
+}
+
+int menu_ui_focus_to(uint64_t node) {
+    main_range();
+    Focus f = focus_now();
+    if (!f.screen || !node) return 0;
+    if (f.node == node) return 1;
+    move_focus(&f, node);
+    return 0;
+}
