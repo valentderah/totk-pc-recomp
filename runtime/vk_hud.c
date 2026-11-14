@@ -1,6 +1,6 @@
 // Hide the game's HUD (TOTK_HIDE_HUD, totk.ini hide_hud, live): hearts, stamina wheel, map, prompts and the rest of
 // what the game lays over the world. 0 (the default) shows it, 1 hides it, auto hides
-// it after TOTK_HIDE_HUD_IDLE minutes without input (wanted).
+// it after TOTK_HIDE_HUD_IDLE seconds without input (wanted).
 //
 // Where the HUD is in a frame (measured for frame generation in PR #1089 from a frame dump of 1.4.3, and for DLSS in
 // vk_dlaa.c, "where DLAA runs in TotK's frame"): the G-buffer passes draw several colour targets with the scene's D32F
@@ -122,7 +122,7 @@ int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
     return 1;
 }
 
-// hide_hud: 0 shows the HUD, 1 hides it, auto hides it once no input came for hide_hud_idle minutes
+// hide_hud: 0 shows the HUD, 1 hides it, auto hides it once no input came for hide_hud_idle seconds
 // (input.c input_active_ns) and shows it again at the next press or left-stick move; turning the camera counts as neither. Before any input the idle time
 // counts from the first frame.
 static int wanted(void) {
@@ -137,13 +137,13 @@ static int wanted(void) {
     uint64_t now = plat_now_ns(), last = input_active_ns();
     if (!first) first = now;
     if (!last) last = first;
-    double idle_min = cfg_double("TOTK_HIDE_HUD_IDLE");
-    int hide = now > last && (double)(now - last) >= idle_min * 60e9;
+    double idle_s = cfg_double("TOTK_HIDE_HUD_IDLE");
+    int hide = now > last && (double)(now - last) >= idle_s * 1e9;
     if (hide != was) {   // the first few changes, for a run's log
         static int logs;
         if (logs < 4) {
             logs++;
-            if (hide) rt_log("hud: hide_hud = auto hides the HUD after %.1f min without input", (now - last) / 60e9);
+            if (hide) rt_log("hud: hide_hud = auto hides the HUD after %.0f s without input", (now - last) / 1e9);
             else rt_log("hud: hide_hud = auto shows the HUD again: input");
         }
         was = hide;
