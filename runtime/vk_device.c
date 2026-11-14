@@ -516,6 +516,9 @@ void vk_shutdown(void) {
 
 VkCtx *vk_ctx(void) { return g_ready ? &g_vk : NULL; }
 
+VkDevice vk_device(void) { return g_ready ? g_vk.device : VK_NULL_HANDLE; }
+VmaAllocator vk_vma(void) { return g_ready ? g_vk.vma : NULL; }
+
 static const char *fault_address_type(VkDeviceFaultAddressTypeEXT t) {
     switch (t) {
     case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "none";

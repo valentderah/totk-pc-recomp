@@ -658,12 +658,55 @@ int plat_file_list(const char *dir, const char *ext, int (*cb)(const char *name,
     HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return 0;
     do {
+        // A folder can be named "something.cai"; the picker must list it as a folder, not try to import it as a file.
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         char name[1024];
         if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) continue;
         if (!cb(name, ctx)) break;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     return 1;
+}
+
+// Each subdirectory of dir, for the blueprint file picker's folder browsing.
+int plat_dir_list(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx) {
+    wchar_t wd[WPATH], pat[WPATH + 8];
+    if (!widen(dir, wd, WPATH)) return 0;
+    swprintf(pat, WPATH + 8, L"%ls\\*", wd);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        // Skip only the "." and ".." entries a directory listing always carries. A real folder whose name begins with
+        // a dot (".cai", ".config") is a folder the player may well want to open, so it stays visible: a blanket
+        // "starts with a dot" test hid those and made them unreachable.
+        if (fd.cFileName[0] == L'.' && (fd.cFileName[1] == 0 ||
+                                        (fd.cFileName[1] == L'.' && fd.cFileName[2] == 0)))
+            continue;
+        char name[1024];
+        if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) continue;
+        if (!cb(name, ctx)) break;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return 1;
+}
+
+// Each browsable drive, so the file picker can leave the drive it is on.
+int plat_root_list(int (*cb)(const char *root, void *ctx), void *ctx) {
+    int n = 0;
+    const DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; i++) {
+        if (!(mask & (1u << i))) continue;
+        char root[8];
+        snprintf(root, sizeof root, "%c:/", 'A' + i);
+        // A drive that is present but has no media (an empty card reader) is not browsable: skip it.
+        if (GetDriveTypeA(root) == DRIVE_NO_ROOT_DIR) continue;
+        if (!plat_dir_exists(root)) continue;
+        n++;
+        if (!cb(root, ctx)) break;
+    }
+    return n;
 }
 
 // ---- virtual memory: VirtualAlloc reservations, MEM_WRITE_WATCH for the watched ones.

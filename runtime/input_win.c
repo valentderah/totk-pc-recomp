@@ -186,7 +186,9 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         }
         // The wheel comes in the same message (usButtonData, signed, + away from the player). It counts while the
         // cursor is captured, or released over the client area: a game menu with the pointer (menu_cursor.c) takes it
-        // as steps of its focus. input.c drops the notches where nothing takes them.
+        // as steps of its focus. input.c drops the notches where nothing takes them. The port's own file picker scrolls
+        // from the window's wheel events instead (ui/menu.cpp bp_picker_wheel), which keep arriving after the capture
+        // is released for its pointer.
         float px, py;
         if (ri.header.dwType == RIM_TYPEMOUSE && (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) &&
             (cur_captured || ikb_pointer(&px, &py)))

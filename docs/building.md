@@ -70,6 +70,30 @@ of them.
 2. Copy `config.example.toml` to `config.local.toml` and set the paths to your base game, the update and your console's
    keys file. `config.local.toml` is ignored by git. The tools read the keys file themselves.
 
+2b. **The blueprint preview's model decoder** (once). The preview draws each part's real model, and decoding a
+   `.bfres.mc` needs MeshCodec, whose only implementation ([dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec))
+   is GPL-2.0. None of it is in this repository, so it is built into `build\<ver>\libmeshcodec.a` beside `totk.exe`:
+
+   ```powershell
+   .venv\Scripts\python tools\build_meshcodec.py --version v143
+   ```
+
+   That fetches MeshCodec at a pinned commit into `build\meshcodec\MeshCodec` (its zstd submodule included), compiles it
+   with this repository's own C door (`tools\meshcodec_bridge.cpp`) and writes the library. Pass
+   `--meshcodec <dir>` to use a checkout you already have. `tools\build_game.py` then puts the library on the link line
+   and defines `TOTK_MESHCODEC` for every version.
+
+   It is optional. Without the library the port still builds: `TOTK_MESHCODEC` stays undefined, `runtime/model_romfs.c`
+   resolves no model, and the preview falls back to each part's collision body — the same fallback the reference viewer
+   uses for actors it has no model for. Delete `build\<ver>\libmeshcodec.a` to go back to that.
+
+   One build detail, because it is not obvious: MeshCodec calls zstd's **internal** block API, so it needs zstd's internal
+   headers, but not its sources — the symbols it calls are exported by the `libzstd.a` this port already links, and
+   compiling zstd here would only duplicate them and fail at link time.
+
+   What a build that links the library becomes, and how to distribute one, is stated in "The model decoder and the GPL" in
+   `THIRD_PARTY_NOTICES.md`.
+
 3. Extract and verify. This writes `build\extracted\v0` (1.0.0) and `build\extracted\<ver>` for each update in
    `updates`, identified by its hash; a hash mismatch stops the run. With another `[work] dir` in `config.local.toml`,
    `extracted` goes there instead, and `build_game.py` reads the ExeFS and RomFS from there:
@@ -223,6 +247,34 @@ when a setting is described neither in `totk.ini.example` nor in [settings.md](s
 table (no game files), and `totk.exe --probe-mods`. A change to the cheat VM or the cheat opcode tables
 (`runtime/cheats.c`, `tools/cheats.py`) passes `.venv\Scripts\python tests\cheats_vm_check.py`, which runs both on
 cheats of its own with clang from PATH (`--cc` names another).
+
+A change to the blueprint picker passes `python tests\picker_layout_test.py`, which compiles the real
+`runtime/blueprint_picker.c` with a stubbed platform and UI surface and checks the panel geometry at several window
+sizes, that no two rectangles overlap, that the list clears the scrollbar, and that the wheel and a thumb drag move the
+list and the thumb together (no game files and no build of the game).
+
+A change to the Autobuild history rotation passes `python tests\blueprint_rotation_test.py`, which compiles the real
+`runtime/blueprint_import.c` against stubs and checks `bp_rotate_ages`: the new creation takes age 0 on the evicted
+entry, favourites keep their age, every other entry moves down exactly one, the evicted card is the oldest free one, the
+result stays a permutation of 0..29, an all-favourite history is refused, and forty successive imports keep the history
+valid.
+
+A change to the blueprint format passes `python tests\blueprint_cai_test.py`, which compiles the real
+`runtime/blueprint_cai.c` and builds its blobs byte by byte: every rejection path (too short, wrong magic, wrong
+version, a bad or disagreeing actor count, an empty name, a non-finite transform, a TOTKAuto file), the accepted shapes
+(1 to 21 actors, and the 6712-byte community form), the positions and bounding box the picker previews from, and a text
+for every result code.
+
+A change to the BYML reader passes `python tests\byml_test.py`, which builds v2..v7 documents byte by byte (every value
+type, a root array, name-keyed and hash-keyed tables, and damaged documents), compiles the real `runtime/byml.c` with a
+walker main, compares the walker's dump line for line with what Python built, then truncates a valid document at every
+byte and only requires survival.
+
+A change to the convex hull passes `python tests\hull_test.py`, which compiles the real `runtime/hull.c` and checks it
+against a brute-force reference: a box, a cylinder ring, an 81-point polytope-like cloud, a random cloud with duplicates
+and interior points, and an all-coplanar set. It asserts every input point is inside every face, every normal points
+away from the centroid, every edge is shared by exactly two opposite triangles (watertight), and the volume matches the
+analytic value.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
