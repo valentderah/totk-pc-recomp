@@ -27,6 +27,7 @@
 #include "tex.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_hud.h"
 #include "vk_exec.h"
 
 #define WEAK __attribute__((weak))
@@ -671,6 +672,7 @@ void vk_exec_pass_begin(VkExec *ex) {
     resolve_rt(ex);
     vk_contact_pass_begin(ex);
     vk_dlaa_pass(ex);   // DLAA runs before the bloom chain's first pass (vk_dlaa.c)
+    if (!ex->chunked) vk_hud_pass(ex);   // where the scene ends, for hide_hud (vk_hud.c)
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
     VkImage want[9];
     VkImageAspectFlags wasp[9];
@@ -1503,6 +1505,7 @@ static void scan_pass(const VkExec *s, const op_hdr *h) {
     scan_contact(s, 1, h);
     VkExecJob j;
     if (vk_dlaa_plan(s, &j)) scan_job(&j, h);
+    vk_hud_pass(s);
 }
 
 // A draw as prepare_draw sees it: its pass begins, and with it a contact shadow march or a DLSS record may be due.

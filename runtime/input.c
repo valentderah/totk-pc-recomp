@@ -34,6 +34,9 @@ static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 o
 enum { PAD_USED = 16384, MOUSE_USED = 6 };
 static volatile int32_t g_kbm_last = 1;
 int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED); }
+static volatile uint64_t g_active_ns;   // input_active_ns
+uint64_t input_active_ns(void) { return __atomic_load_n(&g_active_ns, __ATOMIC_RELAXED); }
+static void note_active(void) { __atomic_store_n(&g_active_ns, plat_now_ns(), __ATOMIC_RELAXED); }
 int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground() && ikb_captured(); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
@@ -763,6 +766,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             if (shake) sr[0] = shake, sr[1] = 0;
             // A mouse shake (mouse_direct.c) moves the stick with the mouse, side by side, and lets go when it rests
             else if (input_direct_mouse_shake()) sr[0] = input_direct_mouse_shake() * STICK_MAX, sr[1] = 0;
+            if (kbm_used) note_active();   // a key or a mouse button; mouse travel is the camera (input_active_ns)
             static uint32_t travel_seen;
             uint32_t travel = ikb_mouse_travel();
             if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;
@@ -774,6 +778,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     }
     script_apply(&b, sl, sr);
     wheel_route(&b, sl, sr);
+    // A press, or the left stick a quarter of its way (past a worn stick's drift). The right stick turns the camera,
+    // which looking around with the HUD hidden must not count as (input_active_ns).
+    if (b || abs(sl[0]) > PAD_USED / 2 || abs(sl[1]) > PAD_USED / 2) note_active();
     gameplay_tweaks_apply(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), input_gameplay_active(), &b, &sl[0], &sl[1], &sr[0], &sr[1]);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game

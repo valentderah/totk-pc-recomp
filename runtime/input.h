@@ -9,6 +9,10 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
 int input_kbm_last(void);
+// plat_now_ns of the last poll that carried input (vk_hud.c, hide_hud = auto): a button, key or mouse button, or the
+// left stick a quarter of the way or more, script input included. The camera (right stick, mouse look) does not count.
+// 0 before the first one. Any thread.
+uint64_t input_active_ns(void);
 // Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
 // accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
 // separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.
@@ -48,6 +52,9 @@ int menu_cursor_shortcut(void);
 // menu has the pointer, so the mouse camera's capture is released
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
+// menu_cursor.c, 1.4.3: a game menu with a focus box (the title, the inventory, shops, Options), the map or a dialogue
+// box is on screen, whatever TOTK_MENU_CURSOR says (vk_hud.c keeps the HUD drawn then). 0 on other versions. Any thread.
+int menu_cursor_ui_open(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
 // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
 int menu_cursor_dialogue(void);

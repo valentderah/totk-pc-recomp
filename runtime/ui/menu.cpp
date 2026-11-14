@@ -764,6 +764,22 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    // hide_hud: 0, 1, auto (vk_hud.c); the idle time only matters, and is only shown, for auto
+    static const UiTextId hud[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_HIDE_HUD_WHEN_IDLE};
+    opt_choice("TOTK_HIDE_HUD", UI_MENU_HIDE_HUD, hud, 3, UI_MENU_HIDE_HUD_DESC);
+    if (!strcmp(cfg_value("TOTK_HIDE_HUD"), "auto")) {   // hide_hud_idle in seconds, shown as 30 s, 1 min ...
+        static const char *const secs[] = {"30", "60", "120", "300", "600", "900", "1800", "3600"};
+        enum { N = sizeof secs / sizeof *secs };
+        static char name[N][32];
+        const char *names[N];
+        for (int i = 0; i < N; i++) {
+            double v = atof(secs[i]);
+            snprintf(name[i], sizeof name[i], menu_text(v < 60 ? UI_MENU_HIDE_HUD_IDLE_SEC_FMT : UI_MENU_HIDE_HUD_IDLE_FMT),
+                     v < 60 ? v : v / 60);
+            names[i] = name[i];
+        }
+        opt_choice_list("TOTK_HIDE_HUD_IDLE", UI_MENU_HIDE_HUD_IDLE, secs, names, N, UI_MENU_HIDE_HUD_IDLE_DESC);
+    }
     row_play_time();
     opt_end();
 }
