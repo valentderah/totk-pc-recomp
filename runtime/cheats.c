@@ -575,7 +575,10 @@ static void rebuild_if_needed(const char *dir) {
     int ok = plat_spawn(argv, dir);
     free(cmd);
     if (!ok) {
-        rt_log("cheats: the rebuild did not start; the game starts with the code it has");
+        // The skip key is for a rebuild that ran and failed or was cancelled. One that never started (a command whose
+        // program is gone) leaves no key, so the next start and "Rebuild the game now" try it again.
+        plat_fs_unlink(skip_path);
+        rt_log("cheats: the rebuild did not start (%s); the game starts with the code it has", cmd_path);
         return;
     }
     prof_write();   // plat_exit runs no atexit handlers

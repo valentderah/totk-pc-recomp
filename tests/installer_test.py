@@ -526,6 +526,21 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
                                      str(self.ctx.layout.root), '--rebuild', str(self.dest)])
 
+    def test_appimage_rebuild_command_starts_the_appimage(self):
+        # The AppImage's mount, where its Python lives, is gone once the setup exits (#560, #403)
+        appimage = Path(self.tmp.name) / 'TotK-Setup-x86_64.AppImage'
+        appimage.write_bytes(b'')
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(appimage)}):
+            self.assertEqual(self.run_cleanup(), 'ok')
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines, [str(appimage.resolve()), '--rebuild', str(self.dest)])
+
+    def test_appimage_variable_without_the_file_keeps_the_python_command(self):
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(Path(self.tmp.name) / 'gone.AppImage')}):
+            self.assertEqual(self.run_cleanup(), 'ok')
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[1:3], ['-c', steps.REBUILD_BOOT])
+
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
             p.unlink()

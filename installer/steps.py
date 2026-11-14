@@ -1374,8 +1374,15 @@ REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
 def rebuild_command(ctx):
     """The command that starts the setup window in its rebuild mode on this install folder (installer/gui.py
     --rebuild): pythonw beside the setup's Python on Windows, so no console opens. In a repository that is the Python
-    running this setup: the tools' embeddable Python there has no tkinter."""
+    running this setup: the tools' embeddable Python there has no tkinter.
+    In the Linux AppImage the release folder is the AppImage's mount (/tmp/.mount_*), which goes away when the setup
+    exits, so a path into it would fail to start later and the game would keep its old code. The command starts the
+    AppImage file itself instead ($APPIMAGE, set by the AppImage runtime); its AppRun passes the arguments to
+    installer.gui."""
     layout = ctx.layout
+    appimage = os.environ.get('APPIMAGE', '')
+    if not layout.dev and appimage and Path(appimage).is_file():
+        return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)]
     python = Path(sys.executable) if layout.dev else layout.python
     if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
         python = python.with_name('pythonw.exe')

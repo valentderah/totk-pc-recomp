@@ -120,8 +120,12 @@ whatever the working folder), one argument per line. When an enabled mod has cod
 lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
 window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
 offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
-needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
+again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start at all leaves no
+`rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. The rebuild needs the
+release folder the setup ran from: a moved or deleted release folder means running a setup again. On Linux the command
+starts the AppImage file itself (`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone
+once the setup exits; a moved or deleted AppImage means running a setup again. Installs set up by an AppImage before
+this change hold a command into that mount: running the new setup once on the install folder writes the new one.
 
 ## Command line
 
