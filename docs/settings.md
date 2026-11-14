@@ -14,6 +14,12 @@ Many rows below are developer tools that only act together with another setting 
 
 `tests/settings_doc_check.py` fails when a name in `known[]` (`runtime/cfg.c`) is described neither here nor in `totk.ini.example`, or when a default here differs from the code.
 
+## Separate windows
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `perf_window` (default `0`) | `1` opens a separate, non-activating performance window on Windows. | Live toggle; requests full hardware sampling and the existing GPU timestamp queries independently of `perf_overlay`. Closing the window writes this setting to 0. If an environment override keeps its effective value at 1, the window still stays closed for this process; remove the override to rearm off/on, or restart to open it again. Linux and other non-Windows platforms provide fallback behavior only: this menu toggle is hidden, existing configuration values remain readable, and no separate window, additional sampling or configuration write is requested. The in-game performance overlay keeps its own setting. | Caution |
+
 ## Diagnostics and logging
 
 | Setting | What it does | Effect of changing it | Safety |
