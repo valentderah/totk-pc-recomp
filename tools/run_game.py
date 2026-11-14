@@ -37,6 +37,10 @@ MAX_RUNS = int(os.environ.get('TOTK_MAX_RUNS', '3'))   # more parallel runs exha
 
 
 def count(image):
+    if os.name != 'nt':   # the same programs without the .exe: totk, ninja
+        name = image[:-4] if image.endswith('.exe') else image
+        out = subprocess.run(['pgrep', '-c', '-x', name], capture_output=True, text=True).stdout
+        return int(out.strip() or 0)
     out = subprocess.run(['tasklist', '/FI', f'IMAGENAME eq {image}', '/NH'], capture_output=True, text=True).stdout
     return sum(line.lower().startswith(image) for line in out.splitlines())
 
@@ -77,7 +81,10 @@ def take_slot():
         for i in range(MAX_RUNS):
             f = open(SLOTS / f'slot{i}.lock', 'a+b')
             try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                if os.name == 'nt':
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return f
             except OSError:
                 f.close()
@@ -183,7 +190,7 @@ def main():
         for kv in a.env:
             k, _, v = kv.partition('=')
             env[k] = v
-        args = [str(exe_dir / 'totk.exe'), '--profile', str(prof), '--seconds', str(a.seconds)]
+        args = [str(exe_dir / ('totk.exe' if os.name == 'nt' else 'totk')), '--profile', str(prof), '--seconds', str(a.seconds)]
         if a.shot:
             args += ['--shot', str(a.shot.resolve())]
         try:
@@ -192,7 +199,7 @@ def main():
                 f.flush()
                 start = time.time()
                 proc = subprocess.Popen(args, cwd=exe_dir, env=env, stdout=f, stderr=subprocess.STDOUT)
-                if not a.show:
+                if not a.show and os.name == 'nt':   # elsewhere TOTK_BACKGROUND_WINDOW alone keeps the window behind
                     threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
                 rc = proc.wait()
                 f.write(f'run_game: rc={rc} wall={time.time() - start:.0f}s; others running after: '
