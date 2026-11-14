@@ -9,6 +9,7 @@
 #include "mods.h"
 #include "platform/platform.h"
 #include "restbl.h"
+#include "sha256.h"
 
 static int fails;
 #define CHECK(c, what) do { if (!(c)) { fails++; fprintf(stderr, "FAIL mods: %s\n", what); } } while (0)
@@ -126,6 +127,104 @@ static void probe_data(const char *root) {
     remove_tree(root);
 }
 
+// A scan of mods with a code module the port cannot run, under mods_without_code.
+static void probe_without_code(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    static const char *const files[] = {"E/exefs/subsdk9", "H/romfs/h.bin", "H/exefs/subsdk9", "I/romfs/i.bin",
+                                        "I/exefs/main"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    mods_probe_cache("", "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "1");
+    mods_rescan();
+    mods_scan();
+    ModInfo *e = by_name("E"), *h = by_name("H"), *im = by_name("I");
+    CHECK(e && h && im, "without-code scan: three mods");
+    if (e && h && im) {
+        CHECK(e->problem == MOD_PLUGIN, "mods_without_code: a mod with only a code module stays off");
+        CHECK(h->problem == MOD_OK && EQ(h->code, "subsdk9"), "mods_without_code: RomFS + subsdk9 is used without it");
+        CHECK(im->problem == MOD_OK && EQ(im->code, "main"), "mods_without_code: RomFS + replaced main is used");
+    }
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
+    mods_rescan();
+    mods_scan();
+    h = by_name("H");
+    CHECK(h && h->problem == MOD_PLUGIN, "without mods_without_code a mod with a code module stays off");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "");
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
+}
+
+// root/rel with the n bytes of data, with every folder above it.
+static void put_data(const char *root, const char *rel, const char *data, size_t n) {
+    char p[2048];
+    snprintf(p, sizeof p, "%s/%s", root, rel);
+    char *slash = strrchr(p, '/');
+    *slash = 0;
+    plat_file_mkdir_p(p);
+    *slash = '/';
+    plat_file_write(p, data, n);
+}
+
+// A third scan, of code modules: two plugins the build has (status kind plugin), one whose build installs no hooks on
+// this game version, one the build calls unsupported, a known build the build lacks and an unknown module; the
+// Switch loads one exefs/subsdk9, so only the top mod's plugin of that name runs.
+static void probe_plugin_scan(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    static const char *const files[] = {"P1/romfs/p.bin", "P1/exefs/subsdk9", "P2/exefs/subsdk9", "P3/romfs/p.bin",
+                                        "P3/exefs/subsdk9", "P5/romfs/p.bin", "P5/exefs/subsdk9", "P6/exefs/subsdk9"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    static const char known[] = "a build plugins.c knows";
+    put_data(root, "P4/exefs/subsdk9", known, sizeof known - 1);
+    uint8_t sha[32];
+    char hex[65];
+    sha256(known, sizeof known - 1, sha);
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", sha[i]);
+    plugins_probe_known(hex, "Probe build");
+    uint32_t c = fnv("probe", 5), k1 = fnv("P1/exefs/subsdk9", 16), k2 = fnv("P2/exefs/subsdk9", 16),
+             k3 = fnv("P3/exefs/subsdk9", 16), k6 = fnv("P6/exefs/subsdk9", 16);
+    char status[512];
+    snprintf(status, sizeof status,
+             "%08X\t%08X\tplugin\t-\thooks 7 Probe MSFix\n%08X\t%08X\tplugin\t-\thooks 0 Idle build\n"
+             "%08X\t%08X\tunsupported\t-\ta code module the port does not know\n"
+             "%08X\t%08X\tplugin\tfps60\thooks 3 Probe MSFix\n",
+             k1, c, k2, c, k3, c, k6, c);
+    mods_probe_cache(status, "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
+    mods_rescan();
+    mods_scan();
+    ModInfo *p1 = by_name("P1"), *p2 = by_name("P2"), *p3 = by_name("P3"), *p4 = by_name("P4"), *p5 = by_name("P5"),
+            *p6 = by_name("P6");
+    CHECK(p1 && p2 && p3 && p4 && p5 && p6, "plugin scan: six mods");
+    if (p1 && p2 && p3 && p4 && p5 && p6) {
+        CHECK(p1->problem == MOD_OK && p1->nplugins == 1 && !p1->code[0] && EQ(p1->plugin[0].module, "subsdk9") &&
+                  EQ(p1->plugin[0].name, "Probe MSFix") && p1->plugin[0].hooks == 7 && p1->plugin[0].set == k1,
+              "a plugin the build has: the mod is used, its hooks are the set of its file");
+        CHECK(p2->problem == MOD_OK && p2->nplugins == 1 && !p2->plugin[0].hooks,
+              "a plugin whose build installs no hooks on this game version: the mod is used");
+        CHECK(p3->problem == MOD_PLUGIN && EQ(p3->code, "subsdk9"), "a code module the build calls unsupported");
+        uint32_t key = 0;
+        CHECK(p4->problem == MOD_EXEFS_LATER && p4->pending == 1 && mods_exefs_pending(&key) == 1,
+              "a known build the build lacks waits for the rebuild");
+        CHECK(p5->problem == MOD_PLUGIN && EQ(p5->code, "subsdk9"), "an unknown code module without a status line");
+        CHECK(p6->problem == MOD_OK && EQ(p6->overrides, "fps60"), "a plugin's hooks over the port's own set");
+        mods_exefs_switch();
+        CHECK(!p1->plugin[0].shadowed[0] && EQ(p2->plugin[0].shadowed, "P1") && EQ(p6->plugin[0].shadowed, "P1"),
+              "one exefs/subsdk9 runs: the top mod's");
+    }
+    plugins_probe_known(NULL, NULL);
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "");
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
+}
+
 // s ends in tail, either path separator matching either.
 static int ends_with(const char *s, const char *tail) {
     size_t n = strlen(s), t = strlen(tail);
@@ -214,6 +313,8 @@ int probe_mods(void) {
         CHECK(mods_changed(), "changes seen");
     }
     probe_data(root);
+    probe_without_code(root);
+    probe_plugin_scan(root);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
     int table = restbl_probe();
     return fails || table ? 1 : 0;

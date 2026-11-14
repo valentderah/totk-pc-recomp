@@ -18,6 +18,12 @@
 // rebuild at start (cheats.c), and its mod stays off until then. A file's writes into main's data (.rodata, .data,
 // .bss) are lines of build-cache/exefs.data, stored into the loaded main before the game runs (mods_exefs_data), as
 // emulators apply a patch file to the module before its dynamic linker runs.
+//
+// Code modules: an exefs/subsdk* file is a plugin that patches main from its own start-up on the Switch, which the port
+// cannot load. A build plugins.c has handlers for runs as the port's own code: the setup builds its hooks in as the
+// patch set of its file (tools/plugins.py, status kind plugin) and mods_exefs_switch switches it on with its mod; a
+// known build the game was built without waits for the rebuild like a patch file. Any other code module, and a
+// replaced main, cannot run (ModInfo.code): its mod stays off unless mods_without_code = 1.
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +34,7 @@
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "sha256.h"
 
 #define TITLE "0100F2C0115B6000"
 #define MAX_MODS 512
@@ -72,14 +79,27 @@ static int ends_with_ci(const char *s, const char *tail) {
     return n >= t && !strcasecmp(s + n - t, tail);
 }
 
+// A code module of m the port cannot run, named in m->code.
+static void code_unrun(ModInfo *m, const char *name) {
+    size_t k = strlen(m->code);
+    snprintf(m->code + k, sizeof m->code - k, "%s%s", k ? ", " : "", name);
+}
+
 // What the ExeFS folder holds: MOD_EXEFS for patches (.ips, .pchtxt), MOD_SUBSDK for code modules (subsdk* plugins, a
-// replaced main). main.npdm alone is the process's metadata, not code: it counts as neither.
+// replaced main). A replaced main never runs; a subsdk* file may be a plugin the port runs (code_file_cb). main.npdm
+// alone is the process's metadata, not code: it counts as neither.
 static int exefs_cb(const char *name, int kind, uint64_t size, void *ctx) {
     (void)size;
-    int *k = ctx;
+    ModInfo *m = ctx;
     if (kind != PLAT_FS_FILE) return 1;
-    if (ends_with_ci(name, ".ips") || ends_with_ci(name, ".pchtxt")) *k |= MOD_EXEFS;
-    else if (!strncasecmp(name, "subsdk", 6) || !strcasecmp(name, "main")) *k |= MOD_SUBSDK;
+    if (ends_with_ci(name, ".ips") || ends_with_ci(name, ".pchtxt")) {
+        m->kind |= MOD_EXEFS;
+    } else if (!strncasecmp(name, "subsdk", 6)) {
+        m->kind |= MOD_SUBSDK;
+    } else if (!strcasecmp(name, "main")) {
+        m->kind |= MOD_SUBSDK;
+        code_unrun(m, name);
+    }
     return 1;
 }
 
@@ -127,8 +147,11 @@ static int by_order(const void *a, const void *b) {
 static const char *problem_name(ModProblem p) {
     switch (p) {
     case MOD_EMPTY: return "empty";
-    case MOD_PLUGIN: return "has a code module (subsdk or main), not supported; the whole mod stays off";
-    case MOD_EXEFS_LATER: return "ExeFS patches wait for a rebuild of the game code; the whole mod stays off";
+    case MOD_PLUGIN:
+        return "has a code module the port cannot run (a subsdk plugin it does not know, or a replaced main); the "
+               "whole mod stays off (mods_without_code = 1 uses the rest of it)";
+    case MOD_EXEFS_LATER:
+        return "ExeFS patches or a plugin's hooks wait for a rebuild of the game code; the whole mod stays off";
     case MOD_EXEFS_UNSUPPORTED: return "an ExeFS patch file cannot be applied; the whole mod stays off";
     case MOD_EXEFS_OTHER: return "its ExeFS patches are for another game version";
     case MOD_BAD_NAME: return "its folder name holds '|', which the order list uses; rename the folder";
@@ -224,6 +247,55 @@ typedef struct {
     int unsupported;
 } ExefsWalk;
 
+// A file of m the build lacks: m waits for the rebuild, which the names and contents of such files key (cheats.c).
+static void pending(ModInfo *m, const char *key, const char *content) {
+    m->pending++;
+    m->pending_key = (m->pending_key ^ fnv(key, 8)) * 0x01000193u;
+    m->pending_key = (m->pending_key ^ fnv(content, 8)) * 0x01000193u;
+}
+
+// One code module (subsdk*) of an exefs folder. Its status line (tools/exefs_patches.py) of kind plugin makes it a
+// plugin the port runs as its own code ("hooks <count> <name>": the set mod_<hash> holds the hooks); without a line
+// (or with another content) a build plugins.c knows waits for the rebuild; any other module is one the port cannot run.
+static int code_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    ExefsWalk *w = ctx;
+    ModInfo *m = w->m;
+    if (kind != PLAT_FS_FILE || strncasecmp(leaf, "subsdk", 6)) return 1;
+    char path[4300], rel[600];
+    snprintf(path, sizeof path, "%s/%s", w->folder, leaf);
+    snprintf(rel, sizeof rel, "%s/%s/%s", m->name, w->rel, leaf);
+    uint64_t n = 0;
+    uint8_t *data = plat_file_read(path, &n);
+    if (!data) {
+        rt_log("mods: %s: cannot read %s", m->name, path);
+        code_unrun(m, leaf);
+        return 1;
+    }
+    char key[9], content[9], kind_s[16], over[256], note[256];
+    uint8_t sha[32];
+    snprintf(key, sizeof key, "%08X", fnv(rel, strlen(rel)));
+    snprintf(content, sizeof content, "%08X", fnv(data, (size_t)n));
+    sha256(data, (size_t)n, sha);
+    free(data);
+    int line = status_line(key, content, kind_s, over, note), hooks = 0, at = 0;
+    if (line && !strcmp(kind_s, "plugin") && sscanf(note, "hooks %d %n", &hooks, &at) == 1 && at &&
+        m->nplugins < (int)(sizeof m->plugin / sizeof *m->plugin)) {
+        int k = m->nplugins++;
+        snprintf(m->plugin[k].module, sizeof m->plugin[k].module, "%s", leaf);
+        snprintf(m->plugin[k].name, sizeof m->plugin[k].name, "%s", note + at);
+        m->plugin[k].hooks = hooks;
+        m->plugin[k].set = (uint32_t)strtoul(key, NULL, 16);
+        size_t o = strlen(m->overrides);
+        if (*over) snprintf(m->overrides + o, sizeof m->overrides - o, "%s%s", o ? "," : "", over);
+    } else if (!line && plugins_known(sha)) {
+        pending(m, key, content);
+    } else {
+        code_unrun(m, leaf);
+    }
+    return 1;
+}
+
 // One file of an exefs folder: its build, then its status line.
 static int exefs_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
     (void)size;
@@ -264,9 +336,7 @@ static int exefs_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
         return 1;
     }
     if (!status_line(key, content, kind_s, over, note)) {
-        m->pending++;
-        m->pending_key = (m->pending_key ^ fnv(key, 8)) * 0x01000193u;
-        m->pending_key = (m->pending_key ^ fnv(content, 8)) * 0x01000193u;
+        pending(m, key, content);
         return 1;
     }
     if (!strcmp(kind_s, "unsupported")) {
@@ -301,10 +371,11 @@ static int exefs_patches_cb(const char *leaf, int kind, uint64_t size, void *ctx
     return 1;
 }
 
-// The ExeFS patch files of mod m (folder path): 1 when one cannot be applied.
+// The ExeFS patch files and code modules of mod m (folder path): 1 when a patch file cannot be applied.
 static int exefs_check(ModInfo *m, const char *path) {
     ExefsWalk w = {m, m->exefs, m->exefs + strlen(path) + 1, 0};
     if (m->exefs[0]) plat_fs_list(m->exefs, exefs_file_cb, &w);
+    if (m->exefs[0] && m->kind & MOD_SUBSDK) plat_fs_list(m->exefs, code_file_cb, &w);
     char patches[2200];
     snprintf(patches, sizeof patches, "%s/atmosphere/exefs_patches", path);
     ExefsWalk at = {m, patches, "", 0};
@@ -334,17 +405,22 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     find_root(path, "exefs", m->exefs, sizeof m->exefs);
     find_root(path, "cheats", m->cheats, sizeof m->cheats);
     if (m->romfs[0] && has_file(m->romfs)) m->kind |= MOD_ROMFS;
-    if (m->exefs[0]) plat_fs_list(m->exefs, exefs_cb, &m->kind);
+    if (m->exefs[0]) plat_fs_list(m->exefs, exefs_cb, m);
     if (m->cheats[0]) plat_fs_list(m->cheats, cheats_cb, &m->kind);
     int unsupported = exefs_check(m, path);
-    // a mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code
-    m->problem = strchr(m->name, '|')                                       ? MOD_BAD_NAME
-               : m->kind & MOD_SUBSDK                                       ? MOD_PLUGIN
-               : unsupported                                                ? MOD_EXEFS_UNSUPPORTED
-               : m->pending                                                 ? MOD_EXEFS_LATER
-               : m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS) ? MOD_OK
-               : m->kind & MOD_EXEFS                                        ? MOD_EXEFS_OTHER
-                                                                            : MOD_EMPTY;
+    // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. A code
+    // module the port cannot run (m->code) never loads; with mods_without_code = 1 the rest of the mod is used, when
+    // it has a rest.
+    int rest = m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS) || m->nplugins;
+    int code_off = m->code[0] && (!cfg_bool("TOTK_MODS_WITHOUT_CODE") || !rest);
+    int usable = m->nsets || m->ndata || m->nplugins || m->kind & (MOD_ROMFS | MOD_CHEATS);
+    m->problem = strchr(m->name, '|')  ? MOD_BAD_NAME
+               : code_off              ? MOD_PLUGIN
+               : unsupported           ? MOD_EXEFS_UNSUPPORTED
+               : m->pending            ? MOD_EXEFS_LATER
+               : usable                ? MOD_OK
+               : m->kind & MOD_EXEFS   ? MOD_EXEFS_OTHER
+                                       : MOD_EMPTY;
     m->enabled = !listed(disabled, m->name);
     nmods++;
     return 1;
@@ -412,6 +488,13 @@ void mods_scan(void) {
                m->kind & MOD_EXEFS ? " exefs" : "", m->kind & MOD_SUBSDK ? " subsdk" : "",
                m->kind & MOD_CHEATS ? " cheats" : "", m->kind ? "" : " no files", problem_name(m->problem),
                m->note[0] ? ": " : "", m->note);
+        if (m->code[0] && m->problem != MOD_PLUGIN)
+            rt_log("mods: %s: its code module (%s) does not load (mods_without_code = 1); the rest of the mod is used",
+                   m->name, m->code);
+        for (int k = 0; k < m->nplugins; k++)
+            rt_log("mods: %s: its code module %s runs as the port's own code: %s, %d hooks%s", m->name,
+                   m->plugin[k].module, m->plugin[k].name, m->plugin[k].hooks,
+                   m->plugin[k].hooks ? "" : " (none for this game version, as on the Switch)");
     }
     rt_log("mods: %d folders in %s", nmods, dir);
 }
@@ -568,28 +651,64 @@ static int set_on(const ModInfo *m, uint32_t key) {
 
 void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
                       int (*store)(uint64_t addr, const uint8_t *bytes, int n)) {
+    // Code module names taken by a mod in use, top first: whatever number of mods have an exefs/subsdk9, the Switch
+    // loads one, the top mod's, so a lower mod's plugin of the same name stays off.
+    struct { char module[16]; const char *by; } taken[64];
+    int ntaken = 0;
+    for (int i = 0; i < nmods; i++) {
+        ModInfo *m = &mods[i];
+        if (!start_enabled[i] || m->problem != MOD_OK) continue;
+        char code[64];   // its code modules that do not run (mods_without_code = 1) take their names too
+        snprintf(code, sizeof code, "%s", m->code);
+        for (char *s = strtok(code, ", "); s && ntaken < 64; s = strtok(NULL, ", ")) {
+            snprintf(taken[ntaken].module, sizeof taken[ntaken].module, "%s", s);
+            taken[ntaken++].by = m->name;
+        }
+        for (int k = 0; k < m->nplugins; k++) {
+            m->plugin[k].shadowed[0] = 0;
+            int t = 0;
+            while (t < ntaken && strcasecmp(taken[t].module, m->plugin[k].module)) t++;
+            if (t < ntaken) {
+                snprintf(m->plugin[k].shadowed, sizeof m->plugin[k].shadowed, "%s", taken[t].by);
+                rt_log("mods: %s: its code module %s does not run: %s, higher in the list, has one", m->name,
+                       m->plugin[k].module, taken[t].by);
+            } else if (ntaken < 64) {
+                snprintf(taken[ntaken].module, sizeof taken[ntaken].module, "%s", m->plugin[k].module);
+                taken[ntaken++].by = m->name;
+            }
+        }
+    }
     // bottom first: the top mod's data writes land last and win, as its RomFS files do. Patch sets are only switches
     // (rt_patch_switch), so their order does not matter.
     for (int i = nmods - 1; i >= 0; i--) {
-        const ModInfo *m = &mods[i];
-        if (!start_enabled[i] || m->problem != MOD_OK || !(m->nsets || m->ndata)) continue;
-        // the data first: a mod whose data writes cannot all be stored keeps its code patches off too, as half of a
-        // patch file is worse than none
-        long stored = size ? mods_exefs_data(m, base, size, code_end, store) : 0;
-        if (stored < 0) {
-            rt_log("mods: %s: its ExeFS patch files stay off: their data writes could not all be stored", m->name);
-            continue;
+        ModInfo *m = &mods[i];
+        if (!start_enabled[i] || m->problem != MOD_OK) continue;
+        int on = 0;
+        if (m->nsets || m->ndata) {
+            // the data first: a mod whose data writes cannot all be stored keeps its code patches off too, as half
+            // of a patch file is worse than none
+            long stored = size ? mods_exefs_data(m, base, size, code_end, store) : 0;
+            if (stored < 0) {
+                rt_log("mods: %s: its ExeFS patch files stay off: their data writes could not all be stored", m->name);
+            } else {
+                for (int k = 0; k < m->nsets; k++) set_on(m, m->sets[k]);
+                rt_log("mods: %s: %d ExeFS patch files on, %ld bytes of main's data stored", m->name,
+                       m->nsets + m->ndata, stored);
+                on = 1;
+            }
         }
-        for (int k = 0; k < m->nsets; k++) set_on(m, m->sets[k]);
+        for (int k = 0; k < m->nplugins; k++)
+            if (!m->plugin[k].shadowed[0] && m->plugin[k].hooks && set_on(m, m->plugin[k].set)) {
+                rt_log("mods: %s: %s runs, %d hooks on", m->name, m->plugin[k].name, m->plugin[k].hooks);
+                on = 1;
+            }
         char over[256];
-        snprintf(over, sizeof over, "%s", m->overrides);
+        snprintf(over, sizeof over, "%s", on ? m->overrides : "");
         for (char *s = strtok(over, ","); s; s = strtok(NULL, ",")) {
             int set = rt_patch_set(s);
             if (set >= 0) rt_patch_switch(set, 0);
             rt_log("mods: %s replaces the port's patch set %s; it stays off", m->name, s);
         }
-        rt_log("mods: %s: %d ExeFS patch files on, %ld bytes of main's data stored", m->name, m->nsets + m->ndata,
-               stored);
     }
 }
 

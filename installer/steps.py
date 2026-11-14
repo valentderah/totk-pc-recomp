@@ -852,17 +852,19 @@ EXEFS_PLACES = ('exefs', 'atmosphere/contents/0100F2C0115B6000/exefs', 'contents
 
 
 def exefs_files(ctx):
-    """The ExeFS patch files of the mods folder (.ips and .pchtxt in each mod's exefs places and its
-    atmosphere/exefs_patches/<name>/, as tools/exefs_patches.py finds them), for the lift key."""
+    """The ExeFS patch files and code modules of the mods folder (.ips and .pchtxt in each mod's exefs places and its
+    atmosphere/exefs_patches/<name>/, subsdk* files in its exefs places, as tools/exefs_patches.py finds them), for the
+    lift key."""
     mods = ctx.dest / 'mods'
     if not mods.is_dir():
         return []
     out = []
     for mod in (m for m in mods.iterdir() if m.is_dir()):
-        folders = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
+        places = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
         patches = mod / 'atmosphere' / 'exefs_patches'
-        folders += [d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else []
+        folders = places + ([d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else [])
         out += [f for d in folders for f in d.iterdir() if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt')]
+        out += [f for d in places for f in d.iterdir() if f.is_file() and f.name.lower().startswith('subsdk')]
     return sorted(out)
 
 
@@ -891,8 +893,9 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         files = cheat_files(ctx) + exefs_files(ctx)
-        return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
-                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
+        return fingerprint('lift-8', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py',
+                           ctx.layout.tools / 'plugins.py', *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
@@ -913,10 +916,10 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
-        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets and data writes
-        # (tools/cheats.py, tools/exefs_patches.py); their status files tell the runtime what the build has. Both are
-        # the player's downloads, so files the tools refuse cost those cheats or patches, not the install: the game is
-        # built without them and the setup warns.
+        # The code cheats of the mods' cheat files, the mods' ExeFS patch files and the hooks of the plugins the port
+        # runs as its own code become patch sets and data writes (tools/cheats.py, tools/exefs_patches.py); their status
+        # files tell the runtime what the build has. All are the player's downloads, so files the tools refuse cost
+        # those cheats or patches, not the install: the game is built without them and the setup warns.
         plain = layout.patches(game_version(ctx))
         # (tool, patch file it writes, its outputs for the runtime: the status first, then the data file, the files it
         # reads, the warning when it fails)

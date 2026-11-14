@@ -220,8 +220,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "down. When two mods change the same file, the higher one wins. Changes apply after a "
                                "restart.",
     [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
-    [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
-                            "load code modules, so the whole mod stays off.",
+    [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main) that the port "
+                            "cannot run: it runs only the plugin builds it knows, as its own code. So the whole mod "
+                            "stays off. \"Use mods without their code\" below uses the rest of it.",
     [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs). The game builds the patches in when it "
                                  "starts next (a rebuild of a few minutes); until then the whole mod stays off.",
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
@@ -561,7 +562,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
                                        "whole mod stays off. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Its code patches (exefs) are made for another game version.",
-    [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
+    [UI_MENU_MODS_EXEFS_ON] = "ExeFS patches in use: %d files.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Its own game code (%s) does not load: the rest of the mod is used. Switch the mod "
+                                  "off if the game misbehaves with it.",
+    [UI_MENU_MODS_CODE_BUILTIN] = "Its code module %s runs as the port's own code (%s).",
+    [UI_MENU_MODS_CODE_SHADOWED] = "Its code module %s does not run: %s, higher in the list, has one of that name, "
+                                   "and only one loads.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Use mods without their code",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "A mod that brings its own game code (a subsdk plugin or a replaced main) "
+                                       "stays off as a whole when the port cannot run that code (it runs only the "
+                                       "plugin builds it knows). On: such a mod is used without that code: its RomFS "
+                                       "files, cheats and ExeFS patches load. Its files may expect the missing code; "
+                                       "switch the mod off if the game misbehaves. Applies at the next start.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
 };
@@ -752,8 +764,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_MOVE_HINT] = "Верхняя кнопка или Ctrl+Вверх поднимает мод, левая кнопка или Ctrl+Вниз опускает. Если "
                                "два мода меняют один файл, побеждает верхний. Изменения действуют после перезапуска.",
     [UI_MENU_MODS_EMPTY] = "В этой папке нет файлов romfs, exefs или cheats.",
-    [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main). Порт не загружает "
-                            "модули кода, поэтому мод выключен целиком.",
+    [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main), который порт не "
+                            "может запустить: как собственный код он выполняет только известные ему сборки плагинов. "
+                            "Поэтому мод выключен целиком. «Моды без их кода» ниже включает остальную часть мода.",
     [UI_MENU_MODS_EXEFS_LATER] = "Этот мод меняет код игры (exefs). Игра соберёт эти патчи при следующем запуске "
                                  "(пересборка на несколько минут); до тех пор мод выключен целиком.",
     [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
@@ -1097,7 +1110,19 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Этот мод меняет код игры (exefs) так, как порт применить не может, поэтому мод "
                                        "выключен целиком. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Его патчи кода (exefs) сделаны для другой версии игры.",
-    [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
+    [UI_MENU_MODS_EXEFS_ON] = "Патчи ExeFS в работе: файлов: %d.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Его собственный код игры (%s) не загружается: используется остальная часть мода. "
+                                  "Выключите мод, если игра с ним ведёт себя странно.",
+    [UI_MENU_MODS_CODE_BUILTIN] = "Его модуль кода %s работает как собственный код порта (%s).",
+    [UI_MENU_MODS_CODE_SHADOWED] = "Его модуль кода %s не работает: у мода %s выше в списке есть модуль с тем же "
+                                   "именем, а загружается только один.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Моды без их кода",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Мод со своим кодом игры (плагин subsdk или заменённый main) выключается "
+                                       "целиком, если порт не может запустить этот код (он выполняет только известные "
+                                       "ему сборки плагинов). Вкл.: такой мод используется без этого кода — "
+                                       "загружаются его файлы RomFS, читы и патчи ExeFS. Его файлы могут рассчитывать "
+                                       "на отсутствующий код; выключите мод, если игра ведёт себя странно. "
+                                       "Применяется при следующем запуске.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
 };
@@ -1123,8 +1148,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_MOVE_HINT] = "O botão de cima ou Ctrl+Cima sobe o mod, o botão da esquerda ou Ctrl+Baixo desce. "
                                "Quando dois mods mudam o mesmo arquivo, vale o de cima. As mudanças valem após reiniciar.",
     [UI_MENU_MODS_EMPTY] = "Esta pasta não tem arquivos romfs, exefs ou cheats.",
-    [UI_MENU_MODS_SUBSDK] = "Este mod traz código próprio do jogo (um plugin subsdk ou um main substituído). O port não "
-                            "carrega módulos de código, então o mod inteiro fica desligado.",
+    [UI_MENU_MODS_SUBSDK] = "Este mod traz código próprio do jogo (um plugin subsdk ou um main substituído) que o port "
+                            "não consegue rodar: como código próprio, ele só roda as builds de plugin que conhece. "
+                            "Então o mod inteiro fica desligado. \"Usar mods sem o código deles\", abaixo, usa o resto "
+                            "dele.",
     [UI_MENU_MODS_EXEFS_LATER] = "Este mod altera o código do jogo (exefs). O jogo compila esses patches na próxima "
                                  "vez que iniciar (uma recompilação de alguns minutos); até lá o mod inteiro fica "
                                  "desligado.",
@@ -1666,7 +1693,19 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Este mod altera o código do jogo (exefs) de um jeito que o port não consegue "
                                        "aplicar, então o mod inteiro fica desligado. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Os patches de código dele (exefs) são para outra versão do jogo.",
-    [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
+    [UI_MENU_MODS_EXEFS_ON] = "Patches de ExeFS em uso: %d arquivos.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "O código próprio do jogo dele (%s) não é carregado: o resto do mod é usado. "
+                                  "Desligue o mod se o jogo se comportar mal com ele.",
+    [UI_MENU_MODS_CODE_BUILTIN] = "O módulo de código dele, %s, roda como código do próprio port (%s).",
+    [UI_MENU_MODS_CODE_SHADOWED] = "O módulo de código dele, %s, não roda: %s, mais acima na lista, tem um com esse "
+                                   "nome, e só um carrega.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Usar mods sem o código deles",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Um mod que traz código próprio do jogo (um plugin subsdk ou um main "
+                                       "substituído) fica desligado por inteiro quando o port não consegue rodar esse "
+                                       "código (ele só roda as builds de plugin que conhece). Ligado: esse mod é usado "
+                                       "sem esse código; os arquivos RomFS, cheats e patches de ExeFS dele carregam. "
+                                       "Os arquivos dele podem depender do código que falta; desligue o mod se o jogo "
+                                       "se comportar mal. Vale na próxima inicialização.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
 };
@@ -1700,7 +1739,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_MOVE_HINT] = "上方按钮或 Ctrl+上 上移，左侧按钮或 Ctrl+下 下移。两个模组修改同一个文件时，以靠上的为准。"
                                "更改在重启后生效。",
     [UI_MENU_MODS_EMPTY] = "此文件夹中没有 romfs、exefs 或 cheats 文件。",
-    [UI_MENU_MODS_SUBSDK] = "此模组带有自己的游戏代码（subsdk 插件或替换的 main）。移植版无法加载代码模块，因此整个模组保持关闭。",
+    [UI_MENU_MODS_SUBSDK] = "此模组带有移植版无法运行的游戏代码（subsdk 插件或替换的 main）：移植版只把它认识的插件版本作为自己的代码运行，"
+                            "因此整个模组保持关闭。打开下方的“不带代码使用模组”即可使用其余部分。",
     [UI_MENU_MODS_EXEFS_LATER] = "此模组修改游戏代码（exefs）。游戏会在下次启动时把这些补丁构建进去（重新构建需要几分钟）；在此之前整个模组保持关闭。",
     [UI_MENU_MODS_CHEATS] = "金手指：%d 个。在“金手指”标签页中开关。",
     [UI_MENU_MODS_CHEATS_FILE] = "此游戏版本的金手指在启动时从此模组的 cheats\\%s 读取。",
@@ -2321,7 +2361,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指会修改游戏代码，但尚未构建进游戏：它们是新增或修改的，或上次重新构建失败或被取消。将关闭游戏；安装程序会把它们构建进去（几分钟）并重新启动游戏。上次存档之后的进度会丢失。",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。%s",
     [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
-    [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
+    [UI_MENU_MODS_EXEFS_ON] = "正在使用的 ExeFS 补丁：%d 个文件。",
+    [UI_MENU_MODS_CODE_SKIPPED] = "它自带的游戏代码（%s）不会加载：模组的其余部分照常使用。如果游戏因此表现异常，请关闭此模组。",
+    [UI_MENU_MODS_CODE_BUILTIN] = "它的代码模块 %s 作为移植版自己的代码运行（%s）。",
+    [UI_MENU_MODS_CODE_SHADOWED] = "它的代码模块 %s 不会运行：列表中更靠上的 %s 有同名模块，而只会加载一个。",
+    [UI_MENU_MODS_WITHOUT_CODE] = "不带代码使用模组",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "带有自己游戏代码（subsdk 插件或替换的 main）的模组，在移植版无法运行这些代码时会整体关闭"
+                                       "（移植版只运行它认识的插件版本）。"
+                                       "开启后：此类模组在没有这些代码的情况下使用，其 RomFS 文件、金手指和 ExeFS 补丁照常加载。"
+                                       "它的文件可能依赖缺失的代码；如果游戏表现异常，请关闭该模组。下次启动时生效。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
 };
 

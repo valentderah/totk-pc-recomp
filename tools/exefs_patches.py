@@ -1,5 +1,5 @@
-"""ExeFS patches of the mods folder to code patch sets and data writes: IPS, IPS32 and IPSwitch (.pchtxt) files for
-the game's main.
+"""ExeFS patches and code modules of the mods folder to code patch sets and data writes: IPS, IPS32 and IPSwitch
+(.pchtxt) files for the game's main, and subsdk plugins the port runs as its own code.
 
 Lifted code cannot be byte-patched when the game runs, so a patch file's writes into main's code become `site` lines
 (recomp/patches.py), one patch set per file, which the runtime switches on while its mod is on (runtime/mods.c). The
@@ -9,7 +9,7 @@ a branch into a code cave the file writes into main's zero padding inlined at th
 emulators and Atmosphere apply a patch file to the module before its dynamic linker runs (data_runs).
 
   python tools/exefs_patches.py --exefs <dir> --mods <mods folder> --patches <patch file> --out <patch file>
-                                --status <file> --data <file>
+                                --status <file> --data <file> [--game-version <x.y.z>]
   python tools/exefs_patches.py --exefs <dir> --status <file> --data <file> --folded <gen>/main/folded.txt
 
 The files are <mod>/exefs/*.ips and *.pchtxt (or the Atmosphere places of the exefs folder, as runtime/mods.c finds
@@ -19,7 +19,8 @@ offsets count the NSO header (0x100 bytes) before main's image; a pchtxt offset 
 A pchtxt patch line applies between @enabled and @disabled; @stop ends the file.
 
 --out gets the --patches file followed by one set per file with sites (`mod_<hash>`, switch TOTK_MODPATCH_<HASH>,
-default off) and its sites. --status gets one line per file, mods by name, tab separated:
+default off), the plugins' hook lines and the sites. --status gets one line per file, mods by name (patch files, then
+code modules), tab separated:
 
   <file hash> <content hash> <kind> <built-in sets> <note>
 
@@ -27,11 +28,12 @@ file hash: FNV-1a 32 of "<mod folder name>/<path in the mod>" (forward slashes);
 bytes, so the runtime sees a file that changed after the build. kind:
   code         a set of sites, and data writes when the file has some
   data         data writes only
+  plugin       a code module run as the port's own code: a set of hook sites (below)
   other        for another game version or module: not used
   empty        no write into main for this version (or only the game's own bytes)
   unsupported  <note> says why: a write the site rules cannot express, a write outside main's image, into the dynamic
                linker's tables or into a pointer it binds lazily, or (after the lift) into bytes the lifted code reads
-               as constants
+               as constants; for a code module, a build the port does not know or a hook it cannot place
 built-in sets: the port's own sets (the --patches file's sets that are no cheats) with a site this file patches too,
 comma separated, or "-": the runtime switches them off while the mod is on, so the mod's code runs. The note of a code
 or data file with data writes is `data <bytes>`, the bytes its data lines hold: the runtime keeps the mod's patches off
@@ -52,15 +54,27 @@ go). Without that list, every data write into .rodata counts as one into read by
 
 A file the rules cannot express is unsupported as a whole: half of a patch is worse than none.
 
-Standard library, recomp/ and tools/cheats.py only.
+Code modules: a subsdk* file in a mod's exefs folder (the first place that exists) is a plugin that patches main from
+its own start-up on the Switch. A build tools/plugins.py knows (by the file's SHA-256) becomes a set of hook sites: one
+`hook` line per callback of the build (`mod_<hash>_<callback>`, its handler in runtime/plugins.c) and a `site` line per
+hooked instruction, `@hook:<hook> <original>`, so the handler runs before the instruction as the plugin's callback does.
+Its status line has kind `plugin`, the port's own sets with a site it hooks too, and the note `hooks <count> <name>`;
+a build with no hooks for the game version installs none on the Switch either (count 0, no set). Any other code module
+gets kind `unsupported` with the reason, and the runtime treats it as before: a code module the port cannot load. The
+game version comes from --game-version, else from main's SHA-256 in tools/data/expected-v*.json.
+
+Standard library, recomp/, tools/cheats.py and tools/plugins.py only.
 """
 import argparse
+import hashlib
+import json
 import re
 import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import plugins  # noqa: E402
 from cheats import TITLE, Main, convert, fnv  # noqa: E402
 from nso import (DT_JMPREL, DT_NULL, DT_PLTRELSZ, DT_RELA, DT_RELASZ, DT_RELR, DT_RELRSZ, DT_STRSZ,  # noqa: E402
                  DT_STRTAB, DT_SYMTAB, R_AARCH64_JUMP_SLOT)
@@ -87,6 +101,28 @@ def patch_files(mods):
                 if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt'):
                     out.append((mod.name, f.relative_to(mod).as_posix(), f))
     return out
+
+
+def code_modules(mods):
+    """[(mod folder name, path in the mod, file)] of the code modules (subsdk* files, any case) in the first exefs place
+    of each folder of mods, by name, as runtime/mods.c finds them."""
+    out = []
+    for mod in sorted((d for d in mods.iterdir() if d.is_dir()), key=lambda d: d.name) if mods.is_dir() else []:
+        exefs = next((mod / w for w in EXEFS_PLACES if (mod / w).is_dir()), None)
+        for f in sorted(exefs.iterdir()) if exefs else []:
+            if f.is_file() and f.name.lower().startswith('subsdk'):
+                out.append((mod.name, f.relative_to(mod).as_posix(), f))
+    return out
+
+
+def game_version(main_path):
+    """The display version of the game's main by its SHA-256 (tools/data/expected-v*.json), None for another main."""
+    digest = hashlib.sha256(Path(main_path).read_bytes()).hexdigest()
+    for f in sorted((Path(__file__).resolve().parent / 'data').glob('expected-v*.json')):
+        d = json.loads(f.read_text(encoding='utf-8'))
+        if d.get('exefs_sha256', {}).get('main') == digest:
+            return d.get('display_version')
+    return None
 
 
 def same_build(name, build_id):
@@ -278,12 +314,13 @@ def data_line(key, content, run):
     return f'{key}\t{content}\t{off:x}\t{data.hex()}' + ('\tbase' if rebase else '')
 
 
-def builtin_sites(text):
-    """{offset in main: [set name]} of the patch file's sets that are no cheats or mod patches."""
+def builtin_sites(text, builtin=True):
+    """{offset in main: [set name]} of the patch file's sets that are no cheats or mod patches (builtin False: of the
+    sets that are)."""
     out = {}
     for line in text.splitlines():
         f = line.split('#', 1)[0].split()
-        if len(f) >= 4 and f[0] == 'site' and f[2] == 'main' and not f[1].startswith(('cheat_', 'mod_')):
+        if len(f) >= 4 and f[0] == 'site' and f[2] == 'main' and f[1].startswith(('cheat_', 'mod_')) != builtin:
             out.setdefault(int(f[3], 16), []).append(f[1])
     return out
 
@@ -311,6 +348,39 @@ def classify(m, md, bid, path, raw):
         return 'unsupported', str(e), {}, [], 0
 
 
+PATCHABLE = ('op', 'bl', 'b', 'bcond')   # instructions recomp/gen.py can put a hook before (Emitter.patch)
+
+
+def plugin_hooks(m, raw, version, taken):
+    """(plugin, hooks, note) of one code module: the build tools/plugins.py knows by the file's SHA-256 and its Hooks
+    for the game version (None: it installs none there), or plugin None and note saying why the port cannot run it.
+    taken: {main offset: set name} of the sites of sets that are not the port's own (code cheats, mods' patches)."""
+    p = plugins.KNOWN.get(hashlib.sha256(raw).hexdigest())
+    if p is None:
+        return None, None, 'a code module the port does not know (only some plugin builds run as its own code)'
+    hooks = p.versions.get(version)
+    for off, _ in hooks.sites if hooks else []:
+        kind = m.lift(m.word(off), off).kind if m.in_text(off) else 'data word'
+        if kind not in PATCHABLE:
+            return None, None, f'{p.name} hooks main+{off:X}, a {kind} instruction the port cannot hook'
+        if off in taken:
+            return None, None, f'{p.name} hooks main+{off:X}, which {taken[off]} patches too'
+    return p, hooks, ''
+
+
+def plugin_lines(m, name, p, hooks):
+    """The hook and site lines of a plugin's set name: one hook per callback, one site per hooked instruction."""
+    hook_names, hook_lines, by_site = {}, [], {}
+    for off, cb in hooks.sites:
+        if cb not in hook_names:
+            hook_names[cb] = f'{name}_{cb}'
+            hook_lines.append(f'hook {name}_{cb} {p.prefix}{cb} {" ".join(hooks.arguments)}')
+        by_site.setdefault(off, []).append(hook_names[cb])
+    sites = [f'site {name} main {off:x} {m.word(off):08x} {" ".join("@hook:" + h for h in hs)} {m.word(off):08x}'
+             for off, hs in sorted(by_site.items())]
+    return hook_lines, sites
+
+
 DATA_HEADER = '# file hash, content hash, offset in main, bytes[, base] (tools/exefs_patches.py)'
 
 
@@ -320,8 +390,9 @@ def build(args):
     bid = m.nso.build_id
     text = args.patches.read_text()
     builtin = builtin_sites(text)
+    taken = {a: names[0] for a, names in builtin_sites(text, builtin=False).items()}   # plugin hooks stay off these
     files = patch_files(args.mods)
-    sets, sites, status, data_lines, kinds = [], [], [], [], {}
+    sets, hooks, sites, status, data_lines, kinds = [], [], [], [], [], {}
     for mod, rel, f in files:
         raw = f.read_bytes()
         key, content = fnv(f'{mod}/{rel}'.encode()), fnv(raw)
@@ -334,6 +405,7 @@ def build(args):
             for a, repl in sorted(file_sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
                 over += [s for s in builtin.get(a, []) if s not in over]
+                taken.setdefault(a, name)
         data_lines += [data_line(key, content, r) for r in runs]
         data_bytes = sum(len(r[1]) for r in runs)
         kinds[kind] = kinds.get(kind, 0) + 1
@@ -347,17 +419,43 @@ def build(args):
         if dropped:
             parts.append(f'{dropped} bytes into words the dynamic linker fills, which change nothing')
         print(f'exefs: {kind:11} {mod}/{rel}' + (f' ({"; ".join(parts)})' if parts else ''))
+    modules = code_modules(args.mods)
+    version = args.game_version or (game_version(args.exefs / 'main') if modules else None)
+    for mod, rel, f in modules:
+        raw = f.read_bytes()
+        key, content = fnv(f'{mod}/{rel}'.encode()), fnv(raw)
+        p, plugin, note = plugin_hooks(m, raw, version, taken)
+        over = []
+        if p and plugin:
+            name = f'mod_{key.lower()}'
+            label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
+            sets.append(f'set {name} TOTK_MODPATCH_{key} 0   # {label}: {p.name}')
+            hook_lines, site_lines = plugin_lines(m, name, p, plugin)
+            hooks += hook_lines
+            sites += site_lines
+            for a, _ in plugin.sites:
+                over += [s for s in builtin.get(a, []) if s not in over]
+                taken.setdefault(a, name)
+        kind = 'plugin' if p else 'unsupported'
+        count = len(plugin.sites) if plugin else 0
+        kinds[kind] = kinds.get(kind, 0) + 1
+        status.append(f'{key}\t{content}\t{kind}\t{",".join(over) or "-"}\t' +
+                      (f'hooks {count} {p.name}' if p else note))
+        detail = (f'{p.name}: {count} hooks' + (f', over {", ".join(over)}' if over else '') if count else
+                  f'{p.name}: no hooks for game version {version}, as on the Switch' if p else note)
+        print(f'exefs: {kind:11} {mod}/{rel} ({detail})')
     if sets:
-        text += ('\n# ExeFS patches of the mods folder (tools/exefs_patches.py)\n' + '\n'.join(sets) + '\n'
-                 + '\n'.join(sites) + '\n')
+        text += ('\n# ExeFS patches and code modules of the mods folder (tools/exefs_patches.py)\n' + '\n'.join(sets)
+                 + '\n' + ''.join(f'{h}\n' for h in hooks) + '\n'.join(sites) + '\n')
     args.out.write_text(text)
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
     if args.data:
         args.data.parent.mkdir(parents=True, exist_ok=True)
         args.data.write_text('\n'.join([DATA_HEADER] + data_lines) + '\n', encoding='utf-8')
-    print(f'exefs: {len(files)} patch files: ' + ', '.join(f'{n} {k}' for k, n in sorted(kinds.items()))
-          + f'; {len(sites)} sites, {len(data_lines)} data runs')
+    print(f'exefs: {len(files)} patch files, {len(modules)} code modules: '
+          + ', '.join(f'{n} {k}' for k, n in sorted(kinds.items()))
+          + f'; {len(sites)} sites, {len(hooks)} hooks, {len(data_lines)} data runs')
 
 
 def read_ranges(path):
@@ -424,6 +522,8 @@ def main():
     ap.add_argument('--out', type=Path, help='the patch file with the mods\' ExeFS patches added')
     ap.add_argument('--status', type=Path, required=True)
     ap.add_argument('--data', type=Path, help='the data writes of the mods\' patch files (runtime/mods.c reads them)')
+    ap.add_argument('--game-version', help='the game\'s display version (1.4.3), for the plugins\' hooks; default: '
+                                           'from main\'s SHA-256 in tools/data/expected-v*.json')
     ap.add_argument('--folded', type=Path, help='after the lift: <gen>/main/folded.txt; checks --status and --data '
                                                 'against it instead of building')
     args = ap.parse_args()
