@@ -39,6 +39,13 @@
 // (input.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
 // length; a later load (fast travel) still shifts what follows by its length.
 //
+// Game speed (TOTK_GAME_SPEED, live): the measured step is multiplied by it before it reaches the patch page, so every
+// reader of the page (FrameRateMgr's interval, the global ratio, cloth, climbing) steps that much game time per wall
+// second; the frame rate does not change. The scaled step keeps the same limits: at most STEP_MAX_S (a longer step
+// caps the speed, 4x at 60 fps) and at least STEP_MIN_S (a slow motion at a high frame rate stops there). With
+// TOTK_GAME_SPEED_KEY set, the game starts at 1x and that key switches between 1x and the speed;
+// TOTK_GAME_SPEED_PAD does the same from a gamepad combo (input.c, speed_pad_gate, calls frame_speed_toggle).
+//
 // TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
 // TOTK_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
 // any frame rate when game time follows wall time).
@@ -52,6 +59,8 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "input_map.h"
+#include "input_wsys.h"
 #include "layout.h"
 #include "platform/platform.h"
 
@@ -80,6 +89,63 @@ static void step_store(float seconds) {
 }
 
 static void frame_limit_live(void);
+
+#define SPEED_MIN 0.25
+#define SPEED_MAX 4.0
+static unsigned speed_seen;
+static int speed_read, speed_key, speed_pad, speed_key_held, speed_toggled;
+static double speed_set = 1;
+static atomic_uint speed_pad_presses;   // frame_speed_toggle (input thread) to speed_live (present thread)
+
+void frame_speed_toggle(void) { atomic_fetch_add_explicit(&speed_pad_presses, 1, memory_order_relaxed); }
+
+static void speed_live(void) {
+    unsigned v = cfg_version();
+    if (!speed_read || v != speed_seen) {
+        speed_read = 1;
+        speed_seen = v;
+        const char *e = cfg_get("TOTK_GAME_SPEED"), *k = cfg_get("TOTK_GAME_SPEED_KEY"),
+                   *pd = cfg_get("TOTK_GAME_SPEED_PAD");
+        double x = 1;
+        if (e && *e) {
+            char *end;
+            x = strtod(e, &end);
+            if (*end || !(x >= SPEED_MIN && x <= SPEED_MAX)) {
+                rt_log("frame rate: TOTK_GAME_SPEED=%s is not %.2f..%.0f; 1", e, SPEED_MIN, SPEED_MAX);
+                x = 1;
+            }
+        }
+        int key = k && *k ? input_key_id(k) : KEY_NONE;
+        if (k && *k && key == KEY_NONE) rt_log("frame rate: TOTK_GAME_SPEED_KEY=%s is not a key name (docs/controls.md)", k);
+        int padset = pd && *pd;
+        if (x != speed_set || key != speed_key || padset != speed_pad) {
+            speed_set = x;
+            speed_key = key;
+            speed_pad = padset;
+            speed_toggled = 0;
+            atomic_store_explicit(&speed_pad_presses, 0, memory_order_relaxed);
+            if (x != 1 && !step_word) rt_log("frame rate: game speed needs the real-time step (TOTK_REALTIME=1); 1x");
+            else if (key || padset)
+                rt_log("frame rate: game speed %gx on %s%s%s, starting at 1x", x, key ? k : "", key && padset ? " / " : "",
+                       padset ? pd : "");
+            else rt_log("frame rate: game speed %gx", x);
+        }
+    }
+    if (atomic_exchange_explicit(&speed_pad_presses, 0, memory_order_relaxed) && speed_pad) {
+        speed_toggled = !speed_toggled;
+        rt_log("frame rate: game speed %gx (gamepad)", speed_toggled ? speed_set : 1.0);
+    }
+    if (speed_key) {
+        int held = ikb_foreground() && ikb_down(speed_key);
+        if (held && !speed_key_held) {
+            speed_toggled = !speed_toggled;
+            rt_log("frame rate: game speed %gx", speed_toggled ? speed_set : 1.0);
+        }
+        speed_key_held = held;
+    }
+}
+
+static double speed_now(void) { return !(speed_key || speed_pad) || speed_toggled ? speed_set : 1; }
 
 void frame_step_init(void) {
     int fps60 = rt_patch_set("fps60"), realtime = rt_patch_set("realtime"), cloth = rt_patch_set("cloth");
@@ -271,6 +337,7 @@ static void world_clock(double dt, double step) {
 
 void frame_step_present(uint64_t display_ns, int interval) {
     frame_limit_live();
+    if (step_word) speed_live();
     double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
     if (step_word && last_ns) {
         if (dt > STEP_RESET_S || dt < 0.001) {
@@ -281,7 +348,8 @@ void frame_step_present(uint64_t display_ns, int interval) {
             if (sample_count < STEP_SAMPLES) sample_count++;
             double sum = 0;
             for (unsigned i = 0; i < sample_count; i++) sum += samples[i];
-            step = sum / sample_count;
+            step = sum / sample_count * speed_now();
+            if (step > STEP_MAX_S) step = STEP_MAX_S;
             if (step < STEP_MIN_S) step = STEP_MIN_S;
             step_store((float)step);
         }

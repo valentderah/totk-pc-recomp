@@ -723,6 +723,40 @@ int input_pad_stick_percent(double pct[2]) {
 
 static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_buttons_last)
 
+// TOTK_GAME_SPEED_PAD (live): the combo that switches the game speed between 1x and TOTK_GAME_SPEED (frame_rate.c);
+// none without the setting. Under lock.
+static uint32_t speed_pad_mask(void) {
+    static unsigned seen;
+    static int read;
+    static uint32_t mask;
+    unsigned v = cfg_version();
+    if (read && v == seen) return mask;
+    read = 1, seen = v;
+    const char *s = cfg_get("TOTK_GAME_SPEED_PAD");
+    mask = s && *s ? input_pad_combo("TOTK_GAME_SPEED_PAD", s) : 0;
+    if (mask) rt_log("input: game speed combo %s", s);
+    return mask;
+}
+
+// The game speed combo: the same latch as Minus+Plus (input_map.c, chord). Once every button of it is down the speed
+// switches once, and the Switch buttons they press stay hidden from the game until all of them are released. Under lock.
+static void speed_pad_gate(uint64_t *b) {
+    static int held;
+    uint32_t mask = speed_pad_mask(), raw = 0;
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++)
+        if (mask >> p & 1 && pad_seen[p]) raw |= 1u << p;
+    if (!mask) held = 0;
+    else if (held) held = raw != 0;
+    else if (raw == mask) {
+        held = 1;
+        frame_speed_toggle();
+    }
+    if (!held) return;
+    uint8_t sub[PAD_COUNT] = {0};
+    for (int p = PAD_SOUTH; p < PAD_COUNT; p++) sub[p] = mask >> p & 1;
+    *b &= ~input_map_pad_buttons(sub, pad_layout_get());
+}
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -822,6 +856,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
+    speed_pad_gate(&b);   // TOTK_GAME_SPEED_PAD switches the game speed (frame_rate.c)
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();

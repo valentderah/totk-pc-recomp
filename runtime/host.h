@@ -321,6 +321,7 @@ void rt_patch_switch(int set, int on);                     // at run time (live 
                                                            // the next time it runs
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
+void frame_speed_toggle(void);                             // TOTK_GAME_SPEED_PAD pressed (input thread): 1x <-> game speed
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
 double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown

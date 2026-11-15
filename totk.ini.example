@@ -28,6 +28,18 @@
 # highfps_fix = 1
 # Climbing walls and ladders at full speed above 60 fps; 30 and 60 fps are unchanged. Needs realtime = 1.
 # climb_fix = 1
+# Game speed: how much game time passes per real second, 0.25 to 4 (2 = the whole game runs twice as fast; the frame
+# rate stays). Needs realtime = 1. A frame step stays within 1/240 to 1/15 s, so the speed tops out at 4x at 60 fps
+# (2x at 30 fps) and slow motion stops at 1x at 240 fps. Sound keeps its pitch and tempo, and movies their speed.
+# Takes effect at once.
+# game_speed = 1
+# A key that switches between 1x and game_speed, by its name in the bind_ lines (f9, num_add, ...). Default: none,
+# game_speed always applies. With a key, the game starts at 1x. Pick a key no bind_ line uses.
+# game_speed_key = f9
+# A gamepad combo that does the same: buttons by position joined with +, the pad: names of the bind_ lines (south east
+# west north lstick rstick l r zl zr start back dpad_up ...) plus guide for the Home / Xbox button. The game does not see
+# the combo's buttons while they are held. Windows may open the Game Bar on the Xbox button (Settings > Gaming).
+# game_speed_pad = guide+south
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
