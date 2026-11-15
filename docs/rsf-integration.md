@@ -2,8 +2,9 @@
 
 The requested replacement covers super resolution, frame generation and low latency
 through ReScaleFrame for NVIDIA, AMD and Intel. Implementation is in progress. The
-renderer selects RSF evaluation when `rsf_runtime` is configured and retains the
-legacy NGX path during migration.
+renderer's temporal evaluation now exclusively uses RSF. The direct NGX core
+loader, vtable ABI, feature creation and evaluation have been removed. The legacy
+DLAA/DLSS setting names remain until menu/config migration is complete.
 
 `runtime/rsf_runtime.c` now provides opt-in module loading and validates the required
 native Vulkan exports before exposing them. `runtime/vk_device.c`, `create_instance`

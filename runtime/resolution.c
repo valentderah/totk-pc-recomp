@@ -68,35 +68,11 @@ static struct {
     int live;                  // 1.4.3 with DLSS able to run: the DLSS mode can change while the game runs
 } R;
 
-// The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
-// next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
-// without that file DLSS never runs, and a DLSS mode would leave the game's plain scaling at 50..67 % of the output.
+// Before device creation, only runtime presence is known. Provider setup later
+// verifies capability and the negotiated render extent.
 static int dlss_dll(void) {
-    if (cfg_get("TOTK_RSF_RUNTIME")) {
-        const char *path = cfg_get("TOTK_RSF_RUNTIME");
-        return path && plat_file_exists(path);
-    }
-#ifdef _WIN32
-    char exe[1024], path[1024 + 32];
-    if (!plat_exe_path(exe, sizeof exe)) return 1;
-    char *last = plat_last_sep(exe);
-    if (!last) return 1;
-    snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
-    return plat_file_exists(path);
-#else
-    char exe[1024];
-    if (!plat_exe_path(exe, sizeof exe)) return 1;
-    char *last = plat_last_sep(exe);
-    if (!last) return 1;
-    *last = 0;
-    DIR *d = opendir(exe);
-    if (!d) return 1;
-    int found = 0;
-    for (struct dirent *e; !found && (e = readdir(d));)
-        found = !strncmp(e->d_name, "libnvidia-ngx-dlss.so.", 22);
-    closedir(d);
-    return found;
-#endif
+    const char *path = cfg_get("TOTK_RSF_RUNTIME");
+    return path && path[0] && plat_file_exists(path);
 }
 
 static uint64_t shadow_kib(void);
@@ -130,13 +106,8 @@ static double dlss_share(const char *m) {
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
             if (dll < 0 && !(dll = dlss_dll())) {
-#ifdef _WIN32
-                rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
-                       "render_scale", m);
-#else
-                rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
-                       "scene follows render_scale", m);
-#endif
+                rt_log("resolution: reconstruction mode %s requires rsf_runtime pointing to an existing RSF DLL; "
+                       "the scene follows render_scale", m);
             }
             return dll ? dlss[i].k : 0;
         }
