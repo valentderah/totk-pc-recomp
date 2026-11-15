@@ -960,6 +960,24 @@ static void tab_controls(float scale) {
     opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 3, UI_MENU_PROMPTS_DESC, note);
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    opt_toggle("TOTK_GYRO_CALIBRATION", UI_MENU_GYRO_CALIBRATION, UI_MENU_GYRO_CALIBRATION_DESC);
+    if (input_gyro_calibration_enabled()) {
+        // The row exists only while the switch is on: with the bias not applied there is nothing to calibrate and no
+        // state to show.
+        char pad[128] = "";
+        int st = input_motion_calib_state(pad, sizeof pad);
+        char status[192] = "";
+        if (st == MOTION_CALIB_COLLECTING)
+            snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_WAIT));
+        else if (st == MOTION_CALIB_DONE)
+            snprintf(status, sizeof status, menu_text(UI_MENU_GYRO_CALIBRATED), pad);
+        else if (st == MOTION_CALIB_FAILED)
+            snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_FAILED));
+        else if (st == MOTION_CALIB_MOVED)
+            snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_MOVED));
+        if (opt_button("##gyro_calib", UI_MENU_GYRO_CALIBRATE, UI_MENU_GYRO_CALIBRATE_DESC, status))
+            input_motion_calibrate();
+    }
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);

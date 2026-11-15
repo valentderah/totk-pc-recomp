@@ -114,6 +114,20 @@ int input_rumble_triggers_enabled(void);
 void input_motion_start(void);
 // TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
+// The Controls tab's Calibrate gyro row: start a bias measurement on the open gamepad (starts the sensor thread when
+// the game has not yet). Callable from any thread.
+void input_motion_calibrate(void);
+// What the Calibrate gyro row shows (MOTION_CALIB_*): NONE no bias for this controller, COLLECTING, DONE a bias in
+// effect (measured in this run or loaded from totk.ini), FAILED the last attempt got no samples and no bias is in
+// effect, MOVED the last attempt was rejected because the controller moved. pad receives the name of the controller the
+// bias belongs to (empty when none), copied so the caller does not read a buffer another thread may be rewriting.
+enum { MOTION_CALIB_NONE, MOTION_CALIB_COLLECTING, MOTION_CALIB_DONE, MOTION_CALIB_FAILED, MOTION_CALIB_MOVED };
+int input_motion_calib_state(char *pad, size_t cap);
+// The bias's own switch (gyro_calibration, live). Off: no collection, the fusion takes the raw gyro, and the row's
+// state reads as before any calibration while the saved keys stay in totk.ini.
+int input_gyro_calibration_enabled(void);
+// The fusion's own read of the same switch (motion_fusion.c); input.c reaches it for the row's state.
+int motion_calibration_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);
@@ -131,3 +145,9 @@ MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
 void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
+// Start a bias measurement at now_ns: samples while the controller rests, then the bias or a rejection (MOTION_CALIB_*).
+// pad is the controller's identity, written to totk.ini with the bias.
+void motion_calibrate_start(MotionFusion *m, const char *pad, uint64_t now_ns);
+int motion_calib_poll(MotionFusion *m, uint64_t now_ns);   // MOTION_CALIB_*; ends an attempt whose samples stopped
+void motion_bias_load(MotionFusion *m);    // take the bias from totk.ini (TOTK_GYRO_BIAS_*)
+void motion_bias_reset(MotionFusion *m);   // no bias and no attempt (another controller)
