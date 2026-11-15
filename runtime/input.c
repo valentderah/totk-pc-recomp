@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "dsu.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -874,23 +875,44 @@ static int sensors_ready(void) {
     return sensor_ok;
 }
 
-int input_motion_enabled(void) {
-    static int on = -1;
+static const char* get_motion_mode() {
+    static const char* motion_mode = NULL;
     static unsigned seen;
     unsigned v = cfg_version();
-    if (on < 0 || v != seen) {
+    if (motion_mode == NULL || v != seen) {
         seen = v;
-        on = cfg_bool("TOTK_MOTION");
+        motion_mode = cfg_value("TOTK_MOTION");
+        rt_logf("input: motion_mode update to %s\n", motion_mode);
     }
-    return on;
+
+    return motion_mode;
+}
+
+int input_motion_enabled() {
+    return strcmp(get_motion_mode(), "disabled") != 0;
+}
+
+static void spawn_motion_thread();
+
+static void poll_motion_mode(void *arg) {
+    (void)arg;
+
+    while (strcmp(get_motion_mode(), "disabled") == 0) {
+        plat_wait_ns(1e9);
+    }
+
+    rt_log("input: motion mode poll thread terminated.");
+    motion_thread = -1;
+    spawn_motion_thread();
 }
 
 // 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
 // fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
 // sensor reads at rest.
-static void motion_main(void *arg) {
+static void native_motion_poll(void *arg) {
     (void)arg;
-    for (;;) {
+
+    while (strcmp(get_motion_mode(), "native") == 0) {
         plat_wait_ns(4000000);
         float a[3], g[3];
         int have = 0;
@@ -901,23 +923,88 @@ static void motion_main(void *arg) {
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
-        if (!have || !input_motion_enabled()) continue;
+        if (!have) {
+            continue;
+        }
+
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
-        motion_feed(motion_global(), acc, gyro, kern_now_ns());
+        // use kern_now_ns as the timestamp
+        motion_feed(motion_global(), acc, gyro, kern_now_ns(), kern_now_ns());
     }
+
+    rt_log("input: native motion thread terminated.");
+    motion_thread = -1;
+    spawn_motion_thread();
+}
+
+static void dsu_motion_poll(void *arg) {
+    (void)arg;
+
+    SOCKET sock;
+    SOCKADDR_IN server_addr;
+    if (dsu_init(&sock, &server_addr) != 0) {
+        rt_log("input: failed to init dsu client.");
+        goto end_thread;
+    }
+    rt_log("input: dsu client initialized");
+
+    DsuClientState state = { .slot = -1 };
+    uint64_t last_request_time = 0;
+
+    while (strcmp(get_motion_mode(), "dsu") == 0) {
+        uint64_t now = kern_now_ns();
+
+        // We need to send a request every 2 seconds. Otherwise DSU server
+        // stops giving data.
+        if (now - last_request_time >= 2e9) {
+            last_request_time = now;
+            dsu_send_requests(sock, &server_addr, state.slot);
+        }
+
+        dsu_process_incoming_packets(sock, &state);
+        motion_feed(motion_global(), state.acc, state.gyro, state.last_timestamp * 1000, kern_now_ns());
+
+        plat_wait_ns(1e9 / 60);
+    }
+
+end_thread:
+    rt_log("input: dsu motion thread terminated.");
+    motion_thread = -1;
+    spawn_motion_thread();
+}
+
+static void spawn_motion_thread() {
+    if (motion_thread == 1) {
+        rt_fatal("input: there is already a motion thread running.");
+    }
+
+    const char* mode = get_motion_mode();
+    int success;
+    if (strcmp(mode, "disabled") == 0) {
+        success = plat_thread_spawn(poll_motion_mode, NULL, "motion (wait for mode change)", 0);
+    } else if (strcmp(mode, "native") == 0) {
+        success = plat_thread_spawn(native_motion_poll, NULL, "motion (native)", 0);
+    } else if (strcmp(mode, "dsu") == 0) {
+        success = plat_thread_spawn(dsu_motion_poll, NULL, "motion (dsu)", 0);
+    } else {
+        rt_fatal("unexpected input motion mode \"%s\"", mode);
+    }
+
+    if (!success) {
+        rt_fatal("input: cannot start the motion thread");
+    }
+
+    rt_log("input: motion thread spawned");
+    motion_thread = 1;
 }
 
 void input_motion_start(void) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (!motion_thread) {
-        if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
         if (state != 1) motion_thread = -1;
-        else {
-            if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
-            motion_thread = 1;
-        }
+        else spawn_motion_thread();
     }
     plat_mutex_unlock(&lock);
 }

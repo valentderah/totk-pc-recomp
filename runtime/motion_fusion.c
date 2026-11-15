@@ -24,7 +24,7 @@ enum { MOTION_RING = 64 };
 struct MotionFusion {
     PlatMutex lock;
     MotionState ring[MOTION_RING];
-    uint64_t produced, last_ns;
+    uint64_t produced, last_kern_time, last_sensor_ts;
     uint64_t first;   // produced at the last restart: older samples are not read
     double R[3][3];   // controller -> reference; row i = reference axis i in controller coordinates
     double angle[3];
@@ -78,6 +78,7 @@ static void align_to(double R[3][3], const double acc[3]) {
     memcpy(R[0], x, sizeof x);
     orthonormalize(R);
 }
+
 // Body-frame rate: R = R * exp([w] dt), the rate plus the gravity pull.
 static void integrate(double R[3][3], const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
@@ -107,11 +108,12 @@ static void integrate(double R[3][3], const double gyro[3], const double acc[3],
     orthonormalize(R);
 }
 
-void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uint64_t now) {
+void motion_feed(MotionFusion *m, const double acc[3], const double gyro[3], uint64_t sensor_ts, uint64_t now) {
     plat_mutex_lock(&m->lock);
-    double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
+    double dt = m->last_sensor_ts && sensor_ts > m->last_sensor_ts ? (double)(sensor_ts - m->last_sensor_ts) / 1e9 : 0.004;
     if (dt > 0.05) dt = 0.004;   // a gap (no controller, sensors were off): no integration across it
-    m->last_ns = now;
+    m->last_kern_time = now;
+    m->last_sensor_ts = sensor_ts;
     if (m->restart) {
         align_to(m->R, acc);
         memset(m->angle, 0, sizeof m->angle);
@@ -135,7 +137,7 @@ int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
     if (max <= 0) return 0;
     int n = 0;
     plat_mutex_lock_shared(&m->lock);
-    if (m->produced > m->first && (now < m->last_ns || now - m->last_ns < STALE_NS)) {
+    if (m->produced > m->first && (now < m->last_kern_time || now - m->last_kern_time < STALE_NS)) {
         uint64_t have = m->produced - m->first < MOTION_RING ? m->produced - m->first : MOTION_RING;
         n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
         for (int i = 0; i < n; i++) out[i] = m->ring[(m->produced - 1 - (uint64_t)i) % MOTION_RING];
@@ -148,7 +150,7 @@ void motion_restart(MotionFusion *m) {
     plat_mutex_lock(&m->lock);
     m->restart = 1;
     m->first = m->produced;
-    m->last_ns = 0;   // the first sample after the restart integrates nothing across the stop
+    m->last_kern_time = 0;   // the first sample after the restart integrates nothing across the stop
     memset(m->angle, 0, sizeof m->angle);
     plat_mutex_unlock(&m->lock);
 }

@@ -596,8 +596,8 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     MotionFusion *m = motion_new();
     uint64_t t = 1000000000ull;
     const double down[3] = {0, 0, -1}, still[3] = {0, 0, 0}, turn[3] = {0, 0, M_PI / 2};
-    motion_feed(m, down, still, t);
-    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000);
+    motion_feed(m, down, still, t, t);
+    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000, t);
     MotionState ms[16];
     int n = motion_read(m, ms, 16, t + 1000000);
     CHECK(n == 16 && ms[0].sampling == 251 && ms[15].sampling == 236 && ms[0].attributes == 1 &&
@@ -609,10 +609,10 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     CHECK(motion_read(m, ms, 16, t + 300000000ull) == 0, "fusion states 300 ms after the last sample");
     // StartSixAxisSensor again in the middle of the turn (the bow drawn again): the states from before it are gone, and
     // the first one after it starts a fresh angle in a fresh frame; sampling numbers go on.
-    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000);
+    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000, t);
     motion_restart(m);
     int same = motion_read(m, ms, 16, t + 1000000);
-    motion_feed(m, down, turn, t += 4000000);
+    motion_feed(m, down, turn, t += 4000000, t);
     int next = motion_read(m, ms, 16, t + 1000000);
     CHECK(same == 0 && next == 1 && ms[0].sampling == 502 && fabs(ms[0].angle[2]) < 0.002 &&
           near3(ms[0].dir, 1, 0, 0, 0.01),

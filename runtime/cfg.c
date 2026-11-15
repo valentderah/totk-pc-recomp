@@ -40,7 +40,7 @@ static const char *const known[] = {
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DSU_PORT", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "DYN_DELTA", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
     "FREEZE_IDLE", "FREE_CORES",
@@ -85,7 +85,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"TEX_HEAP_EXTRA_MB", "mods"},
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"},
-    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+    {"MOTION", "input"}, {"DSU_PORT", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
     {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
@@ -147,7 +147,8 @@ static const CfgMeta metas[] = {
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
-    {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+    {"MOTION", "native", "disabled|native|dsu", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+    {"DSU_PORT", "26760", "1..65535", RESTART},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},

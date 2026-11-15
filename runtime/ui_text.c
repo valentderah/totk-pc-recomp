@@ -234,6 +234,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_MOTION_DISABLED] = "disabled",
+    [UI_MENU_MOTION_NATIVE] = "native",
+    [UI_MENU_MOTION_DSU] = "dsu",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
