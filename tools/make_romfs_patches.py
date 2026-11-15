@@ -35,14 +35,20 @@ from the game's own files on the player's machine, nothing added (tools/button_i
     stays right.
   - every other prompt: the glyphs U+E040 A, U+E041 B, U+E042 X, U+E043 Y of the button font trade places.
 - xbox-label, for pad_layout = xbox and auto. Those layouts put Switch A on the button labelled A (auto picks xbox for
-  every pad not labelled the Nintendo way), so the face buttons keep their letters; the action prompt's diamond keeps
-  the Switch positions (A on the right).
---xbox-prompts is the older name of --prompts xbox.
+  every pad not labelled the Nintendo way), so the face buttons keep their letters. The action prompt's diamond is
+  laid out as an Xbox pad's (bflyt_xbox_diamond): A at the bottom, B on the right, X on the left, Y at the top, the
+  button the prompt names lit in its place with its bar.
+--xbox-prompts is the older name of --prompts xbox. With --aspect, romfs-patches-xbox-<w>x<h> or
+romfs-patches-xbox-label-<w>x<h>: the same prompts with that shape's UI layout.
 --prompts pc: keyboard and mouse prompts, for prompts = pc (romfs-patches-pc, or romfs-patches-pc-<w>x<h> with
 --aspect): every button of the button font is drawn as the key or mouse button the keyboard defaults put on it
 (button_icons.pc_icons; --binds <totk.ini> takes the first key of its bind_ lines instead), and so are the button
 guide's images (A, B, X, Y, L, ZL and the stick's two). The one-letter panes around the action prompt name the keys
 with one character of the Normal font (E, an arrow for Shift, a bar for Space, L and R for the mouse buttons).
+
+--reuse <folder>: an overlay made before, such as romfs-patches-pc for romfs-patches-pc-<w>x<h>. Each file of it whose
+contents match the new one is hard-linked (copied where links fail) instead of compressed again; the summary's reused
+lists them. The output is byte for byte the same as without it.
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
@@ -52,6 +58,7 @@ import compression.zstd as zstd
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import struct
 from pathlib import Path
@@ -69,6 +76,8 @@ ap.add_argument('--prompts', choices=('xbox', 'xbox-label', 'pc'),
                      'pc for the keyboard and mouse')
 ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_ lines the key icons follow')
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
+ap.add_argument('--reuse', type=Path,
+                help='an overlay folder made before: its files with the same contents are linked, not compressed again')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
 args.out = args.out or root / 'build' / args.version / (f'romfs-patches-{args.prompts}' if args.prompts else 'romfs-patches')
@@ -167,6 +176,92 @@ def bflyt_letters(data, base, end, swap):
         if not size:
             break
         pos += size
+    return changed
+
+
+def bflyt_panes(data, base, end):
+    """name -> absolute offset of each pane section (pan1, pic1, txt1, wnd1, ...) of the BFLYT at data[base:end], and
+    name -> absolute offset of each material of its mat1, and its texture names (txl1)."""
+    assert data[base:base + 4] == b'FLYT'
+    pos, panes, mats, textures = base + struct.unpack_from('<H', data, base + 6)[0], {}, {}, []
+    while pos + 8 <= end:
+        magic, size = data[pos:pos + 4], struct.unpack_from('<I', data, pos + 4)[0]
+        if magic in (b'pan1', b'pic1', b'txt1', b'wnd1', b'bnd1', b'prt1', b'ali1', b'scr1'):
+            panes[data[pos + 12:pos + 36].split(b'\0')[0].decode()] = pos
+        elif magic == b'mat1':
+            for i in range(struct.unpack_from('<H', data, pos + 8)[0]):
+                at = pos + struct.unpack_from('<I', data, pos + 12 + 4 * i)[0]
+                mats[data[at:at + 28].split(b'\0')[0].decode()] = at
+        elif magic == b'txl1':
+            for i in range(struct.unpack_from('<H', data, pos + 8)[0]):
+                at = pos + 12 + struct.unpack_from('<I', data, pos + 12 + 4 * i)[0]
+                textures.append(data[at:data.index(0, at)].decode())
+        if not size:
+            break
+        pos += size
+    return panes, mats, textures
+
+
+# The action prompt's diamond (blyt/DoCommand_00.bflyt) for pad_layout = xbox and auto, where Switch A, B, X and Y are
+# the buttons labelled so on an Xbox pad: A at the bottom, B on the right, X on the left, Y at the top. The layout has
+# one diamond per button the prompt can name (N_A_00, N_B_00, N_X_00, N_Y_00; N_StopA_00 is A's while held), each
+# with its button and bar (N_Btn<K>_00), the three other letters (T_<letter>_<n>) and a base image (P_Base<K>_00)
+# that lights the button's side. A Switch button's place on an Xbox pad is that of its partner on a Switch (A of B,
+# X of Y), so each piece takes the place and look its partner's piece has: the bar of a button on the left reaches
+# left (Y's on a Switch), the others reach right.
+DIAMOND_SLOTS = {'A': (39.0, 1.0), 'B': (2.0, -39.0), 'X': (1.0, 39.0), 'Y': (-38.0, 0.0)}   # the letters' places
+DIAMOND_PARTNER = {'A': 'B', 'B': 'A', 'X': 'Y', 'Y': 'X'}
+# (pane, the pane whose place it takes): the buttons with their bars, and the flashes of a repeated press (Rush)
+DIAMOND_MOVES = [('N_BtnA_00', 'N_BtnB_00'), ('N_BtnA_01', 'N_BtnB_00'), ('N_CompanionBtnA_00', 'N_BtnB_00'),
+                 ('N_BtnB_00', 'N_BtnA_00'), ('N_BtnX_00', 'N_BtnY_00'), ('N_BtnY_00', 'N_BtnX_00')]
+DIAMOND_MOVES += [(f'P_Capture{k}_{n:02}', f'P_Capture{DIAMOND_PARTNER[k]}_{n:02}') for k in 'ABXY' for n in (1, 2, 3)]
+# X and Y trade the side their bar reaches to: the flash, the bar (Y's mirrored) and the text (Y's right-aligned)
+DIAMOND_MIRROR = [('P_CaptureX_00', 'P_CaptureY_00'), ('W_BaseX_00', 'W_BaseY_00'), ('T_GuideX_00', 'T_GuideY_00'),
+                  ('T_GuideX_TW', 'T_GuideY_TW')]
+# the base image: its texture (by its material) and its rotation and scale
+DIAMOND_BASES = [('P_BaseA_00', 'P_BaseB_00'), ('P_BaseA_01', 'P_BaseB_00'), ('P_BaseB_00', 'P_BaseA_00'),
+                 ('P_BaseX_00', 'P_BaseY_00'), ('P_BaseY_00', 'P_BaseX_00')]
+
+
+def bflyt_xbox_diamond(data, base, end):
+    """Lay the action prompt's diamond in the BFLYT at data[base:end] (blyt/DoCommand_00.bflyt) out as an Xbox pad's
+    face buttons (DIAMOND_* above); returns the panes changed. A pane section holds its origin at +0x09, translation
+    (3 floats) at +0x2C, rotation (3) at +0x38 and scale (2) at +0x44; a text pane its text position at +0x5C; a
+    picture pane its material index at +0x64, and a material its first texture's index at +0x2C."""
+    panes, mats, textures = bflyt_panes(data, base, end)
+    old = bytes(data)   # every piece takes its partner's place as the game has it
+    changed = []
+    for name, at in panes.items():
+        m = re.fullmatch(r'T_([ABXY])_\d+', name)
+        if m:   # a letter around a diamond: its partner's place
+            struct.pack_into('<2f', data, at + 0x2C, *DIAMOND_SLOTS[DIAMOND_PARTNER[m[1]]])
+            changed.append(name)
+    for name, like in DIAMOND_MOVES:
+        data[panes[name] + 0x2C:panes[name] + 0x34] = old[panes[like] + 0x2C:panes[like] + 0x34]
+        changed.append(name)
+    # A's hold flashes (N_LoopA_03) sit 129 right of the diamond, as A's repeated-press ones: the same move as those
+    dx, dy = (a - b for a, b in zip(struct.unpack_from('<2f', old, panes['P_CaptureB_01'] + 0x2C),
+                                    struct.unpack_from('<2f', old, panes['P_CaptureA_01'] + 0x2C)))
+    x, y = struct.unpack_from('<2f', old, panes['N_LoopA_03'] + 0x2C)
+    struct.pack_into('<2f', data, panes['N_LoopA_03'] + 0x2C, x + dx, y + dy)
+    changed.append('N_LoopA_03')
+    for a, b in DIAMOND_MIRROR:
+        pa, pb = panes[a], panes[b]
+        for lo, hi in ((0x09, 0x0A), (0x2C, 0x4C)) + (((0x5C, 0x5D),) if old[pa:pa + 4] == b'txt1' else ()):
+            data[pa + lo:pa + hi], data[pb + lo:pb + hi] = old[pb + lo:pb + hi], old[pa + lo:pa + hi]
+        changed += [a, b]
+    in_order = list(mats.values())
+
+    def material(name):   # the offset of a picture pane's material
+        return in_order[struct.unpack_from('<H', old, panes[name] + 0x64)[0]]
+
+    for name, like in DIAMOND_BASES:
+        assert old[panes[name]:panes[name] + 4] == b'pic1', name
+        data[panes[name] + 0x38:panes[name] + 0x4C] = old[panes[like] + 0x38:panes[like] + 0x4C]
+        mine, theirs = material(name), material(like)
+        data[mine + 0x2C:mine + 0x2E] = old[theirs + 0x2C:theirs + 0x2E]
+        assert textures[struct.unpack_from('<H', data, mine + 0x2C)[0]].startswith('Nt_KeyBtnSubBase'), name
+        changed.append(name)
     return changed
 
 
@@ -319,6 +414,9 @@ if args.prompts:
     letters = {}
     if by_position:
         bntx_swap(blarc, bntx, KEY_TEXTURES)
+    diamond = []
+    if args.prompts == 'xbox-label':
+        diamond = bflyt_xbox_diamond(blarc, *members['blyt/DoCommand_00.bflyt'])
     if letter_panes:
         for member, (lo, hi) in members.items():
             if member.endswith('.bflyt'):
@@ -350,21 +448,48 @@ if args.prompts:
     if grown:
         outputs[RESTBL] = icons.grow_restbl(unpack(RESTBL), grown)
     prompts = dict(style=args.prompts, textures=KEY_TEXTURES if by_position else [], letters=letters,
-                   messages=messages, hud=hud, icons=len(drawn), fonts=FONTS, grown=grown)
+                   diamond=len(diamond), messages=messages, hud=hud, icons=len(drawn), fonts=FONTS, grown=grown)
 
-lines = []
+def reusable(path, contents, dictionary):
+    """The --reuse folder's copy of path when it holds these contents under the same dictionary, else None. The level 19
+    compression is most of a run (about 80 s for the four fonts of 1.4.3), and romfs-patches-<style>-<w>x<h> differs
+    from romfs-patches-<style> in the Common archive alone, so the setup makes the fifteen shapes from the 16:9
+    folder."""
+    if not args.reuse or not (args.reuse / path).is_file():
+        return None
+    data = (args.reuse / path).read_bytes()
+    try:
+        same = (zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(originals[path]).dictionary_id
+                and zstd.decompress(data, zstd_dict=dictionary) == contents)
+    except zstd.ZstdError:
+        return None
+    return data if same else None
+
+
+lines, reused = [], []
 for path, contents in outputs.items():
     raw = originals[path]
     dictionary = dictionaries.get(zstd.get_frame_info(raw).dictionary_id)
-    data = zstd.compress(contents, level=19, zstd_dict=dictionary)
-    assert zstd.decompress(data, zstd_dict=dictionary) == contents
-    assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
     target = args.out / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    # Unlinked first: a file linked from another folder (--reuse) is not written through, which would break the other
+    # folder's manifest.
+    target.unlink(missing_ok=True)
+    data = reusable(path, contents, dictionary)
+    if data is not None:
+        try:   # a hard link takes no room; a volume without them gets a copy
+            os.link(args.reuse / path, target)
+        except OSError:
+            target.write_bytes(data)
+        reused.append(path)
+    else:
+        data = zstd.compress(contents, level=19, zstd_dict=dictionary)
+        assert zstd.decompress(data, zstd_dict=dictionary) == contents
+        assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
+        target.write_bytes(data)
     lines.append('\t'.join([path, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
 (args.out / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
                                        + ''.join(line + '\n' for line in lines))
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None,
-                      prompts=prompts)))
+                      prompts=prompts, reused=reused)))

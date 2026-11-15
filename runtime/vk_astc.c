@@ -300,17 +300,19 @@ static int create_pipeline(VkCtx *c) {
 // TOTK_ASTC_BC=1: the BC3 encoder, when the device samples BC3 (every desktop GPU does); 0 leaves ASTC as RGBA8.
 // Unset: on when the largest device-local heap is under 5 GiB. There RGBA8 ASTC, four times the size of BC3, fills
 // video memory (a GTX 1650 4 GiB went from 10-23 to 3-12 ms of GPU time a frame, issue #87); BC3 loses some precision
-// (normal maps), so GPUs with more memory keep RGBA8.
+// (normal maps), so GPUs with more memory keep RGBA8. A UMA GPU's heap is the machine's RAM however large it reads
+// (10.6 GiB on an ROG Ally X, 14.9 GiB on a Radeon 880M), so there BC3 is on too: on the RX 9070, BC3 took 737 MiB off
+// VMA's device-local allocations after a minute in the field, at the same GPU time.
 static int create_bc_pipeline(VkCtx *c) {
     const char *e = cfg_get("TOTK_ASTC_BC");
     VkDeviceSize vram = 0;
     for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT && c->mem_props.memoryHeaps[h].size > vram)
             vram = c->mem_props.memoryHeaps[h].size;
-    int on = e && *e ? *e != '0' : vram < (5ull << 30);
+    int on = e && *e ? *e != '0' : vram < (5ull << 30) || vk_mem_uma();
     if (!(e && *e))
-        rt_log("vk: TOTK_ASTC_BC unset: BC3 %s (largest device-local heap %llu MiB)", on ? "on" : "off",
-               (unsigned long long)(vram >> 20));
+        rt_log("vk: TOTK_ASTC_BC unset: BC3 %s (largest device-local heap %llu MiB%s)", on ? "on" : "off",
+               (unsigned long long)(vram >> 20), vk_mem_uma() ? ", uma: system memory" : "");
     if (!on) return 0;
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_BC3_SRGB_BLOCK, &p);
@@ -463,13 +465,9 @@ int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, cons
     cap_in = (cap_in + al - 1) / al * al;
     cap_out = (cap_out + al - 1) / al * al;
     if (!bc) cap_bc = 0;
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap_in + cap_out + cap_bc,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkBuffer sb;
     VmaAllocation sa;
-    if (vmaCreateBuffer(c->vma, &bi, &aci, &sb, &sa, NULL) != VK_SUCCESS) {
+    if (vk_scratch_buffer(cap_in + cap_out + cap_bc, &sb, &sa) != VK_SUCCESS) {
         if (plat_inc32(&n_fail) <= 16)
             rt_log("vk: ASTC scratch buffer of %llu bytes failed: texture left undecoded",
                    (unsigned long long)(cap_in + cap_out));

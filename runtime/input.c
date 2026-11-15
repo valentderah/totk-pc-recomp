@@ -623,17 +623,22 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
-            // (the click that refocused the window) is ignored until it is released.
+            // (the click that refocused the window) is ignored until it is released. While a game menu has the pointer
+            // (menu_cursor.c) and it is over the window, the left and right buttons are that menu's A and B, and the
+            // middle and side buttons keep their bindings: bound to L and R they turn the menu's tabs.
             static int was_captured;
             static uint8_t mouse_ignore[KEY_COUNT];
             int cap = ikb_captured();
+            float pointer_x, pointer_y;
+            int menu_pointer = !cap && menu_cursor_pointer() && ikb_pointer(&pointer_x, &pointer_y);
             for (int k = 1; k < KEY_COUNT; k++) {
                 down[k] = ikb_down(k);
                 kbm_used |= down[k];
                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
                 if (cap && !was_captured) mouse_ignore[k] = down[k];
                 if (!down[k]) mouse_ignore[k] = 0;
-                if (!cap || mouse_ignore[k]) down[k] = 0;
+                int counts = cap || (menu_pointer && k != KEY_MOUSE_L && k != KEY_MOUSE_R);
+                if (!counts || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
             b |= input_map_buttons(down);

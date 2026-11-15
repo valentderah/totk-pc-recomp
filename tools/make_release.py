@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import build_xlate  # noqa: E402
 import check_content  # noqa: E402
+import pgo  # noqa: E402
 import shader_list  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,7 +64,7 @@ WORK = MAIN_ROOT / 'toolchain' / 'release-work'   # unpacked downloads
 PGO_DIR = MAIN_ROOT / 'build' / 'pgo'   # pgo-<version>.profdata + .json (tools/pgo.py merge)
 
 MSYS2 = 'https://repo.msys2.org/mingw/ucrt64/'
-SDL_VERSION = '3.4.18'
+SDL_VERSION = '3.4.20'
 LLVM_VERSION = '20261020'
 MNG_COMMIT = 'b75be8cfa704df3701e86130c8ced268e79d6b11'   # MacNativeGames, the shader list (refs/MacNativeGames)
 # name: (url, sha256)
@@ -76,9 +77,9 @@ PINS = {
                    f'llvm-mingw-{LLVM_VERSION}-ucrt-x86_64.zip',
                    'fd5462b7f5d93b2ff981fcd3f9c7e427e47f3203c64ea91c27bcc444eebd74cd'),
     'sdl3-dll': (f'https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/SDL3-{SDL_VERSION}-win32-x64.zip',
-                 '75c2c0fc74e7d1206aaedc22893a35887332f4f85f5c8b74fddc10d177985f2c'),
+                 '368bed8b24e44ad9ea372990814f2343fcfb9e468abb7f8f4a3bc146c7304752'),
     'sdl3-devel': (f'https://github.com/libsdl-org/SDL/releases/download/release-{SDL_VERSION}/SDL3-devel-{SDL_VERSION}-mingw.tar.gz',
-                   '049b9dd711e3fb3f8d84feb998dfec54a75e17cf539c4a80ff4d058d839771cf'),
+                   'd2d3bf3fb97a90b22e908a306d7362631ef1bab229d988fe6669595dc29cd9ed'),
     'ninja': ('https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip',
               '07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65'),
     'opus': (MSYS2 + 'mingw-w64-ucrt-x86_64-opus-1.6.1-2-any.pkg.tar.zst',
@@ -98,7 +99,7 @@ PINS = {
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
-SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
+SDL3_DLL_SHA256 = '66844f10251cc1c10619ed5d8e4e3224f564900ee6d69ba87d63de782addae40'   # SDL3.dll inside the SDL zip
 
 # llvm-mingw: what clang and lld need to compile and link totk.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
@@ -385,11 +386,13 @@ def lifted_version():
 
 
 def profiles():
-    """{version tag: .profdata} of build/pgo (tools/pgo.py merge). A profile trained on another recomp/ than the one
-    shipped still works but misses the functions whose generated C changed since: warn, so the next release retrains."""
+    """{version tag: .profdata} of build/pgo (tools/pgo.py merge). A profile trained on another recomp/, or with other
+    runtime headers inlined into the generated C, than the ones shipped still works but misses the functions whose
+    code changed since: warn, so the next release retrains."""
     tree = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD:recomp'], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', 'recomp'], capture_output=True,
                            text=True).stdout.strip()
+    retrain = 'build without a profile; retrain (docs/pgo.md)'
     found = {}
     for p in sorted(PGO_DIR.glob('pgo-*.profdata')):
         rec = p.with_suffix('.json')
@@ -397,7 +400,15 @@ def profiles():
         if record.get('recomp_tree') != tree or dirty:
             print(f'make_release: warning: {p.name} was trained on recomp tree {record.get("recomp_tree", "unknown")[:12]}, '
                   f'this is {tree[:12]}{" with local changes" if dirty else ""}: functions whose generated C changed '
-                  'build without a profile; retrain (docs/building.md, "Profile-guided build")', file=sys.stderr)
+                  f'{retrain}', file=sys.stderr)
+        stale = pgo.stale_headers(record, ROOT)
+        if stale is None:
+            print(f'make_release: warning: {p.name} has no runtime header digests (merged before they were recorded): '
+                  'a change to a header the generated C includes would go unnoticed; re-merge or retrain',
+                  file=sys.stderr)
+        elif stale:
+            print(f'make_release: warning: {p.name} was trained with other {", ".join(stale)}: every lifted function '
+                  f'that inlines them may {retrain}', file=sys.stderr)
         found[p.stem.removeprefix('pgo-')] = p
     if not found:
         print(f'make_release: no execution profile in {PGO_DIR}: installs build the game at -O1', file=sys.stderr)

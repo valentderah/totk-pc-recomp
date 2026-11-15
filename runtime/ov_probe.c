@@ -929,8 +929,14 @@ static void probe_menu_text(void) {
     cfg_set("TOTK_MENU_LANG", "zh-Hans");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "menu_text ignores MENU_LANG=zh-Hans");
     cfg_set("TOTK_MENU_LANG", "");
+    // the system language as ui_text.c resolve_menu_lang takes it: the tag, else its base language (ru-RU: ru), else en
     const char *sys_lang = ui_text_lang(plat_ui_language());
-    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang : "en";
+    char sys_base[16] = "";
+    size_t base_n = strcspn(sys_lang, "-");
+    if (sys_lang[base_n] && base_n < sizeof sys_base) memcpy(sys_base, sys_lang, base_n);
+    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang
+                            : *sys_base && ui_text_defined(sys_base, UI_MENU_TITLE) ? sys_base
+                                                                                      : "en";
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
 }
 

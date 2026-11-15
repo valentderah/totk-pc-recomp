@@ -481,6 +481,14 @@ uint64_t plat_counter_hz(void) { return 1000000000u; }
 // inherit it from the thread that creates them.
 void plat_timer_1ms(void) { prctl(PR_SET_TIMERSLACK, 1000ul, 0, 0, 0); }
 
+int plat_power_full(void) { return -1; }
+
+int plat_perf_core_setup(char *why, size_t n) {
+    snprintf(why, n, "not done on Linux");
+    return 0;
+}
+int plat_thread_perf_core(void) { return -1; }
+
 // clock_nanosleep wakes within the timer slack (50 us by default) of its deadline; the last PLAT_SPIN_NS are spent
 // yielding so the deadline is met closely, as on Windows.
 #define PLAT_SPIN_NS 100000u
@@ -949,6 +957,10 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
         }
         if (sig == SIGSEGV || sig == SIGBUS)
             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
+        static const int gr[16] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                                   REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+        for (int i = 0; i < 16; i++) c.gpr[i] = (uint64_t)u->uc_mcontext.gregs[gr[i]];
+        c.has_regs = 1;
         crash_fn(&c);
     }
     signal(sig, SIG_DFL);   // returns into the faulting instruction, which faults again with the default action
@@ -1456,6 +1468,41 @@ int plat_open_folder(const char *path) {
 void *plat_lib_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
 void *plat_lib_sym(void *lib, const char *name) { return lib ? dlsym(lib, name) : NULL; }
 
+void plat_lib_error(char *out, size_t cap) {
+    const char *e = dlerror();
+    snprintf(out, cap, "%s", e ? e : "unknown error");
+}
+
+int plat_ngx_core_path(char *out, size_t cap) { return snprintf(out, cap, "libnvidia-ngx.so.1") < (int)cap; }
+
+// UTF-8 to UTF-32 wchar_t, without the C library's locale (the runtime never sets one, so mbstowcs would stop at the
+// first non-ASCII byte). Returns 0 on malformed input or when out has no room.
+static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
+    const unsigned char *u = (const unsigned char *)in;
+    size_t n = 0;
+    while (*u) {
+        unsigned c = *u++, more = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 4;
+        if (more == 4) return 0;
+        if (more) c &= 0x3F >> more;
+        for (unsigned k = 0; k < more; k++, u++) {
+            if ((*u & 0xC0) != 0x80) return 0;
+            c = c << 6 | (*u & 0x3F);
+        }
+        if (n + 1 >= cap) return 0;
+        out[n++] = (wchar_t)c;
+    }
+    out[n] = 0;
+    return 1;
+}
+
+int plat_exe_dir_wide(wchar_t *out, size_t cap) {
+    char dir[PLAT_PATH_MAX];
+    char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
+    if (!cut) return 0;
+    cut[1] = 0;
+    return utf8_to_wide(dir, out, cap);
+}
+
 // ---- machine load: /proc/stat and /proc/self/stat for the CPU, hwmon for the temperature, the amdgpu sysfs files of
 // the render device for the GPU.
 
@@ -1624,6 +1671,17 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
     uint64_t resident, private_bytes;
     plat_process_memory(&resident, &private_bytes);
     if (private_bytes) *proc_mb = (double)(private_bytes >> 20);
+}
+
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
+    char line[128];
+    unsigned long long k;
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "MemAvailable: %llu kB", &k) == 1) *phys_room = (uint64_t)k << 10;
+    fclose(f);
 }
 
 // ---- child processes

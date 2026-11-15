@@ -38,12 +38,30 @@
 # Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
 # game waits for the GPU; adds up to a frame of latency.
 # replay_async = 0
+# Record each large submission in chunks on this many threads (0 to 16; 0 = one thread, the default). The chunks go to
+# the GPU in order. In the town at 4K on an RTX 5070, 4 cut the replay from 8.2 to 4.5 ms a frame (71 to 79 fps); more
+# threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
+# Read at start.
+# replay_workers = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
+
+# One frame ahead of the GPU.
+# Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
+# game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
+# instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
+# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
+# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage, which is on by default on Linux and Wine and needs
+# the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and the log says so.
+# sync_ahead = 0
+# With sync_ahead = 1: when the game changes memory the GPU still reads, queue the copy into the GPU's shadow of that
+# memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
+# reading instead, which costs part of the gain.
+# shadow_defer = 1
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.
@@ -109,12 +127,15 @@
 # Vulkan.
 # Vulkan validation layer: checks every call and slows the game down a lot. Needs the layer installed (Vulkan SDK).
 # vk_validation = 0
-# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on, except on AMD GPUs.
+# A thread of its own makes the Vulkan calls of each frame, 0 or 1. Default: on. Set 0 if an AMD GPU shows a black
+# screen or stops with VK_ERROR_DEVICE_LOST.
 # vk_recorder = 1
-# Dynamic vertex input, 0 or 1. Default: on, except on Intel's older integrated GPU drivers (Vulkan 1.3.215 and older).
+# Dynamic vertex input, 0 or 1. Default: on, except on Intel's Windows driver for integrated GPUs (UHD, Iris Xe),
+# which draws black patches with it.
 # vk_dyn_vertex = 1
 # Dynamic alpha to coverage, 0 or 1. Default: on, except on AMD's driver for RDNA 2 and older (RX 400 to RX 6000),
-# which applies alpha to coverage while the dynamic state says off and draws the characters black.
+# which applies alpha to coverage while the dynamic state says off and draws the characters black, and on Intel's
+# Windows driver for integrated GPUs (UHD, Iris Xe), which draws coloured noise on foliage with it.
 # vk_dyn_a2c = 1
 # Pin the shader subgroup size to 32 when the GPU allows it.
 # vk_subgroup_pin = 1
@@ -150,12 +171,19 @@
 # fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
 # tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
 # display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars; with prompts = xbox or pc it
-# stays 1920x1080, the only shape the setup builds those prompts for.
+# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
+# too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
-# a percentage (25 to 400, at most 4096 pixels a side); above 100 supersamples the scene (anti-aliasing). Read at start.
+# a percentage (25 to 400); above 100 supersamples the scene (anti-aliasing). The scene stays within 8192 pixels a side
+# and within a texture heap under 2 GiB (8192x2304 at most on a 5120x1440 output); the log says when it is smaller.
+# Read at start.
 # render_scale = game
+# Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
+# by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
+# scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.2.1 and 1.4.3. Changes in
+# the menu take effect at once.
+# dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr

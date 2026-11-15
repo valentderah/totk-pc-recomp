@@ -82,6 +82,13 @@ site scene main 585e50 bd0cc660 2d420460    # str s0, [x19, #0xcc4] -> ldp s0, s
 site scene main 585e54 1e220140 bd0cc660    # scvtf s0, w10 -> str s0, [x19, #0xcc4]
 site scene main 585e60 bd0cca60 bd0cca61    # str s0, [x19, #0xcc8] -> str s1, [x19, #0xcc8]
 
+# Fixed scene size (MacNativeGames game_patches_v143.c patch_fixed_res; runtime/resolution.c res_dynres_live switches
+# the set on unless TOTK_DYNAMIC_RES=1). The dynamic resolution controller (main+0x584300, 1.2.1 0xcc26f4) steps the
+# scene through tiers of 100, 90 and 80 % by a cost model that grows with the scene width squared; at its one epilogue the tier's scale moves into
+# the result, and 1.0 there makes every tier 100 %. The original word is MacNativeGames' check against 1.4.3.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main 5848a8 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
 # Camera aspect ratio for a game resolution that is not 16:9 (upstream game_patches_v143.c and aspect_patch.h
 # aspect_install / aspect_stub; runtime/resolution.c res_init writes the output's width / height to page +56 and
 # switches the set on). Each site leaves the ratio sead's perspective projection (+0xb0) takes in s0: two camera sites
@@ -111,6 +118,8 @@ site mouse_direct main 874cb4 bd042289 94c9acc7
 site mouse_direct main 874d7c 6d40a3e9 94c9ac91
 site mouse_direct main 18e444 f9400408 94e546db
 site mouse_direct main 18f108 bd4047ec 94e543a6
+# Keep native camera-distance easing when direct mouse orbit bypasses the stick integrators.
+site mouse_direct main 18ea34 b9418a88 94e5454f   # orbit state: ldr w8, [x20, #0x188]
 site mouse_direct main 1d59460 b9004be8 94761acc
 # The aiming, scope, ability, horse and Purah Pad camera cameras: per axis, the float load the stick turn is computed
 # from (the gamepad's part only) and the load of the angle it is added to (plus the mouse's degrees), each a bl to page
@@ -1077,3 +1086,19 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+
+# Climbing (issues #35, #276, #1001): the climb controller's velocity step (main+0x1f49754, shared by wall and ladder
+# climbing, climb jumps and climb-overs) multiplies the requested velocity by a factor that makes up for a movement loss
+# growing with the frame rate. Below ratio 1 the factor is 1.272 + 1.189 (1 - r) clamped to [1, 2] (r = VFR +0, the
+# 30 Hz ratio times the time scale): Nintendo's fit for 30 and 60 fps, flat at 2 from about 77 fps, so Link climbs at
+# 63% of the speed at 120 fps and 34% at 240. Below r = 0.5 take g(r) = 0.66265 / r + 0.4982 + 0.0848 r instead,
+# fitted to the replayed ladder climb at 120 and 240 fps and equal to the shipping 1.8665 at r = 0.5; at most 8. The
+# site computes g with 16 * max(r - 0.5, 0) subtracted, so g stays under the shipping factor for r >= 0.5, and folds it
+# into the existing clamp without flags: s0 = max(s0, g) (the value clamped), s1 = max(2, g) (the bound). r >= 0.5
+# keeps the shipping factor bit for bit. x8 is dead after the constant load at 0x1f497e8, s2-s4 are loaded again at
+# 0x1f49844 before any read.
+# g takes u = max(page +0, r): the patch page's 30 Hz frame ratio without the time scale (runtime/frame_rate.c), so
+# slow motion at 30 or 60 fps keeps the shipping factor and only a real frame rate above 60 raises it; the runtime
+# switches the set off without the real-time step, where the page is not written.
+set climb    TOTK_CLIMB_FIX      1
+site climb main 1f497f4 1e201001 @page:x8 bd400104 1e286884 52946dc8 72a7e528 1e270102 1e241842 52828248 72a7dfe8 1e270103 1e232842 529573e8 72a7b5a8 1e270103 1f040862 1e2a3883 2f00e404 1e246863 1e261004 1f048862 1e241004 1e247842 1e226800 1e201001 1e226821   # fmov s1, #2.0 -> s2 = g(u); s0 = max(s0, s2); s1 = max(2.0, s2)

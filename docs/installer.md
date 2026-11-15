@@ -75,8 +75,11 @@ loads the saves 1.4.3 wrote.
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
    The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The three prompt folders are
-   optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). Each of the three prompt
+   folders is then laid out once more for each game resolution of another shape, `romfs-patches-<style>-<w>x<h>`
+   (`--prompts <style> --aspect`). Those differ from `romfs-patches-<style>` in the UI archive only, and `--reuse`
+   hard-links the other files from it, so the forty-five folders take seconds and a few MiB each. The prompt folders are optional: when one cannot be made, the
+   setup warns and finishes.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
@@ -164,7 +167,7 @@ runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated 
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
 data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
-                      update's code and the runtime libraries compile with (building.md, "Profile-guided build")
+                      update's code and the runtime libraries compile with (pgo.md)
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```

@@ -21,7 +21,8 @@
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
 // rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (a vectored exception handler that
-// names the lifted function, the guest registers and the guest frame-pointer chain).
+// names the lifted function, the host and guest registers, the machine code around the fault, the guest frame-pointer
+// chain and the memory the registers point at).
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "layout.h"
 #include "platform/platform.h"
 #include "sha256.h"
 
@@ -188,8 +190,8 @@ static int by_host(const void *a, const void *b) {
 }
 
 // The lifted function that contains a host code address, by the nearest function start below it; 0 outside the lifted
-// code.
-static uint64_t lifted_function(uintptr_t rip) {
+// code. *host, when given, gets the function's host start.
+static uint64_t lifted_function_at(uintptr_t rip, uintptr_t *host) {
     if (!fn_rev) {
         static RtModule mods[MAX_MODULES];
         int n = rt_linked_modules(mods, MAX_MODULES);
@@ -211,10 +213,112 @@ static uint64_t lifted_function(uintptr_t rip) {
         if (fn_rev[mid].host <= rip) lo = mid + 1;
         else hi = mid;
     }
+    if (lo && host) *host = fn_rev[lo - 1].host;
     return lo ? fn_rev[lo - 1].guest : 0;
 }
 
+static uint64_t lifted_function(uintptr_t rip) { return lifted_function_at(rip, NULL); }
+
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
+
+// The machine code around the faulting instruction: 32 bytes before rip, then 32 from rip. The user's totk.exe is built
+// on their machine, so its offsets need not match ours; these bytes and the offset into the lifted function find the
+// same instruction in a local build of that version, and with it the guest instruction and the operands' registers.
+static void crash_code_bytes(uintptr_t rip) {
+    uint8_t b[64];
+    int before = 32;
+    if (!plat_mem_read(rip - 32, b, sizeof b)) {
+        before = 0;   // rip near the start of a mapping: the bytes from rip only
+        if (!plat_mem_read(rip, b + 32, 32)) return;
+    }
+    rt_logf("  host code at rip-%d:", before);
+    for (int i = 32 - before; i < 64; i++) rt_logf("%s%02x", i == 32 ? " | " : " ", b[i]);
+    rt_log_raw("\n", 1);
+}
+
+// 64 bytes around each register value that points at readable memory, as 8-byte words from 16 bytes below the value,
+// the word holding the value marked with *. Host and guest registers that land on the same window share a line. A
+// guest pointer is a host address here (the guest address space is mapped one to one), so both kinds are read alike.
+// The guest registers come from the Cpu, which the lifted code writes back only at calls and returns, so the host
+// registers carry the faulting function's live values.
+typedef struct { uint64_t start; char names[56]; uint64_t w[8]; } CrashWin;
+
+static void crash_win_add(CrashWin *wins, int *n, int cap, const char *name, uint64_t v) {
+    if (v < 0x10000 || v > 0x00007fffffffffffull) return;   // small integers and non-canonical values
+    uint64_t start = (v & ~7ull) - 16;
+    for (int i = 0; i < *n; i++)
+        if (wins[i].start == start) {
+            size_t len = strlen(wins[i].names);
+            if (len + strlen(name) + 2 < sizeof wins[i].names)
+                snprintf(wins[i].names + len, sizeof wins[i].names - len, " %s", name);
+            return;
+        }
+    if (*n == cap || !plat_mem_read(start, wins[*n].w, sizeof wins[*n].w)) return;
+    wins[*n].start = start;
+    snprintf(wins[*n].names, sizeof wins[*n].names, "%s", name);
+    (*n)++;
+}
+
+static void crash_memory(const PlatCrash *x, const Cpu *c) {
+    static CrashWin wins[64];   // the crash handler runs once (busy flag), so static storage needs no allocation
+    static const char *const gpr_names[16] = PLAT_GPR_NAMES;
+    int n = 0;
+    char name[8];
+    if (x->has_regs)
+        for (int i = 0; i < 16; i++) crash_win_add(wins, &n, 64, gpr_names[i], x->gpr[i]);
+    if (c) {
+        for (int i = 0; i < 31; i++) snprintf(name, sizeof name, "x%d", i), crash_win_add(wins, &n, 64, name, c->x[i]);
+        crash_win_add(wins, &n, 64, "sp", c->sp);
+    }
+    if (!n) return;
+    rt_logf("  memory at the register values (8-byte words from value-16, * the value's word):\n");
+    for (int i = 0; i < n; i++) {
+        rt_logf("  %016llx %-12s", (unsigned long long)wins[i].start, wins[i].names);
+        for (int k = 0; k < 8; k++) rt_logf(" %s%016llx", k == 2 ? "*" : "", (unsigned long long)wins[i].w[k]);
+        rt_log_raw("\n", 1);
+    }
+    // The guest stack above sp: the crashing function's spills and locals, and the callers' saved registers
+    uint64_t s[16];
+    if (c && plat_mem_read(c->sp, s, sizeof s))
+        for (int i = 0; i < 16; i += 4)
+            rt_logf("  guest stack sp+0x%02x: %016llx %016llx %016llx %016llx\n", i * 8, (unsigned long long)s[i],
+                    (unsigned long long)s[i + 1], (unsigned long long)s[i + 2], (unsigned long long)s[i + 3]);
+}
+
+// 1.2.1: a fault right after a compound physics shape was asked for its first child's material (the call returning to
+// main+0xe056d4 reads the result without a check). The shape (vtable main+0x45e1218, built by main+0x7359fc) is in x20
+// there. It returns null when no child slot is both live (bitmap at +0x88) and filled (shape pointer at +0 of the
+// 0x78-byte records at +0x80). Every child is filled when the shape is built, so the list tells children removed later
+// (null shape) from children switched off (clear bit), and the names name the object. Runs only in the crash handler.
+static void crash_compound_shape(const Cpu *c) {
+    if (!c || rt_game_version != 121 || c->x[30] != MOD_MAIN_BASE + 0xe056d4) return;
+    uint64_t shape = c->x[20];
+    if (!readable(shape, 0x1a0) || LD64(shape) != MOD_MAIN_BASE + 0x45e1218) {
+        rt_logf("  compound shape: x20 %#llx is not one\n", (unsigned long long)shape);
+        return;
+    }
+    uint32_t children = LD32(shape + 0x190), records = LD32(shape + 0x78);
+    uint64_t rec = LD64(shape + 0x80);
+    rt_logf("  compound shape %#llx (holder %#llx): %u children, %u records at %#llx, live bits:",
+            (unsigned long long)shape, (unsigned long long)(c->x[21] - 0x38), children, records,
+            (unsigned long long)rec);
+    uint32_t n = children > 0x400 ? 0x400 : children;   // the bitmap holds 0x400 bits
+    for (uint32_t w = 0; w < (n + 31) / 32; w++) rt_logf(" %08x", LD32(shape + 0x88 + 4 * w));
+    rt_log_raw("\n", 1);
+    if (records > 0x400 || !readable(rec, (uint64_t)records * 0x78)) return;
+    for (uint32_t i = 0; i < records; i++) {
+        uint64_t r = rec + (uint64_t)i * 0x78, child = LD64(r), s = LD64(r + 8);
+        char name[33];
+        size_t k = 0;
+        for (; k < 32 && readable(s + k, 1); k++) {
+            name[k] = *(const char *)(uintptr_t)(s + k);
+            if (!name[k]) break;
+        }
+        name[k] = 0;
+        int live = LD32(shape + 0x88 + 4 * (i >> 5)) >> (i & 31) & 1;
+        rt_logf("    child %3u: shape %#llx%s \"%s\"\n", i, (unsigned long long)child, live ? "" : " (off)", name);
+    }
+}
 
 static void crash_handler(const PlatCrash *x) {
     static volatile int32_t busy;
@@ -228,23 +332,48 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
-    uint64_t f = x->module ? 0 : lifted_function(rip);
-    if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    // abort and invalid parameter: where the host code called it; a fault in another module: the host calls that led
-    // into it
+    if (x->cxx_type)
+        rt_logf("  C++ type %s%s%s\n", x->cxx_type, x->cxx_what ? ", what(): " : "", x->cxx_what ? x->cxx_what : "");
+    // A driver that runs out of memory faults or throws (std::bad_alloc) instead of returning an error: the commit
+    // tells that apart from a driver bug, as rt_fatal's line does for our own failed allocations.
+    double proc, used, limit;
+    plat_commit_info(&proc, &used, &limit);
+    rt_logf("  memory commit: this process %.0f MB, the system %.0f of %.0f MB\n", proc, used, limit);
+    uintptr_t fstart = 0;
+    uint64_t f = x->module ? 0 : lifted_function_at(rip, &fstart);
+    if (f)
+        rt_logf("  in lifted function f_%llx = %s, host +%#llx into it\n", (unsigned long long)f,
+                ldr_describe(f, d, sizeof d), (unsigned long long)(rip - fstart));
+    if (x->has_regs) {
+        static const char *const gpr_names[16] = PLAT_GPR_NAMES;
+        for (int i = 0; i < 16; i++)
+            rt_logf("  %-3s %016llx%s", gpr_names[i], (unsigned long long)x->gpr[i], i % 4 == 3 ? "\n" : "");
+        crash_code_bytes(rip);
+    }
+    // abort and invalid parameter: where the host code called it; a fault in another module: the driver code and the
+    // host calls that led into it
     uintptr_t exe = plat_exe_base();
     for (int i = 0; i < x->nframes; i++) {
+        const char *m = x->frame_module[i];
+        if (m) {
+            rt_logf("  host frame %2d: %s+%#llx\n", i, *m ? m : "outside every module",
+                    (unsigned long long)x->frame_offset[i]);
+            continue;
+        }
         uint64_t g = lifted_function(x->frames[i]);
         rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
+    if (x->frames_left_out) rt_logf("  (%d frames in other modules left out)\n", x->frames_left_out);
     Cpu *c = kern_cpu();
     if (c) {
         for (int i = 0; i < 31; i++)
             rt_logf("  x%-2d %016llx%s", i, (unsigned long long)c->x[i], i % 4 == 3 ? "\n" : "");
-        rt_logf("  sp  %016llx\n  pc  %016llx  lr %s\n", (unsigned long long)c->sp, (unsigned long long)c->pc,
-                ldr_describe(c->x[30], d, sizeof d));
+        // pc: the guest code running, or the host function a guest call entered (its name tells the host call apart)
+        rt_logf("  sp  %016llx\n  pc  %016llx", (unsigned long long)c->sp, (unsigned long long)c->pc);
+        if (hostfn_name(c->pc)) rt_logf(" (%s)", ldr_describe(c->pc, d, sizeof d));
+        rt_logf("  lr %s\n", ldr_describe(c->x[30], d, sizeof d));
         uint64_t fp = c->x[29];
         for (int n = 0; n < 32 && fp && !(fp & 7) && readable(fp, 16); n++) {
             uint64_t next = LD64(fp), lr = LD64(fp + 8);
@@ -255,6 +384,8 @@ static void crash_handler(const PlatCrash *x) {
     } else {
         rt_logf("  not on a guest thread\n");
     }
+    crash_memory(x, c);
+    crash_compound_shape(c);
     kern_free_cores_note();
     fflush(stderr);
     plat_exit(71);
@@ -521,6 +652,20 @@ int main(int argc, char **argv) {
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
     // costs a full tick. TOTK_TIMER_1MS=0 keeps the default for comparison.
     if (cfg_bool("TOTK_TIMER_1MS")) plat_timer_1ms();
+    int power = plat_power_full();
+    if (power >= 0)
+        rt_log("power: %s", power ? "OS power throttling off (EcoQoS, timer resolution in the background)"
+                                  : "OS power throttling: the opt-out was refused");
+    // Hybrid CPUs: the threads every frame goes through prefer the P-cores (perf_core_thread). TOTK_PCORE=0: off.
+    if (rt_knob("PCORE", "1")) {
+        char why[160];
+        int n = plat_perf_core_setup(why, sizeof why);
+        if (n) rt_log("power: %s; the game's main and render threads and the vk replay, recorder and present threads "
+                      "prefer the %d P-core ones (TOTK_PCORE=0 turns it off)", why, n);
+        else rt_log("power: %s: no P-core preference", why);
+    } else {
+        rt_log("power: TOTK_PCORE=0: no P-core preference");
+    }
     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
                      .gpu = cfg_get("TOTK_GPU")};
     portable_paths(&cfg);   // command-line paths below still win

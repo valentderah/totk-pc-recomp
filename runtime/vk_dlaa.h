@@ -19,11 +19,17 @@ const char *vk_dlaa_name(void);   // "FSR 4.1.2" or "DLSS" once DLAA ran, NULL o
 // scene's light target or, at the first quarter-width pass after it, runs DLAA on that target. Each present ends the
 // frame (vk_dlaa_frame).
 typedef struct VkExec VkExec;
+typedef struct VkExecJob VkExecJob;
 void vk_dlaa_pass(VkExec *ex);
+// The same decision for a chunked replay's scan, in replay order: 1 with the record due before this pass (j), which
+// vk_dlaa_exec makes on the chunk that holds the op (vk_exec.c run_job).
+int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
+void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
 void vk_dlaa_frame(void);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).
 void vk_dlaa_draw(VkExec *ex);
+void vk_dlaa_scan_draw(const VkExec *ex);   // a chunked replay's scan, at each draw: the camera note of vk_dlaa_draw
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v);
 // vk_mvsurvey.c (TOTK_MV_SURVEY): notes the uniform blocks of each scene draw, beside vk_dlaa_draw; each present
 // compares them with the previous frames' and logs a summary now and then.

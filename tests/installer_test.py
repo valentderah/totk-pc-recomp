@@ -489,6 +489,29 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
 
 
+class FreeSpaceTest(unittest.TestCase):
+    def test_missing_folders_use_the_nearest_existing_parent(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = Path(d)
+            path = parent / 'missing' / 'install'
+            with mock.patch.object(steps.shutil, 'disk_usage', return_value=SimpleNamespace(free=1234)) as usage:
+                self.assertEqual(steps.free_bytes(path), (1234, parent.stat().st_dev))
+            usage.assert_called_once_with(parent)
+            self.assertFalse(path.parent.exists())
+
+    def test_missing_root_reports_the_filesystem_error(self):
+        path = Path(ROOT.anchor) / 'missing' / 'install'
+        root = Path(path.anchor)
+        error = FileNotFoundError(2, 'No such file or directory', str(root))
+        # Bound the failed existence checks so the old parent walk cannot hang the test suite.
+        with mock.patch.object(Path, 'exists', side_effect=[False] * (len(path.parents) + 1)):
+            with mock.patch.object(steps.shutil, 'disk_usage', side_effect=error) as usage:
+                with self.assertRaises(FileNotFoundError) as raised:
+                    steps.free_bytes(path)
+        self.assertIs(raised.exception, error)
+        usage.assert_called_once_with(root)
+
+
 class BaseGameCheckTest(unittest.TestCase):
     """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
     BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'

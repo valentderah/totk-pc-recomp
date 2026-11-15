@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import worktree  # noqa: E402
 
-IGNORED = '\n'.join('/' + d + '/' for d in worktree.LINK_DIRS) + '\n/' + worktree.LINK_FILES[0] + '\n/.worktrees/\n'
+IGNORED = ''.join(f'/{p}\n' for p in [d + '/' for d in worktree.LINK_DIRS] + worktree.LINK_FILES + ['.worktrees/'])
 
 
 def git(cwd, *a):

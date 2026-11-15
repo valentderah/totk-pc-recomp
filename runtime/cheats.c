@@ -10,8 +10,9 @@
 // (tools/cheats.py has the format). A cheat whose status line is missing or has another content hash was added or
 // edited after the build: a data cheat runs anyway, a code cheat waits for the setup to run again.
 //
-// Data cheats run in a VM after Atmosphere's dmnt cheat VM (opcodes 0-A; the 0xC.. and 0xF.. extensions are not
-// supported), every presented frame while their switch is on, with registers cleared before each cheat. Memory is the
+// Data cheats run in a VM after Atmosphere's dmnt cheat VM (opcodes 0-A and C0-C3; C4 and the 0xF.. extensions are not
+// supported), every presented frame while their switch is on, with registers and saved registers cleared before each
+// cheat; the static registers (C3) stay, shared by all cheats, as dmnt keeps them. Memory is the
 // guest's, mapped at its own addresses: main's image is written with its pages made writable for the write (read-only
 // data included, as dmnt writes through the debugger), everything else after mem_query says the guest may read or write
 // it. Buttons are input_poll's HidNpadButton bits, the same as the cheat format's key masks; they read 0 while the menu
@@ -53,6 +54,7 @@ static int g_n, g_cap, g_vm;   // g_vm: some cheat needs cheats_frame
 static char g_file[64];        // "<build id>.txt"
 static char g_dir[PLAT_PATH_MAX];   // the folder of totk.exe, with a trailing separator
 static int g_files;            // mods whose file was read
+static uint64_t g_static[256]; // C3's static registers: 0x00-0x7F loaded by cheats, 0x80-0xFF stored by them
 static uint64_t g_main, g_main_size, g_code_end;   // main's image; its code with the padding up to .rodata
 
 static uint32_t fnv(const char *s, size_t n) {
@@ -96,6 +98,11 @@ static int op_len(const uint32_t *w, int left) {
     case 5: case 7: n = 2; break;
     case 9: n = 1 + (((f >> 8) & 0xF) ? (width == 8 ? 2 : 1) : 0); break;
     case 0xA: n = ((f >> 8) & 0xF) == 2 || ((f >> 8) & 0xF) == 4 || ((f >> 8) & 0xF) == 5 ? 2 : 1; break;
+    case 0xC:   // C0TcSX..: an address word for operand types 0 and 2, the value (two words at width 8) for 4
+        if (((f >> 24) & 0xF) != 0) n = 1;
+        else if (((f >> 8) & 0xF) == 0 || ((f >> 8) & 0xF) == 2) n = 2;
+        else n = ((f >> 8) & 0xF) == 4 ? (((f >> 20) & 0xF) == 8 ? 3 : 2) : 1;
+        break;
     default: n = 1; break;
     }
     return n <= left ? n : 0;
@@ -105,12 +112,15 @@ static int op_len(const uint32_t *w, int left) {
 static const char *vm_unsupported(const uint32_t *w, char *buf, int n) {
     uint32_t f = w[0];
     int t = f >> 28, width = (f >> 24) & 0xF;
-    if (t > 0xA || (t == 5 && ((f >> 12) & 0xF) > 1) || (t == 0xA && ((f >> 8) & 0xF) > 5)) {
+    int ext = f >> 24;   // 0xC0-0xC3 run; C0's width is at bits 20-23 and its operand type (at most 5) at bits 8-11
+    if (ext == 0xC0) t = -1, width = (f >> 20) & 0xF;
+    if ((t > 0xA && (ext < 0xC1 || ext > 0xC3)) || (t == -1 && ((f >> 8) & 0xF) > 5) ||
+        (t == 5 && ((f >> 12) & 0xF) > 1) || (t == 0xA && ((f >> 8) & 0xF) > 5)) {
         snprintf(buf, n, "opcode %08X is not supported", f);
         return buf;
     }
     if ((t <= 1 || t == 5 || t == 6 || t == 7 || t == 9 || t == 0xA) && width != 1 && width != 2 && width != 4 &&
-        width != 8) {
+        width != 8) {   // C0 too (t -1)
         snprintf(buf, n, "opcode %08X has a bad width", f);
         return buf;
     }
@@ -227,7 +237,9 @@ static int compare(int cond, uint64_t a, uint64_t b) {
 }
 
 // From i (after a failed condition, or an else reached while running), the opcode to continue at: after the
-// matching else (else_ok) or end.
+// matching else (else_ok) or end. Conditions 1, 8 and C0 open a block, as in Atmosphere's dmnt
+// (stratosphere/dmnt/source/cheat/impl/dmnt_cheat_vm.cpp, CheatVirtualMachine::SkipConditionalBlock), which steps
+// over whole opcodes so that an operand word reading 20000000 ends nothing.
 static int skip(const uint32_t *w, int n, int i, int else_ok) {
     int depth = 0;
     while (i < n) {
@@ -236,17 +248,41 @@ static int skip(const uint32_t *w, int n, int i, int else_ok) {
         uint32_t f = w[i];
         int t = f >> 28;
         i += len;
-        if (t == 1 || t == 8) depth++;
-        else if (t == 2 && ((f >> 24) & 0xF) == 0 && depth-- == 0) return i;
-        else if (t == 2 && depth == 0 && else_ok) return i;
+        if (t == 1 || t == 8 || f >> 24 == 0xC0) depth++;
+        else if (t == 2 && ((f >> 24) & 0xF) == 1) {   // else; any other 2x000000 ends, as dmnt decodes is_else
+            if (depth == 0 && else_ok) return i;
+        } else if (t == 2 && depth-- == 0) {
+            return i;
+        }
     }
     return n;
 }
 
 static uint64_t imm64(const uint32_t *w) { return (uint64_t)w[0] << 32 | w[1]; }
 
+// C0TcSX..: if register S <cond c> operand X, all cut to width T; the operand as Atmosphere's dmnt reads it
+// (stratosphere/dmnt/source/cheat/impl/dmnt_cheat_vm.cpp, CheatVirtualMachine::DecodeNextOpcode and Execute,
+// BeginRegisterConditionalBlock). X: 0 region M + a, 1 region M + register r, 2 register R + a, 3 register R +
+// register r, 4 the value V, 5 register R. M, R at bits 4-7, r and the top bits of a at bits 0-3. A read the guest
+// cannot make compares as 0: dmnt ignores the read's result and compares the zero it started with.
+static int reg_cond(const uint32_t *w, const uint64_t *r) {
+    uint32_t f = w[0];
+    int width = (f >> 20) & 0xF, cond = (f >> 16) & 0xF, a4 = (f >> 4) & 0xF, a0 = f & 0xF;
+    uint64_t src = masked(width, r[(f >> 12) & 0xF]), b = 0, addr;
+    switch ((f >> 8) & 0xF) {   // w[1] exists for types 0, 2 and 4 only (op_len)
+    case 0: addr = region(a4) + (((uint64_t)a0 << 32) | w[1]); break;
+    case 1: addr = region(a4) + r[a0]; break;
+    case 2: addr = r[a4] + (((uint64_t)a0 << 32) | w[1]); break;
+    case 3: addr = r[a4] + r[a0]; break;
+    case 4: return compare(cond, src, width == 8 ? imm64(w + 1) : masked(width, w[1]));
+    default: return compare(cond, src, masked(width, r[a4]));
+    }
+    if (!rd(addr, width, &b)) b = 0;
+    return compare(cond, src, b);
+}
+
 static void run(const Cheat *c, uint64_t keys) {
-    uint64_t r[16] = {0};
+    uint64_t r[16] = {0}, saved[16] = {0};
     int loop[16] = {0};
     const uint32_t *w = c->words;
     int n = c->n, budget = OPS_PER_RUN;
@@ -323,6 +359,44 @@ static void run(const Cheat *c, uint64_t keys) {
             if (z) r[y] += (uint64_t)width;
             break;
         }
+        case 0xC:   // C1-C3 as dmnt's Execute runs SaveRestoreRegister(Mask) and ReadWriteStaticRegister
+            switch (f >> 24) {
+            case 0xC0:
+                if (!reg_cond(w + i, r)) {
+                    i = skip(w, n, i + len, 1);
+                    continue;
+                }
+                break;
+            case 0xC1: {   // C10D0Sx0: x 0 register D = saved S, 1 saved D = register S, 2 saved D = 0,
+                           // 3 register D = 0
+                int d = (f >> 16) & 0xF, s = (f >> 8) & 0xF, op = (f >> 4) & 0xF;
+                if (op == 1) saved[d] = r[s];
+                else if (op == 2) saved[d] = 0;
+                else if (op == 3) r[d] = 0;
+                else r[d] = saved[s];   // dmnt restores for any other x too
+                break;
+            }
+            case 0xC2: {   // C2x0XXXX: for each register in the mask X, x as C1 with D = S = that register
+                int op = (f >> 20) & 0xF;
+                for (int k = 0; k < 16; k++) {
+                    if (!(f >> k & 1)) continue;
+                    if (op == 1) saved[k] = r[k];
+                    else if (op == 2) saved[k] = 0;
+                    else if (op == 3) r[k] = 0;
+                    else r[k] = saved[k];
+                }
+                break;
+            }
+            case 0xC3: {   // C3000XXx: static register XX < 0x80 into register x, else register x into it
+                int s = (f >> 4) & 0xFF;
+                if (s < 0x80) r[f & 0xF] = g_static[s];
+                else g_static[s] = r[f & 0xF];
+                break;
+            }
+            default:
+                return;
+            }
+            break;
         default:
             return;
         }
