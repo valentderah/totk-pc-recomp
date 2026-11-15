@@ -38,7 +38,8 @@ static uint64_t cur_fence = 100, completed = 99;
 static int cur_recording = 1;
 static VkCommandPool cmd_pool = (VkCommandPool)1;
 static VkCtx *vk_ctx(void) { return &context; }
-static VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source) {
+static VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source, uint64_t final_fence) {
+    assert(final_fence==100);
     assert(source==33 && si->commandBufferInfoCount==1);
     if (!submitted) {
         assert(si->pCommandBufferInfos[0].commandBuffer==slots[0].cb);
@@ -50,13 +51,14 @@ static VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source) {
     }
     submitted++;return VK_SUCCESS;
 }
-static VkResult rec_submit_recorded(const VkSubmitInfo2 *si, uint64_t source, int recorder_owned) { assert(!recorder_owned); return rec_submit(si,source); }
+static VkResult rec_submit_recorded(const VkSubmitInfo2 *si, uint64_t source, int recorder_owned, uint64_t final_fence) { assert(!recorder_owned && final_fence==100); return rec_submit(si,source,final_fence); }
 static void rec_drain(void) { calls++; }
 static void ts_begin(VkCommandBuffer cb) { assert(cb); }
 static void ts_end(VkCommandBuffer cb, uint64_t fence) { assert(cb && fence == 100); }
 static int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) { assert(cb && !crumb && !n); ended++; return 0; }
 static int rec_begin_continuation(VkCommandBuffer cb, uint64_t fence) { assert(cb && fence==100); began++; return 0; }
 static void rsf_sr_commands_reset(void *cb) { assert(cb && resets==retires+1); retires++; }
+static void vk_motion_texture_commands_reset(VkCommandBuffer cb) { assert(cb && resets==retires); }
 #define rt_fatal(...) abort()
 VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(VkCommandBuffer cb, VkCommandBufferResetFlags flags) { assert(cb && !flags); resets++; return VK_SUCCESS; }
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer cb) { assert(cb); return VK_SUCCESS; }
@@ -111,7 +113,7 @@ run("record-submit", r'''
 #include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
-static int sub_pending, rec_async=1, locked, pending, notices, driver_calls, queued;
+static int sub_pending, rec_async=1, locked, pending, notices, driver_calls, queued, motion_notices;
 static volatile VkResult r_sub_res, r_sub_err;
 static volatile uint64_t q_subs,r_subs;
 static struct { uint64_t submits; } RS_;
@@ -135,6 +137,10 @@ static int rsf_sr_commands_pending(void *cb) { assert(cb); return pending; }
 static int rsf_sr_commands_submitted(void *cb) { assert(cb && !locked); notices++; return 1; }
 static void vk_present_fg_submitted(const VkSubmitInfo2 *si) { (void)si; abort(); }
 static VkResult result;
+static void vk_motion_texture_submitted(VkCommandBuffer cb, uint64_t final_fence) {
+    assert(cb==(void *)10 && final_fence==91 && final_fence!=41 && !locked && !result);
+    motion_notices++;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue q,uint32_t n,const VkSubmitInfo2 *si,VkFence f) {
     (void)q;assert(locked==1 && n==1 && !f);
     assert(si->waitSemaphoreInfoCount==2 && si->signalSemaphoreInfoCount==2);
@@ -151,14 +157,16 @@ int main(void) {
         .waitSemaphoreInfoCount=2,.pWaitSemaphoreInfos=waits,.signalSemaphoreInfoCount=2,.pSignalSemaphoreInfos=signals};
     // A tracked recording forces actual submission before the producer notifies.
     pending=1; sub_pending=1;
-    assert(rec_submit(&si,33)==VK_SUCCESS && driver_calls==1 && notices==1);
+    assert(rec_submit(&si,33,91)==VK_SUCCESS && driver_calls==1 && notices==1 && motion_notices==1);
     result=VK_ERROR_DEVICE_LOST; sub_pending=1;
-    assert(rec_submit_recorded(&si,33,1)==VK_ERROR_DEVICE_LOST && driver_calls==2 && notices==1);
+    assert(rec_submit_recorded(&si,33,1,91)==VK_ERROR_DEVICE_LOST && driver_calls==2 && notices==1 && motion_notices==1);
     result=VK_SUCCESS; r_sub_err=VK_SUCCESS; pending=0; sub_pending=1;
-    assert(rec_submit(&si,33)==VK_SUCCESS && driver_calls==2 && queued);
+    assert(rec_submit(&si,33,91)==VK_SUCCESS && driver_calls==2 && queued && motion_notices==1);
     waits[1].value=999;signals[1].value=999;cb.commandBuffer=(void *)99;
     rec_drain(); // actual consumer owns deep packet copies of all dependencies
-    assert(driver_calls==3);
+    assert(driver_calls==3 && motion_notices==2);
+    cb.commandBuffer=(void *)10;waits[1].value=40;signals[1].value=41;
+    assert(!rec_submit(&si,33,91) && driver_calls==4 && motion_notices==3 && notices==2);
     free(packet); return 0;
 }
 ''')
@@ -191,7 +199,7 @@ int main(void) {
 ''')
 
 scene_source = (root / "runtime/vk_dlaa.c").read_text()
-scene = scene_source[scene_source.index("static int rsf_scene("):scene_source.index("// dst: the target", scene_source.index("static int rsf_scene("))]
+scene = scene_source[scene_source.index("static int rsf_scene("):scene_source.index("// Previous-frame producer facts", scene_source.index("static int rsf_scene("))]
 run("scene-continuation", r'''
 #include <assert.h>
 #include <stdint.h>
@@ -226,7 +234,9 @@ int rsf_sr_open_split(const rsf_srvk_setup *s,const rsf_fsr4vk_handoff *h,RsfSrS
     (void)s;(void)h;*out=(void *)1;*w=640;*height=360;opened++;return 1;
 }
 int rsf_sr_open(const rsf_srvk_setup *s,RsfSrSession **o,uint32_t *w,uint32_t *h) { (void)s;(void)o;(void)w;(void)h;abort(); }
+static void res_sizes(unsigned *o,unsigned *scene) {o[0]=1920;o[1]=1080;scene[0]=1128;scene[1]=632;}
 static int res_rsf_scene(unsigned w,unsigned h) { (void)w;(void)h;return 1; }
+#define rsf_provider_log NULL
 #define image2d(...) 1
 static rsf_srvk_image rsf_image(VkImage image,VkFormat format,unsigned w,unsigned h,VkImageLayout layout) {
     return (rsf_srvk_image){0,(uint64_t)image,format,w,h,layout,1};
@@ -282,7 +292,7 @@ print("FSR4 serial admission and actual scene continuation/fallback: passed")
 # Compile the actual work-image allocator and record producer together so a new
 # allocation with an unstamped generation fails this regression.
 size_start = scene_source.index("struct Size {")
-size_end = scene_source.index("} sizes[5], *last;", size_start)
+size_end = scene_source.index("} sizes[5], *last, *fg_last;", size_start)
 size_type = scene_source[size_start:size_end] + "};\n"
 allocation = scene_source[scene_source.index("static uint32_t next_resource_generation("):scene_source.index("static void full_barrier(")]
 record = scene_source[scene_source.index("static rsf_frame_record scene_record("):scene_source.index("static void fg_prepare(")]
@@ -301,6 +311,7 @@ static struct {
     struct Size sizes[5], *last;
     uint64_t last_eval_ns, evals;
     int reset;
+    float previous_record_jitter[2];
     RsfCameraProjection projection;
     RsfCameraMatrices camera_matrices;
 } D;
@@ -319,13 +330,16 @@ int main(void) {
     struct Size *e=size_for((void *)1,640,360,1280,720);
     assert(e && e->resource_generation);
     VkExec ex={.source_frame=1001};
-    rsf_frame_record first=scene_record(&ex,e,0,0);
+    rsf_frame_record first=scene_record(&ex,e,.25f,-.125f);
     assert(first.resource_generation==e->resource_generation && first.resource_generation);
     assert(first.render_width==640 && first.render_height==360 && first.output_width==1280 && first.output_height==720);
     assert(first.camera.render_width==640 && first.camera.output_height==720);
     assert(size_for((void *)1,640,360,1280,720)==e);
     ex.source_frame++;
-    rsf_frame_record second=scene_record(&ex,e,0,0);
+    rsf_frame_record second=scene_record(&ex,e,-.25f,.125f);
+    assert(second.camera.previous_jitter_pixels[0]==.25f && second.camera.previous_jitter_pixels[1]==-.125f);
+    D.reset=1;rsf_frame_record reset=scene_record(&ex,e,0,0);
+    assert(!reset.camera.previous_jitter_pixels[0] && !reset.camera.previous_jitter_pixels[1]);
     assert(second.frame_id!=first.frame_id && second.resource_generation==first.resource_generation);
     struct Size *other=size_for((void *)1,800,450,1600,900);
     assert(other && other->resource_generation && other->resource_generation!=e->resource_generation);

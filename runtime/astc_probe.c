@@ -378,7 +378,6 @@ int probe_astc(void) {
         timing(c, 8, 8);
         timing(c, 12, 12);
     }
-    vk_mem_shutdown();
     vk_shutdown();
     long errors = vk_validation_errors_total();
     if (bad || errors) {

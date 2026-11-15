@@ -1,5 +1,6 @@
 #include "rsf_fg_gpu.h"
 #include "rsf_fg_map_spv.h"
+#include "host.h"
 #include <string.h>
 #define COUNT 4
 struct RsfFgLease {
@@ -11,6 +12,17 @@ static struct { VkDescriptorSetLayout descriptors; VkPipelineLayout layout; VkPi
     PFN_vkCmdPushDescriptorSetKHR push; struct RsfFgLease slots[COUNT]; } G;
 int rsf_fg_gpu_pending(void) { for(int i=0;i<COUNT;i++) for(int k=0;k<2;k++) if(G.slots[i].commands[k]) return 1; return 0; }
 void rsf_fg_gpu_submitted(VkCommandBuffer cb) { for(int i=0;i<COUNT;i++) for(int k=0;k<2;k++) if(G.slots[i].commands[k]==cb) G.slots[i].commands[k]=VK_NULL_HANDLE; }
+static void refusal(unsigned reason,uint64_t source,uint64_t fence) {
+    static uint64_t counts[5];
+    if(!(rt_trace&RT_TRACE_PRESENT)||reason>=5) return;
+    uint64_t n=++counts[reason];
+    if(n!=1&&n%300) return;
+    rt_log("rsf mapper: refusal %u count %llu source %llu recording fence %llu completed %llu",
+        reason,(unsigned long long)n,(unsigned long long)source,(unsigned long long)fence,(unsigned long long)vk_sync_fence_done());
+    for(unsigned i=0;i<COUNT;i++) rt_log("rsf mapper: slot %u used %d source %llu final fence %llu pending prepare %d HUDless %d",
+        i,G.slots[i].used,(unsigned long long)G.slots[i].record.frame_id,(unsigned long long)G.slots[i].fence,
+        G.slots[i].commands[0]!=VK_NULL_HANDLE,G.slots[i].commands[1]!=VK_NULL_HANDLE);
+}
 static const VkFormat formats[3]={VK_FORMAT_R32_SFLOAT,VK_FORMAT_R16G16_SFLOAT,VK_FORMAT_R8G8B8A8_UNORM};
 static void barrier(VkCommandBuffer cb,VkImage image,VkImageLayout old,VkImageLayout next) {
     VkImageMemoryBarrier2 b={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,.srcStageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -105,7 +117,7 @@ static rsf_srvk_image output_image(RsfFgLease *s,int i) {return (rsf_srvk_image)
 RsfFgLease *rsf_fg_gpu_prepare(VkCommandBuffer cb,uint64_t fence,const RsfFgMap *m,const RsfFgMap *old,const rsf_fgvk_frame *in,rsf_fgvk_frame *out) {
     if(!cb||!fence||!in||!in->record||!rsf_fg_map_valid(m)||!in->depth.width||!in->depth.height||!in->motion.width||!in->motion.height||
        in->record->render_width!=in->depth.width||in->record->render_height!=in->depth.height||
-       in->depth.format!=VK_FORMAT_R32_SFLOAT||in->motion.format!=VK_FORMAT_R16G16_SFLOAT||!init()) return NULL;
+       in->depth.format!=VK_FORMAT_R32_SFLOAT||in->motion.format!=VK_FORMAT_R16G16_SFLOAT||!init()) {refusal(1,in&&in->record?in->record->frame_id:0,fence);return NULL;}
     // Every provider copies these inputs into private resources in the producer
     // commands. Once that submission completes, its mapped backing is reusable.
     // A successful-submit notification alone does not prove GPU completion.
@@ -117,11 +129,11 @@ RsfFgLease *rsf_fg_gpu_prepare(VkCommandBuffer cb,uint64_t fence,const RsfFgMap 
             s=candidate;break;
         }
     }
-    if(!s) return NULL;
+    if(!s) {refusal(2,in->record->frame_id,fence);return NULL;}
     if(s->w!=m->out_w||s->h!=m->out_h) free_slot(s);
     s->used=1;s->fence=fence;s->map=*m;s->record=*in->record;
     float scale[2];rsf_fg_map_motion(m,in->motion.width,in->motion.height,scale);
-    if(!rsf_fg_map_camera(m,old,&s->record)||!allocate(s,m->out_w,m->out_h)||!source_view(&in->depth,&s->source[0],&s->source_key[0])||!source_view(&in->motion,&s->source[1],&s->source_key[1])) {free_slot(s);return NULL;}
+    if(!rsf_fg_map_camera(m,old,&s->record)||!allocate(s,m->out_w,m->out_h)||!source_view(&in->depth,&s->source[0],&s->source_key[0])||!source_view(&in->motion,&s->source[1],&s->source_key[1])) {refusal(3,in->record->frame_id,fence);free_slot(s);return NULL;}
     for(int i=0;i<3;i++) barrier(cb,s->image[i],VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL);
     // Producer has made both inputs shader-readable; preserve its layouts.
     barrier(cb,(VkImage)in->depth.image,in->depth.layout,in->depth.layout);barrier(cb,(VkImage)in->motion.image,in->motion.layout,in->motion.layout);
@@ -133,7 +145,13 @@ RsfFgLease *rsf_fg_gpu_prepare(VkCommandBuffer cb,uint64_t fence,const RsfFgMap 
     *out=*in;out->record=&s->record;out->depth=output_image(s,0);out->motion=output_image(s,1);out->motion_scale_x=out->motion_scale_y=1;return s;
 }
 int rsf_fg_gpu_hudless(VkCommandBuffer cb,RsfFgLease *s,const rsf_fgvk_frame *in,rsf_fgvk_frame *out) {
-    if(!s||!in||in->hudless.format!=VK_FORMAT_R8G8B8A8_UNORM||!source_view(&in->hudless,&s->source[2],&s->source_key[2])) return 0;
+    // HUD-less output can be recorded in a later guest submission than guides.
+    // Its actual recording fence, not preparation's older fence, retires backing.
+    uint64_t fence=vk_sync_record_fence(cb);
+    if(!cb||!fence||!s||!in||in->hudless.format!=VK_FORMAT_R8G8B8A8_UNORM||!source_view(&in->hudless,&s->source[2],&s->source_key[2])) {
+        refusal(4,in&&in->record?in->record->frame_id:0,fence);return 0;
+    }
+    if(fence>s->fence) s->fence=fence;
     barrier(cb,(VkImage)in->hudless.image,in->hudless.layout,in->hudless.layout);
     // Bind all storage descriptors in GENERAL, even those untouched by this mode.
     for(int i=0;i<2;i++) barrier(cb,s->image[i],VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);

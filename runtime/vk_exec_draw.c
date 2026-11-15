@@ -31,6 +31,7 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "vk_mvprev.h"
+#include "vk_motion_texture.h"
 #include "memx.h"
 
 #define MAX_BINDINGS 128
@@ -483,6 +484,8 @@ typedef struct VkExecDraw {
     CbRes *cur;                          // resources of the submission being recorded
     uint64_t cur_fence;
     CbState B;
+    struct { uint64_t handle; VkDescriptorImageInfo descriptor; } snapshot_native[32];
+    struct { uint64_t current, previous; VkMotionTextureFact fact; VkSampler sampler; int captured; } snapshot_draw;
     DescSigs DS;
     BindStats BS;
     RsState RS;
@@ -2647,6 +2650,10 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
                     else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
                     BI_CUR(k);
                     tex_info(ex, r, h, img, r->separate, &o[k].image, &locked);
+                    if (gfx && !img && st == NVN_STAGE_VS && slot >= 0 && slot < 32 && vk_motion_texture_active()) {
+                        D->snapshot_native[slot].handle = h;
+                        D->snapshot_native[slot].descriptor = o[k].image;
+                    }
                     o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
                 }
                 if (locked) vk_texture_unlock();
@@ -3694,6 +3701,12 @@ static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
                 } else o[k].buffer = ssbo_info(ex, st, r, 0);
             }
         } else if (b->kind == GFX_RES_TEX && b->type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+            if (r->flags & 128) {
+                if (!ex->draw->snapshot_draw.captured || cnt != 1 ||
+                    !vk_motion_texture_previous(ex, ex->draw->snapshot_draw.previous, &ex->draw->snapshot_draw.fact,
+                        ex->draw->snapshot_draw.sampler, &o->image)) return 0;
+                nd += cnt; continue;
+            }
             int locked = 0;   // tex_info takes the texture lock for the lookups that need it
             for (uint32_t k = 0; k < cnt; k++) {
                 int slot = r->slot + (int)k;
@@ -4031,7 +4044,10 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     int ns = gfx_shader_resources(vs, GFX_RES_SSBO, &sr), previous_storage = 0;
     for (int i = 0; i < ns; i++) previous_storage |= sr[i].cbuf_slot >= 64;
     if (ns && !previous_storage) { MO.storage++; return; }
-    if (!banks || (!(banks & ~(1u << 4)) && !previous_storage)) {
+    int nt = gfx_shader_resources(vs, GFX_RES_TEX, &sr), previous_texture = 0;
+    for (int i = 0; i < nt; i++) previous_texture |= !!(sr[i].flags & 128);
+    if (previous_texture && !D->snapshot_draw.captured) return;
+    if (!banks || (!(banks & ~(1u << 4)) && !previous_storage && !previous_texture)) {
         MO.no_out++;
         return;
     }
@@ -4050,7 +4066,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     // were half the draws checked and listed. TOTK_MVOBJ_ALL=1 (test) takes them again.
     static int all = -1;
     if (all < 0) all = rt_knob("MVOBJ_ALL", "0");
-    if (!all && !(banks & (1u << 5 | 1u << 6 | 1u << 7)) && !previous_storage) {
+    if (!all && !(banks & (1u << 5 | 1u << 6 | 1u << 7)) && !previous_storage && !previous_texture) {
         MO.no_out++;
         return;
     }
@@ -4093,7 +4109,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         int moving = 0;
         // Storage can deform independently while every placement/bone bank stays equal. Its separate descriptor
         // is admitted/refused by mo_desc; uniform equality alone cannot skip this variant.
-        if (previous_storage) moving = 1u << 30;
+        if (previous_storage || previous_texture) moving = 1u << 30;
         for (int b = 3; b <= 16; b++) {
             if (!(banks >> b & 1) || b == 4) continue;
             const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][b - 3];
@@ -4114,6 +4130,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         MO.nodata++;
         return;
     }
+    if (previous_texture && ((banks & ~(1u << 4)) & ~have)) return;
     if (t0) MO.ns_part[1] += kern_now_ns() - tp, MO.n_part[1]++, tp = kern_now_ns();
     GfxShaderIo io[32];
     uint32_t extra = gfx_shader_outputs(vs, io) & ~gfx_shader_outputs(D->B.st.vs, io);
@@ -4383,6 +4400,68 @@ static int restart_for(const VkExec *ex, int prim, int itype) {
     return 0;
 }
 
+static uint64_t texture_draw_identity(const VkExec *ex, const p_draw_idx *d) {
+    uint64_t h = 0xcbf29ce484222325ull;
+#define TEXTURE_KEY(x) h = (h ^ (uint64_t)(x)) * 0x100000001b3ull
+    TEXTURE_KEY((uintptr_t)ex->draw->B.st.vs); TEXTURE_KEY(d->ibuf); TEXTURE_KEY(d->count);
+    TEXTURE_KEY(d->base_vertex); TEXTURE_KEY(d->base_instance); TEXTURE_KEY(d->instances); TEXTURE_KEY(d->itype);
+    for (int i = 0; i < 16; i++) { TEXTURE_KEY(ex->vbuf[i].address); TEXTURE_KEY(ex->vbuf[i].size); TEXTURE_KEY(ex->pipe.vstream[i].stride); }
+#undef TEXTURE_KEY
+    return h;
+}
+static void texture_snapshot_before(VkExec *ex, const p_draw_idx *d) {
+    VkExecDraw *D = ex->draw;
+    D->snapshot_draw.captured = 0;
+    if (!vk_motion_texture_active() || !vk_mvprev_on() || !D->B.st_valid || !D->B.st.ds.dt || !D->B.st.ds.dw ||
+        ex->depth.width < DLAA_SCENE_MIN_W || ex->depth.format != VK_FORMAT_D32_SFLOAT || d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE) return;
+    int has, pending = 0;
+    sf_mvprev = 1;
+    const GfxShader *variant = shader_for(ex, NVN_STAGE_VS, &has, &pending, 0);
+    sf_mvprev = 0;
+    if (!variant || pending) return;
+    uint32_t banks = gfx_shader_mvprev_banks(variant);
+    uint32_t allowed = (1u << 4) | (1u << 14) | (1u << 15) | (1u << 16);
+    if (!(banks & (1u << 4)) || !(banks & (1u << 15)) || banks & ~allowed) return;
+    const GfxShaderRes *res, *previous = NULL;
+    int n = gfx_shader_resources(variant, GFX_RES_TEX, &res);
+    for (int i = 0; i < n; i++) if (res[i].flags & 128) { if (previous) return; previous = &res[i]; }
+    if (!previous || previous->type != 3 || previous->count != 1 || previous->separate ||
+        previous->slot < 0 || previous->slot >= 32) return;
+    int slot = previous->slot;
+    uint64_t handle = ex->tex[NVN_STAGE_VS][slot];
+    VkDescriptorImageInfo native = D->snapshot_native[slot].descriptor;
+    if (!handle || D->snapshot_native[slot].handle != handle || !native.sampler || !native.imageView ||
+        native.imageLayout != VK_IMAGE_LAYOUT_GENERAL) return;
+    VkMotionTextureFact fact;
+    vk_texture_lock();
+    int got = vk_texture_motion_fact(handle, &fact);
+    VkImageView expected = VK_NULL_HANDLE;
+    if (got && view_of.klen) {
+        uint32_t swz = NVN_TEXTURE_SWIZZLE_R | NVN_TEXTURE_SWIZZLE_G << 8 |
+                       NVN_TEXTURE_SWIZZLE_B << 16 | NVN_TEXTURE_SWIZZLE_A << 24;
+        ViewKey k = {fact.image, fact.shape.format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+                     0, fact.shape.levels, 0, 1, swz};
+        expected = (VkImageView)nvn_hm_get(&view_of, &k);
+    }
+    vk_texture_unlock();
+    if (!got || !expected || native.imageView != expected) return;
+    for (int i = 0; i < 8; i++) if (ex->color[i].image == fact.image) return;
+    if (ex->depth.image == fact.image) return;
+    uint64_t key = texture_draw_identity(ex, d), old = key;
+    int have_previous = 1;
+    for (int bank = 15; bank <= 16; bank++) if (banks >> bank & 1) {
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][bank - 3];
+        uint64_t address = 0; int how;
+        if (!u->addr || !u->size) return;
+        if (!vk_mvprev_find(bank - 3, u->addr, u->size, &address, &how)) have_previous = 0;
+        key = (key ^ u->addr) * 0x100000001b3ull;
+        old = (old ^ address) * 0x100000001b3ull;
+    }
+    D->snapshot_draw.current = key; D->snapshot_draw.previous = have_previous ? old : 0;
+    D->snapshot_draw.fact = fact; D->snapshot_draw.sampler = native.sampler;
+    D->snapshot_draw.captured = vk_motion_texture_capture(ex, key, &fact, native.sampler);
+}
+
 static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     VkExecDraw *D = ex->draw;
     D->c0_binst = (uint32_t)d->base_instance;
@@ -4415,6 +4494,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
+    texture_snapshot_before(ex, d);
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     ex->recorded++;

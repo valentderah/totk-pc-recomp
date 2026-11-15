@@ -110,6 +110,7 @@ typedef struct VkExec {
     VkFormat pass_color[8], pass_depth, pass_stencil; // attachment formats of the pass (VkPipelineRenderingCreateInfo);
                                                       // VK_FORMAT_UNDEFINED: none
     uint32_t pass_ncolor, pass_samples;               // colorAttachmentCount and rasterization samples of the pass
+    VkImageView resolved_native_colors[8], resolved_native_depth, resolved_native_stencil;
 
     // ---- fixed-function state (vk_exec.c keeps it; vk_exec_draw.c records it before draws)
     float vp[16][6];                     // OP_VIEWPORTS: x, y, w, h, near, far

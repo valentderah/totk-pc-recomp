@@ -15,6 +15,7 @@ harness += r'''#include <assert.h>
 #include <rescaleframe/native_fg_vulkan.h>
 typedef struct { VkCommandBuffer cb; uint64_t source_frame; } VkExec;
 struct Size { unsigned w,h,ow,oh,fw,fh; VkImage device_depth,mv; rsf_frame_record fg_record; };
+static struct { struct Size *fg_last; } D;
 static unsigned calls;
 static int refused;
 #define cfg_int(...) 3
@@ -44,7 +45,7 @@ int main(void) {
         .output_width=1920,.output_height=1080,.camera={.render_width=1600,.render_height=900,
         .output_width=1920,.output_height=1080}};
     fg_prepare(&ex,&e,&record);
-    assert(calls==1 && e.fg_record.frame_id==7 && e.fg_record.output_width==2560);
+    assert(calls==1 && D.fg_last==&e && e.fg_record.frame_id==7 && e.fg_record.output_width==2560);
     assert(record.output_width==1920 && record.camera.output_width==1920);
     refused=-1; fg_prepare(&ex,&e,&record);
     assert(calls==2 && !e.fg_record.frame_id);

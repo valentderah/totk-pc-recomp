@@ -2,7 +2,10 @@
 #include "../runtime/rsf_fg_gpu.c"
 #include <assert.h>
 static VkCtx context;
-static uint64_t completed;
+static uint64_t completed, recording_fence=1;
+unsigned rt_trace;
+void rt_log(const char *fmt,...) {(void)fmt;}
+uint64_t vk_sync_record_fence(VkCommandBuffer cb) {return cb?recording_fence:0;}
 uint64_t vk_sync_fence_done(void) {return completed;}
 VkCtx *vk_ctx(void) {return &context;}
 static unsigned creates,destroys,views,deleted_views,dispatches,drains;
@@ -75,6 +78,29 @@ int main(void){
     assert(rsf_fg_gpu_prepare(cb,6,&m,&m,&in,&out)); // A different completed slot can be used.
     // Pending commands keep their slot even if an unrelated fence is complete.
     assert(G.slots[0].commands[0]==cb&&G.slots[0].record.frame_id==5);
+    rsf_fg_gpu_submitted(cb);
+    // A later HUD-less submission extends the exact completion lease. A
+    // successful submit or completed guide fence cannot retire its pending copy.
+    completed=UINT64_MAX;rsf_fg_gpu_clear();completed=0;
+    VkCommandBuffer color_cb=(VkCommandBuffer)(uintptr_t)2;
+    record.frame_id=100;
+    RsfFgLease *first=rsf_fg_gpu_prepare(cb,100,&m,&m,&in,&out);assert(first);
+    recording_fence=0;
+    assert(!rsf_fg_gpu_hudless(color_cb,first,&color_only,&out));
+    assert(first->fence==100&&!first->commands[1]);
+    recording_fence=110;
+    assert(rsf_fg_gpu_hudless(color_cb,first,&color_only,&out));
+    assert(first->fence==110);rsf_fg_gpu_submitted(cb);
+    for(unsigned i=101;i<=103;i++) {record.frame_id=i;assert(rsf_fg_gpu_prepare(cb,i,&m,&m,&in,&out));rsf_fg_gpu_submitted(cb);}
+    completed=103;
+    for(unsigned i=104;i<=106;i++) {record.frame_id=i;assert(rsf_fg_gpu_prepare(cb,i+16,&m,&m,&in,&out));rsf_fg_gpu_submitted(cb);}
+    assert(first->record.frame_id==100); // Older guide completion did not reclaim HUD-less backing.
+    record.frame_id=107;completed=110;
+    assert(!rsf_fg_gpu_prepare(cb,123,&m,&m,&in,&out)); // HUD-less commands not yet submitted.
+    rsf_fg_gpu_submitted(color_cb);completed=109;
+    assert(!rsf_fg_gpu_prepare(cb,123,&m,&m,&in,&out)); // Submit alone still cannot retire fence110.
+    completed=110;
+    assert(rsf_fg_gpu_prepare(cb,123,&m,&m,&in,&out)==first);
     rsf_fg_gpu_submitted(cb);
     assert(drains==dispatches);rsf_fg_gpu_release();assert(destroys==creates&&deleted_views==views);
     return 0;

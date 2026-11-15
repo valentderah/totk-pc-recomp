@@ -587,7 +587,8 @@ void res_init(void) {
 // of log2(render / output)), so their detail survives the scaling. 0 without a DLSS mode.
 float res_dlss_lod_bias(void) {
     decide();
-    return R.dlss_k ? (float)log2(R.dlss_k) : 0.0f;
+    // Provider rounding/scaling may differ from the menu's initial heuristic.
+    return R.dlss_k && R.sw && R.ow ? (float)log2((double)R.sw / R.ow) : 0.0f;
 }
 
 // 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.
@@ -636,7 +637,10 @@ void res_fov_live(void) {
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
+    // An SR owner accepts one exact render plan. Its 90/80 percent game tiers
+    // cannot replace that plan; FG-only retains the user's DRS preference.
+    int sr = R.on && R.live && cfg_bool("TOTK_RSF_ENABLED");
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !sr;
     if (dyn == shown) return;
     shown = dyn;
     if (set < 0) {
@@ -645,7 +649,8 @@ void res_dynres_live(void) {
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn ? "on: the game's own 100, 90 or 80 %" : sr ? "off: RSF owns the exact provider render plan"
+                                                             : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
@@ -669,6 +674,13 @@ int res_rsf_scene(unsigned width, unsigned height) {
     // provider images outside the scene budget reserved before game setup.
     if (!RT_V143 || !R.live || !width || !height || width > R.hw || height > R.hh ||
         width > 65535 || height > 65535) return 0;
+    // The renderer quantizes down to eight pixels. Request aligned dimensions
+    // at or above the recommendation: XeSS may report it as its minimum input.
+    // The provider still validates the real allocation against its own range.
+    if (width < 8 || height < 8) return 0;
+    width = (width + 7u) & ~7u; height = (height + 7u) & ~7u;
+    if (width > R.hw || height > R.hh || width > 65535 || height > 65535) return 0;
+    if (width == R.sw && height == R.sh) return 2; // already the representable plan
     uint64_t request = ((uint64_t)cfg_version() << 32) | ((uint64_t)width << 16) | height;
     __atomic_store_n(&rsf_scene_request, request, __ATOMIC_RELEASE);
     return 1;
@@ -682,8 +694,9 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
+    res_dynres_live(); // exact SR ownership follows game-side activation/reset too
     uint64_t request = __atomic_exchange_n(&rsf_scene_request, 0, __ATOMIC_ACQUIRE);
-    if (request && (unsigned)(request >> 32) == cfg_version()) {
+    if (request && cfg_bool("TOTK_RSF_ENABLED") && (unsigned)(request >> 32) == cfg_version()) {
         unsigned w = (unsigned)(request >> 16) & 65535, h = (unsigned)request & 65535;
         if (w != R.sw || h != R.sh) {
             double scale = scene_scale();

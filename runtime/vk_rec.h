@@ -31,8 +31,9 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
 // vkQueueSubmit2 of si (at most two command buffers, two signals, two waits, no fence) under vk_queue_lock: by the
 // recorder after a part it ended, else at once. Queued for the recorder, it returns the first failure of an earlier
 // submission the recorder made (VK_SUCCESS if none), since this one's result is not known yet.
-VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame);
-VkResult rec_submit_recorded(const VkSubmitInfo2 *, uint64_t source_frame, int recorder_owned);
+// final_fence is the owning engine submission's eventual completion, including split parts.
+VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame, uint64_t final_fence);
+VkResult rec_submit_recorded(const VkSubmitInfo2 *, uint64_t source_frame, int recorder_owned, uint64_t final_fence);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
 // vk_queue_lock, before it takes the lock (not on the recorder, not when the thread holds the lock already): waits
 // until the recorder submitted every submission queued so far.

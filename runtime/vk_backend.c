@@ -60,8 +60,7 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
-        vk_reflex_present_frame(j.pid);   // the present of this blit, and the submission after it, are the frame's
-        vk_reflex_submit_frame(j.pid);
+        gfx_frame_present(j.pid);   // retain the acquired-image identity for host timing
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL, j.source);
         uint64_t f = vk_sync_submit(NULL, 0, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
@@ -225,7 +224,6 @@ static void replay_main(void *arg) {
         plat_cond_broadcast(&rcv);
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
-            vk_reflex_submit_frame(it.pid);   // the replay thread submits the frame the game was on when it queued it
             uint64_t f = submit_sync(it.h, it.n, it.source);
             if (f != it.value)
                 rt_fatal("vk: replayed submission signalled %llu, queued as %llu", (unsigned long long)f,
@@ -348,7 +346,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
-        present_image(t, crop, at_ns, kern_now_ns(), frame, 0, vk_reflex_frame(), source);
+        present_image(t, crop, at_ns, kern_now_ns(), frame, 0, gfx_frame_current(), source);
         return;
     }
     // Frame bound: the replay thread handled the previous present before this one is queued.
@@ -364,7 +362,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     uint64_t frame = ++game_frames;
     perf_present(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(), .source = source, .pid = vk_reflex_frame()};
+    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(), .source = source, .pid = gfx_frame_current()};
     if (crop) {
         it.has_crop = 1;
         for (int i = 0; i < 4; i++) it.crop[i] = crop[i];
@@ -411,7 +409,7 @@ static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEAS
 static uint64_t vk_be_submit(const uint64_t *handles, int n, uint64_t source) {
     if (!gfx_replay_async()) return submit_sync(handles, n, source);
     vk_sync_start();
-    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .source = source, .pid = vk_reflex_frame()};
+    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .source = source};
     if (n > 0) {
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
@@ -555,6 +553,5 @@ void vk_backend_shutdown(void) {
     gfx_exit_log();
     vk_present_drain();
     vk_sync_shutdown();
-    vk_mem_shutdown();
     vk_shutdown();
 }

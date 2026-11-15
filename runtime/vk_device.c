@@ -13,9 +13,10 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "rsf_runtime.h"
+#include "vk_motion_texture.h"
 
 static VkCtx g_vk;
-static int g_ready;
+static int g_ready, g_stopping;
 static PlatMutex g_lock = PLAT_MUTEX_INIT;
 
 // ---- GPU address map for device faults
@@ -366,8 +367,7 @@ static int create_device(void) {
         g_vk.has_nv_checkpoints = 1;
         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     }
-    // RSF owns vendor latency exclusively. Do not activate the legacy sleep,
-    // marker or native Present path through has_nv_reflex.
+    // Vendor latency extensions and pacing are owned by RSF.
     // Enable shared-resource imports for live switches to FSR4 when supported.
 #ifdef _WIN32
     if (has_ext(ep, ne, "VK_KHR_external_memory_win32") &&
@@ -421,11 +421,6 @@ static int create_device(void) {
            : !ab_want ? "off (TOTK_ADDR_REPORT=1 turns it on; it slows recording on some drivers)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
-    // VkPresentIdKHR on a present needs the presentId feature, not just the extension
-    if (g_vk.has_nv_reflex && !c->pid.presentId) {
-        g_vk.has_nv_reflex = 0;
-        rt_log("Reflex: VK_NV_low_latency2 not available (no presentId feature)");
-    }
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
@@ -503,11 +498,18 @@ static int create_device(void) {
 
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
-static void destroy_all(void) {
-    if (!gfx_window_release_vk()) return;
+static int destroy_all(void) {
+    if (!gfx_window_release_vk()) return 0;
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
-    if (g_vk.device && !vk_dlaa_release()) return;
-    if (!rsf_vk_shutdown()) return;
+    if (g_vk.device && !vk_dlaa_release()) return 0;
+    if (g_vk.device && !vk_motion_texture_stop()) return 0;
+    // Retained object/bone/storage arenas are direct VMA allocations, separate
+    // from the native buffer pool. Release their CPU history after completion.
+    if (g_ready && g_vk.device) vk_usnap_shutdown();
+    if (!rsf_vk_shutdown()) return 0;
+    // Native textures/samplers and buffers outlive every provider and snapshot
+    // history owner. Only checked retirement permits freeing their allocations.
+    if (g_ready && g_vk.device) vk_mem_shutdown();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
@@ -523,6 +525,8 @@ static void destroy_all(void) {
     if (g_vk.instance) vkDestroyInstance(g_vk.instance, NULL);
     g_errors_total += g_vk.validation_errors;
     memset(&g_vk, 0, sizeof g_vk);
+    rsf_vk_reset();
+    return 1;
 }
 
 long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.validation_errors : 0); }
@@ -530,11 +534,23 @@ long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.
 int vk_init(void) {
     plat_mutex_lock(&g_lock);
     vk_memx_init();
+    if (g_stopping) {
+        if (!destroy_all()) { plat_mutex_unlock(&g_lock); return 0; }
+        g_ready = g_stopping = 0;
+    }
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device())
-            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
-        else destroy_all();
+        if (create_instance() && pick_device() && create_device()) {
+            g_ready = 1;
+            vk_mem_host_probe();
+            vk_upload_pools_init();
+            vk_headroom_start();
+            vk_dlaa_init();
+            int texture_motion = (cfg_int("TOTK_RSF_ENABLED") || cfg_int("TOTK_RSF_FG")) &&
+                                 cfg_bool("TOTK_DLAA_OBJMV");
+            if (!vk_motion_texture_start(texture_motion))
+                rt_log("vk: texture motion snapshots unavailable; unsupported history stays native");
+        } else if (!destroy_all()) g_stopping = 1;
     }
     int ok = g_ready;
     plat_mutex_unlock(&g_lock);
@@ -543,7 +559,12 @@ int vk_init(void) {
 
 void vk_shutdown(void) {
     plat_mutex_lock(&g_lock);
-    if (g_ready) { destroy_all(); g_ready = 0; }
+    if (g_ready || g_stopping) {
+        g_stopping = 1;
+        // Providers may refuse retirement while a CPU or GPU lease is active.
+        // Keep VkCtx available to that work and retry without recreating it.
+        if (destroy_all()) g_ready = g_stopping = 0;
+    }
     plat_mutex_unlock(&g_lock);
 }
 

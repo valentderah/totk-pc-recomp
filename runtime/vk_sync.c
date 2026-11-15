@@ -16,6 +16,7 @@
 
 #include "gfx.h"
 #include "rsf_sr.h"
+#include "vk_motion_texture.h"
 #include "rsf_split.h"
 #include "rsf_vulkan.h"
 #include "host.h"
@@ -420,6 +421,7 @@ int vk_sync_sr_prepare(VkCommandBuffer commands, rsf_fsr4vk_handoff *handoff) {
     VkResult reset = vkResetCommandBuffer(slots[next].cb, 0);
     if (reset != VK_SUCCESS) rt_fatal("vk: FSR4 continuation reset failed (%d)", reset);
     rsf_sr_commands_reset(slots[next].cb);
+    vk_motion_texture_commands_reset(slots[next].cb);
     sr_split.prepared = 1; sr_split.consumed = 0;
     sr_split.old_slot = cur_slot; sr_split.next_slot = next;
     *handoff = (rsf_fsr4vk_handoff){sizeof *handoff, RSF_SRVK_SPLIT_TRACKED_ABI_VERSION,
@@ -435,12 +437,12 @@ void vk_sync_sr_cancel(void) {
 static VkResult submit_section(const VkSubmitInfo2 *si, void *user) {
     VkCommandBuffer cb = si->pCommandBufferInfos[si->commandBufferInfoCount - 1].commandBuffer;
     for (int i = 0; i < nslots; i++)
-        if (slots[i].cb == cb) return rec_submit_recorded(si, *(uint64_t *)user, slots[i].sr_recorder);
+        if (slots[i].cb == cb) return rec_submit_recorded(si, *(uint64_t *)user, slots[i].sr_recorder, slots[i].fence);
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 static VkResult submit_graph(const VkSubmitInfo2 *si, uint64_t source) {
     int end = cur_slot;
-    if (slots[end].sr_previous < 0) return rec_submit(si, source);
+    if (slots[end].sr_previous < 0) return rec_submit(si, source, cur_fence);
     uint32_t count = 1;
     for (int i = end; slots[i].sr_previous >= 0; i = slots[i].sr_previous) count++;
     RsfSplitSection *parts = malloc(count * sizeof *parts);
@@ -472,6 +474,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
         VkResult result = vkBeginCommandBuffer(cb, &bi);
         if (result != VK_SUCCESS) rt_fatal("vk: prologue command begin failed (%d)", result);
         rsf_sr_commands_reset(cb);
+        vk_motion_texture_commands_reset(cb);
     } else {
         rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     }
@@ -501,6 +504,10 @@ void vk_sync_part(VkCommandBuffer cb) {
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
     rsf_vk_submission(cur_source, 0);
+    if (r == VK_SUCCESS) {
+        for (uint32_t i = 0; i < si.commandBufferInfoCount; i++)
+            vk_motion_texture_submitted(si.pCommandBufferInfos[i].commandBuffer, cur_fence);
+    }
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
@@ -577,20 +584,12 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
                                  .value = fence, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    VkLatencySubmissionPresentIdNV lsid = {
-        .sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
-        .pNext = NULL,
-        .presentID = vk_reflex_submit_id()
-    };
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        .pNext = (c->has_nv_reflex) ? &lsid : NULL,
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
-    if (recorded && c->has_nv_reflex) vk_reflex_marker(2, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
     VkResult r = submit_graph(&si, source);   // by the recorder when it recorded the part
-    if (recorded && c->has_nv_reflex) vk_reflex_marker(3, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
@@ -712,7 +711,15 @@ void vk_sync_shutdown(void) {
         plat_mutex_unlock(&st_lock);
         plat_mutex_lock(&sub_lock);
         VkCtx *c = vk_ctx();
-        if (c && cmd_pool) vkDestroyCommandPool(c->device, cmd_pool, NULL);
+        if (c && cmd_pool) {
+            vkDestroyCommandPool(c->device, cmd_pool, NULL);
+            // Pool destruction discards executable references just as reset
+            // does. All submitted work completed before reaching this point.
+            for (int i = 0; i < nslots; i++) {
+                rsf_sr_commands_reset(slots[i].cb);
+                vk_motion_texture_commands_reset(slots[i].cb);
+            }
+        }
         perf_gpu_stats = NULL;
         if (c && ts_pool) vkDestroyQueryPool(c->device, ts_pool, NULL);
         ts_pool = VK_NULL_HANDLE;

@@ -18,14 +18,14 @@ code=r'''
 #define vk_hdr_metadata(...) ((void)0)
 #define free_capture() ((void)0)
 #define reflex_apply_locked() ((void)0)
-typedef struct {VkDevice device;VkPhysicalDevice phys;int has_nv_reflex;unsigned rsf_queue_count;} VkCtx;
+typedef struct {VkDevice device;VkPhysicalDevice phys;unsigned rsf_queue_count;} VkCtx;
 static VkCtx context={.rsf_queue_count=4};
 static VkCtx *vk_ctx(void) {return &context;}
 static VkSurfaceKHR g_surface=(VkSurfaceKHR)1;
 static VkSwapchainKHR g_sc;
 static RsfPresent *g_rsf_present;
 static VkFormat g_sc_fmt;
-static int g_sc_hdr,g_reflex_mode,g_dirty;
+static int g_sc_hdr,g_dirty;
 static VkExtent2D g_sc_ext;
 static uint32_t g_sc_n;
 static VkImage g_sc_img[MAX_IMAGES];

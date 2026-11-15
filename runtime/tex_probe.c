@@ -595,7 +595,6 @@ int probe_vkmem(void) {
            "%u unsupported by the GPU, %u unmapped, %u with a fallback)\n",
            g_cases, g_astc_blocks, n_mapped, n_supported, n_unsupported, n_unmapped, n_fallback);
     int bad = test_gpu();
-    vk_mem_shutdown();
     vk_shutdown();
     long errors = vk_validation_errors_total();
     if (bad || errors) {

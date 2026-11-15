@@ -5,6 +5,8 @@
 int rsf_vk_prepare(void);
 // Drain/release providers first; SDK teardown precedes Vulkan device destruction.
 int rsf_vk_shutdown(void);
+// Reset adapter setup only after checked shutdown and Vulkan instance destruction.
+void rsf_vk_reset(void);
 // Copied engine source at actual host execution, including recorder-thread calls.
 void rsf_vk_submission(uint64_t source, uint32_t begin);
 void rsf_vk_present_event(uint64_t source, uint32_t begin);

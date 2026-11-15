@@ -9,7 +9,7 @@
 #include <rescaleframe/native_xess_vulkan_requirements.h>
 #include <string.h>
 
-static int prepared, active;
+static int prepared, active, runtime_loaded;
 static VkInstance primary_instance;
 static __typeof__(&rsf_latencyvk_instance_proc) instance_resolver;
 static int stopped;
@@ -43,7 +43,7 @@ static int append_extensions(const char **extensions, uint32_t *count, uint32_t 
 }
 
 int rsf_vk_shutdown(void) {
-    if (stopped || prepared <= 0 || !rsf_runtime_path()) return 1;
+    if (stopped || !runtime_loaded) return 1;
     if (xess_active) {
         __typeof__(&rsf_xessvk_shutdown) shutdown_xess = rsf_runtime_symbol("rsf_xessvk_shutdown");
         int32_t result = shutdown_xess ? shutdown_xess() : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
@@ -63,6 +63,14 @@ int rsf_vk_shutdown(void) {
     return 1;
 }
 
+// Called only after checked SDK shutdown and destruction of the old Vulkan
+// instance. A refused teardown keeps the resolver and all owners intact.
+void rsf_vk_reset(void) {
+    if (primary_instance || (runtime_loaded && !stopped)) return;
+    prepared = active = runtime_loaded = stopped = xess_active = 0;
+    instance_resolver = NULL;
+}
+
 static rsf_vk_function generic_instance_proc(void *instance, const char *name) {
     return (rsf_vk_function)rsf_vk_instance_proc(instance, name);
 }
@@ -70,7 +78,7 @@ static rsf_vk_function generic_instance_proc(void *instance, const char *name) {
 int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
     const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features) {
     *enabled_features = features;
-    if (!rsf_runtime_path()) return 1;
+    if (!runtime_loaded) return 1;
     __typeof__(&rsf_latencyvk_require_device) require = rsf_runtime_symbol("rsf_latencyvk_require_device");
     if (!require) { rt_log("rsf: missing Vulkan device-requirements service"); return 0; }
     rsf_latencyvk_device_query query = {.struct_size = sizeof query, .abi_version = 1,
@@ -99,8 +107,10 @@ int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
 int rsf_vk_prepare(void) {
     if (prepared) return prepared > 0;
     prepared = -1;
-    if (!rsf_runtime_path()) { prepared = 1; return 1; }
+    int requested = cfg_int("TOTK_RSF_ENABLED") || cfg_int("TOTK_RSF_FG") || cfg_int("TOTK_RSF_LOW_LATENCY");
+    if (!requested || !rsf_runtime_path()) { prepared = 1; return 1; }
     if (!rsf_runtime_load()) return 0;
+    runtime_loaded = 1;
     int sr_backend = cfg_int("TOTK_RSF_ENABLED") ? cfg_int("TOTK_RSF_BACKEND") : 0;
     if (sr_backend == RSF_SR_XESS) {
         __typeof__(&rsf_xessvk_initialize) initialize_xess = rsf_runtime_symbol("rsf_xessvk_initialize");
@@ -183,7 +193,7 @@ VkResult rsf_vk_create_device(VkPhysicalDevice physical, const VkDeviceCreateInf
                              const VkAllocationCallbacks *allocator, VkDevice *out) {
     PFN_vkCreateDevice create = (PFN_vkCreateDevice)rsf_vk_instance_proc(primary_instance, "vkCreateDevice");
     VkResult result = create ? create(physical, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
-    if (result == VK_SUCCESS && rsf_runtime_path()) {
+    if (result == VK_SUCCESS && runtime_loaded) {
         __typeof__(&rsf_latencyvk_device_created) created = rsf_runtime_symbol("rsf_latencyvk_device_created");
         if (created) {
             rsf_latencyvk_created_device event = {.struct_size = sizeof event, .abi_version = 1,
@@ -212,7 +222,7 @@ void rsf_vk_destroy_instance(VkInstance instance, const VkAllocationCallbacks *a
 
 void rsf_vk_destroy_device(VkDevice device, const VkAllocationCallbacks *allocator) {
     __typeof__(&rsf_latencyvk_device_destroyed) destroyed = rsf_runtime_symbol("rsf_latencyvk_device_destroyed");
-    if (destroyed) destroyed(device);
+    if (runtime_loaded && destroyed) destroyed(device);
     PFN_vkDestroyDevice destroy = (PFN_vkDestroyDevice)rsf_vk_device_proc(device, "vkDestroyDevice");
     if (destroy) destroy(device, allocator);
 }

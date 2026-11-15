@@ -708,3 +708,152 @@ run, 11 skipped and no failures, including configured Vulkan SR device tests.
 The TotK build passes. Actual fullscreen XeSS generation and pacing acceptance
 is still pending; CPU concurrency tests are detailed in RSF's
 `docs/research/vulkan-fg-latency-context-20261115.md`.
+
+
+## Final latency ownership and menu implementation
+
+The unused direct Vulkan Reflex implementation has been removed from the host:
+no host latency sleep semaphore, vendor marker calls, latency swapchain chain,
+submission-present ID extension or native driver timing query remains. Verified
+engine source/input/render/Present facts continue through RSF. The remaining
+acquired-image identity API is named `gfx_frame_begin`, `gfx_frame_current` and
+`gfx_frame_present`; it serves queued native presentation and host timing only.
+The old native-frame timing report is now labeled acquired image to host present,
+without implying that it measures vendor latency. Legacy configuration aliases
+still map onto the RSF controls.
+
+Frame generation can now be selected and saved directly in Upscaling & Framegen
+from an initially disabled session, with the existing restart requirement.
+The hidden requirement to opt in through a config file before using that control
+has been removed. All upscaling/FG/latency controls now have Russian, Brazilian
+Portuguese and Simplified Chinese catalog entries alongside English.
+
+The concurrent implementation batch is not yet validated. Per the requested
+workflow, compilation and regression checks are deferred until the batch lands.
+The last FSR4 FG run predates this batch: the provider refused creation with
+NOT_SUPPORTED on this machine and ordinary presentation completed normally.
+That is fallback evidence, not FSR4 FG acceptance.
+
+
+The replacement menu also retains the live DLSS model choice when DLSS is
+selected, together with the existing character-history colour bias consumed
+by DLSS. Object/deformation motion remains independent of that colour bias. These controls were previously orphaned when the old rows were removed.
+Their labels describe their actual scope; no claim is made that a colour bias
+repairs missing object motion. The menu catalog boundary now includes the new
+controls so normal catalog coverage and description-length validation reaches
+them. Obsolete standalone NGX installation instructions were removed from the
+legacy catalog descriptions.
+
+
+Release build graph generation now requires RSF SDK headers only when compiling
+the renderer. An installer linking `--runtime-lib` compiles game-derived modules
+and the install-side sources, which do not include RSF service headers; it no
+longer fails because the release folder lacks a development checkout. Full
+renderer and runtime-library builds still require the pinned SDK. Build docs now
+name the gitlink default rather than the obsolete sibling default.
+
+
+## Disabled startup and checked device retirement
+
+An installed package no longer activates SDK setup or device requirements when
+SR, FG and low latency are all off. The adapter tracks whether it actually loaded
+runtime services, independently of whether setup completed, so partial setup can
+still run checked cleanup. Only a completed shutdown and destroyed Vulkan
+instance permit resetting setup for another initialization.
+
+The Vulkan device owner now retains its context when presentation, SR or SDK
+shutdown refuses retirement. A later initialization first retries that teardown;
+it cannot zero the retained device or create another one over it. Successful
+teardown clears readiness, while deferred teardown keeps the context available
+to outstanding callbacks. The CPU regression extracts the actual init/shutdown
+state machine and exercises refused cleanup, partial creation failure and retry.
+It passes in the combined validation batch.
+
+
+Texture snapshot integration now has concrete device and submission hooks.
+The pool starts off recording threads after VMA and the live device exist, when
+SR or FG and object motion are enabled. Checked shutdown stops it before SDK,
+allocator and device destruction. Its command notifications run after actual
+queue acceptance, including asynchronous recorder submissions and split SR
+sections; the recorder packet carries the owning final engine fence explicitly.
+SDK intermediate signals are not treated as resource retirement. Actual reset
+or successful begin of a reused command buffer also notifies the texture owner.
+The producer/translator implementation and actual-function submission and
+retirement regressions now pass. Runtime admission of the narrow texture subset
+still needs a scene containing one of its supported draws.
+
+
+The existing object-motion switch is now a restart control under Upscaling &
+Framegen, using its existing `dlaa_objmv` key and default on. It controls supported
+object/deformation history, including the bounded texture pool; it does not
+claim complete particle or volumetric coverage. Missing history still uses the
+explicit native/camera-motion path described in the shader audit.
+
+
+Native memory/texture shutdown is now called by checked device teardown after
+SR/FG and texture-history retirement, rather than by the backend before those
+owners close. This keeps source textures and immutable cached samplers alive
+through the last history reference. The memory/ASTC probes use that same teardown
+order. Submission command-pool destruction also sends reset notifications after
+all accepted engine fences have completed, so discarded command references do
+not leave a snapshot permanently pending during shutdown.
+
+
+Checked teardown now explicitly clears retained object/bone/storage snapshot
+history and destroys its retired direct VMA arenas. Previously that cleanup was
+reached only by the draw probe's stand-in cleanup, while ordinary backend
+shutdown could destroy the allocator with those retained arenas still present.
+The backend quiesces replay and completes submitted engine fences before this
+step. The probe's prior cleanup remains safe because the retired arena list is
+emptied by the first call.
+
+
+## Optional startup change reverted
+
+The optional Streamline startup behavior in `5fe602e` was reverted at the user's
+request to keep this migration focused. The gitlink follows that revert on RSF
+main; the extra native-loader fallback is not part of this integration.
+
+
+## Combined validation batch
+
+The combined game build passes. The device-retirement, settings documentation,
+actual FG history/Present and post-retirement surface fixtures pass. The normal
+self-test, settings and services probes pass, including all four menu catalogs.
+The unsupported `--probe-ov` invocation was corrected to `--probe-services`.
+Vulkan execution passes with validation enabled; its intentional device-loss
+report is explicitly synthetic. The installer worker's final batch reports 134
+tests with two platform skips and no failures.
+
+Focused fullscreen Quality SR+FG runs for DLSS, FSR3 and XeSS all exit normally
+with zero Vulkan validation errors, shader failures or skipped draws. DLSS and
+FSR3 sustain SR evaluations and genuine generated output. Dedicated DLSS raw
+capture for source 1800 contains both real and generated images with matching
+scene framing, brightness and bars; the sampled view is the opening cave/torch,
+so it does not prove general moving-scene interpolation quality.
+
+XeSS now sustains prepared and HUD-less inputs through source 1800, with XeLL
+sleep/marker counts progressing and no refused calls. It still produces only
+real output: its 1130x636 recommended SR plan is rounded to 1128x632 by the game,
+and the exact-size host gate keeps returning pending. A narrow existing-API
+repair is in progress. These runs used the established `620aee7` runtime, whose
+source matches reverted main `7cc5f2b`. The pending texture shader patch was not
+used by the shared translator in these runs.
+
+The subsequent build pins RSF main `2010da8`, including the actual XeSS input
+range contract. The full pinned native suite passes after correcting an existing
+device fixture's warning counter to distinguish the new informational range
+message. Eleven tests are skipped for unavailable configurations; the targeted
+device-fixture retry passes.
+
+Shared shader preparation now uses patch 0018 identity `ab774f1cb93f41c2`.
+All 28667 normal and 14765 motion census jobs translate and validate, with 15
+additional terrain previous-position outputs and no new refusals. Shared cache
+preparation also completes without failures. This proves shader translation,
+not runtime texture-history admission or visual quality.
+
+The subsequent fullscreen FSR4 SR run exits normally with zero validation
+errors, shader failures or skipped draws. XeSS still remains pending: rounding
+the request up to 1136x640 produces a real game target of 1136x632. The engine
+size conversion is being traced before another run; this is not counted as
+successful XeSS SR or frame generation.

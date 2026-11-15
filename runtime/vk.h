@@ -40,8 +40,7 @@ typedef struct VkCtx {
         has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
-        has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_hdr_metadata;                  // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -163,10 +162,6 @@ void vk_present_fg_submitted(const VkSubmitInfo2 *submit);
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
-void vk_reflex_submit_frame(uint64_t id);   // this thread's submissions belong to frame id (0: the game's current one)
-uint64_t vk_reflex_submit_id(void);
-void vk_reflex_present_frame(uint64_t id);  // the present thread, before the blit of frame id
-int vk_has_reflex(void);
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -445,7 +440,7 @@ void vk_mem_collect(void);                         // frees what has completed
 void vk_oom_release(void);
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
-void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
+void vk_mem_shutdown(void);                        // checked device teardown only: frees memory/textures after provider retirement
 
 // Textures. Images are keyed by storage GPU address plus descriptor and stay in VK_IMAGE_LAYOUT_GENERAL. A mirrored
 // texture (CPU-written pool storage, MNG tex_mirrored) is uploaded on first use and again when its storage pages were

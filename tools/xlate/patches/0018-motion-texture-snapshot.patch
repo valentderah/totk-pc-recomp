@@ -1,0 +1,80 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
+@@ -83,6 +83,7 @@
+             // structured program is made.
+             Dictionary<int, int> bindings = new();
+             Dictionary<int, int> storage = new();
++            Dictionary<int, SetBindingPair> textures = new();
+             foreach (INode node in slice)
+             {
+                 if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
+@@ -103,8 +104,31 @@
+                     }
+                     if (!found) return -1;
+                 }
+-                // Texture/image dependent positions still have no retained previous producer.
+-                if (node is Operation special && special.GetType() != typeof(Operation)) return -1;
++                if (node is TextureOperation texture)
++                {
++                    if (texture.Inst != Instruction.TextureSample || texture.Type != SamplerType.Texture2D ||
++                        (texture.Flags & ~TextureFlags.LodLevel) != 0 ||
++                        textures.Count != 0 && !textures.ContainsKey(texture.Binding)) return -1;
++                    if (textures.ContainsKey(texture.Binding)) continue;
++                    foreach (INode item in slice) if (item is PhiNode) return -1;
++                    foreach (BasicBlock candidate in blocks)
++                        foreach (INode item in candidate.Operations)
++                            if (item is Operation branch && (branch.Inst == Instruction.Branch ||
++                                branch.Inst == Instruction.BranchIfTrue || branch.Inst == Instruction.BranchIfFalse)) return -1;
++                    bool foundTexture = false;
++                    foreach (TextureDescriptor descriptor in resourceManager.GetTextureDescriptors())
++                    {
++                        if (descriptor.Binding != texture.Binding) continue;
++                        if (descriptor.ArrayLength != 1 || descriptor.Separate ||
++                            descriptor.CbufSlot != -1 && descriptor.CbufSlot != 2) return -1;
++                        textures[texture.Binding] = resourceManager.GetTextureOrImageBinding(texture.Inst,
++                            texture.Type, texture.Format, texture.Flags, descriptor.CbufSlot + 64,
++                            descriptor.HandleIndex, 1, false);
++                        foundTexture = true; break;
++                    }
++                    if (!foundTexture) return -1;
++                }
++                else if (node is Operation special && special.GetType() != typeof(Operation)) return -1;
+             }
+ 
+             foreach (INode n in slice)
+@@ -130,6 +154,9 @@
+                 }
+             }
+ 
++            // Initial snapshot contract: straight-line terrain/grass parameters, one sampled 2D binding.
++            int textureBanks = (1 << 4) | (1 << 14) | (1 << 15) | (1 << 16);
++            if (textures.Count != 0 && ((banks & ~textureBanks) != 0 || (banks & (1 << 4)) == 0 || (banks & (1 << 15)) == 0)) return -1;
+             if (banks == 0)
+             {
+                 return -1;
+@@ -139,8 +166,8 @@
+             HashSet<Operand> tainted = new();
+             foreach (INode node in slice)
+             {
+-                if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
+-                    for (int d = 0; d < load.DestsCount; d++) tainted.Add(load.GetDest(d));
++                if (node is TextureOperation || node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
++                    for (int d = 0; d < node.DestsCount; d++) tainted.Add(node.GetDest(d));
+             }
+             bool changed = true;
+ 
+@@ -195,6 +222,14 @@
+                         prev[phi.Dest] = dest;
+                         copy = new PhiNode(dest);
+                     }
++                    else if (n is TextureOperation texture && textures.TryGetValue(texture.Binding, out SetBindingPair binding))
++                    {
++                        Operand[] sources = new Operand[texture.SourcesCount];
++                        for (int i = 0; i < sources.Length; i++) sources[i] = texture.GetSource(i);
++                        Operand[] dests = new Operand[texture.DestsCount];
++                        for (int i = 0; i < dests.Length; i++) { dests[i] = Local(); prev[texture.GetDest(i)] = dests[i]; }
++                        copy = new TextureOperation(texture.Inst, texture.Type, texture.Format, texture.Flags, binding.SetIndex, binding.Binding, texture.Index, dests, sources);
++                    }
+                     else if (n is Operation op && op.GetType() == typeof(Operation) && op.Inst != Instruction.Store)
+                     {
+                         Operand[] dests = new Operand[op.DestsCount];

@@ -12,7 +12,7 @@ code=r'''
 #include <vulkan/vulkan.h>
 #include "rsf_present.h"
 #include "rsf_fg_history.h"
-typedef struct { int has_nv_reflex; VkQueue gfx_queue; } VkCtx;
+typedef struct { VkQueue gfx_queue; } VkCtx;
 static VkCtx context;
 static VkCtx *vk_ctx(void) {return &context;}
 static int g_pl,locked,g_dirty,rt_trace;
@@ -23,7 +23,7 @@ static VkSwapchainKHR g_sc=(VkSwapchainKHR)2;
 static VkExtent2D g_sc_ext={1920,1080};
 static VkSemaphore g_render_done[1];
 static uint32_t g_flip_idx;
-static uint64_t g_flip_source,g_flip_pid,g_last_pid;
+static uint64_t g_flip_source,g_flip_pid;
 static int g_flip_on,g_flip_fg_valid;
 static RsfFgSnapshot g_flip_fg;
 static RsfFgHistory fg_history;
@@ -36,8 +36,7 @@ static void vk_queue_lock(void) {}
 static void vk_queue_unlock(void) {}
 static int plat_xchg32(int *p,int v) {int old=*p;*p=v;return old;}
 static void rsf_vk_present_event(uint64_t source,int begin) {(void)source;(void)begin;}
-static void vk_reflex_marker(int n,uint64_t p) {(void)n;(void)p;}
-static void latency_note(VkCtx *c,uint64_t p) {(void)c;(void)p;}
+static void latency_note(uint64_t p) {(void)p;}
 static void vk_device_fault_report(VkResult r) {assert(!r);}
 static rsf_frame_record presented;
 static int anonymous,flips,prepare_refused,hudless_calls;

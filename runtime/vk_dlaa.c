@@ -88,7 +88,7 @@ static struct {
         rsf_frame_record fg_record;
         uint64_t fg_copied;
         uint64_t used;           // evals count when it last ran
-    } sizes[5], *last;           // last: the one the previous DLAA frame ran with
+    } sizes[5], *last, *fg_last; // last: SR/guide history; fg_last: accepted FG source
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     int failed, reset;
     uint64_t evals, frames_missed, guide_frames;
@@ -129,6 +129,7 @@ static struct {
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
     unsigned cfg_seen;           // cfg_version when preset was read
+    float previous_record_jitter[2];
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 #define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
@@ -136,11 +137,12 @@ static struct {
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+static int dl_active(void) { return N.available && D.on && (!D.failed || D.fg_on); }
 
 static void dl_fail(const char *what, int32_t r) {
-    rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
+    rt_log("dlaa: %s failed (%08x): SR disabled until mode change", what, (unsigned)r);
     D.failed = 1;
+    D.jit_ok = 0; // SR failure must not stop independent FG guide production.
 }
 
 static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, VkImage *img, VmaAllocation *mem,
@@ -181,6 +183,7 @@ static int free_size(struct Size *e) {
         if (e->chars_view[i]) vkDestroyImageView(c->device, e->chars_view[i], NULL);
         if (e->chars[i]) vmaDestroyImage(c->vma, e->chars[i], e->chars_mem[i]);
     }
+    if (D.fg_last == e) D.fg_last = NULL;
     memset(e, 0, sizeof *e);
     return 1;
 }
@@ -190,7 +193,7 @@ int vk_dlaa_release(void) {
     for (int i = 0; i < 5; i++) {
         if ((D.sizes[i].out || D.sizes[i].rsf) && !free_size(&D.sizes[i])) return 0;
     }
-    D.last = NULL;
+    D.last = D.fg_last = NULL;
     return 1;
 }
 
@@ -719,7 +722,7 @@ static int ended_at(const VkExec *ex) {
 }
 
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
-    if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
+    if (!vk_dlaa_wanted() || D.failed || !D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
     D.ux = D.jx, D.uy = D.jy;
     __atomic_store_n(&D.jit_used, 1, __ATOMIC_RELAXED);
@@ -852,6 +855,11 @@ static rsf_srvk_image rsf_image(VkImage image, VkFormat format, unsigned w, unsi
     return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
 }
 
+static void rsf_provider_log(void *user, const char *message) {
+    (void)user;
+    if (rt_trace & (RT_TRACE_GFX | RT_TRACE_PRESENT)) rt_log("rsf: %s", message);
+}
+
 static rsf_frame_record scene_record(VkExec *ex, const struct Size *e, float jx, float jy) {
     uint64_t now = plat_now_ns();
     float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : 16.67f;
@@ -870,6 +878,8 @@ static rsf_frame_record scene_record(VkExec *ex, const struct Size *e, float jx,
             .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
             .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
             .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
+    if (!D.reset) memcpy(record.camera.previous_jitter_pixels, D.previous_record_jitter, sizeof D.previous_record_jitter);
+    D.previous_record_jitter[0] = jx; D.previous_record_jitter[1] = jy;
     memcpy(record.camera.view_to_clip, D.camera_matrices.view_to_clip, sizeof record.camera.view_to_clip);
     memcpy(record.camera.clip_to_view, D.camera_matrices.clip_to_view, sizeof record.camera.clip_to_view);
     memcpy(record.camera.world_to_view, D.camera_matrices.world_to_view, sizeof record.camera.world_to_view);
@@ -896,6 +906,7 @@ static void fg_prepare(VkExec *ex, struct Size *e, const rsf_frame_record *recor
     int result = vk_present_fg_prepare(cb, &frame);
     e->fg_record = *record;
     if (result) e->fg_record.frame_id = 0;
+    else D.fg_last = e; // accepted FG colour belongs here even if SR is pending
     rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vk_exec_draw_new_cb(ex);
@@ -939,11 +950,22 @@ static int rsf_scene(VkExec *ex, struct Size *e, int masked, const rsf_frame_rec
         if (!opened) { if (split) vk_sync_sr_cancel(); return 0; }
     }
     if (e->rsf_w != e->w || e->rsf_h != e->h) {
-        if (split) vk_sync_sr_cancel();
-        if (res_rsf_scene(e->rsf_w, e->rsf_h)) return RSF_SR_PENDING;
-        rt_log("rsf: provider requires %ux%u; scene %ux%u cannot be reconfigured within its heap budget",
-               e->rsf_w, e->rsf_h, e->w, e->h);
-        return 0;
+        int plan = res_rsf_scene(e->rsf_w, e->rsf_h);
+        unsigned output[2], scene[2];
+        res_sizes(output, scene);
+        if (plan && (plan != 2 || e->w != scene[0] || e->h != scene[1])) {
+            if (split) vk_sync_sr_cancel();
+            return RSF_SR_PENDING;
+        }
+        if (!plan) {
+            if (split) vk_sync_sr_cancel();
+            rt_log("rsf: provider recommends %ux%u; scene %ux%u cannot be reconfigured within its heap budget",
+                   e->rsf_w, e->rsf_h, e->w, e->h);
+            return RSF_SR_FAILED;
+        }
+        // The game has reached its normalized plan. Submit actual image/camera
+        // extents; a provider with no compatible input range must refuse them.
+
     }
     VkCommandBuffer cb = ex->cb;
     if (!e->sr_color) {
@@ -970,7 +992,7 @@ static int rsf_scene(VkExec *ex, struct Size *e, int masked, const rsf_frame_rec
         .depth = rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
         .motion = rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
         .output = rsf_image(e->out, VK_FORMAT_R16G16B16A16_SFLOAT, e->ow, e->oh, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
-        .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1};
+        .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1, .log = rsf_provider_log};
     if (masked) frame.bias_current_color = rsf_image(e->mask, VK_FORMAT_R8_UNORM, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rec_drain();
     uint64_t started = T.on > 0 ? kern_now_ns() : 0;
@@ -997,21 +1019,40 @@ static int rsf_scene(VkExec *ex, struct Size *e, int masked, const rsf_frame_rec
     return result;
 }
 
+// Previous-frame producer facts; the present boundary emits at most one line.
+static struct { unsigned stage, reason, camera, hudless, w, h, ow, oh, plan_w, plan_h; uint64_t source, shader; } producer_trace;
+static void producer_trace_frame(void) {
+    static unsigned previous = ~0u;
+    static uint64_t presents;
+    ++presents;
+    unsigned state = producer_trace.stage | (producer_trace.reason << 8) | (producer_trace.hudless << 16) |
+        ((unsigned)D.armed << 24) | ((unsigned)D.done << 25) | ((unsigned)D.ended << 26);
+    if ((rt_trace & RT_TRACE_PRESENT) && temporal_wanted() &&
+        (state != previous || !(presents % 300)))
+        rt_log("rsf: temporal producer source %llu stage %#x reason %u camera %#x armed %d done %d ended %d scene %ux%u output %ux%u provider plan %ux%u HUD-less gate %u shader %016llx",
+            (unsigned long long)producer_trace.source, producer_trace.stage, producer_trace.reason, producer_trace.camera,
+            D.armed, D.done, D.ended, producer_trace.w, producer_trace.h, producer_trace.ow, producer_trace.oh, producer_trace.plan_w, producer_trace.plan_h,
+            producer_trace.hudless, (unsigned long long)producer_trace.shader);
+    previous = state;
+    memset(&producer_trace, 0, sizeof producer_trace);
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
     if (!dst) dst = t;
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
+    producer_trace.stage |= 1; producer_trace.source = ex->source_frame;
+    producer_trace.w = w; producer_trace.h = h; producer_trace.ow = ow; producer_trace.oh = oh;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
         for (size_t i = 0; i < DLSS_SIZES; i++)
-            if (D.sizes[i].out && !free_size(&D.sizes[i])) return;
-        if (D.failed) return;
-        D.last = NULL, D.preset_dirty = 0;
+            if (D.sizes[i].out && !free_size(&D.sizes[i])) { producer_trace.reason = 5; return; }
+        D.last = D.fg_last = NULL, D.preset_dirty = 0;
     }
     struct Size *e = size_for(cb, w, h, ow, oh);
-    if (!e) return; // Retained SDK leases may become retireable after submission.
+    if (!e) { producer_trace.reason = 1; return; } // Retained SDK leases may become retireable after submission.
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
@@ -1038,7 +1079,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     rec_drain();   // RSF records directly: finish all scene and motion commands first
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    producer_trace.camera = (motion_ok ? 1u : 0u) | (D.projection_ok ? 2u : 0u) | (D.camera_matrices_ok ? 4u : 0u);
     if (!motion_ok || !D.projection_ok || !D.camera_matrices_ok) {
+        producer_trace.reason = 2;
         D.reset = 1;
         D.jit_ok = 0;
         if (motion_ok && ++D.invalid_camera == 1)
@@ -1047,7 +1090,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     }
     rsf_frame_record record = scene_record(ex, e, jx, jy);
     fg_prepare(ex, e, &record);
-    if (!vk_dlaa_wanted()) {
+    if (e->fg_record.frame_id == ex->source_frame && ex->source_frame) producer_trace.stage |= 2;
+    if (!vk_dlaa_wanted() || D.failed) {
+        producer_trace.stage |= 4;
         // FG needs scene depth and independent object motion even when the
         // native colour path is retained. Never inject temporal jitter here.
         D.last = e, e->used = ++D.guide_frames, D.jdepth = z->image;
@@ -1062,9 +1107,11 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         return;
     }
     int result = rsf_scene(ex, e, masked, &record);
+    producer_trace.plan_w = e->rsf_w; producer_trace.plan_h = e->rsf_h;
     cb = ex->cb; // the split service may have ended the scene producer
-    if (result == RSF_SR_PENDING) { D.reset = 1; D.jit_ok = 0; return; }
-    if (!result) return dl_fail("RSF evaluation", 0);
+    if (result == RSF_SR_PENDING) { producer_trace.reason = 3; D.reset = 1; D.jit_ok = 0; return; }
+    if (!result) { producer_trace.reason = 4; return dl_fail("RSF evaluation", 0); }
+    producer_trace.stage |= result == RSF_SR_FALLBACK ? 16u : 8u;
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording
     D.reset = result == RSF_SR_FALLBACK;
     D.last = e, e->used = D.evals + 1;
@@ -1249,23 +1296,37 @@ void vk_dlaa_pass(VkExec *ex) {
 // texture bias that goes with it while DLSS runs.
 static void dlss_mode(void) {
     static char mode[32];
-    static int bias_on = -1;
+    static int bias_on = -1, backend = -1;
+    static float applied_bias;
     if (!vk_dlaa_wanted()) {
         if (bias_on != 0) vk_sampler_dlss_bias(0.0f);
         bias_on = 0;
+        if (mode[0]) {
+            res_dlss_mode("off"); // restore requested native/render_scale policy
+            mode[0] = 0;
+            D.preset_dirty = D.reset = 1;
+        }
         return;
     }
+    int selected = cfg_int("TOTK_RSF_BACKEND");
     const char *m = cfg_value("TOTK_RSF_QUALITY");
     if (!strcmp(m, "native")) m = "dlaa";
-    if (strcmp(m, mode)) {
+    if (strcmp(m, mode) || backend != selected) {
+        backend = selected;
+        D.failed = 0;
+        D.jit_ok = D.jit_used = D.cam_prev_ok = 0;
         D.preset_dirty = 1;
         D.reset = 1;
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
         bias_on = -1;
     }
-    int b = dl_active() && vk_dlaa_wanted();
-    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
+    int b = dl_active() && vk_dlaa_wanted() && !D.failed;
+    float bias = b ? res_dlss_lod_bias() : 0.0f;
+    if (b != bias_on || bias != applied_bias) {
+        bias_on = b; applied_bias = bias;
+        vk_sampler_dlss_bias(bias);
+    }
 }
 
 
@@ -1284,6 +1345,7 @@ static void preset_check(void) {
 }
 
 void vk_dlaa_frame(void) {
+    producer_trace_frame();
     D.fg_on = N.available && cfg_int("TOTK_RSF_FG") != 0;
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
@@ -1353,17 +1415,26 @@ static uint64_t spirv_hash(const GfxShader *s) {
 
 void vk_dlaa_fg_after_draw(VkExec *ex, const GfxShader *fs) {
     if (!D.fg_on || !fs || !ex->source_frame || ex->chunked) return;
-    struct Size *e = D.last;
+    struct Size *e = D.fg_last;
     const VkExecTarget *t = &ex->color[0];
-    if (!e || e->fg_record.frame_id != ex->source_frame || e->fg_copied == ex->source_frame ||
-        ex->pass_ncolor != 1 || !t->image || t->width != e->gw || t->height != e->gh ||
-        !scene_color(t->format) || t->samples > 1 || t->is3d || t->level || t->base_layer || ex->pass_layers != 1) return;
+    if (!e || e->fg_record.frame_id != ex->source_frame || e->fg_copied == ex->source_frame) {
+        if (!producer_trace.hudless) producer_trace.hudless = 1;
+        return;
+    }
+    if (ex->pass_ncolor != 1 || !t->image || t->width != e->gw || t->height != e->gh ||
+        !scene_color(t->format) || t->samples > 1 || t->is3d || t->level || t->base_layer || ex->pass_layers != 1) {
+        if (!producer_trace.hudless) producer_trace.hudless = 2;
+        return;
+    }
     uint64_t hash = spirv_hash(fs);
+    producer_trace.shader = hash;
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= hash == FXAA_FS[i];
-    if (!known) return;
+    if (!known) { producer_trace.hudless = 3; return; }
     unsigned output[2];
-    if (!vk_present_fg_output(e->gw, e->gh, output) || output[0] != e->fw || output[1] != e->fh) return;
+    if (!vk_present_fg_output(e->gw, e->gh, output) || output[0] != e->fw || output[1] != e->fh) {
+        producer_trace.hudless = 4; return;
+    }
     VkCtx *c = vk_ctx();
     VkFormatProperties src, dst;
     vkGetPhysicalDeviceFormatProperties(c->phys, t->format, &src);
@@ -1404,6 +1475,7 @@ void vk_dlaa_fg_after_draw(VkExec *ex, const GfxShader *fs) {
         .hudless = rsf_image(e->fg_color, VK_FORMAT_R8G8B8A8_UNORM, e->gw, e->gh, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
     rec_drain();
     int result = vk_present_fg_hudless(cb, &frame);
+    producer_trace.hudless = result ? 6u : 5u;
     rsf_layout(cb, e->fg_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vk_exec_draw_new_cb(ex);
     vk_exec_pass_begin(ex);   // load the existing target for the next native draw
@@ -1454,7 +1526,7 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
     if (!known) return 0;
-    if (!ex->depth.image) return D.up;   // the scaling pass, which DLSS replaced
+    if (!ex->depth.image) return D.up && !D.fg_on;   // the scaling pass, which DLSS replaced
     if (!fxaa && !fx_found) {
         fx_found = 1;
         rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);
