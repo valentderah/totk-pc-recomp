@@ -172,8 +172,10 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without DLSS (no NGX, no RTX GPU, dlaa = 0) nothing reads last frame's blocks: P.on stays 0, no tables
-    if (!vk_dlaa_available()) return;
+    // RSF reconstruction owns these histories. Still process an off transition
+    // when availability disappears so stale object/bone blocks are discarded.
+    int available = vk_dlaa_available();
+    if (!available && P.on <= 0) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
@@ -186,10 +188,11 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && cfg_bool("TOTK_DLAA");
+    int on = available && P.knob && cfg_bool("TOTK_RSF_ENABLED");
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));
+        memset(P.last, 0, sizeof P.last);
         return;
     }
     if (P.on <= 0) return;
