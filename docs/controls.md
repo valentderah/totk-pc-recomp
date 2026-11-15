@@ -131,20 +131,21 @@ bind_Y = pad:north, key:mouse_l
 
 ## Free camera
 
-On game 1.4.3, ZL+ZR+L3 together (LT+RT+L3 on an Xbox pad; `freecam_pad` in `totk.ini` picks another combo, `none` none)
-detach the view from Link; the same combo brings it back. The world goes on, but the game gets no gamepad input while the
-free camera is on, so Link stands where he was.
+On game 1.4.3, ZL+ZR+L3 together (LT+RT+L3 on an Xbox pad) or F6 detach the view from Link; the same combo or key brings
+it back (`freecam_pad` and `freecam_key` in `totk.ini` and on the Controls tab pick others, `none` none). The world goes
+on, but the game gets no input while the free camera is on, so Link stands where he was.
 
-| Input | Free camera |
-|---|---|
-| Left stick | forward and back along the view, and sideways |
-| ZR / ZL (RT / LT) | straight up / down, by how far the trigger is pressed |
-| Right stick | turn (yaw and pitch; pitch stops 5 degrees short of straight up or down) |
-| R / L (RB / LB) | each press doubles / halves the speed, 0.25 to 512 m/s |
+| Gamepad | Keyboard and mouse (default bindings) | Free camera |
+|---|---|---|
+| Left stick | W A S D | forward and back along the view, and sideways |
+| ZR / ZL (RT / LT) | X / Z | straight up / down; a trigger by how far it is pressed |
+| Right stick | mouse, arrow keys | turn (yaw and pitch; pitch stops 5 degrees short of straight up or down) |
+| R / L (RB / LB) | R / Q | each press doubles / halves the speed, 0.25 to 512 m/s |
 
-The keys that drive the sticks (W A S D and the arrow keys by default) move it too. Each switch starts at the game
-camera's position and view at 8 m/s; the speed follows the clock, so it is the same at any frame rate and game speed.
-The horizon stays level.
+The keys are the ones bound to the left and right stick and to ZR, ZL, R and L (`bind_` lines), so remapped keys follow.
+The mouse turns the free camera at the game camera's rate (0.08 degrees a count at `mouse_sens = 1`) and the game's
+mouse camera gets none of it meanwhile. Each switch starts at the game camera's position and view at 8 m/s; the speed
+follows the clock, so it is the same at any frame rate and game speed. The horizon stays level.
 
 How it works (`runtime/freecam.c`): the camera component update (main+0x628460) copies each component's eye, target
 and up into its sead camera. The site `freecam` (`recomp/patches-v143.txt`, main+0x6286d4) runs before that copy and

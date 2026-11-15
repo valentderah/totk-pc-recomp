@@ -21,10 +21,11 @@
 // the anchor is driven. When no driven component has been updated for LOST_NS (a load replaced them) the next one
 // away from the default anchors again; the free camera keeps its own position.
 //
-// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD switches it, ZL+ZR+L3 by default. While it is on the game
-// gets no gamepad input; the left stick flies along the view and to the side, the triggers straight up and down, the
-// right stick turns, and each press of L or R halves or doubles the speed. Every driven component steps the flight by
-// the wall-clock time since the last step, so the speed is the same at any frame rate and game speed.
+// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD (ZL+ZR+L3 by default) or TOTK_FREECAM_KEY (F6) switches
+// it. While it is on the game gets no input; the left stick flies along the view and to the side, ZR and ZL straight
+// up and down, the right stick and the mouse turn, and each press of L or R halves or doubles the speed. Keys work
+// through their bindings: the keys' sticks, and the keys bound to ZL, ZR, L and R. Every driven component steps the
+// flight by the wall-clock time since the last step, so the speed is the same at any frame rate and game speed.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,6 +54,7 @@
 static PlatMutex pad_lock = PLAT_MUTEX_INIT;
 static FreecamPad pad_now;        // the last poll's input (input thread), under pad_lock
 static int speed_clicks;          // R presses minus L presses not yet applied (input thread adds, the hook takes)
+static double mouse_deg[2];       // under pad_lock: mouse turn not yet applied, degrees (right +, down +)
 // + 1 at every switch (input thread); odd while the free camera is on. One value, so the hook never sees a switch
 // without the state it switched to.
 static unsigned generation;
@@ -62,6 +64,13 @@ int freecam_on(void) { return __atomic_load_n(&generation, __ATOMIC_ACQUIRE) & 1
 void freecam_pad(const FreecamPad *p) {
     plat_mutex_lock(&pad_lock);
     pad_now = *p;
+    plat_mutex_unlock(&pad_lock);
+}
+
+void freecam_mouse(double right_deg, double down_deg) {
+    plat_mutex_lock(&pad_lock);
+    mouse_deg[0] += right_deg;
+    mouse_deg[1] += down_deg;
     plat_mutex_unlock(&pad_lock);
 }
 
@@ -164,8 +173,11 @@ static void step(uint64_t now) {
     if (dt <= 0) return;
     if (dt > STEP_MAX_S) dt = STEP_MAX_S;
     FreecamPad p;
+    double mouse[2];
     plat_mutex_lock(&pad_lock);
     p = pad_now;
+    mouse[0] = mouse_deg[0], mouse[1] = mouse_deg[1];
+    mouse_deg[0] = mouse_deg[1] = 0;
     plat_mutex_unlock(&pad_lock);
     int clicks = __atomic_exchange_n(&speed_clicks, 0, __ATOMIC_RELAXED);
     if (clicks) {
@@ -173,8 +185,9 @@ static void step(uint64_t now) {
         fc.speed = fc.speed < SPEED_MIN ? SPEED_MIN : fc.speed > SPEED_MAX ? SPEED_MAX : fc.speed;
     }
     double turn = TURN_DEG_S * M_PI / 180 * dt, limit = PITCH_MAX_DEG * M_PI / 180;
-    fc.yaw = remainder(fc.yaw - axis(p.rx) * turn, 2 * M_PI);   // right turns towards -yaw (see right[] below)
-    fc.pitch += axis(p.ry) * turn;
+    // right turns towards -yaw (see right[] below); the mouse's degrees come on top of the stick's
+    fc.yaw = remainder(fc.yaw - axis(p.rx) * turn - mouse[0] * M_PI / 180, 2 * M_PI);
+    fc.pitch += axis(p.ry) * turn - mouse[1] * M_PI / 180;
     fc.pitch = fc.pitch > limit ? limit : fc.pitch < -limit ? -limit : fc.pitch;
     double d[3], right[3];
     direction(d);
@@ -211,6 +224,9 @@ static void freecam_hook(Cpu *c) {
     if (gen != fc.generation) {     // a switch: a new flight starts at the game camera, at the start speed
         fc.generation = gen;
         fc.started = 0, fc.anchored = 0, fc.speed = SPEED_START;
+        plat_mutex_lock(&pad_lock);   // mouse motion from before the switch does not turn the new flight
+        mouse_deg[0] = mouse_deg[1] = 0;
+        plat_mutex_unlock(&pad_lock);
     }
     uint64_t now = plat_now_ns();
     int i = driven_index(cam);

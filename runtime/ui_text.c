@@ -363,6 +363,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
         "While it is on the game gets no input: the left stick flies along the view and sideways, the triggers up and "
         "down, the right stick turns, and each press of L or R halves or doubles the speed. Game version 1.4.3.",
     [UI_MENU_FREECAM_PAD_V143] = "Game version 1.4.3 only",
+    [UI_MENU_FREECAM_KEY] = "Free camera key",
+    [UI_MENU_FREECAM_KEY_DESC] = "A key that detaches the view from Link and brings it back. While it is on: W A S D "
+        "fly along the view and sideways, the keys bound to ZR and ZL (X and Z by default) up and down, the mouse and "
+        "the arrow keys turn, and the keys bound to L and R (Q and R) halve or double the speed. Game version 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Mouse wheel controls for Ultrahand rotation and distance, item and weapon switching, and smooth map zoom.",
@@ -979,6 +983,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
         "включена, игра не получает ввод: левый стик ведёт камеру вдоль взгляда и вбок, курки — вверх и вниз, правый "
         "стик поворачивает, а каждое нажатие L или R уменьшает или увеличивает скорость вдвое. Версия игры 1.4.3.",
     [UI_MENU_FREECAM_PAD_V143] = "Только для версии игры 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "Клавиша свободной камеры",
+    [UI_MENU_FREECAM_KEY_DESC] = "Клавиша, которая отделяет камеру от Линка и возвращает её. Пока она включена: W A S "
+        "D ведут камеру вдоль взгляда и вбок, клавиши ZR и ZL (по умолчанию X и Z) — вверх и вниз, мышь и стрелки "
+        "поворачивают, а клавиши L и R (Q и R) уменьшают или увеличивают скорость вдвое. Версия игры 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Геймплей",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Настройки геймплея",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Управление колесом мыши: вращение и дистанция предметов в Ультраруке, выбор оружия и предметов, плавный зум карты.",
@@ -1787,6 +1795,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
         "para os lados, os gatilhos sobem e descem, o analógico direito gira, e cada toque em L ou R reduz a "
         "velocidade à metade ou a dobra. Versão do jogo 1.4.3.",
     [UI_MENU_FREECAM_PAD_V143] = "Só na versão 1.4.3 do jogo",
+    [UI_MENU_FREECAM_KEY] = "Tecla da câmera livre",
+    [UI_MENU_FREECAM_KEY_DESC] = "Uma tecla que solta a câmera do Link e a traz de volta. Enquanto ela está ligada: W "
+        "A S D voam na direção da visão e para os lados, as teclas de ZR e ZL (X e Z por padrão) sobem e descem, o "
+        "mouse e as setas giram, e as teclas de L e R (Q e R) reduzem a velocidade à metade ou a dobram. Versão do "
+        "jogo 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Controles com a roda do mouse para rotação e distância na Ultramão, seleção de armas e itens, e zoom suave no mapa.",
@@ -2539,6 +2552,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FREECAM_PAD] = "自由镜头组合键",
     [UI_MENU_FREECAM_PAD_DESC] = "同时按下的手柄按键，让镜头脱离林克，再按一次回到林克。开启期间游戏不接收输入：左摇杆沿视线方向和左右移动，扳机键上升和下降，右摇杆转动视角，每按一次 L 或 R 速度减半或加倍。游戏版本 1.4.3。",
     [UI_MENU_FREECAM_PAD_V143] = "仅限游戏版本 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "自由镜头键",
+    [UI_MENU_FREECAM_KEY_DESC] = "让镜头脱离林克、再按一次回到林克的按键。开启期间：W A S D 沿视线方向和左右移动，ZR 和 ZL 对应的按键（默认 X 和 Z）上升和下降，鼠标和方向键转动视角，L 和 R 对应的按键（默认 Q 和 R）让速度减半或加倍。游戏版本 1.4.3。",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "游戏操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "启用操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "使用鼠标滚轮控制究极手物体旋转与距离、武器与道具切换以及地图平滑缩放。",

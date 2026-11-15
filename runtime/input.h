@@ -107,6 +107,7 @@ int freecam_on(void);
 void freecam_toggle(void);     // logs; input thread
 void freecam_pad(const FreecamPad *p);
 void freecam_speed_click(int faster);   // R (1) doubles the speed, L (0) halves it
+void freecam_mouse(double right_deg, double down_deg);   // a turn from the mouse, added at the next step
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
 // read off. 0 (and both 0) without a connected gamepad. Any thread.

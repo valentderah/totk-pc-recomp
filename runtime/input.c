@@ -267,7 +267,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
 
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_lock(&lock);
-    enabled = enabled && !g_block && !g_menu;
+    enabled = enabled && !g_block && !g_menu && !freecam_on();   // the free camera takes the mouse (freecam_gate)
     *dx = script_mouse[0]; *dy = script_mouse[1];
     script_mouse[0] = script_mouse[1] = 0;
     if (!enabled) { *dx = *dy = 0; }
@@ -830,17 +830,35 @@ static uint32_t freecam_pad_mask(void) {
     return mask;
 }
 
+// TOTK_FREECAM_KEY (live): the key that switches the free camera, f6 by default (the settings table), none for no key.
+// Under lock.
+static int freecam_key(void) {
+    static unsigned seen;
+    static int read, key;
+    unsigned v = cfg_version();
+    if (read && v == seen) return key;
+    read = 1, seen = v;
+    const char *s = cfg_value("TOTK_FREECAM_KEY");
+    key = !*s || !strcasecmp(s, "none") ? KEY_NONE : input_key_id(s);
+    if (key == KEY_NONE && *s && strcasecmp(s, "none"))
+        rt_log("input: TOTK_FREECAM_KEY=%s is not a key name (docs/controls.md)", s);
+    return key;
+}
+
 static float trigger_unit(int16_t v) {   // 0..1 past a 5 % dead zone
     float t = v / 32767.0f;
     return t < 0.05f ? 0 : (t - 0.05f) / 0.95f;
 }
 
 // The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down the free
-// camera switches once, and the buttons stay hidden from the game until all are released. While the free camera is on
-// it gets the gamepad (and the keys' sticks, merged into sl and sr) and the game gets nothing, so Link stands still;
-// each press of L or R is a speed click. Off for other updates and with the freecam patch set off. Under lock.
+// camera switches once, and the buttons stay hidden from the game until all are released; the free camera key
+// switches it on its press. While the free camera is on it gets the input and the game gets nothing, so Link stands
+// still: the sticks (the keys' sticks merged into sl and sr), the trigger axes or else ZL and ZR as buttons, a press of
+// L or R as a speed click, and the mouse's motion, which input_direct_mouse_sample then keeps from the game's camera.
+// ZL, ZR, L and R are the merged Switch buttons, so the keys bound to them count. Off for other updates and with the
+// freecam patch set off. Under lock.
 static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
-    static int held, available = -1, shoulder[2];
+    static int held, key_held, available = -1, shoulder[2];
     if (available < 0) available = freecam_available();
     uint32_t mask = available ? freecam_pad_mask() : 0, raw = 0;
     for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++)
@@ -851,14 +869,27 @@ static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
         held = 1;
         freecam_toggle();
     }
+    int key = available ? freecam_key() : KEY_NONE;
+    int key_down = key != KEY_NONE && ikb_foreground() && ikb_down(key);
+    if (key_down && !key_held) freecam_toggle();
+    key_held = key_down;
     if (available && freecam_on()) {
+        float lt = trigger_unit(trigger_seen[0]), rt = trigger_unit(trigger_seen[1]);
+        if (*b >> B_ZL & 1) lt = 1;
+        if (*b >> B_ZR & 1) rt = 1;
         FreecamPad fp = {sl[0] / (float)STICK_MAX, sl[1] / (float)STICK_MAX, sr[0] / (float)STICK_MAX,
-                         sr[1] / (float)STICK_MAX, trigger_unit(trigger_seen[0]), trigger_unit(trigger_seen[1])};
+                         sr[1] / (float)STICK_MAX, lt, rt};
         freecam_pad(&fp);
         for (int k = 0; k < 2; k++) {
-            int down = pad_seen[k ? PAD_R : PAD_L];
+            int down = (int)(*b >> (k ? B_R : B_L) & 1);
             if (down && !shoulder[k]) freecam_speed_click(k);
             shoulder[k] = down;
+        }
+        if (ikb_captured() && ikb_foreground() && input_cursor_allowed()) {
+            int32_t x, y;
+            ikb_mouse_take(&x, &y);   // what the stick emulation left (none in that mode: it is in sr already)
+            float deg = 0.08f * mouse_sens_get();   // the game camera's rate a count (mouse_direct.c DEG_PER_COUNT)
+            if (x || y) freecam_mouse(x * deg, y * deg);
         }
         *b = 0;
         sl[0] = sl[1] = sr[0] = sr[1] = 0;
