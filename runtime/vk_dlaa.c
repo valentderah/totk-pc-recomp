@@ -162,6 +162,16 @@ static void free_size(struct Size *e) {
     memset(e, 0, sizeof *e);
 }
 
+int vk_dlaa_release(void) {
+    rec_drain();
+    for (int i = 0; i < 5; i++) {
+        if (D.sizes[i].out || D.sizes[i].rsf) free_size(&D.sizes[i]);
+        if (D.sizes[i].rsf) return 0;
+    }
+    D.last = NULL;
+    return 1;
+}
+
 // The entry for a scene and output size: its output (RGBA16F at the output size, written by DLSS, then blitted into
 // the target) and motion vectors (RG16F at the scene size, render pixels), both kept in GENERAL like every image of the
 // back end. TotK's dynamic resolution switches between a few sizes; each keeps its feature, the least recently used

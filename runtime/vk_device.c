@@ -440,7 +440,19 @@ static int create_device(void) {
                                           .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
         nqi = 2;
     }
-    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
+    // RSF may enable provider-specific nodes. Give it a separate copy of our
+    // queried feature chain; rebase links into that copy before passing it out.
+    FeatureChain enabled = *c;
+    for (VkBaseOutStructure *node = (VkBaseOutStructure *)c; node; node = node->pNext) {
+        VkBaseOutStructure *copy = (void *)((char *)&enabled + ((char *)node - (char *)c));
+        copy->pNext = node->pNext ? (void *)((char *)&enabled + ((char *)node->pNext - (char *)c)) : NULL;
+    }
+    void *enabled_features = &enabled.f2;
+    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, ext, &n_ext, 48, &enabled_features)) {
+        free(c);
+        return 0;
+    }
+    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = enabled_features, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
     free(c);
@@ -484,6 +496,8 @@ static long g_errors_total;     // outlives the device so the probe can print it
 static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.device && !vk_dlaa_release()) return;
+    if (!rsf_vk_shutdown()) return;
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();

@@ -5,10 +5,57 @@
 #include "host.h"
 #include <rescaleframe/native_streamline_vulkan.h>
 #include <rescaleframe/native_latency_vulkan.h>
+#include <rescaleframe/native_latency_vulkan_requirements.h>
+#include <string.h>
 
 static int prepared, active;
 static VkInstance primary_instance;
 static __typeof__(&rsf_latencyvk_instance_proc) instance_resolver;
+static int stopped;
+
+int rsf_vk_shutdown(void) {
+    if (stopped || prepared <= 0 || !cfg_get("TOTK_RSF_RUNTIME")) return 1;
+    __typeof__(&rsf_latencyvk_shutdown) shutdown = rsf_runtime_symbol("rsf_latencyvk_shutdown");
+    int32_t result = shutdown ? shutdown() : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
+    if (result != RSF_BACKEND_OK) {
+        rt_log("rsf: SDK shutdown refused (%d); retain Vulkan owners", result);
+        return 0;
+    }
+    stopped = 1;
+    return 1;
+}
+
+static rsf_vk_function generic_instance_proc(void *instance, const char *name) {
+    return (rsf_vk_function)rsf_vk_instance_proc(instance, name);
+}
+
+int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
+    const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features) {
+    *enabled_features = features;
+    if (!cfg_get("TOTK_RSF_RUNTIME")) return 1;
+    __typeof__(&rsf_latencyvk_require_device) require = rsf_runtime_symbol("rsf_latencyvk_require_device");
+    if (!require) { rt_log("rsf: missing Vulkan device-requirements service"); return 0; }
+    rsf_latencyvk_device_query query = {.struct_size = sizeof query, .abi_version = 1,
+        .instance = primary_instance, .physical_device = physical,
+        .instance_proc = generic_instance_proc, .features = features};
+    rsf_latencyvk_device_requirements requirements = {.struct_size = sizeof requirements, .abi_version = 1};
+    int32_t result = require(&query, &requirements);
+    if (result != RSF_BACKEND_OK) {
+        rt_log("rsf: Vulkan device requirements refused (%d)", result);
+        return 0;
+    }
+    for (uint32_t i = 0; i < requirements.extension_count; i++) {
+        const char *extension = requirements.extensions[i];
+        int found = 0;
+        for (uint32_t k = 0; k < *count; k++) found |= !strcmp(extensions[k], extension);
+        if (!found) {
+            if (*count == capacity) { rt_log("rsf: device extension list is full"); return 0; }
+            extensions[(*count)++] = extension;
+        }
+    }
+    *enabled_features = requirements.features;
+    return 1;
+}
 
 int rsf_vk_prepare(void) {
     if (prepared) return prepared > 0;
@@ -58,5 +105,23 @@ VkResult rsf_vk_create_instance(const VkInstanceCreateInfo *info, const VkAlloca
 VkResult rsf_vk_create_device(VkPhysicalDevice physical, const VkDeviceCreateInfo *info,
                              const VkAllocationCallbacks *allocator, VkDevice *out) {
     PFN_vkCreateDevice create = (PFN_vkCreateDevice)rsf_vk_instance_proc(primary_instance, "vkCreateDevice");
-    return create ? create(physical, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
+    VkResult result = create ? create(physical, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
+    if (result == VK_SUCCESS && cfg_get("TOTK_RSF_RUNTIME")) {
+        __typeof__(&rsf_latencyvk_device_created) created = rsf_runtime_symbol("rsf_latencyvk_device_created");
+        if (created) {
+            rsf_latencyvk_created_device event = {.struct_size = sizeof event, .abi_version = 1,
+                .instance = primary_instance, .physical_device = physical, .device = *out,
+                .instance_proc = generic_instance_proc, .create_info = info};
+            int32_t status = created(&event);
+            if (status != RSF_BACKEND_OK) rt_log("rsf: latency device registration refused (%d)", status);
+        }
+    }
+    return result;
+}
+
+void rsf_vk_destroy_device(VkDevice device, const VkAllocationCallbacks *allocator) {
+    __typeof__(&rsf_latencyvk_device_destroyed) destroyed = rsf_runtime_symbol("rsf_latencyvk_device_destroyed");
+    if (destroyed) destroyed(device);
+    PFN_vkDestroyDevice destroy = (PFN_vkDestroyDevice)rsf_vk_device_proc(device, "vkDestroyDevice");
+    if (destroy) destroy(device, allocator);
 }

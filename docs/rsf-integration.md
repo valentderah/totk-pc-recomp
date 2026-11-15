@@ -50,6 +50,16 @@ The earlier shared build returned NOT_SUPPORTED because its implementation had
 been compiled out without the corrected receipt.
 This does not establish FG WSI ownership or a low-latency input-event producer.
 
+The device creation path now offers RSF a writable, rebased copy of the renderer's
+feature chain, merges its required extensions, and reports the successful create
+info. Device destruction notifies RSF. The startup probe now exercises real device
+creation too: instance and device creation succeed; latency device registration
+reports NOT_SUPPORTED on the probed adapter. SDK shutdown before device destruction
+passes. The earlier order (device destruction before SDK shutdown) triggered an SDK
+shutdown exception. Renderer teardown now drains/releases SR owners and shuts RSF
+down before destroying Vulkan owners, retaining them if checked cleanup fails.
+These are device-lifecycle results, not evidence of working low-latency markers.
+
 The pinned corrected Streamline SDK now builds successfully under
 `build/rsf-sdk-host/artifacts/rescaleframe/streamline/Release/win-x64/runtime`.
 The original NVIDIA plugins are staged there from the SHA-512-pinned 2.14.1
