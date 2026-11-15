@@ -14,6 +14,8 @@ native code into the process and retains the module until exit; restart to chang
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
 | `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `4` FSR4, `5` XeSS. Restart required. FSR4 uses the external timeline split adapter; its device acceptance is still in progress. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
+| `dlaa_objmv` (default `1`) | Per-object and deformation motion history for supported shaders. Selectable as Object motion under Upscaling & Framegen; restart required. Missing history keeps camera motion. | Retained snapshot memory and motion replay. | Caution |
+| `rsf_fg` (default `0`) | Experimental frame generation: `0` off, `1` DLSS, `3` FSR3, `4` FSR4, `5` XeSS. Selectable from Upscaling & Framegen; restart required. Unsupported inputs retain ordinary presentation. | Extra GPU work and provider resources. | Caution |
 | `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 | `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
 | `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
@@ -21,7 +23,7 @@ native code into the process and retains the module until exit; restart to chang
 
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
-| `rsf_runtime` | Absolute path to the experimental RSF runtime DLL; validates native Vulkan service exports before provider setup. Default unset. | Loads native code and retains the module until exit; restart to change. Rendering migration remains pending. | Caution |
+| `rsf_runtime` | Absolute path to the experimental RSF runtime DLL; validates native Vulkan service exports before provider setup. Default unset. | Loads native code and retains the module until exit; restart to change. Provider setup depends on the selected mode and GPU. | Caution |
 
 - **Safe**: changes only what the row says, with no effect on stability or saves.
 - **Caution**: can slow the game, grow files, or change the picture, and undoes cleanly when removed.

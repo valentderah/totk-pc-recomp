@@ -20,8 +20,9 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
-- NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
-  (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
+- Experimental DLSS, FSR and XeSS upscaling, frame generation and low latency through
+  [ReScaleFrame](https://github.com/KillerPixelCrew/ReScaleFrame), with controls under **Upscaling & Framegen**.
+  Requires the complete runtime package; available modes depend on the GPU.
 - HDR10 output with peak, game and HUD brightness settings
 - 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance

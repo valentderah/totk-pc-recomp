@@ -7,9 +7,7 @@
  "step.prepare": "Preparando os shaders",
  "step.pc_prompts": "Desenhando os ícones de teclado e mouse",
  "step.shapes": "Ajustando as telas do jogo aos seus monitores",
- "step.dlss": "Baixando o NVIDIA DLSS",
  "step.cleanup": "Finalizando",
-
  "phase.check.host": "Verificando o processador e a placa de vídeo",
  "phase.check.verify": "Verificando os arquivos já instalados",
  "phase.check.verify_romfs": "Verificando os dados do jogo instalados",
@@ -37,16 +35,13 @@
  "phase.prepare.libraries": "Montando os shaders para o driver de vídeo",
  "phase.prepare.pack": "Juntando o cache de shaders num único arquivo",
  "phase.shapes.layouts": "Gravando os layouts de tela e os botões para cada formato de monitor",
- "phase.dlss.download": "Baixando o nvngx_dlss.dll do DLSS SDK da NVIDIA",
  "phase.cleanup.ini": "Gravando o totk.ini",
  "phase.cleanup.temp": "Removendo os arquivos temporários",
-
  "cli.usage": "Linha de comando inválida: {detail}",
  "internal": "Erro inesperado ({exception}): {detail}",
  "state.unreadable": "Não foi possível ler {path}. Escolha outra pasta ou apague esse arquivo.",
  "state.newer_format": "{path} foi gravado por um instalador mais novo. Use esse instalador ou outra pasta.",
  "state.output_changed": "Os arquivos instalados da etapa '{step}' mudaram desde que foram criados; essa etapa será executada de novo.",
-
  "check.release_incomplete": "A pasta do instalador está incompleta; faltam: {paths}. Extraia o pacote de novo.",
  "check.dest_not_folder": "O local de instalação {path} é um arquivo, não uma pasta.",
  "check.dest_not_empty": "A pasta de instalação {path} não está vazia e não tem uma instalação anterior. Escolha uma pasta vazia.",
@@ -85,7 +80,6 @@
  "check.firmware_missing": "A pasta de firmware {path} não existe. Escolha a pasta Contents/registered do firmware.",
  "check.firmware_empty": "A pasta de firmware {path} não contém arquivos NCA. Escolha a pasta Contents/registered do firmware.",
  "check.fonts_keys_needed": "As fontes compartilhadas deste idioma ainda não estão instaladas; escolha o prod.keys para que a instalação possa extraí-las do firmware.",
-
  "extract.exefs_mismatch": "O código do jogo extraído não corresponde à versão {version} ({modules}).",
  "extract.romfs_merge_failed": "Falha ao aplicar a atualização aos dados do jogo: {detail}. Detalhes: {log}",
  "extract.romfs_mismatch": "Os dados do jogo extraídos não correspondem à versão {version} (tamanho {size}, checksum {sha256}...).",
@@ -103,7 +97,6 @@
  "cleanup.romfs_unreadable": "Os dados do jogo em {path} estão faltando ou não podem ser lidos depois da instalação. Reinicie o Windows e execute o instalador de novo na mesma pasta: ele extrai os dados do jogo outra vez e mantém o resto.",
  "prepare.pack_failed": "Falha ao juntar o cache de shaders (código de saída {code}). Detalhes: {log}",
  "cleanup.ini_failed": "Não foi possível gravar o totk.ini: {detail}",
-
  "warn.lang_needs_fonts": "Textos em {lang} precisam das fontes de sistema do Switch, e nenhuma foi informada. O jogo não inicia neste idioma até que sejam adicionadas. Escolha a pasta do firmware (Contents/registered) ou veja \"Switch system fonts\" em docs/installer.md.",
  "warn.cheats_skipped": "Não foi possível compilar os cheats da pasta de mods que alteram o código do jogo; o jogo é instalado sem eles. Detalhes: {log}",
  "warn.exefs_skipped": "Não foi possível compilar os patches ExeFS dos mods (.ips, .pchtxt); o jogo é instalado sem eles. Detalhes: {log}",
@@ -111,9 +104,6 @@
  "warn.xbox_prompts_failed": "Não foi possível preparar os ícones de botão do Xbox ou do PC (código de saída {code}); o jogo mantém os ícones do Switch. Detalhes: {log}",
  "warn.shaders_skipped": "O driver gráfico travou ao compilar alguns shaders, então {count} ficaram fora da preparação. O jogo os compila quando precisar deles pela primeira vez, e o driver pode travar ali também; uma atualização do driver pode resolver. Detalhes: {log}",
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
- "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",
- "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
-
  "ui.title": "Instalação do TotK",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
  "ui.start_game": "Iniciar o jogo",
@@ -134,8 +124,6 @@
  "ui.pick_firmware": "Escolha a pasta de firmware do Switch (Contents/registered)",
  "ui.pick_dest": "Escolha a pasta de instalação",
  "ui.firmware_help": "Para textos em chinês, coreano e chinês tradicional: a pasta Contents/registered do firmware, por exemplo do Ryujinx ou do Yuzu. A instalação copia dela as fontes do sistema do Switch para a pasta de instalação.",
- "ui.dlss": "Baixar o NVIDIA DLSS (nvngx_dlss.dll) para placas de vídeo NVIDIA RTX",
- "ui.dlss_help": "Do DLSS SDK da NVIDIA no GitHub, sob a licença NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Sem ele as opções dlaa e DLSS não fazem nada.",
  "ui.compressed_help": "Arquivos compactados NSZ e XCZ funcionam do jeito que estão: a instalação os descompacta sozinha (para isso, até os dados do jogo serem extraídos, ela precisa de tanto espaço livre quanto ocupam os arquivos descompactados).",
  "ui.type_game": "Arquivos de jogo (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Arquivos de chaves (*.keys)",
@@ -190,10 +178,8 @@
  "param.input.base": "jogo base",
  "param.input.update": "atualização",
  "param.input.keys": "chaves",
-
  "launcher.title": "Instalação do TotK",
  "launcher.python_missing": "Os arquivos de instalação estão incompletos: a pasta python ao lado do TotK-Setup.exe não existe. Extraia o arquivo compactado inteiro de novo e abra o TotK-Setup.exe a partir da pasta extraída.",
-
  "lang.ja": "Japonês",
  "lang.en-US": "Inglês (EUA)",
  "lang.en-GB": "Inglês (Reino Unido)",
@@ -209,5 +195,13 @@
  "lang.ru": "Russo",
  "lang.ko": "Coreano",
  "lang.zh-Hans": "Chinês (Simplificado)",
- "lang.zh-Hant": "Chinês (Tradicional)"
+ "lang.zh-Hant": "Chinês (Tradicional)",
+ "step.rsf": "Instalando o runtime local de renderização",
+ "phase.rsf.copy": "Validando e copiando o pacote RSF completo",
+ "rsf.invalid": "Pacote RSF local inválido {path}: {detail}. O pacote existente e os backups são mantidos.",
+ "ui.rsf": "Pacote RSF local opcional (todos os fabricantes de GPU)",
+ "ui.rsf_help": "Selecione um pacote completo com manifest.json. Sem download. Campo vazio mantém o runtime existente; a apresentação nativa funciona sem pacote. Este pacote de validação de desenvolvimento não comprova suporte de hardware nem prontidão para lançamento e distribuição do código-fonte.",
+ "ui.rsf_clear": "Limpar",
+ "ui.pick_rsf": "Selecione a pasta do pacote RSF local",
+ "ui.missing_rsf": "A pasta do pacote RSF local não existe."
 }

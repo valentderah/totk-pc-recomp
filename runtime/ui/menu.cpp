@@ -733,11 +733,17 @@ static void tab_screen(float scale) {
     static const UiTextId quality[] = {UI_MENU_RSF_NATIVE, UI_MENU_RSF_QUALITY_VALUE, UI_MENU_RSF_BALANCED,
                                       UI_MENU_RSF_PERFORMANCE, UI_MENU_RSF_ULTRA};
     opt_choice("TOTK_RSF_QUALITY", UI_MENU_RSF_QUALITY, quality, 5, UI_MENU_RSF_QUALITY_DESC);
+    if (cfg_int("TOTK_RSF_BACKEND") == 1) {
+        static const UiTextId models[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
+        opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, models, 3, UI_MENU_DLSS_PRESET_DESC);
+    }
+    opt_toggle("TOTK_DLAA_OBJMV", UI_MENU_RSF_OBJECT_MOTION, UI_MENU_RSF_OBJECT_MOTION_DESC);
+    static const UiTextId character_history[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT,
+                                                UI_MENU_DLSS_CHARS_MEDIUM, UI_MENU_DLSS_CHARS_FULL};
+    opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_RSF_CHARACTER_HISTORY, character_history, 4,
+               UI_MENU_RSF_CHARACTER_HISTORY_DESC);
     static const char *const fg[] = {"0", "1", "3", "4", "5"};
     const char *fg_names[] = {menu_text(UI_MENU_OFF), "DLSS", "FSR 3", "FSR 4", "XeSS"};
-    // Keep general admission closed; explicitly opted-in sessions can change/save providers.
-    static const bool fg_experimental = cfg_int("TOTK_RSF_FG") != 0;
-    if (!fg_experimental) opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
     opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
     static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 3, UI_MENU_RSF_LATENCY_DESC);

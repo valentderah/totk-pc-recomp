@@ -7,9 +7,7 @@
  "step.prepare": "Preparing the shaders",
  "step.pc_prompts": "Drawing the keyboard and mouse prompts",
  "step.shapes": "Laying out the game screens for your displays",
- "step.dlss": "Downloading NVIDIA DLSS",
  "step.cleanup": "Cleaning up",
-
  "phase.check.host": "Checking the processor and the graphics card",
  "phase.check.verify": "Checking the files already installed",
  "phase.check.verify_romfs": "Checking the installed game data",
@@ -37,16 +35,13 @@
  "phase.prepare.libraries": "Building the shaders for the graphics driver",
  "phase.prepare.pack": "Packing the shader cache into one file",
  "phase.shapes.layouts": "Writing the screen layouts and button prompts for each display shape",
- "phase.dlss.download": "Downloading nvngx_dlss.dll from NVIDIA's DLSS SDK",
  "phase.cleanup.ini": "Writing totk.ini",
  "phase.cleanup.temp": "Removing temporary files",
-
  "cli.usage": "Invalid command line: {detail}",
  "internal": "Unexpected error ({exception}): {detail}",
  "state.unreadable": "{path} cannot be read. Choose another folder or delete that file.",
  "state.newer_format": "{path} was written by a newer installer. Use that installer or another folder.",
  "state.output_changed": "Installed files of step '{step}' changed since they were made; that step runs again.",
-
  "check.release_incomplete": "The installer folder is incomplete; missing: {paths}. Unpack the release again.",
  "check.dest_not_folder": "The install location {path} is a file, not a folder.",
  "check.dest_not_empty": "The install folder {path} is not empty and holds no earlier installation. Choose an empty folder.",
@@ -85,7 +80,6 @@
  "check.firmware_missing": "The firmware folder {path} does not exist. Choose the firmware's Contents/registered folder.",
  "check.firmware_empty": "The firmware folder {path} holds no NCA files. Choose the firmware's Contents/registered folder.",
  "check.fonts_keys_needed": "The shared fonts for this language are not installed yet; choose prod.keys so the setup can extract them from the firmware.",
-
  "extract.exefs_mismatch": "The extracted game code does not match version {version} ({modules}).",
  "extract.romfs_merge_failed": "Applying the update to the game data failed: {detail}. Details: {log}",
  "extract.romfs_mismatch": "The extracted game data does not match version {version} (size {size}, checksum {sha256}...).",
@@ -103,7 +97,6 @@
  "cleanup.romfs_unreadable": "The game data in {path} is missing or cannot be read after the install. Restart Windows, then run the installer again on the same folder: it extracts the game data again and keeps the rest.",
  "prepare.pack_failed": "Packing the shader cache failed (exit code {code}). Details: {log}",
  "cleanup.ini_failed": "totk.ini cannot be written: {detail}",
-
  "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts, and none were given. The game will not start in this language until they are added. Choose the firmware folder (Contents/registered), or see \"Switch system fonts\" in docs/installer.md.",
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.cheats_skipped": "The cheats of the mods folder that change the game's code could not be built; the game installs without them. Details: {log}",
@@ -111,9 +104,6 @@
  "warn.xbox_prompts_failed": "The Xbox or PC button prompts could not be prepared (exit code {code}); the game keeps the Switch prompts. Details: {log}",
  "warn.shaders_skipped": "The graphics driver crashed while building some shaders, so {count} were left out of the preparation. The game builds them when it first needs them, and the driver may crash there too; a driver update may fix it. Details: {log}",
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
- "warn.dlss_kept": "A DLSS library is already in the install folder ({path}); the setup keeps it.",
- "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
-
  "ui.title": "TotK Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",
  "ui.start_game": "Start the game",
@@ -134,8 +124,6 @@
  "ui.pick_firmware": "Choose the Switch firmware folder (Contents/registered)",
  "ui.pick_dest": "Choose the install folder",
  "ui.firmware_help": "For Chinese, Korean and Traditional Chinese text: the firmware's Contents/registered folder, for example from Ryujinx or Yuzu. The setup copies the Switch system fonts from it into the install folder.",
- "ui.dlss": "Download NVIDIA DLSS (nvngx_dlss.dll) for NVIDIA RTX graphics cards",
- "ui.dlss_help": "From NVIDIA's DLSS SDK on GitHub, under NVIDIA's RTX SDK license (github.com/NVIDIA/DLSS). It makes the dlaa and DLSS settings work; without it they do nothing.",
  "ui.compressed_help": "Compressed NSZ and XCZ files work as they are: the setup unpacks them by itself (until the game data is extracted, that needs as much free space as the unpacked files take).",
  "ui.type_game": "Game files (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Key files (*.keys)",
@@ -190,10 +178,8 @@
  "param.input.base": "base game",
  "param.input.update": "update",
  "param.input.keys": "keys",
-
  "launcher.title": "TotK Setup",
  "launcher.python_missing": "The setup files are incomplete: the python folder next to TotK-Setup.exe is missing. Unpack the whole archive again and start TotK-Setup.exe from the unpacked folder.",
-
  "lang.ja": "Japanese",
  "lang.en-US": "English (US)",
  "lang.en-GB": "English (UK)",
@@ -209,5 +195,13 @@
  "lang.ru": "Russian",
  "lang.ko": "Korean",
  "lang.zh-Hans": "Chinese (Simplified)",
- "lang.zh-Hant": "Chinese (Traditional)"
+ "lang.zh-Hant": "Chinese (Traditional)",
+ "step.rsf": "Installing local rendering runtime",
+ "phase.rsf.copy": "Validating and copying the complete RSF package",
+ "rsf.invalid": "Invalid local RSF package {path}: {detail}. Existing package and backups are retained.",
+ "ui.rsf": "Optional local RSF package (all GPU vendors)",
+ "ui.rsf_help": "Select a complete package folder containing manifest.json. No download. Empty keeps the existing runtime unchanged; native presentation works without a package. This development validation package does not establish hardware support or release/source-distribution readiness.",
+ "ui.rsf_clear": "Clear",
+ "ui.pick_rsf": "Select local RSF package folder",
+ "ui.missing_rsf": "The local RSF package folder does not exist."
 }

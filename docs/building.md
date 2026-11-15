@@ -53,11 +53,13 @@ hactool reads `-k <prod.keys>`; MSYS2 shells set `HOME`, which hides its default
 
 ## Build
 
-The RSF integration consumes SDK headers from a separate ReScaleFrame checkout.
-By default it uses the sibling `ReScaleFrame` directory. Set `TOTK_RSF_SOURCE` to
-its absolute path when it lives elsewhere. The build reads its orchestrator,
-contract and game SDK include directories; it does not copy RSF source into this
-repository. The runtime DLL is loaded separately through `rsf_runtime`.
+The RSF integration reads SDK headers from the pinned `external/ReScaleFrame`
+submodule. Initialize it with `git submodule update --init external/ReScaleFrame`.
+Set `TOTK_RSF_SOURCE` to an absolute checkout path for runtime development. The
+build reads its orchestrator, contract and game SDK include directories without
+copying RSF implementation into this repository. Release installers linking a
+prebuilt host runtime do not need the SDK checkout. The separate runtime package
+lives under `ReScaleFrame/` beside the executable; `rsf_runtime` overrides its DLL.
 
 From the repository root, in PowerShell. Every step that depends on the game version takes it as `<ver>`: `v143` for
 1.4.3, `v121` for 1.2.1 or `v110` for 1.1.0. The tools default to `v121` when `--version` is left out. Saves load on any

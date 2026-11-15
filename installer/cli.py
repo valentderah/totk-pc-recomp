@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss]
+                                     [--root DIR] [--temp DIR] [--verify] [--rsf-package DIR | --no-rsf]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -8,8 +8,8 @@ release) only --dest is needed: --lang defaults to the recorded language, and th
 extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed, 2 bad command
 line, 3 cancelled (Ctrl+C or Ctrl+Break).
 
---dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
-Windows with an NVIDIA RTX GPU (steps.py, Dlss).
+--rsf-package installs a validated complete local RSF runtime package for all vendors. With no override, a bundled
+ReScaleFrame folder is used when present. No package is required for native presentation; --no-rsf keeps it unchanged.
 """
 import argparse
 import hashlib
@@ -61,10 +61,14 @@ def main(argv=None):
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
                                               'the install folder on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
-    ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
-                                                      'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--dlss', action='store_true', help='deprecated: use --rsf-package DIR for a complete local runtime')
+    package = ap.add_mutually_exclusive_group()
+    package.add_argument('--rsf-package', type=Path, help='complete local RSF package folder (manifest.json)')
+    package.add_argument('--no-rsf', action='store_true', help='leave any existing runtime unchanged; native presentation is valid')
     args = ap.parse_args(argv)
 
+    if args.dlss:
+        ap.error('--dlss no longer downloads NGX; use --rsf-package DIR or omit it for native presentation')
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
     # the tools it runs; Python's default for it ends the process without recording anything.
     for name in ('SIGBREAK', 'SIGTERM'):
@@ -75,7 +79,7 @@ def main(argv=None):
     base = args.temp or layout.temp
     temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
-    rep = Reporter(log_path=log)
+    rep = Reporter()  # Preflight must not create even an install-local log directory.
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)
@@ -84,6 +88,22 @@ def main(argv=None):
         rep.emit('end', result='failed', seconds=0)
         return 1
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
+    from .steps import rsf_source, rsf_package
+    source = rsf_source(ctx)
+    if source is not None:
+        try:
+            rsf_package.validate(source)
+            existing = dest / 'ReScaleFrame'
+            if existing.exists() or existing.is_symlink():
+                rsf_package.validate(existing)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            rep.error('rsf.invalid', {'path': str(source), 'detail': str(error)})
+            rep.emit('end', result='failed', seconds=0)
+            rep.close()
+            return 1
+    rep.close()
+    rep = Reporter(log_path=log)
+    ctx.reporter = rep
     migrate_state(ctx)
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),

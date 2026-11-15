@@ -234,7 +234,7 @@ class FormTest(unittest.TestCase):
         self.assertTrue(form.update_mode())
         self.assertEqual(form.problems(), [])
         cmd = form.command('py.exe')
-        self.assertEqual(cmd, ['py.exe', '-m', 'installer', '--dest', str(out)])
+        self.assertEqual(cmd, ['py.exe', '-m', 'installer', '--dest', str(out), '--no-rsf'])
 
     def test_installed_folder_still_checks_given_files(self):
         out = self.dir / 'out'
@@ -245,6 +245,18 @@ class FormTest(unittest.TestCase):
         out = self._mkdir(self.dir / 'out')
         (out / statefile.NAME).write_text('{nope', encoding='utf-8')
         self.assertFalse(Form(dest=str(out)).update_mode())
+
+    def test_local_runtime_folder_selector_and_clear_arguments(self):
+        package = self._mkdir(self.dir / 'ReScaleFrame')
+        form = self.form(rsf_package=str(package))
+        self.assertEqual(form.problems(), [])
+        command = form.command('python')
+        self.assertEqual(command[command.index('--rsf-package') + 1], str(package))
+        self.assertNotIn('--dlss', command)
+        form.rsf_package = ''
+        self.assertIn('--no-rsf', form.command('python'))
+        form.rsf_package = str(self.dir / 'missing')
+        self.assertIn('ui.missing_rsf', form.problems())
 
     @staticmethod
     def _mkdir(path):

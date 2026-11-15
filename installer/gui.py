@@ -267,12 +267,18 @@ class App:
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(dpi.px(8), 0))
         self.label(f, 'ui.compressed_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
         self.label(f, 'ui.firmware_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        # On by default and named with its source and licence: the player sees what is downloaded and can untick it
-        self.dlss_var = tk.BooleanVar(value=True)
-        dlss = ttk.Checkbutton(f, variable=self.dlss_var)
-        self.bind_text(dlss, 'text', 'ui.dlss')
-        dlss.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.dlss_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
+        bundled = self.layout.root / 'ReScaleFrame'
+        selected = self.run_args.get('rsf_package')
+        if selected is None and not self.run_args.get('no_rsf'):
+            selected = (self.rebuild / 'ReScaleFrame') if self.rebuild and (self.rebuild / 'ReScaleFrame/manifest.json').is_file() else bundled if bundled.is_dir() else ''
+        self.rsf_var = tk.StringVar(value=str(selected or ''))
+        self.label(f, 'ui.rsf', wraplength=WRAP).pack(anchor='w', pady=(dpi.px(8), 0))
+        runtime_row = ttk.Frame(f)
+        runtime_row.pack(fill='x')
+        ttk.Entry(runtime_row, textvariable=self.rsf_var).pack(side='left', fill='x', expand=True)
+        self.button(runtime_row, 'ui.browse', self.pick_rsf).pack(side='left')
+        self.button(runtime_row, 'ui.rsf_clear', lambda: self.rsf_var.set('')).pack(side='left')
+        self.label(f, 'ui.rsf_help', wraplength=WRAP, justify='left').pack(anchor='w')
         self.update_hint = ttk.Label(f, wraplength=WRAP, justify='left')
         self.update_hint.pack(anchor='w', pady=(dpi.px(8), 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
@@ -344,7 +350,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    rsf_package=self.rsf_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -397,6 +403,11 @@ class App:
         path = filedialog.askdirectory(title=self.cat('ui.pick_firmware'), mustexist=True)
         if path:
             self.vars['firmware'].set(os.path.normpath(path))
+
+    def pick_rsf(self):
+        path = filedialog.askdirectory(title=self.cat('ui.pick_rsf'), mustexist=True)
+        if path:
+            self.rsf_var.set(path)
 
     def pick_dest(self):
         path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False)
@@ -619,7 +630,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'rsf', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},
@@ -740,13 +751,16 @@ def main(argv=None):
     ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
     ap.add_argument('--rebuild', type=Path)
+    package = ap.add_mutually_exclusive_group()
+    package.add_argument('--rsf-package', type=Path)
+    package.add_argument('--no-rsf', action='store_true')
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
     if args.selftest:
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild)
+    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild, run_args={'rsf_package': args.rsf_package, 'no_rsf': args.no_rsf})
     root.mainloop()
     return 0
 

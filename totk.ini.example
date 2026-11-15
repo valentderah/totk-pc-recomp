@@ -277,11 +277,13 @@
 # rsf_backend = 3
 # Quality: native, quality, balanced, performance, ultra_performance.
 # rsf_quality = native
+# Object/deformation motion history for supported shaders. Restart after changing.
+# dlaa_objmv = 1
 # Absolute paths, configured for the installed RSF package:
 # rsf_runtime = C:\ReScaleFrame\ReScaleFrame.Runtime.dll
 # rsf_provider_dir = C:\ReScaleFrame\providers
-# Frame generation is experimental. Starting with a nonzero rsf_fg value enables
-# its provider selection in the menu; changing it takes effect after restart.
+# Frame generation is experimental: 0 off, 1 DLSS, 3 FSR3, 4 FSR4, 5 XeSS.
+# Select it in Upscaling & Framegen; changing it takes effect after restart.
 # rsf_fg = 0
 # Low latency: 0 off, 1 on, 2 boost where supported; independent of upscaling.
 # Restart after changing. The runtime selects the supported latency technology.
