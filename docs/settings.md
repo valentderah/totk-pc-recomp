@@ -1,7 +1,8 @@
 # Settings reference
 
 `TOTK_RSF_RUNTIME` (`rsf_runtime` in the ini) is an experimental absolute path to
-`ReScaleFrame.Runtime.dll`. When set, graphics initialization loads the module and
+`ReScaleFrame.Runtime.dll`. Without an override, the loader checks
+`ReScaleFrame/ReScaleFrame.Runtime.dll` beside the executable. Graphics initialization loads the module and
 checks its native Vulkan SR, FG and latency exports. It selects the experimental
 RSF scene evaluation path configured by `rsf_backend` and `rsf_provider_dir`. Default: unset. Caution: loads
 native code into the process and retains the module until exit; restart to change it.
@@ -13,7 +14,7 @@ native code into the process and retains the module until exit; restart to chang
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
 | `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `5` XeSS. Restart required. FSR4 submission is still under implementation. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
-| `rsf_provider_dir` | Absolute provider SDK runtime directory passed to RSF; required for experimental SR evaluation. Default unset. | Loads native provider DLLs. | Caution |
+| `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |

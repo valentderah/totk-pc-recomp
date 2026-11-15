@@ -9,6 +9,8 @@
 static HMODULE runtime;
 static const char *provider_directory;
 int rsf_runtime_load(void) { return runtime != NULL; }
+const char *rsf_runtime_path(void) { return runtime ? "probe" : NULL; }
+const char *rsf_provider_directory(unsigned backend) { (void)backend; return provider_directory; }
 void *rsf_runtime_symbol(const char *name) { return (void *)GetProcAddress(runtime, name); }
 const char *cfg_get(const char *name) {
     if (!strcmp(name, "TOTK_RSF_RUNTIME")) return "probe";

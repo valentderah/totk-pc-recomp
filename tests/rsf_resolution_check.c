@@ -6,6 +6,7 @@ const int rt_game_version = 143;
 volatile int g_fnprof;
 static unsigned settings_version = 1, render_calls;
 static unsigned char patch_page[64];
+const char *rsf_runtime_path(void) { abort(); }
 // Other resolution entry points are linked too on Windows. None may run in this fixture.
 const char *cfg_get(const char *name) { (void)name; abort(); }
 const char *cfg_value(const char *name) { (void)name; abort(); }

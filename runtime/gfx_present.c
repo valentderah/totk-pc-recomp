@@ -19,6 +19,7 @@
 
 #include "cfg.h"
 #include "rsf_present.h"
+#include "rsf_runtime.h"
 #ifdef _WIN32
 #include "input_win.h"
 #endif
@@ -562,7 +563,7 @@ static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_
             .instance_proc = present_instance_proc, .device_proc = present_device_proc,
             .backend = (uint32_t)cfg_int("TOTK_RSF_BACKEND"),
             .output_width = info->imageExtent.width, .output_height = info->imageExtent.height,
-            .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR")},
+            .runtime_directory_utf8 = rsf_provider_directory(backend)},
         .queue_family = c->gfx_family, .create_info = info,
         .graphics_submit = present_submit, .lock_queues = present_lock, .unlock_queues = present_unlock};
     for (unsigned i = 0; i < 4; i++) setup.queues[i] = c->rsf_queues[i];
@@ -571,7 +572,7 @@ static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_
 #ifdef _WIN32
     host.window = gfx_window_handle();
     wchar_t directory[PLAT_PATH_MAX];
-    const char *path = cfg_get("TOTK_RSF_PROVIDER_DIR");
+    const char *path = rsf_provider_directory(backend);
     if (path && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, directory, PLAT_PATH_MAX))
         host.intel_runtime_directory = (const uint16_t *)directory;
 #endif

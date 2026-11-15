@@ -14,7 +14,7 @@ static __typeof__(&rsf_latencyvk_instance_proc) instance_resolver;
 static int stopped;
 
 int rsf_vk_shutdown(void) {
-    if (stopped || prepared <= 0 || !cfg_get("TOTK_RSF_RUNTIME")) return 1;
+    if (stopped || prepared <= 0 || !rsf_runtime_path()) return 1;
     __typeof__(&rsf_latencyvk_shutdown) shutdown = rsf_runtime_symbol("rsf_latencyvk_shutdown");
     int32_t result = shutdown ? shutdown() : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
     if (result != RSF_BACKEND_OK) {
@@ -32,7 +32,7 @@ static rsf_vk_function generic_instance_proc(void *instance, const char *name) {
 int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
     const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features) {
     *enabled_features = features;
-    if (!cfg_get("TOTK_RSF_RUNTIME")) return 1;
+    if (!rsf_runtime_path()) return 1;
     __typeof__(&rsf_latencyvk_require_device) require = rsf_runtime_symbol("rsf_latencyvk_require_device");
     if (!require) { rt_log("rsf: missing Vulkan device-requirements service"); return 0; }
     rsf_latencyvk_device_query query = {.struct_size = sizeof query, .abi_version = 1,
@@ -60,7 +60,7 @@ int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
 int rsf_vk_prepare(void) {
     if (prepared) return prepared > 0;
     prepared = -1;
-    if (!cfg_get("TOTK_RSF_RUNTIME")) { prepared = 1; return 1; }
+    if (!rsf_runtime_path()) { prepared = 1; return 1; }
     if (!rsf_runtime_load()) return 0;
     // Non-DLSS SR does not require Streamline. Latency will share this session
     // when its input/simulation event producer is connected.
@@ -69,7 +69,7 @@ int rsf_vk_prepare(void) {
     instance_resolver = rsf_runtime_symbol("rsf_latencyvk_instance_proc");
     if (!initialize || !instance_resolver) return 0;
     rsf_slvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SLVK_ABI_VERSION,
-        .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR"),
+        .runtime_directory_utf8 = rsf_provider_directory(1),
         .project_id = "totk-pc-recomp",
         .features = (cfg_int("TOTK_RSF_BACKEND") == RSF_SR_DLSS ? RSF_SLVK_DLSS_SR : 0) |
                     (cfg_int("TOTK_RSF_FG") == 1 ? RSF_SLVK_DLSS_FG : 0)};
@@ -108,7 +108,7 @@ VkResult rsf_vk_create_device(VkPhysicalDevice physical, const VkDeviceCreateInf
                              const VkAllocationCallbacks *allocator, VkDevice *out) {
     PFN_vkCreateDevice create = (PFN_vkCreateDevice)rsf_vk_instance_proc(primary_instance, "vkCreateDevice");
     VkResult result = create ? create(physical, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
-    if (result == VK_SUCCESS && cfg_get("TOTK_RSF_RUNTIME")) {
+    if (result == VK_SUCCESS && rsf_runtime_path()) {
         __typeof__(&rsf_latencyvk_device_created) created = rsf_runtime_symbol("rsf_latencyvk_device_created");
         if (created) {
             rsf_latencyvk_created_device event = {.struct_size = sizeof event, .abi_version = 1,

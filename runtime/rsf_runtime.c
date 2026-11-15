@@ -5,6 +5,49 @@
 #include "host.h"
 #include "platform/platform.h"
 #include "rsf_runtime.h"
+#include <string.h>
+
+static PlatMutex paths_lock = PLAT_MUTEX_INIT;
+static int paths_ready;
+static char runtime_path[PLAT_PATH_MAX], provider_paths[3][PLAT_PATH_MAX];
+
+static void package_paths(void) {
+    plat_mutex_lock(&paths_lock);
+    if (!paths_ready) {
+        char exe[PLAT_PATH_MAX];
+        if (plat_exe_path(exe, sizeof exe)) {
+            char *last = plat_last_sep(exe);
+            if (last) {
+                *last = 0;
+                int length = snprintf(runtime_path, sizeof runtime_path, "%s/ReScaleFrame/ReScaleFrame.Runtime.dll", exe);
+                if (length < 0 || (size_t)length >= sizeof runtime_path) runtime_path[0] = 0;
+                const char *names[] = {"streamline", "fidelityfx", "xess"};
+                for (unsigned i = 0; i < 3; i++) {
+                    length = snprintf(provider_paths[i], sizeof provider_paths[i], "%s/ReScaleFrame/%s", exe, names[i]);
+                    if (length < 0 || (size_t)length >= sizeof provider_paths[i]) provider_paths[i][0] = 0;
+                }
+            }
+        }
+        paths_ready = 1;
+    }
+    plat_mutex_unlock(&paths_lock);
+}
+
+const char *rsf_runtime_path(void) {
+    const char *override = cfg_get("TOTK_RSF_RUNTIME");
+    if (override && *override) return override;
+    package_paths();
+    return runtime_path[0] && plat_file_exists(runtime_path) ? runtime_path : NULL;
+}
+
+const char *rsf_provider_directory(unsigned backend) {
+    const char *override = cfg_get("TOTK_RSF_PROVIDER_DIR");
+    if (override && *override) return override;
+    package_paths();
+    if (backend != 1 && backend != 2 && backend != 3 && backend != 4 && backend != 5) return NULL;
+    const char *path = provider_paths[backend == 1 ? 0 : backend == 5 ? 2 : 1];
+    return *path ? path : NULL;
+}
 
 static void *module;
 static int tried, ready;
@@ -12,7 +55,7 @@ static int tried, ready;
 int rsf_runtime_load(void) {
     if (tried) return ready;
     tried = 1;
-    const char *path = cfg_get("TOTK_RSF_RUNTIME");
+    const char *path = rsf_runtime_path();
     if (!path || !path[0]) return 0;
     module = plat_lib_open(path);
     if (!module) {

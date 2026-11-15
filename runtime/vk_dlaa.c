@@ -831,7 +831,7 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
                        !strcmp(cfg_value("TOTK_RSF_QUALITY"), "ultra_performance") ? 4 : 0,
             .output_width = e->ow, .output_height = e->oh,
             .depth_inverted = D.projection.inverted, .depth_infinite = D.projection.infinite,
-            .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR")};
+            .runtime_directory_utf8 = rsf_provider_directory((unsigned)cfg_int("TOTK_RSF_BACKEND"))};
         if (!rsf_sr_open(&setup, &e->rsf, &e->rsf_w, &e->rsf_h)) return 0;
     }
     if (e->rsf_w != e->w || e->rsf_h != e->h) {

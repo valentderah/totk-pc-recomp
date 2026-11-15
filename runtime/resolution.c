@@ -39,6 +39,7 @@
 #include <zstd.h>
 
 #include "cfg.h"
+#include "rsf_runtime.h"
 #include "host.h"
 #include "mods.h"
 #include "ov.h"
@@ -71,7 +72,7 @@ static struct {
 // Before device creation, only runtime presence is known. Provider setup later
 // verifies capability and the negotiated render extent.
 static int dlss_dll(void) {
-    const char *path = cfg_get("TOTK_RSF_RUNTIME");
+    const char *path = rsf_runtime_path();
     return path && path[0] && plat_file_exists(path);
 }
 

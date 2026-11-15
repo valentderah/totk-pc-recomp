@@ -173,6 +173,20 @@ must be checked against the actual runtime exports and ABI layouts.
 
 ## Completion evidence
 
+Package discovery now checks `ReScaleFrame/ReScaleFrame.Runtime.dll` beside the
+game when `rsf_runtime` is unset. Each selected backend independently resolves its
+package directory (`streamline`, `fidelityfx`, `xess`), allowing mixed SR/FG vendors
+without forcing one SDK directory on both. Explicit runtime/provider overrides
+remain available. The compiled `rsf_package_paths_check.c` fixture passes absent
+and present packages, all backend mappings and override precedence. This does not
+prove that a complete distributable package or its provider DLLs are present.
+
+The corrected FidelityFX Vulkan SDK is being built under
+`build/rsf-sdk-host/artifacts/rescaleframe/fsr3-sdk/Release/win-x64` using RSF's
+guarded build recipe and pinned source. The native Vulkan runtime DLL was absent
+from the available package, so the FSR2/3 paths still require that build before
+device evaluation can be tested.
+
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
 Check HUD composition, motion, resize, provider changes, pause/load history resets,
