@@ -532,30 +532,29 @@ impl App {
                 self.search.clear();
             }
         }
-        self.sources_note(ui);
     }
 
-    /// Which documents next to the game gave settings and descriptions (docs.rs), under the tabs.
+    /// Which documents next to the game gave settings and descriptions (docs.rs), one line in the bottom bar; the
+    /// paths and the added keys show on hover.
     fn sources_note(&self, ui: &mut Ui) {
         let s = &self.sources;
-        let found: Vec<(&str, &PathBuf)> = [("settings.json", &s.json), ("totk.ini.example", &s.example), ("settings.md", &s.settings_md), ("totk.ini", &s.ini)]
-            .into_iter()
-            .filter_map(|(n, p)| Some((n, p.as_ref()?)))
-            .collect();
+        let found: Vec<(&str, &PathBuf)> =
+            [("settings.json", &s.json), ("totk.ini.example", &s.example), ("settings.md", &s.settings_md), ("totk.ini", &s.ini)]
+                .into_iter()
+                .filter_map(|(n, p)| Some((n, p.as_ref()?)))
+                .collect();
         if found.is_empty() {
             return;
         }
-        ui.add_space(12.0);
-        ui.label(RichText::new(t(&self.lang, "Descriptions read from")).small().color(WEAK));
-        for (name, path) in found {
-            ui.label(RichText::new(format!("· {name}")).small().color(WEAK)).on_hover_text(path.display().to_string());
-        }
+        let names: Vec<&str> = found.iter().map(|(n, _)| *n).collect();
+        let paths: Vec<String> = found.iter().map(|(_, p)| p.display().to_string()).collect();
+        ui.label(RichText::new(format!("{}: {}", t(&self.lang, "Descriptions read from"), names.join(", "))).small().color(WEAK))
+            .on_hover_text(paths.join("\n"));
         if !s.added.is_empty() {
             ui.label(RichText::new(format!("+{} {}", s.added.len(), t(&self.lang, "new settings from these files"))).small().color(GOLD))
                 .on_hover_text(s.added.iter().map(|k| k.to_ascii_lowercase()).collect::<Vec<_>>().join("\n"));
         }
     }
-
     fn bottom_bar(&mut self, ui: &mut Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -569,6 +568,7 @@ impl App {
                 let keys = self.changed_keys();
                 ui.label(RichText::new(format!("● {}", t(&self.lang, "Unsaved changes"))).color(GOLD)).on_hover_text(keys.join("\n"));
             }
+            self.sources_note(ui);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let can = self.dir.is_some();
                 let exe = self.dir.as_ref().is_some_and(|d| d.join("totk.exe").is_file());

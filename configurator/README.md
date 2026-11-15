@@ -12,6 +12,7 @@ test it: [docs/building.md](../docs/building.md), "Settings configurator".
 | `src/presets.rs` | The starting points of a new profile (Quality, Performance, the runtime's Steam Deck profile). |
 | `src/data.rs` | `settings.json` as types; the tests that compare it with `runtime/cfg.c`. |
 | `src/docs.rs` | What it reads at start: `totk.ini.example`, `docs/settings.md`, `totk.ini` comments and a newer `totk-settings.json`, so new settings need no rebuild. |
+| `totk-config.ico`, `totk-config.rc`, `build.rs` | The icon: `runtime/totk.ico` with a wrench, written by `tools/make_configurator_icon.py`; `build.rs` embeds it with windres. |
 | `src/app.rs`, `src/theme.rs`, `src/i18n.rs` | The window, the in-game menu's colours and font, the window's own words in English and Russian. |
 
 Licences of what the exe links: the crates are MIT, Apache-2.0, Zlib, BSD or ISC (most under a choice of them),

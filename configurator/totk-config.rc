@@ -1,0 +1,2 @@
+/* The icon of totk-config.exe: runtime/totk.ico with a wrench (tools/make_configurator_icon.py). build.rs compiles it. */
+1 ICON "totk-config.ico"

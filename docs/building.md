@@ -194,7 +194,9 @@ cargo test --release           # totk.ini reading and writing, profiles, setting
 ```
 
 With the GNU Rust toolchain (no MSVC), crates that use the `windows` bindings need `dlltool` from MinGW-w64 (WinLibs or
-MSYS2 UCRT64) on PATH. The exe needs no runtime files: copy it next to `totk.exe`.
+MSYS2 UCRT64) on PATH, and `build.rs` runs its `windres` to embed the icon. The exe needs no runtime files: copy it next
+to `totk.exe`. The icon, `configurator/totk-config.ico`, is `runtime/totk.ico` with a wrench drawn over it by
+`.venv\Scripts\python tools\make_configurator_icon.py` (Pillow); rerun it when `runtime/totk.ico` changes.
 
 The settings it shows come from `configurator/settings.json`, which `python tools/gen_configurator_settings.py` writes
 from `runtime/cfg.c` (`known[]`, `metas[]`, `sections[]`), `runtime/ui/menu.cpp` (tabs, groups, order, slider ranges,

@@ -166,14 +166,33 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+const ICON: &[u8] = include_bytes!("../totk-config.ico");
+
+/// The largest PNG frame of totk-config.ico (tools/make_configurator_icon.py stores every frame as PNG), for the
+/// window and taskbar icon; the exe's own icon is the resource build.rs embeds.
+fn icon_png(ico: &[u8]) -> Option<&[u8]> {
+    let count = u16::from_le_bytes([*ico.get(4)?, *ico.get(5)?]) as usize;
+    (0..count)
+        .filter_map(|i| {
+            let e = ico.get(6 + 16 * i..22 + 16 * i)?;
+            let size = u32::from_le_bytes(e[8..12].try_into().ok()?) as usize;
+            let off = u32::from_le_bytes(e[12..16].try_into().ok()?) as usize;
+            let w = if e[0] == 0 { 256 } else { e[0] as u32 };
+            Some((w, ico.get(off..off + size)?))
+        })
+        .max_by_key(|(w, _)| *w)
+        .map(|(_, png)| png)
+}
+
 fn window(args: Args, dir: Option<PathBuf>) -> eframe::Result {
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("TotK Settings")
-            .with_inner_size([1240.0, 820.0])
-            .with_min_inner_size([920.0, 600.0]),
-        ..Default::default()
-    };
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("TotK Settings")
+        .with_inner_size([1240.0, 820.0])
+        .with_min_inner_size([920.0, 600.0]);
+    if let Some(icon) = icon_png(ICON).and_then(|png| eframe::icon_data::from_png_bytes(png).ok()) {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "totk-config",
         options,
