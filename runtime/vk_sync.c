@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "gfx.h"
+#include "rsf_sr.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
@@ -377,7 +378,9 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
     if (direct) {
         VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-        vkBeginCommandBuffer(cb, &bi);
+        VkResult result = vkBeginCommandBuffer(cb, &bi);
+        if (result != VK_SUCCESS) rt_fatal("vk: prologue command begin failed (%d)", result);
+        rsf_sr_commands_reset(cb);
     } else {
         rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     }

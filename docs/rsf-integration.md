@@ -16,6 +16,20 @@ the actual SDK. The adapter has not yet been connected to `evaluate` or exercise
 on the GPU. Builds consume external SDK headers through `TOTK_RSF_SOURCE`, defaulting
 to the sibling ReScaleFrame checkout; no RSF headers are copied into this repository.
 
+The recorder and direct submission prologue now retire RSF per-command resources
+after beginning a new recording of a GPU-completed buffer. Session registration,
+evaluation, retirement and destruction are serialized so the recorder cannot walk
+a freed owner. The compiled `tests/rsf_sr_lifetime_check.c` fault-injection test
+passes with two providers, failed evaluation, refused destruction and failed
+planning followed by cleanup retry. It uses stub providers and proves ownership
+handling only, not SDK recording or Vulkan validation.
+
+Run that test with UCRT64 Clang, compiling `tests/rsf_sr_lifetime_check.c` and
+`runtime/rsf_sr.c` together with `-I runtime` and the three RSF SDK include
+directories listed in `tools/build_game.py`. Place the executable under
+`build/checks/`. The recorder, submission synchronization and adapter sources also
+pass UCRT64 Clang syntax checks with those SDK and VMA include paths.
+
 The RSF DLL previously omitted 21 native Vulkan exports because its archive link
 retained only internally referenced objects. The local RSF checkout now links
 `rsf_native_vulkan` with `WHOLE_ARCHIVE` into the runtime DLL. Its Release build

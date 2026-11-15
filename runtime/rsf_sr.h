@@ -12,5 +12,8 @@ int rsf_sr_open(const rsf_srvk_setup *setup, RsfSrSession **out, uint32_t *width
 int rsf_sr_record(RsfSrSession *session, void *commands, const rsf_srvk_frame *frame);
 // Call after GPU completion and command-buffer reset, before recording it again.
 void rsf_sr_retire(RsfSrSession *session, void *commands);
+// Renderer command-pool reuse boundary: prior GPU work is complete and a new
+// recording has begun (implicitly resetting the command buffer's previous use).
+void rsf_sr_commands_reset(void *commands);
 // Caller drains all GPU references first. Failure retains the session for retry.
 int rsf_sr_close(RsfSrSession **session);

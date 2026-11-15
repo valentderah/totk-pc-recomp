@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "rsf_sr.h"
 #include "host.h"
 #include "memx.h"
 #include "vk.h"
@@ -214,7 +215,9 @@ static int rec_own(void) {
 static void begin_now(VkCommandBuffer cb, int crumb, uint64_t n) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    vkBeginCommandBuffer(cb, &bi);
+    VkResult result = vkBeginCommandBuffer(cb, &bi);
+    if (result != VK_SUCCESS) rt_fatal("vk: recorder command begin failed (%d)", result);
+    rsf_sr_commands_reset(cb);
     if (crumb) vk_crumb(cb, crumb, n);
 }
 
