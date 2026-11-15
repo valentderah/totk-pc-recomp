@@ -1,8 +1,18 @@
 # Settings reference
 
+`TOTK_RSF_RUNTIME` (`rsf_runtime` in the ini) is an experimental absolute path to
+`ReScaleFrame.Runtime.dll`. When set, graphics initialization loads the module and
+checks its native Vulkan SR, FG and latency exports. This migration hook does not
+yet initialize providers or replace NGX rendering. Default: unset. Caution: loads
+native code into the process and retains the module until exit; restart to change it.
+
 `totk.ini.example` describes the settings for players. This page lists the rest: diagnostics, test hooks, paths and experiments. Set one as `name = value` in `totk.ini`, or as the environment variable `TOTK_NAME`, which wins over the file. Remove the line to go back to the default.
 
 ## Safety
+
+| Setting | Effect | Runtime cost | Risk |
+| --- | --- | --- | --- |
+| `rsf_runtime` | Absolute path to the experimental RSF runtime DLL; validates native Vulkan service exports before provider setup. Default unset. | Loads native code and retains the module until exit; restart to change. Rendering migration remains pending. | Caution |
 
 - **Safe**: changes only what the row says, with no effect on stability or saves.
 - **Caution**: can slow the game, grow files, or change the picture, and undoes cleanly when removed.

@@ -12,6 +12,7 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "rsf_runtime.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -131,6 +132,7 @@ static void mesa_cache_beside_exe(void) {
 }
 
 static int create_instance(void) {
+    rsf_runtime_load();
     mesa_cache_beside_exe();
     const char *ext[12];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
