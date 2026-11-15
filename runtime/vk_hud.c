@@ -126,7 +126,7 @@ int vk_hud_skip_draw(VkExec *ex, const GfxShader *fs) {
 // (input.c input_active_ns) and shows it again at the next press or left-stick move; turning the camera counts as neither. Before any input the idle time
 // counts from the first frame.
 static int wanted(void) {
-    // The game's menus, the map and dialogue are drawn the way the HUD is: while one is on screen (1.4.3,
+    // The game's menus, the map, dialogue and an event's windows are drawn the way the HUD is: while one is on screen (1.4.3,
     // menu_cursor.c menu_cursor_ui_open) nothing is hidden, so they stay usable. The read lags the screen by up to
     // 100 ms, so a menu's first frames can open without its layer.
     if (menu_cursor_ui_open()) return 0;
