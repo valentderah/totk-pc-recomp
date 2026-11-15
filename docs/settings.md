@@ -2,6 +2,28 @@
 
 `totk.ini.example` describes the settings for players. This page lists the rest: diagnostics, test hooks, paths and experiments. Set one as `name = value` in `totk.ini`, or as the environment variable `TOTK_NAME`, which wins over the file. Remove the line to go back to the default.
 
+## Settings configurator
+
+`totk-config.exe` sets the game up before it starts. Put it next to `totk.exe` and run it; it finds `totk.ini` there
+(the runtime reads `totk.ini` from the folder of `totk.exe` and nowhere else). Started elsewhere it opens the folder
+it used last or the installer's install folder, and **Change…** picks another.
+
+- Every setting the runtime knows, on the tabs of the in-game menu (F1) with the menu's names and descriptions in its
+  language, plus **Expert** for the keys of this page and **Other keys** for keys of `totk.ini` the game does not know
+  and the cheat switches. Search looks through names, keys and descriptions.
+- A gold mark shows a setting `totk.ini` sets; **↺** removes its line, back to the default. A setting a `TOTK_*`
+  environment variable sets is marked: the variable wins over the file.
+- **Save** writes only the lines of the settings that changed, the way the in-game menu does: comments, unknown keys
+  and the order of the file stay. A change the menu wrote meanwhile to another setting stays too.
+- **Profiles** are named sets of settings in `profiles\<name>.ini` next to `totk.ini`, in the same format. The active
+  profile is what `totk.ini` holds: choosing another stores `totk.ini`'s settings into the profile that was active
+  (changes made in the in-game menu stay with it) and copies the chosen one into `totk.ini`. A new profile starts
+  from the current settings, the defaults, or the current settings with the Quality, Performance or Steam Deck changes.
+- **Save and launch** saves and starts `totk.exe`.
+
+Without a window: `totk-config --set fps_limit=120 --set fov=` (an empty value resets),
+`totk-config --new-profile Travel --from deck`, `totk-config --profile Travel`; `--dir <folder>` names the game folder.
+
 ## Safety
 
 - **Safe**: changes only what the row says, with no effect on stability or saves.

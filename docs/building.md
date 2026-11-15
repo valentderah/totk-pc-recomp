@@ -181,6 +181,27 @@ folder. The folder holds code and data derived from your game: for your own mach
 profile, 6-12% shorter frames. Which build uses which profile, when to retrain, where and how to train and how to
 measure a new profile: [pgo.md](pgo.md).
 
+### Settings configurator
+
+`configurator/` is `totk-config.exe`, a window that edits `totk.ini` and settings profiles before the game starts
+([settings.md](settings.md), "Settings configurator"). It is Rust (eframe/egui), built on its own, not by
+`build_game.py`:
+
+```
+cd configurator
+cargo build --release          # target\release\totk-config.exe
+cargo test --release           # totk.ini reading and writing, profiles, settings.json against runtime/cfg.c
+```
+
+With the GNU Rust toolchain (no MSVC), crates that use the `windows` bindings need `dlltool` from MinGW-w64 (WinLibs or
+MSYS2 UCRT64) on PATH. The exe needs no runtime files: copy it next to `totk.exe`.
+
+The settings it shows come from `configurator/settings.json`, which `python tools/gen_configurator_settings.py` writes
+from `runtime/cfg.c` (`known[]`, `metas[]`, `sections[]`), `runtime/ui/menu.cpp` (tabs, groups, order, slider ranges,
+choice names), `runtime/ui_text.c` (menu texts in English, Russian, Brazilian Portuguese and Simplified Chinese),
+`runtime/input_map.c` (key, button and action names, default bindings), `totk.ini.example` and
+[settings.md](settings.md). Rerun it after changing any of them; nothing in `configurator/` lists settings by hand.
+
 ## Linux (in progress)
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
@@ -234,7 +255,9 @@ Before a commit:
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
 files); a change to the settings passes `totk.exe --probe-cfg` and `python tests\settings_doc_check.py`, which fails
-when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md).
+when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md), and reruns
+`python tools\gen_configurator_settings.py` (`--check` fails while `configurator/settings.json` is out of date; so does
+`cargo test` in `configurator/`).
 HUD pane/animation and generator naming regressions run with Python 3.14+: `tests/hud_layout_test.py`.
 Set `HUD_TEST_ROMFS` to a verified extracted RomFS directory to include a real-archive comparison against the
 pre-port layout generator; all game-derived temporary data stays under `build/`.

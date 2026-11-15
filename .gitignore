@@ -74,3 +74,6 @@ desktop.ini
 
 # Agent task worktrees (tools/worktree.py)
 /.worktrees/
+
+# Rust build output of the settings configurator
+/configurator/target/
