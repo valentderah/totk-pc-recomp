@@ -24,6 +24,8 @@ typedef struct VkCtx {
     uint32_t gfx_family;                    // graphics + compute + presentation on win32
     uint32_t xfer_family;                   // a transfer-only family when the GPU has one, else gfx_family
     VkQueue gfx_queue;                      // graphics + present
+    VkQueue rsf_queues[4];                  // graphics, compute, present, acquire for the RSF WSI owner
+    uint32_t rsf_queue_count;               // actual distinct queues requested in gfx_family
     VkQueue xfer_queue;                     // equals gfx_queue when xfer_shared
     int xfer_shared;                        // 1: no separate queue; serialise with gfx_queue
     VmaAllocator vma;

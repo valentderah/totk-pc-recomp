@@ -192,11 +192,14 @@ static const char *missing_required(VkPhysicalDevice pd) {
 
 // Graphics+compute family that can present to the window.
 static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperties *qp, uint32_t nq) {
+    uint32_t fallback = UINT32_MAX;
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-            gfx_window_vk_presentable(g_vk.instance, pd, i))
-            return i;
-    return UINT32_MAX;
+            gfx_window_vk_presentable(g_vk.instance, pd, i)) {
+            if (!cfg_int("TOTK_RSF_FG") || qp[i].queueCount >= 4) return i;
+            if (fallback == UINT32_MAX) fallback = i;
+        }
+    return fallback;
 }
 
 static int name_has(const char *s, const char *sub) {
@@ -255,6 +258,12 @@ static int pick_device(void) {
     VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
+    g_vk.rsf_queue_count = 1;
+    if (cfg_int("TOTK_RSF_FG")) {
+        if (qp[g_vk.gfx_family].queueCount >= 4) g_vk.rsf_queue_count = 4;
+        else rt_log("rsf: frame generation needs four distinct graphics-family queues; only %u available",
+                    qp[g_vk.gfx_family].queueCount);
+    }
     g_vk.xfer_family = g_vk.gfx_family;
     for (uint32_t i = 0; i < nq; i++)   // a family that does transfer only (async DMA engine)
         if ((qp[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(qp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
@@ -430,14 +439,14 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    float prio = 1.0f;
+    float priorities[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     VkDeviceQueueCreateInfo qi[2] = {
-        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = 1,
-         .pQueuePriorities = &prio}};
+        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family,
+         .queueCount = g_vk.rsf_queue_count, .pQueuePriorities = priorities}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
         qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
+                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = priorities};
         nqi = 2;
     }
     // RSF may enable provider-specific nodes. Give it a separate copy of our
@@ -458,6 +467,8 @@ static int create_device(void) {
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
+    for (uint32_t i = 0; i < g_vk.rsf_queue_count; i++)
+        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, i, &g_vk.rsf_queues[i]);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 

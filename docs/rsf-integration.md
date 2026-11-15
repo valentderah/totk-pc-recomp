@@ -60,6 +60,14 @@ shutdown exception. Renderer teardown now drains/releases SR owners and shuts RS
 down before destroying Vulkan owners, retaining them if checked cleanup fails.
 These are device-lifecycle results, not evidence of working low-latency markers.
 
+When a nonzero `rsf_fg` is requested, device selection prefers a graphics/compute/
+presentation family with four queues. Device creation requests and retrieves four
+distinct queue handles for graphics, compute, presentation and acquisition. If the
+family has fewer queues, it keeps ordinary rendering with one queue and logs that
+FG cannot use that family; it never fabricates four owners from one handle. WSI
+provider creation and queue callbacks still need connecting, so FG remains disabled
+in the menu. The device source passes UCRT64 object compilation.
+
 The pinned corrected Streamline SDK now builds successfully under
 `build/rsf-sdk-host/artifacts/rescaleframe/streamline/Release/win-x64/runtime`.
 The original NVIDIA plugins are staged there from the SHA-512-pinned 2.14.1
