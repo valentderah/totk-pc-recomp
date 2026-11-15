@@ -10,6 +10,9 @@ enum {
     DS_ZONES = 10,           // a trigger's travel in zones: 0 at rest, 9 fully pulled
     DS_LEVEL_MAX = 8,        // the strongest resistance and the strongest vibration
     DS_MODE_OFF = 0x05, DS_MODE_FEEDBACK = 0x21, DS_MODE_VIBRATION = 0x26,   // byte 0 of an effect
+    DS_TRIGGERS_R2_L2 = 0,   // R2 (bow) and L2 (shield)
+    DS_TRIGGERS_R2 = 1,      // R2 only; L2 is free
+    DS_TRIGGERS_L2 = 2,      // L2 only; R2 is free
 };
 
 // No effect: the trigger moves freely.
@@ -28,7 +31,8 @@ void ds_report_triggers(uint8_t out[DS_REPORT_BYTES], const uint8_t right[DS_TRI
 int ds_vibration_level(uint16_t motor);
 
 // What decides the two effects. strength: TOTK_DUALSENSE_TRIGGERS, 0 off, 1..8 the resistance. vibration: 0, or the
-// level 1..8 the game's rumble gives the triggers (TOTK_RUMBLE_TRIGGERS).
-typedef struct { int strength, vibration; } DsTriggerState;
+// level 1..8 the game's rumble gives the triggers (TOTK_DUALSENSE_TRIGGER_VIBRATION). mode: DS_TRIGGERS_* (0 = R2+L2,
+// 1 = R2 only, 2 = L2 only).
+typedef struct { int strength, vibration, mode; } DsTriggerState;
 // The effects of the right (ZR) and the left (ZL) trigger for s.
 void ds_triggers_pick(const DsTriggerState *s, uint8_t right[DS_TRIGGER_BYTES], uint8_t left[DS_TRIGGER_BYTES]);

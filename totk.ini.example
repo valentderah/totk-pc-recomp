@@ -389,12 +389,14 @@
 # steam_rumble = 1
 # steam_volume = 100
 # steam_crisp = 1
-# Adaptive triggers of a DualSense (PS5): dualsense_triggers is how hard L2 and R2 resist, 1 (light) to 8 (heavy);
-# 0 = off. R2 (ZR) gets heavier past the point where the press counts, as a drawn bow; L2 (ZL) stays lighter.
-# dualsense_trigger_vibration = 1 vibrates both adaptive triggers with the game's rumble (0 = off). Needs neither
-# renhdrum.dll nor dualsense_haptics, but the game must see the DualSense itself, not a virtual Xbox pad (Steam Input,
-# DS4Windows). Changes while the game runs take effect at once.
+# Adaptive triggers of a DualSense (PS5): dualsense_triggers is how hard the trigger resists, 1 (light) to 8 (heavy);
+# 0 = off. dualsense_triggers_mode selects which triggers resist: r2 (only R2 gets the drawn-bow resistance, L2 is
+# free), both (R2 + L2, with L2 lighter for shield/lock-on), or l2 (only L2). dualsense_trigger_vibration = 1 vibrates
+# both adaptive triggers with the game's rumble (0 = off). Needs neither renhdrum.dll nor dualsense_haptics, but the
+# game must see the DualSense itself, not a virtual Xbox pad (Steam Input, DS4Windows). Changes while the game runs
+# take effect at once.
 # dualsense_triggers = 0
+# dualsense_triggers_mode = r2
 # dualsense_trigger_vibration = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo

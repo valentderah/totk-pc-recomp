@@ -95,6 +95,14 @@ void ds_triggers_pick(const DsTriggerState *s, uint8_t right[DS_TRIGGER_BYTES], 
             zl[z] = (uint8_t)clamp(pull - SHIELD_LESS, 1, DS_LEVEL_MAX);
         }
     }
-    ds_trigger_feedback(right, zr);
-    ds_trigger_feedback(left, zl);
+    if (s->mode == DS_TRIGGERS_R2) {
+        ds_trigger_feedback(right, zr);
+        ds_trigger_off(left);
+    } else if (s->mode == DS_TRIGGERS_L2) {
+        ds_trigger_off(right);
+        ds_trigger_feedback(left, zr);
+    } else {
+        ds_trigger_feedback(right, zr);
+        ds_trigger_feedback(left, zl);
+    }
 }

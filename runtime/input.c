@@ -46,7 +46,7 @@ static int pad_ds5;
 static int ds_live;                              // ... and it was sent the effects in ds_sent (right, left)
 static uint8_t ds_sent[2][DS_TRIGGER_BYTES];
 static int ds_stopped;                           // input_haptics_stop freed the triggers: the process is ending
-static int ds_strength = -1, ds_rumble;          // TOTK_DUALSENSE_TRIGGERS 0..8, TOTK_RUMBLE_TRIGGERS; live (cfg_version)
+static int ds_strength = -1, ds_mode = DS_TRIGGERS_R2, ds_rumble;   // TOTK_DUALSENSE_TRIGGERS 0..8, mode, trigger vibration; live (cfg_version)
 static unsigned ds_cfg_seen;
 static int ds_vibration;                         // trigger vibration level of the last rumble, 0 none ...
 static uint64_t ds_vibration_until;              // ... and when it ends, plat_now_ns
@@ -612,9 +612,12 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         ds_cfg_seen = ver;
         int v = cfg_int("TOTK_DUALSENSE_TRIGGERS");
         ds_strength = v < 0 ? 0 : v > DS_LEVEL_MAX ? DS_LEVEL_MAX : v;
+        const char *m = cfg_value("TOTK_DUALSENSE_TRIGGERS_MODE");
+        ds_mode = !strcasecmp(m, "both") || !strcasecmp(m, "r2+l2") ? DS_TRIGGERS_R2_L2 :
+                  !strcasecmp(m, "l2") ? DS_TRIGGERS_L2 : DS_TRIGGERS_R2;
         ds_rumble = cfg_bool("TOTK_DUALSENSE_TRIGGER_VIBRATION") || input_rumble_triggers_enabled();
     }
-    DsTriggerState s = {.strength = ds_strength, .vibration = ds_rumble && now < ds_vibration_until ? ds_vibration : 0};
+    DsTriggerState s = {.strength = ds_strength, .vibration = ds_rumble && now < ds_vibration_until ? ds_vibration : 0, .mode = ds_mode};
     uint8_t want[2][DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
     ds_triggers_pick(&s, want[0], want[1]);
     if (ds_live ? !memcmp(want, ds_sent, sizeof want) : want[0][0] == DS_MODE_OFF && want[1][0] == DS_MODE_OFF) return;
@@ -626,7 +629,8 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         return;
     }
     if (!ds_live)
-        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, dualsense_trigger_vibration = %d)", ds_strength, ds_rumble);
+        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, mode = %s, dualsense_trigger_vibration = %d)",
+               ds_strength, ds_mode == DS_TRIGGERS_R2_L2 ? "both" : ds_mode == DS_TRIGGERS_L2 ? "l2" : "r2", ds_rumble);
     memcpy(ds_sent, want, sizeof want);
     ds_live = 1;
     if (keep_rumble && now < rumble_until && (rumble_low || rumble_high))

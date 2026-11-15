@@ -143,6 +143,8 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
     m = cfg_meta("DUALSENSE_TRIGGERS");
     CHECK(m && EQ(m->def, "0") && EQ(m->values, "0..8") && m->live, "meta: dualsense_triggers is live, off by default");
+    m = cfg_meta("DUALSENSE_TRIGGERS_MODE");
+    CHECK(m && EQ(m->def, "r2") && EQ(m->values, "r2|both|l2") && m->live, "meta: dualsense_triggers_mode is live, r2 by default");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
@@ -274,6 +276,10 @@ int probe_cfg(void) {
     CHECK(DS_IS(tr, ds_vib3) && DS_IS(tl, ds_vib3), "dualsense: a rumble vibrates both triggers in place of the resistance");
     ds_triggers_pick(&(DsTriggerState){0, 8}, tr, tl);
     CHECK(DS_IS(tr, ds_vib8) && DS_IS(tl, ds_vib8), "dualsense: trigger vibration works with the resistance off");
+    ds_triggers_pick(&(DsTriggerState){4, 0, DS_TRIGGERS_R2}, tr, tl);
+    CHECK(DS_IS(tr, ds_zr4) && DS_IS(tl, ds_off), "dualsense: R2-only mode gives ZR bow resistance and leaves L2 free");
+    ds_triggers_pick(&(DsTriggerState){4, 0, DS_TRIGGERS_L2}, tr, tl);
+    CHECK(DS_IS(tr, ds_off) && DS_IS(tl, ds_zr4), "dualsense: L2-only mode gives ZL bow resistance and leaves R2 free");
     #undef DS_IS
     // Keyboard and mouse bindings (input_map.c)
     uint8_t dn[KEY_COUNT] = {0};
