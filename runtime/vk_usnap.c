@@ -40,6 +40,7 @@ typedef struct Arena {
     uint8_t *cpu;    // with temporal inputs, the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
                      // map is often device memory through the BAR, written fast but read back at about a microsecond a
                      // cache line. Without temporal consumers the bytes go into map in one copy.
+    int cpu_current; // this use of the arena populated cpu; allocation alone does not make its bytes current
     uint64_t size;
 } Arena;
 
@@ -292,6 +293,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
+    U.arena->cpu_current = dst == U.arena->cpu;
     for (int i = 0; i < U.nreg; i++)
         memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
     if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
@@ -350,7 +352,7 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
 // The host copy where temporal consumers requested one, else the device copy.
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+static uint8_t *host_copy(void) { return U.arena->cpu_current ? U.arena->cpu : U.arena->map; }
 
 const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 

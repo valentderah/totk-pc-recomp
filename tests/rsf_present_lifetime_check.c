@@ -86,6 +86,8 @@ int main(void) {
     drain_error = -9;
     assert(rsf_present_close(&owner) == -9 && owner && !destroy_calls);
     assert(!rsf_present_chain(owner));
+    rsf_present_submitted(owner, commands, 1);
+    assert(submitted_calls == 2); // Closing must accept facts for outstanding commands.
     assert(rsf_present_flip(owner, &index, &identity) == RSF_BACKEND_ERROR_NOT_READY && present_calls == 1);
     drain_error = 0; destroy_error = -9;
     assert(rsf_present_close(&owner) == -9 && owner && destroy_calls == 1);

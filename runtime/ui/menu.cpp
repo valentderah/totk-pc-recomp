@@ -735,7 +735,9 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_RSF_QUALITY", UI_MENU_RSF_QUALITY, quality, 5, UI_MENU_RSF_QUALITY_DESC);
     static const char *const fg[] = {"0", "1", "3", "4", "5"};
     const char *fg_names[] = {menu_text(UI_MENU_OFF), "DLSS", "FSR 3", "FSR 4", "XeSS"};
-    opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
+    // Keep general admission closed; explicitly opted-in sessions can change/save providers.
+    static const bool fg_experimental = cfg_int("TOTK_RSF_FG") != 0;
+    if (!fg_experimental) opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
     opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
     static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON};
     opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 2, UI_MENU_RSF_LATENCY_DESC);

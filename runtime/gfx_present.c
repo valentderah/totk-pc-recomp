@@ -150,6 +150,7 @@ static VmaAllocation g_cap_alloc;
 static uint8_t *g_cap_ptr;
 static VkDeviceSize g_cap_size;
 static int g_cap_w, g_cap_h, g_cap_valid;
+static int g_flip_fg_valid;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
 static uint64_t g_flip_source;    // owned by the pending swapchain image, under g_pl
@@ -508,7 +509,7 @@ static void flip_locked(void) {
     if (g_rsf_present) {
         rsf_frame_record identity = {.struct_size = sizeof identity, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
             .session_id = 1, .frame_id = source, .view_id = 1};
-        r = (VkResult)rsf_present_flip(g_rsf_present, &pi, source ? &identity : NULL);
+        r = (VkResult)rsf_present_flip(g_rsf_present, &pi, source && g_flip_fg_valid ? &identity : NULL);
     } else r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
     if (c && c->has_nv_reflex) vk_reflex_marker(5, pid);   // VK_LATENCY_MARKER_PRESENT_END_NV
@@ -577,6 +578,26 @@ static int retire_swapchain(void) {
     } else if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
     g_sc = VK_NULL_HANDLE;
     return 1;
+}
+
+// Only full-frame mappings currently have matching depth/motion coordinates.
+// A crop or letterbox requires remapping the guides as well as the colour.
+static int fg_source_w, fg_source_h, fg_full_frame;
+int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]) {
+    plat_rmutex_lock(&g_pl);
+    int ok = g_rsf_present && !g_sc_hdr && fg_full_frame &&
+        w == (unsigned)fg_source_w && h == (unsigned)fg_source_h;
+    out[0] = ok ? g_sc_ext.width : 0;
+    out[1] = ok ? g_sc_ext.height : 0;
+    plat_rmutex_unlock(&g_pl);
+    return ok;
+}
+
+int vk_present_fg_drain(void) {
+    plat_rmutex_lock(&g_pl);
+    int result = rsf_present_drain(g_rsf_present);
+    plat_rmutex_unlock(&g_pl);
+    return result == RSF_BACKEND_OK;
 }
 
 int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
@@ -1004,6 +1025,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     const int rect[4] = {cx, cy, cw, ch};
     int to[4];   // where the picture goes in the swapchain image: {x, y, w, h}
     gfx_fit_rect(cw, ch, (int)g_sc_ext.width, (int)g_sc_ext.height, to);
+    fg_source_w = w, fg_source_h = h;
+    fg_full_frame = cx == 0 && cy == 0 && cw == w && ch == h &&
+        to[0] == 0 && to[1] == 0 && to[2] == (int)g_sc_ext.width && to[3] == (int)g_sc_ext.height;
+
     if (g_sc_ext.width && g_sc_ext.height) {
         for (int i = 0; i < 4; i++) g_pic[i] = (float)to[i] / (float)(i & 1 ? g_sc_ext.height : g_sc_ext.width);
         __atomic_store_n(&g_pic_ok, 1, __ATOMIC_RELEASE);
@@ -1112,6 +1137,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_flip_idx = idx;
         g_flip_pid = g_blit_pid;   // the frame this blit shows (vk_reflex_present_frame)
         g_flip_source = source;
+        g_flip_fg_valid = fg_full_frame;
         if (!defer) flip_locked();
     } else {
         vk_device_fault_report(r);

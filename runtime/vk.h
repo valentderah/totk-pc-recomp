@@ -703,3 +703,9 @@ void vk_pipeline_shutdown(void);           // waits for background builds, saves
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h
+
+// Verified full-frame host mapping, or zero dimensions when unsupported.
+int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]);
+
+// Refuses while SDK work is recorded but not submitted; retain all input leases.
+int vk_present_fg_drain(void);

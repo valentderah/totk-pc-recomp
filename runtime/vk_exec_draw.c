@@ -1443,8 +1443,11 @@ static void upd_note(VkExec *ex, const p_update_ub *u) {
     D->UPD.u[D->UPD.n++ % UPD_N] = (VkExecUpd){u->dst, u->dst + u->size, u->data};
 }
 
-// 1 when an update of this submission supplied [a, a+n).
+// 1 when recorded updates supply every byte of the pointer, without needing a base snapshot or live backing.
 static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
+    uint8_t seen[8] = {0};
+    size_t have = 0;
+    if (n > sizeof seen) return 0;
     VkExecDraw *D = ex->draw;
     const VkExecUpd *u = ex->upd;   // a chunk: the scan's list of the submission, of which upd_n precede this op
     uint32_t cnt = ex->upd_n, mask = UINT32_MAX;
@@ -1452,12 +1455,16 @@ static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
         if (D->UPD.fence != ex->fence) return 0;
         u = D->UPD.u, cnt = D->UPD.n, mask = UPD_N - 1;
     }
-    for (uint32_t i = cnt, end = cnt > UPD_N ? cnt - UPD_N : 0; i-- > end;) {
+    for (uint32_t i = cnt, end = !ex->chunked && cnt > UPD_N ? cnt - UPD_N : 0; i-- > end;) {
         const VkExecUpd *e = &u[i & mask];
         if (a >= e->hi || a + n <= e->lo) continue;
-        if (a < e->lo || a + n > e->hi) return 0;   // partly covered: memory
-        MX_CPY(out, e->data + (a - e->lo), n);
-        return 1;
+        uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
+        for (uint64_t p = lo; p < hi; p++) {
+            if (seen[p - a]) continue;   // newer updates win, including a later partial overwrite
+            ((uint8_t *)out)[p - a] = e->data[p - e->lo];
+            seen[p - a] = 1;
+            if (++have == n) return 1;
+        }
     }
     return 0;
 }
@@ -1465,9 +1472,14 @@ static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
 // Applies the updates of this submission that touch [a, a+n) onto out, oldest first (ub_bind's merged copies).
 static void upd_apply(const VkExec *ex, uint64_t a, uint8_t *out, size_t n) {
     const UpdRing *U = &ex->draw->UPD;
-    if (U->fence != ex->fence) return;
-    for (uint32_t i = U->n > UPD_N ? U->n - UPD_N : 0; i < U->n; i++) {
-        const VkExecUpd *e = &U->u[i % UPD_N];
+    const VkExecUpd *u = ex->upd;
+    uint32_t cnt = ex->upd_n, mask = UINT32_MAX;
+    if (!ex->chunked) {
+        if (U->fence != ex->fence) return;
+        u = U->u, cnt = U->n, mask = UPD_N - 1;
+    }
+    for (uint32_t i = !ex->chunked && cnt > UPD_N ? cnt - UPD_N : 0; i < cnt; i++) {
+        const VkExecUpd *e = &u[i & mask];
         uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
         if (lo < hi) MX_CPY(out + (lo - a), e->data + (lo - e->lo), hi - lo);
     }
@@ -1480,7 +1492,16 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     uint64_t off = (uint64_t)r->handle * 4, a = 0;
     VkMemSpan sp;
     if (!u->addr || u->size < off + 8 || upd_read(ex, u->addr + off, &a, 8)) return a;
-    if (vk_mem_resolve(u->addr + off, 8, &sp)) memcpy(&a, (const void *)(uintptr_t)(u->addr + off), 8);
+    // Resolve the pointer from the same submission snapshot as ubo_info. The game can rewrite the live block
+    // while replay records; using it here can bind another frame's storage allocation (or the zero fallback).
+    VkDescriptorBufferInfo snap;
+    if (vk_usnap_find(u->addr + off, 8, ex->chunked ? ex->drop_n : UINT32_MAX, 1, &snap)) {
+        memcpy(&a, vk_usnap_map() + snap.offset, 8);
+    } else {
+        if (!vk_mem_resolve(u->addr + off, 8, &sp)) return 0;
+        memcpy(&a, (const void *)(uintptr_t)(u->addr + off), 8);
+    }
+    upd_apply(ex, u->addr + off, (uint8_t *)&a, 8);
     return a;
 }
 
@@ -3978,13 +3999,15 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         MO.nodata++, MO.why[0]++;
         return;
     }
-    static struct { uint64_t frame, key; int moving; VkDescriptorBufferInfo b[17]; uint32_t have; } memo[8192];
+    static struct { uint64_t gen, key; int moving; VkDescriptorBufferInfo b[17]; uint32_t have; } memo[8192];
     uint64_t key = banks;
     for (int b = 3; b <= 16; b++)
         if (banks >> b & 1 && b != 4) key = (key ^ ex->ubo[NVN_STAGE_VS][b - 3].addr) * 0x100000001b3ull;
     uint32_t mi = (uint32_t)(key * 0xff51afd7ed558ccdull >> 51);
     uint32_t have = 0;
-    if (memo[mi].frame == frame && memo[mi].key == key) {
+    // Previous-block descriptors belong to this list's submission snapshot. A second submission in the same
+    // present can reuse the guest addresses with new contents and must not reuse the first submission's decision.
+    if (memo[mi].gen == mo_gen && memo[mi].key == key) {
         if (!memo[mi].moving) {
             if (t0) MO.ns_still += kern_now_ns() - tp;
             return (void)MO.still++;
@@ -4000,7 +4023,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
             if (u->addr && u->size && mo_prev_cached(b - 3, u, &prevb[b], &changed))
                 have |= 1u << b, moving |= changed << b;   // the banks whose block changed
         }
-        memo[mi].frame = frame, memo[mi].key = key, memo[mi].moving = moving;
+        memo[mi].gen = mo_gen, memo[mi].key = key, memo[mi].moving = moving;
         memcpy(memo[mi].b, prevb, sizeof prevb), memo[mi].have = have;
         if (!moving) {
             if (t0) MO.ns_still += kern_now_ns() - tp;

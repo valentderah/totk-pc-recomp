@@ -46,10 +46,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RSF_NATIVE] = "Native", [UI_MENU_RSF_QUALITY_VALUE] = "Quality", [UI_MENU_RSF_BALANCED] = "Balanced",
     [UI_MENU_RSF_PERFORMANCE] = "Performance", [UI_MENU_RSF_ULTRA] = "Ultra Performance",
     [UI_MENU_RSF_FG] = "Frame generation",
-    [UI_MENU_RSF_FG_DESC] = "Adds generated frames between rendered frames when supported by the selected provider.",
+    [UI_MENU_RSF_FG_DESC] = "Experimental. Requests generated frames; unsupported inputs use native presentation. Restart after changing.",
     [UI_MENU_RSF_LATENCY] = "Low latency",
     [UI_MENU_RSF_LATENCY_DESC] = "Reduces input latency when supported by your GPU. Works with upscaling off. Restart after changing.",
-    [UI_MENU_RSF_UNAVAILABLE] = "Unavailable in this build",
+    [UI_MENU_RSF_UNAVAILABLE] = "Experimental frame generation requires opt-in before launch",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",

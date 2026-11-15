@@ -97,5 +97,6 @@ int32_t rsf_present_status(RsfPresent *s, rsf_fgvk_status *status) {
     return s && s->ready ? s->status(s->provider, status) : RSF_BACKEND_ERROR_NOT_READY;
 }
 void rsf_present_submitted(RsfPresent *s, void *const *commands, uint32_t count) {
-    if (s && s->ready) s->submitted(s->provider, commands, count);
+    // Closing blocks new work, but previously recorded commands must still retire.
+    if (s && s->provider) s->submitted(s->provider, commands, count);
 }
