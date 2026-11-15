@@ -659,8 +659,8 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     // (controller y up). Then the down is wrong by a quarter turn (laid flat without turning): a second held still
     // levels it to within 8 degrees.
     MotionFusion *u = motion_new();
-    const double zero[3] = {0, 0, 0}, standing[3] = {0, -1, 0};
-    motion_feed(u, zero, still, t);
+    const double standing[3] = {0, -1, 0};
+    motion_feed(u, still, still, t);
     int before = motion_read(u, ms, 16, t + 1000000);
     motion_feed(u, standing, still, t += 4000000);
     int first = motion_read(u, ms, 16, t + 1000000);
