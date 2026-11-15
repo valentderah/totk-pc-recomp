@@ -18,6 +18,10 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "rsf_present.h"
+#ifdef _WIN32
+#include "input_win.h"
+#endif
 #include "flight.h"
 #include "fs.h"
 #include "gfx.h"
@@ -124,6 +128,7 @@ double gfx_window_refresh_hz(void) { return plat_cas32(&g_rate_mhz, 0, 0) / 1000
 // ---- swapchain and present state (g_pl)
 static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
+static RsfPresent *g_rsf_present;
 static VkFormat g_sc_fmt;
 static int g_sc_hdr;                        // HDR10 (TOTK_HDR, vk_hdr.c): PQ code values in Rec. 2020
 static VkExtent2D g_sc_ext;
@@ -493,7 +498,8 @@ static void flip_locked(void) {
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
-    VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
+    VkResult r = g_rsf_present ? (VkResult)rsf_present_flip(g_rsf_present, &pi)
+                               : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
     if (c && c->has_nv_reflex) vk_reflex_marker(5, pid);   // VK_LATENCY_MARKER_PRESENT_END_NV
     if (c) latency_note(c, pid ? pid : g_flip_pid);
@@ -508,6 +514,83 @@ static void free_capture(void) {
     g_cap_ptr = NULL;
     g_cap_size = 0;
     g_cap_valid = 0;
+}
+
+static rsf_vk_function present_instance_proc(void *instance, const char *name) {
+    return (rsf_vk_function)vkGetInstanceProcAddr(instance, name);
+}
+static rsf_vk_function present_device_proc(void *device, const char *name) {
+    return (rsf_vk_function)vkGetDeviceProcAddr(device, name);
+}
+static void present_lock(void *user) { (void)user; vk_queue_lock(); }
+static void present_unlock(void *user) { (void)user; vk_queue_unlock(); }
+static int32_t present_submit(void *user, uint32_t count, const void *submits, uint64_t fence) {
+    (void)user;
+    vk_queue_lock();
+    VkResult result = vkQueueSubmit(vk_ctx()->gfx_queue, count, submits, (VkFence)fence);
+    vk_queue_unlock();
+    return result;
+}
+
+static int retire_swapchain(void) {
+    VkCtx *c = vk_ctx();
+    // SDK workers can take the queue lock while draining. Hold only g_pl here.
+    if (g_rsf_present && rsf_present_drain(g_rsf_present) != RSF_BACKEND_OK) return 0;
+    vk_queue_lock();
+    VkResult idle = vkDeviceWaitIdle(c->device);
+    vk_queue_unlock();
+    if (idle != VK_SUCCESS) return 0;
+    for (uint32_t i = 0; i < g_sc_n; i++) {
+        vkDestroySemaphore(c->device, g_render_done[i], NULL);
+        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
+        g_render_done[i] = VK_NULL_HANDLE;
+        g_sc_view[i] = VK_NULL_HANDLE;
+    }
+    g_sc_n = 0;
+    if (g_rsf_present) {
+        if (rsf_present_close(&g_rsf_present) != RSF_BACKEND_OK) return 0;
+    } else if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
+    g_sc = VK_NULL_HANDLE;
+    return 1;
+}
+
+static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_t backend) {
+    VkCtx *c = vk_ctx();
+    rsf_fgvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_FGVK_ABI_VERSION,
+        .graphics = {.struct_size = sizeof(rsf_srvk_setup), .abi_version = RSF_SRVK_ABI_VERSION,
+            .instance = c->instance, .physical_device = c->phys, .device = c->device,
+            .instance_proc = present_instance_proc, .device_proc = present_device_proc,
+            .backend = (uint32_t)cfg_int("TOTK_RSF_BACKEND"),
+            .output_width = info->imageExtent.width, .output_height = info->imageExtent.height,
+            .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR")},
+        .queue_family = c->gfx_family, .create_info = info,
+        .graphics_submit = present_submit, .lock_queues = present_lock, .unlock_queues = present_unlock};
+    for (unsigned i = 0; i < 4; i++) setup.queues[i] = c->rsf_queues[i];
+    rsf_fgvk_host_options host = {.struct_size = sizeof host, .abi_version = RSF_FGVK_HOST_ABI_VERSION,
+        .timeline_enabled = 1};
+#ifdef _WIN32
+    host.window = gfx_window_handle();
+    wchar_t directory[PLAT_PATH_MAX];
+    const char *path = cfg_get("TOTK_RSF_PROVIDER_DIR");
+    if (path && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, directory, PLAT_PATH_MAX))
+        host.intel_runtime_directory = (const uint16_t *)directory;
+#endif
+    int32_t result = rsf_present_open(&setup, &host, backend, 1, &g_rsf_present);
+    if (result != RSF_BACKEND_OK) {
+        rt_log("rsf: FG backend %u creation refused (%d)", backend, result);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    // Establish WSI ownership only. Generation must wait for proven source-frame,
+    // depth/motion and tonemapped HUD-less inputs; the menu remains unavailable.
+    result = rsf_present_enable(g_rsf_present, 0, 1);
+    if (result != RSF_BACKEND_OK) return VK_ERROR_INITIALIZATION_FAILED;
+    g_sc = (VkSwapchainKHR)rsf_present_chain(g_rsf_present);
+    return VK_SUCCESS;
+}
+
+static VkResult acquire_swapchain(uint64_t timeout, VkSemaphore semaphore, uint32_t *index) {
+    if (g_rsf_present) return (VkResult)rsf_present_acquire(g_rsf_present, timeout, (uint64_t)semaphore, 0, index);
+    return vkAcquireNextImageKHR(vk_ctx()->device, g_sc, timeout, semaphore, VK_NULL_HANDLE, index);
 }
 
 static int build_swapchain(void) {
@@ -537,9 +620,7 @@ static int build_swapchain(void) {
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
 
-    vk_queue_lock();
-    vkDeviceWaitIdle(c->device);
-    VkSwapchainKHR old = g_sc;
+    if (!retire_swapchain()) return 0;
     VkSwapchainLatencyCreateInfoNV sci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV,
         .latencyModeEnable = VK_TRUE
@@ -553,27 +634,36 @@ static int build_swapchain(void) {
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // every surface supports it (the menu overlay draws into it)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
-        .oldSwapchain = old};
-    VkResult r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+        .oldSwapchain = VK_NULL_HANDLE};
+    VkResult r;
+    int backend = cfg_int("TOTK_RSF_FG");
+    if (backend && !hdr && c->rsf_queue_count == 4) {
+        r = open_rsf_swapchain(&ci, (uint32_t)backend);
+        if (r != VK_SUCCESS && g_rsf_present) return 0; // partial owner must retire before another WSI owner
+        if (r != VK_SUCCESS) rt_log("rsf: presentation unavailable (%d); using native presentation", (int)r);
+    } else r = VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!g_rsf_present) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
     if (r != VK_SUCCESS) {
-        rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
-        g_sc = old;
-        vk_queue_unlock();
+        rt_log("gfx: swapchain creation failed (%d)", (int)r);
         return 0;
     }
-    for (uint32_t i = 0; i < g_sc_n; i++) {
-        vkDestroySemaphore(c->device, g_render_done[i], NULL);
-        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
-        g_sc_view[i] = VK_NULL_HANDLE;
-    }
-    if (old) vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
     vk_hdr_set_active(hdr);
-    if (hdr) vk_hdr_metadata(g_sc, 1);
+    if (hdr && !g_rsf_present) vk_hdr_metadata(g_sc, 1);
     g_sc_ext = ext;
     g_sc_n = MAX_IMAGES;
-    vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img);
+    if (g_rsf_present) {
+        uint64_t images[MAX_IMAGES];
+        if (rsf_present_images(g_rsf_present, &g_sc_n, images) != VK_SUCCESS || g_sc_n > MAX_IMAGES) {
+            g_sc_n = 0;
+            return 0;
+        }
+        for (uint32_t i = 0; i < g_sc_n; i++) g_sc_img[i] = (VkImage)images[i];
+    } else if (vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img) != VK_SUCCESS) {
+        g_sc_n = 0;
+        return 0;
+    }
     VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t i = 0; i < g_sc_n; i++) {
         vkCreateSemaphore(c->device, &semi, NULL, &g_render_done[i]);
@@ -583,7 +673,6 @@ static int build_swapchain(void) {
         if (vkCreateImageView(c->device, &vi, NULL, &g_sc_view[i]) != VK_SUCCESS) g_sc_view[i] = VK_NULL_HANDLE;
     }
     free_capture();
-    vk_queue_unlock();
     // The Reflex sleep mode belongs to the swapchain: a new one (resize, fullscreen, out of date) starts with low
     // latency off, so the mode is set on it again even though the setting did not change.
     g_reflex_mode = -1;
@@ -812,11 +901,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         goto out;
     }
     uint32_t idx = 0;
-    VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+    VkResult r = acquire_swapchain(1000000000ull, g_acquire[slot], &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+        r = acquire_swapchain(1000000000ull, g_acquire[slot], &idx);
     }
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
@@ -940,7 +1029,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         last_write = 0;
         record_thumb(cb, dst, slot);
     }
-    sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
+    sync_barrier(cb, dst, last, g_rsf_present ? (VkImageLayout)rsf_present_layout(g_rsf_present) : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
     vkEndCommandBuffer(cb);
 
@@ -954,6 +1043,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                         .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
+    if (r == VK_SUCCESS && g_rsf_present) {
+        void *commands[] = {cb};
+        rsf_present_submitted(g_rsf_present, commands, 1);
+    }
     vk_queue_unlock();
     if (r == VK_SUCCESS) {
         g_flip_on = 1;
@@ -1000,13 +1093,11 @@ void gfx_window_resize(int cw, int chh) {
 }
 
 // Called by vk_shutdown before the device goes away; the window and its thread stay.
-void gfx_window_release_vk(void) {
+int gfx_window_release_vk(void) {
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
-    if (c && g_started) {
-        vk_queue_lock();
-        vkDeviceWaitIdle(c->device);
-        vk_queue_unlock();
+    if (c && (g_started || g_sc || g_rsf_present)) {
+        if (!retire_swapchain()) { plat_rmutex_unlock(&g_pl); return 0; }
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
@@ -1024,18 +1115,13 @@ void gfx_window_release_vk(void) {
             vkDestroySemaphore(c->device, g_acquire[i], NULL);
             vkDestroyFence(c->device, g_fence[i], NULL);
         }
-        for (uint32_t i = 0; i < g_sc_n; i++) {
-            vkDestroySemaphore(c->device, g_render_done[i], NULL);
-            if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
-            g_sc_view[i] = VK_NULL_HANDLE;
-        }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
-        if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
         g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);
+    return 1;
 }
 
 void gfx_window_start(void) {

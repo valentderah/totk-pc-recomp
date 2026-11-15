@@ -64,13 +64,15 @@ int rsf_vk_prepare(void) {
     if (!rsf_runtime_load()) return 0;
     // Non-DLSS SR does not require Streamline. Latency will share this session
     // when its input/simulation event producer is connected.
-    if (cfg_int("TOTK_RSF_BACKEND") != RSF_SR_DLSS) { prepared = 1; return 1; }
+    if (cfg_int("TOTK_RSF_BACKEND") != RSF_SR_DLSS && cfg_int("TOTK_RSF_FG") != 1) { prepared = 1; return 1; }
     __typeof__(&rsf_slvk_initialize) initialize = rsf_runtime_symbol("rsf_slvk_initialize");
     instance_resolver = rsf_runtime_symbol("rsf_latencyvk_instance_proc");
     if (!initialize || !instance_resolver) return 0;
     rsf_slvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SLVK_ABI_VERSION,
         .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR"),
-        .project_id = "totk-pc-recomp", .features = RSF_SLVK_DLSS_SR};
+        .project_id = "totk-pc-recomp",
+        .features = (cfg_int("TOTK_RSF_BACKEND") == RSF_SR_DLSS ? RSF_SLVK_DLSS_SR : 0) |
+                    (cfg_int("TOTK_RSF_FG") == 1 ? RSF_SLVK_DLSS_FG : 0)};
     int32_t result = initialize(&setup);
     if (result != RSF_BACKEND_OK) {
         rt_log("rsf: early Vulkan SDK initialization refused (%d)", result);

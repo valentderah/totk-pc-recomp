@@ -505,7 +505,7 @@ static int create_device(void) {
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
 static void destroy_all(void) {
-    gfx_window_release_vk();
+    if (!gfx_window_release_vk()) return;
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device && !vk_dlaa_release()) return;
     if (!rsf_vk_shutdown()) return;

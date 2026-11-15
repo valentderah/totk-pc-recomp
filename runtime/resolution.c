@@ -681,11 +681,6 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
-<<<<<<< HEAD
-    // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
-    // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
-    // next start.
-=======
     uint64_t request = __atomic_exchange_n(&rsf_scene_request, 0, __ATOMIC_ACQUIRE);
     if (request && (unsigned)(request >> 32) == cfg_version()) {
         unsigned w = (unsigned)(request >> 16) & 65535, h = (unsigned)request & 65535;
@@ -698,9 +693,9 @@ void res_present(Cpu *c) {
             rt_log("resolution: RSF requested scene %ux%u", w, h);
         }
     }
-    // The hook runs on every guest function entry while it waits: should the game set its render size before
-    // res_init or never, it stops after 1800 presents (half a minute at 60 fps) and modes change at the next start.
->>>>>>> 812485f (Apply RSF render-size plans through the game-thread resolution hook)
+    // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
+    // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
+    // next start.
     static unsigned waited;
     if (g_fnprof && !renderer && ++waited == 1800) {
         g_fnprof = 0;

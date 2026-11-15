@@ -15,7 +15,7 @@ const char *cfg_get(const char *name) {
     if (!strcmp(name, "TOTK_RSF_PROVIDER_DIR")) return provider_directory;
     return NULL;
 }
-int cfg_int(const char *name) { (void)name; return 1; }
+int cfg_int(const char *name) { return !strcmp(name, "TOTK_RSF_BACKEND") ? 1 : 0; }
 void rt_log(const char *format, ...) {
     va_list args;
     va_start(args, format);

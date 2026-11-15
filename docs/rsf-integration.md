@@ -73,8 +73,17 @@ attempt prevents further WSI calls. Its compiled fault-injection fixture
 `tests/rsf_present_lifetime_check.c` passes those cases, including submission facts
 after failed recording. Build the fixture with `runtime/rsf_present.c`, the runtime
 and external SDK includes, and UCRT64 Clang; run it under `build/checks/`.
-The window's native WSI calls have not yet been switched to this adapter. This
-fixture does not establish generated frames, valid HUD-less inputs or presentation.
+The window now uses this adapter's creation, image enumeration, acquire and
+presentation calls when a configured FG provider creates an owner. Its final image
+layout comes from that owner. Successful host-present submissions are reported to
+RSF. Resize and shutdown drain SDK work, finish GPU use, retire engine views and
+close the same owner; cleanup failure prevents device destruction. Partial owners
+never fall through to native WSI. An upfront unsupported/missing provider with no
+retained owner may keep native presentation. HDR currently keeps native WSI.
+Generation is explicitly disabled until input-frame identity, normalized FG inputs
+and tonemapped HUD-less capture are connected. Menu FG controls remain unavailable.
+Object compilation and the ownership fixture pass; real provider WSI in TotK and
+generated output are not yet validated.
 
 When a nonzero `rsf_fg` is requested, device selection prefers a graphics/compute/
 presentation family with four queues. Device creation requests and retrieves four
