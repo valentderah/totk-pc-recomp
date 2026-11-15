@@ -151,6 +151,7 @@ struct rsf_fgvk_frame;
 // Scene producer, after rec_drain and outside rendering. The owner copies the
 // record and records SDK work into cb; submit that work even when preparation fails.
 int vk_present_fg_prepare(VkCommandBuffer cb, const struct rsf_fgvk_frame *frame);
+int vk_present_fg_hudless(VkCommandBuffer cb, const struct rsf_fgvk_frame *frame);
 // Producer only, after a successful actual queue submit, outside the queue lock.
 // Never call on the recorder: presentation can hold its lock while waiting for it.
 void vk_present_fg_submitted(const VkSubmitInfo2 *submit);

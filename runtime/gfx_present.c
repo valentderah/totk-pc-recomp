@@ -514,6 +514,18 @@ static void flip_locked(void) {
     if (c && c->has_nv_reflex) vk_reflex_marker(5, pid);   // VK_LATENCY_MARKER_PRESENT_END_NV
     if (c) latency_note(c, pid ? pid : g_flip_pid);
     rsf_vk_present_event(source, 0);
+    if (g_rsf_present) {
+        rsf_fgvk_status status = {.struct_size = sizeof status, .abi_version = RSF_FGVK_ABI_VERSION};
+        static uint32_t previous_enabled;
+        if (!rsf_present_status(g_rsf_present, &status) &&
+            (status.enabled != previous_enabled || (source && !(source % 300)))) {
+            previous_enabled = status.enabled;
+            rt_log("rsf: FG present source %llu enabled %u, prepared %llu HUD-less %llu generated callbacks %llu SDK presents %llu, result %d",
+                (unsigned long long)status.source_frame, status.enabled, (unsigned long long)status.prepared,
+                (unsigned long long)status.tagged, (unsigned long long)status.generated_callbacks,
+                (unsigned long long)status.last_present_count, status.result);
+        }
+    }
     if ((rt_trace & RT_TRACE_PRESENT) && source && (source <= 16 || !(source % 600)))
         rt_log("rsf host present: source %llu image %u result %d", (unsigned long long)source, g_flip_idx, (int)r);
     vk_device_fault_report(r);
@@ -570,6 +582,13 @@ static int retire_swapchain(void) {
 int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
     plat_rmutex_lock(&g_pl);
     int32_t result = g_rsf_present ? rsf_present_prepare(g_rsf_present, cb, frame) : RSF_BACKEND_ERROR_NOT_READY;
+    plat_rmutex_unlock(&g_pl);
+    return result;
+}
+
+int vk_present_fg_hudless(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
+    plat_rmutex_lock(&g_pl);
+    int32_t result = g_rsf_present ? rsf_present_hudless(g_rsf_present, cb, frame) : RSF_BACKEND_ERROR_NOT_READY;
     plat_rmutex_unlock(&g_pl);
     return result;
 }

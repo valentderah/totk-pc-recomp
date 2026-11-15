@@ -35,6 +35,10 @@ static int32_t present(rsf_fgvk *owner, const void *info, const rsf_frame_record
 static int32_t prepare(rsf_fgvk *owner, void *commands, const rsf_fgvk_frame *frame) {
     assert(owner && commands && frame); return -9;
 }
+static int32_t status(rsf_fgvk *owner, rsf_fgvk_status *out) {
+    assert(owner && out && out->struct_size == sizeof *out && out->abi_version == RSF_FGVK_ABI_VERSION);
+    out->prepared = 3; return 0;
+}
 static void submitted(rsf_fgvk *owner, void *const *commands, uint32_t count) {
     assert(owner && count == 1 && commands[0]); ++submitted_calls;
 }
@@ -53,6 +57,7 @@ void *rsf_runtime_symbol(const char *name) {
     if (!strcmp(name, "rsf_fgvk_present_source")) return present;
     if (!strcmp(name, "rsf_fgvk_prepare") || !strcmp(name, "rsf_fgvk_hudless")) return prepare;
     if (!strcmp(name, "rsf_fgvk_submitted")) return submitted;
+    if (!strcmp(name, "rsf_fgvk_get_status")) return status;
     if (!strcmp(name, "rsf_fgvk_drain")) return drain;
     if (!strcmp(name, "rsf_fgvk_destroy")) return destroy;
     return NULL;
@@ -74,6 +79,8 @@ int main(void) {
         .session_id = 7, .frame_id = 5, .view_id = 3, .resource_generation = 2};
     assert(!rsf_present_flip(owner, &index, &identity) && acquire_calls == 1 && present_calls == 1);
     assert(rsf_present_prepare(owner, &command, &frame) == -9);
+    rsf_fgvk_status state = {.struct_size = sizeof state, .abi_version = RSF_FGVK_ABI_VERSION};
+    assert(!rsf_present_status(owner, &state) && state.prepared == 3);
     rsf_present_submitted(owner, commands, 1);
     assert(submitted_calls == 1); // Failed recording still receives submission retirement facts.
     drain_error = -9;

@@ -15,6 +15,7 @@ int32_t rsf_present_acquire(RsfPresent *, uint64_t timeout, uint64_t semaphore, 
 int32_t rsf_present_flip(RsfPresent *, const void *present_info, const rsf_frame_record *source);
 int32_t rsf_present_prepare(RsfPresent *, void *commands, const rsf_fgvk_frame *);
 int32_t rsf_present_hudless(RsfPresent *, void *commands, const rsf_fgvk_frame *);
+int32_t rsf_present_status(RsfPresent *, rsf_fgvk_status *);
 void rsf_present_submitted(RsfPresent *, void *const *commands, uint32_t count);
 // Quiesce producers first. Drain SDK presentation before releasing engine views;
 // checked close preserves ownership and callbacks on either drain/destroy failure.

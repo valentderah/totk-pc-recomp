@@ -1743,7 +1743,9 @@ static int chunked_on(void) {
             rt_log("vk: replay in up to %d chunks per submission of at least %d draws each, %d recording thread%s%s",
                    SC.chunks, SC.min_draws, SC.workers, SC.workers > 1 ? "s" : "", SC.check ? ", state checked" : "");
     }
-    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed;
+    // FG snapshots run at an actual draw boundary. Keep their resource and
+    // camera order serial until the chunk planner carries that boundary too.
+    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !cfg_int("TOTK_RSF_FG");
 }
 
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source) {

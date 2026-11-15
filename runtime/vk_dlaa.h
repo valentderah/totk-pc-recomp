@@ -55,3 +55,6 @@ void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);
+// After an actual scene draw: snapshot the recognized final FXAA/scaling result
+// before subsequent overlays. Unrecognized boundaries never authorize FG.
+void vk_dlaa_fg_after_draw(VkExec *ex, const GfxShader *fs);

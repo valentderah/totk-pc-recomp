@@ -80,6 +80,11 @@ static struct {
         VkImage sr_color;
         VmaAllocation sr_color_mem;
         VkImageView sr_color_view;
+        VkImage fg_srgb, fg_color; // encoded post-processing result, then byte-preserving UNORM copy
+        VmaAllocation fg_srgb_mem, fg_color_mem;
+        VkImageView fg_srgb_view, fg_color_view;
+        rsf_frame_record fg_record;
+        uint64_t fg_copied;
         uint64_t used;           // evals count when it last ran
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
@@ -117,6 +122,7 @@ static struct {
     uint64_t mv_frames, mv_none, masked;   // masked: frames with the characters' bias mask
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
+    int fg_on;                   // cached once per present; the draw hook runs on every native draw
     int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
@@ -156,6 +162,10 @@ static void free_size(struct Size *e) {
     if (!rsf_sr_close(&e->rsf)) { D.failed = 1; return; }
     if (e->sr_color_view) vkDestroyImageView(c->device, e->sr_color_view, NULL);
     if (e->sr_color) vmaDestroyImage(c->vma, e->sr_color, e->sr_color_mem);
+    if (e->fg_srgb_view) vkDestroyImageView(c->device, e->fg_srgb_view, NULL);
+    if (e->fg_color_view) vkDestroyImageView(c->device, e->fg_color_view, NULL);
+    if (e->fg_srgb) vmaDestroyImage(c->vma, e->fg_srgb, e->fg_srgb_mem);
+    if (e->fg_color) vmaDestroyImage(c->vma, e->fg_color, e->fg_color_mem);
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
     if (e->device_depth_view) vkDestroyImageView(c->device, e->device_depth_view, NULL);
@@ -863,6 +873,8 @@ static void fg_prepare(VkExec *ex, struct Size *e, const rsf_frame_record *recor
         .motion_scale_x = 1, .motion_scale_y = 1};
     rec_drain();   // SDK records directly into the producer's current command buffer.
     int result = vk_present_fg_prepare(cb, &frame);
+    e->fg_record = *record;
+    if (result) e->fg_record.frame_id = 0;
     rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vk_exec_draw_new_cb(ex);
@@ -1218,6 +1230,7 @@ static void preset_check(void) {
 }
 
 void vk_dlaa_frame(void) {
+    D.fg_on = N.available && cfg_int("TOTK_RSF_FG") != 0;
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
@@ -1282,6 +1295,70 @@ static uint64_t spirv_hash(const GfxShader *s) {
         if (e == s) return tab[j].h;
     }
     return 0;   // table full: no skip
+}
+
+void vk_dlaa_fg_after_draw(VkExec *ex, const GfxShader *fs) {
+    if (!D.fg_on || !fs || !ex->source_frame || ex->chunked) return;
+    struct Size *e = D.last;
+    const VkExecTarget *t = &ex->color[0];
+    if (!e || e->fg_record.frame_id != ex->source_frame || e->fg_copied == ex->source_frame ||
+        ex->pass_ncolor != 1 || !t->image || t->width != e->ow || t->height != e->oh ||
+        !scene_color(t->format) || t->samples > 1 || t->is3d || t->level || t->base_layer || ex->pass_layers != 1) return;
+    uint64_t hash = spirv_hash(fs);
+    int known = 0;
+    for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= hash == FXAA_FS[i];
+    if (!known) return;
+    VkCtx *c = vk_ctx();
+    VkFormatProperties src, dst;
+    vkGetPhysicalDeviceFormatProperties(c->phys, t->format, &src);
+    vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_R8G8B8A8_SRGB, &dst);
+    if (!(src.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+        !(dst.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) return;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!e->fg_srgb && !image2d(e->ow, e->oh, VK_FORMAT_R8G8B8A8_SRGB, usage,
+        &e->fg_srgb, &e->fg_srgb_mem, &e->fg_srgb_view)) return;
+    if (!e->fg_color && !image2d(e->ow, e->oh, VK_FORMAT_R8G8B8A8_UNORM, usage,
+        &e->fg_color, &e->fg_color_mem, &e->fg_color_view)) return;
+    // The known final scaling/FXAA draw is complete; overlay draws have not run.
+    // End rendering and restore feedback-loop targets before reading this image.
+    vk_exec_barrier(ex);
+    VkCommandBuffer cb = ex->cb;
+    rsf_layout(cb, t->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageLayout old = e->fg_copied ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    rsf_layout(cb, e->fg_srgb, old, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    rsf_layout(cb, e->fg_color, old, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, 0, 0}, {(int)e->ow, (int)e->oh, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {(int)e->ow, (int)e->oh, 1}}};
+    // Vulkan encodes linear RGB when blitting to an sRGB format. Copying those
+    // bytes into UNORM then preserves the encoding expected by the FG service.
+    vkCmdBlitImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->fg_srgb,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    rsf_layout(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {e->ow, e->oh, 1}};
+    vkCmdCopyImage(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->fg_color,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    rsf_layout(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->fg_color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    e->fg_copied = ex->source_frame;
+    rsf_fgvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_FGVK_ABI_VERSION, .record = &e->fg_record,
+        .hudless = rsf_image(e->fg_color, VK_FORMAT_R8G8B8A8_UNORM, e->ow, e->oh, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
+    rec_drain();
+    int result = vk_present_fg_hudless(cb, &frame);
+    rsf_layout(cb, e->fg_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    vk_exec_pass_begin(ex);   // load the existing target for the next native draw
+    static uint64_t copied, refused;
+    if (!result) {
+        if (++copied == 1 || !(copied % 300))
+            rt_log("rsf: FG HUD-less %llu source %llu, %ux%u encoded, boundary %016llx",
+                (unsigned long long)copied, (unsigned long long)ex->source_frame, e->ow, e->oh, (unsigned long long)hash);
+    } else if (++refused == 1 || !(refused % 300))
+        rt_log("rsf: FG HUD-less refused (%d) source %llu (%llu refusals)", result,
+            (unsigned long long)ex->source_frame, (unsigned long long)refused);
 }
 
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {

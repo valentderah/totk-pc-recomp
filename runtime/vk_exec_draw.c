@@ -4254,6 +4254,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
     }
     ex->recorded++;
+    vk_dlaa_fg_after_draw(ex, D->B.st.fs);
 }
 
 // Primitive restart of an indexed draw. NVN restarts strips wherever an index equals the SetPrimitiveRestart value;
@@ -4311,6 +4312,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
                      (uint32_t)d->base_instance);
     ex->recorded++;
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
+    vk_dlaa_fg_after_draw(ex, D->B.st.fs);
 }
 
 // DrawElementsIndirect: the arguments are read by the GPU from the pool buffer (they are often written by an earlier
@@ -4336,6 +4338,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
     VK_MEM_BOUND(ip);
     VK_MEM_BOUND(ib);
+    vk_dlaa_fg_after_draw(ex, D->B.st.fs);
 }
 
 // ---- dispatch and uniform buffer updates

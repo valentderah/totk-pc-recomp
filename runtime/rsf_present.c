@@ -17,6 +17,7 @@ struct RsfPresent {
     __typeof__(&rsf_fgvk_present_source) present;
     __typeof__(&rsf_fgvk_prepare) prepare;
     __typeof__(&rsf_fgvk_hudless) hudless;
+    __typeof__(&rsf_fgvk_get_status) status;
     __typeof__(&rsf_fgvk_submitted) submitted;
     __typeof__(&rsf_fgvk_drain) drain;
     __typeof__(&rsf_fgvk_destroy) destroy;
@@ -54,6 +55,7 @@ int32_t rsf_present_open(const rsf_fgvk_setup *setup, const rsf_fgvk_host_option
     BIND(present, "rsf_fgvk_present_source");
     BIND(prepare, "rsf_fgvk_prepare");
     BIND(hudless, "rsf_fgvk_hudless");
+    BIND(status, "rsf_fgvk_get_status");
     BIND(submitted, "rsf_fgvk_submitted");
     BIND(drain, "rsf_fgvk_drain");
     BIND(destroy, "rsf_fgvk_destroy");
@@ -90,6 +92,9 @@ int32_t rsf_present_prepare(RsfPresent *s, void *commands, const rsf_fgvk_frame 
 }
 int32_t rsf_present_hudless(RsfPresent *s, void *commands, const rsf_fgvk_frame *frame) {
     return s && s->ready ? s->hudless(s->provider, commands, frame) : RSF_BACKEND_ERROR_NOT_READY;
+}
+int32_t rsf_present_status(RsfPresent *s, rsf_fgvk_status *status) {
+    return s && s->ready ? s->status(s->provider, status) : RSF_BACKEND_ERROR_NOT_READY;
 }
 void rsf_present_submitted(RsfPresent *s, void *const *commands, uint32_t count) {
     if (s && s->ready) s->submitted(s->provider, commands, count);

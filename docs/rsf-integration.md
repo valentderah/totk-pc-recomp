@@ -563,3 +563,62 @@ normally with zero validation errors, shader failures or skipped draws. All 300
 SR evaluations report camera motion and the character history mask. This covers
 the shared metadata path with SR, FG preparation and low latency requested
 together, while generated output remains gated by the missing HUD-less input.
+
+## HUD-less capture and first generated output
+
+`vk_dlaa_fg_after_draw` now captures the recognized final FXAA/scaling draw's
+output immediately after the actual draw and before subsequent overlays. The
+snapshot requires an output-sized, single-layer float colour target and the
+same calculation source as the accepted FG preparation. It ends rendering,
+restores feedback-loop targets to GENERAL, performs the copy, then reopens
+the native pass with LOAD and invalidates cached bindings. Unknown boundaries,
+skipped FXAA draws and unmatched sources cannot authorize interpolation.
+
+The float result is linear. A blit into RGBA8_SRGB supplies its final encoding,
+then a size-compatible copy preserves those bytes in the RGBA8_UNORM image
+required by the SDK. Both formats are actual allocations; a format label is
+never substituted for a different image format. The source's blit capability
+and destination's conversion capability are checked. The relevant Vulkan rules
+are [sRGB blit conversion](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBlitImage.html)
+and [size-compatible image copy](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyImage.html).
+The SDK copies the result into its private input lease, and the existing producer
+reports that command buffer only after successful actual submission. FG recording
+temporarily uses serial replay until the chunk planner carries this draw boundary.
+The draw hook caches its FG selection once per present.
+
+The first FSR 3 run reached the world and completed 1,580 presents with real
+generation callbacks and zero validation errors, shader failures or skipped
+draws. The settled capture run completed 2,342 presents and reached 626 successful
+generation callbacks before a controlled resize drained SDK readbacks. Three
+source/output pairs at sources 1800-1802 show the torch/cave picture with similar
+overall brightness and interpolated flame edges. Their mean absolute RGB
+difference from the current HUD-less source is about 1.96-1.98 byte values; this
+is descriptive, not a temporal-quality metric. Particle motion coverage is still
+incomplete. The earlier sources 1500-1502 overlap the loading fade and produce
+nearly black final output despite a bright scene-only input. The pinned FSR 3
+inpainting shader already blends UI differences into this captured output; its
+historical capture role `fg-generated-before-ui` does not establish absence of UI.
+
+DLSS FG-only completed 1,820 presents with at least 300 accepted HUD-less inputs.
+The combined native-resolution DLSS SR/FG capture completed 2,290 presents,
+at least 300 successful SR evaluations, 600 accepted FG preparations and 564
+HUD-less inputs before resize. Both
+reached the world and exited with zero validation errors, shader failures or
+skipped draws. However, the combined capture records only real presents at
+sources 1800-1802, with SDK-generated index -1. DLSS generation is therefore
+unverified despite its enabled status. That discrepancy remains active work.
+A mailbox control retains the same combined native SR/FG/latency setup and also
+records only real presents at sources 1800-1802. It exits normally with zero
+validation errors, shader failures or skipped draws. FIFO alone therefore does
+not explain the missing DLSS generated-present records. Its process ends before
+an SDK drain, so this control establishes presenter metadata, not retired image
+readbacks. The draw hook's per-present cached selection is active in this control.
+
+All these runs used low latency on, GPL off and descriptor writes on the RTX
+4070 Laptop GPU. Self-test, settings, provider lifetime and Vulkan execution
+checks pass. Capture files and contact sheets remain in ignored
+`build/checks/rsf-fg-hudless-*` directories. On resize the new swapchain safely
+refuses inputs whose output extent differs, preserving ordinary presentation;
+FG resize recovery is not complete. Ordinary gameplay HUD, reduced-resolution
+SR, skipped/unknown FXAA paths, other FG providers and visual quality still need
+acceptance. The FG menu control remains disabled.
