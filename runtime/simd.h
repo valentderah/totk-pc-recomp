@@ -17,7 +17,17 @@
 
 typedef __uint128_t u128;
 #define SI static inline __attribute__((always_inline))
+// The noinline FP helpers are the slow paths of inline fast paths, called from cold blocks inside the lifted
+// functions. preserve_most makes the helper save the caller-saved GPRs it clobbers, so a call site does not spill and
+// reload its live values around the call. The helpers are static, so the convention never crosses a module boundary.
+#if defined(__has_attribute)
+#if __has_attribute(preserve_most)
+#define SN static __attribute__((noinline, preserve_most))
+#endif
+#endif
+#ifndef SN
 #define SN static __attribute__((noinline))
+#endif
 #define SIMD_CAT2(a, b) a##_##b
 #define SIMD_CAT(a, b) SIMD_CAT2(a, b)
 
@@ -274,6 +284,11 @@ SI void simd_rm_leave(unsigned old) {
 // plain host FP gives the ARM result unless FPCR.RMode asks for directed rounding, which the slow paths handle.
 SI int simd_directed(const Cpu *c) { return __builtin_expect((c->fpcr & FPCR_RM) != 0, 0); }
 
+// FP result check threshold of the thread (cpu.h rt_fpcr_threshold), for one lane and for a whole vector.
+SI float simd_th_s(const Cpu *c) { return c->fp_th_s[0]; }
+SI double simd_th_d(const Cpu *c) { return c->fp_th_d[0]; }
+SI vf32 simd_thv_s(const Cpu *c) { return *(const vf32 *)c->fp_th_s; }
+SI vf64 simd_thv_d(const Cpu *c) { return *(const vf64 *)c->fp_th_d; }
 #define F s
 #define T float
 #define U uint32_t
