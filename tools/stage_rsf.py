@@ -93,7 +93,7 @@ def stage(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', type=Path, default=ROOT.parent / 'ReScaleFrame')
+    parser.add_argument('--source', type=Path, default=ROOT / 'external' / 'ReScaleFrame')
     parser.add_argument('--runtime', type=Path, required=True)
     parser.add_argument('--streamline', type=Path, required=True)
     parser.add_argument('--streamline-source', type=Path, required=True)

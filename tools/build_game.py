@@ -413,7 +413,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
-    rsf_sdk = Path(os.environ.get('TOTK_RSF_SOURCE', str(ROOT.parent / 'ReScaleFrame'))).resolve()
+    rsf_sdk = Path(os.environ.get('TOTK_RSF_SOURCE', str(ROOT / 'external' / 'ReScaleFrame'))).resolve()
     for relative in ('runtime/orchestrator/include', 'runtime/contract/include', 'sdk/game/include'):
         headers = rsf_sdk / relative
         if not headers.is_dir():

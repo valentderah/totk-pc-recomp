@@ -21,7 +21,11 @@ handles creation, planning, recording, command retirement and destruction. Faile
 cleanup preserves ownership for retry. It passes UCRT64 Clang syntax checks against
 the actual SDK. The adapter is connected to `evaluate`, but has not yet been exercised
 on the GPU. Builds consume external SDK headers through `TOTK_RSF_SOURCE`, defaulting
-to the sibling ReScaleFrame checkout; no RSF headers are copied into this repository.
+to the pinned `external/ReScaleFrame` submodule; no RSF headers are copied into this repository.
+Initialize it with `git submodule update --init external/ReScaleFrame`.
+`TOTK_RSF_SOURCE` can point to a development checkout. The gitlink pins
+[RSF commit 1753d4d](https://github.com/KillerPixelCrew/ReScaleFrame/commit/1753d4d),
+published on RSF's `main` branch.
 
 The recorder and direct submission prologue now retire RSF per-command resources
 after beginning a new recording of a GPU-completed buffer. Session registration,
@@ -189,7 +193,7 @@ required for FSR2/3 device evaluation; it does not establish successful evaluati
 `tools/stage_rsf.py` stages the locally built runtime, corrected Streamline and
 FidelityFX Vulkan binaries, vendor libraries and licenses beside a development
 game build. Supply `--runtime`, `--streamline`, `--streamline-source`,
-`--fidelityfx` and `--out`; `--source` defaults to the sibling ReScaleFrame checkout.
+`--fidelityfx` and `--out`; `--source` defaults to the pinned `external/ReScaleFrame` submodule.
 Output must stay under `build/`. Before writing, it checks every required input,
 native DLL headers, pinned SDK revisions and corrected binary receipt hashes,
 and rejects unexpected stale DLLs. Its manifest records all staged SHA-256 hashes.
