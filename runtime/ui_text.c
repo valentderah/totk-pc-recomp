@@ -36,6 +36,20 @@ typedef struct { const char *lang; const char *const *text; } Row;
 #endif
 
 static const char *const text_en[UI_TEXT_COUNT] = {
+    [UI_MENU_RSF_GROUP] = "ReScaleFrame",
+    [UI_MENU_RSF_ENABLE] = "RSF reconstruction",
+    [UI_MENU_RSF_ENABLE_DESC] = "Reconstructs the 3D scene through ReScaleFrame. Requires the RSF runtime. Restart after changing.",
+    [UI_MENU_RSF_PROVIDER] = "RSF upscaler",
+    [UI_MENU_RSF_PROVIDER_DESC] = "Selects the reconstruction provider. Availability depends on your GPU and installed RSF runtime. Restart after changing.",
+    [UI_MENU_RSF_QUALITY] = "RSF quality",
+    [UI_MENU_RSF_QUALITY_DESC] = "Selects the scene resolution. Native keeps the configured scene size; lower modes trade detail for speed.",
+    [UI_MENU_RSF_NATIVE] = "Native", [UI_MENU_RSF_QUALITY_VALUE] = "Quality", [UI_MENU_RSF_BALANCED] = "Balanced",
+    [UI_MENU_RSF_PERFORMANCE] = "Performance", [UI_MENU_RSF_ULTRA] = "Ultra Performance",
+    [UI_MENU_RSF_FG] = "RSF frame generation",
+    [UI_MENU_RSF_FG_DESC] = "Adds generated frames between rendered frames when supported by the selected provider.",
+    [UI_MENU_RSF_LATENCY] = "RSF low latency",
+    [UI_MENU_RSF_LATENCY_DESC] = "Uses ReScaleFrame to reduce input latency when supported by the active provider.",
+    [UI_MENU_RSF_UNAVAILABLE] = "Unavailable in this build",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 
     [UI_MENU_TITLE] = "Settings",

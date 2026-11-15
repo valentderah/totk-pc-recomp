@@ -270,15 +270,21 @@
 # patch 0010), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
-# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
-# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
-# Read at start.
+# ReScaleFrame reconstruction of the 3D scene; the HUD is drawn afterwards.
+# Requires the separately installed RSF runtime and provider DLL directory.
+# Provider: 1 DLSS, 2 FSR2, 3 FSR3, 5 XeSS. Restart after changing enable/provider.
+# rsf_enabled = 0
+# rsf_backend = 3
+# Quality: native, quality, balanced, performance, ultra_performance.
+# rsf_quality = native
+# Absolute paths, configured for the installed RSF package:
+# rsf_runtime = C:\ReScaleFrame\ReScaleFrame.Runtime.dll
+# rsf_provider_dir = C:\ReScaleFrame\providers
+# Frame generation and low latency are not available yet; their menu controls are disabled.
+# rsf_fg = 0
+# rsf_low_latency = 0
+# Legacy configuration aliases (used only when the corresponding RSF key is unset):
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
-# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
-# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
-# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
 # dlss = dlaa
 # The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
 # ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving

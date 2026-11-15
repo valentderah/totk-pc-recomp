@@ -20,7 +20,7 @@
 // The existing DLAA setting controls scene reconstruction. Every temporal provider
 // is owned by RSF; this renderer supplies scene resources and camera/motion facts.
 static struct { int available; } N;
-int vk_dlaa_wanted(void) { return cfg_bool("TOTK_DLAA"); }
+int vk_dlaa_wanted(void) { return cfg_bool("TOTK_RSF_ENABLED"); }
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
     (void)ext; (void)n; (void)max;
 }
@@ -1088,7 +1088,8 @@ void vk_dlaa_pass(VkExec *ex) {
 static void dlss_mode(void) {
     static char mode[32];
     static int bias_on = -1;
-    const char *m = cfg_value("TOTK_DLSS");
+    const char *m = cfg_value("TOTK_RSF_QUALITY");
+    if (!strcmp(m, "native")) m = "dlaa";
     if (strcmp(m, mode)) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
@@ -1117,7 +1118,7 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("TOTK_DLAA");
+    int on = N.available && cfg_bool("TOTK_RSF_ENABLED");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;

@@ -43,18 +43,18 @@ This proves export availability only, not ABI setup or GPU provider operation.
 `runtime/rsf_vulkan.c` now initializes the shared Streamline session before instance
 creation when DLSS SR is selected. Instance/device creation and proc lookups from
 the renderer go through that session's resolver. Non-DLSS SR keeps normal loader
-dispatch. The real `tests/rsf_vulkan_startup_check.c` probe builds, but initialization
-currently returns NOT_SUPPORTED: the local RSF build has no corrected Streamline
-runtime receipt at its configured path, so its Streamline implementation was
-compiled out. A pinned SDK build is needed before this path can be validated.
+dispatch. The real `tests/rsf_vulkan_startup_check.c` probe now passes against the
+isolated RSF build and corrected runtime: Streamline initializes, NVIDIA plugin
+signatures verify, Vulkan instance creation succeeds, and shutdown succeeds.
+The earlier shared build returned NOT_SUPPORTED because its implementation had
+been compiled out without the corrected receipt.
 This does not establish FG WSI ownership or a low-latency input-event producer.
 
 The pinned corrected Streamline SDK now builds successfully under
 `build/rsf-sdk-host/artifacts/rescaleframe/streamline/Release/win-x64/runtime`.
 The original NVIDIA plugins are staged there from the SHA-512-pinned 2.14.1
 archive in RSF's Godot dependency lock. The corrected common/interposer binaries
-and their receipt remain intact. An RSF build enabling this implementation is
-being prepared under `build/rsf-sdk-host/rsf-native`, isolated from the shared RSF
+and their receipt remain intact. An RSF build enabling this implementation completed under `build/rsf-sdk-host/rsf-native`, isolated from the shared RSF
 build directory after that build failed to open a native Vulkan object at link.
 
 The experimental scene path uses `rsf_backend` and `rsf_provider_dir`, converts
@@ -132,3 +132,11 @@ queue synchronization and shutdown with Vulkan validation. Confirm the old NGX
 implementation is removed and configuration, menu, installer and packaging all
 select and deploy RSF. Provider availability alone does not prove generated frames
 were presented or latency markers reached the SDK.
+
+The in-game Graphics page now contains a ReScaleFrame group with enable, provider
+and quality controls, plus disabled frame-generation and low-latency controls
+marked unavailable. The DLSS model and character-mask controls have been removed
+from that page. New menu text falls back to English in untranslated languages.
+`rsf_enabled` and `rsf_quality` are the active keys; unset keys inherit legacy
+`dlaa` and `dlss` values. Menu/C sources pass UCRT64 syntax checks. A game-rendered
+menu and persistence still need runtime verification.
