@@ -128,7 +128,8 @@ typedef struct {
     uint64_t (*fence_done)(void);                          // highest value whose side effects are written
     // Queues the present and returns at once; the host present goes out at at_ns (kern_now_ns clock), at once when that
     // has passed or at_ns is 0.
-    void (*present)(const tex_t *t, const int crop[4], uint64_t at_ns);
+    // Verified calculation source copied from the draw owner; zero stays unassociated.
+    void (*present)(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t source_frame);
     void (*finish)(void);
     void (*read_texels)(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row, uint64_t img);
     void (*write_texels)(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row, uint64_t img);

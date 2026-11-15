@@ -727,6 +727,7 @@ NVN_API(nvnQueuePresentTexture) {
     int idx = (int)arg_x(c, 2);
     movie_tick(c);   // ov_movie.c: hand over decoded movie frames that are due; needs the core, so before the wait
     res_present(c);  // resolution.c: a DLSS mode change sets the game's render size again, between frames
+    uint64_t source_frame = rsf_frame_draw_source(c);
     NVN_BLOCKING();
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
@@ -736,7 +737,7 @@ NVN_API(nvnQueuePresentTexture) {
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);
     nvn_sync_ahead_present();
-    gfx_backend()->present(t, o->crop, slot);
+    gfx_backend()->present(t, o->crop, slot, source_frame);
     rsf_frame_draw_done(c);
     o->ticket[idx] = o->presents;
     o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;

@@ -316,6 +316,24 @@ zero, FIFO and wraparound, foreign publishers/operations, overflow, mismatch,
 finalization and reinitialization. The frame fixture, game build, selftest, config
 probe and Vulkan execution probe pass.
 
+Guest Present now snapshots the draw owner's source before its blocking section
+and retires that owner only after enqueueing the backend operation. The scalar
+travels through both immediate replay and `RI_PRESENT`, then `PresentJob`, into
+the pending swapchain image. `gfx_present.c`, `flip_locked` consumes that image's
+source even when a resize or the next blit flushes it. Failed/skipped blits cannot
+attach a new source to an older image, and device release clears pending ownership.
+Direct presentation probes remain unassociated with source zero.
+
+The asynchronous replay validation run (`build/checks/rsf-present-source-async.log`)
+completed 1,775 presents and at least 300 successful SR evaluations with zero
+validation errors, shader failures or skipped draws. Bounded host-Present traces
+match draw-consumed sources 600 and 1,200. The default synchronous replay run also
+matches those sources and completed 1,586 presents with zero validation errors,
+shader failures and skipped draws. Selftest and the Vulkan execution probe pass.
+Validation still uses GPL off and descriptor writes. This establishes copied
+identity through actual presentation; FG input/output admission, present execution
+events in the orchestrator and latency marker/pacing acceptance remain open.
+
 DLSS now reaches successful SR evaluation with matching CPU tokens. A six-second
 opening-scene run completed 1,788 presents and passed 300 SR evaluations, with zero
 validation errors, shader failures and skipped draws using `TOTK_GPL=0` and
