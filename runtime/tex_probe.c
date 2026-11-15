@@ -453,6 +453,7 @@ static int test_virtual(pool_t *phys, pool_t *virt) {
 static tex_t make_tex(pool_t *pool, uint64_t off, int format, uint32_t w, uint32_t h, uint32_t levels, uint64_t serial) {
     tex_t t;
     memset(&t, 0, sizeof t);
+    t.pool_flags = (uint16_t)pool->flags;
     t.magic = MAGIC('T', 'E', 'X', 0);
     t.d.target = 1, t.d.format = format, t.d.width = w, t.d.height = h, t.d.depth = 1, t.d.levels = levels;
     nvn_tex_layout(&t.d, &t.L);
