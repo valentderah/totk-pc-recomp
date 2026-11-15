@@ -497,6 +497,29 @@ by a fade/overlay draw and a copy into an sRGB target. HUD-less colour must reta
 the final sRGB encoding; copying earlier linear scene values is insufficient.
 That diagnostic dump emitted readback-layout validation warnings, so it is pass
 ordering evidence, not a clean validation run. Actual SDK prepare/HUD-less
-submission, explicit SDK presentation source selection, generated output and
-other providers remain open. RSF's
+submission, generated output and other providers remain open. RSF's
 `docs/research/vulkan-fg-image-enumeration-20261115.md` records the shared fixes.
+
+## Explicit FG presentation identity
+
+The pending output image now passes its calculation identity to RSF's new
+`rsf_fgvk_present_source` entry point. The adapter requires that export at load
+time and forwards null for an unknown source. RSF matches the prepared session,
+frame, view and resource generation rather than selecting the newest prepared
+frame. Preparing N+1 before presenting N therefore cannot replace N's inputs.
+Unknown/mismatched sources retain ordinary output with interpolation off.
+
+The provider lifetime fixture verifies the identity crosses the adapter intact.
+RSF's native FSR 3 and DLSS owner fixtures verify both N and N+1 can present in
+order after both were prepared; dispatcher checks cover all four providers.
+The runtime builds and its DLL export checks pass. These synthetic checks do
+not establish generated-image quality, bridge session restart behavior or HUD
+separation. See RSF's `docs/research/vulkan-fg-present-source-20261115.md`.
+
+The updated runtime's ordinary-output runs reached the world and exited normally:
+FSR 3 WSI completed 1,578 presents and DLSS WSI completed 1,581, each with zero
+validation errors, shader failures or skipped draws. Interpolation stayed off;
+both used SR off, low latency on, GPL off and descriptor writes on the same RTX
+4070 Laptop setup. Self-test, settings and Vulkan execution probes pass. The full
+RSF gate ran 232 tests and retains the two recorded Anomaly FG device failures;
+Rust formatting and Clippy pass independently.

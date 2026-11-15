@@ -27,8 +27,10 @@ static int32_t acquire(rsf_fgvk *owner, uint64_t timeout, uint64_t semaphore, ui
     assert(owner && timeout == 100 && semaphore == 7 && !fence);
     ++acquire_calls; *index = 0; return 0;
 }
-static int32_t present(rsf_fgvk *owner, const void *info) {
-    assert(owner && info); ++present_calls; return 0;
+static int32_t present(rsf_fgvk *owner, const void *info, const rsf_frame_record *source) {
+    assert(owner && info);
+    if (source) assert(source->session_id == 7 && source->frame_id == 5 && source->view_id == 3 && source->resource_generation == 2);
+    ++present_calls; return 0;
 }
 static int32_t prepare(rsf_fgvk *owner, void *commands, const rsf_fgvk_frame *frame) {
     assert(owner && commands && frame); return -9;
@@ -48,7 +50,7 @@ void *rsf_runtime_symbol(const char *name) {
     if (!strcmp(name, "rsf_fgvk_enable_options")) return enable;
     if (!strcmp(name, "rsf_fgvk_images")) return images;
     if (!strcmp(name, "rsf_fgvk_acquire")) return acquire;
-    if (!strcmp(name, "rsf_fgvk_present")) return present;
+    if (!strcmp(name, "rsf_fgvk_present_source")) return present;
     if (!strcmp(name, "rsf_fgvk_prepare") || !strcmp(name, "rsf_fgvk_hudless")) return prepare;
     if (!strcmp(name, "rsf_fgvk_submitted")) return submitted;
     if (!strcmp(name, "rsf_fgvk_drain")) return drain;
@@ -68,14 +70,16 @@ int main(void) {
     uint64_t image = 0;
     assert(!rsf_present_images(owner, &count, &image) && image == 456);
     assert(!rsf_present_acquire(owner, 100, 7, 0, &index) && !index);
-    assert(!rsf_present_flip(owner, &index) && acquire_calls == 1 && present_calls == 1);
+    rsf_frame_record identity = {.struct_size = sizeof identity, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+        .session_id = 7, .frame_id = 5, .view_id = 3, .resource_generation = 2};
+    assert(!rsf_present_flip(owner, &index, &identity) && acquire_calls == 1 && present_calls == 1);
     assert(rsf_present_prepare(owner, &command, &frame) == -9);
     rsf_present_submitted(owner, commands, 1);
     assert(submitted_calls == 1); // Failed recording still receives submission retirement facts.
     drain_error = -9;
     assert(rsf_present_close(&owner) == -9 && owner && !destroy_calls);
     assert(!rsf_present_chain(owner));
-    assert(rsf_present_flip(owner, &index) == RSF_BACKEND_ERROR_NOT_READY && present_calls == 1);
+    assert(rsf_present_flip(owner, &index, &identity) == RSF_BACKEND_ERROR_NOT_READY && present_calls == 1);
     drain_error = 0; destroy_error = -9;
     assert(rsf_present_close(&owner) == -9 && owner && destroy_calls == 1);
     destroy_error = 0;

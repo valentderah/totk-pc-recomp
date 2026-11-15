@@ -75,7 +75,7 @@ int rsf_runtime_load(void) {
         "rsf_srvk_evaluate", "rsf_srvk_retire_commands", "rsf_srvk_destroy",
         "rsf_fgvk_create_with_host", "rsf_fgvk_images", "rsf_fgvk_acquire",
         "rsf_fgvk_enable_options", "rsf_fgvk_prepare", "rsf_fgvk_hudless",
-        "rsf_fgvk_submitted", "rsf_fgvk_present", "rsf_fgvk_destroy"
+        "rsf_fgvk_submitted", "rsf_fgvk_present_source", "rsf_fgvk_destroy"
     };
     int missing = 0;
     for (unsigned i = 0; i < sizeof required / sizeof required[0]; i++) {

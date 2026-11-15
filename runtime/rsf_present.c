@@ -14,7 +14,7 @@ struct RsfPresent {
     __typeof__(&rsf_fgvk_enable_options) enable;
     __typeof__(&rsf_fgvk_images) images;
     __typeof__(&rsf_fgvk_acquire) acquire;
-    __typeof__(&rsf_fgvk_present) present;
+    __typeof__(&rsf_fgvk_present_source) present;
     __typeof__(&rsf_fgvk_prepare) prepare;
     __typeof__(&rsf_fgvk_hudless) hudless;
     __typeof__(&rsf_fgvk_submitted) submitted;
@@ -51,7 +51,7 @@ int32_t rsf_present_open(const rsf_fgvk_setup *setup, const rsf_fgvk_host_option
     BIND(enable, "rsf_fgvk_enable_options");
     BIND(images, "rsf_fgvk_images");
     BIND(acquire, "rsf_fgvk_acquire");
-    BIND(present, "rsf_fgvk_present");
+    BIND(present, "rsf_fgvk_present_source");
     BIND(prepare, "rsf_fgvk_prepare");
     BIND(hudless, "rsf_fgvk_hudless");
     BIND(submitted, "rsf_fgvk_submitted");
@@ -82,8 +82,8 @@ int32_t rsf_present_images(RsfPresent *s, uint32_t *count, uint64_t *images) {
 int32_t rsf_present_acquire(RsfPresent *s, uint64_t timeout, uint64_t semaphore, uint64_t fence, uint32_t *index) {
     return s && s->ready ? s->acquire(s->provider, timeout, semaphore, fence, index) : RSF_BACKEND_ERROR_NOT_READY;
 }
-int32_t rsf_present_flip(RsfPresent *s, const void *info) {
-    return s && s->ready ? s->present(s->provider, info) : RSF_BACKEND_ERROR_NOT_READY;
+int32_t rsf_present_flip(RsfPresent *s, const void *info, const rsf_frame_record *source) {
+    return s && s->ready ? s->present(s->provider, info, source) : RSF_BACKEND_ERROR_NOT_READY;
 }
 int32_t rsf_present_prepare(RsfPresent *s, void *commands, const rsf_fgvk_frame *frame) {
     return s && s->ready ? s->prepare(s->provider, commands, frame) : RSF_BACKEND_ERROR_NOT_READY;

@@ -12,7 +12,7 @@ uint32_t rsf_present_layout(const RsfPresent *);
 int32_t rsf_present_enable(RsfPresent *, uint32_t enabled, uint32_t generated_count);
 int32_t rsf_present_images(RsfPresent *, uint32_t *count, uint64_t *images);
 int32_t rsf_present_acquire(RsfPresent *, uint64_t timeout, uint64_t semaphore, uint64_t fence, uint32_t *index);
-int32_t rsf_present_flip(RsfPresent *, const void *present_info);
+int32_t rsf_present_flip(RsfPresent *, const void *present_info, const rsf_frame_record *source);
 int32_t rsf_present_prepare(RsfPresent *, void *commands, const rsf_fgvk_frame *);
 int32_t rsf_present_hudless(RsfPresent *, void *commands, const rsf_fgvk_frame *);
 void rsf_present_submitted(RsfPresent *, void *const *commands, uint32_t count);
