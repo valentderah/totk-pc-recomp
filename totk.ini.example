@@ -136,7 +136,7 @@
 # push_skip = 1
 # vb_used = 1
 # memx = 1
-# bind_inc = 1
+# bind_inc = 0
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
