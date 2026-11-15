@@ -181,11 +181,26 @@ remain available. The compiled `rsf_package_paths_check.c` fixture passes absent
 and present packages, all backend mappings and override precedence. This does not
 prove that a complete distributable package or its provider DLLs are present.
 
-The corrected FidelityFX Vulkan SDK is being built under
+The corrected FidelityFX Vulkan SDK was built under
 `build/rsf-sdk-host/artifacts/rescaleframe/fsr3-sdk/Release/win-x64` using RSF's
-guarded build recipe and pinned source. The native Vulkan runtime DLL was absent
-from the available package, so the FSR2/3 paths still require that build before
-device evaluation can be tested.
+guarded build recipe and pinned source. This supplies the native Vulkan DLL
+required for FSR2/3 device evaluation; it does not establish successful evaluation.
+
+`tools/stage_rsf.py` stages the locally built runtime, corrected Streamline and
+FidelityFX Vulkan binaries, vendor libraries and licenses beside a development
+game build. Supply `--runtime`, `--streamline`, `--streamline-source`,
+`--fidelityfx` and `--out`; `--source` defaults to the sibling ReScaleFrame checkout.
+Output must stay under `build/`. Before writing, it checks every required input,
+native DLL headers, pinned SDK revisions and corrected binary receipt hashes,
+and rejects unexpected stale DLLs. Its manifest records all staged SHA-256 hashes.
+The local package contains 27 verified files. A mismatched FidelityFX receipt was
+rejected before output creation. This tool prepares development validation only;
+release packaging and provider acceptance remain outstanding.
+
+The UCRT64 Clang v1.4.3 game build succeeds. Shader preparation translated 29,587
+variants from 53,437 seed records with zero translation failures, then warmed all
+29,587 variants into the driver cache with zero failures. These checks establish
+translation and pipeline preparation, not correct shader inputs in gameplay.
 
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
