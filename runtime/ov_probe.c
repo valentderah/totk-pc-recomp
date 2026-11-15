@@ -655,6 +655,21 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
           fabs(ms[0].gyro[2] - bias[2] / (2 * M_PI)) < 1e-6,
           "calibration without samples: state %d after 1 s, %d after 6 s; after a reset the raw gyro passes", waiting,
           failed);
+    // A sensor just switched on reads zero: the frame starts at the first reading, here standing on the bottom edge
+    // (controller y up). Then the down is wrong by a quarter turn (laid flat without turning): a second held still
+    // levels it to within 8 degrees.
+    MotionFusion *u = motion_new();
+    const double zero[3] = {0, 0, 0}, standing[3] = {0, -1, 0};
+    motion_feed(u, zero, still, t);
+    int before = motion_read(u, ms, 16, t + 1000000);
+    motion_feed(u, standing, still, t += 4000000);
+    int first = motion_read(u, ms, 16, t + 1000000);
+    int upright_y = first == 1 && near3(ms[0].dir + 3, 0, 0, 1, 0.01);
+    for (int i = 0; i < 250; i++) motion_feed(u, down, still, t += 4000000);
+    motion_read(u, ms, 16, t + 1000000);
+    CHECK(before == 0 && upright_y && ms[0].dir[8] > 0.99,
+          "fusion start and levelling: %d states before a reading, %d after (y up %d), z up %.3f after 1 s still",
+          before, first, upright_y, (double)ms[0].dir[8]);
     printf("hid feedback: vibration handles %#x %#x, six-axis %#x, at rest when stopped; fusion quarter turn %.4f rev\n",
            vh[0], vh[1], sh[0], quarter);
 }
