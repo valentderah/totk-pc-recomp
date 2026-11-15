@@ -6,6 +6,11 @@ renderer's temporal evaluation now exclusively uses RSF. The direct NGX core
 loader, vtable ABI, feature creation and evaluation have been removed. The legacy
 DLAA/DLSS setting names remain until menu/config migration is complete.
 
+Apply RSF's shared `game-render-analysis` integration skill, including its required
+shader-input audit. Current TotK coverage and missing inputs are recorded in
+[the shader audit](rsf-shader-audit.md); they remain part of this integration's
+completion requirements, independent of user-reported visual symptoms.
+
 `runtime/rsf_runtime.c` now provides opt-in module loading and validates the required
 native Vulkan exports before exposing them. `runtime/vk_device.c`, `create_instance`
 calls this before Vulkan initialization. This is a module lease only; SDK setup and
@@ -59,6 +64,17 @@ passes. The earlier order (device destruction before SDK shutdown) triggered an 
 shutdown exception. Renderer teardown now drains/releases SR owners and shuts RSF
 down before destroying Vulkan owners, retaining them if checked cleanup fails.
 These are device-lifecycle results, not evidence of working low-latency markers.
+
+`runtime/rsf_present.c` now provides a checked provider-owned WSI adapter for
+creation, image enumeration, acquisition, presentation, enable options, depth/
+motion preparation, HUD-less recording and successful submission notifications.
+It retains partial owners and drain/destroy failures for cleanup retry; a close
+attempt prevents further WSI calls. Its compiled fault-injection fixture
+`tests/rsf_present_lifetime_check.c` passes those cases, including submission facts
+after failed recording. Build the fixture with `runtime/rsf_present.c`, the runtime
+and external SDK includes, and UCRT64 Clang; run it under `build/checks/`.
+The window's native WSI calls have not yet been switched to this adapter. This
+fixture does not establish generated frames, valid HUD-less inputs or presentation.
 
 When a nonzero `rsf_fg` is requested, device selection prefers a graphics/compute/
 presentation family with four queues. Device creation requests and retrieves four
