@@ -862,7 +862,9 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
     D.last_eval_ns = now;
     if (!(dt > 0 && dt < 100)) dt = 16.67f;
     rsf_frame_record record = {.struct_size = sizeof record, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
-        .frame_id = D.evals + 1, .session_id = 1, .view_id = 1,
+        // This is still a renderer-local identity. Keep it outside the CPU
+        // source session until the queued draw handoff carries its real source.
+        .frame_id = D.evals + 1, .session_id = 2, .view_id = 1,
         .flags = RSF_FRAME_FLAG_NO_FG | RSF_FRAME_FLAG_AMBIGUOUS_ID | (D.reset ? RSF_FRAME_FLAG_RESET : 0),
         .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
         .frame_time_ms = dt,

@@ -247,6 +247,40 @@ not a unique frame identifier. Queue addresses are runtime owners, not portable
 addresses. Any source metadata must follow publication/consumption order and the
 completed calculation, rather than assigning the next input sample to received work.
 
+The 1.4.3 patch table now brackets the framework calculation traversal, after
+task setup and before its guard is released. Each hook performs its displaced
+instruction. `rsf_frame.c` opens a source identity at that verified calculation
+boundary, reports simulation traversal begin there, reports the first connected
+controller read on its guest thread, and reports calculation completion. Input
+polling and presentation cannot open identities. The input manager runs inside
+calculation: RSF accepts its input sample after simulation begin, preserving the
+actual order. Repeated reads are deduplicated per update. An update without a
+connected read reports no invented input; the core owns any substitute. SDK calls
+run without the frame-state lock or a held virtual guest core.
+
+The compiled `tests/rsf_frame_check.c` fixture verifies distinct source IDs,
+register preservation for both displaced instructions, repeated input reads,
+unrelated guest threads, missing input and abandoned traversal handling. The game
+build, selftest and configuration probe pass. The configuration probe now accounts
+for the detected display default on a non-16:9 monitor; its previous assumption
+that an empty Windows environment assignment suppresses that default was false.
+The settings documentation gate also passes after documenting the new hook switch
+and the existing climbing fix.
+
+The real Streamline run reports accepted RSF CPU records with stage mask 0xf,
+no failed ownership and no order violations. This establishes CPU facts only.
+Renderer-local SR records use a separate session namespace until the source is
+copied through the draw queue and Vulkan replay, preventing an accidental numeric
+match with CPU token IDs. Draw publication/consumption, rendering and final Present
+association are still outstanding, so DLSS evaluation and FG remain unverified.
+The longer trace also exposes task migration: later controller polls execute on
+guest worker threads rather than the framework calculation's caller. At source
+1,200, RSF had accepted 1,200 updates with zero order violations and 867 explicitly
+substituted input boundaries. These are not 867 missing physical polls: the current
+thread-local association cannot attach those worker polls to their parent update.
+The task-owner handoff must carry the source into workers before latency acceptance.
+The run completed 1,549 presents without reported shader failures or skipped draws.
+
 The corrected FidelityFX Vulkan runtime now executes FSR3 SR at native resolution
 in the opening scene on the RTX 4070 Laptop GPU. That run completed 1,671 presents
 without reported shader failures or skipped draws. A validation run with

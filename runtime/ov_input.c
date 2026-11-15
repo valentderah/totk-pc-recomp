@@ -16,6 +16,7 @@
 #include "host.h"
 #include "input.h"
 #include "ov.h"
+#include "rsf_frame.h"
 #include "platform/platform.h"
 
 typedef struct { int64_t sampling; uint64_t buttons; int32_t lx, ly, rx, ry; uint32_t attributes, pad; } NpadState;
@@ -92,6 +93,7 @@ static void npad_states(Cpu *c, uint32_t want) {
     int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
     plat_mutex_unlock(&lock);
     if (live) {
+        rsf_frame_input(c);
         if (rt_trace & RT_TRACE_PRESENT) {
             static int32_t traced;
             int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);

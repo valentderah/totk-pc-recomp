@@ -496,7 +496,13 @@ int probe_cfg(void) {
         char name[96];
         snprintf(name, sizeof name, "TOTK_%s", m->key);
         plat_setenv(name, "");
-        CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
+        // A non-16:9 display supplies an OUTPUT_RES default. On Windows an
+        // empty environment assignment removes the variable, exposing it.
+        const char *effective = cfg_get(name);
+        if (!strcmp(m->key, "OUTPUT_RES") && effective && *effective)
+            CHECK(EQ(cfg_value(name), effective), "cfg_value returns the detected display default");
+        else
+            CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {
