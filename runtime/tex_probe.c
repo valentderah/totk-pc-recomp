@@ -530,14 +530,21 @@ static int test_textures(pool_t *tpool, pool_t *phys) {
     vk_write_texels(&g, NULL, &all, gl[0], 256, 256 * 64);
     if (read_back(&g, 0, gl, 0, "physical-pool RGBA8 WriteTexels")) return 1;
 
-    // a slot of a finalized texture follows the live texture at the same storage (MNG hle_nvn.c)
+    // a slot of a finalized texture follows the live texture of its texel format at the same storage (MNG hle_nvn.c);
+    // a live texture of another format there holds another texture's texels and leaves the slot alone
+    // (vk_texture.c slot_resolve)
     vk_texture_register(5, &b, NULL);
     vk_texture_release(&b);
-    tex_t b2 = make_tex(tpool, 0x40000, 0x25, 16, 12, 1, 4);
+    tex_t b2 = make_tex(tpool, 0x40000, 0x42, 16, 12, 1, 4);
     const VkTexImage *live = vk_texture_get(&b2);
     VkImage live_img = live ? live->image : VK_NULL_HANDLE;
     const VkTexImage *slot = vk_texture_by_id(5, NULL, NULL);
     GCHECK(live && slot && slot->image == live_img, "slot 5 does not follow the live texture at its storage");
+    tex_t b3 = make_tex(tpool, 0x40000, 0x25, 32, 32, 1, 5);
+    const VkTexImage *other = vk_texture_get(&b3);
+    slot = vk_texture_by_id(5, NULL, NULL);
+    GCHECK(other && slot && slot->image == live_img, "slot 5 follows a live texture of another format at its storage");
+    vk_texture_release(&b3);
     samp_par sp;
     memset(&sp, 0, sizeof sp);
     sp.minf = NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR, sp.magf = NVN_MAG_FILTER_LINEAR, sp.ws = sp.wt = sp.wr = NVN_WRAP_MODE_REPEAT;
@@ -545,7 +552,7 @@ static int test_textures(pool_t *tpool, pool_t *phys) {
     vk_sampler_register(0, &sp);
     VkSampler s0 = vk_sampler_by_id(0), s1 = vk_sampler_for(&sp);
     GCHECK(s0 && s0 == s1 && !vk_sampler_by_id(1), "sampler slots");
-    g_gpu_checks += 7;
+    g_gpu_checks += 8;
     vk_texture_release(&t), vk_texture_release(&b2), vk_texture_release(&g);
     for (int i = 0; i < 4; i++) free(lin[i]), free(bl[i]);
     free(gl[0]);
