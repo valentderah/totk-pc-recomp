@@ -1025,10 +1025,12 @@ static int sensors_ready(void) {
     sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
                 SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
                 SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    if (sensor_ok) rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
-    else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
+    if (sensor_ok) {
+        rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
+               (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
+               (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
+        motion_restart(motion_global());   // another controller: its own orientation, from its first reading
+    } else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
                 SDL_GetGamepadName(pad));
     return sensor_ok;
 }

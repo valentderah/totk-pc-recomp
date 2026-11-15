@@ -6,12 +6,16 @@
 // reports it: acceleration in G, angular velocity in revolutions per second, angle = the integrated revolutions per
 // axis, direction = the controller's three axes in a reference frame whose z is up. The orientation is integrated from
 // the gyro and, while the controller is not being accelerated (|a| within 15 % of 1 G), pulled toward the measured
-// gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; yaw has no reference and drifts with the
-// gyro's bias, so a bias measured with the controller at rest (the Calibrate gyro row, motion_calibrate_start) is
-// subtracted from every sample while gyro_calibration is on. The newest MOTION_RING samples are kept; reads are newest
-// first. A restart (StartSixAxisSensor) drops the samples before it: reads return nothing until the next sample, which
-// starts a fresh frame and angle; sampling numbers go on. The feeding thread writes, guest threads read, both under the
-// instance's SRW lock.
+// gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; held still (|a| within 5 % of 1 G,
+// turning slower than STILL_RATE) the pull is STILL_GAIN, so a down the gyro got wrong while the controller moved is
+// right again before the next aim. The game splits the aim into pitch and yaw by the reported down: a wrong one turns
+// a tilt up or down into a turn to the side as well. Yaw has no reference and drifts with the gyro's bias, so a bias
+// measured with the controller at rest (the Calibrate gyro row, motion_calibrate_start) is subtracted from every sample
+// while gyro_calibration is on. The newest MOTION_RING samples are kept; reads are newest first. A restart
+// (StartSixAxisSensor) drops the samples before it: reads return nothing until the first sample with a reading (|a|
+// over 0.5 G: a sensor just switched on reads zero until its first report), which starts a fresh frame, levelled by
+// that reading, and a fresh angle; sampling numbers go on. The feeding thread writes, guest threads read, both under
+// the instance's SRW lock.
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +35,8 @@ enum { MOTION_RING = 64, CALIB_SETTLE = 125, CALIB_SAMPLES = 250 };
 // near 0.01-0.02 rad/s. A jolt that stays under the limit moves the mean by at most the limit times the square root of
 // the share of the second it lasts.
 #define CALIB_MAX_SPREAD 0.04
+#define STILL_GAIN 4.0          // 1/s: a wrong down is 2 % of itself after a second held still
+#define STILL_RATE 0.5          // rad/s, about 30 deg/s: a slow aim still counts as held still
 
 struct MotionFusion {
     PlatMutex lock;
@@ -89,11 +95,11 @@ static void orthonormalize(double R[3][3]) {
     for (int j = 0; j < 3; j++) R[0][j] /= n;
     cross3(R[2], R[0], R[1]);
 }
-// A fresh orientation: z up against the measured gravity, x as close to the controller's x as that allows.
+// A fresh orientation: z up against the measured gravity (|acc| over 0.5 G), x as close to the controller's x as that
+// allows.
 static void align_to(double R[3][3], const double acc[3]) {
-    double n = norm3(acc), up[3] = {0, 0, 1}, x[3] = {1, 0, 0};
-    if (n > 0.5)
-        for (int j = 0; j < 3; j++) up[j] = -acc[j] / n;
+    double n = norm3(acc), up[3], x[3] = {1, 0, 0};
+    for (int j = 0; j < 3; j++) up[j] = -acc[j] / n;
     if (fabs(up[0]) > 0.9) { x[0] = 0; x[1] = 1; }
     memcpy(R[2], up, sizeof up);
     memcpy(R[0], x, sizeof x);
@@ -103,7 +109,7 @@ static void align_to(double R[3][3], const double acc[3]) {
 static void integrate(double R[3][3], const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
     if (fabs(n - 1) < 0.15) {   // not being accelerated: turn the estimated down toward the measured one
-        const double kp = 0.5;
+        double kp = fabs(n - 1) < 0.05 && norm3(gyro) < STILL_RATE ? STILL_GAIN : 0.5;
         double measured[3] = {acc[0] / n, acc[1] / n, acc[2] / n}, estimated[3] = {-R[2][0], -R[2][1], -R[2][2]}, e[3];
         cross3(measured, estimated, e);
         for (int j = 0; j < 3; j++) w[j] += kp * e[j];
@@ -237,6 +243,10 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3],
     // The bias applies only while the switch is on; with no bias measured it is zero and the gyro passes unchanged.
     double gyro[3];
     for (int i = 0; i < 3; i++) gyro[i] = gyro_raw[i] - (calib_on ? m->gyro_bias[i] : 0);
+    if (m->restart && norm3(acc) < 0.5) {
+        plat_mutex_unlock(&m->lock);
+        return;
+    }
     if (m->restart) {
         align_to(m->R, acc);
         memset(m->angle, 0, sizeof m->angle);
