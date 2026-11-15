@@ -351,18 +351,20 @@
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
 # motion = 1
-# Gyro bias calibration (1 = on): the Controls tab's "Calibrate gyro" row measures the controller's resting drift and
-# subtracts it from the gyro readings, which removes the yaw drift. Off, the fusion takes the raw gyro, an attempt in
-# progress is dropped and nothing is loaded at start; the four keys below stay in the file, so turning it back on
-# restores the last calibration.
+# Gyro bias calibration (1 = on): the Controls tab's "Calibrate gyro" row measures the controller's resting drift over
+# two seconds and subtracts it from the gyro readings, which removes the yaw drift; an attempt where the controller
+# moved is rejected and the row says so. Nothing changes until a controller is calibrated. Off, the fusion takes the raw
+# gyro and an attempt in progress is dropped; the four keys below stay in the file, so turning it back on restores the
+# last calibration.
 # gyro_calibration = 1
-# The measured bias and the controller it was measured from, written by the game when calibration finishes; they are
-# not meant to be typed. The bias is loaded at the next start only when gyro_bias_pad names the controller that is
-# connected, so calibrate each controller separately: another one starts with no bias until it is calibrated.
+# The measured bias in rad/s and the controller it was measured from, written by the game when calibration finishes;
+# they are not meant to be typed. The bias applies only while gyro_bias_pad names the connected controller (its name,
+# plus a hash of its serial number when it reports one), so another controller starts with no bias. One controller's
+# bias is kept: calibrating another one replaces it.
 # gyro_bias_x = 0
 # gyro_bias_y = 0
 # gyro_bias_z = 0
-# gyro_bias_pad = Nintendo Switch Pro Controller
+# gyro_bias_pad = Nintendo Switch Pro Controller #1a2b3c4d
 # rumble = 1
 # Rumble strength in percent (0 to 300; 0 = off) and the exponent on the amplitude (0.2 to 1.5; lower = weak pulses
 # stronger, 1 = linear). rumble_triggers = 1 also drives the impulse triggers of an Xbox pad.

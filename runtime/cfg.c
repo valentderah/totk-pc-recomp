@@ -169,8 +169,8 @@ static const CfgMeta metas[] = {
     {"AUDIO_DEVICE", "", NULL, LIVE},   // audio_mixer.c output_worker: a device name, empty for the system default
     {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE},
     {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
-    // Written by the Calibrate gyro row (motion_fusion.c), not by hand; read at start when gyro_bias_pad names the
-    // connected controller.
+    // Written by the Calibrate gyro row (motion_fusion.c save_bias), not by hand; read by input.c pad_bias_select when a
+    // controller connects and gyro_bias_pad names it.
     {"GYRO_BIAS_X", "", NULL, RESTART}, {"GYRO_BIAS_Y", "", NULL, RESTART}, {"GYRO_BIAS_Z", "", NULL, RESTART},
     {"GYRO_BIAS_PAD", "", NULL, RESTART},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},

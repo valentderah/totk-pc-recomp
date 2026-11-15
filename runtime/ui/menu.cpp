@@ -967,12 +967,14 @@ static void tab_controls(float scale) {
         char pad[128] = "";
         int st = input_motion_calib_state(pad, sizeof pad);
         char status[192] = "";
-        if (st == 1)
+        if (st == MOTION_CALIB_COLLECTING)
             snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_WAIT));
-        else if (st == 2)
+        else if (st == MOTION_CALIB_DONE)
             snprintf(status, sizeof status, menu_text(UI_MENU_GYRO_CALIBRATED), pad);
-        else if (st == 3)
+        else if (st == MOTION_CALIB_FAILED)
             snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_FAILED));
+        else if (st == MOTION_CALIB_MOVED)
+            snprintf(status, sizeof status, "%s", menu_text(UI_MENU_GYRO_CALIBRATE_MOVED));
         if (opt_button("##gyro_calib", UI_MENU_GYRO_CALIBRATE, UI_MENU_GYRO_CALIBRATE_DESC, status))
             input_motion_calibrate();
     }
