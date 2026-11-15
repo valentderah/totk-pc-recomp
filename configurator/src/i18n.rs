@@ -89,6 +89,10 @@ pub fn t(lang: &str, text: &'static str) -> &'static str {
         "settings" => "настроек",
         "not a value the game takes" => "игра не примет это значение",
         "Language" => "Язык",
+        "Descriptions read from" => "Описания взяты из",
+        "new settings from these files" => "новых настроек из этих файлов",
+        "from" => "из",
+        "Read from this file at start; not in the configurator's own list yet." => "Прочитано из этого файла при запуске; во встроенном списке конфигуратора её пока нет.",
         _ => text,
     }
 }

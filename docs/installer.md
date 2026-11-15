@@ -27,6 +27,8 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
+  totk.ini.example               the release's, replaced at every install and update; the settings configurator
+                                 (totk-config.exe) reads the settings and their descriptions from it
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
   profile/                       saves

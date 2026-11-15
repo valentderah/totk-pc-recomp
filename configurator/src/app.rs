@@ -49,6 +49,8 @@ pub struct App {
     last_check: f64,
     screenshot: Option<PathBuf>,
     frames: u32,
+    /// Where the run-time settings and descriptions came from (docs.rs).
+    sources: crate::docs::Sources,
 }
 
 /// The Windows UI language as a menu language (GetUserDefaultUILanguage's primary language id).
@@ -118,6 +120,7 @@ impl App {
             last_check: 0.0,
             screenshot: args.screenshot.clone(),
             frames: 0,
+            sources: Default::default(),
         };
         if let Some(d) = dir {
             app.open_dir(d);
@@ -137,6 +140,10 @@ impl App {
     }
 
     fn open_dir(&mut self, dir: PathBuf) {
+        // the settings and descriptions of the documents next to this game, read now (docs.rs)
+        let (cat, sources) = crate::docs::load(Some(&dir));
+        self.cat = Rc::new(cat);
+        self.sources = sources;
         self.store = Some(Store::new(&dir));
         self.dir = Some(dir);
         self.reload();
@@ -525,6 +532,28 @@ impl App {
                 self.search.clear();
             }
         }
+        self.sources_note(ui);
+    }
+
+    /// Which documents next to the game gave settings and descriptions (docs.rs), under the tabs.
+    fn sources_note(&self, ui: &mut Ui) {
+        let s = &self.sources;
+        let found: Vec<(&str, &PathBuf)> = [("settings.json", &s.json), ("totk.ini.example", &s.example), ("settings.md", &s.settings_md), ("totk.ini", &s.ini)]
+            .into_iter()
+            .filter_map(|(n, p)| Some((n, p.as_ref()?)))
+            .collect();
+        if found.is_empty() {
+            return;
+        }
+        ui.add_space(12.0);
+        ui.label(RichText::new(t(&self.lang, "Descriptions read from")).small().color(WEAK));
+        for (name, path) in found {
+            ui.label(RichText::new(format!("· {name}")).small().color(WEAK)).on_hover_text(path.display().to_string());
+        }
+        if !s.added.is_empty() {
+            ui.label(RichText::new(format!("+{} {}", s.added.len(), t(&self.lang, "new settings from these files"))).small().color(GOLD))
+                .on_hover_text(s.added.iter().map(|k| k.to_ascii_lowercase()).collect::<Vec<_>>().join("\n"));
+        }
     }
 
     fn bottom_bar(&mut self, ui: &mut Ui) {
@@ -697,6 +726,10 @@ impl App {
                             if env {
                                 theme::badge(ui, t(&self.lang, "set by environment variable"), Color32::WHITE, RED)
                                     .on_hover_text(t(&self.lang, "the environment variable wins over totk.ini"));
+                            }
+                            if let Some(src) = &s.source {
+                                theme::badge(ui, &format!("{} {src}", t(&self.lang, "from")), Color32::WHITE, Color32::from_rgb(60, 80, 120))
+                                    .on_hover_text(t(&self.lang, "Read from this file at start; not in the configurator's own list yet."));
                             }
                             if let Some(safety) = &s.safety {
                                 let color = match safety.as_str() {

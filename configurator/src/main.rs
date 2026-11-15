@@ -11,6 +11,7 @@
 
 mod app;
 mod data;
+mod docs;
 mod i18n;
 mod ini;
 mod presets;

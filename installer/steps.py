@@ -1585,6 +1585,11 @@ class Cleanup(Step):
         rep.progress('cleanup', 'ini', force=True)
         try:
             ini.write(dest, ctx.lang, ctx.layout.ini_example)
+            # The release's totk.ini.example next to totk.exe, refreshed on every install and update: the settings
+            # configurator (configurator/src/docs.rs) reads the settings and their descriptions from it, so settings
+            # newer than the configurator still show up.
+            if ctx.layout.ini_example and ctx.layout.ini_example.is_file():
+                replace_file(ctx.layout.ini_example, dest / 'totk.ini.example')
         except OSError as e:
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang

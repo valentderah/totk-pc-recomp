@@ -61,6 +61,9 @@ pub struct Setting {
     /// A binding of a stick direction or SHAKE: keys only.
     #[serde(default)]
     pub keys_only: bool,
+    /// The document a setting added at run time came from (docs.rs); None for the settings of settings.json.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

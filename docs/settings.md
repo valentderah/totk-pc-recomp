@@ -20,6 +20,13 @@ it used last or the installer's install folder, and **Change…** picks another.
   (changes made in the in-game menu stay with it) and copies the chosen one into `totk.ini`. A new profile starts
   from the current settings, the defaults, or the current settings with the Quality, Performance or Steam Deck changes.
 - **Save and launch** saves and starts `totk.exe`.
+- **New settings without a new configurator.** At start it reads `totk.ini.example` (the setup puts the release's next
+  to `totk.exe` at every install and update), `docs/settings.md` when there is one, and the comments of `totk.ini`. A
+  key they describe that the configurator does not know yet gets a row of its own (marked with the file it came
+  from; a switch when the text says "0 or 1", a number for "a to b", text otherwise), and the descriptions of known
+  keys come from these files. A newer `totk-settings.json` (what `tools/gen_configurator_settings.py` writes) next to
+  `totk.exe` or the configurator replaces its built-in list whole, menu texts and tabs included. The bottom of the
+  left column lists the files it read.
 
 Without a window: `totk-config --set fps_limit=120 --set fov=` (an empty value resets),
 `totk-config --new-profile Travel --from deck`, `totk-config --profile Travel`; `--dir <folder>` names the game folder.

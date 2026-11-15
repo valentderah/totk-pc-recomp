@@ -606,6 +606,14 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
                                      str(self.ctx.layout.root), '--rebuild', str(self.dest)])
 
+    def test_refreshes_ini_example_and_keeps_the_players_ini(self):
+        # the settings configurator reads the release's totk.ini.example next to totk.exe; totk.ini stays the player's
+        (self.dest / 'totk.ini.example').write_text('# an older release\n', encoding='utf-8')
+        (self.dest / 'totk.ini').write_text('fps_limit = 120\n', encoding='utf-8')
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertEqual((self.dest / 'totk.ini.example').read_bytes(), (ROOT / 'totk.ini.example').read_bytes())
+        self.assertIn('fps_limit = 120', (self.dest / 'totk.ini').read_text(encoding='utf-8'))
+
     def test_appimage_rebuild_command_starts_the_appimage(self):
         # The AppImage's mount, where its Python lives, is gone once the setup exits (#560, #403)
         appimage = Path(self.tmp.name) / 'TotK-Setup-x86_64.AppImage'

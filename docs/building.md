@@ -201,6 +201,9 @@ from `runtime/cfg.c` (`known[]`, `metas[]`, `sections[]`), `runtime/ui/menu.cpp`
 choice names), `runtime/ui_text.c` (menu texts in English, Russian, Brazilian Portuguese and Simplified Chinese),
 `runtime/input_map.c` (key, button and action names, default bindings), `totk.ini.example` and
 [settings.md](settings.md). Rerun it after changing any of them; nothing in `configurator/` lists settings by hand.
+At run time the configurator also reads `totk.ini.example`, `docs/settings.md` and `totk.ini` next to the game (or
+in a parent folder, so a source checkout works) and a `totk-settings.json` there replaces the built-in list
+(`configurator/src/docs.rs`): a setting added after the configurator was built shows up without rebuilding it.
 
 ## Linux (in progress)
 
