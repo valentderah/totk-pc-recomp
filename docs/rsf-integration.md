@@ -254,6 +254,19 @@ checked cleanup. The DLSS opening-scene run now completes with its token unavail
 without permanently disabling reconstruction. This recovery path does not provide
 the missing CPU frame token.
 
+XeSS initially refused SR creation with NOT_READY because its private SDK session
+had never been initialized. The adapter now loads the RSF XeSS service before
+instance creation, merges its required instance extensions and minimum API, and
+merges device extensions/features into the writable creation chain. Context
+retirement precedes checked XeSS shutdown; its SDK remains mapped through Vulkan
+teardown under the RSF service contract. Only an enabled SR provider initializes
+its SDK. The real device fixture passes XeSS and Streamline setup/teardown, and an
+RSF-disabled fixture passes with a nonexistent provider directory.
+The negotiated XeSS native-resolution opening-scene run completed 1,636 presents
+with zero validation errors, shader failures and skipped draws, using descriptor
+writes as above. This establishes initial XeSS evaluation on the RTX 4070 Laptop
+GPU, not reduced-resolution, resize or temporal-quality acceptance.
+
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
 Check HUD composition, motion, resize, provider changes, pause/load history resets,

@@ -8,6 +8,7 @@
 
 static HMODULE runtime;
 static const char *provider_directory;
+static int backend = 1;
 int rsf_runtime_load(void) { return runtime != NULL; }
 const char *rsf_runtime_path(void) { return runtime ? "probe" : NULL; }
 const char *rsf_provider_directory(unsigned backend) { (void)backend; return provider_directory; }
@@ -17,7 +18,10 @@ const char *cfg_get(const char *name) {
     if (!strcmp(name, "TOTK_RSF_PROVIDER_DIR")) return provider_directory;
     return NULL;
 }
-int cfg_int(const char *name) { return !strcmp(name, "TOTK_RSF_BACKEND") ? 1 : 0; }
+int cfg_int(const char *name) {
+    if (!strcmp(name, "TOTK_RSF_BACKEND")) return backend;
+    return !strcmp(name, "TOTK_RSF_ENABLED") && backend != 0;
+}
 void rt_log(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -26,7 +30,8 @@ void rt_log(const char *format, ...) {
     putchar('\n');
 }
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    if (argc != 3 && argc != 4) return 2;
+    if (argc == 4) backend = atoi(argv[3]);
     runtime = LoadLibraryA(argv[1]);
     if (!runtime) { printf("Runtime load failed: %lu\n", GetLastError()); return 1; }
     provider_directory = argv[2];
