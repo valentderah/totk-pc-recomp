@@ -10,10 +10,6 @@
 #include <rescaleframe/native_latency_vulkan.h>
 #include <rescaleframe/native_cpu.h>
 
-#if __has_include("patches.h")
-#include "patches.h"
-#endif
-
 static PlatMutex frame_lock = PLAT_MUTEX_INIT;
 static struct FrameOwner { void *thread; uint64_t framework, current, completed, draw, draw_queue; int sampled; } frames[32];
 static uint64_t next_source;
@@ -189,8 +185,7 @@ static void publish_draw(Cpu *c, uint64_t queue, uint64_t message) {
         rt_log("rsf draw published: queue 0x%llx source %llu", (unsigned long long)queue, (unsigned long long)source);
 }
 
-#ifdef RT_PATCH_PAGE
-static void calculation_begin(Cpu *c) {
+void rsf_frame_calculation_begin(Cpu *c) {
     // Displaced ADRP from the verified 1.4.3 framework calculation entry.
     c->x[8] = MOD_MAIN_BASE + 0x396f000;
     if (!cfg_int("TOTK_RSF_ENABLED") && !cfg_int("TOTK_RSF_FG") && !cfg_int("TOTK_RSF_LOW_LATENCY")) return;
@@ -211,7 +206,7 @@ static void calculation_begin(Cpu *c) {
     cpu_fact(source, RSF_GAME_CPU_SIMULATION_BEGIN, 0);
 }
 
-static void calculation_end(Cpu *c) {
+void rsf_frame_calculation_end(Cpu *c) {
     // Displaced load after the task calculation traversal, before its guard is released.
     memcpy(&c->x[0], (const void *)(uintptr_t)(c->x[19] + 0x98), sizeof c->x[0]);
     uint64_t source = 0;
@@ -225,13 +220,6 @@ static void calculation_end(Cpu *c) {
     plat_mutex_unlock(&frame_lock);
     cpu_fact(source, RSF_GAME_CPU_SIMULATION_END, 0);
 }
-
-__attribute__((constructor)) static void register_frame_hooks(void) {
-    if (rt_game_version != 143) return;
-    rt_register_host(RT_PATCH_PAGE + 0xf50, calculation_begin);
-    rt_register_host(RT_PATCH_PAGE + 0xf40, calculation_end);
-}
-#endif
 
 static int trace_count(void *thread, uint64_t queue, int send) {
     static PlatMutex lock = PLAT_MUTEX_INIT;

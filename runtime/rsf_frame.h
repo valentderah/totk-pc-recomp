@@ -8,3 +8,6 @@ void rsf_frame_input(Cpu *cpu);
 uint64_t rsf_frame_draw_source(Cpu *cpu);
 // After the guest queued its output; later work cannot borrow this draw's source.
 void rsf_frame_draw_done(Cpu *cpu);
+// Callbacks registered by the selected game's install-side patch table.
+void rsf_frame_calculation_begin(Cpu *cpu);
+void rsf_frame_calculation_end(Cpu *cpu);

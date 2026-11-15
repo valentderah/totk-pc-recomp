@@ -186,6 +186,10 @@ THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
+RSF frame-hook registration lives in `patches.c`, which is compiled for the
+selected game version during setup. Its implementation stays in the prebuilt
+runtime library, so the installer needs no RSF SDK checkout.
+
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
 - Every bundled third-party piece gets a row in `THIRD_PARTY_NOTICES.md`.
 - The release contains no code, data, text or assets of the game; `make_release.py` runs `tools/check_content.py` over
