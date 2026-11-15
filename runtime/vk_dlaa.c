@@ -100,6 +100,9 @@ static struct {
     double cam_prev[16];         // last frame's view-projection (rows 3-6 of its block), for the reprojection
     RsfCameraProjection projection;
     int projection_ok;
+    RsfCameraMatrices camera_matrices;
+    int camera_matrices_ok;
+    uint64_t invalid_camera;
     int cam_slot, cam_prev_ok;   // the slot this frame writes / the other slot holds last frame's camera
     VkDescriptorSetLayout mv_dsl;
     VkPipelineLayout mv_layout;
@@ -388,6 +391,7 @@ static int inv4(const double m[16], double o[16]) {
 static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked) {
     *masked = 0;
     D.projection_ok = 0;
+    D.camera_matrices_ok = 0;
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
     VkDescriptorBufferInfo cam;
@@ -401,6 +405,10 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     const float *cr = (const float *)vk_usnap_bytes(D.cam_addr + 48, 64);
     const float *projection = (const float *)vk_usnap_bytes(D.cam_addr + 7 * 16, 64);
     if (projection) D.projection_ok = rsf_camera_projection(projection, &D.projection);
+    float previous_vp[16];
+    if (D.cam_prev_ok) for (int i = 0; i < 16; i++) previous_vp[i] = (float)D.cam_prev[i];
+    if (projection && cr) D.camera_matrices_ok = rsf_camera_matrices(projection, cr,
+        D.cam_prev_ok && !D.reset ? previous_vp : NULL, &D.camera_matrices);
     double cur_vp[16], m[16], ci[16];
     int have_m = 0;
     if (cr) {
@@ -863,6 +871,12 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
             .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
             .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
             .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
+    memcpy(record.camera.view_to_clip, D.camera_matrices.view_to_clip, sizeof record.camera.view_to_clip);
+    memcpy(record.camera.clip_to_view, D.camera_matrices.clip_to_view, sizeof record.camera.clip_to_view);
+    memcpy(record.camera.world_to_view, D.camera_matrices.world_to_view, sizeof record.camera.world_to_view);
+    memcpy(record.camera.view_to_world, D.camera_matrices.view_to_world, sizeof record.camera.view_to_world);
+    memcpy(record.camera.clip_to_previous_clip, D.camera_matrices.clip_to_previous_clip,
+           sizeof record.camera.clip_to_previous_clip);
     rsf_srvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_SRVK_ABI_VERSION, .record = &record,
         .color = rsf_image(e->sr_color, VK_FORMAT_R16G16B16A16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
         .depth = rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
@@ -922,7 +936,13 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     rec_drain();   // RSF records directly: finish all scene and motion commands first
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
-    if (!motion_ok || !D.projection_ok) { D.reset = 1; return; }
+    if (!motion_ok || !D.projection_ok || !D.camera_matrices_ok) {
+        D.reset = 1;
+        D.jit_ok = 0;
+        if (motion_ok && ++D.invalid_camera == 1)
+            rt_log("rsf: camera projection or transforms unavailable/invalid; skipping reconstruction");
+        return;
+    }
     int result = rsf_scene(ex, e, jx, jy);
     if (result == 2) { D.reset = 1; D.jit_ok = 0; return; }
     if (!result) return dl_fail("RSF evaluation", 0);
