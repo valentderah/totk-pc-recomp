@@ -98,6 +98,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "Texture filtering",
     [UI_MENU_ANISO_DESC] = "Anisotropic filtering of surface textures: ground, roads and walls seen at a shallow angle stay sharp into the distance instead of blurring. Game: the level the game asks for, as on the Switch.",
     [UI_MENU_ANISO_GAME] = "Game",
+    [UI_MENU_LOD_STEADY] = "Steady detail under load",
+    [UI_MENU_LOD_STEADY_DESC] = "Skips the game's setup for lowering model and texture detail when the frame rate drops, as the emulator mod Disable LOD Quality Reduction does. Game versions 1.2.1 and 1.4.3. Leave it off on weak PCs: there this drop keeps the frame rate up.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
     [UI_MENU_COLOR] = "Colour",
@@ -251,6 +253,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Stereo or 5.1 surround output. Automatic picks 5.1 when the Windows speaker setup "
                                     "has six or more channels. Applies after a restart.",
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
+    [UI_MENU_AUDIO_DEVICE] = "Output device",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Where the sound plays. System default follows the Windows default device. A chosen "
+                                  "device that is unplugged falls back to the system default until it is back. "
+                                  "Applies at once.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "System default",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
@@ -396,6 +403,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PAD_DPAD_DOWN] = "D-pad down", [UI_PAD_ZL] = "Left trigger", [UI_PAD_ZR] = "Right trigger",
     [UI_PAD_LPADDLE1] = "Left back button", [UI_PAD_RPADDLE1] = "Right back button",
     [UI_PAD_LPADDLE2] = "Left back button 2", [UI_PAD_RPADDLE2] = "Right back button 2",
+    [UI_PAD_TOUCHPAD] = "Touchpad click",
     [UI_PAD_CROSS] = "Cross", [UI_PAD_CIRCLE] = "Circle", [UI_PAD_SQUARE] = "Square", [UI_PAD_TRIANGLE] = "Triangle",
 
     [UI_MENU_AMIIBO_DIR] = "Amiibo folder",
@@ -633,6 +641,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "Фильтрация текстур",
     [UI_MENU_ANISO_DESC] = "Анизотропная фильтрация текстур поверхностей: земля, дороги и стены под острым углом остаются чёткими вдали, а не размываются. Игра: уровень, который запрашивает игра, как на Switch.",
     [UI_MENU_ANISO_GAME] = "Игра",
+    [UI_MENU_LOD_STEADY] = "Стабильная детализация под нагрузкой",
+    [UI_MENU_LOD_STEADY_DESC] = "Пропускает настройку игры, снижающую детализацию моделей и текстур при падении частоты кадров, как эмуляторный мод Disable LOD Quality Reduction. Только для версий игры 1.2.1 и 1.4.3. На слабых ПК не включайте: там это снижение и держит частоту кадров.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
     [UI_MENU_COLOR] = "Цвет",
@@ -784,6 +794,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Стерео или объёмный звук 5.1. Автоматически выбирается 5.1, если в Windows "
                                     "настроено шесть каналов или больше. Применяется после перезапуска.",
     [UI_MENU_CHANNELS_AUTO] = "Автоматически", [UI_MENU_CHANNELS_STEREO] = "Стерео", [UI_MENU_CHANNELS_51] = "Объёмный 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Устройство вывода",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Куда выводится звук. Системное по умолчанию следует за устройством по умолчанию "
+                                  "в Windows. Если выбранное устройство отключить, звук идёт на системное, пока оно "
+                                  "не вернётся. Применяется сразу.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Системное по умолчанию",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
@@ -933,6 +948,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PAD_ZR] = "Правый курок",
     [UI_PAD_LPADDLE1] = "Левая задняя кнопка", [UI_PAD_RPADDLE1] = "Правая задняя кнопка",
     [UI_PAD_LPADDLE2] = "Левая задняя кнопка 2", [UI_PAD_RPADDLE2] = "Правая задняя кнопка 2",
+    [UI_PAD_TOUCHPAD] = "Нажатие на тачпад",
     [UI_PAD_CROSS] = "Крест", [UI_PAD_CIRCLE] = "Круг", [UI_PAD_SQUARE] = "Квадрат", [UI_PAD_TRIANGLE] = "Треугольник",
 
     [UI_MENU_AMIIBO_DIR] = "Папка amiibo",
@@ -1236,6 +1252,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Saída estéreo ou surround 5.1. Automático escolhe 5.1 quando a configuração de "
                                     "alto-falantes do Windows tem seis canais ou mais. Vale após reiniciar.",
     [UI_MENU_CHANNELS_AUTO] = "Automático", [UI_MENU_CHANNELS_STEREO] = "Estéreo", [UI_MENU_CHANNELS_51] = "Surround 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Dispositivo de saída",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Onde o som toca. Padrão do sistema segue o dispositivo padrão do Windows. Um "
+                                  "dispositivo escolhido que for desconectado volta ao padrão do sistema até "
+                                  "reaparecer. Vale na hora.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Padrão do sistema",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
@@ -1318,6 +1339,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_PAD_ZL] = "Gatilho esquerdo", [UI_PAD_ZR] = "Gatilho direito",
     [UI_PAD_LPADDLE1] = "Botão traseiro esquerdo", [UI_PAD_RPADDLE1] = "Botão traseiro direito",
     [UI_PAD_LPADDLE2] = "Botão traseiro esquerdo 2", [UI_PAD_RPADDLE2] = "Botão traseiro direito 2",
+    [UI_PAD_TOUCHPAD] = "Clique do touchpad",
     [UI_PAD_CROSS] = "Cruz", [UI_PAD_CIRCLE] = "Círculo", [UI_PAD_SQUARE] = "Quadrado", [UI_PAD_TRIANGLE] = "Triângulo",
 
     [UI_MENU_AMIIBO_DIR] = "Pasta de amiibo",
@@ -1478,6 +1500,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                            "ângulo raso continuam nítidos ao longe em vez de borrar. Jogo: o nível que o jogo pede, "
                            "como no Switch.",
     [UI_MENU_ANISO_GAME] = "Jogo",
+    [UI_MENU_LOD_STEADY] = "Detalhe estável sob carga",
+    [UI_MENU_LOD_STEADY_DESC] = "Pula a configuração do jogo que reduz o detalhe de modelos e texturas quando a taxa "
+                                "de quadros cai, como faz o mod de emulador Disable LOD Quality Reduction. Só nas "
+                                "versões 1.2.1 e 1.4.3 do jogo. Deixe desligado em PCs fracos: lá essa redução mantém a taxa de quadros.",
     [UI_MENU_COLOR] = "Cor",
     [UI_MENU_COLOR_PRESET] = "Perfil de cor",
     [UI_MENU_COLOR_PRESET_DESC] = "Define os quatro valores abaixo. Vívido: mais contraste e saturação, sombras um "
@@ -1851,6 +1877,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_CHANNELS] = "扬声器",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "立体声或 5.1 环绕声输出。选择自动时，若 Windows 扬声器设置有六个或更多声道则使用 5.1。重启后生效。",
     [UI_MENU_CHANNELS_AUTO] = "自动", [UI_MENU_CHANNELS_STEREO] = "立体声", [UI_MENU_CHANNELS_51] = "5.1 环绕声",
+    [UI_MENU_AUDIO_DEVICE] = "输出设备",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "声音从哪个设备播放。系统默认跟随 Windows 的默认设备。所选设备被拔出时改用系统默认，"
+                                  "设备重新连接后恢复。立即生效。",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "系统默认",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
@@ -1983,6 +2013,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_PAD_RPADDLE1] = "右背键",
     [UI_PAD_LPADDLE2] = "左背键 2",
     [UI_PAD_RPADDLE2] = "右背键 2",
+    [UI_PAD_TOUCHPAD] = "触摸板按下",
     [UI_PAD_CROSS] = "叉键",
     [UI_PAD_CIRCLE] = "圆圈键",
     [UI_PAD_SQUARE] = "方块键",
@@ -2189,6 +2220,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO] = "纹理过滤",
     [UI_MENU_ANISO_DESC] = "表面纹理的各向异性过滤：以小角度看到的地面、道路和墙壁在远处依然清晰，而不会模糊。游戏：使用游戏请求的级别，与 Switch 上相同。",
     [UI_MENU_ANISO_GAME] = "游戏",
+    [UI_MENU_LOD_STEADY] = "负载下保持细节",
+    [UI_MENU_LOD_STEADY_DESC] = "跳过游戏在帧率下降时降低模型和纹理细节的设置，与模拟器模组 Disable LOD Quality "
+                                "Reduction 的作用相同。仅适用于游戏版本 1.2.1 和 1.4.3。低配电脑请勿开启：在那里正是这种降低维持了帧率。",
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 输出",
     [UI_MENU_HDR_DESC] = "在 HDR 显示器上呈现明亮的高光。需要在 Windows 中开启 HDR（“使用 HDR”），或使用带色彩管理的 Wayland 合成器；否则画面保持 "

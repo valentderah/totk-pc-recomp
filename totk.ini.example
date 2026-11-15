@@ -57,9 +57,13 @@
 # game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
 # frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
-# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage, which is on by default on Linux and Wine and needs
-# the environment variable TOTK_SHADOW=1 on native Windows; without it the setting is ignored and the log says so.
+# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage (shadow below), which is on by default on Linux and
+# Wine and needs shadow = 1 on native Windows; without it the setting is ignored and the log says so.
 # sync_ahead = 0
+# Shadow storage, 0 or 1: each CPU-visible memory pool of the game gets a host-visible copy that the GPU reads, in
+# place of importing the game's memory. Default: on under Linux and Wine, off on native Windows. sync_ahead needs it.
+# Costs about 0.2 ms a frame and doubles the memory of those pools (about 1.1 GB; docs/building.md). Read at start.
+# shadow = 0
 # With sync_ahead = 1: when the game changes memory the GPU still reads, queue the copy into the GPU's shadow of that
 # memory for the GPU to run in order, 0 or 1. Default: on. With 0 the replay thread waits for the GPU to finish
 # reading instead, which costs part of the gain.
@@ -121,7 +125,9 @@
 # fix_zero = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
-# skip push constants that did not change, bind only the vertex buffers a draw reads.
+# skip push constants that did not change, bind only the vertex buffers a draw reads, compare and copy each draw's
+# state inline, and rebuild only the parts of a draw's bindings, shaders and pipeline whose inputs changed since the
+# draw before (check: build everything and log any difference from what would have been kept).
 # bind_skip = 1
 # shader_memo = 1
 # pipe_memo = 1
@@ -129,6 +135,8 @@
 # desc_template = 1
 # push_skip = 1
 # vb_used = 1
+# memx = 1
+# bind_inc = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
@@ -243,6 +251,10 @@
 # it; the grass map's textures grow with it, so its detail per metre stays the game's, and the grass heap grows by about
 # 9 MiB times (percent / 100)^2 - 1. Lower draws less grass. Read at start.
 # grass_range = 100
+# Steady detail under load: 1 skips the game's setup for lowering model and texture detail when the frame rate drops,
+# as the emulator mod "Disable LOD Quality Reduction" does (set steady); 0 (the default) leaves it. Leave it off on weak
+# PCs, where that drop keeps the frame rate up. Game versions 1.2.1 and 1.4.3. Read at start.
+# lod_steady = 0
 # Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
@@ -333,6 +345,10 @@
 # Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
 # game is told the same channel count and mixes for it. Takes effect at the next start.
 # audio_channels = stereo
+# Output device: its name as the Sound tab of the menu lists it (SDL's name, e.g. Speakers (Realtek(R) Audio)), or
+# empty / default for the system default device, which follows the Windows default. A named device that is not
+# connected plays on the system default until it is back. Changes while the game runs take effect at once.
+# audio_device = default
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
@@ -413,6 +429,7 @@
 # SHAKE take keys only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
 #   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
+#   touchpad (the touchpad click of a DualSense or DualShock 4)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert
 #   delete home end pageup pagedown up down left right num_add num_sub num_mul num_div num_decimal minus equals
 #   lbracket rbracket semicolon apostrophe comma period slash backslash grave mouse_l mouse_r mouse_m mouse_x1 mouse_x2

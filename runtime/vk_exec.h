@@ -1,3 +1,14 @@
+// What the bind ops changed in a context's bound slots since its last prepared draw (VkExec.dirt, TOTK_BIND_INC in
+// vk_exec_draw.c): a bit per slot, per NVN stage, set only when the bytes an op writes differ from those it replaces.
+typedef struct {
+    uint32_t prog;                       // the program pointer or its stage mask
+    uint32_t ubo[6];                     // uniform slots 0..17 (OP_BIND_UBO index)
+    uint32_t ssbo[6];                    // storage slots 0..15
+    uint64_t tex[6][2];                  // texture handles 0..127
+    uint32_t img[6];                     // image handles 0..31
+    uint32_t vbuf;                       // vertex buffer ranges 0..15
+} VkExecDirty;
+
 // The op-stream replay of the Vulkan back end. vk_exec.c walks the command
 // handles of a submission, keeps render targets, passes, clears and fixed-function state; draws, binds and dispatches
 // (vk_exec_draw.c) and copies, counters, events and conditional rendering (vk_exec_xfer.c) plug in through the two
@@ -110,7 +121,7 @@ typedef struct VkExec {
     const dpool_t *tex_pool, *samp_pool; // OP_SET_TEX_POOL, OP_SET_SAMP_POOL
     // Pipeline inputs. vk_exec.c writes depth_clamp (OP_DEPTH_CLAMP), raster_discard (OP_RASTER_DISCARD) and, at pass
     // begin, color_fmt, depth_fmt and samples; vk_exec_draw.c owns every other field (shaders, prim, y_flip, state
-    // objects, vertex input).
+    // objects, vertex input). Every write that changes it bumps pipe_gen.
     VkPipeState pipe;
 
     // ---- vk_exec_draw.c slots (draws, binds, dispatch): left empty by vk_exec.c
@@ -148,6 +159,14 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+    // TOTK_BIND_INC (vk_exec_draw.c): the slots the bind ops changed since this context's last prepared draw, cleared
+    // by that draw; vk_exec_draw_new_cb and copy_state set every bit. pipe_gen: bumped by every write that changes
+    // pipe (the state object and vertex input binds, OP_DEPTH_CLAMP, OP_RASTER_DISCARD, the target formats of
+    // resolve_rt, copy_state); an equal value says pipe holds what it held then. fbl_serial: bumped whenever the images
+    // in the feedback layout (fbl_img, nfbl) may have changed. Outside the copied state: each context counts its own.
+    VkExecDirty dirt;
+    uint64_t pipe_gen;
+    uint32_t fbl_serial;
 
     // ---- vk_exec_xfer.c: the occlusion query of the open pass and the queries closed since the last report or reset
     int oq_open;                         // slot of the active query, -1 none
@@ -195,6 +214,12 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(VkExec *ex);
+// Everything a context's next draw reads may differ from its last prepared draw's (VkExec.dirt, pipe_gen, fbl_serial):
+// its bound state was replaced or its command buffer state lost.
+static inline void vk_exec_dirty_all(VkExec *ex) {
+    __builtin_memset(&ex->dirt, 0xff, sizeof ex->dirt);
+    ex->pipe_gen++, ex->fbl_serial++;
+}
 // vk_exec_draw.c: the fragment stage of the draw being recorded samples img through one of its bound combined
 // textures (OP_BIND_TEX, the handles tex_info swaps; vk_dlaa.c vk_dlaa_skip_draw). Takes the texture lock.
 int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img);

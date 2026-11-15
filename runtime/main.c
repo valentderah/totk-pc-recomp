@@ -161,6 +161,16 @@ const RtConfig *rt_config(void) { return &cfg; }
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
 
+// cpu.h RT_FPCR_NOTE: diagnostic only, the write itself takes effect as before (runtime/simd.h slow paths).
+void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr) {
+    static int seen;
+    if (__atomic_exchange_n(&seen, 1, __ATOMIC_RELAXED)) return;
+    static const char *const mode[] = {"nearest", "+inf", "-inf", "zero"};
+    char at[128];
+    rt_log("fpcr: guest code set rounding mode %s (FPCR %#llx), in a function called from %s", mode[(fpcr >> 22) & 3],
+           (unsigned long long)fpcr, ldr_describe(lr, at, sizeof at));
+}
+
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
     rt_fatal("brk #%#x at %s (lr %s)", imm, ldr_describe(pc, at, sizeof at), ldr_describe(c->x[30], lr, sizeof lr));

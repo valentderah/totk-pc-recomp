@@ -1,5 +1,6 @@
 // Ported from MacNativeGames games/totk/third_party/d2r_gfx/gfx/nvn/nvn_hmap.h @ b75be8cf (MIT, Copyright (c) 2026
-// jhaizhou; origin d2r-mobile); Chinese duplicate comments dropped, code unchanged.
+// jhaizhou; origin d2r-mobile); Chinese duplicate comments dropped, code unchanged but for
+// nvn_hm_get's key compare (MX_EQ, memx.h).
 //
 // Open-addressing hash table from fixed-length byte keys -> pointers (linear probing + backward shift on deletion, no
 // tombstones). The replay hot path uses it instead of a boxed dictionary: keys are not boxed, no allocation, a lookup
@@ -10,6 +11,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "memx.h"
 
 typedef struct { uint8_t *keys; void **vals; uint32_t klen, cap, n; } nvn_hmap;   // vals[i] == NULL means an empty slot
 
@@ -25,7 +28,7 @@ static inline void *nvn_hm_get(const nvn_hmap *m, const void *k) {
     if (!m->n) return NULL;
     for (uint32_t i = (uint32_t)nvn_hm_hash(k, m->klen) & (m->cap - 1);; i = (i + 1) & (m->cap - 1)) {
         if (!m->vals[i]) return NULL;
-        if (!memcmp(m->keys + (size_t)i * m->klen, k, m->klen)) return m->vals[i];
+        if (MX_EQ(m->keys + (size_t)i * m->klen, k, m->klen)) return m->vals[i];
     }
 }
 static inline void *nvn_hm_put(nvn_hmap *m, const void *k, void *v);
