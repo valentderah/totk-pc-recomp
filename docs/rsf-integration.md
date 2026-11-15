@@ -29,10 +29,26 @@ This proves export availability only, not ABI setup or GPU provider operation.
 The camera motion dispatch now also writes an R32F device-depth image at the
 render size. Each size owns that image, its view and allocation; eviction drains
 GPU work before freeing them. Its contents are valid only after `mv_pass` returns
-success for the current evaluation. Missing camera/history currently skips that
-dispatch, so an RSF caller must arrange depth production on those frames too.
+success for the current evaluation. A valid camera without history now dispatches
+identity reprojection, writes current depth and zero camera motion, skips object
+history replay and resets reconstruction history. A missing camera still skips
+the dispatch, so those frames cannot consume this depth output.
 The shader compiled and passed SPIR-V validation; the changed C files passed
 UCRT64 Clang syntax checks. GPU output has not yet been checked in TotK.
+
+`runtime/rsf_camera.c` decodes near/far, reversed/infinite depth and vertical FOV
+from the recorded c4 projection block. Unsupported projections are refused. The
+focused compiled test checks finite, reversed and infinite projections and refusal
+without overwriting a prior valid result. The motion pass captures these values
+from its current uniform snapshot for the forthcoming provider record.
+
+Run the camera test from the repository root (output stays under ignored `build/`):
+
+```powershell
+New-Item -ItemType Directory -Force build/checks | Out-Null
+C:/msys64/ucrt64/bin/clang.exe -std=gnu11 -Wall -Wextra -Werror -I runtime tests/rsf_camera_check.c runtime/rsf_camera.c -o build/checks/rsf_camera_check.exe
+build/checks/rsf_camera_check.exe
+```
 
 - `runtime/vk_dlaa.c`, `evaluate`: retain scene recognition, jitter and camera/object
   motion production; replace NGX feature creation and evaluation with RSF SR sessions.

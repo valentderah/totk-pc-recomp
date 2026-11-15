@@ -18,6 +18,7 @@
 #include <wchar.h>
 
 #include "cfg.h"
+#include "rsf_camera.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -282,6 +283,8 @@ static struct {
     uint8_t *mvm_map;
     uint32_t mvm_slot;
     double cam_prev[16];         // last frame's view-projection (rows 3-6 of its block), for the reprojection
+    RsfCameraProjection projection;
+    int projection_ok;
     int cam_slot, cam_prev_ok;   // the slot this frame writes / the other slot holds last frame's camera
     VkDescriptorSetLayout mv_dsl;
     VkPipelineLayout mv_layout;
@@ -566,6 +569,7 @@ static int inv4(const double m[16], double o[16]) {
 // bias mask (dlaa_mv.comp); *masked says whether it did.
 static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked) {
     *masked = 0;
+    D.projection_ok = 0;
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
     VkDescriptorBufferInfo cam;
@@ -577,6 +581,8 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     }
     // this frame's view-projection as the snapshot holds it, for the reprojection; kept as last frame's for the next
     const float *cr = (const float *)vk_usnap_bytes(D.cam_addr + 48, 64);
+    const float *projection = (const float *)vk_usnap_bytes(D.cam_addr + 7 * 16, 64);
+    if (projection) D.projection_ok = rsf_camera_projection(projection, &D.projection);
     double cur_vp[16], m[16], ci[16];
     int have_m = 0;
     if (cr) {
@@ -599,7 +605,11 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     if (cr) memcpy(D.cam_prev, cur_vp, sizeof cur_vp);
     if (!had_prev || !have_m) {   // nothing to reproject into: zero motion, new history
         e->chars_ok = 0;
-        return 0;
+        D.reset = 1;
+        // Still dispatch so the current depth reaches RSF on the first frame.
+        // Identity reprojection produces zero motion without reading old camera data.
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) m[r * 4 + k] = r == k ? 1.0 : 0.0;
     }
     VkDescriptorImageInfo zi = {D.mv_samp, zv, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo oi = {VK_NULL_HANDLE, e->mv_view, VK_IMAGE_LAYOUT_GENERAL};
@@ -656,7 +666,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     vk_mvcheck_camera(cb, e->mv, w, h, jx, jy);   // TOTK_MV_CHECK (test)
     // the characters' own motion over the camera's (vk_exec_draw.c, per-object motion)
     uint64_t c0 = T.on > 0 ? kern_now_ns() : 0;
-    if (vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
+    if (had_prev && have_m && vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
     if (T.on > 0) T.cpu_mv += kern_now_ns() - c0;
     times_mark(cb, T_OBJ);
     if (T.on > 0) T.used[T.slot] = 1;   // the DLSS marks follow in evaluate
