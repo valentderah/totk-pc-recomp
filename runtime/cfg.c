@@ -49,7 +49,8 @@ static const char *const known[] = {
     "GAMEPLAY_MAP_ZOOM", "GAMEPLAY_MAP_ZOOM_SENSITIVITY", "GAMEPLAY_ROTATION_SENSITIVITY", "GAMEPLAY_TWEAKS_ENABLED",
     "GAMEPLAY_ULTRAHAND_C_AXIS", "GAMEPLAY_ULTRAHAND_DISTANCE", "GAMEPLAY_ULTRAHAND_ROTATE", "GAMEPLAY_WEAPON_SENSITIVITY",
     "GAMEPLAY_WEAPON_WHEEL",
-    "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "GRASS_RANGE", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+    "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "GRASS_RANGE",
+    "GYRO_BIAS_PAD", "GYRO_BIAS_X", "GYRO_BIAS_Y", "GYRO_BIAS_Z", "GYRO_CALIBRATION", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "KSPIN_US", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LOD_STEADY", "LSTICK_DEADZONE", "MAP_CLICK", "MEMORY", "MEMX", "MENU_LANG", "MENU_TEST", "MENU_FONT_FONTCONFIG",
     "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
@@ -92,7 +93,8 @@ static const struct { const char *key, *section; } sections[] = {
     {"MENU_LANG", "language"}, {"MENU_FONT_FONTCONFIG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"VOLUME_MUSIC", "audio"}, {"VOLUME_SFX", "audio"}, {"VOLUME_VOICE", "audio"}, {"AUDIO_CHANNELS", "audio"},
     {"AUDIO_DEVICE", "audio"},
-    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+    {"MOTION", "input"}, {"GYRO_CALIBRATION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+    {"GYRO_BIAS_X", "input"}, {"GYRO_BIAS_Y", "input"}, {"GYRO_BIAS_Z", "input"}, {"GYRO_BIAS_PAD", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
     {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
@@ -165,7 +167,12 @@ static const CfgMeta metas[] = {
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"VOLUME_MUSIC", "100", "0..100", LIVE}, {"VOLUME_SFX", "100", "0..100", LIVE}, {"VOLUME_VOICE", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"AUDIO_DEVICE", "", NULL, LIVE},   // audio_mixer.c output_worker: a device name, empty for the system default
-    {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+    {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE},
+    {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+    // Written by the Calibrate gyro row (motion_fusion.c), not by hand; read at start when gyro_bias_pad names the
+    // connected controller.
+    {"GYRO_BIAS_X", "", NULL, RESTART}, {"GYRO_BIAS_Y", "", NULL, RESTART}, {"GYRO_BIAS_Z", "", NULL, RESTART},
+    {"GYRO_BIAS_PAD", "", NULL, RESTART},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},

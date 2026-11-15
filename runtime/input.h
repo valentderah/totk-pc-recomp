@@ -114,6 +114,16 @@ int input_rumble_triggers_enabled(void);
 void input_motion_start(void);
 // TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
+void input_motion_calibrate(void);   // start collecting resting gyro samples for a bias estimate
+// What the Controls tab's Calibrate gyro row shows: 0 no bias for this controller, 1 collecting, 2 calibrated
+// (by this run or loaded from totk.ini), 3 the last attempt timed out. pad receives the controller the bias belongs
+// to (empty when none), copied so the caller does not read a buffer another thread may be rewriting.
+int input_motion_calib_state(char *pad, size_t cap);
+// The bias's own switch (gyro_calibration, live). Off: no collection, the fusion takes the raw gyro, and the row's
+// state reads as before any calibration while the saved keys stay in totk.ini.
+int input_gyro_calibration_enabled(void);
+// The fusion's own read of the same switch (motion_fusion.c); input.c reaches it for the load and the row's state.
+int motion_calibration_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);
@@ -131,3 +141,7 @@ MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
 void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
+void motion_calibrate_start(MotionFusion *m, const char *pad_name);   // start collecting; pad_name saved with the bias
+int motion_calib_poll(MotionFusion *m, uint64_t now_ns);   // the timeout, for when motion_feed is not called
+void motion_bias_load(MotionFusion *m);          // load the bias from totk.ini (TOTK_GYRO_BIAS_*)
+void motion_bias_reset(MotionFusion *m);         // zero the bias (new controller)
