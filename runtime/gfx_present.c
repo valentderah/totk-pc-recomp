@@ -664,11 +664,12 @@ static int build_swapchain(void) {
     g_sc_n = MAX_IMAGES;
     if (g_rsf_present) {
         uint64_t images[MAX_IMAGES];
-        if (rsf_present_images(g_rsf_present, &g_sc_n, images) != VK_SUCCESS || g_sc_n > MAX_IMAGES) {
+        if (rsf_present_images(g_rsf_present, &g_sc_n, images) != VK_SUCCESS || !g_sc_n || g_sc_n > MAX_IMAGES) {
             g_sc_n = 0;
             return 0;
         }
         for (uint32_t i = 0; i < g_sc_n; i++) g_sc_img[i] = (VkImage)images[i];
+        rt_log("rsf: presentation images %u, first 0x%llx", g_sc_n, (unsigned long long)(g_sc_n ? images[0] : 0));
     } else if (vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img) != VK_SUCCESS) {
         g_sc_n = 0;
         return 0;
@@ -902,7 +903,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }
-    if (wsys_minimized() || !g_sc) goto out;
+    if (wsys_minimized() || !g_sc || !g_sc_n) goto out;
 
     unsigned slot = g_frame % FRAMES;
     if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) {
@@ -918,6 +919,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     }
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
+    if (idx >= g_sc_n || !g_sc_img[idx]) {
+        rt_fatal("gfx: acquired image %u outside usable image set (%u)", idx, g_sc_n);
+    }
     if (r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
     vkResetFences(c->device, 1, &g_fence[slot]);
     if (g_sc_hdr) vk_hdr_metadata(g_sc, 0);   // a changed peak or white goes to the display

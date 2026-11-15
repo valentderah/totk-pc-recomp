@@ -1,4 +1,4 @@
-// Scene reconstruction through RSF (vk_dlaa.c), enabled by the legacy TOTK_DLAA setting.
+// Scene reconstruction and independent FG motion/depth production (vk_dlaa.c).
 #pragma once
 #include "vk.h"
 
@@ -15,6 +15,8 @@ void vk_dlaa_init(void);
 int vk_dlaa_release(void); // drained graphics owner; failure preserves provider ownership
 // 1 when reconstruction is enabled and RSF exports loaded. Provider admission occurs at evaluation.
 int vk_dlaa_available(void);
+// Motion/depth production is independent of reconstruction when FG is selected.
+int vk_dlaa_temporal_available(void);
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the
 // scene's light target or, at the first quarter-width pass after it, runs DLAA on that target. Each present ends the
 // frame (vk_dlaa_frame).

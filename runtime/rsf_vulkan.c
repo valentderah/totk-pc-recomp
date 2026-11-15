@@ -147,6 +147,11 @@ PFN_vkVoidFunction rsf_vk_device_proc(VkDevice device, const char *name) {
     return resolver ? resolver(device, name) : NULL;
 }
 
+void rsf_vk_destroy_surface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator) {
+    PFN_vkDestroySurfaceKHR destroy = (PFN_vkDestroySurfaceKHR)rsf_vk_instance_proc(instance, "vkDestroySurfaceKHR");
+    if (destroy) destroy(instance, surface, allocator);
+}
+
 VkResult rsf_vk_create_instance(const VkInstanceCreateInfo *info, const VkAllocationCallbacks *allocator,
                                VkInstance *out) {
     VkInstanceCreateInfo merged = *info;

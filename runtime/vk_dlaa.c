@@ -17,10 +17,11 @@
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
-// The existing DLAA setting controls scene reconstruction. Every temporal provider
-// is owned by RSF; this renderer supplies scene resources and camera/motion facts.
+// Reconstruction and FG independently request temporal inputs. RSF owns the
+// providers; this renderer supplies scene resources and camera/motion facts.
 static struct { int available; } N;
 int vk_dlaa_wanted(void) { return cfg_bool("TOTK_RSF_ENABLED"); }
+static int temporal_wanted(void) { return vk_dlaa_wanted() || cfg_int("TOTK_RSF_FG") != 0; }
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
     (void)ext; (void)n; (void)max;
 }
@@ -28,8 +29,9 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave,
                          const char **ext, uint32_t *n, uint32_t max) {
     (void)have; (void)nhave; (void)ext; (void)n; (void)max;
 }
-void vk_dlaa_init(void) { N.available = vk_dlaa_wanted() && rsf_runtime_load(); }
+void vk_dlaa_init(void) { N.available = temporal_wanted() && rsf_runtime_load(); }
 int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+int vk_dlaa_temporal_available(void) { return temporal_wanted() && N.available; }
 
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
@@ -81,7 +83,7 @@ static struct {
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     int failed, reset;
-    uint64_t evals, frames_missed;
+    uint64_t evals, frames_missed, guide_frames;
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
     float jx, jy;                // the offset the next scene draws take, render pixels (window x right, y down)
@@ -91,6 +93,8 @@ static struct {
     uint64_t holds;
     // camera (vk_dlaa_draw) and motion vectors (mv_pass)
     uint64_t cam_addr;           // this frame's scene camera block (c4 of a scene draw's vertex stage), 0: none seen
+    float camera_depth_range[2]; // viewport mapping observed with that camera, rather than the later bloom pass
+    uint32_t camera_depth_compare;
     VkBuffer camb;               // two CAM_SLOT slots: this frame's block and last frame's
     VmaAllocation camb_mem;
     VkBuffer mvm;                // MVM_SLOTS pairs of blocks for dlaa_mv.comp: the identity and the reprojection (mv_pass)
@@ -700,8 +704,11 @@ static void note_camera(const VkExec *ex) {
     const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
     const VkExecTarget *z = &ex->depth;
     if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
+        (!D.jdepth || z->image == D.jdepth)) {
         D.cam_addr = b->addr;
+        memcpy(D.camera_depth_range, ex->depth_range, sizeof D.camera_depth_range);
+        D.camera_depth_compare = ex->pipe.ds.df;
+    }
 }
 
 void vk_dlaa_draw(VkExec *ex) {
@@ -925,7 +932,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     int masked = 0;
     // Depth and camera metadata are still needed when the diagnostic requests
     // zero motion. Produce those inputs before clearing just the vector image.
-    int motion_ok = mv_pass(ex, e, zv, jx, jy, char_bias(), &masked);
+    int motion_ok = mv_pass(ex, e, zv, jx, jy, vk_dlaa_wanted() ? char_bias() : 0.0f, &masked);
     if (no_mv || !motion_ok) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -947,6 +954,20 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         D.jit_ok = 0;
         if (motion_ok && ++D.invalid_camera == 1)
             rt_log("rsf: camera projection or transforms unavailable/invalid; skipping reconstruction");
+        return;
+    }
+    if (!vk_dlaa_wanted()) {
+        // FG needs scene depth and independent object motion even when the
+        // native colour path is retained. Never inject temporal jitter here.
+        D.last = e, e->used = ++D.guide_frames, D.jdepth = z->image;
+        D.reset = 0, D.jit_ok = 0;
+        full_barrier(cb);
+        vk_exec_draw_new_cb(ex);
+        if (D.guide_frames == 1 || !(D.guide_frames % 300))
+            rt_log("rsf: FG guides %llu source %llu, render %ux%u output %ux%u; depth reversed %d infinite %d near %g far %g viewport %g..%g compare %#x; HUD-less admission pending",
+                   (unsigned long long)D.guide_frames, (unsigned long long)ex->source_frame, w, h, ow, oh,
+                   D.projection.inverted, D.projection.infinite, D.projection.near_plane, D.projection.far_plane,
+                   D.camera_depth_range[0], D.camera_depth_range[1], D.camera_depth_compare);
         return;
     }
     int result = rsf_scene(ex, e, jx, jy, masked);
@@ -1131,6 +1152,11 @@ void vk_dlaa_pass(VkExec *ex) {
 static void dlss_mode(void) {
     static char mode[32];
     static int bias_on = -1;
+    if (!vk_dlaa_wanted()) {
+        if (bias_on != 0) vk_sampler_dlss_bias(0.0f);
+        bias_on = 0;
+        return;
+    }
     const char *m = cfg_value("TOTK_RSF_QUALITY");
     if (!strcmp(m, "native")) m = "dlaa";
     if (strcmp(m, mode)) {
@@ -1140,7 +1166,7 @@ static void dlss_mode(void) {
         res_dlss_mode(m);
         bias_on = -1;
     }
-    int b = dl_active();
+    int b = dl_active() && vk_dlaa_wanted();
     if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
 }
 
@@ -1163,7 +1189,7 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("TOTK_RSF_ENABLED");
+    int on = N.available && temporal_wanted();
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;

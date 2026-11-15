@@ -82,8 +82,8 @@ never fall through to native WSI. An upfront unsupported/missing provider with n
 retained owner may keep native presentation. HDR currently keeps native WSI.
 Generation is explicitly disabled until input-frame identity, normalized FG inputs
 and tonemapped HUD-less capture are connected. Menu FG controls remain unavailable.
-Object compilation and the ownership fixture pass; real provider WSI in TotK and
-generated output are not yet validated.
+Object compilation and the ownership fixture pass. Initial FSR 3 and DLSS provider
+WSI runs now pass as described below; generated output remains unvalidated.
 
 When a nonzero `rsf_fg` is requested, device selection prefers a graphics/compute/
 presentation family with four queues. Device creation requests and retrieves four
@@ -463,3 +463,40 @@ writes. The game self-test, configuration probe and four RSF Vulkan ABI/split
 contract tests pass. The full RSF gate retains two Anomaly FG device-test failures.
 This repairs a verified dropped input; deformation/unsupported-draw motion
 coverage and moving-scene visual acceptance remain open.
+
+## FG input production and initial WSI runs
+
+Temporal depth/motion production now runs when either SR or FG is selected.
+The previous reconstruction-only gates also covered object/bone history,
+recording-worker serialization and CPU uniform snapshot shadows; all now admit
+FG-only work. The history fixture verifies FG-only collection and clearing on
+disable. With reconstruction off, the game keeps its own colour path and scene
+scale, receives no injected jitter and gets no saved SR sampler bias. The
+motion-only diagnostic skips its absent reconstructed-output allocation instead
+of calling VMA with a null allocation.
+
+The FSR 3 WSI run first exposed invalid image handles: the pinned SDK filled a
+smaller array without reducing an oversized count. RSF now queries and bounds
+that enumeration. The DLSS proxy required an exact-size fill call as well. Win32
+surface creation now uses RSF's instance dispatch so Streamline records its HWND;
+destruction follows that dispatch too. The host requires usable images before
+acquisition and validates acquired indices before recording.
+
+With generation still disabled, FSR 3 WSI completed 1,588 presents and DLSS WSI
+completed 1,574 presents, both with zero validation errors, shader failures or
+skipped draws. The latter had SR off and a saved performance quality selection;
+the scene stayed at the game's native 1600x896 size. The FG-only input run completed
+1,794 presents with the same clean validation counters. Its motion check uses zero
+jitter; one moving-object sample improves median flow error from 6.36 to 1.58
+pixels and fits better than camera-only motion on 93% of matches, with remaining
+misses recorded in [the audit](rsf-shader-audit.md). All validation runs use GPL off
+and descriptor writes on the RTX 4070 Laptop GPU, driver 617.42.
+
+The separate frame-1600 dump confirms an output-sized FXAA/scaling result followed
+by a fade/overlay draw and a copy into an sRGB target. HUD-less colour must retain
+the final sRGB encoding; copying earlier linear scene values is insufficient.
+That diagnostic dump emitted readback-layout validation warnings, so it is pass
+ordering evidence, not a clean validation run. Actual SDK prepare/HUD-less
+submission, explicit SDK presentation source selection, generated output and
+other providers remain open. RSF's
+`docs/research/vulkan-fg-image-enumeration-20261115.md` records the shared fixes.

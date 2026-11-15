@@ -3426,7 +3426,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     D->B.st_pm = D->PM.valid;   // st is this draw's state, which PM holds while valid
     vk_dlaa_draw(ex);
-    int mo = ex->chunked && vk_dlaa_available();
+    int mo = ex->chunked && vk_dlaa_temporal_available();
     if (mo) plat_mutex_lock(&mo_lock);
     vk_mvsurvey_draw(ex);
     vk_mvprev_draw(ex);

@@ -2,11 +2,11 @@
 #include <assert.h>
 #include "../runtime/vk_mvprev.c"
 
-static int reconstruction_enabled = 1, runtime_available = 1;
+static int reconstruction_enabled = 1, generation_enabled, runtime_available = 1;
 int cfg_bool(const char *name) {
     return !strcmp(name, "TOTK_RSF_ENABLED") ? reconstruction_enabled : 0;
 }
-int vk_dlaa_available(void) { return runtime_available; }
+int vk_dlaa_temporal_available(void) { return runtime_available && (reconstruction_enabled || generation_enabled); }
 int rt_knob(const char *name, const char *fallback) {
     (void)fallback;
     return !strcmp(name, "DLAA_OBJMV");
@@ -44,6 +44,14 @@ int main(void) {
     vk_mvprev_frame();
     assert(vk_mvprev_find(BONES, 0x10000, 128, &previous, &how));
     reconstruction_enabled = 0;
+    vk_mvprev_frame();
+    assert(!vk_mvprev_find(BONES, 0x10000, 128, &previous, &how));
+    generation_enabled = 1;
+    vk_mvprev_frame();
+    vk_mvprev_draw(&ex);
+    vk_mvprev_frame();
+    assert(vk_mvprev_find(BONES, 0x10000, 128, &previous, &how)); // FG alone needs real previous bones.
+    generation_enabled = 0;
     vk_mvprev_frame();
     assert(!vk_mvprev_find(BONES, 0x10000, 128, &previous, &how));
     reconstruction_enabled = 1;

@@ -37,9 +37,9 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
+    uint8_t *cpu;    // with temporal inputs, the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
                      // map is often device memory through the BAR, written fast but read back at about a microsecond a
-                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
+                     // cache line. Without temporal consumers the bytes go into map in one copy.
     uint64_t size;
 } Arena;
 
@@ -288,7 +288,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
     uint8_t *dst = U.arena->map;
-    if (vk_dlaa_available()) {
+    if (vk_dlaa_temporal_available()) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
@@ -349,7 +349,7 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy where there is one (DLSS), else the device copy
+// The host copy where temporal consumers requested one, else the device copy.
 static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
 
 const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }

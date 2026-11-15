@@ -174,7 +174,7 @@ static void mvprev_draw_(VkExec *ex) {
 void vk_mvprev_frame(void) {
     // RSF reconstruction owns these histories. Still process an off transition
     // when availability disappears so stale object/bone blocks are discarded.
-    int available = vk_dlaa_available();
+    int available = vk_dlaa_temporal_available();
     if (!available && P.on <= 0) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
@@ -188,7 +188,7 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = available && P.knob && cfg_bool("TOTK_RSF_ENABLED");
+    int on = available && P.knob;
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));

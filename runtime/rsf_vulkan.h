@@ -16,6 +16,7 @@ PFN_vkVoidFunction rsf_vk_device_proc(VkDevice device, const char *name);
 VkResult rsf_vk_create_instance(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
 VkResult rsf_vk_enumerate_physical_devices(VkInstance, uint32_t *, VkPhysicalDevice *);
 void rsf_vk_destroy_instance(VkInstance, const VkAllocationCallbacks *);
+void rsf_vk_destroy_surface(VkInstance, VkSurfaceKHR, const VkAllocationCallbacks *);
 VkResult rsf_vk_create_device(VkPhysicalDevice, const VkDeviceCreateInfo *, const VkAllocationCallbacks *, VkDevice *);
 void rsf_vk_destroy_device(VkDevice, const VkAllocationCallbacks *);
 
@@ -25,6 +26,7 @@ void rsf_vk_destroy_device(VkDevice, const VkAllocationCallbacks *);
 #define vkCreateInstance rsf_vk_create_instance
 #define vkEnumeratePhysicalDevices rsf_vk_enumerate_physical_devices
 #define vkDestroyInstance rsf_vk_destroy_instance
+#define vkDestroySurfaceKHR rsf_vk_destroy_surface
 #define vkCreateDevice rsf_vk_create_device
 #define vkDestroyDevice rsf_vk_destroy_device
 #endif
