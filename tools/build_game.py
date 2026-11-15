@@ -364,6 +364,19 @@ def runtime_sources(skip=()):
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
+def library_sources(sources):
+    """The runtime sources of libtotkrt.a: all but INSTALL_SIDE. The library is built once per release from one game
+    version's generated headers, so a source that includes a per-version header there bakes that version's addresses
+    into every install: a host function on the 1.2.1 patch page lies inside 1.4.3's sdk and the game stops at start."""
+    lib = [p for p in sources if p.name not in INSTALL_SIDE]
+    baked = [p.name for p in lib if p.suffix in ('.c', '.cpp')
+             and any(h in p.read_text(encoding='utf-8', errors='replace') for h in PER_VERSION_HEADERS)]
+    if baked:
+        sys.exit(f'build_game: library sources with a per-version header ({", ".join(PER_VERSION_HEADERS)}): {", ".join(baked)}; '
+                 'add them to INSTALL_SIDE')
+    return lib
+
+
 def install_stamp(out, runtime_lib):
     """Write obj/runtime/inputs.sha256, one hash over the runtime library, the INSTALL_SIDE sources and every runtime
     header, and return its path. The release zip dates every file 1980-01-01 (make_release.py write_zip), so a new
@@ -530,7 +543,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
     rt = []
     sources = runtime_sources(skip)
     if make_lib:
-        sources = [p for p in sources if p.name not in INSTALL_SIDE]
+        sources = library_sources(sources)
     elif runtime_lib:
         sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
     else:
