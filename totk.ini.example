@@ -516,6 +516,11 @@
 # last one it finished. Unset: on AMD GPUs (VK_AMD_buffer_marker). 1: also on NVIDIA GPUs
 # (VK_NV_device_diagnostic_checkpoints), which NVIDIA says costs a little. 0: off.
 # pass_crumbs = 1
+# GPU address map: after a GPU memory fault (device lost) the log names the image or buffer that held the faulting
+# address and whether it was freed before the fault. 1: on, where the driver has VK_EXT_device_address_binding_report.
+# It slows the recording of GPU commands, on AMD's Windows driver more and more over a session, so turn it on only for
+# the run that reproduces the crash. Default: 0.
+# addr_report = 0
 # Render targets up to this size (bytes, 0 to 1073741824) go back to their game memory whenever the game waits for a
 # GPU fence. A larger target goes back too unless the GPU drew it in each of the last 16 frames. A game that reads a
 # larger target drawn every frame without invalidating it sees stale bytes at the default. With trace = gfx the log

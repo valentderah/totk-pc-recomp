@@ -53,6 +53,7 @@ scene you expected. Title menus on a slow boot eat presses, and runs of one scri
 | every render pass of one frame | `TOTK_DUMP=<frame>` and `TOTK_DUMP_DIR`: a PNG per pass target plus `passes.txt` (draws, bound textures with swizzles, storage buffers, copies, clears) and `images.txt`; `TOTK_DUMP_BUF` adds a guest buffer |
 | Vulkan misuse | `TOTK_VK_VALIDATION=1` (needs the Vulkan SDK), run into the world; compare the message kinds with a run without your change. The layer caps repeats, so counts are not totals |
 | which pass the GPU was in at a device lost | the `vk: pass marks` lines; on by default on AMD, `TOTK_PASS_CRUMBS=1` elsewhere |
+| which object held the address of a GPU memory fault | `TOTK_ADDR_REPORT=1` (off by default: it slows recording, on AMD's Windows driver more and more over a session); the `vk: fault address` lines after the device lost |
 | a crash | the crash report at the end of the log: exception, guest and host addresses, registers |
 | a run on a large card that acts like a small one | `TOTK_VRAM_LIMIT_MIB=<MiB>` |
 
