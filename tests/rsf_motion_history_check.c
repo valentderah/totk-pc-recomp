@@ -13,6 +13,12 @@ int rt_knob(const char *name, const char *fallback) {
 }
 uint64_t kern_now_ns(void) { return 1; }
 void rt_log(const char *format, ...) { (void)format; }
+uint64_t vk_usnap_gen(void) { return 1; }
+void *vk_usnap_retain(uint64_t a, uint64_t n, VkDescriptorBufferInfo *out, const uint8_t **bytes) {
+    (void)a; (void)n; (void)out; (void)bytes; return NULL;
+}
+void vk_usnap_release(void *lease) { assert(!lease); }
+void vk_usnap_use(void *lease, uint64_t fence) { (void)lease; (void)fence; assert(0); }
 const uint8_t *vk_usnap_bytes(uint64_t address, uint64_t size) {
     (void)address; (void)size;
     return NULL;

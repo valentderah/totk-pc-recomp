@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-out = root / 'build/checks/rsf-storage-worker'
+out = root / 'build/checks/rsf-storage-rebase-worker'
 out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_exec_draw.c').read_text()
 def function(name):
@@ -16,6 +16,7 @@ fixture = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#define MX_CPY memcpy
 typedef struct { uint64_t addr, size; } p_bind_buf;
 typedef struct { uint64_t lo, hi; const uint8_t *data; } VkExecUpd;
 #define UPD_N 4096

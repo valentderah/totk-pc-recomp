@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-out = root / 'build/checks/rsf-storage-worker'
+out = root / 'build/checks/rsf-storage-rebase-worker'
 out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_usnap.c').read_text()
 
@@ -70,7 +70,7 @@ for name in ('void vk_usnap_begin(', 'void vk_usnap_end(', 'static int first_abo
              'int vk_usnap_find('):
     fixture += function(name)
 start = source.index('static uint8_t *host_copy(')
-fixture += source[start:source.index('// The arenas back', start)]
+fixture += source[start:source.index('// The upload made', start)]
 fixture += r'''
 int main(void) {
     uint8_t mapped[256]; arena.map = mapped; arena.size = sizeof mapped;
