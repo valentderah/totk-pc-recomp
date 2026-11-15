@@ -674,12 +674,24 @@ int res_rsf_scene(unsigned width, unsigned height) {
     // provider images outside the scene budget reserved before game setup.
     if (!RT_V143 || !R.live || !width || !height || width > R.hw || height > R.hh ||
         width > 65535 || height > 65535) return 0;
-    // The renderer quantizes down to eight pixels. Request aligned dimensions
-    // at or above the recommendation: XeSS may report it as its minimum input.
-    // The provider still validates the real allocation against its own range.
-    if (width < 8 || height < 8) return 0;
-    width = (width + 7u) & ~7u; height = (height + 7u) & ~7u;
-    if (width > R.hw || height > R.hh || width > 65535 || height > 65535) return 0;
+    // 1.4.3 derives BOTH allocation axes from page width / console base
+    // (main f_7000581a0c -> +0xccc -> f_70000d5c24). Page height at
+    // +0xcc8 is not consumed here. Each canvas axis is then floored to eight.
+    // Choose a width whose real height also reaches the recommendation, rather
+    // than repeatedly requesting an independent height the engine cannot make.
+    if (width < 8 || height < 8 || !R.ow || !R.oh) return 0;
+    unsigned wanted_w = width, wanted_h = height;
+    unsigned base = ov_handheld() ? 1280 : BASE_W;
+    for (width = (width + 7u) & ~7u;; width += 8) {
+        if (width > R.hw || width > 65535) return 0;
+        float page_width = (float)(width / scene_scale());
+        float scale = page_width / (float)base;
+        unsigned actual_w = (unsigned)floorf(((float)R.ow * scale) / 8.0f) * 8;
+        height = (unsigned)floorf(((float)R.oh * scale) / 8.0f) * 8;
+        // A fixed point also survives writing the accepted width back to page.
+        if (actual_w == width && actual_w >= wanted_w && height >= wanted_h) break;
+    }
+    if (height > R.hh || height > 65535) return 0;
     if (width == R.sw && height == R.sh) return 2; // already the representable plan
     uint64_t request = ((uint64_t)cfg_version() << 32) | ((uint64_t)width << 16) | height;
     __atomic_store_n(&rsf_scene_request, request, __ATOMIC_RELEASE);

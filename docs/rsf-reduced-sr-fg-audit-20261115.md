@@ -188,3 +188,86 @@ The live device fixture reports minimum equal to recommendation, so normalizatio
 now rounds 1130x636 up to 1136x640. The original observed 1128x632 remains below
 that lower bound. The adapter still reports real image extents and lets the
 provider enforce the SDK maximum; heap overflow after alignment refuses.
+
+
+## Width-derived allocation correction
+
+The subsequent real run `build/checks/rsf-final-xess-range.log` preserves the
+failed independent-axis correction: page request 1136x640, actual scene1136x632,
+SR PENDING reason3 through source1800. This supersedes the earlier claim that
+independent ceil8 dimensions were achievable. It is not a floating-page rounding
+hypothesis or evidence of XeSS frame generation acceptance.
+
+Read-only generated 1.4.3 source establishes the conversion. In
+main_0062.c, f_7000585bd0 at main+0x585e48 stores page floats into renderer+0xcc4
+and +0xcc8, but f_7000580ff0's block main+0x581a0c computes renderer+0xccc from
+**width** (+0xcc4) times the dynamic tier divided by console base (+0xcc0).
+The existing fixres patch at main+0x5848a8 makes the tier1 for the SR owner.
+The per-view values +0x3c30 and +0x3c34 both receive that scale (main+0x5816dc).
+main_0008.c f_70000d5c24 multiplies each canvas axis by its corresponding scale,
+divides by allocator alignment (+0x3c38), FRINTM floors each axis, and multiplies
+back. With the observed eight-pixel alignment and a1920x1080 canvas,
+1136/1920*1080=639, flooring to632;1144 yields643.5, flooring to640.
+Page height is stored but does not drive this scene allocation path.
+
+res_rsf_scene now chooses the first aligned width at or above the recommendation
+whose derived allocation satisfies both recommended axes, using binary32
+operations matching that path. It requires a width fixed point so writing the
+accepted width back cannot quantize again; existing startup heap/16-bit bounds
+refuse overflow. The accepted scene for1130x636 is1144x640, not1136x640.
+res_present retains game-thread mailbox ownership, res_sizes reports actual
+achievable dimensions, and the adapter still gives truthful extents to the
+provider's queried-range validation. Unsupported sizes explicitly fail there;
+this does not introduce a vendor alignment rule or guarantee SDK acceptance.
+
+Focused CPU verification uses tests/rsf_resolution_conversion_check.py. It
+extracts the real generated width-scale and allocation-rounding blocks into an
+ignored, marked build fixture, executes them with the real runtime FP helpers,
+and invokes the actual resolution owner/mailbox fixture. It reproduces1136x632,
+asserts1144x640 after request application and no repeated impossible request,
+and covers height-driven requests, changed canvas aspect, handheld scale,
+heap refusal, stale settings, register preservation and DRS ownership. This
+is a source/CPU conversion contract, not complete guest FP or GPU acceptance.
+
+
+Final focused commands/results (all CPU, isolated outputs):
+
+- `python tests/rsf_resolution_conversion_check.py`: passed actual mailbox tests,
+  read-only generated conversion blocks with runtime FP helpers, and complete
+  `resolution.c` object compile (`-std=gnu11 -O2 -g -Wall -Werror
+  -fno-strict-aliasing -march=x86-64-v3 -D_WIN32_WINNT=0x0A00 -DRT_CPU_LEVEL=3`).
+- `python D:/Coding/ReScaleFrame/tests/native_sr_xess_range_check.py`: passed
+  actual common validation/backend-dispatch prefix with inert capture/backend
+  callbacks. It proves1144x640 reaches XeSS, backend refusal propagates, malformed
+  record/camera/guide/mask/format/layout contracts refuse, and DLSS/FFX still
+  require1130x636. It does not stand in for the real SDK range evaluator.
+- Complete sibling `native_sr_vulkan.cpp` compiled successfully with UCRT64
+  `clang++.exe -std=c++20 -O1 -Wall -Werror -Wno-unknown-pragmas
+  -DRSF_HAVE_FFX_VK=1 -DRSF_RUNTIME_BUILD -DWIN32_LEAN_AND_MEAN -DNOMINMAX`,
+  output `D:/Coding/ReScaleFrame/build/checks/worker-srvk-xess-range/native_sr_vulkan.o`.
+  Includes: runtime/orchestrator/include, sdk/game/include, runtime/contract/include,
+  runtime/backends/{fsr/include,fsr/src,dlss/include,xess/include},
+  runtime/{common,graphics,shader_patch}/include, ui/overlay/include,
+  references/godot/fidelityfx-vulkan/ffx-api/include,
+  references/godot/engine/thirdparty/vulkan/include, and the read-only generated
+  headers in build/worker-fsr4-sr-20261115/generated. Earlier fixture import and
+  include-path setup failures were corrected; no compile/test failure remains.
+- Scoped `git diff --check` passed in both repositories (only line-ending notices).
+
+The coordinator subsequently measured real1144x640 in
+`build/checks/rsf-xess-convergence/game.log`,1915 real presents, zero validation,
+shader or skipped-draw errors, and322 generated callbacks by source1800 after
+SR failed and disabled itself. This is FG-after-SR-failure evidence, not combined
+XeSS SR+FG acceptance. The remaining common wrapper gate was identified before
+backend invocation: its images/masks/record were all required to equal the SDK
+recommendation. Authorized sibling correction now uses actual record dimensions
+for XeSS only, after checking record pointer/size, retaining all common contract
+checks and letting XeSS enforce its queried range. No public ABI/layout changes.
+The coordinator owns the published CMake build/pin and combined hardware check;
+actual min/max log and sustained SR plus FG remain to be recorded there.
+
+This final task changes TotK runtime/resolution.c, tests/rsf_resolution_check.c,
+new tests/rsf_resolution_conversion_check.py and this note; sibling changes are
+runtime/orchestrator/src/native_sr_vulkan.cpp and new
+tests/native_sr_xess_range_check.py. No generated file, index, GPU state, pinned
+checkout or unrelated dirty work was changed by the worker.

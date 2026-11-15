@@ -846,6 +846,11 @@ device fixture's warning counter to distinguish the new informational range
 message. Eleven tests are skipped for unavailable configurations; the targeted
 device-fixture retry passes.
 
+The current game build also passes `--probe-kernel`, `--probe-nvn-tex` (133
+cases), and `--probe-shader` (32 shaders), with the latter reporting translator
+identity `ab774f1cb93f41c2`. These complete the required runtime probes alongside
+the existing Vulkan execution result.
+
 Shared shader preparation now uses patch 0018 identity `ab774f1cb93f41c2`.
 All 28667 normal and 14765 motion census jobs translate and validate, with 15
 additional terrain previous-position outputs and no new refusals. Shared cache
@@ -857,3 +862,49 @@ errors, shader failures or skipped draws. XeSS still remains pending: rounding
 the request up to 1136x640 produces a real game target of 1136x632. The engine
 size conversion is being traced before another run; this is not counted as
 successful XeSS SR or frame generation.
+
+The width-derived game-size correction reaches the actual 1144x640 scene.
+In that focused run, the shared RSF SR entry point still refuses the frame
+before XeSS's input-range validator because it requires the exact recommended
+size. SR therefore disables for that run. With SR disabled, XeSS FG succeeds:
+the SDK reports genuine generated-resource callbacks for sources 1800–1802,
+and the source-1800 status has 322 generated callbacks with result zero. XeLL
+continues without refused calls. The run exits normally with zero Vulkan
+validation errors, shader failures or skipped draws. This proves XeSS FG,
+but not combined XeSS SR+FG; the outer SR admission check is being repaired.
+
+The shared SR repair now forwards XeSS's actual matching image/camera dimensions
+to its queried-range validator while preserving the exact-plan requirement for
+DLSS and FFX. Its focused actual-dispatch contract and whole-source compile pass.
+The engine-size regression also executes the game's generated conversion blocks
+against the real resolution owner and passes. RSF main advanced concurrently to
+frame-record ABI 2 with independently versioned camera ABI 1; TotK now stamps
+the camera with its own ABI constant when building against that pin.
+
+## Combined XeSS acceptance after the admission repair
+
+RSF main `e0985ce` builds cleanly with the real providers. Ten focused native
+contracts pass; the separate XeSS device fixture skips in this configuration.
+The game build and both source-based size/admission regressions pass.
+
+The focused fullscreen game run now logs the genuine XeSS recommendation
+1130x636, minimum 1130x636, maximum 1920x1080 and actual input 1144x640.
+It sustains 300 SR evaluations and reaches source 1800 with 327 prepared and
+HUD-less frames, 317 genuine generated-output callbacks, two SDK presents and
+result zero. XeLL reports 1795 sleeps, 21599 markers and zero refusals there.
+The run exits normally after 1852 real presents with zero Vulkan validation
+errors, shader failures or skipped draws.
+
+Diagnostic receipts match real and generated SDK resources to sources
+1800–1802. Probe mode records metadata only, so these receipts do not establish
+generated-pixel quality. The normal final screenshot shows Link and Zelda on
+the cave stairs; general moving-scene quality and the narrow terrain snapshot
+subset's runtime admission, memory peak and performance remain unmeasured.
+
+Fullscreen DLSS and FSR3 SR+FG were rerun against the same frame-record ABI 2
+runtime pin. Both sustain 300 SR evaluations at 1280x720 and generated output.
+DLSS exits after 1882 real presents and FSR3 after 1885, each with zero Vulkan
+validation errors, shader failures or skipped draws. DLSS also writes matched
+real/generated raw captures for source 1800. The rebuilt game's self-test passes
+with zero failures. These screenshot/capture runs are functional evidence, not
+performance measurements.
