@@ -70,6 +70,10 @@ void input_menu(int open);
 // of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
+// A gamepad combo setting: buttons by position joined with '+' (guide+south: Home and the bottom face button, the
+// pad: names of the bind_ lines plus guide or home). Bit p is PAD_* p, bit PAD_COUNT the Home button; 0 for an empty
+// value or one with a name that is no button, which logs a line naming env.
+uint32_t input_pad_combo(const char *env, const char *s);
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
