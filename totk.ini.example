@@ -384,6 +384,11 @@
 # dualsense_bt_crisp = 0
 # xbox_rumble = 1
 # xbox_triggers = 1
+# Steam Controller (2026) grip HD Rumble via RenHDrum (Beta, requires Steam Input off): 8 kHz PCM over USB, 4 kHz over
+# wireless dongle or Bluetooth (Windows). steam_volume is 10 to 100 %; steam_crisp sharpens short impacts and notes.
+# steam_rumble = 1
+# steam_volume = 100
+# steam_crisp = 1
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.

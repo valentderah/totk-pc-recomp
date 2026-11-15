@@ -824,7 +824,7 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
-enum { HD_NOTE_SWITCH, HD_NOTE_DUALSENSE, HD_NOTE_XBOX };
+enum { HD_NOTE_SWITCH, HD_NOTE_DUALSENSE, HD_NOTE_XBOX, HD_NOTE_STEAM };
 static const char *hd_pad_note(int group) {
     int k = input_hd_pad_kind();
     if (group == HD_NOTE_DUALSENSE) {
@@ -839,6 +839,13 @@ static const char *hd_pad_note(int group) {
         if (k != HD_PAD_XBOX_USB && k != HD_PAD_XBOX_BT) return nullptr;
         static char note[64];
         snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_XBOX_BT ? "Bluetooth" : "USB");
+        return note;
+    }
+    if (group == HD_NOTE_STEAM) {
+        if (!cfg_bool("TOTK_STEAM_RUMBLE")) return nullptr;
+        if (k != HD_PAD_STEAM_USB && k != HD_PAD_STEAM_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_STEAM_BT ? "Wireless" : "USB");
         return note;
     }
     if (!cfg_bool("TOTK_HD_RUMBLE")) return nullptr;
@@ -1029,6 +1036,11 @@ static void tab_controls(float scale) {
     opt_group(UI_MENU_GROUP_HD_XBOX);
     opt_toggle("TOTK_XBOX_RUMBLE", UI_MENU_XBOX_RUMBLE, UI_MENU_XBOX_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_XBOX));
     opt_toggle("TOTK_XBOX_TRIGGERS", UI_MENU_XBOX_TRIGGERS, UI_MENU_XBOX_TRIGGERS_DESC);
+    opt_group(UI_MENU_GROUP_HD_STEAM);
+    opt_toggle("TOTK_STEAM_RUMBLE", UI_MENU_STEAM_RUMBLE, UI_MENU_STEAM_RUMBLE_DESC, false,
+               hd_pad_note(HD_NOTE_STEAM));
+    opt_slider("TOTK_STEAM_VOLUME", UI_MENU_STEAM_VOLUME, 10, 100, UI_MENU_STEAM_VOLUME_DESC, 5, "%.0f %%");
+    opt_toggle("TOTK_STEAM_CRISP", UI_MENU_STEAM_CRISP, UI_MENU_STEAM_CRISP_DESC);
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting
     // value, to set it above.

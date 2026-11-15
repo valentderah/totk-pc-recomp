@@ -620,6 +620,15 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_XBOX_TRIGGERS] = "Trigger rumble (all 4 motors)",
     [UI_MENU_XBOX_TRIGGERS_DESC] = "Lets the two impulse trigger motors join in with short left and right onset ticks on "
                                    "impacts and beats when Xbox One Rumble is on.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, Beta)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (Beta)",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "Beta grip HD Rumble for the Steam Controller (2026) via RenHDrum (" RENHDRUM_FILE "): "
+                                  "streams Switch HD Rumble PCM waveforms to both grips (8 kHz USB, 4 kHz wireless "
+                                  "dongle or Windows Bluetooth; requires Steam Input off). Off: standard controller rumble.",
+    [UI_MENU_STEAM_VOLUME] = "Haptics volume",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Strength of the Steam Controller (2026) grip HD Rumble (10 % to 100 %).",
+    [UI_MENU_STEAM_CRISP] = "Crisp notes",
+    [UI_MENU_STEAM_CRISP_DESC] = "Sharpens transient impacts and musical notes on the Steam Controller (2026) grips.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1209,6 +1218,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_XBOX_TRIGGERS] = "Вибрация триггеров (все 4 мотора)",
     [UI_MENU_XBOX_TRIGGERS_DESC] = "Подключает два импульсных мотора в триггерах для коротких левых и правых откликов "
                                    "при ударах и ритме, когда включена вибрация Xbox One Rumble.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, бета)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (бета)",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "Бета-поддержка HD Rumble в рукоятках Steam Controller (2026) через RenHDrum "
+                                  "(" RENHDRUM_FILE "): передаёт сигнал HD Rumble в обе рукоятки (8 кГц по USB, 4 кГц "
+                                  "через донгл или Bluetooth в Windows; Steam Input должен быть выключен). Выкл.: "
+                                  "обычная вибрация геймпада.",
+    [UI_MENU_STEAM_VOLUME] = "Громкость отдачи",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Сила вибрации рукояток Steam Controller (2026) (от 10 % до 100 %).",
+    [UI_MENU_STEAM_CRISP] = "Чёткие ноты",
+    [UI_MENU_STEAM_CRISP_DESC] = "Подчёркивает короткие удары и ноты в рукоятках Steam Controller (2026).",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1834,6 +1853,16 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_XBOX_TRIGGERS] = "Vibração nos gatilhos (todos os 4 motores)",
     [UI_MENU_XBOX_TRIGGERS_DESC] = "Permite que os dois motores dos gatilhos participem com pulsos curtos à esquerda e à "
                                    "direita em impactos e batidas quando o Xbox One Rumble está ligado.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, Beta)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (Beta)",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "Suporte beta de HD Rumble nas pegadas do Steam Controller (2026) via RenHDrum "
+                                  "(" RENHDRUM_FILE "): envia ondas PCM de HD Rumble para ambas as pegadas (8 kHz por USB, "
+                                  "4 kHz via dongle sem fio ou Bluetooth no Windows; requer Steam Input desligado). "
+                                  "Desligado: vibração padrão do controle.",
+    [UI_MENU_STEAM_VOLUME] = "Volume da vibração háptica",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Intensidade do HD Rumble nas pegadas do Steam Controller (2026) (10 % a 100 %).",
+    [UI_MENU_STEAM_CRISP] = "Notas nítidas",
+    [UI_MENU_STEAM_CRISP_DESC] = "Realça impactos curtos e notas musicais nas pegadas do Steam Controller (2026).",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2532,6 +2561,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                  "关闭：使用普通手柄震动。",
     [UI_MENU_XBOX_TRIGGERS] = "扳机震动（全部 4 个马达）",
     [UI_MENU_XBOX_TRIGGERS_DESC] = "开启 Xbox One 震动时，让两个脉冲扳机马达共同参与，在冲击与节拍时提供左右短促震动。",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam 手柄（2026，测试版）",
+    [UI_MENU_STEAM_RUMBLE] = "Steam 手柄 HD 震动（测试版）",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 为 Steam 手柄（2026）握把提供测试版 HD 震动：向左右握把"
+                                  "流式传输 Switch HD 震动 PCM 波形（USB 有线 8 kHz，无线接收器或 Windows 蓝牙 4 kHz；需关闭 "
+                                  "Steam 输入）。关闭：使用普通手柄震动。",
+    [UI_MENU_STEAM_VOLUME] = "触觉反馈音量",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Steam 手柄（2026）握把 HD 震动的强度（10 % 至 100 %）。",
+    [UI_MENU_STEAM_CRISP] = "清脆音符",
+    [UI_MENU_STEAM_CRISP_DESC] = "在 Steam 手柄（2026）握把上增强瞬态冲击与音符清晰度。",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
