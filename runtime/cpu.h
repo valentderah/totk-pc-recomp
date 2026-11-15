@@ -62,6 +62,12 @@ static inline void rt_fpcr_sync(const Cpu *c) {
     if (cur != want) __builtin_ia32_ldmxcsr(want);
 }
 #endif
+// MSR FPCR (recomp/lifter.py): the first guest write of a directed rounding mode (FPCR.RMode, bits 22-23) is logged
+// once with the caller (main.c rt_fpcr_rmode), to learn whether the game ever leaves round-to-nearest. A test of the
+// value just stored, at the MSR sites only.
+void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr);
+#define RT_FPCR_NOTE(c, lr) \
+    do { if (__builtin_expect((c)->fpcr & (3ull << 22), 0)) rt_fpcr_rmode((c)->fpcr, lr); } while (0)
 
 // ---- memory: guest addresses are host addresses
 typedef uint16_t __attribute__((aligned(1), may_alias)) u16u;
@@ -69,7 +75,9 @@ typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
 typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
 typedef uint8_t __attribute__((may_alias)) u8a;
 
-// Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
+// Function-entry hook: one predictable branch per call while g_fnprof is 0. The generator emits it only in the
+// functions of the patch table's `hook` lines (recomp/patches.py), or in every function for a table without any and
+// with gen.py --fn-enter-all.
 extern volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)

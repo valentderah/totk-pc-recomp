@@ -494,7 +494,7 @@ static int sync_ahead(void) {
         // that. The Vulkan back end sets the mode while it starts, before the game's first present or wait; the null
         // back end never does.
         if (on && !vk_mem_shadow_on()) {
-            rt_log("nvn: TOTK_SYNC_AHEAD needs shadow storage (TOTK_SHADOW=1 on native Windows); "
+            rt_log("nvn: TOTK_SYNC_AHEAD needs shadow storage (shadow = 1 in totk.ini or TOTK_SHADOW=1 on native Windows); "
                    "the game waits for the GPU as before");
             on = 0;
         }

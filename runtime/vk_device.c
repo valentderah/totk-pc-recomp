@@ -8,6 +8,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "memx.h"
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
@@ -497,6 +498,7 @@ long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.
 
 int vk_init(void) {
     plat_mutex_lock(&g_lock);
+    vk_memx_init();
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
         if (create_instance() && pick_device() && create_device())
