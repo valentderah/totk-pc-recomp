@@ -72,7 +72,12 @@ scene colour into its own RGBA16F image, transitions colour/depth/motion to samp
 layouts and output to transfer-destination, drains the recorder, calls RSF, then
 restores GENERAL layouts and invalidates draw bindings even after refused recording.
 The provider's planned render size must match the actual scene; mismatches are
-reported and stop evaluation. Camera/depth must be valid for that evaluation.
+queued for the 1.4.3 game-thread render-size hook when the startup heap budget
+permits them. Evaluation waits without skipping the native scaling draw. Older
+versions or dimensions outside the budget are refused. The requested quality is
+passed directly to RSF rather than guessed from an old scene's width. Native now
+requests output resolution, and the live heap reserves space for that mode.
+Settings-version changes invalidate queued resize requests. Camera/depth must be valid for that evaluation.
 This path currently reports a renderer-local identity with NO_FG and AMBIGUOUS_ID;
 it does not claim input-frame ownership or authorize generation. Provider setup
 and evaluation still need game validation. DLSS early Vulkan initialization,
@@ -150,3 +155,11 @@ from that page. New menu text falls back to English in untranslated languages.
 `rsf_enabled` and `rsf_quality` are the active keys; unset keys inherit legacy
 `dlaa` and `dlss` values. Menu/C sources pass UCRT64 syntax checks. A game-rendered
 menu and persistence still need runtime verification.
+
+The compiled `tests/rsf_resolution_check.c` fixture exercises the real resolution
+mailbox and `res_present`: producer-side requests do not call game code, the game
+thread updates the patch page and invokes its size hook, guest registers survive
+the call, stale settings requests are dropped, heap limits are enforced, and an
+unchanged size does not rebuild targets. It passes with UCRT64 Clang. Build it with
+`-std=gnu11 -O1 -I runtime` and link the MSYS2 static `libzstd.a`; place and run the
+executable under `build/checks/`. Actual provider-driven resize in TotK remains unverified.

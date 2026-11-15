@@ -73,6 +73,7 @@ static struct {
         VkImageView mask_view, chars_view[2];
         int chars_cur, chars_ok; // chars[chars_cur] is written next; chars_ok: the other holds last frame's
         RsfSrSession *rsf;
+        uint32_t rsf_w, rsf_h;
         VkImage sr_color;
         VmaAllocation sr_color_mem;
         VkImageView sr_color_view;
@@ -816,17 +817,20 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
             .instance = c->instance, .physical_device = c->phys, .device = c->device,
             .instance_proc = rsf_instance_proc, .device_proc = rsf_device_proc,
             .backend = (uint32_t)cfg_int("TOTK_RSF_BACKEND"),
-            .quality = e->w >= e->ow ? 0 : e->w * 100 >= e->ow * 66 ? 1 :
-                       e->w * 100 >= e->ow * 57 ? 2 : e->w * 100 >= e->ow * 49 ? 3 : 4,
+            .quality = !strcmp(cfg_value("TOTK_RSF_QUALITY"), "quality") ? 1 :
+                       !strcmp(cfg_value("TOTK_RSF_QUALITY"), "balanced") ? 2 :
+                       !strcmp(cfg_value("TOTK_RSF_QUALITY"), "performance") ? 3 :
+                       !strcmp(cfg_value("TOTK_RSF_QUALITY"), "ultra_performance") ? 4 : 0,
             .output_width = e->ow, .output_height = e->oh,
             .depth_inverted = D.projection.inverted, .depth_infinite = D.projection.infinite,
             .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR")};
-        uint32_t w, h;
-        if (!rsf_sr_open(&setup, &e->rsf, &w, &h)) return 0;
-        if (w != e->w || h != e->h) {
-            rt_log("rsf: provider requires %ux%u; scene is %ux%u", w, h, e->w, e->h);
-            return 0;
-        }
+        if (!rsf_sr_open(&setup, &e->rsf, &e->rsf_w, &e->rsf_h)) return 0;
+    }
+    if (e->rsf_w != e->w || e->rsf_h != e->h) {
+        if (res_rsf_scene(e->rsf_w, e->rsf_h)) return 2;
+        rt_log("rsf: provider requires %ux%u; scene %ux%u cannot be reconfigured within its heap budget",
+               e->rsf_w, e->rsf_h, e->w, e->h);
+        return 0;
     }
     VkCommandBuffer cb = ex->cb;
     if (!e->sr_color) {
@@ -917,7 +921,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
     if (!motion_ok || !D.projection_ok) { D.reset = 1; return; }
-    if (!rsf_scene(ex, e, jx, jy)) return dl_fail("RSF evaluation", 0);
+    int result = rsf_scene(ex, e, jx, jy);
+    if (result == 2) { D.reset = 1; D.jit_ok = 0; return; }
+    if (!result) return dl_fail("RSF evaluation", 0);
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording
     D.reset = 0;
     D.last = e, e->used = D.evals + 1;
@@ -939,7 +945,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                    VK_FILTER_NEAREST);
     full_barrier(cb);
-    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
+    if (dst != t) D.up = 1, vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;
     ex->recorded += 4;
     vk_exec_draw_new_cb(ex);   // RSF binds its own pipelines/descriptors; force the next draw to bind everything
     D.jdepth = z->image;
@@ -1084,7 +1090,6 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
     }
     if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
     if (!t.tex) return evaluate(ex, NULL);
-    D.up = 1;
     evaluate(ex, &t);
 }
 
@@ -1101,6 +1106,8 @@ static void dlss_mode(void) {
     const char *m = cfg_value("TOTK_RSF_QUALITY");
     if (!strcmp(m, "native")) m = "dlaa";
     if (strcmp(m, mode)) {
+        D.preset_dirty = 1;
+        D.reset = 1;
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
         bias_on = -1;

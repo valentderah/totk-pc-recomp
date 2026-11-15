@@ -42,7 +42,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RSF_PROVIDER] = "RSF upscaler",
     [UI_MENU_RSF_PROVIDER_DESC] = "Selects the reconstruction provider. Availability depends on your GPU and installed RSF runtime. Restart after changing.",
     [UI_MENU_RSF_QUALITY] = "RSF quality",
-    [UI_MENU_RSF_QUALITY_DESC] = "Selects the scene resolution. Native keeps the configured scene size; lower modes trade detail for speed.",
+    [UI_MENU_RSF_QUALITY_DESC] = "Selects the scene resolution. Native reconstructs at output resolution; lower modes trade detail for speed.",
     [UI_MENU_RSF_NATIVE] = "Native", [UI_MENU_RSF_QUALITY_VALUE] = "Quality", [UI_MENU_RSF_BALANCED] = "Balanced",
     [UI_MENU_RSF_PERFORMANCE] = "Performance", [UI_MENU_RSF_ULTRA] = "Ultra Performance",
     [UI_MENU_RSF_FG] = "RSF frame generation",

@@ -100,7 +100,7 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
 // (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
-        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
+        {"dlaa", 1.0}, {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
     static int dll = -1;
     if (!cfg_bool("TOTK_RSF_ENABLED")) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
@@ -183,7 +183,7 @@ static void decide(void) {
         rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB "
                "past 4096 a side); %ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
     }
-    if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
+    if (R.live) scene_for(fmax(k, 1.0), &R.hw, &R.hh);
     else R.hw = R.sw, R.hh = R.sh;
 }
 
@@ -661,6 +661,17 @@ void res_wanted(unsigned out[2]) {
 #define SET_RENDER_SIZE 0x7000585bd0ull
 static uint64_t renderer;          // x0 of the game's own call of SET_RENDER_SIZE
 static volatile int size_pending;  // the page holds a size the game has not set yet
+static uint64_t rsf_scene_request; // atomic mailbox: cfg version, width and height
+
+int res_rsf_scene(unsigned width, unsigned height) {
+    // Heap bounds are fixed at startup. Never ask the renderer to allocate
+    // provider images outside the scene budget reserved before game setup.
+    if (!RT_V143 || !R.live || !width || !height || width > R.hw || height > R.hh ||
+        width > 65535 || height > 65535) return 0;
+    uint64_t request = ((uint64_t)cfg_version() << 32) | ((uint64_t)width << 16) | height;
+    __atomic_store_n(&rsf_scene_request, request, __ATOMIC_RELEASE);
+    return 1;
+}
 
 void res_fn_hit(uint64_t addr, uint64_t x0) {
     if (addr != SET_RENDER_SIZE) return;
@@ -670,9 +681,26 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
+<<<<<<< HEAD
     // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
     // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
     // next start.
+=======
+    uint64_t request = __atomic_exchange_n(&rsf_scene_request, 0, __ATOMIC_ACQUIRE);
+    if (request && (unsigned)(request >> 32) == cfg_version()) {
+        unsigned w = (unsigned)(request >> 16) & 65535, h = (unsigned)request & 65535;
+        if (w != R.sw || h != R.sh) {
+            double scale = scene_scale();
+            float scene[2] = {(float)(w / scale), (float)(h / scale)};
+            memcpy((uint8_t *)rt_patch_page() + 16, scene, sizeof scene);
+            R.sw = w, R.sh = h;
+            size_pending = 1;
+            rt_log("resolution: RSF requested scene %ux%u", w, h);
+        }
+    }
+    // The hook runs on every guest function entry while it waits: should the game set its render size before
+    // res_init or never, it stops after 1800 presents (half a minute at 60 fps) and modes change at the next start.
+>>>>>>> 812485f (Apply RSF render-size plans through the game-thread resolution hook)
     static unsigned waited;
     if (g_fnprof && !renderer && ++waited == 1800) {
         g_fnprof = 0;
