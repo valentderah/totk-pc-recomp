@@ -15,6 +15,8 @@ static GuestFn begin_hook, end_hook;
 static int enabled, locked, away;
 static rsf_game_cpu_event events[32];
 static unsigned count;
+static struct { uintptr_t base; size_t size; } readable[8];
+static unsigned nreadable;
 
 void rt_register_host(uint64_t address, GuestFn fn) {
     if (address == RT_PATCH_PAGE + 0xf50) begin_hook = fn;
@@ -30,7 +32,12 @@ uint64_t plat_counter_hz(void) { return 1000000; }
 uint64_t plat_now_ns(void) { return 1; }
 int cfg_int(const char *name) { return !strcmp(name, "TOTK_RSF_ENABLED") && enabled; }
 uint64_t rt_original(Cpu *c) { return c->x[0]; }
-int mem_guest_readable(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
+int mem_guest_readable(uint64_t a, uint64_t n) {
+    for (unsigned i = 0; i < nreadable; i++)
+        if (a >= readable[i].base && n <= readable[i].size && a - readable[i].base <= readable[i].size - n) return 1;
+    return 0;
+}
+static void allow(void *p, size_t size) { readable[nreadable].base = (uintptr_t)p; readable[nreadable++].size = size; }
 void rt_log(const char *format, ...) { (void)format; }
 static void receive(const rsf_game_cpu_event *event) {
     assert(away && !locked && count < 32);
@@ -86,6 +93,35 @@ int main(void) {
     begin_hook(&cpu);
     assert(count == 12 && events[9].stage == RSF_GAME_CPU_FRAME_END &&
            (events[9].flags & RSF_GAME_CPU_RENDER_SKIPPED));
+    end_hook(&cpu);
+    begin_hook(&cpu);
+    unsigned before = count;
+    _Alignas(16) uint64_t collector[2] = {0}, manager[12] = {0}, context[4] = {0}, task[6] = {0};
+    uint8_t input_manager[0x500] = {0};
+    collector[0] = (uintptr_t)manager;
+    collector[1] = MOD_MAIN_BASE + 0x479c88;
+    manager[1] = MOD_MAIN_BASE + 0x893e8c;
+    manager[11] = (uintptr_t)context;
+    context[1] = (uintptr_t)input_manager + 0x480;
+    uint64_t task_pointer = (uintptr_t)task;
+    memcpy(input_manager + 0xa8, &task_pointer, sizeof task_pointer);
+    task[4] = (uintptr_t)object;
+    allow(collector, sizeof collector); allow(manager, sizeof manager); allow(context, sizeof context);
+    allow(input_manager, sizeof input_manager); allow(task, sizeof task);
+    cpu.thread = &other;
+    cpu.x[29] = (uintptr_t)collector;
+    cpu.x[30] = MOD_MAIN_BASE + 0x47afa8;
+    expected = cpu;
+    manager[1]++; // A different caller cannot borrow an active frame.
+    rsf_frame_input(&cpu);
+    assert(count == before);
+    manager[1]--;
+    rsf_frame_input(&cpu);
+    assert(count == before + 1 && events[before].stage == RSF_GAME_CPU_INPUT_SAMPLE);
+    assert(events[before].source_frame_id == events[before - 2].source_frame_id);
+    assert(!memcmp(&cpu, &expected, sizeof cpu));
+    rsf_frame_input(&cpu);
+    assert(count == before + 1);
     assert(!locked && !away);
     return 0;
 }

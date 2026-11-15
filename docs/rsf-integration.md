@@ -281,6 +281,23 @@ thread-local association cannot attach those worker polls to their parent update
 The task-owner handoff must carry the source into workers before latency acceptance.
 The run completed 1,549 presents without reported shader failures or skipped draws.
 
+Worker association now follows the copied calculation context rather than the
+worker thread or a global latest update. The verified pad collector and controller
+manager frames identify the two worker callback variants. Their saved x19 points
+to the job context; its second word points to InputManager's configuration at
+object +0x480. InputManager's task link at +0xa8 leads to the framework owner at
++0x20, the same owner captured by the framework calculation hook. A unique active
+traversal must match that owner. Unknown call sites and ambiguous owners refuse
+association. The earlier idea of recovering the framework from saved x22 was
+rejected: InputManager overwrites x22 during its calculation.
+
+The lifecycle fixture now checks a worker context, rejection of a different caller,
+register preservation and deduplication after worker association. The real run
+completed 1,551 presents; at source 1,200 the core reports zero order violations
+and zero input substitutes. The independent pad reads seen later in another call
+tree remain unassociated. This corrects the worker-input gap above, not the still
+missing source propagation into the draw queue and Vulkan replay.
+
 The corrected FidelityFX Vulkan runtime now executes FSR3 SR at native resolution
 in the opening scene on the RTX 4070 Laptop GPU. That run completed 1,671 presents
 without reported shader failures or skipped draws. A validation run with

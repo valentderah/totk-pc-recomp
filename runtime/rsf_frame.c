@@ -14,7 +14,7 @@
 #endif
 
 static PlatMutex frame_lock = PLAT_MUTEX_INIT;
-static struct FrameOwner { void *thread; uint64_t current, completed; int sampled; } frames[32];
+static struct FrameOwner { void *thread; uint64_t framework, current, completed; int sampled; } frames[32];
 static uint64_t next_source;
 
 static struct FrameOwner *frame_owner(void *thread) {
@@ -55,10 +55,46 @@ static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
     }
 }
 
+static uint64_t input_framework(const Cpu *c) {
+    if (rt_game_version != 143 || (c->x[30] != MOD_MAIN_BASE + 0x47afa8 && c->x[30] != MOD_MAIN_BASE + 0x47b0f4)) return 0;
+    // The pad collector saves the controller manager's frame. On a worker,
+    // that frame saves the job's calc context in x19 at FP + 0x58. Its second
+    // word is InputManager's configuration block at object + 0x480.
+    uint64_t collector[2], manager[2], framework;
+    uint64_t fp = c->x[29];
+    if ((fp & 15) || !mem_guest_readable(fp, sizeof collector)) return 0;
+    memcpy(collector, (const void *)(uintptr_t)fp, sizeof collector);
+    if (collector[1] != MOD_MAIN_BASE + 0x479c88 || (collector[0] & 15) ||
+        !mem_guest_readable(collector[0], 0x60)) return 0;
+    memcpy(manager, (const void *)(uintptr_t)collector[0], sizeof manager);
+    if (manager[1] != MOD_MAIN_BASE + 0x893e8c && manager[1] != MOD_MAIN_BASE + 0x893ef0 &&
+        manager[1] != MOD_MAIN_BASE + 0x893f70 && manager[1] != MOD_MAIN_BASE + 0xea60fc &&
+        manager[1] != MOD_MAIN_BASE + 0xea6160 && manager[1] != MOD_MAIN_BASE + 0xea6290) return 0;
+    uint64_t context, config, task;
+    memcpy(&context, (const void *)(uintptr_t)(collector[0] + 0x58), sizeof context);
+    if (!mem_guest_readable(context, 16)) return 0;
+    memcpy(&config, (const void *)(uintptr_t)(context + 8), sizeof config);
+    if (config < 0x480 || !mem_guest_readable(config - 0x480 + 0xa8, 8)) return 0;
+    memcpy(&task, (const void *)(uintptr_t)(config - 0x480 + 0xa8), sizeof task);
+    if (!mem_guest_readable(task + 0x20, 8)) return 0;
+    memcpy(&framework, (const void *)(uintptr_t)(task + 0x20), sizeof framework);
+    return framework;
+}
+
 void rsf_frame_input(Cpu *c) {
     uint64_t source = 0;
+    uint64_t framework = input_framework(c);
     plat_mutex_lock(&frame_lock);
-    struct FrameOwner *owner = frame_owner(c->thread);
+    struct FrameOwner *owner = NULL;
+    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread && frames[i].current) owner = &frames[i];
+    if (!owner && framework) {
+        // Worker execution carries the same framework owner through the task's
+        // calc context. Only one active traversal of that owner may match.
+        for (unsigned i = 0; i < 32; i++) if (frames[i].current && frames[i].framework == framework) {
+            if (owner) { owner = NULL; break; }
+            owner = &frames[i];
+        }
+    }
     if (owner && owner->current && !owner->sampled) {
         source = owner->current;
         owner->sampled = 1;
@@ -78,6 +114,7 @@ static void calculation_begin(Cpu *c) {
     if (owner) {
         abandoned = owner->current;
         source = owner->current = ++next_source;
+        owner->framework = c->x[19];
         owner->sampled = 0;
     }
     plat_mutex_unlock(&frame_lock);
