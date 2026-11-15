@@ -273,6 +273,11 @@ class App:
         self.bind_text(dlss, 'text', 'ui.dlss')
         dlss.pack(anchor='w', pady=(dpi.px(8), 0))
         self.label(f, 'ui.dlss_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
+        self.fsr_var = tk.BooleanVar(value=True)
+        fsr = ttk.Checkbutton(f, variable=self.fsr_var)
+        self.bind_text(fsr, 'text', 'ui.fsr')
+        fsr.pack(anchor='w', pady=(dpi.px(8), 0))
+        self.label(f, 'ui.fsr_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
         self.update_hint = ttk.Label(f, wraplength=WRAP, justify='left')
         self.update_hint.pack(anchor='w', pady=(dpi.px(8), 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
@@ -344,7 +349,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -619,7 +624,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'fsr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},

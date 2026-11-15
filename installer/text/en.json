@@ -6,6 +6,7 @@
  "step.compile": "Compiling {game_exe}",
  "step.prepare": "Preparing the shaders",
  "step.dlss": "Downloading NVIDIA DLSS",
+ "step.fsr": "Downloading AMD FSR",
  "step.cleanup": "Cleaning up",
 
  "phase.check.host": "Checking the processor and the graphics card",
@@ -34,6 +35,7 @@
  "phase.prepare.libraries": "Building the shaders for the graphics driver",
  "phase.prepare.pack": "Packing the shader cache into one file",
  "phase.dlss.download": "Downloading nvngx_dlss.dll from NVIDIA's DLSS SDK",
+ "phase.fsr.download": "Downloading the FSR upscaler from AMD's FSR SDK",
  "phase.cleanup.ini": "Writing totk.ini",
  "phase.cleanup.temp": "Removing temporary files",
 
@@ -108,6 +110,8 @@
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
  "warn.dlss_kept": "A DLSS library is already in the install folder ({path}); the setup keeps it.",
  "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
+ "warn.fsr_kept": "An FSR library is already in the install folder ({path}); the setup keeps the libraries there.",
+ "warn.fsr_download_failed": "AMD FSR could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
 
  "ui.title": "TotK Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",
@@ -131,6 +135,8 @@
  "ui.firmware_help": "For Chinese, Korean and Traditional Chinese text: the firmware's Contents/registered folder, for example from Ryujinx or Yuzu. The setup copies the Switch system fonts from it into the install folder.",
  "ui.dlss": "Download NVIDIA DLSS (nvngx_dlss.dll) for NVIDIA RTX graphics cards",
  "ui.dlss_help": "From NVIDIA's DLSS SDK on GitHub, under NVIDIA's RTX SDK license (github.com/NVIDIA/DLSS). It makes the dlaa and DLSS settings work; without it they do nothing.",
+ "ui.fsr": "Download AMD FSR 4 (amd_fidelityfx_upscaler_vk.dll) for AMD Radeon graphics cards",
+ "ui.fsr_help": "From AMD's FSR SDK on GitHub, under AMD's FSR SDK license (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). It lets the dlaa setting run FSR (Upscaler: AMD FSR in the menu); without it that choice does nothing.",
  "ui.compressed_help": "Compressed NSZ and XCZ files work as they are: the setup unpacks them by itself (until the game data is extracted, that needs as much free space as the unpacked files take).",
  "ui.type_game": "Game files (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Key files (*.keys)",

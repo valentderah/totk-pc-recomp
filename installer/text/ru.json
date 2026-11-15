@@ -6,6 +6,7 @@
  "step.compile": "Сборка {game_exe}",
  "step.prepare": "Подготовка шейдеров",
  "step.dlss": "Загрузка NVIDIA DLSS",
+ "step.fsr": "Загрузка AMD FSR",
  "step.cleanup": "Уборка",
 
  "phase.check.host": "Проверка процессора и видеокарты",
@@ -34,6 +35,7 @@
  "phase.prepare.libraries": "Сборка шейдеров для драйвера видеокарты",
  "phase.prepare.pack": "Упаковка кэша шейдеров в один файл",
  "phase.dlss.download": "Загрузка nvngx_dlss.dll из DLSS SDK от NVIDIA",
+ "phase.fsr.download": "Загрузка апскейлера FSR из FSR SDK от AMD",
  "phase.cleanup.ini": "Запись totk.ini",
  "phase.cleanup.temp": "Удаление временных файлов",
 
@@ -108,6 +110,8 @@
  "warn.kernel_old": "В Linux {version} нет отслеживания записи, на которое опирается игра (нужна версия 6.7 или новее); игра может работать очень медленно. Обновление системы это исправит.",
  "warn.dlss_kept": "В папке установки уже есть библиотека DLSS ({path}); установка её оставляет.",
  "warn.dlss_download_failed": "Не удалось загрузить NVIDIA DLSS с {url}: {detail}. Игра работает и без него; при следующем запуске установка попробует снова.",
+ "warn.fsr_kept": "В папке установки уже есть библиотека FSR ({path}); установка оставляет имеющиеся библиотеки.",
+ "warn.fsr_download_failed": "Не удалось загрузить AMD FSR с {url}: {detail}. Игра работает и без него; при следующем запуске установка попробует снова.",
 
  "ui.title": "Установка TotK",
  "ui.rebuild_title": "Пересборка игры под ваши моды",
@@ -131,6 +135,8 @@
  "ui.firmware_help": "Для текста на китайском и корейском: папка Contents/registered прошивки, например из Ryujinx или Yuzu. Установка скопирует из неё системные шрифты Switch в папку установки.",
  "ui.dlss": "Загрузить NVIDIA DLSS (nvngx_dlss.dll) для видеокарт NVIDIA RTX",
  "ui.dlss_help": "Из DLSS SDK от NVIDIA на GitHub, по лицензии NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Без него настройки dlaa и DLSS ничего не делают.",
+ "ui.fsr": "Загрузить AMD FSR 4 (amd_fidelityfx_upscaler_vk.dll) для видеокарт AMD Radeon",
+ "ui.fsr_help": "Из FSR SDK от AMD на GitHub, по лицензии AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). С ним настройка dlaa может работать через FSR («Апскейлер: AMD FSR» в меню); без него этот выбор ничего не делает.",
  "ui.compressed_help": "Сжатые файлы NSZ и XCZ подходят как есть: установка сама их распакует (для этого, пока извлекаются данные игры, нужно столько свободного места, сколько занимают распакованные файлы).",
  "ui.type_game": "Файлы игры (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Файлы ключей (*.keys)",

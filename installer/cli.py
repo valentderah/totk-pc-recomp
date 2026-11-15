@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -9,7 +9,9 @@ extraction has to run again. Prints JSON events on stdout (events.py). Exit code
 line, 3 cancelled (Ctrl+C or Ctrl+Break).
 
 --dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
-Windows with an NVIDIA RTX GPU (steps.py, Dlss).
+Windows with an NVIDIA RTX GPU (steps.py, Dlss). --fsr downloads AMD's FSR loader and upscaler
+(amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll) from AMD's FSR SDK repository into the install folder on
+Windows with an AMD GPU (steps.py, Fsr).
 """
 import argparse
 import hashlib
@@ -63,6 +65,8 @@ def main(argv=None):
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--fsr', action='store_true', help="download AMD's FSR loader and upscaler DLLs (AMD FSR SDK "
+                                                     'license) next to the game, for dlaa_backend = fsr')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches

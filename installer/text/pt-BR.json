@@ -6,6 +6,7 @@
  "step.compile": "Compilando o {game_exe}",
  "step.prepare": "Preparando os shaders",
  "step.dlss": "Baixando o NVIDIA DLSS",
+ "step.fsr": "Baixando o AMD FSR",
  "step.cleanup": "Finalizando",
 
  "phase.check.host": "Verificando o processador e a placa de vídeo",
@@ -34,6 +35,7 @@
  "phase.prepare.libraries": "Montando os shaders para o driver de vídeo",
  "phase.prepare.pack": "Juntando o cache de shaders num único arquivo",
  "phase.dlss.download": "Baixando o nvngx_dlss.dll do DLSS SDK da NVIDIA",
+ "phase.fsr.download": "Baixando o upscaler FSR do FSR SDK da AMD",
  "phase.cleanup.ini": "Gravando o totk.ini",
  "phase.cleanup.temp": "Removendo os arquivos temporários",
 
@@ -108,6 +110,8 @@
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
  "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",
  "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
+ "warn.fsr_kept": "Já existe uma biblioteca FSR na pasta de instalação ({path}); a instalação mantém as bibliotecas que estão lá.",
+ "warn.fsr_download_failed": "Não foi possível baixar o AMD FSR de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
 
  "ui.title": "Instalação do TotK",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
@@ -131,6 +135,8 @@
  "ui.firmware_help": "Para textos em chinês, coreano e chinês tradicional: a pasta Contents/registered do firmware, por exemplo do Ryujinx ou do Yuzu. A instalação copia dela as fontes do sistema do Switch para a pasta de instalação.",
  "ui.dlss": "Baixar o NVIDIA DLSS (nvngx_dlss.dll) para placas de vídeo NVIDIA RTX",
  "ui.dlss_help": "Do DLSS SDK da NVIDIA no GitHub, sob a licença NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Sem ele as opções dlaa e DLSS não fazem nada.",
+ "ui.fsr": "Baixar o AMD FSR 4 (amd_fidelityfx_upscaler_vk.dll) para placas de vídeo AMD Radeon",
+ "ui.fsr_help": "Do FSR SDK da AMD no GitHub, sob a licença do AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). Permite que a opção dlaa use o FSR (Upscaler: AMD FSR no menu); sem ele essa escolha não faz nada.",
  "ui.compressed_help": "Arquivos compactados NSZ e XCZ funcionam do jeito que estão: a instalação os descompacta sozinha (para isso, até os dados do jogo serem extraídos, ela precisa de tanto espaço livre quanto ocupam os arquivos descompactados).",
  "ui.type_game": "Arquivos de jogo (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Arquivos de chaves (*.keys)",
