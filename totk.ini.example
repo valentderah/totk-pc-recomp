@@ -367,8 +367,7 @@
 # gyro_bias_pad = Nintendo Switch Pro Controller #1a2b3c4d
 # rumble = 1
 # Rumble strength in percent (0 to 300; 0 = off) and the exponent on the amplitude (0.2 to 1.5; lower = weak pulses
-# stronger, 1 = linear). rumble_triggers = 1 also drives the impulse triggers of an Xbox pad and makes the adaptive
-# triggers of a DualSense vibrate.
+# stronger, 1 = linear). rumble_triggers = 1 also drives the impulse triggers of an Xbox pad.
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
@@ -390,11 +389,13 @@
 # steam_rumble = 1
 # steam_volume = 100
 # steam_crisp = 1
-# Adaptive triggers of a DualSense (PS5): how hard L2 and R2 resist, 1 (light) to 8 (heavy); 0 = off. R2 (ZR) gets
-# heavier past the point where the press counts, as a drawn bow; L2 (ZL) stays lighter. Needs neither renhdrum.dll
-# nor dualsense_haptics, but the game must see the DualSense itself, not a virtual Xbox pad (Steam Input,
+# Adaptive triggers of a DualSense (PS5): dualsense_triggers is how hard L2 and R2 resist, 1 (light) to 8 (heavy);
+# 0 = off. R2 (ZR) gets heavier past the point where the press counts, as a drawn bow; L2 (ZL) stays lighter.
+# dualsense_trigger_vibration = 1 vibrates both adaptive triggers with the game's rumble (0 = off). Needs neither
+# renhdrum.dll nor dualsense_haptics, but the game must see the DualSense itself, not a virtual Xbox pad (Steam Input,
 # DS4Windows). Changes while the game runs take effect at once.
 # dualsense_triggers = 0
+# dualsense_trigger_vibration = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.

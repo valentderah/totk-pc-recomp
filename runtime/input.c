@@ -600,11 +600,11 @@ static void dsp_push_target(RenHdcDualSenseDsp *dsp, int side, float left_al, fl
 }
 
 // Under lock: give a DualSense the trigger effects the settings ask for (ds_triggers_pick), when they differ from the
-// ones it has. TOTK_DUALSENSE_TRIGGERS (0..8, live) is the resistance; with TOTK_RUMBLE_TRIGGERS the level the last
-// rumble left in ds_vibration replaces it until that rumble ends. Nothing is sent to a pad that never needed an
-// effect, so with both settings off a DualSense is left as it was. keep_rumble: send the SDL rumble in effect again
-// behind the trigger report, as the controller is not known to keep its emulated rumble across a report that does
-// not carry it; input_rumble passes 0 and sends its own.
+// ones it has. TOTK_DUALSENSE_TRIGGERS (0..8, live) is the resistance; with TOTK_DUALSENSE_TRIGGER_VIBRATION (or
+// TOTK_RUMBLE_TRIGGERS) the level the last rumble left in ds_vibration replaces it until that rumble ends. Nothing is
+// sent to a pad that never needed an effect, so with both settings off a DualSense is left as it was. keep_rumble: send
+// the SDL rumble in effect again behind the trigger report, as the controller is not known to keep its emulated rumble
+// across a report that does not carry it; input_rumble passes 0 and sends its own.
 static void triggers_update(uint64_t now, int keep_rumble) {
     if (!pad_ds5 || ds_stopped) return;
     unsigned ver = cfg_version();
@@ -612,7 +612,7 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         ds_cfg_seen = ver;
         int v = cfg_int("TOTK_DUALSENSE_TRIGGERS");
         ds_strength = v < 0 ? 0 : v > DS_LEVEL_MAX ? DS_LEVEL_MAX : v;
-        ds_rumble = input_rumble_triggers_enabled();
+        ds_rumble = cfg_bool("TOTK_DUALSENSE_TRIGGER_VIBRATION") || input_rumble_triggers_enabled();
     }
     DsTriggerState s = {.strength = ds_strength, .vibration = ds_rumble && now < ds_vibration_until ? ds_vibration : 0};
     uint8_t want[2][DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
@@ -626,7 +626,7 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         return;
     }
     if (!ds_live)
-        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, rumble_triggers = %d)", ds_strength, ds_rumble);
+        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, dualsense_trigger_vibration = %d)", ds_strength, ds_rumble);
     memcpy(ds_sent, want, sizeof want);
     ds_live = 1;
     if (keep_rumble && now < rumble_until && (rumble_low || rumble_high))
