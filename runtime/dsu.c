@@ -2,11 +2,6 @@
 #include "host.h"
 #include "cfg.h"
 
-#include <winsock2.h>
-#include <ws2def.h>
-#include <ws2tcpip.h>
-#include <SDL3/SDL_sensor.h>
-
 #define DSU_CLIENT_ID 0x12345678
 #define DSU_VERSION 1001
 #define DSU_TYPE_VERSION 0x00100000
@@ -34,33 +29,48 @@ typedef struct {
     double gyro[3];
 } DsuPacket;
 
-int dsu_init(SOCKET* sock, SOCKADDR_IN* server_addr) {
+void dsu_close(socket_t* sock) {
+#ifdef _WIN32
+    closesocket(*sock);
+    WSACleanup();
+#else
+    close(*sock);
+#endif
+}
+
+int dsu_init(socket_t* sock, struct sockaddr_in* server_addr) {
+#ifdef _WIN32
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        rt_logf("Winsock initialization failed.\n");
+        rt_log("dsu: winsock initialization failed");
         return 1;
     }
+#endif
 
     *sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (*sock == INVALID_SOCKET) {
-        rt_logf("Socket creation failed: %d\n", WSAGetLastError());
-        WSACleanup();
+        rt_log("dsu: socket_t creation failed.");
+        #ifdef _WIN32
+            WSACleanup();
+        #endif
         return 1;
     }
 
     uint16_t port = (uint16_t) cfg_int("DSU_PORT");
-    rt_logf("DSU client starting on 127.0.0.1:%u\n", port);
+    rt_logf("dsu: client starting on 127.0.0.1:%u\n", port);
 
-    *server_addr = (SOCKADDR_IN){0};
+    *server_addr = (struct sockaddr_in){0};
     server_addr->sin_family = AF_INET;
     server_addr->sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &server_addr->sin_addr);
+    if (inet_pton(AF_INET, "127.0.0.1", &server_addr->sin_addr) <= 0) {
+        dsu_close(sock);
+        return 1;
+    }
 
     u_long nonblocking = 1;
     if (ioctlsocket(*sock, FIONBIO, &nonblocking) == SOCKET_ERROR) {
-        rt_logf("Failed to set non-blocking socket.\n");
-        closesocket(*sock);
-        WSACleanup();
+        rt_log("dsu: failed to set non-blocking socket_t");
+        dsu_close(sock);
         return 1;
     }
 
@@ -129,14 +139,14 @@ static size_t dsu_request(uint8_t out[28], uint32_t client, uint32_t type, int s
     return size;
 }
 
-static bool send_dsu_type(SOCKET sock, const SOCKADDR_IN* addr, uint32_t type, int slot) {
+static bool send_dsu_type(socket_t sock, const struct sockaddr_in* addr, uint32_t type, int slot) {
     uint8_t request[28];
     size_t len = dsu_request(request, DSU_CLIENT_ID, type, slot);
     int sent = sendto(sock, (const char*)request, (int)len, 0, (const struct sockaddr*)addr, sizeof(*addr));
     return sent != SOCKET_ERROR;
 }
 
-void dsu_send_requests(SOCKET sock, const SOCKADDR_IN* addr, int slot) {
+void dsu_send_requests(socket_t sock, const struct sockaddr_in* addr, int slot) {
     send_dsu_type(sock, addr, DSU_TYPE_VERSION, 0);
     send_dsu_type(sock, addr, DSU_TYPE_INFO, 0);
     if (slot >= 0) {
@@ -260,7 +270,7 @@ static void handle_data_packet(DsuClientState* state, const DsuPacket* packet) {
     memcpy(state->gyro, packet->gyro, sizeof(state->gyro));
 }
 
-void dsu_process_incoming_packets(SOCKET sock, DsuClientState* state) {
+void dsu_process_incoming_packets(socket_t sock, DsuClientState* state) {
     uint8_t buffer[DSU_MAX_PACKET];
 
     while (1) {

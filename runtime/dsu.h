@@ -3,8 +3,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include <winsock2.h>
-#include <ws2def.h>
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2def.h>
+    #include <ws2tcpip.h>
+    
+    typedef SOCKET socket_t;
+#else
+    #include <unistd.h>
+    #include <arpa/inet.h>
+    #include <sys/socket_t.h>
+    #include <netinet/in.h>
+    #include <netdb.h>
+
+    typedef int socket_t;
+    #define INVALID_SOCKET (-1)
+    #define SOCKET_ERROR   (-1)
+#endif
 
 typedef struct {
     int slot;
@@ -18,6 +33,7 @@ typedef struct {
     double gyro[3];
 } DsuClientState;
 
-int dsu_init(SOCKET* sock, SOCKADDR_IN* server_addr);
-void dsu_send_requests(SOCKET sock, const SOCKADDR_IN* addr, int slot);
-void dsu_process_incoming_packets(SOCKET sock, DsuClientState* state);
+void dsu_close(socket_t* sock);
+int dsu_init(socket_t* sock, struct sockaddr_in* server_addr);
+void dsu_send_requests(socket_t sock, const struct sockaddr_in* addr, int slot);
+void dsu_process_incoming_packets(socket_t sock, DsuClientState* state);

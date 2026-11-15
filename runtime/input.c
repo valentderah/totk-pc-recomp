@@ -968,6 +968,7 @@ static void dsu_motion_poll(void *arg) {
         plat_wait_ns(1e9 / 60);
     }
 
+    dsu_close(&sock);
 end_thread:
     rt_log("input: dsu motion thread terminated.");
     motion_thread = -1;
