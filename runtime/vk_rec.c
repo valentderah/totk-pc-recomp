@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "memx.h"
 #include "vk.h"
 #include "platform/platform.h"
 
@@ -175,11 +176,16 @@ static void *put(uint32_t op, size_t bytes) {
 // cost the producer an event set and the recorder a wake-up. Savage Wind Recomp measured that at 6.7% of its render
 // thread's busy time on 4 cores and moved to 64 KiB there (runtime/nvn/vulkan/record.c rec_init, publish_every).
 // TOTK_REC_PUB=<words> sets the batch; =ab: 64 words in the A blocks of TOTK_AB, 8192 in the B blocks.
+// The wake goes through wake(), whose full fence orders the head store before the read of Q.sleeping. rec_main sets
+// Q.sleeping and then reads head; without the fence x86 may read Q.sleeping before the head store is visible, both
+// sides miss each other and the recorder sleeps out its 2 ms timeout with the packets waiting. Since rec_submit returns
+// without a drain (TOTK_REC_ASYNC=1), its publish is the last one of a submission, and every queue user then waited in
+// rec_queue_wait for that timeout (issue #1174: 1.6 to 3.4 ms a wait on an RX 9070 XT).
 static int pub_ab;
 static void pub_now(void) {
     Q.pub_h = Q.put_h;
     __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
-    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev), RS_.wakes++;
+    wake();
 }
 
 static void pub(void) {
@@ -473,7 +479,7 @@ int rec_owns(VkCommandBuffer cb) { return OWNED(cb); }
 static void *tail_copy(uint8_t **at, const void *arr, size_t bytes) {
     if (!arr || !bytes) return NULL;
     void *d = *at;
-    memcpy(d, arr, bytes);
+    MX_CPY(d, arr, bytes);
     *at += (bytes + 7) & ~(size_t)7;
     return d;
 }

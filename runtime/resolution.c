@@ -694,8 +694,9 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
-    // The hook runs on every guest function entry while it waits: should the game set its render size before
-    // res_init or never, it stops after 1800 presents (half a minute at 60 fps) and modes change at the next start.
+    // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
+    // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
+    // next start.
     static unsigned waited;
     if (g_fnprof && !renderer && ++waited == 1800) {
         g_fnprof = 0;

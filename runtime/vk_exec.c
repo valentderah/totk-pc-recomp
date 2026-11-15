@@ -136,6 +136,7 @@ static void state_reset(VkExec *ex) {
     vk_pipe_state_defaults(&ex->pipe);
     ex->barrier_at = -1;
     ex->oq_open = -1;
+    vk_exec_dirty_all(ex);
 }
 
 // ---- render targets
@@ -410,6 +411,8 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h) {
 static void resolve_rt_as(VkExec *ex, int peek) {
     if (ex->rt_resolved) return;
     ex->rt_resolved = 1;
+    int32_t fmt0[8], ds0[2] = {ex->pipe.depth_fmt, ex->pipe.samples};
+    memcpy(fmt0, ex->pipe.color_fmt, sizeof fmt0);
     const p_set_rt *r = &ex->rt;
     int n = r->n < 0 ? 0 : r->n > 8 ? 8 : r->n;
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0, scale = 1;
@@ -451,6 +454,8 @@ static void resolve_rt_as(VkExec *ex, int peek) {
     ex->pass_ncolor = (uint32_t)n;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
+    if (memcmp(fmt0, ex->pipe.color_fmt, sizeof fmt0) || ds0[0] != ex->pipe.depth_fmt || ds0[1] != ex->pipe.samples)
+        ex->pipe_gen++;   // the pipeline's target formats changed
 }
 
 static void resolve_rt(VkExec *ex) { resolve_rt_as(ex, 0); }
@@ -649,6 +654,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     for (int i = 0; i < nwant; i++)
         if (!has_image(ex->fbl_img, ex->nfbl, want[i]))
             ib[n++] = layout_barrier(want[i], wasp[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
+    if (n || nwant != ex->nfbl) ex->fbl_serial++;   // the images in the feedback layout changed
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
@@ -967,8 +973,16 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
         memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
         ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
         break;
-    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
-    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
+    case OP_DEPTH_CLAMP: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.depth_clamp != v) ex->pipe.depth_clamp = v, ex->pipe_gen++;
+        break;
+    }
+    case OP_RASTER_DISCARD: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.raster_discard != v) ex->pipe.raster_discard = v, ex->pipe_gen++;
+        break;
+    }
     case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
     case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
     case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
@@ -1170,6 +1184,7 @@ static void *grow_n(void *p, uint32_t *cap, size_t elem) {
 
 static void copy_state(VkExec *dst, const VkExec *src) {
     memcpy((char *)dst + VK_EXEC_STATE_BEGIN, (const char *)src + VK_EXEC_STATE_BEGIN, VK_EXEC_STATE_END - VK_EXEC_STATE_BEGIN);
+    vk_exec_dirty_all(dst);   // the bound state was replaced: no draw memo may take it for what it held
 }
 
 static int draw_op(uint32_t op) { return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND; }
@@ -1336,6 +1351,7 @@ static void chunk_record(Rec *r, int k) {
     const Chunk *next = k + 1 < __atomic_load_n(&SC.nch, __ATOMIC_ACQUIRE) ? &SC.ch[k + 1] : NULL;
     ex->cb = rec_cb(r, RP.fence);
     ex->fence = RP.fence, ex->recorded = 0, ex->in_pass = 0, ex->nviews = 0, ex->barrier_at = -1, ex->nfbl = 0;
+    ex->fbl_serial++;
     ex->part_start = 0;
     x_cur = ex;
     chunk_k = k;
@@ -1701,6 +1717,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->nviews = 0;
     ex->barrier_at = -1;
     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
+    ex->fbl_serial++;
     ex->fr.submits++;
     ex->split_draws = ex->part_start = 0;
     ex->part_t0 = kern_now_ns();

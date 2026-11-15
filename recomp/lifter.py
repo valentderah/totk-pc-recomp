@@ -352,7 +352,8 @@ class Lifter:
         dst = {
             (3, 3, 13, 0, 2): 'c->tpidr = {v};',
             (3, 3, 4, 2, 0): 'c->nzcv = {v} & 0xf0000000ull;',
-            (3, 3, 4, 4, 0): 'c->fpcr = {v} & 0x7c00000ull; rt_fpcr_sync(c);' if self.sc else 'rt_set_fpcr({v});',
+            (3, 3, 4, 4, 0): ('c->fpcr = {v} & 0x7c00000ull; rt_fpcr_sync(c); RT_FPCR_NOTE(c, c->x[30]);' if self.sc
+                              else 'rt_set_fpcr({v});'),
             (3, 3, 4, 4, 1): 'c->fpsr = {v} & 0xf800009full;' if self.sc else 'rt_set_fpsr({v});',
         }.get(key)
         if dst is None:

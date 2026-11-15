@@ -24,7 +24,8 @@ void rt_vlogf(const char *fmt, va_list ap);
 void rt_log_raw(const char *p, size_t n);
 const char *rt_log_path(void);                  // the log file, NULL when this run writes none
 enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
-       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
+       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+       RT_TRACE_HOSTCOUNT = 512 };   // no TOTK_TRACE name of its own: hostfn_count switches it (host.h)
 extern unsigned rt_trace;                       // from TOTK_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
 // prof_win.c: TOTK_PROFILE=<path> sampling profiler; TOTK_TRACE=perf frame timing (waits of the render thread)
 // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
@@ -120,7 +121,9 @@ void hostfn_add_override(const char *name, GuestFn fn);    // an override outsid
 const char *hostfn_name(uint64_t addr);                    // name registered at a synthetic address, NULL if none
 void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                            // linked module); idempotent; registration ends here
-uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
+uint64_t hostfn_calls(void);                               // host-function calls counted so far, all threads: only
+                                                           // while hostfn_count is on or under TOTK_TRACE=host
+void hostfn_count(int on);                                 // count host-function calls (probes); off by default
 void hostfn_report(void);                                  // call count per host function to stderr, busiest first
 int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
 const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end

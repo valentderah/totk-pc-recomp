@@ -14,9 +14,10 @@ screen shapes and the prompts style this player needs, installer/screens.py), to
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
-logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
-in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
-it touches, not a full compile.
+logs/: the next run lifts into the same gen/, where recomp/gen.py lifts again only the chunks whose inputs changed (its
+lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, and Ninja in build/ recompiles only
+those. A change of the mods' code cheats then costs a few seconds of lift and the chunks holding its sites, not a full
+lift or compile.
 
 Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
 rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
@@ -900,8 +901,9 @@ class Lift(Step):
         return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
 
     def run(self, ctx):
-        # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
-        # partition no longer has), so Ninja recompiles only those
+        # gen/ of the last run stays: gen.py lifts again only the chunks whose inputs changed
+        # (gen/<mod>/lift_cache.json; TOTK_LIFT_CACHE=0 lifts all), rewrites only those whose C changed (and removes
+        # the ones a smaller partition no longer has), so Ninja recompiles only those
         layout, rep, gen = ctx.layout, ctx.reporter, ctx.temp / 'gen'
         (gen / STAMP).unlink(missing_ok=True)
         rep.progress('lift', 'discover', force=True)
@@ -1372,8 +1374,15 @@ REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
 def rebuild_command(ctx):
     """The command that starts the setup window in its rebuild mode on this install folder (installer/gui.py
     --rebuild): pythonw beside the setup's Python on Windows, so no console opens. In a repository that is the Python
-    running this setup: the tools' embeddable Python there has no tkinter."""
+    running this setup: the tools' embeddable Python there has no tkinter.
+    In the Linux AppImage the release folder is the AppImage's mount (/tmp/.mount_*), which goes away when the setup
+    exits, so a path into it would fail to start later and the game would keep its old code. The command starts the
+    AppImage file itself instead ($APPIMAGE, set by the AppImage runtime); its AppRun passes the arguments to
+    installer.gui."""
     layout = ctx.layout
+    appimage = os.environ.get('APPIMAGE', '')
+    if not layout.dev and appimage and Path(appimage).is_file():
+        return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)]
     python = Path(sys.executable) if layout.dev else layout.python
     if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
         python = python.with_name('pythonw.exe')

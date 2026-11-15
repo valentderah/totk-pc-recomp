@@ -855,6 +855,7 @@ int probe_kernel(void) {
     test_platform();
     test_oom_commit();
     test_crash_report();
+    hostfn_count(1);   // test_lifted_ticks and the stats line read the host-call count
     kern_run_on_guest_main(probe_main);
     RtStats s = rt_stats();
     printf("stats: %llu SVCs, %llu threads, %llu host calls\n", (unsigned long long)s.svcs,

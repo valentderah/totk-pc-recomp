@@ -61,6 +61,9 @@ extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
+// audren.h pulls in cpu.h through host.h: the one call the Sound tab needs from it, as declared there.
+enum { AUDIO_DEVICE_NAME_MAX = 256 };
+int audio_output_devices(char (*names)[AUDIO_DEVICE_NAME_MAX], int max);
 int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
 bool amiibo_check_font_rebuild(void);  // ui/amiibo_page.cpp; check and clear font rebuild request
 }
@@ -726,6 +729,7 @@ static void tab_screen(float scale) {
     row_shadow_scale();
     row_shadow_range();
     row_grass_range();
+    opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
@@ -775,6 +779,33 @@ static void tab_game(float scale) {
     opt_end();
 }
 
+// The output device row: System default (TOTK_AUDIO_DEVICE unset) and the playback devices SDL lists, by name. The list
+// is read again when the tab comes into view and once a second while it shows, so a device plugged in or out appears
+// without reopening the menu. A chosen device that is unplugged keeps its name as the value; the mixer plays on the
+// system default meanwhile (audio_mixer.c output_worker).
+enum { MAX_AUDIO_DEVICES = 16 };
+static char g_audio_names[MAX_AUDIO_DEVICES][AUDIO_DEVICE_NAME_MAX];
+static int g_audio_n;
+
+static void row_audio_device(void) {
+    static int last_frame = -2;
+    static double next_list;
+    int frame = ImGui::GetFrameCount();
+    double now = ImGui::GetTime();
+    if (frame != last_frame + 1 || now >= next_list) {
+        g_audio_n = audio_output_devices(g_audio_names, MAX_AUDIO_DEVICES);
+        next_list = now + 1.0;
+    }
+    last_frame = frame;
+    const char *vals[MAX_AUDIO_DEVICES + 1], *names[MAX_AUDIO_DEVICES + 1];
+    vals[0] = "";
+    names[0] = menu_text(UI_MENU_AUDIO_DEVICE_DEFAULT);
+    for (int i = 0; i < g_audio_n; i++) vals[i + 1] = names[i + 1] = g_audio_names[i];
+    int cur = strcmp(cfg_value("TOTK_AUDIO_DEVICE"), "default") ? -1 : 0;   // "default" in totk.ini is the first row
+    opt_choice_list("TOTK_AUDIO_DEVICE", UI_MENU_AUDIO_DEVICE, vals, names, g_audio_n + 1, UI_MENU_AUDIO_DEVICE_DESC,
+                    cur);
+}
+
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
     opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
@@ -783,6 +814,7 @@ static void tab_sound(float scale) {
     opt_slider("TOTK_VOLUME_VOICE", UI_MENU_VOLUME_VOICE, 0, 100, UI_MENU_VOLUME_VOICE_DESC, 5, "%.0f %%");
     static const UiTextId channels[] = {UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51};
     opt_choice("TOTK_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
+    row_audio_device();
     opt_end();
 }
 
