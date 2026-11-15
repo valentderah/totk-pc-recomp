@@ -15,6 +15,20 @@ static __typeof__(&rsf_latencyvk_instance_proc) instance_resolver;
 static int stopped;
 static int xess_active;
 
+static void execution_event(uint64_t source, uint32_t role, uint32_t begin) {
+    if (!source) return;
+    __typeof__(&rsf_latencyvk_execution) report = rsf_runtime_symbol("rsf_latencyvk_execution");
+    if (!report) return;
+    rsf_game_render_pass pass = {.struct_size = sizeof pass, .role = role,
+        .session_id = 1, .source_frame_id = source};
+    int32_t result = report(&pass, begin);
+    if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+        rt_log("rsf execution: source %llu role %u begin %u result %d", (unsigned long long)source, role, begin, result);
+}
+
+void rsf_vk_submission(uint64_t source, uint32_t begin) { execution_event(source, RSF_GAME_RENDER_SUBMISSION, begin); }
+void rsf_vk_present_event(uint64_t source, uint32_t begin) { execution_event(source, RSF_GAME_RENDER_PRESENT, begin); }
+
 static int append_extensions(const char **extensions, uint32_t *count, uint32_t capacity,
                              const char *const *names, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
@@ -96,9 +110,11 @@ int rsf_vk_prepare(void) {
         if (result != RSF_BACKEND_OK) { rt_log("rsf: early XeSS initialization refused (%d)", result); return 0; }
         xess_active = 1;
     }
-    // Non-DLSS SR does not require Streamline. Latency will share this session
-    // when its input/simulation event producer is connected.
-    if (sr_backend != RSF_SR_DLSS && cfg_int("TOTK_RSF_FG") != 1) { prepared = 1; return 1; }
+    // Latency-only sessions request no DLSS feature. The core chooses the
+    // supported pacing owner after device creation, independently of SR.
+    if (sr_backend != RSF_SR_DLSS && cfg_int("TOTK_RSF_FG") != 1 && !cfg_int("TOTK_RSF_LOW_LATENCY")) {
+        prepared = 1; return 1;
+    }
     __typeof__(&rsf_slvk_initialize) initialize = rsf_runtime_symbol("rsf_slvk_initialize");
     instance_resolver = rsf_runtime_symbol("rsf_latencyvk_instance_proc");
     if (!initialize || !instance_resolver) return 0;

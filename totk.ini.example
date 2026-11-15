@@ -280,8 +280,10 @@
 # Absolute paths, configured for the installed RSF package:
 # rsf_runtime = C:\ReScaleFrame\ReScaleFrame.Runtime.dll
 # rsf_provider_dir = C:\ReScaleFrame\providers
-# Frame generation and low latency are not available yet; their menu controls are disabled.
+# Frame generation is still under integration; its menu control is disabled.
 # rsf_fg = 0
+# Low latency: 0 off, 1 on when supported by the GPU; independent of upscaling.
+# Restart after changing. The runtime selects the supported latency technology.
 # rsf_low_latency = 0
 # Legacy configuration aliases (used only when the corresponding RSF key is unset):
 # dlaa = 0

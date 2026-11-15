@@ -15,6 +15,7 @@ static GuestFn begin_hook, end_hook;
 static int enabled, locked, away;
 static rsf_game_cpu_event events[32];
 static unsigned count;
+static unsigned configurations;
 static struct { uintptr_t base; size_t size; } readable[8];
 static unsigned nreadable;
 
@@ -45,8 +46,14 @@ static void receive(const rsf_game_cpu_event *event) {
     assert(event->timestamp_qpc && event->qpc_frequency == 1000000);
     events[count++] = *event;
 }
+static rsf_backend_result configure_latency(uint32_t mode, uint32_t limit) {
+    assert(away && locked == 1 && mode == 0 && limit == 0);
+    ++configurations;
+    return RSF_BACKEND_OK;
+}
 void *rsf_runtime_symbol(const char *name) {
     assert(!locked);
+    if (!strcmp(name, "rsf_latencyvk_options")) return configure_latency;
     return !strcmp(name, "rsf_latencyvk_cpu") ? receive : NULL;
 }
 
@@ -68,6 +75,7 @@ int main(void) {
     rsf_frame_input(&cpu);
     rsf_frame_input(&cpu);
     assert(count == 3 && events[2].stage == RSF_GAME_CPU_INPUT_SAMPLE);
+    assert(configurations == 1); // Configuration precedes the real sample, with the guest core released.
     cpu.thread = &other;
     rsf_frame_input(&cpu);
     assert(count == 3);

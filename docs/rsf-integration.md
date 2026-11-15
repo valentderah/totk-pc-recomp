@@ -334,6 +334,33 @@ Validation still uses GPL off and descriptor writes. This establishes copied
 identity through actual presentation; FG input/output admission, present execution
 events in the orchestrator and latency marker/pacing acceptance remain open.
 
+Explicit execution events now reach the RSF core at actual queue submission and
+Present boundaries. Recorder packets copy their source alongside command buffers;
+split/chunk submissions retain their enclosing source. The final blit and Present
+use the swapchain image's saved source. The SDK's new execution endpoint consumes
+the existing game render pass interface and never guesses a latest render ID.
+Its core owns marker mapping, deduplication and the end of the complete render
+interval before Present. A synthetic test verifies rendering N+1 before presenting
+N without changing N's marker identity.
+
+`rsf_low_latency` is applied at the real input boundary with the virtual guest core
+released. The core chooses the supported technology. A latency-only session loads
+no DLSS SR/FG feature, so it works with upscaling off. The menu control is enabled
+and documents the restart requirement. The frame fixture checks that configuration
+occurs with the guest core released; configuration remains outside frame ownership
+locks. Source zero never reports an invented execution identity.
+
+The latency-only asynchronous replay run completed 1,655 presents; the combined
+DLSS native-resolution/latency synchronous run completed 1,826 presents and at least
+300 SR evaluations. Both had zero validation errors, shader failures and skipped
+draws with GPL off and descriptor writes. At source 1,200 both reported Reflex
+available and active, 1,200 accepted sleep calls, 7,193 markers, zero refused calls,
+zero input substitutes and zero CPU ordering violations. This establishes accepted
+NVIDIA SDK pacing/marker calls, not a measured latency reduction or AMD/XeLL hardware
+acceptance. The full RSF gate retains its two Anomaly FG device-test failures;
+focused latency contracts, Rust format and Clippy checks pass. See RSF's
+`docs/research/vulkan-explicit-execution-20261115.md` for the shared contract.
+
 DLSS now reaches successful SR evaluation with matching CPU tokens. A six-second
 opening-scene run completed 1,788 presents and passed 300 SR evaluations, with zero
 validation errors, shader failures and skipped draws using `TOTK_GPL=0` and
@@ -396,8 +423,8 @@ select and deploy RSF. Provider availability alone does not prove generated fram
 were presented or latency markers reached the SDK.
 
 The in-game Graphics page now contains an Upscaling & Framegen group with enable, provider
-and quality controls, plus disabled frame-generation and low-latency controls
-marked unavailable. Visible controls and tooltips have no RSF branding. The DLSS model and character-mask controls have been removed
+and quality controls, an enabled low-latency control and a disabled frame-generation
+control marked unavailable. Visible controls and tooltips have no RSF branding. The DLSS model and character-mask controls have been removed
 from that page. New menu text falls back to English in untranslated languages.
 `rsf_enabled` and `rsf_quality` are the active keys; unset keys inherit legacy
 `dlaa` and `dlss` values. Menu/C sources pass UCRT64 syntax checks. A game-rendered

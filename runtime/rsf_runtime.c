@@ -70,7 +70,7 @@ int rsf_runtime_load(void) {
     static const char *const required[] = {
         "rsf_get_runtime_version", "rsf_slvk_initialize",
         "rsf_latencyvk_instance_proc", "rsf_latencyvk_options",
-        "rsf_latencyvk_cpu", "rsf_latencyvk_render", "rsf_latencyvk_present",
+        "rsf_latencyvk_cpu", "rsf_latencyvk_execution",
         "rsf_latencyvk_shutdown", "rsf_srvk_create", "rsf_srvk_plan",
         "rsf_srvk_evaluate", "rsf_srvk_retire_commands", "rsf_srvk_destroy",
         "rsf_fgvk_create_with_host", "rsf_fgvk_images", "rsf_fgvk_acquire",

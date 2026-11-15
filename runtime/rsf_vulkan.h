@@ -5,6 +5,9 @@
 int rsf_vk_prepare(void);
 // Drain/release providers first; SDK teardown precedes Vulkan device destruction.
 int rsf_vk_shutdown(void);
+// Copied engine source at actual host execution, including recorder-thread calls.
+void rsf_vk_submission(uint64_t source, uint32_t begin);
+void rsf_vk_present_event(uint64_t source, uint32_t begin);
 // features is a caller-owned writable copy, leased through device creation.
 int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
     const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features);

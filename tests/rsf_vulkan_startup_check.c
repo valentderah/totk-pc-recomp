@@ -9,6 +9,7 @@
 static HMODULE runtime;
 static const char *provider_directory;
 static int backend = 1;
+unsigned rt_trace;
 int rsf_runtime_load(void) { return runtime != NULL; }
 const char *rsf_runtime_path(void) { return runtime ? "probe" : NULL; }
 const char *rsf_provider_directory(unsigned backend) { (void)backend; return provider_directory; }

@@ -17,6 +17,23 @@
 static PlatMutex frame_lock = PLAT_MUTEX_INIT;
 static struct FrameOwner { void *thread; uint64_t framework, current, completed, draw, draw_queue; int sampled; } frames[32];
 static uint64_t next_source;
+static PlatMutex latency_options_lock = PLAT_MUTEX_INIT;
+
+static void latency_options(void) {
+    static int applied = -1, last_result = -999;
+    int requested = cfg_int("TOTK_RSF_LOW_LATENCY");
+    __typeof__(&rsf_latencyvk_options) configure = rsf_runtime_symbol("rsf_latencyvk_options");
+    if (!configure) return;
+    plat_mutex_lock(&latency_options_lock);
+    if (applied != requested) {
+        int32_t result = configure((uint32_t)requested, 0);
+        if (result != last_result || result == RSF_BACKEND_OK)
+            rt_log("rsf: low latency requested %d, options result %d", requested, result);
+        if (result == RSF_BACKEND_OK) applied = requested;
+        last_result = result;
+    }
+    plat_mutex_unlock(&latency_options_lock);
+}
 
 static int tracking_enabled(void) {
     // These selections require restart. Queue initialization happens after
@@ -51,6 +68,7 @@ static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
     // The core may pace at INPUT_SAMPLE. No virtual guest core or frame-state
     // lock can span its driver sleep; rendering continues on the other threads.
     int away = kern_core_away();
+    if (stage == RSF_GAME_CPU_INPUT_SAMPLE) latency_options();
     sink(&event);
     kern_core_back(&away);
     if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
@@ -66,6 +84,13 @@ static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
                    (unsigned long long)source, accepted.stage_mask, accepted.failed, accepted.flags,
                    (unsigned long long)totals.frames, (unsigned long long)totals.order_violations,
                    (unsigned long long)totals.substitutes);
+        __typeof__(&rsf_latencyvk_get_status) latency = rsf_runtime_symbol("rsf_latencyvk_get_status");
+        rsf_latencyvk_status status = {.struct_size = sizeof status, .abi_version = RSF_LATENCYVK_ABI_VERSION};
+        if (latency && latency(&status) == RSF_BACKEND_OK)
+            rt_log("rsf latency: source %llu owner %u available %u mode %u; sleeps %llu markers %llu refused %llu",
+                   (unsigned long long)source, status.owner, status.low_latency_available, status.mode,
+                   (unsigned long long)status.sleep_calls, (unsigned long long)status.marker_calls,
+                   (unsigned long long)status.refused_calls);
     }
 }
 

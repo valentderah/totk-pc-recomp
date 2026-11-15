@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "rsf_sr.h"
+#include "rsf_vulkan.h"
 #include "host.h"
 #include "memx.h"
 #include "vk.h"
@@ -331,15 +332,17 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
 // VkLatencySubmissionPresentIdNV (vk_sync_submit), carried as its present ID.
 typedef struct {
     uint32_t ncb, nsig, has_pid;
-    uint64_t present_id;
+    uint64_t present_id, source;
     VkCommandBufferSubmitInfo cbi[2];
     VkSemaphoreSubmitInfo sig;
 } A_Submit;
-VkResult rec_submit(const VkSubmitInfo2 *si) {
+VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
     if (!sub_pending) {
+        rsf_vk_submission(source_frame, 1);
         vk_queue_lock();
         VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
         vk_queue_unlock();
+        rsf_vk_submission(source_frame, 0);
         return r;
     }
     sub_pending = 0;
@@ -351,6 +354,7 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
                  si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
     A_Submit *a = put(R_Submit, sizeof *a);
     memset(a, 0, sizeof *a);
+    a->source = source_frame;
     a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
     if (pid) a->has_pid = 1, a->present_id = ((const VkLatencySubmissionPresentIdNV *)nx)->presentID;
     for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
@@ -379,9 +383,11 @@ static void submit_run(const A_Submit *a) {
                         .commandBufferInfoCount = a->ncb,
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
                         .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
+    rsf_vk_submission(a->source, 1);
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
+    rsf_vk_submission(a->source, 0);
     r_sub_res = r;
     if (r != VK_SUCCESS && __atomic_load_n(&r_sub_err, __ATOMIC_RELAXED) == VK_SUCCESS)
         __atomic_store_n(&r_sub_err, r, __ATOMIC_RELEASE);

@@ -16,6 +16,7 @@ native code into the process and retains the module until exit; restart to chang
 | `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `5` XeSS. Restart required. FSR4 submission is still under implementation. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
 | `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 | `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
+| `rsf_low_latency` (default `0`) | `1` enables supported latency technology independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
 | `climb_fix` (default `1`) | Corrects the existing 1.4.3 climbing velocity loss above 60 fps. Requires the real-time frame step; lower rates keep the game's factor. `0` uses the shipping factor. | Arithmetic in the climbing velocity step. | Caution |
 
 | Setting | Effect | Runtime cost | Risk |

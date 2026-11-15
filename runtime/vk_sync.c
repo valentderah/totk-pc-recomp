@@ -16,6 +16,7 @@
 
 #include "gfx.h"
 #include "rsf_sr.h"
+#include "rsf_vulkan.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
@@ -37,6 +38,7 @@ static CmdSlot *slots;
 static int nslots;
 static int cur_slot;          // the slot vk_sync_submit records into now (an index: take_slot may move slots)
 static uint64_t cur_fence;    // the value of the submission being recorded
+static uint64_t cur_source;   // immutable while this submission's parts record
 
 // Shared with the completion thread (st_lock).
 static PlatMutex st_lock = PLAT_MUTEX_INIT;
@@ -405,9 +407,11 @@ void vk_sync_part(VkCommandBuffer cb) {
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb}};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
+    rsf_vk_submission(cur_source, 1);
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
+    rsf_vk_submission(cur_source, 0);
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
@@ -426,7 +430,7 @@ VkCommandBuffer vk_sync_split(void) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
     ts_submitted();
-    VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
+    VkResult r = rec_submit(&si, cur_source);   // by the recorder when it recorded the part
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
@@ -455,6 +459,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
+    cur_source = source;
     // Before the first object is resolved: what any thread destroys from here on waits for this value (vk_memory.c
     // defer), since the recording may already name it.
     vk_mem_note_fence(fence);
@@ -489,7 +494,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
     if (recorded && c->has_nv_reflex) vk_reflex_marker(2, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
-    VkResult r = rec_submit(&si);   // by the recorder when it recorded the part
+    VkResult r = rec_submit(&si, source);   // by the recorder when it recorded the part
     if (recorded && c->has_nv_reflex) vk_reflex_marker(3, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);

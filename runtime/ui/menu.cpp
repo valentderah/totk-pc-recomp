@@ -738,7 +738,6 @@ static void tab_screen(float scale) {
     opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
     opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
     static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON};
-    opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
     opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 2, UI_MENU_RSF_LATENCY_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();

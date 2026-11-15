@@ -20,6 +20,7 @@
 #include "cfg.h"
 #include "rsf_present.h"
 #include "rsf_runtime.h"
+#include "rsf_vulkan.h"
 #ifdef _WIN32
 #include "input_win.h"
 #endif
@@ -501,12 +502,14 @@ static void flip_locked(void) {
                            .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
+    rsf_vk_present_event(source, 1);
     vk_queue_lock();
     VkResult r = g_rsf_present ? (VkResult)rsf_present_flip(g_rsf_present, &pi)
                                : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
     if (c && c->has_nv_reflex) vk_reflex_marker(5, pid);   // VK_LATENCY_MARKER_PRESENT_END_NV
     if (c) latency_note(c, pid ? pid : g_flip_pid);
+    rsf_vk_present_event(source, 0);
     if ((rt_trace & RT_TRACE_PRESENT) && source && (source <= 16 || !(source % 600)))
         rt_log("rsf host present: source %llu image %u result %d", (unsigned long long)source, g_flip_idx, (int)r);
     vk_device_fault_report(r);
@@ -1047,6 +1050,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
                         .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    rsf_vk_submission(source, 1);
     vk_queue_lock();
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
     if (r == VK_SUCCESS && g_rsf_present) {
@@ -1054,6 +1058,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         rsf_present_submitted(g_rsf_present, commands, 1);
     }
     vk_queue_unlock();
+    rsf_vk_submission(source, 0);
     if (r == VK_SUCCESS) {
         g_flip_on = 1;
         g_flip_idx = idx;
