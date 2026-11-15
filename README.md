@@ -38,6 +38,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
   ([docs/mods.md](docs/mods.md)). HD texture packs work: the port grows the texture heap a pack asks for by itself. Tested
   with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
 - Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
+- In-game Autobuild blueprint import with a 3D preview, off by default ([docs/blueprint-import.md](docs/blueprint-import.md))
 
 ## Languages
 
