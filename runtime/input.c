@@ -46,6 +46,7 @@ static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
 static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static char calib_pad_name[128];     // the controller the bias belongs to; empty when there is none
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -424,6 +425,9 @@ static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
+        // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
+        motion_bias_reset(motion_global());
+        calib_pad_name[0] = 0;
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
@@ -997,11 +1001,56 @@ void input_motion_axes(const float a[3], const float g[3], double acc[3], double
     gyro[2] = g[1];
 }
 
+// Copy a controller name into cap bytes without splitting a UTF-8 sequence: a name cut mid-character would show as
+// garbage in the menu and be written to totk.ini the same way.
+static void copy_name(char *dst, size_t cap, const char *src) {
+    if (!src) src = "";
+    size_t n = strlen(src);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80) n--;   // back off to the start of the character
+    }
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
+// Under lock: the open gamepad's identity for the saved bias. Its name, plus a hash of SDL's serial when the pad
+// reports one (Switch and PlayStation pads report their Bluetooth address), so two controllers of one model keep their
+// own bias; the hash keeps the address out of totk.ini and the log, which players post with bug reports.
+static void pad_identity(char *dst, size_t cap) {
+    const char *name = SDL_GetGamepadName(pad), *serial = SDL_GetGamepadSerial(pad);
+    char id[160];
+    if (serial && *serial) {
+        uint32_t h = 2166136261u;   // FNV-1a
+        for (const char *c = serial; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+        snprintf(id, sizeof id, "%s #%08x", name ? name : "", h);
+    } else snprintf(id, sizeof id, "%s", name ? name : "");
+    copy_name(dst, cap, id);
+}
+
+// Under lock, for each gamepad the sensor code sees (a first one, or one connected after another went away): the
+// previous controller's bias and any attempt still collecting from it are dropped, then the bias saved in totk.ini is
+// taken when gyro_bias_pad names this controller. It is taken with gyro_calibration off too: the switch only decides
+// whether motion_feed subtracts it, so turning the switch on mid-run applies the saved bias.
+static void pad_bias_select(void) {
+    char id[128];
+    pad_identity(id, sizeof id);
+    motion_bias_reset(motion_global());
+    calib_pad_name[0] = 0;
+    const char *saved = cfg_get("TOTK_GYRO_BIAS_PAD");
+    if (saved && !strcmp(saved, id)) {
+        motion_bias_load(motion_global());
+        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(pad));
+        rt_log("input: gyro bias loaded from totk.ini for %s", calib_pad_name);
+    }
+}
+
 // Under lock: (re)enable the sensors when the open gamepad changed; 1 if it has both and they are on.
 static int sensors_ready(void) {
     SDL_JoystickID id = SDL_GetGamepadID(pad);
     if (id == sensor_pad) return sensor_ok;
     sensor_pad = id;
+    pad_bias_select();
     // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
     SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
     sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
@@ -1049,16 +1098,53 @@ static void motion_main(void *arg) {
     }
 }
 
+// Under lock: the sensor thread, once; -1 when SDL is not running.
+static void motion_thread_start(void) {
+    if (!state) start();
+    if (motion_thread) return;
+    if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
+    if (state != 1) motion_thread = -1;
+    else {
+        if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
+        motion_thread = 1;
+    }
+}
+
 void input_motion_start(void) {
     plat_mutex_lock(&lock);
-    if (!state) start();
-    if (!motion_thread) {
-        if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
-        if (state != 1) motion_thread = -1;
-        else {
-            if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
-            motion_thread = 1;
-        }
+    motion_thread_start();
+    plat_mutex_unlock(&lock);
+}
+
+void input_motion_calibrate(void) {
+    plat_mutex_lock(&lock);
+    // The menu can run before the game starts the six-axis sensor (the title screen): the thread starts here then.
+    if (input_gyro_calibration_enabled() && input_motion_enabled()) motion_thread_start();
+    const char *why = NULL;
+    if (!input_gyro_calibration_enabled()) why = "gyro_calibration is off";
+    else if (!input_motion_enabled()) why = "motion is off (TOTK_MOTION=0)";
+    else if (motion_thread != 1) why = "no SDL gamepad support";
+    else if (!pad || !SDL_GamepadConnected(pad)) why = "no gamepad";
+    // sensors_ready here, not at the sensor thread's next look at a new pad: that look selects the pad's bias and
+    // would cancel the attempt that starts below.
+    else if (!sensors_ready()) why = "the gamepad has no gyro and accelerometer";
+    if (why) rt_log("input: calibrate gyro ignored: %s", why);
+    else {
+        char id[128];
+        pad_identity(id, sizeof id);
+        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(pad));
+        motion_calibrate_start(motion_global(), id, kern_now_ns());
+        rt_log("input: gyro calibration started on %s", calib_pad_name);
     }
     plat_mutex_unlock(&lock);
+}
+
+int input_gyro_calibration_enabled(void) { return motion_calibration_enabled(); }
+
+int input_motion_calib_state(char *pad, size_t cap) {
+    plat_mutex_lock(&lock);
+    int st = motion_thread == 1 ? motion_calib_poll(motion_global(), kern_now_ns()) : MOTION_CALIB_NONE;
+    if (pad && cap) snprintf(pad, cap, "%s", calib_pad_name);
+    plat_mutex_unlock(&lock);
+    return st;
 }

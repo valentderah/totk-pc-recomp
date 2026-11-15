@@ -643,6 +643,7 @@ static void check_got(void) {
     hostfn_seal();
     Cpu *c = plat_aligned_alloc(sizeof(Cpu), 64);
     memset(c, 0, sizeof *c);
+    rt_fpcr_threshold(c);
     uint8_t *stack = mem_kernel_alloc(0x10000, 16);
     c->sp = (uint64_t)(uintptr_t)stack + 0x10000;
     c->excl_addr = ~0ull;

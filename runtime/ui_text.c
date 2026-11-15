@@ -270,6 +270,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_DEVICE_DEFAULT] = "System default",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_GYRO_CALIBRATION] = "Gyro bias calibration",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "Subtracts the controller's resting drift, measured with the calibrate row "
+                                      "below. The measured values stay saved when this is off.",
+    [UI_MENU_GYRO_CALIBRATE] = "Calibrate gyro",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "Measures the gyroscope's resting drift and removes it. Put the controller down or "
+                                    "hold it still for two seconds.",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "Calibrating...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s, calibrated",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "Calibration failed",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "Controller moved: hold it still and try again",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -821,6 +831,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Системное по умолчанию",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
+    [UI_MENU_GYRO_CALIBRATION] = "Калибровка смещения гироскопа",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "Убирает покоящееся смещение контроллера, измеренное строкой калибровки ниже. "
+                                      "Измеренные значения сохраняются и при выключенном состоянии.",
+    [UI_MENU_GYRO_CALIBRATE] = "Калибровка гироскопа",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "Измеряет смещение гироскопа в покое и убирает его. Положите контроллер или "
+                                    "держите его неподвижно две секунды.",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "Калибровка...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s, откалиброван",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "Калибровка не удалась",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "Контроллер сдвинулся: держите его неподвижно и повторите",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
     [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
@@ -1289,6 +1309,16 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Padrão do sistema",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
+    [UI_MENU_GYRO_CALIBRATION] = "Calibração do desvio do giroscópio",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "Remove o desvio de repouso do controle, medido pela linha de calibração "
+                                      "abaixo. Os valores medidos ficam salvos mesmo com isto desligado.",
+    [UI_MENU_GYRO_CALIBRATE] = "Calibrar giroscópio",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "Mede o desvio de repouso do giroscópio e o remove. Apoie o controle ou "
+                                    "segure-o parado por dois segundos.",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "Calibrando...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s, calibrado",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "Falha na calibração",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "O controle se moveu: segure-o parado e tente de novo",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Quão forte o controle vibra.",
     [UI_MENU_RUMBLE_CURVE] = "Curva da vibração",
@@ -1923,6 +1953,14 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_DEVICE_DEFAULT] = "系统默认",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
+    [UI_MENU_GYRO_CALIBRATION] = "陀螺仪偏置校准",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "减去下面校准行测得的手柄静止偏移。关闭时测量值仍然保留。",
+    [UI_MENU_GYRO_CALIBRATE] = "校准陀螺仪",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "测量并消除陀螺仪的静止偏移。请放下手柄或保持静止两秒。",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "校准中...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s，已校准",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "校准失败",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "手柄移动了：请保持静止后重试",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄振动的强弱。",
     [UI_MENU_RUMBLE_CURVE] = "振动曲线",
