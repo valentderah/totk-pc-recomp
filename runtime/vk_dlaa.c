@@ -1526,7 +1526,15 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
     if (!known) return 0;
-    if (!ex->depth.image) return D.up && !D.fg_on;   // the scaling pass, which DLSS replaced
+    if (!ex->depth.image && D.up) {
+        // Reconstruction already filled this output target. Running the native
+        // scene-sized scaling shader over it samples only part of the enlarged
+        // texture. Capture the completed target at this boundary without drawing
+        // that scaling pass a second time.
+        if (D.fg_on) vk_dlaa_fg_after_draw(ex, fs);
+        return 1;
+    }
+    if (!ex->depth.image) return 0; // native/FG-only scaling still produces colour
     if (!fxaa && !fx_found) {
         fx_found = 1;
         rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);

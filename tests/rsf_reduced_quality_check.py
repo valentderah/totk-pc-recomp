@@ -92,12 +92,16 @@ static const uint64_t FXAA_FS[]={123};
 static uint64_t spirv_hash(const GfxShader *f) {(void)f;return 123;}
 static int cfg_bool(const char *key) {(void)key;return 1;}
 static int vk_exec_draw_samples(VkExec *ex,const GfxShader *fs,const void *t) {(void)ex;(void)fs;(void)t;return 0;}
+static unsigned captured;
+static void vk_dlaa_fg_after_draw(VkExec *ex,const GfxShader *fs) {(void)ex;(void)fs;captured++;}
 '''+s[s.index('int vk_dlaa_skip_draw('):]+r'''
 int main(void) {
     VkExec ex={0};GfxShader fs={0};D.up=1;
     assert(vk_dlaa_skip_draw(&ex,&fs));D.fg_on=1;
-    assert(!vk_dlaa_skip_draw(&ex,&fs)); // actual draw remains the raw HUD-less boundary
-    D.up=0;assert(!vk_dlaa_skip_draw(&ex,&fs));return 0;
+    assert(vk_dlaa_skip_draw(&ex,&fs) && captured==1); // capture SR output without scaling it again
+    ex.depth.image=1;assert(!vk_dlaa_skip_draw(&ex,&fs) && captured==1);
+    ex.depth.image=0;assert(!vk_dlaa_skip_draw(&ex,NULL) && captured==1);
+    D.up=0;assert(!vk_dlaa_skip_draw(&ex,&fs) && captured==1);return 0;
 }
 ''')
 print('Actual live quality/backend/reset, accepted FG owner and scaling capture boundary: passed (CPU only)')

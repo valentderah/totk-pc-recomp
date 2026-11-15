@@ -908,3 +908,16 @@ validation errors, shader failures or skipped draws. DLSS also writes matched
 real/generated raw captures for source 1800. The rebuilt game's self-test passes
 with zero failures. These screenshot/capture runs are functional evidence, not
 performance measurements.
+
+## Cropped SR+FG image follow-up
+
+A report that most of the frame lay outside the visible image exposed a source
+error in the retained scaling boundary: enabling FG kept the known native
+scaling draw after reconstruction had already filled its output target. That
+shader still addresses the source as a scene-sized image. The SR+FG path now
+captures the completed target at the same boundary and skips the redundant
+scaling draw. Native and FG-only scaling still run; in-place FXAA and unrelated
+draws retain their existing behavior. The actual-function regression passes.
+The visual comparison run was closed by the user because it blocked their PC,
+so this correction has not yet received final on-screen acceptance. Further
+interactive gameplay runs require the user's explicit request.
