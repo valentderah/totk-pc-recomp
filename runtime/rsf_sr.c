@@ -113,6 +113,23 @@ void rsf_sr_commands_reset(void *commands) {
     plat_mutex_unlock(&sessions_lock);
 }
 
+static void split_info_log(const rsf_fsr4vk *owner) {
+    if (!(rt_trace & RT_TRACE_GFX)) return;
+#if defined(RSF_SRVK_FSR4_INFO_ABI_VERSION)
+    __typeof__(&rsf_srvk_fsr4_info) query = rsf_runtime_symbol("rsf_srvk_fsr4_info");
+    rsf_srvk_fsr4_provider_info info = {sizeof info, RSF_SRVK_FSR4_INFO_ABI_VERSION};
+    int32_t result = query ? query(owner, &info) : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
+    if (!result) {
+        rt_log("rsf: FSR4 effective provider 0x%016llx adapter LUID 0x%016llx vendor 0x%04x INT8 compatibility %u",
+            (unsigned long long)info.provider_version, (unsigned long long)info.adapter_luid,
+            info.vendor_id, info.int8_compatibility);
+    } else rt_log("rsf: FSR4 effective provider unknown (info query %d)", result);
+#else
+    (void)owner;
+    rt_log("rsf: FSR4 effective provider unknown (info query absent from SDK headers)");
+#endif
+}
+
 int rsf_sr_open_split(const rsf_srvk_setup *setup, const rsf_fsr4vk_handoff *handoff,
                       RsfSrSession **out, uint32_t *width, uint32_t *height) {
     if (!setup || setup->backend != RSF_SR_FSR4 || !handoff ||
@@ -135,6 +152,7 @@ int rsf_sr_open_split(const rsf_srvk_setup *setup, const rsf_fsr4vk_handoff *han
         if (!rsf_sr_close(&s)) *out = s;
         return 0;
     }
+    split_info_log(s->split_provider);
     plat_mutex_lock(&sessions_lock);
     s->next = sessions; sessions = s;
     plat_mutex_unlock(&sessions_lock);

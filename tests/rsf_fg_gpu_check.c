@@ -49,7 +49,11 @@ int main(void){
     allocation_fail=0;RsfFgLease*s=rsf_fg_gpu_prepare(cb,1,&m,NULL,&in,&out);assert(s&&creates==4&&rsf_fg_gpu_pending()&&drains==1);
     assert(out.depth.width==2560&&out.motion.height==1600&&out.record->camera.output_height==1600);
     rsf_fg_gpu_submitted(cb);assert(!rsf_fg_gpu_pending());
-    assert(rsf_fg_gpu_hudless(cb,s,&in,&out)&&rsf_fg_gpu_pending());rsf_fg_gpu_submitted(cb);
+    rsf_fgvk_frame color_only={.struct_size=sizeof color_only,.abi_version=RSF_FGVK_ABI_VERSION,
+        .record=&record,.hudless=in.hudless};
+    assert(rsf_fg_gpu_hudless(cb,s,&color_only,&out)&&rsf_fg_gpu_pending());
+    assert(out.motion_scale_x==1&&out.motion_scale_y==1&&out.record->render_width==m.out_w);
+    rsf_fg_gpu_submitted(cb);
     rsf_fg_gpu_recycle();unsigned before=views;
     s=rsf_fg_gpu_prepare(cb,1,&m,&m,&in,&out);assert(s&&creates==4&&views==before); // Stable extent reuses backing and source views.
     rsf_fg_gpu_submitted(cb);assert(rsf_fg_gpu_hudless(cb,s,&in,&out));rsf_fg_gpu_submitted(cb);

@@ -8,6 +8,7 @@
 
 static int retire_calls, destroy_calls, refuse_destroy, refuse_plan, locks;
 static int32_t evaluation_result = -1;
+unsigned rt_trace; // Optional provider-info logging is off in this lifetime fixture.
 struct rsf_srvk { int unused; };
 struct rsf_fsr4vk { int unused; };
 static struct rsf_fsr4vk split_owner;

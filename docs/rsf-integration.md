@@ -677,3 +677,34 @@ identical to the native build output. `tools/stage_rsf.py --source` pointed to
 the sibling checkout solely for ignored vendor binaries and license inputs;
 the first-party runtime DLL came from the pinned build above. All 27 staged
 inputs passed the existing package preflight and receipt checks.
+
+
+## Fullscreen provider and pixel verification
+
+The focused fullscreen DLSS run with RSF `2d650e1` completed 1935 real
+presents, with zero Vulkan validation errors, shader failures or skipped draws.
+Dedicated capture-fence completion now flushes raw generated and real images
+for sources 1800-1802 before process exit. The inspected pairs have consistent
+brightness, scene framing and letterbox bars in the opening cave. This short,
+mostly static sample does not establish interpolation quality during fast motion,
+ordinary HUD behavior or outdoor shader coverage. Evidence remains ignored under
+`build/checks/rsf-fullscreen-dlss-present-pixels-capture`.
+
+The separate fullscreen FSR4 SR run completed 1571 real presents with zero
+validation errors, shader failures or skipped draws. The optional provider query
+reported effective version `0xf5a5ca1e01001002`, NVIDIA vendor `0x10de` and
+INT8 compatibility enabled. Temporal scene evaluation succeeded. The query is
+optional: missing headers/exports or a failed query report unknown and do not
+change SR admission. The actual logger, complete adapter and lifetime fixtures
+pass against the pinned and controlled pre-query SDK headers.
+
+The first XeSS FG run refused HUD-less packets because their motion scales
+were zero. The mapper now supplies scale one, matching the host-pixel guides
+accepted during preparation; its actual packet fixture passes. A separate core
+repair automatically binds the configured FG context to latency processing and
+protects CPU operations with scoped borrowers. This is published on RSF main at
+`620aee7`, pinned here. Its clean MSVC Release build passes, with 207 native tests
+run, 11 skipped and no failures, including configured Vulkan SR device tests.
+The TotK build passes. Actual fullscreen XeSS generation and pacing acceptance
+is still pending; CPU concurrency tests are detailed in RSF's
+`docs/research/vulkan-fg-latency-context-20261115.md`.

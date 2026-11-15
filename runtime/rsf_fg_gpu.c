@@ -141,5 +141,9 @@ int rsf_fg_gpu_hudless(VkCommandBuffer cb,RsfFgLease *s,const rsf_fgvk_frame *in
     dispatch(cb,s,1,1,1,&in->hudless,&in->hudless);
     for(int i=0;i<3;i++) barrier(cb,s->image[i],VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rec_drain(); // Preserve mapper/barrier order before the SDK's direct HUD-less copy.
-    *out=*in;out->record=&s->record;out->hudless=output_image(s,2);return 1;
+    *out=*in;out->record=&s->record;out->hudless=output_image(s,2);
+    // Guides were mapped to host-pixel motion during prepare. A HUD-less-only
+    // packet has zero input scales, but provider validation still needs the
+    // same nonzero scale contract as that accepted preparation.
+    out->motion_scale_x=out->motion_scale_y=1;return 1;
 }

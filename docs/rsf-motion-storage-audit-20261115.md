@@ -529,6 +529,381 @@ context or native depth-only pipeline needs its shader/pipeline identity to
 distinguish it, and an identical baseline device run remains required. Offline
 census success does not establish absence or cause of Vulkan pipeline warnings.
 
+## Exact triage of every newly refused variant
+
+An isolated managed translator copy records the first refusing guard and the
+position dependency slice for each of the 1,275 newly refused keys. Production
+runtime, translator sources and shared translator outputs were read only during
+this task. The probe preserves guard ordering and splits the storage guard's
+short-circuit conditions only to name them individually. All 1,275 probe jobs
+translate and validate successfully. Their complete per-key records, including
+source family, exact reason, texture bindings/types/flags, storage presence,
+position phi nodes and original bank masks, are in ignored
+`build/checks/rsf-refusal-triage-worker/classified-keys.json`.
+
+| Exact first new guard | Keys |
+| --- | --- |
+| Derived `TextureOperation`, instruction `TextureSample` in the position slice | 1,271 |
+| Derived `TextureOperation`, instruction `TextureQuerySize` in the position slice | 4 |
+| Dynamic, writable, unsupported-bank, missing or capacity-exhausted storage binding | 0 |
+| Other derived operation types or control-flow guards | 0 |
+
+Every refusal is texture-dependent. Twelve also have storage operations in the
+position slice; none refused because of storage. Position phi nodes occur in
+1,113 cases, indicating a merge in the data feeding position. There are branches
+somewhere in 1,125 of the shaders; this broader program count is not proof that
+every branch controls position or changes between frames. Control flow is not a
+new refusing guard. Sampling types in the slices are predominantly 2D, with
+array/3D/cube cases also present. These counts describe the actual transformed
+IR, not an inference from texture declarations alone.
+
+The four size-query-first keys come from
+`Effect/EftLoc_MiasmaAppearance_02`, `_03` and `_11` packages (two variants of
+`_02`). All four also contain integer-coordinate, explicit-LOD texture samples
+in the same position slice, 19 or 20 phi nodes, and 45 or 56 program branches.
+Allowing the size query alone would not provide previous position data. This
+rejects the tempting but incomplete four-key query-only repair.
+
+| Source family | Keys | Has scene camera c4 | Camera plus c5/c6/c7 | Position phi present |
+| --- | --- | --- | --- | --- |
+| `Shader/material.Product.140...bfsha` | 712 | 712 | 712 | 630 |
+| `Effect/*.esetb.byml` | 375 | 0 | 0 | 375 |
+| `Shader/terrain.Product.140...bfsha` | 70 | 70 | 0 | 43 |
+| `Shader/terrain_water.Product.140...bfsha` | 45 | 45 | 21 | 45 |
+| `Shader/grass.Product.140...bfsha` | 36 | 36 | 0 | 9 |
+| AGL techniques/common, merge targets and application light shaders | 37 | 8 | 0 | 11 |
+
+The 900 startup cases are the non-Effect rows. Source-family names support
+material, ground, water, grass and effect classifications; the combined material
+package does not identify a particular character or object. The 37 miscellaneous
+cases comprise 24 `agl_technique`, four `agl_technique_proc`, three `merge_tar`,
+two `agl_common`, two `agl_technique_shdw`, one `agl_technique_pfx` and one
+application `AglLightShader` key. All twelve storage-plus-texture cases are in
+this miscellaneous group. Specific effect package names and all key assignments
+remain in the ignored per-key report rather than being presented as confirmed
+player-visible particle types.
+
+### Active evidence and prioritization
+
+The old frame-1600 torch/cave dump was joined through actual runtime shader
+inputs, not merely a matching source-package name. Exact SPIR-V bytes identify
+dumped shaders in the runtime cache. The old translator identity and recorded
+host-options identity reproduce their cache keys from stored `.in` input IDs;
+the stored control/code then recover census keys. Loose and packed cache
+entries are read without mutation. This recovers all 249 dumped shader hashes
+and 115 vertex input states; 114 vertex program keys appear in the v143 census,
+with one outside that inventory. None overlaps the 1,275 newly refused keys.
+
+The 115 vertex states were also replayed through the instrumented translator
+with their stored texture and vertex-input answers, constants, storage alignment
+and `mvprev=true`. There were no VS images needing format reconstruction. All
+115 translate and validate: 86 expose previous output, 28 hit the existing
+no-uniform-bank condition and one has no spare output location. None hits a new
+texture/storage guard. The input reconstruction and join tables remain ignored
+in `active-jobs.json`, `active-classification.json` and
+`runtime-capture-matches.json`. This is bounded offline evidence for the old
+captured frame, not a fresh game acceptance run or proof of other scenes.
+
+That frame contains 29 distinct material vertex keys across 63 recorded pipeline
+entries and 141 draws. It also contains cave, torch, static-effect and miasma
+families. The observed miasma package includes `_04`, not the newly refused
+query-first `_02`/`_03`/`_11` variants. Material-family activity must not be
+misreported as activity of the 712 different refused material keys. Terrain,
+grass and water refusal families are not established active by this capture.
+
+The evidence-based priority order is therefore:
+
+1. **Material variants:** largest potential solid-scene risk, with all 712
+   meeting the old camera/primary-bank filters, and the family observed in the
+   capture. No specific refused material key is proven active. Their c11
+   dependency, and often c9, also intersects the earlier deliberately skipped
+   history banks; a texture-only fix cannot claim complete previous deformation.
+2. **Water:** 21 of 45 meet those uniform filters, but every case has phi nodes
+   and this capture proves none active. Previous samples and previous control
+   selection both need evidence.
+3. **Ground/grass:** useful narrow producer experiments, but these 106 cases
+   lack c5/c6/c7 and were already outside ordinary uniform-only replay filters.
+   Their new shader refusal count is not an equal count of newly lost active
+   motion draws. There are 27 terrain and 26 grass variants with neither phi nor
+   branch operations, avoiding the first previous-control-flow problem.
+4. **Effect and AGL variants:** the 375 effect cases lack the scene camera and
+   were already rejected by the normal scene-camera motion policy. A separate
+   view/composition producer is required; do not remove that filter to recover
+   an aggregate output count. The other 37 need pass-specific classification.
+
+### Next correct repair decision and required owner hooks
+
+The next implementable producer repair is a **versioned texture/view/sampler
+lease for genuinely unchanged texture contents**, followed by duplication of a
+small straight-line texture-position slice. Begin with the 27 terrain or 26
+grass no-phi/no-branch candidates after an actual draw identifies their inputs.
+They avoid the material c9/c11 ambiguity and water/effect control-flow problem.
+Neither source filenames nor a stable VkImage handle prove immutable texels.
+
+The narrow required contracts are:
+
+- The texture owner supplies allocation identity, full view/mip/layer/format/
+  swizzle identity, sampler state and a content generation at the native read
+  boundary. That generation must conservatively change for CPU uploads, render
+  or storage writes, clears/copies and overlapping aliases. Existing global
+  `vk_texture_slots_gen` is a slot-resolution generation; `vk_texture_epoch` is
+  a write-watch epoch. Neither alone certifies unchanged image contents.
+- A texture-owner retain/release hook protects the allocation and view across
+  history and consumer fences. `destroy_tex` currently marks entries gone and
+  defers destruction for the submission being recorded, which does not grant
+  an arbitrary previous-frame history lease. Add this with the texture owner,
+  rather than holding raw image/view pointers in motion code.
+- Motion history records that certificate with previous parameter snapshots.
+  Reuse sampled contents only if allocation, view, sampler and content generation
+  still agree at the next consumption point. Mutated or untracked resources
+  refuse history. GPU-written textures need a producer-ordered prior copy if
+  coverage is desired later; retaining an image alone cannot preserve texels.
+- The shader owner clones the actual `TextureOperation`, preserving its sample
+  opcode/type/flags/LOD and sampler contract while remapping previous coordinates
+  and parameters. Separate previous descriptor provenance and runtime admission
+  must be explicit. The first version refuses branch/phi-dependent slices and
+  missing previous parameter banks; it must not reuse the current sample result
+  merely because the texture itself was unchanged.
+
+This requires coordination with `vk_texture.c` and its descriptor/destruction/
+write paths outside the current owned files, plus the shader metadata owner if
+the provenance contract needs extension. No such production hooks were edited
+here. Previous GPU-storage copies, alternating object identities and independent
+effect views are separate follow-ups, not substitutes for this texture producer.
+
+A fresh opening-scene dump alone is unlikely to resolve the 1,275-key question:
+the old opening capture is fully mapped and contains none. The minimal next
+capture should identify one actual refused key in a field/grass/water or animated
+material scene. Retain its exact VS input/bind-state record, SPIR-V/pass identity,
+depth-test/write and blend policy, camera/parameter bank bindings, and only the
+texture resources sampled by its position slice, including view/sampler state,
+dimensions, upload/write generations and producer writes over two consecutive
+frames. Existing `TOTK_DUMP`, `TOTK_DUMP_DIR`, `TOTK_DUMP_TEX` and stored shader
+inputs cover much of this; `passes.txt` does not currently print all depth/blend
+policy or a durable per-image content certificate. Those missing facts need
+coordinator-owned bounded instrumentation rather than inference. Follow the
+user's fullscreen/background0 requirement for that acceptance run. No game,
+GPU, UI or device action was performed in this triage.
+
+## Texture certificate implementation preflight: missing ordered write contract
+
+The requested narrow texture admission has not been enabled. Auditing the actual
+producer tracking found a concrete boundary that must be resolved before an
+equality certificate can be trusted. An unchanged slot, image handle, upload
+count and last-write fence do not establish unchanged sampled contents over the
+required interval.
+
+`vk_texture.c`, `vk_texture_storage_bound_locked` updates only `wr_fence`.
+Two potential storage writes within one recording fence leave that value equal;
+the function does not advance `gpu_seq` or `n_up`. `vk_texture_gpu_written`
+advances `gpu_seq` only for mirrored GPU-owned entries, and updates the entry
+selected for that descriptor rather than publishing a canonical interval epoch
+for every physical alias. Pool-bound images therefore need an alias-aware
+backing identity or must be excluded entirely. The current per-address slot
+generation records resolution changes, not all content writes.
+
+`vk_memory.c`, `vk_mem_changed` can report tracked CPU page writes and must be
+queried over the whole source range, with untracked results refused. However,
+`make_fresh_snap` explicitly permits CPU writes after a submission's write-watch
+snapshot to wait until a later snapshot. Its cached `wgen`/`last_ch` pair is
+therefore not a live no-write certificate. Direct checks also need their own
+previous generation; unrelated consumers may reset the OS write-watch bits while
+stamping the shared page generation table. A generation comparison must use
+that table and refuse overflow/untracked/invalid ranges, not compare the last
+debug result or an upload counter.
+
+For buffer writes, `vk_exec_xfer.c`, `note_gpu_write` informs guest memory at
+completion through `guest_written_cb`. It skips GPU-only addresses. Its
+record-time `vk_mem_gpu_pending` helper is private shadow-sync bookkeeping and
+is disabled when shadow mode is off; it is not an always-on content epoch query.
+`vk_memory.c`, `gpu_writes` tracks a newest fence for freezing and is likewise
+conditional on the freeze/shadow configuration. It cannot distinguish repeated
+writes inside one fence or serve as a universal resource-content version.
+
+There is also an ordering window beyond certificate comparison. Texture uploads
+enter the shared upload batch. `vk_sync.c` calls `vk_upload_flush(0)` before
+submitting a recorded part, so a later-recorded upload can execute before an
+earlier-recorded motion sample in that part. A comparison in `mo_desc` or even
+`vk_mvobj_execute` cannot alone seal an image against a later upload. An image
+allocation hold prevents destruction, not this content mutation. A current
+descriptor is safe to reuse as previous only if the version remains sealed
+through the actual consuming GPU read, or if later writes use another image.
+
+An ignored actual-function fixture at
+`build/checks/rsf-texture-certificate-contract-worker/check.py` compiles the real
+`vk_texture_storage_bound_locked` and `vk_mem_gpu_pending` functions with synthetic
+state. It passes the counterexamples: two write-bind calls in fence 42 retain
+the same fence and unchanged upload/GPU-sequence fields, while pending buffer
+write registration vanishes with shadow mode disabled. Enabling shadow mode
+records its private ranges, confirming that the omission is intentional mode
+behavior, not a fixture failure. This is CPU/source evidence, not a GPU repro.
+
+The blocking hook contract requested from the coordinator is:
+
+1. An **always-on record-time content-write stamp** for a canonical backing
+   identity and complete interval/subresource. Image target/storage/copy/clear,
+   buffer fill/copy/inline update and shader SSBO writes must publish before the
+   write is eligible to execute, irrespective of shadow/freeze mode. Every write
+   advances a monotonic serial even inside the same fence. Unknown physical
+   aliasing marks the range uncertifiable; it must not silently return clean.
+   This touches `vk_memory.c` and the transfer/target recording owners outside
+   this task, plus an internal header agreed with those owners; no `vk.h` edit
+   is needed merely to describe that contract.
+2. A **seal or ordering guarantee for the sampled image version** through its
+   consuming submission. The texture owner can provide copy-on-write uploads
+   while a certified image version is held, but direct target/storage writes
+   and the upload-batch submission owner must honor the same guarantee. An
+   alternative is a dedicated immutable image snapshot at the actual native
+   read boundary, which is a different implementation scope from accepting
+   current descriptors based only on equality. A late validation failure after
+   motion has been recorded cannot simply mark it refused; the recorded motion
+   must be rebuilt or that write must target another version.
+
+Once these two facts exist, allocation/view/sampler identity, source-frame
+history, ABA rejection, range checks and current-fence resource leases can be
+implemented in the owned certificate module and tested with the requested
+unchanged-pose/write/view/sampler/expiry fixtures. The first version should
+exclude pool-bound aliases, mutable feedback resources, unknown write tracking
+and branch/phi position slices. No synthetic model of those missing hooks will
+be presented as proof that the native producers honor them. Production files,
+shared translators/caches and GPU/game state remain unchanged in this preflight.
+
+## Authorized snapshot alternative: design and unimplemented budget gate
+
+The coordinator selected immutable GPU image snapshots at the actual native
+read boundary instead of equality certificates. This changes the ordering
+analysis: an upload recorded later on the CPU but submitted before a native
+part executes before **both** an inline snapshot and its corresponding native
+read. It need not invalidate a copy that observes exactly the contents the
+native read observes. The old equality-only approach could not make that claim.
+No snapshot coverage is implemented or enabled by this design note.
+
+### Precise producer placement and command order
+
+The producer belongs in `vk_exec_draw.c`, `op_draw_idx`, after `prepare_draw`
+has resolved and bound the native shader/resources and index validation has
+succeeded, immediately before the actual `vkCmdDrawIndexed`. This is earlier
+than the current `mvobj_draw` collection after the draw. It must use the native
+descriptor facts already resolved for that exact read, not re-resolve a slot
+later and assume it still names the same image/view.
+
+For an accepted read the same recorder-owned command buffer must contain:
+
+1. End native rendering, preserving its attachment contents and restoring any
+   needed layouts through the existing barrier machinery.
+2. A source-write-to-copy-read dependency and transitions for preallocated
+   private destination images; copy each required view subresource to its exact
+   matching private image shape. No decoding, format relabeling or mip omission.
+3. Dependencies completing the copies before the native vertex read and making
+   private transfer writes visible to later previous-position samples.
+4. Resume the same native attachments with LOAD, restore the exact native
+   pipeline/descriptors/index/vertex/dynamic state as needed, then issue that
+   native draw without an intervening upload resolution, split, producer callback
+   or unrelated write to the sampled images.
+
+`vk_rec.c` already packs `CopyImage`, `PipelineBarrier2`, `EndRendering`,
+`BeginRendering` and `DrawIndexed` in recorder order. Direct Vulkan calls that
+bypass this wrapper path are not acceptable. `vk_sync.c` flushes texture uploads
+before submitting the part; therefore copy/read adjacency within one part is
+the required unit, not CPU wall-clock adjacency or an image copied in a separate
+upload command buffer. If the command buffer/part changes between the planned
+copy and read, decline the snapshot rather than joining unrelated ordering.
+
+`vk_exec_pass_begin` uses LOAD for colour/depth/stencil, but it also resolves
+targets and calls contact/DLAA producer callbacks. It is not a pure resume
+primitive. A minimal native-pass resume hook must either bypass those producer
+callbacks using already resolved attachments or prove they are inert in this
+specific path. Re-running `prepare_draw` blindly is also unsafe: a slot/view
+change could make the native read use a different image than the one copied.
+The existing FG end/resume fix is a pattern for recorder and cache ownership,
+not permission to copy its assumptions to every geometry draw. The required
+hook is an exact-native-state resume; there is no need for a new recorder packet
+or a per-draw full pipeline-state copy.
+
+### Metadata and ownership contract
+
+The shader variant would expose a bounded list of position-sample bindings,
+preserving opcode, type, flags, mip/LOD and sampler provenance. The first subset
+must have no branch/phi in the position path and no image stores, feedback,
+buffer textures, unsupported formats, ambiguous aliases or uncertain view
+interpretation. A native read fact includes source frame/view, producer part,
+image creation identity (not raw-handle identity), native descriptor/view,
+format/aspect, exact mip/layer ranges, swizzles, sampler state and the stable
+geometry/draw identity used to associate history. Missing previous parameter
+banks or an ambiguous previous draw identity refuses the variant.
+
+The private snapshot owns its allocation and views independently of the source
+image. The native source needs only its normal current-submission lease once the
+copy/read pair is recorded; no stale source-image pointer is kept as previous
+history. Previous texture metadata points exclusively to a private immutable
+snapshot associated with the previous pose. A sampler may be reused only while
+its ownership and exact recorded state are valid; different sampler facts
+cannot be silently labeled previous.
+
+Pool slots progress through free, reserved, capture-recorded, producer-submitted,
+history-owned, consumer-submitted and retired states. Publication requires the
+actual producer submission result and a valid frame/view/draw association.
+Failed or unsubmitted work keeps the slot unavailable for reuse. A prior
+snapshot can be sampled only with the producer/consumer ordering proved on the
+actual queue. Pool reuse requires release of CPU history plus completion of
+the actual producer and every consuming final engine fence, including SDK split
+continuations. The existing final-fence accessor and recorder submit ownership
+are the relevant integration points; guessing the latest frame or using an SDK
+ready signal as retirement is not sufficient. No host wait belongs in the draw.
+
+Repeated draws get distinct captures unless a separate write seal proves reuse
+safe. Merely seeing the same VkImage or sampler again is not such a seal.
+
+### Why a useful initial subset was not implemented in this task
+
+The 53 straight-line candidates require between one and six distinct sampled
+bindings per draw: terrain has 15 one-binding and 12 two-binding variants;
+grass has eight two-binding, three three-binding, three four-binding and twelve
+six-binding variants. Those are shader binding counts, not runtime draw counts.
+The fully mapped existing capture contains none of these exact keys, so it gives
+no actual format/extent/mip shapes, repetition counts or valid draw-history
+identity for a snapshot pool serving them.
+
+A demand-created VkImage/view per encountered shape on the render thread fails
+the explicit hot-path rule in `CONTRIBUTING.md` and
+`docs/pr-review-kit/02-performance.md`: new GPU allocations can take 8-23 ms.
+Even allocating a new VMA image from reserved memory still creates driver image
+and view objects on that path. The one-per-present FG copy does not establish
+the cost of restarting a solid-geometry pass up to once per candidate draw.
+Reusing one capture per image would avoid work but violate the coordinator's
+no-amortization condition without a proved write seal.
+
+A viable implementation therefore first needs a fence-safe exact-shape backing
+pool initialized away from draw recording, or an asynchronous allocator with
+bounded requests and readiness publication. Unsupported or unready shapes must
+refuse without waiting or allocation. A proposed diagnostic ceiling is 64 MiB
+of actual Vulkan allocation requirements across all live/free pool slots,
+4 MiB copied per source frame and eight copied resources per source frame;
+these are proposed safety caps, **not measured sufficient budgets**. A draw
+needing six bindings consumes six resource tokens, not one. The entire draw
+must reserve its resources atomically before touching the native pass, and
+budget exhaustion leaves that draw native without partial history publication.
+Inflight exhaustion refuses rather than reuses a pending slot. The actual
+copy, barrier and pass-restart cost still requires coordinator device timing.
+
+No arbitrary fixed image sizes/formats were preallocated merely to show synthetic
+admission, and no per-draw GPU allocation or unproven texture history was added.
+The task is consequently **partial/failed as an implementation task**: concrete
+architecture and source ordering evidence are delivered, but no production
+snapshot module, shader admission patch, new ordering/retirement fixture or
+changed-source compile is claimed. The earlier certificate counterexample
+fixture remains valid evidence for rejecting equality-only admission; it is not
+a test of this unimplemented GPU snapshot design.
+
+The minimal next facts from the coordinator's outdoor capture are one exact
+candidate key and native read, its one-to-six sampled view/sampler descriptions
+(format, dimensions, mips/layers, swizzle), draw and part counts, and two-frame
+geometry/parameter identity. Together with a device-initialization/background
+pool hook and the exact-native-pass resume hook, those facts permit a useful
+bounded shape subset without hot-path allocation. Fullscreen/background0 applies
+to that later game acceptance. No GPU/game/UI, shared build/cache replacement,
+staging or commit action occurred while preparing this design.
+
 
 ## Coordinator shader preparation and first combined run
 
