@@ -321,6 +321,24 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
     }
 }
 
+// The first transition of a new image, in the upload batch, which runs ahead of the submission being recorded. A chunk
+// of a chunked replay records it into its own command buffer at its op instead when the image is bound into pool
+// memory: the chunks before it may be on the GPU already, and a clear of the new image (its depth) there would land on
+// what they rendered into the same storage for the chunks after them to read. The inventory and the quick weapon menu
+// render the items' icons into new targets at the storage the frame's other targets share, and a black strip showed
+// right of the quick menu for a frame where its new depth targets were cleared.
+static void init_new(Tex *e) {
+    int reopen = 0;
+    VkCommandBuffer cb = e->bound_to && vk_exec_replay_pos() != UINT32_MAX ? vk_exec_inline_begin(&reopen) : VK_NULL_HANDLE;
+    if (cb) {
+        init_image(e, cb);
+        vk_exec_inline_end(reopen);
+        return;
+    }
+    init_image(e, vk_upload_begin());
+    vk_upload_end();
+}
+
 // TOTK_SHADOW_SCALE (1 to 4): the game's shadow maps are made this many times larger on each side. TotK renders its
 // sun cascades into a 960x960 DEPTH16 2D array of 4 layers and its static shadows into 1440x1440 and 720x720 arrays of 2,
 // whatever the output resolution, and shrinks the cascades under load (872, 848, 800, 480 and so on). Those are made
@@ -505,10 +523,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     p->fb_usage = (uint8_t)fb_usage;
     p->scale = (uint8_t)scale;
 
-    if (!defer_init) {
-        init_image(e, vk_upload_begin());
-        vk_upload_end();
-    }
+    if (!defer_init) init_new(e);
     return e;
 }
 
@@ -1435,8 +1450,7 @@ static Tex *entry_of(const tex_t *t) {
                     e->pub.gpu_owned = 1;
                 }
             } else {
-                init_image(e, vk_upload_begin());
-                vk_upload_end();
+                init_new(e);
                 if (alias) {
                     if (e->pub.mirrored) n_alias_upload++;
                     else n_alias_uninit++;

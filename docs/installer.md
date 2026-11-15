@@ -106,9 +106,13 @@ A cancelled or failed setup resumes from the last finished step (`totk-install.j
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
-Ninja recompiles only those: a new or edited code cheat costs the lift (under a minute on 24 cores, a few minutes on 4)
-and a few dozen chunks, not a full compile, and the shaders stay prepared.
+The generated C and the objects stay in the temp folder. The next lift lifts again only the chunks whose inputs
+changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices) and rewrites only
+those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds of lift
+(discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the whole lift)
+and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A cheat set added
+or removed before others in the patch file moves their set indices, so the chunks of their sites are lifted too. A
+change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
@@ -116,8 +120,12 @@ whatever the working folder), one argument per line. When an enabled mod has cod
 lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
 window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
 offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
-needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
+again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start at all leaves no
+`rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. The rebuild needs the
+release folder the setup ran from: a moved or deleted release folder means running a setup again. On Linux the command
+starts the AppImage file itself (`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone
+once the setup exits; a moved or deleted AppImage means running a setup again. Installs set up by an AppImage before
+this change hold a command into that mount: running the new setup once on the install folder writes the new one.
 
 ## Command line
 

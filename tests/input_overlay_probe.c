@@ -29,9 +29,10 @@ void rt_fatal(const char *fmt, ...) {
     va_list ap; va_start(ap,fmt); vfprintf(stderr,fmt,ap); va_end(ap); abort();
 }
 // Fail immediately if the snapshot reaches these paths instead of hiding their side effects.
-int ikb_foreground(void) { abort(); }
+static int capture_test;
+int ikb_foreground(void) { if (capture_test) return 0; abort(); }
 int ikb_down(int key) { (void)key; abort(); }
-int ikb_escape(void) { abort(); }
+int ikb_escape(void) { if (capture_test) return 0; abort(); }
 int ikb_captured(void) { abort(); }
 void ikb_mouse_take(int32_t *x, int32_t *y) { (void)x; (void)y; abort(); }
 float cam_speed_applied(void) { abort(); }
@@ -126,6 +127,34 @@ int main(void) {
         sample(&s); CHECK(s.buttons == (1ull << buttons[i].bit));
         CHECK(SDL_SetJoystickVirtualButton(joy,buttons[i].button,false));
     }
+    // Touchpad is a physical input, unbound by default, and capturable without consuming the overlay snapshot.
+    CHECK(!strcmp(input_pad_name(PAD_TOUCHPAD), "touchpad"));
+    CHECK(SDL_SetJoystickVirtualButton(joy,SDL_GAMEPAD_BUTTON_TOUCHPAD,true));
+    sample(&s); CHECK(s.buttons == 0);
+    uint8_t physical[PAD_COUNT] = {0};
+    plat_mutex_lock(&lock); CHECK(pad_physical(physical)); plat_mutex_unlock(&lock);
+    CHECK(physical[PAD_TOUCHPAD]);
+    cfg_set("TOTK_BIND_PLUS","pad:touchpad");
+    sample(&s); CHECK(s.buttons == (1ull << B_PLUS));
+    cfg_set("TOTK_PAD_LAYOUT","nintendo");
+    sample(&s); CHECK(s.buttons == (1ull << B_PLUS));
+    cfg_set("TOTK_PAD_LAYOUT","xbox");
+    capture_test = 1;
+    int captured = -1;
+    CHECK(input_capture(1,&captured) == INPUT_CAPTURE_NONE);
+    CHECK(input_capture(0,&captured) == INPUT_CAPTURE_NONE);
+    CHECK(SDL_SetJoystickVirtualButton(joy,SDL_GAMEPAD_BUTTON_TOUCHPAD,false));
+    sample(&s); CHECK(s.buttons == 0);
+    CHECK(input_capture(0,&captured) == INPUT_CAPTURE_NONE);
+    CHECK(SDL_SetJoystickVirtualButton(joy,SDL_GAMEPAD_BUTTON_TOUCHPAD,true));
+    sample(&s); CHECK(s.buttons == (1ull << B_PLUS));
+    CHECK(input_capture(0,&captured) == INPUT_CAPTURE_PAD && captured == PAD_TOUCHPAD);
+    CHECK(input_capture(0,&captured) == INPUT_CAPTURE_NONE);
+    capture_test = 0;
+    CHECK(SDL_SetJoystickVirtualButton(joy,SDL_GAMEPAD_BUTTON_TOUCHPAD,false));
+    cfg_set("TOTK_BIND_PLUS","pad:default");
+    sample(&s); CHECK(s.buttons == 0);
+    puts("PASS: touchpad physical snapshot, default unbound, both-layout mapping, capture edges and release");
     CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_LEFTX,3000));
     sample(&s); CHECK(s.raw[0] == 3000 && s.out[0] == 0 && s.out[1] == 0);
     CHECK(SDL_SetJoystickVirtualAxis(joy,SDL_GAMEPAD_AXIS_LEFTX,16384));

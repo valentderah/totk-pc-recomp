@@ -101,8 +101,11 @@ static void cb_module_finis(Cpu *c) {
 // ---- checkpoints (host.h)
 static void stats_line(void) {
     RtStats s = rt_stats();
-    rt_logf("boot: passed (%llu SVCs, %llu threads, %llu host calls)\n", (unsigned long long)s.svcs,
-           (unsigned long long)s.threads, (unsigned long long)s.host_calls);
+    if (rt_trace & (RT_TRACE_HOSTCALL | RT_TRACE_HOSTCOUNT))   // counted only then (hostfn.c hostfn_entry)
+        rt_logf("boot: passed (%llu SVCs, %llu threads, %llu host calls)\n", (unsigned long long)s.svcs,
+                (unsigned long long)s.threads, (unsigned long long)s.host_calls);
+    else
+        rt_logf("boot: passed (%llu SVCs, %llu threads)\n", (unsigned long long)s.svcs, (unsigned long long)s.threads);
 }
 
 void rt_boot_event(const char *what, Cpu *c, const char *detail) {
