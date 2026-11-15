@@ -202,6 +202,15 @@ variants from 53,437 seed records with zero translation failures, then warmed al
 29,587 variants into the driver cache with zero failures. These checks establish
 translation and pipeline preparation, not correct shader inputs in gameplay.
 
+The first full-renderer boot exposed an enumeration bypass: it called the Vulkan
+loader directly while creating devices through Streamline. Streamline records
+physical-device/instance ownership during enumeration, so its device startup
+received a null instance dispatch table and crashed in `sl::chi::Vulkan::init`.
+Physical-device enumeration and instance destruction now use the RSF resolver.
+The startup fixture uses these same entry points. The real SDK/device fixture and
+the game's `--boot` checkpoints pass after this correction. With the shader census
+present, the kernel, Vulkan draw, texture and shader probes all pass too.
+
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
 Check HUD composition, motion, resize, provider changes, pause/load history resets,

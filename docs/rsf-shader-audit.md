@@ -2,8 +2,8 @@
 
 This audit is part of the integration, independent of a reported visual defect.
 The entries below are source-review evidence, not game-capture acceptance. The
-game extraction is still running; the verified code modules alone do not establish
-coverage in a moving scene.
+game extraction, native build and shader preparation have completed; those checks
+alone do not establish coverage in a moving scene.
 
 | Path | Inputs and producer | Current finding | Validation still needed |
 | --- | --- | --- | --- |

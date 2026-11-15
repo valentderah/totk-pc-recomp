@@ -121,6 +121,20 @@ VkResult rsf_vk_create_device(VkPhysicalDevice physical, const VkDeviceCreateInf
     return result;
 }
 
+VkResult rsf_vk_enumerate_physical_devices(VkInstance instance, uint32_t *count, VkPhysicalDevice *devices) {
+    // Streamline's enumeration records physical-device -> instance ownership.
+    // Bypassing it leaves its device startup with a null instance dispatch table.
+    PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)
+        rsf_vk_instance_proc(instance, "vkEnumeratePhysicalDevices");
+    return enumerate ? enumerate(instance, count, devices) : VK_ERROR_INITIALIZATION_FAILED;
+}
+
+void rsf_vk_destroy_instance(VkInstance instance, const VkAllocationCallbacks *allocator) {
+    PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)rsf_vk_instance_proc(instance, "vkDestroyInstance");
+    if (destroy) destroy(instance, allocator);
+    if (instance == primary_instance) primary_instance = VK_NULL_HANDLE;
+}
+
 void rsf_vk_destroy_device(VkDevice device, const VkAllocationCallbacks *allocator) {
     __typeof__(&rsf_latencyvk_device_destroyed) destroyed = rsf_runtime_symbol("rsf_latencyvk_device_destroyed");
     if (destroyed) destroyed(device);

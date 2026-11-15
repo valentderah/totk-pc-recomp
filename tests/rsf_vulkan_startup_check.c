@@ -38,14 +38,12 @@ int main(int argc, char **argv) {
     VkResult result = vkCreateInstance(&info, NULL, &instance);
     printf("RSF Vulkan instance creation: %d\n", result);
     if (result != VK_SUCCESS) return 1;
-    PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)
-        vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices");
     PFN_vkGetPhysicalDeviceQueueFamilyProperties families = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
         vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
     uint32_t count = 0;
-    if (!enumerate || !families || enumerate(instance, &count, NULL) != VK_SUCCESS || !count) return 1;
+    if (!families || vkEnumeratePhysicalDevices(instance, &count, NULL) != VK_SUCCESS || !count) return 1;
     VkPhysicalDevice *physical = calloc(count, sizeof *physical);
-    if (!physical || enumerate(instance, &count, physical) != VK_SUCCESS) return 1;
+    if (!physical || vkEnumeratePhysicalDevices(instance, &count, physical) != VK_SUCCESS) return 1;
     uint32_t family_count = 0;
     families(physical[0], &family_count, NULL);
     VkQueueFamilyProperties *queues = calloc(family_count, sizeof *queues);
@@ -74,8 +72,6 @@ int main(int argc, char **argv) {
     int shutdown_ok = rsf_vk_shutdown();
     printf("RSF SDK shutdown: %s\n", shutdown_ok ? "success" : "failed");
     vkDestroyDevice(device, NULL);
-    PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)vkGetInstanceProcAddr(instance, "vkDestroyInstance");
-    if (!destroy) return 1;
-    destroy(instance, NULL);
+    vkDestroyInstance(instance, NULL);
     return !shutdown_ok;
 }
