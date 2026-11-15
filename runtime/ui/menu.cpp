@@ -760,10 +760,62 @@ static void row_play_time(void) {
     opt_text_row("##play_time", menu_text(UI_MENU_PLAY_TIME), value, note, menu_text(UI_MENU_PLAY_TIME_DESC), false);
 }
 
+// A gamepad combo setting (game_speed_pad) as the open pad names its buttons: positions joined with '+', guide or home
+// the Home button.
+static const char *combo_name(const char *combo, char *buf, size_t n) {
+    size_t at = 0;
+    buf[0] = 0;
+    char name[32];
+    size_t k = 0;
+    for (const char *c = combo;; c++) {
+        if (*c && *c != '+') {
+            if (k < sizeof name - 1) name[k++] = *c;
+            continue;
+        }
+        name[k] = 0, k = 0;
+        int p = input_pad_id(name);
+        const char *label = !strcasecmp(name, "guide") || !strcasecmp(name, "home") ? menu_text(UI_PAD_HOME)
+                            : p != PAD_NONE                                         ? binds_pad_label(p)
+                                                                                    : name;
+        int w = snprintf(buf + at, n - at, "%s%s", at ? " + " : "", label);
+        if (w < 0 || (size_t)w >= n - at) break;
+        at += (size_t)w;
+        if (!*c) break;
+    }
+    return buf;
+}
+
+// Game speed (frame_rate.c): the speed, and a key and a gamepad combo that switch between 1x and it. The rows offer a
+// few keys no default binding uses and combos with Home or Back, which the game reads for nothing else in play;
+// totk.ini takes any key name and any combo of button positions, shown as they are.
+static void rows_game_speed(void) {
+    static const char *const speeds[] = {"0.25", "0.5", "0.75", "1", "1.25", "1.5", "2", "3", "4"};
+    static const char *const speed_names[] = {"0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x", "3x", "4x"};
+    char need[128];
+    const char *note = nullptr;
+    if (!cfg_bool("TOTK_REALTIME")) {
+        snprintf(need, sizeof need, menu_text(UI_MENU_GAME_SPEED_NEEDS), menu_text(UI_MENU_REALTIME));
+        note = need;
+    }
+    opt_choice_list("TOTK_GAME_SPEED", UI_MENU_GAME_SPEED, speeds, speed_names, 9, UI_MENU_GAME_SPEED_DESC, -1, note);
+    static const char *const keys[] = {"", "f2", "f3", "f4", "f5", "f6", "f7", "f9"};
+    const char *key_names[] = {menu_text(UI_MENU_OFF), "F2", "F3", "F4", "F5", "F6", "F7", "F9"};
+    opt_choice_list("TOTK_GAME_SPEED_KEY", UI_MENU_GAME_SPEED_KEY, keys, key_names, 8, UI_MENU_GAME_SPEED_KEY_DESC);
+    static const char *const combos[] = {"", "guide+south", "guide+east", "guide+west", "guide+north", "back+lstick",
+                                         "back+rstick"};
+    enum { N = sizeof combos / sizeof *combos };
+    static char shown[N][96];
+    const char *combo_names[N] = {menu_text(UI_MENU_OFF)};
+    for (int i = 1; i < N; i++) combo_names[i] = combo_name(combos[i], shown[i], sizeof shown[i]);
+    opt_choice_list("TOTK_GAME_SPEED_PAD", UI_MENU_GAME_SPEED_PAD, combos, combo_names, N,
+                    UI_MENU_GAME_SPEED_PAD_DESC);
+}
+
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
     opt_toggle("TOTK_FRAME_QUEUE", UI_MENU_FRAME_QUEUE, UI_MENU_FRAME_QUEUE_DESC);
+    rows_game_speed();
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
