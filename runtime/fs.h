@@ -66,3 +66,9 @@ int fs_save_busy(void);                                    // a save is being wr
                                                            // or save data changed in the last 3 s and not committed
 void fs_save_flush(void);                                  // wait for a save Commit still running in the background;
                                                            // every exit path calls it before the process ends
+uint32_t fs_save_commits(char *slot, size_t cap);          // commits that changed save files; slot: the save folder
+                                                           // (slot_00 ...) the last one wrote first
+int fs_save_copy_slot(const char *slot, const char *dst);  // a folder of the newest save copied to dst (replaced)
+void fs_save_read_from(const char *dir);                   // quick load: reads of save:/slot_NN/<file> open dir/<file>
+                                                           // while dir is set; NULL ends it
+int fs_save_read_from_hits(void);                          // opens redirected since the last fs_save_read_from(dir)

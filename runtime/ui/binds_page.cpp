@@ -3,6 +3,7 @@
 // gamepad cells show and change the table of the button layout in use (TOTK_PAD_LAYOUT).
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "imgui.h"
 #include "ui/binds_page.h"
@@ -34,16 +35,22 @@ static const int kButtons[] = {B_A, B_B, B_X, B_Y, B_L, B_R, B_ZL, B_ZR, B_STICK
 static const int kMove[] = {B_SL_UP, B_SL_DOWN, B_SL_LEFT, B_SL_RIGHT};
 static const int kCamera[] = {B_SR_UP, B_SR_DOWN, B_SR_LEFT, B_SR_RIGHT};
 
+// A key setting's row (binds_key_row) waits as this action, with the setting and its label beside it
+enum { ACTION_SETTING = ACTION_COUNT };
 static struct {
     int action = -1, cell;   // the cell waiting for a press (0, 1 keys, 2 the controller); action -1 none
     bool reset;              // the next capture poll takes what is held as the start
     uint64_t start, done;    // plat_now_ns of the start and of the press, timeout or Esc (0 still waiting)
+    const char *setting;     // ACTION_SETTING: the TOTK_ name the key goes to
+    UiTextId label;          // and its row's label
 } g_cap;
 static char g_note[160];     // what the last change took or swapped, after its row's description
 static int g_note_action = -1;
 static uint64_t g_note_until;
 
-static const char *action_label(int a) { return menu_text((UiTextId)(UI_BIND_A + a)); }
+static const char *action_label(int a) {
+    return a == ACTION_SETTING ? menu_text(g_cap.label) : menu_text((UiTextId)(UI_BIND_A + a));
+}
 
 static UiTextId action_desc(int a) {
     if (a <= B_MINUS) return (UiTextId)(UI_BIND_DESC_A + a);
@@ -196,7 +203,11 @@ static void capture_window(void) {
     if (!g_cap.done) {
         int id = 0, got = input_capture(g_cap.reset, &id);
         g_cap.reset = false;
-        if (got == INPUT_CAPTURE_KEY && !pad_cell) change(g_cap.action, g_cap.cell, id);
+        if (got == INPUT_CAPTURE_KEY && g_cap.action == ACTION_SETTING) {
+            cfg_set(g_cap.setting, input_key_name(id));
+            opt_save_soon();
+            rt_log("menu: %s = %s", g_cap.setting + 5, input_key_name(id));
+        } else if (got == INPUT_CAPTURE_KEY && !pad_cell) change(g_cap.action, g_cap.cell, id);
         if (got == INPUT_CAPTURE_PAD && pad_cell) change(g_cap.action, g_cap.cell, id);
         if (got != INPUT_CAPTURE_NONE && !(got == INPUT_CAPTURE_KEY && pad_cell)) g_cap.done = now;
         if (now - g_cap.start > CAPTURE_SECONDS * 1000000000ull) g_cap.done = now;
@@ -213,7 +224,8 @@ static void capture_window(void) {
         if (g_cap.done && now - g_cap.done > kDoneNs) {
             ImGui::CloseCurrentPopup();
             char id[48];
-            snprintf(id, sizeof id, "BIND_%s#%d", input_action_name(g_cap.action), g_cap.cell);
+            if (g_cap.action == ACTION_SETTING) snprintf(id, sizeof id, "%s#0", g_cap.setting + 5);
+            else snprintf(id, sizeof id, "BIND_%s#%d", input_action_name(g_cap.action), g_cap.cell);
             opt_focus_key(id);   // back on the cell it came from
             g_cap.action = -1;
         }
@@ -222,6 +234,29 @@ static void capture_window(void) {
 }
 
 bool binds_modal(void) { return g_cap.action >= 0; }
+
+// A key setting (quick save's keys): its key in the first cell, taken by the same capture window as a binding's key;
+// Delete, Backspace or X sets it to none. The other two cells stay empty (no controller button for it). note: e.g. the
+// binding that also uses the key.
+void binds_key_row(const char *setting, UiTextId label, UiTextId desc, const char *note) {
+    const char *cur = cfg_value(setting);
+    int key = KEY_NONE;
+    for (int k = KEY_A; k < KEY_COUNT && key == KEY_NONE; k++)
+        if (input_key_name(k) && !strcasecmp(input_key_name(k), cur)) key = k;
+    char b[48];
+    const char *cells[3] = {key != KEY_NONE ? key_label(key, b, sizeof b) : strcasecmp(cur, "none") ? cur : "", "", ""};
+    const bool enabled[3] = {true, false, false};
+    int r = opt_bind_row(setting + 5, menu_text(label), desc, cells, enabled, note);
+    if (g_cap.action >= 0 || r < 0) return;
+    if (r == 0) {
+        g_cap.action = ACTION_SETTING, g_cap.cell = 0, g_cap.setting = setting, g_cap.label = label;
+        g_cap.reset = true, g_cap.start = plat_now_ns(), g_cap.done = 0;
+    } else if (r == 10) {
+        cfg_set(setting, "none");
+        opt_save_soon();
+        rt_log("menu: %s = none", setting + 5);
+    }
+}
 
 static bool g_reset_asked;   // the reset row was chosen this frame (acted on after the page)
 

@@ -281,6 +281,18 @@ static int same_file(const char *a, const char *b) {
     return same;
 }
 
+// The folder of the save (slot_00 ...) whose file the running commit wrote first, for quick save (fs_save_commits):
+// note_changed takes the first path component under new_root of each file copy_tree copies instead of linking.
+static char changed_slot[64], last_slot[64];
+static uint32_t commits;   // commits that changed a file, under tx_lock
+static void note_changed(const char *dst) {
+    size_t n = strlen(new_root);
+    if (changed_slot[0] || !n || strncmp(dst, new_root, n) || dst[n] != '/') return;
+    const char *rel = dst + n + 1, *sl = strchr(rel, '/');
+    size_t len = sl ? (size_t)(sl - rel) : sizeof changed_slot;
+    if (len < sizeof changed_slot) memcpy(changed_slot, rel, len), changed_slot[len] = 0;
+}
+
 // Copy the tree src to dst, which must not exist; links are skipped. durable: every file is flushed, and every
 // directory as far as the file system allows. base (or NULL): the committed save; a file whose bytes equal base's file
 // at the same path becomes a hard link to it instead of a copy (*nlinked), as committed files are never written in
@@ -300,7 +312,7 @@ static int copy_tree(const char *src, const char *dst, const char *base, int dur
         if (l.e[i].kind == PLAT_FS_DIR) bad = copy_tree(s, d, b, durable, nfiles, nlinked, bytes);
         else {
             if (b && same_file(s, b) && !plat_fs_link(b, d)) bad = 0, ++*nlinked;
-            else bad = copy_file(s, d, durable, bytes);
+            else bad = copy_file(s, d, durable, bytes), note_changed(d);
             *nfiles += !bad;
             if (!bad && durable && crashed()) bad = -1;
         }
@@ -509,6 +521,7 @@ static uint32_t save_commit_locked(void) {
     int nfiles = 0, linked = 0;
     tx_step = tx_dead = 0;
     const char *base = exists(newest_save()) ? newest_save() : NULL;
+    changed_slot[0] = 0;
     if (remove_tree(new_root) || copy_tree(work_root, new_root, base, 1, &nfiles, &linked, &bytes)) {
         if (tx_dead) return FS_R_INVALID_ARGUMENT;
         rt_log("fs: save commit: copying the working copy failed; the newest save is unchanged");
@@ -535,6 +548,8 @@ static uint32_t save_commit_locked(void) {
     ready_seq++;
     if (*ready_root) remove_tree(ready_root);   // superseded: the working copy it was made from held all of it
     snprintf(ready_root, sizeof ready_root, "%s", ready);
+    commits++;
+    memcpy(last_slot, changed_slot, sizeof last_slot);
     plat_xchg32(&save_dirty, 0);
     if (crashed()) return FS_R_INVALID_ARGUMENT;
     int waits = swap_in();
@@ -557,6 +572,34 @@ static void save_wait_commit(void) {
 }
 
 void fs_save_flush(void) { save_wait_commit(); }
+
+// ---- quick save (quicksave.c): the save folder the last commit wrote, copied out of the newest save
+uint32_t fs_save_commits(char *slot, size_t cap) {
+    plat_mutex_lock(&tx_lock);
+    uint32_t n = commits;
+    snprintf(slot, cap, "%s", last_slot);
+    plat_mutex_unlock(&tx_lock);
+    return n;
+}
+
+// The folder slot of the newest save to dst (replaced). 0 on success.
+static int slot_name_ok(const char *slot) {
+    return slot[0] && slot[0] != '.' && !strchr(slot, '/') && !strchr(slot, '\\') && !strchr(slot, ':');
+}
+
+int fs_save_copy_slot(const char *slot, const char *dst) {
+    if (!*save_root || !slot_name_ok(slot)) return -1;
+    save_wait_commit();
+    plat_mutex_lock(&tx_lock);
+    char *src = join(newest_save(), slot);
+    int n = 0, linked = 0;
+    uint64_t bytes = 0;
+    int bad = plat_fs_kind(src) != PLAT_FS_DIR || remove_tree(dst) || copy_tree(src, dst, NULL, 1, &n, &linked, &bytes);
+    plat_mutex_unlock(&tx_lock);
+    free(src);
+    return bad ? -1 : 0;
+}
+
 
 static uint32_t commit_run(void) {
     plat_mutex_lock(&tx_lock);
@@ -877,6 +920,33 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     return got < 0 ? -1 : got;
 }
 
+// Quick load (quicksave.c, fs_save_read_from): while set, a read-only open of a file of any slot folder of the save
+// mount (save:/slot_NN/<file>) opens <file> of this folder instead, so the game loads the quick save whichever slot it
+// was asked to load, and no slot of the save is written for it.
+static char read_from[PATH_CAP];
+static volatile int32_t read_from_on, read_from_hits;
+
+void fs_save_read_from(const char *dir) {
+    if (dir) snprintf(read_from, sizeof read_from, "%s", dir), plat_xchg32(&read_from_hits, 0);
+    plat_xchg32(&read_from_on, dir != NULL);
+}
+
+int fs_save_read_from_hits(void) { return plat_cas32(&read_from_hits, 0, 0); }
+
+static void redirect_slot_read(const char *path, char *p, size_t cap) {
+    const char *rest = strstr(path, ":/slot_");
+    if (!rest) return;
+    const char *d = rest + 7, *file;
+    while (*d >= '0' && *d <= '9') d++;
+    if (d == rest + 7 || *d != '/' || !d[1] || strchr(d + 1, '/')) return;
+    file = d + 1;
+    char q[PATH_CAP];
+    if (snprintf(q, sizeof q, "%s/%s", read_from, file) >= (int)sizeof q || plat_fs_kind(q) != PLAT_FS_FILE) return;
+    rt_log("fs: quick load: %s read from %s", path, q);
+    snprintf(p, cap, "%s", q);
+    plat_inc32(&read_from_hits);
+}
+
 static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     if (romfs_owns(path)) return romfs_open(out, path, mode);
     fs_trace(mode & FS_OPEN_WRITE ? "write" : "read", path);
@@ -885,6 +955,8 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     int kind = M_FREE;
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
+    if (kind == M_SAVE && !(mode & FS_OPEN_WRITE) && plat_cas32(&read_from_on, 0, 0))
+        redirect_slot_read(path, p, sizeof p);
     if (plat_fs_kind(p) != PLAT_FS_FILE) return FS_R_PATH_NOT_FOUND;
     if (kind == M_SAVE_RO && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
     int save_writer = kind == M_SAVE && (mode & FS_OPEN_WRITE);
