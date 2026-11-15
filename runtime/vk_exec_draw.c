@@ -81,7 +81,10 @@ typedef struct {
     int npools, cpools;
     Range *written;
     int nwritten, cwritten;
+    uint64_t fence;                      // the value cb_done waits for
+    uint64_t serial;                     // unique per CbRes, for the descriptor pool journal
 } CbRes;
+static uint64_t cbres_serial;            // atomic
 
 // Descriptor pools and full-size transient chunks go back to these lists when their command buffer completes, instead
 // of being destroyed and created again for the next one: each creation is a driver memory allocation (on Windows an
@@ -92,6 +95,136 @@ static PlatMutex spare_lock = PLAT_MUTEX_INIT;
 static VkDescriptorPool spare_pool[SPARE_POOLS];
 static Chunk spare_chunk[SPARE_CHUNKS];
 static int nspare_pool, nspare_chunk;
+
+// ---- Descriptor pool journal, always on: what a device loss needs to tell whether a descriptor pool was reset under a
+// command buffer that still used its sets (a set bound after its pool's reset loses the device on NVIDIA). A ring keeps
+// the last PJ_N events: a CbRes made, a pool handed to a CbRes (from the spare list or new), a pool reset or destroyed.
+// That is a few events a submission and nothing per draw. The ring is logged
+// after a device loss (vk_device_fault_report). The owner of each pool is checked as it is handed out and as it is
+// reset, under spare_lock: a pool handed out while another CbRes holds it, or reset by a CbRes that does not hold it,
+// is logged at once (at most 4 times) with the events before it.
+#define PJ_N 1024          // power of two
+#define PJ_SHOW 64         // events logged with an owner conflict
+#define PJ_SHOW_LOST 256   // events logged after a device loss
+#define PO_N 4096          // pool owner table, open addressing, power of two
+enum { PJ_CBRES = 1, PJ_SPARE, PJ_NEW, PJ_RESET, PJ_DESTROY, PJ_KINDS };
+typedef struct { uint64_t pool, serial, fence, issued; uint32_t kind, tid; } PjEvent;
+static PjEvent pj[PJ_N];
+static uint64_t pj_n;                                        // atomic: events so far
+typedef struct { uint64_t pool, serial, fence; } PoolOwner;   // pool 0: empty slot, 1: slot of a destroyed pool
+static PoolOwner po[PO_N];                                   // spare_lock
+static int po_used;                                          // spare_lock: slots ever taken
+static volatile int32_t pool_bad;                            // owner conflicts found
+static uint64_t aset_batches;   // alloc_set_batched: batches of more than one set (replay context threads, atomic)
+
+void vk_exec_draw_counts(uint64_t *batches, int *stale, uint64_t *journal) {   // --probe-vkexec
+    *batches = __atomic_load_n(&aset_batches, __ATOMIC_RELAXED);
+    *stale = __atomic_load_n(&pool_bad, __ATOMIC_RELAXED);
+    *journal = __atomic_load_n(&pj_n, __ATOMIC_RELAXED);
+}
+
+static void pj_add(int kind, VkDescriptorPool pool, uint64_t serial, uint64_t fence) {
+    uint64_t i = __atomic_fetch_add(&pj_n, 1, __ATOMIC_RELAXED) & (PJ_N - 1);
+    pj[i] = (PjEvent){(uint64_t)(uintptr_t)pool, serial, fence, vk_sync_issued(), (uint32_t)kind, plat_thread_id()};
+}
+
+// The last `last` events, oldest first. Lock-free: after a device loss the threads that write the ring may be stuck
+// holding locks; an event written meanwhile can show torn.
+static void pj_log(int last) {
+    static const char *const kinds[PJ_KINDS] = {"?", "CbRes made", "pool from the spare list", "new pool", "pool reset",
+                                                "pool reset and destroyed"};
+    uint64_t n = __atomic_load_n(&pj_n, __ATOMIC_ACQUIRE), k = n < (uint64_t)last ? n : (uint64_t)last;
+    rt_log("vk_exec: descriptor pool journal, the last %llu of %llu events (thread: event, pool, CbRes, its value; the "
+           "newest value submitted then); GPU done %llu, submitted %llu", (unsigned long long)k, (unsigned long long)n,
+           (unsigned long long)vk_sync_fence_done(), (unsigned long long)vk_sync_issued());
+    for (uint64_t i = n - k; i < n; i++) {
+        const PjEvent *e = &pj[i & (PJ_N - 1)];
+        rt_log("vk_exec:   %u: %s, pool %#llx, CbRes %llu, value %llu; submitted %llu", e->tid,
+               kinds[e->kind < PJ_KINDS ? e->kind : 0], (unsigned long long)e->pool, (unsigned long long)e->serial,
+               (unsigned long long)e->fence, (unsigned long long)e->issued);
+    }
+}
+
+void vk_exec_pool_journal_log(void) { pj_log(PJ_SHOW_LOST); }
+
+static void pool_take(VkDescriptorPool p, const CbRes *r, int spare);
+static int pool_release(VkDescriptorPool p, const CbRes *r, int destroyed, uint64_t *other, uint64_t *of);
+static void pool_conflict(const char *what, uint64_t pool, const CbRes *r, uint64_t other, uint64_t other_fence);
+
+// --probe-vkexec: two CbRes of the probe's own, never submitted, take one pool handle that names no Vulkan object, then
+// the one that no longer holds it resets it. Each step must log an owner conflict with the journal: returns the
+// conflicts found (2). The handle's slot is freed and the conflict count restored, so later checks start clean.
+int vk_exec_pool_journal_selftest(void) {
+    CbRes a = {.serial = UINT64_MAX - 1, .fence = 1}, b = {.serial = UINT64_MAX - 2, .fence = 2};
+    VkDescriptorPool p = (VkDescriptorPool)(uintptr_t)0x7e57d00d000ull;
+    int32_t bad0 = __atomic_load_n(&pool_bad, __ATOMIC_RELAXED);
+    pool_take(p, &a, 0);
+    pool_take(p, &b, 1);   // a holds it
+    uint64_t other = 0, of = 0;
+    plat_mutex_lock(&spare_lock);
+    int bad = pool_release(p, &a, 1, &other, &of);   // b holds it
+    plat_mutex_unlock(&spare_lock);
+    pj_add(PJ_DESTROY, p, a.serial, a.fence);
+    if (bad) pool_conflict("reset by", (uint64_t)(uintptr_t)p, &a, other, of);
+    int found = __atomic_load_n(&pool_bad, __ATOMIC_RELAXED) - bad0;
+    __atomic_store_n(&pool_bad, bad0, __ATOMIC_RELAXED);
+    return found;
+}
+
+static uint32_t po_hash(uint64_t h) { return (uint32_t)((h * 0x9E3779B97F4A7C15ull) >> 40) & (PO_N - 1); }
+
+// spare_lock held: the pool's slot, made when add is set; NULL when it has none (the table filled up: no check).
+static PoolOwner *po_slot(uint64_t h, int add) {
+    PoolOwner *free_slot = NULL;
+    for (uint32_t i = po_hash(h), k = 0; k < PO_N; k++, i = (i + 1) & (PO_N - 1)) {
+        PoolOwner *e = &po[i];
+        if (e->pool == h) return e;
+        if (e->pool == 1 && !free_slot) free_slot = e;
+        if (!e->pool) {
+            if (!add) return NULL;
+            if (!free_slot) {
+                if (po_used >= PO_N / 4 * 3) return NULL;
+                po_used++, free_slot = e;
+            }
+            break;
+        }
+    }
+    if (!add || !free_slot) return NULL;
+    *free_slot = (PoolOwner){h, 0, 0};
+    return free_slot;
+}
+
+static void pool_conflict(const char *what, uint64_t pool, const CbRes *r, uint64_t other, uint64_t other_fence) {
+    if (plat_inc32(&pool_bad) > 4) return;
+    rt_log("vk_exec: descriptor pool %#llx %s CbRes %llu (value %llu) while %s%llu (value %llu) holds it; submitted "
+           "%llu, done %llu, thread %u", (unsigned long long)pool, what, (unsigned long long)r->serial,
+           (unsigned long long)r->fence, other ? "CbRes " : "no CbRes, ", (unsigned long long)other,
+           (unsigned long long)other_fence, (unsigned long long)vk_sync_issued(),
+           (unsigned long long)vk_sync_fence_done(), plat_thread_id());
+    pj_log(PJ_SHOW);
+}
+
+// alloc_set: pool p goes to CbRes r, from the spare list (spare) or new.
+static void pool_take(VkDescriptorPool p, const CbRes *r, int spare) {
+    uint64_t h = (uint64_t)(uintptr_t)p, other = 0, of = 0;
+    plat_mutex_lock(&spare_lock);
+    PoolOwner *e = po_slot(h, 1);
+    if (e) other = e->serial, of = e->fence, e->serial = r->serial, e->fence = r->fence;
+    plat_mutex_unlock(&spare_lock);
+    pj_add(spare ? PJ_SPARE : PJ_NEW, p, r->serial, r->fence);
+    if (other) pool_conflict("handed to", h, r, other, of);
+}
+
+// cb_done, spare_lock held, after the pool's reset: 1 when CbRes r did not hold it. *other: who did.
+static int pool_release(VkDescriptorPool p, const CbRes *r, int destroyed, uint64_t *other, uint64_t *of) {
+    PoolOwner *e = po_slot((uint64_t)(uintptr_t)p, 0);
+    if (!e) return 0;   // not in the table: unknown, not checked
+    int bad = e->serial != r->serial;
+    *other = e->serial, *of = e->fence;
+    if (destroyed) e->pool = 1, e->serial = e->fence = 0;
+    else e->serial = e->fence = 0;
+    return bad;
+}
 
 // State of the command buffer being recorded that the Vulkan command buffer itself holds.
 typedef struct {
@@ -392,10 +525,14 @@ static void cb_done(void *arg) {   // completion thread
     for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
     for (int i = 0; i < r->npools; i++) {
         vkResetDescriptorPool(c->device, r->pools[i], 0);
+        uint64_t other = 0, of = 0;
         plat_mutex_lock(&spare_lock);
         int kept = nspare_pool < SPARE_POOLS;
         if (kept) spare_pool[nspare_pool++] = r->pools[i];
+        int bad = pool_release(r->pools[i], r, !kept, &other, &of);
         plat_mutex_unlock(&spare_lock);
+        pj_add(kept ? PJ_RESET : PJ_DESTROY, r->pools[i], r->serial, r->fence);
+        if (bad) pool_conflict("reset by", (uint64_t)(uintptr_t)r->pools[i], r, other, of);
         if (!kept) vkDestroyDescriptorPool(c->device, r->pools[i], NULL);
     }
     for (int i = 0; i < r->nchunks; i++) {
@@ -437,6 +574,9 @@ static CbRes *cb_res(VkExec *ex) {
     if (D->cur && D->cur_fence == ex->fence) return D->cur;
     D->cur = calloc(1, sizeof *D->cur);
     if (!D->cur) rt_fatal("vk: out of memory");
+    D->cur->fence = ex->fence;
+    D->cur->serial = __atomic_add_fetch(&cbres_serial, 1, __ATOMIC_RELAXED);
+    pj_add(PJ_CBRES, VK_NULL_HANDLE, D->cur->serial, ex->fence);
     D->cur_fence = ex->fence;
     memset(&D->B, 0, sizeof D->B);
     vk_completion_add(ex->fence, cb_done, D->cur);
@@ -1882,7 +2022,9 @@ static VkDescriptorSet alloc_set(VkExec *ex, VkDescriptorSetLayout layout) {
         plat_mutex_lock(&spare_lock);
         if (nspare_pool) pool = spare_pool[--nspare_pool];
         plat_mutex_unlock(&spare_lock);
+        int spare = pool != VK_NULL_HANDLE;
         if (!pool && vkCreateDescriptorPool(c->device, &pi, NULL, &pool) != VK_SUCCESS) rt_fatal("vk: descriptor pool failed");
+        pool_take(pool, r, spare);
         r->pools[r->npools++] = pool;
     }
     rt_fatal("vk: descriptor set allocation failed twice");
@@ -1911,6 +2053,7 @@ static VkDescriptorSet alloc_set_batched(VkExec *ex, VkDescriptorSetLayout layou
         if (vkAllocateDescriptorSets(vk_ctx()->device, &ai, got) == VK_SUCCESS) {
             for (int i = 1; i < want; i++) c->set[i - 1] = got[i];
             c->n = want - 1, c->fence = ex->fence;
+            __atomic_add_fetch(&aset_batches, 1, __ATOMIC_RELAXED);
             return got[0];
         }   // the pool is nearly full: one set, from a new pool when needed
     }

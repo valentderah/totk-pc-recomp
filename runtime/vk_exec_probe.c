@@ -455,6 +455,86 @@ static int test_marks(const GfxBackend *b, pool_t *pool, tex_t *color, prog_t *g
     return 0;
 }
 
+// ---- set batch part: SB_SUBMITS submissions in a row, none waited for, each of SB_PASSES passes of SB_DRAWS draws
+// whose viewport, and so the support buffer of every set, changes from draw to draw: each draw writes a new
+// allocated set (set 1 with independent layouts), which TOTK_BIND_INC takes from batches (vk_exec_draw.c
+// alloc_set_batched). A split after every 3 draws between passes (vk_exec.c maybe_split), the recorder on (its
+// default), and empty submissions from a second thread as the present thread makes them. A set bound after its pool
+// was reset is a validation error ("Invalid VkDescriptorSet", with TOTK_VK_VALIDATION=1); a pool with two owners is
+// a line of vk_exec_draw.c's descriptor pool journal. On a GTX 1050 Ti it was a lost device. Skipped where no draw allocates its sets in batches.
+#define SB_SUBMITS 60
+#define SB_PASSES 4
+#define SB_DRAWS 6
+
+uint64_t vk_exec_split_set(int draws, int us);                 // vk_exec.c
+void vk_exec_draw_counts(uint64_t *batches, int *stale, uint64_t *journal);   // vk_exec_draw.c
+int vk_exec_pool_journal_selftest(void);                                     // vk_exec_draw.c
+
+static volatile int sb_stop;
+static volatile int32_t sb_empty;
+static int sb_batches, sb_parts, sb_skipped, sb_validated;
+
+static void sb_present(void *arg) {
+    (void)arg;
+    while (!__atomic_load_n(&sb_stop, __ATOMIC_ACQUIRE)) {
+        vk_sync_submit(NULL, 0);
+        plat_inc32(&sb_empty);
+        plat_sleep_ns(200000);
+    }
+}
+
+static int test_batches(const GfxBackend *b, prog_t *prog, const pool_t *pool, tex_t *color) {
+    static _Alignas(8) uint8_t stream[16384];
+    uint64_t batches0, journal0;
+    int stale0;
+    vk_exec_draw_counts(&batches0, &stale0, &journal0);
+    long errors0 = vk_validation_errors_total();
+    uint64_t parts0 = vk_exec_split_set(3, 0);
+    sb_stop = 0;
+    PlatThread *t = plat_thread_new(sb_present, NULL, "probe present");
+    CHECK(t, "no thread for the empty submissions");
+    uint64_t f = 0;
+    for (int s = 0; s < SB_SUBMITS; s++) {
+        uint8_t *q = draw_prefix(stream, prog, pool, color);
+        for (int p = 0; p < SB_PASSES; p++) {
+            for (int d = 0; d < SB_DRAWS; d++) {
+                p_viewports vp;
+                memset(&vp, 0, sizeof vp);
+                vp.n = 1, vp.v[0][2] = (float)(TEX_W - (s * SB_PASSES * SB_DRAWS + p * SB_DRAWS + d) % 97), vp.v[0][3] = TEX_H;
+                vp.v[0][5] = 1.0f;
+                q = put(q, OP_VIEWPORTS, &vp, sizeof vp);
+                const p_draw dr = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3, 0, 0};
+                q = put(q, OP_DRAW, &dr, sizeof dr);
+            }
+            const p_barrier bar = {0, 0};
+            q = put(q, OP_BARRIER, &bar, sizeof bar);
+        }
+        q = put(q, OP_END, NULL, 0);
+        CHECK(q <= stream + sizeof stream, "set batch op stream overflow");
+        uint64_t handle = (uint64_t)(uintptr_t)stream;
+        f = b->submit(&handle, 1);   // the replay records it before submit returns: the stream is free again
+    }
+    __atomic_store_n(&sb_stop, 1, __ATOMIC_RELEASE);
+    plat_thread_join(t);
+    CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the last set batch submission timed out");
+    b->finish();
+    int split_us = cfg_int("TOTK_SPLIT_US");
+    sb_parts = (int)(vk_exec_split_set(cfg_int("TOTK_SPLIT_DRAWS") > 0 ? cfg_int("TOTK_SPLIT_DRAWS") : 0, split_us) - parts0);
+    uint64_t batches, journal;
+    int stale;
+    vk_exec_draw_counts(&batches, &stale, &journal);
+    long errors = vk_validation_errors_total() - errors0;
+    CHECK(!errors && stale == stale0, "%ld validation errors and %d doubly owned descriptor pool lines (vk_exec: ...) over %d "
+          "submissions of batched sets", errors, stale - stale0, SB_SUBMITS);
+    // Each submission that drew made a CbRes and took at least one pool, and the pools of the earlier ones were reset.
+    CHECK(journal - journal0 >= 2 * SB_SUBMITS, "the descriptor pool journal took %llu events over %d submissions",
+          (unsigned long long)(journal - journal0), SB_SUBMITS);
+    sb_batches = (int)(batches - batches0), sb_validated = vk_ctx()->validation != 0;
+    sb_skipped = !sb_batches;
+    CHECK(sb_skipped || sb_parts >= SB_SUBMITS, "%d parts over %d submissions: the replay did not split", sb_parts, SB_SUBMITS);
+    return 0;
+}
+
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
     CHECK(probe_census_dir(root, sizeof root), "no build/v%d/shaders/jobs.json above the exe (run tools/shader_census.py)",
@@ -602,6 +682,9 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         ind_dispatches++;
     }
     if (test_marks(b, &pool, &color, hit, cs_prog)) return 1;
+    if (test_batches(b, hit, &pool, &color)) return 1;
+    int conflicts = vk_exec_pool_journal_selftest();
+    CHECK(conflicts == 2, "the descriptor pool owner check found %d of 2 conflicts", conflicts);
     b->texture_release(&color);
     b->pool_fini(&pool);
     free(pairs), free(cs), free(e), free(jobs);
@@ -1043,9 +1126,25 @@ int probe_vkexec(void) {
     else
         printf("probe-vkexec: pass marks part passed (pass, dispatch, pass in one submission: the GPU's last started and "
                "finished mark is the last pass, ring records exact); the report reads:\n%s\n", marks_text);
+    if (sb_skipped)
+        printf("probe-vkexec: set batch part skipped (no draw allocated its descriptor sets in batches: TOTK_BIND_INC off "
+               "or every set pushed)\n");
+    else
+        printf("probe-vkexec: set batch part passed (%d submissions of %d draws, each writing a new set: %d batches, %d "
+               "parts, %d empty submissions from a second thread, no stale pool, %s)\n",
+               SB_SUBMITS, SB_PASSES * SB_DRAWS, sb_batches, sb_parts, sb_empty,
+               sb_validated ? "0 validation errors" : "validation layer off: TOTK_VK_VALIDATION=1 checks the binds");
     printf("probe-vkexec: empty pool part passed (a zero-byte pool at the start of another: no Vulkan objects, lookups "
            "there find the other pool before and after its Finalize)\n");
     printf("probe-vkexec: out-of-memory part passed (2 failed staging buffers waited for, 1 failed texture image retried, "
            "1 failed draw-data chunk waited for)\n");
+    printf("probe-vkexec: pool owner part passed (a pool handed to a second CbRes and reset by one that no longer held it: "
+           "2 conflicts logged with the journal)\n");
+    // The device loss report on a working device, as a device loss calls it: breadcrumbs, pass marks, deferred frees and
+    // the descriptor pool journal must come out without a crash. Last: the report runs once per process.
+    printf("probe-vkexec: device loss report follows (a test: the device is not lost)\n");
+    fflush(stdout);
+    vk_device_fault_report(VK_ERROR_DEVICE_LOST);
+    printf("probe-vkexec: device loss report part passed\n");
     return 0;
 }
