@@ -944,6 +944,25 @@ static void row_quicksave_keys(void) {
                   key_taken("TOTK_QUICKLOAD_KEY", note[1], sizeof note[1]));
 }
 
+// The free camera combo (freecam.c): the trigger and shoulder pairs with a stick click, named as the open pad labels
+// its buttons, or none. totk.ini takes any combo of button positions, shown as written. Off on other game versions.
+static void row_freecam_pad(void) {
+    static const char *const combos[] = {"zl+zr+lstick", "zl+zr+rstick", "l+r+lstick", "l+r+rstick", "none"};
+    static const int pads[][3] = {{PAD_ZL, PAD_ZR, PAD_LSTICK}, {PAD_ZL, PAD_ZR, PAD_RSTICK},
+                                  {PAD_L, PAD_R, PAD_LSTICK}, {PAD_L, PAD_R, PAD_RSTICK}};
+    enum { N = sizeof combos / sizeof *combos };
+    static char shown[N - 1][128];
+    const char *names[N];
+    for (int i = 0; i < N - 1; i++) {
+        snprintf(shown[i], sizeof shown[i], "%s + %s + %s", binds_pad_label(pads[i][0]), binds_pad_label(pads[i][1]),
+                 binds_pad_label(pads[i][2]));
+        names[i] = shown[i];
+    }
+    names[N - 1] = menu_text(UI_MENU_OFF);
+    if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
+    opt_choice_list("TOTK_FREECAM_PAD", UI_MENU_FREECAM_PAD, combos, names, N, UI_MENU_FREECAM_PAD_DESC);
+}
+
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
 // layout, as a layout that puts A on the right button needs the face buttons named the other way round), but the game
 // reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: when the
@@ -1084,6 +1103,7 @@ static void tab_controls(float scale) {
     row_quicksave_keys();
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
+    row_freecam_pad();
     rows_gameplay_tweaks();
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting
