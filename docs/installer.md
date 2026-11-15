@@ -9,7 +9,7 @@ holds only the game; the installer and its tools stay outside it.
 1. Downloads `TotK-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
    starts `TotK-Setup.exe`.
 2. Picks:
-   - the base game (XCI or NSP) and the 1.1.0, 1.2.1 or 1.4.3 update (NSP); an NSZ or XCZ (compressed by the nsz
+   - the base game (XCI or NSP) and the 1.1.0, 1.1.1, 1.2.1 or 1.4.3 update (NSP); an NSZ or XCZ (compressed by the nsz
      tool) works as it is, the setup unpacks it itself;
    - their `prod.keys`;
    - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
@@ -49,7 +49,7 @@ loads the saves 1.4.3 wrote.
 
 ## Setup steps
 
-1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
+1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.1.1, 1.2.1 or 1.4.3 (by hash, as
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.

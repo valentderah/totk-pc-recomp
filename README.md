@@ -3,7 +3,7 @@
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
 > [!IMPORTANT]
-> **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.1.0, 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
+> **No game files are included.** You need your own legally obtained copy of *Tears of the Kingdom*, dumped from your own console: the base game and the 1.1.0, 1.1.1, 1.2.1 or 1.4.3 update. Instructions for obtaining those files will not be provided.
 >
 > The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
 
@@ -16,7 +16,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Features
 
 - Native code, not emulation
-- Game updates 1.1.0, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
+- Game updates 1.1.0, 1.1.1, 1.2.1 and 1.4.3; 1.2.1 and 1.4.3 saves carry over between them
 - Takes NSP and XCI game files, and compressed NSZ and XCZ as they are: the setup unpacks them itself
 - 60 fps by default; up to 144 fps or the monitor's refresh rate (experimental)
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
