@@ -11,6 +11,7 @@
 #include "host.h"
 #include "input.h"
 #include "input_win.h"
+#include "rsf_input.h"
 #include "input_map.h"
 #include "input_wsys.h"
 #include "gameplay_tweaks.h"
@@ -173,9 +174,12 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         break;
     }
     case WM_INPUT: {
-        RAWINPUT ri;
+        RAWINPUT ri = {0};
         UINT sz = sizeof ri;
-        if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+        UINT got = GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER));
+        if (got != (UINT)-1 && got >= sizeof(RAWINPUTHEADER) + sizeof(ri.data.mouse) && ri.header.dwType == RIM_TYPEMOUSE)
+            rsf_input_received(RSF_INPUT_MOUSE);
+        if (got != (UINT)-1 && got >= sizeof(RAWINPUTHEADER) + sizeof(ri.data.mouse) &&
             ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
             LONG x = ri.data.mouse.lLastX, y = ri.data.mouse.lLastY;
             InterlockedAdd(&mouse_travel, (x < 0 ? -x : x) + (y < 0 ? -y : y));

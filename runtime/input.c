@@ -5,6 +5,7 @@
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
 // thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
+#include "rsf_input_gamepad.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -424,6 +425,7 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
+        rsf_input_gamepad_select(0);
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
         motion_bias_reset(motion_global());
@@ -437,6 +439,7 @@ static void scan_pads(void) {
     for (int i = 0; ids && i < n && !pad; i++) pad = SDL_OpenGamepad(ids[i]);
     SDL_free(ids);
     if (!pad) return;
+    rsf_input_gamepad_select(SDL_GetGamepadID(pad));
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     for (int i = 0; i < 4; i++) {
@@ -530,7 +533,10 @@ static void start(void) {
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
-    if (state == 1) test_pad_attach();
+    if (state == 1) {
+        if (!rsf_input_gamepad_watch_start()) rt_log("rsf: controller delivery watch unavailable");
+        test_pad_attach();
+    }
     if (state == 1) {
         scan_pads();
         if (!pad) rt_log("input: no gamepad (keyboard only until one is connected)");
