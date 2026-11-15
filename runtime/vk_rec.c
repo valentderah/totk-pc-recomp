@@ -213,19 +213,19 @@ static int rec_own(void) {
 }
 
 // vkBeginCommandBuffer (one submission) and the breadcrumb, on the thread that records cb.
-static void begin_now(VkCommandBuffer cb, int crumb, uint64_t n) {
+static void begin_now(VkCommandBuffer cb, int crumb, uint64_t n, int retire) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VkResult result = vkBeginCommandBuffer(cb, &bi);
     if (result != VK_SUCCESS) rt_fatal("vk: recorder command begin failed (%d)", result);
-    rsf_sr_commands_reset(cb);
+    if (retire) rsf_sr_commands_reset(cb);
     if (crumb) vk_crumb(cb, crumb, n);
 }
 
 // The command buffer the following packets go into; begin: the recorder begins it (TOTK_REC_END=1).
-typedef struct { VkCommandBuffer cb; int begin, crumb; uint64_t n; } A_BeginCb;
+typedef struct { VkCommandBuffer cb; int begin, crumb, retire; uint64_t n; } A_BeginCb;
 
-void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
+static void begin_part(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n, int retire) {
     static int mode = -1;
     if (mode < 0) {
         // On by default on every GPU. 0.2.8 turned it on for AMD too, and some RDNA 2, 3 and 4 systems lost the device
@@ -275,17 +275,27 @@ void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
         // The submitting thread begins cb. The part pool is the recorder's while it has packets (an A/B switch
         // between parts): it finishes them first.
         rec_drain();
-        begin_now(cb, crumb, n);
+        begin_now(cb, crumb, n, retire);
         if (!on) return;
     }
     RS_.parts_on++;
     __atomic_store_n(&part_h0, Q.put_h, __ATOMIC_RELEASE);
     __atomic_store_n(&part_fence, fence, __ATOMIC_RELEASE);
     A_BeginCb *a = put(R_BeginCb, sizeof *a);
-    *a = (A_BeginCb){cb, own, crumb, n};
+    *a = (A_BeginCb){.cb = cb, .begin = own, .crumb = crumb, .retire = retire, .n = n};
     pub_now();
     rec_cb = cb;
     rec_live = 1;
+}
+
+void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n) {
+    begin_part(cb, fence, crumb, n, 1);
+}
+int rec_begin_continuation(VkCommandBuffer cb, uint64_t fence) {
+    // The serial owner retired the completed slot before entering the SDK call;
+    // do not reenter its session lock from the recorder's BeginCb packet.
+    begin_part(cb, fence, 0, 0, 0);
+    return rec_live && rec_cb == cb && rec_own();
 }
 
 void rec_end(void) {
@@ -328,14 +338,24 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     return 1;
 }
 
-// At most two command buffers and one signal: the shape vk_sync.c submits. The only pNext it chains is Reflex's
+// At most two command buffers, waits and signals, including SR split dependencies. The only pNext is Reflex's
 // VkLatencySubmissionPresentIdNV (vk_sync_submit), carried as its present ID.
 typedef struct {
-    uint32_t ncb, nsig, has_pid;
+    uint32_t ncb, nwait, nsig, has_pid;
     uint64_t present_id, source;
     VkCommandBufferSubmitInfo cbi[2];
-    VkSemaphoreSubmitInfo sig;
+    VkSemaphoreSubmitInfo wait[2], sig[2];
 } A_Submit;
+static int sr_pending(const VkSubmitInfo2 *si) {
+    for (uint32_t i = 0; i < si->commandBufferInfoCount; i++)
+        if (rsf_sr_commands_pending(si->pCommandBufferInfos[i].commandBuffer)) return 1;
+    return 0;
+}
+static void sr_submitted(const VkSubmitInfo2 *si) {
+    for (uint32_t i = 0; i < si->commandBufferInfoCount; i++)
+        if (!rsf_sr_commands_submitted(si->pCommandBufferInfos[i].commandBuffer))
+            rt_fatal("rsf: SR submission notification failed; preserving provider leases");
+}
 VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
     if (!sub_pending) {
         rsf_vk_submission(source_frame, 1);
@@ -343,13 +363,14 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
         VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
         vk_queue_unlock();
         rsf_vk_submission(source_frame, 0);
+        if (r == VK_SUCCESS) sr_submitted(si);
         if (r == VK_SUCCESS && cfg_int("TOTK_RSF_FG")) vk_present_fg_submitted(si);
         return r;
     }
     sub_pending = 0;
     const VkBaseInStructure *nx = si->pNext;
     int pid = nx && nx->sType == VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV && !nx->pNext;
-    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount ||
+    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 2 || si->waitSemaphoreInfoCount > 2 ||
         (nx && !pid))
         rt_fatal("vk_rec: a submission of %u command buffers, %u waits and %u signals the recorder cannot carry",
                  si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
@@ -357,9 +378,11 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
     memset(a, 0, sizeof *a);
     a->source = source_frame;
     a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
+    a->nwait = si->waitSemaphoreInfoCount;
     if (pid) a->has_pid = 1, a->present_id = ((const VkLatencySubmissionPresentIdNV *)nx)->presentID;
     for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
-    if (a->nsig) a->sig = si->pSignalSemaphoreInfos[0];
+    for (uint32_t i = 0; i < a->nsig; i++) a->sig[i] = si->pSignalSemaphoreInfos[i];
+    for (uint32_t i = 0; i < a->nwait; i++) a->wait[i] = si->pWaitSemaphoreInfos[i];
     __atomic_store_n(&q_subs, q_subs + 1, __ATOMIC_RELEASE);
     RS_.submits++;
     // TOTK_REC_ASYNC=1 (default): the submitting thread goes on while the recorder catches up with the part and submits
@@ -372,14 +395,22 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
     // on failure. Observe this part's actual result before telling its owner.
     // Notify on this producer, never on a recorder that Present may wait for.
     int fg = cfg_int("TOTK_RSF_FG") != 0;
-    if (RT_KNOB_ON(rec_async) && !fg) {
+    if (RT_KNOB_ON(rec_async) && !fg && !sr_pending(si)) {
         pub_now();
         return __atomic_load_n(&r_sub_err, __ATOMIC_ACQUIRE);
     }
     pub();
     rec_drain();
+    if (r_sub_res == VK_SUCCESS) sr_submitted(si);
     if (r_sub_res == VK_SUCCESS && fg) vk_present_fg_submitted(si);
     return r_sub_res;
+}
+
+VkResult rec_submit_recorded(const VkSubmitInfo2 *si, uint64_t source_frame, int recorder_owned) {
+    // A split has several already-ended buffers; each retains its own recording
+    // thread, rather than consuming the single ordinary sub_pending flag once.
+    sub_pending = recorder_owned;
+    return rec_submit(si, source_frame);
 }
 
 static void submit_run(const A_Submit *a) {
@@ -388,7 +419,8 @@ static void submit_run(const A_Submit *a) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .pNext = a->has_pid ? &lsid : NULL,
                         .commandBufferInfoCount = a->ncb,
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
-                        .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
+                        .pSignalSemaphoreInfos = a->nsig ? a->sig : NULL,
+                        .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->nwait ? a->wait : NULL};
     rsf_vk_submission(a->source, 1);
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, &si, VK_NULL_HANDLE);
@@ -852,7 +884,7 @@ static void exec_packet(uint32_t op, void *p) {
     if (op == R_BeginCb) {
         A_BeginCb *a = p;
         r_cb = a->cb;
-        if (a->begin) begin_now(r_cb, a->crumb, a->n);
+        if (a->begin) begin_now(r_cb, a->crumb, a->n, a->retire);
         return;
     }
     if (op == R_Submit) { submit_run(p); return; }

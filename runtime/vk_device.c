@@ -366,18 +366,17 @@ static int create_device(void) {
         g_vk.has_nv_checkpoints = 1;
         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     }
-    // NVIDIA Reflex Low Latency (VK_NV_low_latency2 requires VK_KHR_present_id)
-    const char *rv = cfg_value("TOTK_REFLEX");
-    if (rv && strcmp(rv, "off") != 0 && strcmp(rv, "0") != 0) {
-        if (has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, "VK_NV_low_latency2")) {
-            g_vk.has_nv_reflex = 1;
-            ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
-            ext[n_ext++] = "VK_NV_low_latency2";
-            CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
-        } else {
-            rt_log("Reflex: VK_NV_low_latency2 not available");
-        }
+    // RSF owns vendor latency exclusively. Do not activate the legacy sleep,
+    // marker or native Present path through has_nv_reflex.
+    // Enable shared-resource imports for live switches to FSR4 when supported.
+#ifdef _WIN32
+    if (has_ext(ep, ne, "VK_KHR_external_memory_win32") &&
+        has_ext(ep, ne, "VK_KHR_external_semaphore_win32")) {
+        ext[n_ext++] = "VK_KHR_external_memory_win32";
+        ext[n_ext++] = "VK_KHR_external_semaphore_win32";
+        g_vk.has_rsf_sr_split = 1;
     }
+#endif
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {

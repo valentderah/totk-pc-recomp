@@ -526,11 +526,12 @@ static int test_batches(const GfxBackend *b, prog_t *prog, const pool_t *pool, t
     long errors = vk_validation_errors_total() - errors0;
     CHECK(!errors && stale == stale0, "%ld validation errors and %d doubly owned descriptor pool lines (vk_exec: ...) over %d "
           "submissions of batched sets", errors, stale - stale0, SB_SUBMITS);
-    // Each submission that drew made a CbRes and took at least one pool, and the pools of the earlier ones were reset.
-    CHECK(journal - journal0 >= 2 * SB_SUBMITS, "the descriptor pool journal took %llu events over %d submissions",
-          (unsigned long long)(journal - journal0), SB_SUBMITS);
     sb_batches = (int)(batches - batches0), sb_validated = vk_ctx()->validation != 0;
     sb_skipped = !sb_batches;
+    // A batched-set draw makes a CbRes and takes at least one pool. Push descriptors
+    // need no pool; that configuration skips the pool/batch assertions below.
+    CHECK(sb_skipped || journal - journal0 >= 2 * SB_SUBMITS, "the descriptor pool journal took %llu events over %d submissions",
+          (unsigned long long)(journal - journal0), SB_SUBMITS);
     CHECK(sb_skipped || sb_parts >= SB_SUBMITS, "%d parts over %d submissions: the replay did not split", sb_parts, SB_SUBMITS);
     return 0;
 }

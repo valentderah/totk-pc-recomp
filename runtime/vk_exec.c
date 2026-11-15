@@ -1745,7 +1745,10 @@ static int chunked_on(void) {
     }
     // FG snapshots run at an actual draw boundary. Keep their resource and
     // camera order serial until the chunk planner carries that boundary too.
-    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !cfg_int("TOTK_RSF_FG");
+    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !cfg_int("TOTK_RSF_FG") &&
+           // FSR4 hands the serial submission-pool owner a continuation. Worker
+           // chunks own different pools and cannot consume that recording lease.
+           !(vk_dlaa_wanted() && cfg_int("TOTK_RSF_BACKEND") == 4);
 }
 
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source) {

@@ -21,14 +21,18 @@
 // The submitting thread, sub_lock held: vkBeginCommandBuffer (one submission) on cb and the breadcrumb crumb (0: none,
 // vk_crumbs.c) with number n, made by the recorder when it records the part, else at once; fence: the part's value.
 void rec_begin(VkCommandBuffer cb, uint64_t fence, int crumb, uint64_t n);
+// Slot resources were reset/retired before the SDK acquired its lock. Returns
+// whether the recorder owns this section, including its eventual submission.
+int rec_begin_continuation(VkCommandBuffer cb, uint64_t fence);
 void rec_end(void);                   // waits for the recorder; no-op when rec_begin did not start it
 // The end of part cb: the breadcrumb crumb, then vkEndCommandBuffer, both queued for the recorder when it records cb
 // (1: rec_submit hands the part over); otherwise rec_end and the breadcrumb, and the caller ends cb (0).
 int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n);
-// vkQueueSubmit2 of si (at most two command buffers, one signal, no wait, no fence) under vk_queue_lock: by the
+// vkQueueSubmit2 of si (at most two command buffers, two signals, two waits, no fence) under vk_queue_lock: by the
 // recorder after a part it ended, else at once. Queued for the recorder, it returns the first failure of an earlier
 // submission the recorder made (VK_SUCCESS if none), since this one's result is not known yet.
 VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame);
+VkResult rec_submit_recorded(const VkSubmitInfo2 *, uint64_t source_frame, int recorder_owned);
 void rec_drain(void);                 // waits until the recorder made every call queued so far
 // vk_queue_lock, before it takes the lock (not on the recorder, not when the thread holds the lock already): waits
 // until the recorder submitted every submission queued so far.

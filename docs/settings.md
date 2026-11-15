@@ -13,7 +13,7 @@ native code into the process and retains the module until exit; restart to chang
 
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
-| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `5` XeSS. Restart required. FSR4 submission is still under implementation. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
+| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `4` FSR4, `5` XeSS. Restart required. FSR4 uses the external timeline split adapter; its device acceptance is still in progress. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
 | `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 | `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
 | `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |

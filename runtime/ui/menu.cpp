@@ -727,9 +727,9 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
     opt_group(UI_MENU_RSF_GROUP);
     opt_toggle("TOTK_RSF_ENABLED", UI_MENU_RSF_ENABLE, UI_MENU_RSF_ENABLE_DESC);
-    static const char *const providers[] = {"1", "2", "3", "5"};
-    static const char *const provider_names[] = {"DLSS", "FSR 2", "FSR 3", "XeSS"};
-    opt_choice_list("TOTK_RSF_BACKEND", UI_MENU_RSF_PROVIDER, providers, provider_names, 4, UI_MENU_RSF_PROVIDER_DESC);
+    static const char *const providers[] = {"1", "2", "3", "4", "5"};
+    static const char *const provider_names[] = {"DLSS", "FSR 2", "FSR 3", "FSR 4", "XeSS"};
+    opt_choice_list("TOTK_RSF_BACKEND", UI_MENU_RSF_PROVIDER, providers, provider_names, 5, UI_MENU_RSF_PROVIDER_DESC);
     static const UiTextId quality[] = {UI_MENU_RSF_NATIVE, UI_MENU_RSF_QUALITY_VALUE, UI_MENU_RSF_BALANCED,
                                       UI_MENU_RSF_PERFORMANCE, UI_MENU_RSF_ULTRA};
     opt_choice("TOTK_RSF_QUALITY", UI_MENU_RSF_QUALITY, quality, 5, UI_MENU_RSF_QUALITY_DESC);
@@ -739,8 +739,8 @@ static void tab_screen(float scale) {
     static const bool fg_experimental = cfg_int("TOTK_RSF_FG") != 0;
     if (!fg_experimental) opt_disable_next(UI_MENU_RSF_UNAVAILABLE);
     opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
-    static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON};
-    opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 2, UI_MENU_RSF_LATENCY_DESC);
+    static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_REFLEX_BOOST};
+    opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 3, UI_MENU_RSF_LATENCY_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);

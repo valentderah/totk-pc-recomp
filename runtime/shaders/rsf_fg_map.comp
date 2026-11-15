@@ -1,0 +1,20 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D input0;
+layout(binding=1) uniform sampler2D input1;
+layout(binding=2,r32f) uniform writeonly image2D depthOut;
+layout(binding=3) uniform writeonly image2D motionOut;
+layout(binding=4,rgba8) uniform writeonly image2D colorOut;
+layout(push_constant) uniform P { vec4 crop; ivec4 dst; ivec2 size; vec2 motionScale; float farDepth; int mode; vec2 pad; } pc;
+void main() {
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(p,pc.size))) return;
+    bool inside=all(greaterThanEqual(p,pc.dst.xy))&&all(lessThan(p,pc.dst.xy+pc.dst.zw));
+    vec2 uv=pc.crop.xy+(vec2(p)+0.5-vec2(pc.dst.xy))/vec2(pc.dst.zw)*pc.crop.zw;
+    ivec2 q=clamp(ivec2(floor(uv*textureSize(input0,0))),ivec2(0),textureSize(input0,0)-1);
+    if(pc.mode==0) {
+        float d=inside?texelFetch(input0,q,0).r:pc.farDepth;
+        vec2 mv=inside?texelFetch(input1,clamp(ivec2(floor(uv*textureSize(input1,0))),ivec2(0),textureSize(input1,0)-1),0).xy*pc.motionScale:vec2(0);
+        imageStore(depthOut,p,vec4(d)); imageStore(motionOut,p,vec4(mv,0,0));
+    } else imageStore(colorOut,p,inside?texelFetch(input0,q,0):vec4(0,0,0,1));
+}

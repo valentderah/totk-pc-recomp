@@ -16,6 +16,7 @@
 
 #include "gfx.h"
 #include "rsf_sr.h"
+#include "rsf_split.h"
 #include "rsf_vulkan.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -25,7 +26,12 @@
 #define WEAK __attribute__((weak))
 
 typedef struct { uint64_t fence; void (*fn)(void *); void *arg; } Pending;
-typedef struct { VkCommandBuffer cb; uint64_t fence; } CmdSlot;   // reusable once the timeline reached fence
+typedef struct {
+    VkCommandBuffer cb; uint64_t fence;
+    int sr_recorder; // this section was recorded by the recorder thread
+    int sr_previous; // preceding recorded section, -1 for an ordinary part
+    RsfSplitSection sr;
+} CmdSlot;   // reusable once the timeline reached fence
 
 static PlatMutex start_lock = PLAT_MUTEX_INIT;
 static int started;
@@ -37,6 +43,7 @@ static VkCommandPool cmd_pool;
 static CmdSlot *slots;
 static int nslots;
 static int cur_slot;          // the slot vk_sync_submit records into now (an index: take_slot may move slots)
+static int cur_recording;
 static uint64_t cur_fence;    // the value of the submission being recorded
 static uint64_t cur_source;   // immutable while this submission's parts record
 
@@ -345,6 +352,7 @@ static int claim_slot(VkCtx *c, uint64_t fence) {
     for (int i = 0; i < nslots; i++)
         if (slots[i].fence <= gpu) {
             slots[i].fence = fence;
+            slots[i].sr_recorder = 0; slots[i].sr_previous = -1; slots[i].sr = (RsfSplitSection){0};
             return i;
         }
     rec_drain();   // the part pool is the recorder's while it has packets (vk_rec.h): it is idle for the allocation
@@ -352,6 +360,7 @@ static int claim_slot(VkCtx *c, uint64_t fence) {
     if (!n) rt_fatal("vk: out of memory (command buffers)");
     slots = n;
     CmdSlot *s = &slots[nslots];
+    *s = (CmdSlot){.sr_previous = -1};
     VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cmd_pool,
                                       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
     if (vkAllocateCommandBuffers(c->device, &ai, &s->cb) != VK_SUCCESS) rt_fatal("vk: command buffer allocation");
@@ -362,6 +371,86 @@ static int claim_slot(VkCtx *c, uint64_t fence) {
 static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
     cur_slot = claim_slot(c, fence);
     return &slots[cur_slot];
+}
+
+// Prepared outside rsf_sr_record_split's session lock. Only serial replay calls
+// the callback, with sub_lock held and the recorder drained around pool access.
+static _Thread_local struct { int prepared, consumed, old_slot, next_slot; } sr_split;
+static int32_t sr_record_split(void *user, void *commands, uint64_t timeline,
+                               uint64_t previous, uint64_t ready, uint64_t done, void **next) {
+    (void)user;
+    if (!next || !sr_split.prepared || sr_split.consumed ||
+        cur_slot != sr_split.old_slot || commands != slots[cur_slot].cb ||
+        !timeline || !ready || done <= ready || previous >= ready)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    int old = cur_slot, continuation = sr_split.next_slot;
+    ts_end(slots[old].cb, cur_fence);
+    int recorder_owned = rec_end_cb(slots[old].cb, 0, 0);
+    if (!recorder_owned) {
+        VkResult r = vkEndCommandBuffer(slots[old].cb);
+        if (r) return r;
+    }
+    rec_drain();
+    slots[old].sr_recorder = recorder_owned;
+    slots[old].sr = (RsfSplitSection){slots[old].cb, (VkSemaphore)(uintptr_t)timeline, previous, ready};
+    slots[continuation].sr_previous = old;
+    slots[continuation].sr = (RsfSplitSection){slots[continuation].cb, (VkSemaphore)(uintptr_t)timeline, done, 0};
+    cur_slot = continuation;
+    sr_split.consumed = 1;
+    slots[cur_slot].sr_recorder = rec_begin_continuation(slots[cur_slot].cb, cur_fence);
+    ts_begin(slots[cur_slot].cb);
+    rec_drain(); // the SDK records into an actually begun continuation
+    *next = slots[cur_slot].cb;
+    return VK_SUCCESS;
+}
+
+uint64_t vk_sync_record_fence(VkCommandBuffer commands) {
+    return cur_recording && cur_fence && slots && cur_slot >= 0 && cur_slot < nslots &&
+           commands == slots[cur_slot].cb ? cur_fence : 0;
+}
+
+int vk_sync_sr_prepare(VkCommandBuffer commands, rsf_fsr4vk_handoff *handoff) {
+    VkCtx *c = vk_ctx();
+    if (!handoff || !c || !c->has_rsf_sr_split || !vk_sync_record_fence(commands) || !cmd_pool ||
+        commands != slots[cur_slot].cb || sr_split.prepared) return 0;
+    rec_drain();
+    int next = claim_slot(c, cur_fence);
+    // Completion alone does not release executable command references. Reset
+    // before retiring borrowed SDK views, outside the session's recording lock.
+    VkResult reset = vkResetCommandBuffer(slots[next].cb, 0);
+    if (reset != VK_SUCCESS) rt_fatal("vk: FSR4 continuation reset failed (%d)", reset);
+    rsf_sr_commands_reset(slots[next].cb);
+    sr_split.prepared = 1; sr_split.consumed = 0;
+    sr_split.old_slot = cur_slot; sr_split.next_slot = next;
+    *handoff = (rsf_fsr4vk_handoff){sizeof *handoff, RSF_SRVK_SPLIT_TRACKED_ABI_VERSION,
+        1, c->gfx_family, NULL, sr_record_split};
+    return 1;
+}
+
+void vk_sync_sr_cancel(void) {
+    if (sr_split.prepared && !sr_split.consumed) slots[sr_split.next_slot].fence = 0;
+    sr_split.prepared = sr_split.consumed = 0;
+}
+
+static VkResult submit_section(const VkSubmitInfo2 *si, void *user) {
+    VkCommandBuffer cb = si->pCommandBufferInfos[si->commandBufferInfoCount - 1].commandBuffer;
+    for (int i = 0; i < nslots; i++)
+        if (slots[i].cb == cb) return rec_submit_recorded(si, *(uint64_t *)user, slots[i].sr_recorder);
+    return VK_ERROR_INITIALIZATION_FAILED;
+}
+static VkResult submit_graph(const VkSubmitInfo2 *si, uint64_t source) {
+    int end = cur_slot;
+    if (slots[end].sr_previous < 0) return rec_submit(si, source);
+    uint32_t count = 1;
+    for (int i = end; slots[i].sr_previous >= 0; i = slots[i].sr_previous) count++;
+    RsfSplitSection *parts = malloc(count * sizeof *parts);
+    if (!parts) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    int slot = end;
+    for (uint32_t i = count; i; --i) { parts[i - 1] = slots[slot].sr; slot = slots[slot].sr_previous; }
+    VkResult r = rsf_split_submit(si, parts, count, submit_section, &source);
+    free(parts);
+    if (r == VK_SUCCESS) slots[end].sr_previous = -1;
+    return r;
 }
 
 // The copies the replay's first accesses to VRAM mirrors queued (vk_memory.c), in a command buffer of their own that is
@@ -430,7 +519,7 @@ VkCommandBuffer vk_sync_split(void) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = pro ? 2 : 1,
                         .pCommandBufferInfos = pro ? cbi : cbi + 1};
     ts_submitted();
-    VkResult r = rec_submit(&si, cur_source);   // by the recorder when it recorded the part
+    VkResult r = submit_graph(&si, cur_source);   // by the recorder when it recorded the part
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of a part of value %llu failed (%d)", (unsigned long long)cur_fence, (int)r);
@@ -459,6 +548,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
+    cur_recording = 1;
     cur_source = source;
     // Before the first object is resolved: what any thread destroys from here on waits for this value (vk_memory.c
     // defer), since the recording may already name it.
@@ -468,6 +558,11 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
     rec_begin(s->cb, fence, VK_CRUMB_SUBMIT, fence);   // begun by the recorder when it records the part
     ts_begin(s->cb);
     int recorded = vk_exec_record(s->cb, handles, n, fence, source);
+    cur_recording = 0;
+    // The SDK may have consumed the producer before refusing the dispatch.
+    // Its continuation and final retirement signal are mandatory even if the
+    // replay reports no remaining native commands.
+    if (slots[cur_slot].sr_previous >= 0 && !recorded) recorded = 1;
     s = &slots[cur_slot];   // the last part (vk_sync_split)
     if (recorded) ts_end(s->cb, fence);
     else ts_drop();
@@ -494,7 +589,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source) {
                         .pSignalSemaphoreInfos = &sig};
     ts_submitted();
     if (recorded && c->has_nv_reflex) vk_reflex_marker(2, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_START_NV
-    VkResult r = rec_submit(&si, source);   // by the recorder when it recorded the part
+    VkResult r = submit_graph(&si, source);   // by the recorder when it recorded the part
     if (recorded && c->has_nv_reflex) vk_reflex_marker(3, lsid.presentID);   // VK_LATENCY_MARKER_RENDERSUBMIT_END_NV
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);

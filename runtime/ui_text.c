@@ -48,7 +48,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RSF_FG] = "Frame generation",
     [UI_MENU_RSF_FG_DESC] = "Experimental. Requests generated frames; unsupported inputs use native presentation. Restart after changing.",
     [UI_MENU_RSF_LATENCY] = "Low latency",
-    [UI_MENU_RSF_LATENCY_DESC] = "Reduces input latency when supported by your GPU. Works with upscaling off. Restart after changing.",
+    [UI_MENU_RSF_LATENCY_DESC] = "Requests low latency, with Boost where supported. Works with upscaling off. Restart after changing.",
     [UI_MENU_RSF_UNAVAILABLE] = "Experimental frame generation requires opt-in before launch",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
 

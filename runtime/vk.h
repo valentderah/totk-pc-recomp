@@ -2,6 +2,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "rsf_vulkan.h"
+#include <rescaleframe/native_sr_split_vulkan.h>
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
@@ -46,6 +47,7 @@ typedef struct VkCtx {
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
+    int has_rsf_sr_split;                   // Win32 shared image/fence imports enabled
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
@@ -709,3 +711,11 @@ int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]);
 
 // Refuses while SDK work is recorded but not submitted; retain all input leases.
 int vk_present_fg_drain(void);
+
+// Serial replay owner, outside rendering. Prepares an unused final-fence slot;
+// the synchronous callback only ends/begins recording, never submits a queue.
+int vk_sync_sr_prepare(VkCommandBuffer commands, rsf_fsr4vk_handoff *handoff);
+void vk_sync_sr_cancel(void);
+// Actual final engine fence for the serial recording owner, else zero. Caller
+// already holds the replay submission lock; this accessor takes no locks.
+uint64_t vk_sync_record_fence(VkCommandBuffer commands);

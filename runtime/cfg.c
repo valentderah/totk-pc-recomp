@@ -140,7 +140,7 @@ static const CfgMeta metas[] = {
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"RSF_BACKEND", "3", "1|2|3|5", RESTART},
+    {"RSF_BACKEND", "3", "1|2|3|4|5", RESTART},
     {"RSF_ENABLED", "0", "0|1", RESTART},
     {"RSF_QUALITY", "native", "native|quality|balanced|performance|ultra_performance", LIVE},
     {"RSF_FG", "0", "0|1|3|4|5", RESTART}, {"RSF_LOW_LATENCY", "0", "0|1|2", RESTART},

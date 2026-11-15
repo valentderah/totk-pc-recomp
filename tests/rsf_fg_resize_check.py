@@ -54,7 +54,7 @@ int main(void) {
 '''
 fixture = out / "prepare.c"
 fixture.write_text(harness, encoding="utf-8")
-rsf = root.parent / "ReScaleFrame"
+rsf = root / "external" / "ReScaleFrame"
 command = ["C:/msys64/ucrt64/bin/clang.exe", str(fixture), "-o", str(out / "prepare.exe")]
 for directory in ("runtime/orchestrator/include", "runtime/contract/include", "sdk/game/include"):
     command += ["-I", str(rsf / directory)]

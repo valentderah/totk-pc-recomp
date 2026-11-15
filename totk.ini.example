@@ -272,7 +272,7 @@
 
 # ReScaleFrame reconstruction of the 3D scene; the HUD is drawn afterwards.
 # Requires the separately installed RSF runtime and provider DLL directory.
-# Provider: 1 DLSS, 2 FSR2, 3 FSR3, 5 XeSS. Restart after changing enable/provider.
+# Provider: 1 DLSS, 2 FSR2, 3 FSR3, 4 FSR4, 5 XeSS. Restart after changing enable/provider.
 # rsf_enabled = 0
 # rsf_backend = 3
 # Quality: native, quality, balanced, performance, ultra_performance.
@@ -280,7 +280,8 @@
 # Absolute paths, configured for the installed RSF package:
 # rsf_runtime = C:\ReScaleFrame\ReScaleFrame.Runtime.dll
 # rsf_provider_dir = C:\ReScaleFrame\providers
-# Frame generation is still under integration; its menu control is disabled.
+# Frame generation is experimental. Starting with a nonzero rsf_fg value enables
+# its provider selection in the menu; changing it takes effect after restart.
 # rsf_fg = 0
 # Low latency: 0 off, 1 on, 2 boost where supported; independent of upscaling.
 # Restart after changing. The runtime selects the supported latency technology.
