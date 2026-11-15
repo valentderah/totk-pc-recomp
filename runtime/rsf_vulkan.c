@@ -70,7 +70,9 @@ int rsf_vk_prepare(void) {
     if (!initialize || !instance_resolver) return 0;
     rsf_slvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SLVK_ABI_VERSION,
         .runtime_directory_utf8 = rsf_provider_directory(1),
-        .project_id = "totk-pc-recomp",
+        // NGX requires a GUID-shaped custom-engine identity. Stable UUIDv5 of
+        // "totk-pc-recomp" in the DNS namespace, shared by every build.
+        .project_id = "0a698e8c-91cc-5cb4-bb36-e1b402039c9e",
         .features = (cfg_int("TOTK_RSF_BACKEND") == RSF_SR_DLSS ? RSF_SLVK_DLSS_SR : 0) |
                     (cfg_int("TOTK_RSF_FG") == 1 ? RSF_SLVK_DLSS_FG : 0)};
     int32_t result = initialize(&setup);

@@ -211,6 +211,16 @@ The startup fixture uses these same entry points. The real SDK/device fixture an
 the game's `--boot` checkpoints pass after this correction. With the shader census
 present, the kernel, Vulkan draw, texture and shader probes all pass too.
 
+A subsequent run reached the opening scene and completed 1,657 presents with no
+reported shader failures or skipped draws. DLSS creation was initially refused:
+NGX rejected the plain-name project ID. Its shipped `nvsdk_ngx.h`,
+`NVSDK_NGX_Init_with_ProjectID` contract requires a GUID-shaped custom-engine ID.
+The adapter now uses a stable project UUID. Boot no longer logs NGX initialization
+failure and scene evaluation reaches the SR recorder, which still refuses missing
+inputs (-8). The real input/simulation identity and token path remains outstanding;
+this run is not successful SR acceptance. No gameplay motion coverage is inferred
+from the opening scene.
+
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
 Check HUD composition, motion, resize, provider changes, pause/load history resets,
