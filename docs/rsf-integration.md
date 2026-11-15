@@ -235,6 +235,18 @@ work must establish the framework's transfer to draw work and propagate the sour
 identity through queued NVN commands; reading a global "latest input" on replay
 would incorrectly associate asynchronous frames.
 
+The light-message observers in `rsf_frame.c` preserve the SDK operation and trace
+bounded messages per guest-thread/queue pair under `TOTK_TRACE=present`. The draw
+thread receives its work through the Sead thread loop (`main+0xacf89c`); matching
+blocking sends come from the input/calculation thread through
+`main+0x59a688`, called from `main+0x2db62c` under the framework pre-calculation
+stage (`main+0x2dab78`). The subsequent calculation stage is called at
+`main+0x2dab88`, entering `main+0x2dad80`. In the captured run, the first two sends
+each preceded the corresponding next pad poll. The message is the constant 1,
+not a unique frame identifier. Queue addresses are runtime owners, not portable
+addresses. Any source metadata must follow publication/consumption order and the
+completed calculation, rather than assigning the next input sample to received work.
+
 The corrected FidelityFX Vulkan runtime now executes FSR3 SR at native resolution
 in the opening scene on the RTX 4070 Laptop GPU. That run completed 1,671 presents
 without reported shader failures or skipped draws. A validation run with

@@ -710,6 +710,17 @@ NVN_API(nvnQueuePresentTexture) {
         if (n <= 32 || !(n % 600))
             rt_log("present boundary: call %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
                    (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
+        if (n <= 2) {
+            uint64_t fp = c->x[29];
+            for (unsigned depth = 0; depth < 12 && !(fp & 15) && mem_guest_readable(fp, 16); depth++) {
+                uint64_t pair[2];
+                memcpy(pair, (const void *)(uintptr_t)fp, sizeof pair);
+                rt_log("present caller: call %d depth %u return 0x%llx", n, depth,
+                       (unsigned long long)pair[1]);
+                if (pair[0] <= fp || pair[0] - fp > 0x100000) break;
+                fp = pair[0];
+            }
+        }
     }
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
