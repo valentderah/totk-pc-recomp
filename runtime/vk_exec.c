@@ -1230,6 +1230,7 @@ static void *grow_n(void *p, uint32_t *cap, size_t elem) {
 }
 
 static void copy_state(VkExec *dst, const VkExec *src) {
+    dst->source_frame = src->source_frame;
     memcpy((char *)dst + VK_EXEC_STATE_BEGIN, (const char *)src + VK_EXEC_STATE_BEGIN, VK_EXEC_STATE_END - VK_EXEC_STATE_BEGIN);
     vk_exec_dirty_all(dst);   // the bound state was replaced: no draw memo may take it for what it held
 }
@@ -1745,7 +1746,7 @@ static int chunked_on(void) {
     return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed;
 }
 
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source) {
     VkExec *ex = &X;
     SC.rec_t0 = kern_now_ns();
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
@@ -1755,6 +1756,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     nvn_pins_sweep(nvn_submit_count(), keep, 9);
     ex->cb = cb;
     ex->fence = fence;
+    ex->source_frame = source;
     ex->recorded = 0;
     ex->in_pass = 0;
     ex->mark = NULL;

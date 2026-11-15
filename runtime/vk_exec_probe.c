@@ -58,7 +58,7 @@ static int test_sync(const GfxBackend *b, uint8_t *guest, uint64_t *first, uint6
     *first = prev + 1;
     for (int i = 0; i < SUBMITS; i++) {
         vk_completion_add(prev + 1, note, (void *)(uintptr_t)(prev + 1));   // queued before the value exists, as vk_exec.c does
-        uint64_t f = b->submit(i % 3 ? handles : NULL, i % 3);
+        uint64_t f = b->submit(i % 3 ? handles : NULL, i % 3, 0);
         CHECK(f == prev + 1, "submission %d got fence %llu after %llu", i, (unsigned long long)f, (unsigned long long)prev);
         CHECK(b->fence_done() <= f, "fence_done %llu ahead of the newest submission %llu",
               (unsigned long long)b->fence_done(), (unsigned long long)f);
@@ -77,7 +77,7 @@ static int test_sync(const GfxBackend *b, uint8_t *guest, uint64_t *first, uint6
     static WordWrite ww;
     ww = (WordWrite){word, 0x5EC0DE01u};
     vk_completion_add(prev + 1, write_word, &ww);
-    uint64_t f = b->submit(NULL, 0);
+    uint64_t f = b->submit(NULL, 0, 0);
     CHECK(f == prev + 1, "word submission got fence %llu", (unsigned long long)f);
     CHECK(b->fence_wait(f, 5000000000ull), "fence_wait of the word submission timed out");
     CHECK(*word == 0x5EC0DE01u, "guest word is %#x after fence_wait", *word);
@@ -85,7 +85,7 @@ static int test_sync(const GfxBackend *b, uint8_t *guest, uint64_t *first, uint6
     // finish drains everything.
     for (int i = 0; i < TAIL; i++) {
         vk_completion_add(prev + 1, note, (void *)(uintptr_t)(prev + 1));
-        prev = b->submit(handles, 2);
+        prev = b->submit(handles, 2, 0);
     }
     b->finish();
     CHECK(b->fence_done() == prev, "fence_done %llu after finish, newest %llu", (unsigned long long)b->fence_done(),
@@ -217,7 +217,7 @@ static int test_clear(const GfxBackend *b, uint8_t *guest, int *n_inside) {
     CHECK(p <= stream + sizeof stream, "op stream overflow");
 
     uint64_t handle = (uint64_t)(uintptr_t)stream;
-    uint64_t f = b->submit(&handle, 1);
+    uint64_t f = b->submit(&handle, 1, 0);
     CHECK(b->fence_wait(f, 5000000000ull), "fence_wait of the clear submission timed out");
 
     static uint32_t px[TEX_W * TEX_H];
@@ -422,7 +422,7 @@ static int test_marks(const GfxBackend *b, pool_t *pool, tex_t *color, prog_t *g
     q = put(q, OP_END, NULL, 0);
     CHECK(q <= stream + sizeof stream, "pass-marks op stream overflow");
     uint64_t handle = (uint64_t)(uintptr_t)stream;
-    uint64_t f = b->submit(&handle, 1);
+    uint64_t f = b->submit(&handle, 1, 0);
     CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the pass-marks submission timed out");
     uint32_t started = 0, finished = 0;
     vk_pass_marks_read(&started, &finished);
@@ -597,7 +597,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         q = put(q, OP_END, NULL, 0);
         CHECK(q <= stream + sizeof stream, "draw op stream overflow");
         uint64_t handle = (uint64_t)(uintptr_t)stream;
-        uint64_t f = b->submit(&handle, 1);
+        uint64_t f = b->submit(&handle, 1, 0);
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the draw submission timed out");
         const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
         b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
@@ -607,7 +607,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         if (diff && vk_caps.gpl) {   // the same draw through the shared set 0 layout: texel-equal
             static uint32_t px2[TEX_W * TEX_H];
             int was = vk_pipeline_set_indep(0);
-            f = b->submit(&handle, 1);
+            f = b->submit(&handle, 1, 0);
             CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the shared-layout draw timed out");
             b->read_texels(&color, NULL, &r, (uint8_t *)px2, TEX_W * 4, TEX_W * TEX_H * 4);
             vk_pipeline_set_indep(was);
@@ -638,7 +638,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         q = put(q, OP_DRAW_IDX_IND, &di, sizeof di);
         q = put(q, OP_END, NULL, 0);
         uint64_t handle = (uint64_t)(uintptr_t)stream;
-        uint64_t f = b->submit(&handle, 1);
+        uint64_t f = b->submit(&handle, 1, 0);
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the indirect draw timed out");
         static uint32_t pxi[TEX_W * TEX_H];
         const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
@@ -676,7 +676,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         q = put(q, OP_DISPATCH_IND, &dpi, sizeof dpi);
         q = put(q, OP_END, NULL, 0);
         uint64_t handle = (uint64_t)(uintptr_t)stream;
-        uint64_t f = b->submit(&handle, 1);
+        uint64_t f = b->submit(&handle, 1, 0);
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the dispatch submission timed out");
         dispatched++;
         ind_dispatches++;
@@ -711,7 +711,7 @@ static int xf_submit(const GfxBackend *b, uint8_t *stream, uint8_t *end) {
     end = put(end, OP_END, NULL, 0);
     (void)stream;
     uint64_t handle = (uint64_t)(uintptr_t)stream;
-    uint64_t f = b->submit(&handle, 1);
+    uint64_t f = b->submit(&handle, 1, 0);
     return b->fence_wait(f, 5000000000ull);
 }
 

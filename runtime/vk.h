@@ -531,7 +531,7 @@ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h)
 // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 // once the GPU reached it and the completion thread ran its side effects. Guest or host threads.
 void vk_sync_start(void);                  // vk_init (fatal without a device) and the completion thread; idempotent
-uint64_t vk_sync_submit(const uint64_t *handles, int n);   // records with vk_exec_record, submits; returns the value
+uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source); // source copied through asynchronous replay
 uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the next queued submission signals
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
 uint64_t vk_sync_fence_done(void);         // highest done value
@@ -542,7 +542,7 @@ void vk_sync_shutdown(void);               // finish, stop the completion thread
 // begun and ends. fence is the value this submission will signal. Returns the number of commands recorded into the
 // command buffer it holds at the end (0: that one stays empty and is not submitted). A weak vk_sync.c version accepts
 // empty streams only.
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence);
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source);
 // Inside vk_exec_record, outside a render pass: ends the command buffer recorded so far, submits it (after the upload
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.

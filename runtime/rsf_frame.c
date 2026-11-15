@@ -4,6 +4,7 @@
 #include "cfg.h"
 #include "layout.h"
 #include "rsf_frame.h"
+#include "rsf_handoff.h"
 #include "rsf_runtime.h"
 #include "platform/platform.h"
 #include <rescaleframe/native_latency_vulkan.h>
@@ -14,8 +15,20 @@
 #endif
 
 static PlatMutex frame_lock = PLAT_MUTEX_INIT;
-static struct FrameOwner { void *thread; uint64_t framework, current, completed; int sampled; } frames[32];
+static struct FrameOwner { void *thread; uint64_t framework, current, completed, draw, draw_queue; int sampled; } frames[32];
 static uint64_t next_source;
+
+static int tracking_enabled(void) {
+    // These selections require restart. Queue initialization happens after
+    // cfg_init, before any framework calculation opens a source.
+    static int cached = -1;
+    int value = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+    if (value < 0) {
+        value = !!(cfg_int("TOTK_RSF_ENABLED") || cfg_int("TOTK_RSF_FG") || cfg_int("TOTK_RSF_LOW_LATENCY"));
+        __atomic_store_n(&cached, value, __ATOMIC_RELEASE);
+    }
+    return value;
+}
 
 static struct FrameOwner *frame_owner(void *thread) {
     if (!thread) return NULL;
@@ -33,6 +46,7 @@ static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
     rsf_game_cpu_event event = {.struct_size = sizeof event, .stage = stage,
         .session_id = 1, .source_frame_id = source, .timestamp_qpc = plat_counter(),
         .qpc_frequency = plat_counter_hz(), .event_version = RSF_GAME_CPU_EVENT_VERSION,
+        .render_expected = stage == RSF_GAME_CPU_FRAME_END && !(flags & RSF_GAME_CPU_RENDER_SKIPPED),
         .flags = RSF_GAME_CPU_INPUT_KEYED | flags};
     // The core may pace at INPUT_SAMPLE. No virtual guest core or frame-state
     // lock can span its driver sleep; rendering continues on the other threads.
@@ -103,6 +117,53 @@ void rsf_frame_input(Cpu *c) {
     cpu_fact(source, RSF_GAME_CPU_INPUT_SAMPLE, 0);
 }
 
+uint64_t rsf_frame_draw_source(Cpu *c) {
+    uint64_t source = 0;
+    plat_mutex_lock(&frame_lock);
+    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread) source = frames[i].draw;
+    plat_mutex_unlock(&frame_lock);
+    return source;
+}
+
+void rsf_frame_draw_done(Cpu *c) {
+    plat_mutex_lock(&frame_lock);
+    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread) frames[i].draw = frames[i].draw_queue = 0;
+    plat_mutex_unlock(&frame_lock);
+}
+
+static void retire_draw_queue(uint64_t queue) {
+    rsf_handoff_finalize(queue);
+    plat_mutex_lock(&frame_lock);
+    for (unsigned i = 0; i < 32; i++) if (frames[i].draw_queue == queue) frames[i].draw = frames[i].draw_queue = 0;
+    plat_mutex_unlock(&frame_lock);
+}
+
+static void publish_draw(Cpu *c, uint64_t queue, uint64_t message) {
+    uint64_t framework = 0, source = 0, caller[2], draw_thread;
+    // Framework pre-calc publishes the preceding completed calculation to its
+    // draw thread. x19 still holds that framework at the Sead send call.
+    if (rt_game_version == 143 && c->x[30] == MOD_MAIN_BASE + 0x59a6c8 &&
+        !(c->x[29] & 15) && mem_guest_readable(c->x[29], sizeof caller)) {
+        memcpy(caller, (const void *)(uintptr_t)c->x[29], sizeof caller);
+        if (caller[1] == MOD_MAIN_BASE + 0x2db62c && mem_guest_readable(c->x[19] + 0x198, 8)) {
+            memcpy(&draw_thread, (const void *)(uintptr_t)(c->x[19] + 0x198), sizeof draw_thread);
+            if (queue >= 0x28 && draw_thread == queue - 0x28) framework = c->x[19];
+        }
+    }
+    plat_mutex_lock(&frame_lock);
+    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread &&
+        frames[i].framework == framework && !frames[i].current) source = frames[i].completed;
+    plat_mutex_unlock(&frame_lock);
+    if (!rsf_handoff_publish(queue, message, c->thread, framework, source)) return;
+    plat_mutex_lock(&frame_lock);
+    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread && frames[i].completed == source)
+        frames[i].completed = 0;
+    plat_mutex_unlock(&frame_lock);
+    cpu_fact(source, RSF_GAME_CPU_FRAME_END, 0);
+    if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+        rt_log("rsf draw published: queue 0x%llx source %llu", (unsigned long long)queue, (unsigned long long)source);
+}
+
 #ifdef RT_PATCH_PAGE
 static void calculation_begin(Cpu *c) {
     // Displaced ADRP from the verified 1.4.3 framework calculation entry.
@@ -165,6 +226,7 @@ static int trace_count(void *thread, uint64_t queue, int send) {
 
 static void observe_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
+    if (tracking_enabled()) publish_draw(c, queue, message);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, queue, 1);
         if (n)
@@ -189,6 +251,19 @@ static void observe_send(Cpu *c) {
 static void observe_receive_impl(Cpu *c, int trying) {
     uint64_t output = c->x[0], queue = c->x[1], caller = c->x[30];
     rt_original(c);
+    if (tracking_enabled() && (!trying || c->x[0]) && mem_guest_readable(output, sizeof(uint64_t))) {
+        uint64_t message, source;
+        memcpy(&message, (const void *)(uintptr_t)output, sizeof message);
+        if (rsf_handoff_receive(queue, message, &source)) {
+            plat_mutex_lock(&frame_lock);
+            struct FrameOwner *owner = frame_owner(c->thread);
+            if (owner) { owner->draw = source; owner->draw_queue = queue; }
+            plat_mutex_unlock(&frame_lock);
+            if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+                rt_log("rsf draw consumed: thread %p queue 0x%llx source %llu", c->thread,
+                       (unsigned long long)queue, (unsigned long long)source);
+        }
+    }
     if ((rt_trace & RT_TRACE_PRESENT) && (!trying || c->x[0])) {
         int n = trace_count(c->thread, queue, 0);
         if (n && mem_guest_readable(output, sizeof(uint64_t))) {
@@ -206,6 +281,7 @@ static void observe_try_receive(Cpu *c) { observe_receive_impl(c, 1); }
 
 static void observe_try_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
+    if (tracking_enabled()) rsf_handoff_foreign(queue);
     rt_original(c);
     if ((rt_trace & RT_TRACE_PRESENT) && c->x[0]) {
         int n = trace_count(c->thread, queue, 1);
@@ -221,6 +297,7 @@ HOST_OBSERVER("_ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeE
 HOST_OBSERVER("_ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE", observe_try_receive);
 // Jam inserts at the front. Keep the distinction visible in its own trace.
 static void observe_jam(Cpu *c) {
+    if (tracking_enabled()) rsf_handoff_foreign(c->x[0]);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, c->x[0], 1);
         if (n) rt_log("draw handoff: jam %d thread %p queue 0x%llx message 0x%llx caller 0x%llx ns %llu",
@@ -230,3 +307,13 @@ static void observe_jam(Cpu *c) {
     rt_original(c);
 }
 HOST_OBSERVER("_ZN2nn2os20JamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_jam);
+static void observe_try_jam(Cpu *c) { if (tracking_enabled()) rsf_handoff_foreign(c->x[0]); rt_original(c); }
+HOST_OBSERVER("_ZN2nn2os23TryJamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_try_jam);
+static void observe_initialize(Cpu *c) {
+    uint64_t queue = c->x[0];
+    rt_original(c);
+    if (tracking_enabled()) { retire_draw_queue(queue); rsf_handoff_initialize(queue); }
+}
+static void observe_finalize(Cpu *c) { if (tracking_enabled()) retire_draw_queue(c->x[0]); rt_original(c); }
+HOST_OBSERVER("_ZN2nn2os27InitializeLightMessageQueueEPNS0_21LightMessageQueueTypeEPmm", observe_initialize);
+HOST_OBSERVER("_ZN2nn2os25FinalizeLightMessageQueueEPNS0_21LightMessageQueueTypeE", observe_finalize);

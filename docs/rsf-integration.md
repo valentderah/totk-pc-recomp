@@ -298,6 +298,45 @@ and zero input substitutes. The independent pad reads seen later in another call
 tree remain unassociated. This corrects the worker-input gap above, not the still
 missing source propagation into the draw queue and Vulkan replay.
 
+The source now follows the framework's observed light-message queue lifecycle.
+`rsf_handoff.c` keeps a bounded FIFO of sidecar source tags, including the initial
+unassociated draw. A queue must be initialized and its first publication must be
+the verified framework draw call. The framework, draw-thread object, publisher and
+message must match. Foreign operations, overflow, mismatched messages and queue
+finalization invalidate association until reinitialization. The native queue
+operations still run. Consumed ownership is retired at the guest Present boundary
+and on queue retirement.
+
+NVN submission copies this source into the backend call, asynchronous replay item,
+Vulkan recording context and recording-worker snapshots. SR records use CPU session
+1 only when this copied source exists; unassociated records retain the separate
+renderer namespace and ambiguity flag. FG remains prohibited pending its output
+and final Present association. `tests/rsf_handoff_check.c` verifies initial source
+zero, FIFO and wraparound, foreign publishers/operations, overflow, mismatch,
+finalization and reinitialization. The frame fixture, game build, selftest, config
+probe and Vulkan execution probe pass.
+
+DLSS now reaches successful SR evaluation with matching CPU tokens. A six-second
+opening-scene run completed 1,788 presents and passed 300 SR evaluations, with zero
+validation errors, shader failures and skipped draws using `TOTK_GPL=0` and
+`TOTK_DESC_TEMPLATE=0`. The captured scene is visible. The default graphics-library
+path is not validated: another run produced invalid push-descriptor messages and
+a validation-layer crash, while the matching RSF-disabled run passed. That remains
+an unresolved graphics-library/validation interaction, not a clean default-path
+acceptance or a claim of complete motion quality.
+
+The runtime's deliberate abrupt exit used `ExitProcess`, which invokes DLL detach
+handlers. After the first successful DLSS run, SDK cleanup reached Vulkan after
+the validation layer's state had been destroyed, despite a reported process exit
+code of zero. `plat_exit` now uses self-termination after its existing explicit
+flushes, matching its no-handler contract and the Linux `_exit` path. Microsoft
+documents this distinction in [ExitProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess)
+and [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess).
+The subsequent successful validation run exited without the DLL-cleanup abort.
+After source retirement at guest Present was added, the menu automation run
+captured all nine settings tabs and completed 1,775 presents with zero validation
+errors, shader failures and skipped draws under the same validation switches.
+
 The corrected FidelityFX Vulkan runtime now executes FSR3 SR at native resolution
 in the opening scene on the RTX 4070 Laptop GPU. That run completed 1,671 presents
 without reported shader failures or skipped draws. A validation run with
@@ -338,9 +377,9 @@ implementation is removed and configuration, menu, installer and packaging all
 select and deploy RSF. Provider availability alone does not prove generated frames
 were presented or latency markers reached the SDK.
 
-The in-game Graphics page now contains a ReScaleFrame group with enable, provider
+The in-game Graphics page now contains an Upscaling & Framegen group with enable, provider
 and quality controls, plus disabled frame-generation and low-latency controls
-marked unavailable. The DLSS model and character-mask controls have been removed
+marked unavailable. Visible controls and tooltips have no RSF branding. The DLSS model and character-mask controls have been removed
 from that page. New menu text falls back to English in untranslated languages.
 `rsf_enabled` and `rsf_quality` are the active keys; unset keys inherit legacy
 `dlaa` and `dlss` values. Menu/C sources pass UCRT64 syntax checks. A game-rendered

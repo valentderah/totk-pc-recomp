@@ -89,6 +89,7 @@ typedef struct VkExec {
     // ---- per command buffer
     VkCommandBuffer cb;                  // being recorded
     uint64_t fence;                      // timeline value the submission signals (vk_completion_add)
+    uint64_t source_frame;               // actual calculation carried by the guest draw queue; zero if unassociated
     int recorded;                        // Vulkan commands recorded so far; every handler adds the ones it records
     int in_pass;                         // inside vkCmdBeginRendering
     uint32_t dirty;                      // VK_EXEC_DIRTY_*

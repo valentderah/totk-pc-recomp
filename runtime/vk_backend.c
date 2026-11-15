@@ -63,7 +63,7 @@ static void present_main(void *arg) {
         vk_reflex_present_frame(j.pid);   // the present of this blit, and the submission after it, are the frame's
         vk_reflex_submit_frame(j.pid);
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
-        uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
+        uint64_t f = vk_sync_submit(NULL, 0, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
@@ -116,7 +116,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
         if (value) {   // the queued value is still signalled, in order
             vk_present_drain();
-            uint64_t f = vk_sync_submit(NULL, 0);
+            uint64_t f = vk_sync_submit(NULL, 0, 0);
             if (f != value) rt_fatal("vk: skipped present signalled %llu, queued as %llu", (unsigned long long)f, (unsigned long long)value);
         }
         return;
@@ -146,7 +146,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
 enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE };
 typedef struct {
     int kind, n, has_crop, crop[4];
-    uint64_t value, submit_no, at, queued, pid;   // pid: the game's frame when it queued the item (present ID)
+    uint64_t value, submit_no, at, queued, pid, source;   // pid: the game's frame when it queued the item (present ID)
     uint64_t *h;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
@@ -204,11 +204,11 @@ void gfx_replay_wait_value(uint64_t v) {
     plat_mutex_unlock(&rl);
 }
 
-static uint64_t submit_sync(const uint64_t *handles, int n) {
+static uint64_t submit_sync(const uint64_t *handles, int n, uint64_t source) {
     vk_sync_start();
     vk_present_drain();
     vk_texture_new_submit();
-    return vk_sync_submit(handles, n);
+    return vk_sync_submit(handles, n, source);
 }
 
 static void replay_main(void *arg) {
@@ -226,7 +226,7 @@ static void replay_main(void *arg) {
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
             vk_reflex_submit_frame(it.pid);   // the replay thread submits the frame the game was on when it queued it
-            uint64_t f = submit_sync(it.h, it.n);
+            uint64_t f = submit_sync(it.h, it.n, it.source);
             if (f != it.value)
                 rt_fatal("vk: replayed submission signalled %llu, queued as %llu", (unsigned long long)f,
                          (unsigned long long)it.value);
@@ -408,10 +408,10 @@ static void vk_be_texture_release(const tex_t *t) {
 static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
 // Asynchronous: the handles (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued;
 // the value returned is the one the replay will signal.
-static uint64_t vk_be_submit(const uint64_t *handles, int n) {
-    if (!gfx_replay_async()) return submit_sync(handles, n);
+static uint64_t vk_be_submit(const uint64_t *handles, int n, uint64_t source) {
+    if (!gfx_replay_async()) return submit_sync(handles, n, source);
     vk_sync_start();
-    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .pid = vk_reflex_frame()};
+    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .source = source, .pid = vk_reflex_frame()};
     if (n > 0) {
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");

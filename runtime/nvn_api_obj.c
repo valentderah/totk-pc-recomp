@@ -17,6 +17,7 @@
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
+#include "rsf_frame.h"
 #include "platform/platform.h"
 
 // ---------- Descriptor pools
@@ -736,6 +737,7 @@ NVN_API(nvnQueuePresentTexture) {
     uint64_t slot = now + pace(&o->pace, now, period);
     nvn_sync_ahead_present();
     gfx_backend()->present(t, o->crop, slot);
+    rsf_frame_draw_done(c);
     o->ticket[idx] = o->presents;
     o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
