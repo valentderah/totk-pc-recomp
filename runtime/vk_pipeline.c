@@ -873,6 +873,78 @@ out:
     return o;
 }
 
+// Discard with demote semantics (docs/maxwell.md 3.5). Maxwell's KIL keeps the fragment running as a helper, so the
+// derivatives its 2x2 quad takes afterwards stay defined; the translator emits OpKill, which ends the invocation, and
+// what the quad's other fragments then get from an implicit derivative (OpImageQueryLod, implicit-LOD samples, dFdx) is
+// undefined. Mesa keeps computing after a discard; AMD's Windows compiler does not, and TotK's cloud shader, which
+// discards where the scene is in front and then takes OpImageQueryLod for its noise textures, lost fog in the pixels
+// sharing a quad with a discarded one: a light fringe round every silhouette against clouds (issue #164).
+// Each OpKill whose block is a direct target of a selection header becomes OpDemoteToHelperInvocation plus a branch to
+// that selection's merge block, so the fragment goes on computing and writes nothing. An OpKill anywhere else (the end
+// of a function, a switch case) stays. NULL: nothing to change.
+// On by default on AMD's own drivers, where the fringe shows; other drivers keep the translator's OpKill, their output
+// unchanged. TOTK_DEMOTE=1 or 0 overrides on any driver that enables shaderDemoteToHelperInvocation (vk_caps.demote,
+// set in vk_device.c create_device); without the feature the module keeps OpKill, since the capability would be invalid.
+static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
+           OP_BRANCH_CONDITIONAL = 250, OP_KILL = 252, OP_DEMOTE = 5380, CAP_DEMOTE = 5379 };
+    static const char ext_name[36] = "SPV_EXT_demote_to_helper_invocation";   // 35 characters and the terminator: 9 words
+    static int on = -1;
+    if (on < 0) {
+        on = vk_caps.demote && rt_knob("DEMOTE", vk_caps.amd && !vk_caps.mesa ? "1" : "0");
+        rt_log("vk_pipeline: discard as demote: %s (shaderDemoteToHelperInvocation %d, TOTK_DEMOTE)", on ? "on" : "off",
+               vk_caps.demote);
+    }
+    if (!on || n < 5) return NULL;
+    uint64_t kills = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!l || i + l > n) return NULL;
+        if (op == OP_KILL) kills++;
+        if (op == OP_CAPABILITY && l >= 2 && w[i + 1] == CAP_DEMOTE) return NULL;   // already demotes
+        i += l;
+    }
+    if (!kills) return NULL;
+    uint32_t bound = w[3] < (1u << 22) ? w[3] : (1u << 22);
+    uint32_t *merge_of = calloc(bound ? bound : 1, sizeof *merge_of);   // label -> merge block of the selection that branches to it
+    uint32_t *o = malloc((n + 12 + 2 * kills) * 4);
+    if (!merge_of || !o) { free(merge_of), free(o); return NULL; }
+    uint64_t on_w = 5, changed = 0;
+    uint32_t cur = 0, pending = 0;
+    int declared = 0;
+    memcpy(o, w, 5 * 4);
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (!declared && op != OP_CAPABILITY) {   // capabilities come first, extensions right after them
+            o[on_w++] = 2u << 16 | OP_CAPABILITY, o[on_w++] = CAP_DEMOTE;
+            o[on_w++] = 10u << 16 | OP_EXTENSION;
+            memcpy(o + on_w, ext_name, sizeof ext_name), on_w += 9;
+            declared = 1;
+        }
+        if (op == OP_LABEL && l >= 2) cur = a[0];
+        if (op == OP_BRANCH_CONDITIONAL && l >= 4 && pending) {
+            // The true and the false block lie directly in the selection; a target that is the merge block itself does not.
+            for (int k = 1; k <= 2; k++)
+                if (a[k] < bound && a[k] != pending) merge_of[a[k]] = merge_of[a[k]] ? ~0u : pending;   // two headers: leave it
+        }
+        pending = op == OP_SELECTION_MERGE && l >= 3 ? a[0] : 0;
+        uint32_t m = op == OP_KILL && cur < bound ? merge_of[cur] : 0;
+        if (m && m != ~0u && m != cur) {
+            o[on_w++] = 1u << 16 | OP_DEMOTE;
+            o[on_w++] = 2u << 16 | OP_BRANCH, o[on_w++] = m;
+            changed++;
+        } else {
+            memcpy(o + on_w, w + i, l * 4), on_w += l;
+        }
+        i += l;
+    }
+    free(merge_of);
+    if (!changed) { free(o); return NULL; }
+    *out_n = on_w;
+    return o;
+}
+
 // True when the module declares a GroupNonUniform* or SubgroupBallot-style capability (lane masks assume 32 lanes).
 static int uses_subgroup_ops(const uint32_t *w, uint64_t words) {
     for (uint64_t i = 5; i < words;) {
@@ -899,6 +971,9 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint64_t demoted_n = 0;
+    uint32_t *demoted = spirv_demote(w, words, &demoted_n);
+    if (demoted) free(fixed), fixed = demoted, w = demoted, words = demoted_n;
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
