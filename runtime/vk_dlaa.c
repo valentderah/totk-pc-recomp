@@ -903,8 +903,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
     int masked = 0;
-    int motion_ok = !no_mv && mv_pass(ex, e, zv, jx, jy, char_bias(), &masked);
-    if (!motion_ok) {
+    // Depth and camera metadata are still needed when the diagnostic requests
+    // zero motion. Produce those inputs before clearing just the vector image.
+    int motion_ok = mv_pass(ex, e, zv, jx, jy, char_bias(), &masked);
+    if (no_mv || !motion_ok) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
