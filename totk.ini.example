@@ -282,7 +282,7 @@
 # rsf_provider_dir = C:\ReScaleFrame\providers
 # Frame generation is still under integration; its menu control is disabled.
 # rsf_fg = 0
-# Low latency: 0 off, 1 on when supported by the GPU; independent of upscaling.
+# Low latency: 0 off, 1 on, 2 boost where supported; independent of upscaling.
 # Restart after changing. The runtime selects the supported latency technology.
 # rsf_low_latency = 0
 # Legacy configuration aliases (used only when the corresponding RSF key is unset):
@@ -302,8 +302,8 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
-# NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
-# Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
+# Legacy latency alias: off, on, or boost maps to rsf_low_latency = 0, 1, or 2
+# only when rsf_low_latency is unset. RSF owns pacing and vendor selection. Read at start.
 # reflex = off
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.

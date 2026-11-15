@@ -626,3 +626,26 @@ refuses inputs whose output extent differs, preserving ordinary presentation;
 FG resize recovery is not complete. Ordinary gameplay HUD, reduced-resolution
 SR, skipped/unknown FXAA paths, other FG providers and visual quality still need
 acceptance. The FG menu control remains disabled.
+
+
+## Post-rebase latency settings
+
+The upstream rebase reintroduced the native `reflex` setting. When
+`rsf_low_latency` is unset, that legacy setting now supplies off/on/boost as
+RSF mode 0/1/2. An explicit RSF selection takes precedence, including off.
+This preserves existing settings while RSF remains responsible for selecting
+the supported latency technology. Removing the legacy device activation and
+adding the boost menu choice are coordinated with the renderer changes.
+
+An isolated CPU executable linked the complete production `runtime/cfg.c`
+against fail-fast platform stubs and passed file-backed selection, environment
+override and explicit-off precedence cases. `runtime/cfg_probe.c` carries the
+regression cases for the normal `--probe-cfg` gate. The complete config and
+probe sources compile with UCRT64 Clang, and `tests/settings_doc_check.py`
+reports zero problems. This is CPU evidence, not a new device latency run.
+
+The first full build after rebase stopped at two newly upstreamed
+`runtime/vk_exec_probe.c` calls that omitted the adapter's source-frame
+argument. Both now pass source 0 because the synthetic probe has no game source
+identity; the complete probe source compiles. The full renderer gate must run
+after the concurrent adapter changes settle.

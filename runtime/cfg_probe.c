@@ -57,6 +57,22 @@ int probe_cfg(void) {
     CHECK(cfg_load(path) == 0, "missing file is not an error");
     CHECK(cfg_get("TOTK_FPS60") == NULL, "missing file leaves no keys");
 
+    // Legacy Reflex settings configure the shared latency owner; explicit RSF
+    // settings override the alias, including an explicit disabled selection.
+    plat_setenv("TOTK_RSF_LOW_LATENCY", NULL);
+    plat_setenv("TOTK_REFLEX", "on");
+    CHECK(cfg_int("TOTK_RSF_LOW_LATENCY") == 1, "legacy Reflex on enables shared latency");
+    plat_setenv("TOTK_REFLEX", "boost");
+    CHECK(cfg_int("TOTK_RSF_LOW_LATENCY") == 2, "legacy Reflex boost preserves shared boost mode");
+    plat_setenv("TOTK_RSF_LOW_LATENCY", "0");
+    CHECK(cfg_int("TOTK_RSF_LOW_LATENCY") == 0, "explicit RSF off overrides legacy boost");
+    plat_setenv("TOTK_REFLEX", "off");
+    plat_setenv("TOTK_RSF_LOW_LATENCY", "1");
+    CHECK(cfg_int("TOTK_RSF_LOW_LATENCY") == 1, "explicit RSF on overrides legacy off");
+    plat_setenv("TOTK_RSF_LOW_LATENCY", NULL);
+    CHECK(cfg_int("TOTK_RSF_LOW_LATENCY") == 0, "legacy off disables shared latency");
+    plat_setenv("TOTK_REFLEX", NULL);
+
     // cfg_set / cfg_save: only changed lines move, comments stay, a missing key goes under its section
     static const char before[] =
         "\xEF\xBB\xBF# my settings\r\n"

@@ -16,7 +16,7 @@ native code into the process and retains the module until exit; restart to chang
 | `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `5` XeSS. Restart required. FSR4 submission is still under implementation. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
 | `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 | `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
-| `rsf_low_latency` (default `0`) | `1` enables supported latency technology independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
+| `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
 | `climb_fix` (default `1`) | Corrects the existing 1.4.3 climbing velocity loss above 60 fps. Requires the real-time frame step; lower rates keep the game's factor. `0` uses the shipping factor. | Arithmetic in the climbing velocity step. | Caution |
 
 | Setting | Effect | Runtime cost | Risk |
@@ -202,7 +202,7 @@ Many rows below are developer tools that only act together with another setting 
 | `mvprev_grow` (default `1`) | `0` keeps only three banks in the previous-frame tables. | Object motion that depends on the other banks is no longer tracked. | Caution |
 | `mvprev_skip` | Hex bank mask of banks left out of the previous-frame copy, replacing the default. | Different banks are tracked, which changes object motion. | Caution |
 | `mvprev_trust` | Hex bank mask of banks whose found previous-frame copy is taken without the check. | A copy that does not match is used anyway, which can give wrong motion. | Caution |
-| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency, holding frames to the frame limit the pacer uses (`fps_limit`, the monitor's rate for `display`); `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
+| `reflex` (default `off`) | Legacy alias: `off`, `on`, or `boost` supplies `rsf_low_latency` as `0`, `1`, or `2` when that key is unset. Read at start. | RSF selects and owns the supported vendor latency technology. An explicit `rsf_low_latency` takes precedence. | Safe |
 
 ## Scheduling and host
 

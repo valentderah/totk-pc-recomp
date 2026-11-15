@@ -477,7 +477,7 @@ static int sb_batches, sb_parts, sb_skipped, sb_validated;
 static void sb_present(void *arg) {
     (void)arg;
     while (!__atomic_load_n(&sb_stop, __ATOMIC_ACQUIRE)) {
-        vk_sync_submit(NULL, 0);
+        vk_sync_submit(NULL, 0, 0);
         plat_inc32(&sb_empty);
         plat_sleep_ns(200000);
     }
@@ -512,7 +512,7 @@ static int test_batches(const GfxBackend *b, prog_t *prog, const pool_t *pool, t
         q = put(q, OP_END, NULL, 0);
         CHECK(q <= stream + sizeof stream, "set batch op stream overflow");
         uint64_t handle = (uint64_t)(uintptr_t)stream;
-        f = b->submit(&handle, 1);   // the replay records it before submit returns: the stream is free again
+        f = b->submit(&handle, 1, 0);   // the replay records it before submit returns: the stream is free again
     }
     __atomic_store_n(&sb_stop, 1, __ATOMIC_RELEASE);
     plat_thread_join(t);

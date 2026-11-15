@@ -143,7 +143,7 @@ static const CfgMeta metas[] = {
     {"RSF_BACKEND", "3", "1|2|3|5", RESTART},
     {"RSF_ENABLED", "0", "0|1", RESTART},
     {"RSF_QUALITY", "native", "native|quality|balanced|performance|ultra_performance", LIVE},
-    {"RSF_FG", "0", "0|1|3|4|5", RESTART}, {"RSF_LOW_LATENCY", "0", "0|1", RESTART},
+    {"RSF_FG", "0", "0|1|3|4|5", RESTART}, {"RSF_LOW_LATENCY", "0", "0|1|2", RESTART},
     {"DLSS_PRESET", "default", "default|k|j", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
@@ -465,6 +465,16 @@ const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     // New menu keys inherit existing reconstruction settings until explicitly set.
     if (!v && !strcmp(name, "TOTK_RSF_ENABLED")) v = raw_get("TOTK_DLAA");
+    // Preserve legacy latency selections through the shared runtime. An explicit
+    // RSF selection, including off, takes precedence over the legacy key.
+    if (!v && !strcmp(name, "TOTK_RSF_LOW_LATENCY")) {
+        const char *legacy = raw_get("TOTK_REFLEX");
+        if (legacy) {
+            if (!strcasecmp(legacy, "boost") || !strcmp(legacy, "2")) v = "2";
+            else if (!strcasecmp(legacy, "on") || !strcmp(legacy, "1")) v = "1";
+            else v = "0";
+        }
+    }
     if (!v && !strcmp(name, "TOTK_RSF_QUALITY")) {
         v = raw_get("TOTK_DLSS");
         if (v && !strcmp(v, "dlaa")) v = "native";
