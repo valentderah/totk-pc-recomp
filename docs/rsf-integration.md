@@ -49,6 +49,14 @@ runtime receipt at its configured path, so its Streamline implementation was
 compiled out. A pinned SDK build is needed before this path can be validated.
 This does not establish FG WSI ownership or a low-latency input-event producer.
 
+The pinned corrected Streamline SDK now builds successfully under
+`build/rsf-sdk-host/artifacts/rescaleframe/streamline/Release/win-x64/runtime`.
+The original NVIDIA plugins are staged there from the SHA-512-pinned 2.14.1
+archive in RSF's Godot dependency lock. The corrected common/interposer binaries
+and their receipt remain intact. An RSF build enabling this implementation is
+being prepared under `build/rsf-sdk-host/rsf-native`, isolated from the shared RSF
+build directory after that build failed to open a native Vulkan object at link.
+
 The experimental scene path uses `rsf_backend` and `rsf_provider_dir`, converts
 scene colour into its own RGBA16F image, transitions colour/depth/motion to sampled
 layouts and output to transfer-destination, drains the recorder, calls RSF, then
