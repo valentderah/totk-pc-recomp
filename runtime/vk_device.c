@@ -132,7 +132,7 @@ static void mesa_cache_beside_exe(void) {
 }
 
 static int create_instance(void) {
-    rsf_runtime_load();
+    if (!rsf_vk_prepare()) return 0;
     mesa_cache_beside_exe();
     const char *ext[12];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);

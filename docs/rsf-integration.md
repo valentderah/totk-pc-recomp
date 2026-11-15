@@ -39,6 +39,15 @@ probe resolves all 22 exports required by this loader. These changes live in the
 RSF checkout and must accompany the eventual package; they are not vendored here.
 This proves export availability only, not ABI setup or GPU provider operation.
 
+`runtime/rsf_vulkan.c` now initializes the shared Streamline session before instance
+creation when DLSS SR is selected. Instance/device creation and proc lookups from
+the renderer go through that session's resolver. Non-DLSS SR keeps normal loader
+dispatch. The real `tests/rsf_vulkan_startup_check.c` probe builds, but initialization
+currently returns NOT_SUPPORTED: the local RSF build has no corrected Streamline
+runtime receipt at its configured path, so its Streamline implementation was
+compiled out. A pinned SDK build is needed before this path can be validated.
+This does not establish FG WSI ownership or a low-latency input-event producer.
+
 The experimental scene path uses `rsf_backend` and `rsf_provider_dir`, converts
 scene colour into its own RGBA16F image, transitions colour/depth/motion to sampled
 layouts and output to transfer-destination, drains the recorder, calls RSF, then

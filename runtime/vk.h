@@ -1,6 +1,7 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
 #include <vulkan/vulkan.h>
+#include "rsf_vulkan.h"
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
