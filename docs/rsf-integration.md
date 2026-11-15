@@ -392,3 +392,29 @@ the call, stale settings requests are dropped, heap limits are enforced, and an
 unchanged size does not rebuild targets. It passes with UCRT64 Clang. Build it with
 `-std=gnu11 -O1 -I runtime` and link the MSYS2 static `libzstd.a`; place and run the
 executable under `build/checks/`. Actual provider-driven resize in TotK remains unverified.
+
+## Character history bias input
+
+The input audit exposed a missing temporal input in the migration. The user's
+skin-smearing report and F10 capture belonged to Skyrim, not TotK.
+`vk_dlaa.c`, `mv_pass` still generated the R8 character current-colour bias mask,
+but `rsf_scene` never supplied it. The RSF Vulkan DLSS service also lacked its
+Streamline hint. The adapter now forwards the mask only when this frame's
+G-buffer class input was valid, transitions it to sampled layout around evaluation
+and restores GENERAL on every result. Mask allocations support transfer-source
+usage for the SDK's private copy and bounded readback. Existing character-mask
+strength and history behavior are preserved.
+
+The separate optional RSF `bias_current_color` input preserves the distinction
+between character history bias, material reactivity and transparency. Older ABI 2
+frame sizes remain accepted. See RSF's
+`docs/research/vulkan-character-history-bias-20261115.md` for the provider path.
+RSF converts the R8 mask into its own R16F image before tagging it because the
+pinned Streamline Vulkan format mapping omits R8_UNORM. The first R8-only run's
+format errors disappeared after this conversion. The corrected opening-scene run
+completed 1,767 presents and at least 300 successful evaluations with zero
+validation errors, shader failures and skipped draws, using GPL off and descriptor
+writes. The game self-test, configuration probe and four RSF Vulkan ABI/split
+contract tests pass. The full RSF gate retains two Anomaly FG device-test failures.
+This repairs a verified dropped input; deformation/unsupported-draw motion
+coverage and moving-scene visual acceptance remain open.

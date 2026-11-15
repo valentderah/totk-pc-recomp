@@ -194,7 +194,7 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
     }
     VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (!image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) ||
         !image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
         !image2d(w, h, VK_FORMAT_R32_SFLOAT, u, &e->device_depth, &e->device_depth_mem, &e->device_depth_view) ||
@@ -818,7 +818,7 @@ static rsf_srvk_image rsf_image(VkImage image, VkFormat format, unsigned w, unsi
     return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
 }
 
-static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
+static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy, int masked) {
     const VkCtx *c = vk_ctx();
     if (!e->rsf) {
         rsf_srvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SRVK_ABI_VERSION,
@@ -856,6 +856,7 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
     rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (masked) rsf_layout(cb, e->mask, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     uint64_t now = plat_now_ns();
     float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : 16.67f;
@@ -886,6 +887,7 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
         .motion = rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
         .output = rsf_image(e->out, VK_FORMAT_R16G16B16A16_SFLOAT, e->ow, e->oh, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
         .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1};
+    if (masked) frame.bias_current_color = rsf_image(e->mask, VK_FORMAT_R8_UNORM, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rec_drain();
     uint64_t started = T.on > 0 ? kern_now_ns() : 0;
     int result = rsf_sr_record(e->rsf, cb, &frame);
@@ -893,6 +895,7 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
     rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    if (masked) rsf_layout(cb, e->mask, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vk_exec_draw_new_cb(ex);
     return result;
@@ -946,7 +949,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
             rt_log("rsf: camera projection or transforms unavailable/invalid; skipping reconstruction");
         return;
     }
-    int result = rsf_scene(ex, e, jx, jy);
+    int result = rsf_scene(ex, e, jx, jy, masked);
     if (result == RSF_SR_PENDING) { D.reset = 1; D.jit_ok = 0; return; }
     if (!result) return dl_fail("RSF evaluation", 0);
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording
