@@ -19,6 +19,8 @@
 
 #include "cfg.h"
 #include "rsf_camera.h"
+#include "rsf_runtime.h"
+#include "rsf_sr.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -151,6 +153,7 @@ static int listed(const char *const *list, uint32_t n, const char *s) {
 }
 
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
+    if (cfg_get("TOTK_RSF_RUNTIME")) return;
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
@@ -160,6 +163,7 @@ void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
 
 void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n,
                          uint32_t max) {
+    if (cfg_get("TOTK_RSF_RUNTIME")) return;
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
@@ -190,6 +194,7 @@ static int vtable_ok(void) {
 }
 
 void vk_dlaa_init(void) {
+    if (cfg_get("TOTK_RSF_RUNTIME")) { N.available = rsf_runtime_load(); return; }
     if (!vk_dlaa_wanted() || !core_load()) return;
     // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
@@ -260,6 +265,10 @@ static struct {
         VmaAllocation mask_mem, chars_mem[2];
         VkImageView mask_view, chars_view[2];
         int chars_cur, chars_ok; // chars[chars_cur] is written next; chars_ok: the other holds last frame's
+        RsfSrSession *rsf;
+        VkImage sr_color;
+        VmaAllocation sr_color_mem;
+        VkImageView sr_color_view;
         NgxHandle *feat;
         uint64_t used;           // evals count when it last ran
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
@@ -330,6 +339,9 @@ static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, 
 static void free_size(struct Size *e) {
     const VkCtx *c = vk_ctx();
     vkDeviceWaitIdle(c->device);   // a third scene size: the evicted images may still be in flight
+    if (!rsf_sr_close(&e->rsf)) { D.failed = 1; return; }
+    if (e->sr_color_view) vkDestroyImageView(c->device, e->sr_color_view, NULL);
+    if (e->sr_color) vmaDestroyImage(c->vma, e->sr_color, e->sr_color_mem);
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
     if (e->device_depth_view) vkDestroyImageView(c->device, e->device_depth_view, NULL);
@@ -360,6 +372,7 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
     if (!e) {
         if (D.last == lru) D.last = NULL;
         free_size(e = lru);
+        if (e->rsf) return NULL;
     }
     VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -974,6 +987,97 @@ static int scene_shaped(const VkExecTarget *c) {
     return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
+static rsf_vk_function rsf_instance_proc(void *instance, const char *name) {
+    return (rsf_vk_function)vkGetInstanceProcAddr(instance, name);
+}
+static rsf_vk_function rsf_device_proc(void *device, const char *name) {
+    return (rsf_vk_function)vkGetDeviceProcAddr(device, name);
+}
+
+static void rsf_layout(VkCommandBuffer cb, VkImage image, VkImageLayout before, VkImageLayout after) {
+    VkImageMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = before, .newLayout = after, .image = image,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(cb, &dependency);
+}
+
+static rsf_srvk_image rsf_image(VkImage image, VkFormat format, unsigned w, unsigned h, VkImageLayout layout) {
+    return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
+}
+
+static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
+    const VkCtx *c = vk_ctx();
+    if (!e->rsf) {
+        rsf_srvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SRVK_ABI_VERSION,
+            .instance = c->instance, .physical_device = c->phys, .device = c->device,
+            .instance_proc = rsf_instance_proc, .device_proc = rsf_device_proc,
+            .backend = (uint32_t)cfg_int("TOTK_RSF_BACKEND"),
+            .quality = e->w >= e->ow ? 0 : e->w * 100 >= e->ow * 66 ? 1 :
+                       e->w * 100 >= e->ow * 57 ? 2 : e->w * 100 >= e->ow * 49 ? 3 : 4,
+            .output_width = e->ow, .output_height = e->oh,
+            .depth_inverted = D.projection.inverted, .depth_infinite = D.projection.infinite,
+            .runtime_directory_utf8 = cfg_get("TOTK_RSF_PROVIDER_DIR")};
+        uint32_t w, h;
+        if (!rsf_sr_open(&setup, &e->rsf, &w, &h)) return 0;
+        if (w != e->w || h != e->h) {
+            rt_log("rsf: provider requires %ux%u; scene is %ux%u", w, h, e->w, e->h);
+            return 0;
+        }
+    }
+    VkCommandBuffer cb = ex->cb;
+    if (!e->sr_color) {
+        if (!image2d(e->w, e->h, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &e->sr_color, &e->sr_color_mem, &e->sr_color_view)) return 0;
+        rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    }
+    VkImageBlit copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, D.color.level, D.color.base_layer, 1},
+        .srcOffsets = {{0, 0, 0}, {(int)e->w, (int)e->h, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {(int)e->w, (int)e->h, 1}}};
+    vkCmdBlitImage(cb, D.color.image, VK_IMAGE_LAYOUT_GENERAL, e->sr_color, VK_IMAGE_LAYOUT_GENERAL,
+                   1, &copy, VK_FILTER_NEAREST);
+    rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    uint64_t now = plat_now_ns();
+    float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : 16.67f;
+    D.last_eval_ns = now;
+    if (!(dt > 0 && dt < 100)) dt = 16.67f;
+    rsf_frame_record record = {.struct_size = sizeof record, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+        .frame_id = D.evals + 1, .session_id = 1, .view_id = 1,
+        .flags = RSF_FRAME_FLAG_NO_FG | RSF_FRAME_FLAG_AMBIGUOUS_ID | (D.reset ? RSF_FRAME_FLAG_RESET : 0),
+        .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+        .frame_time_ms = dt,
+        .camera = {.struct_size = sizeof(rsf_camera_frame), .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+            .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+            .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
+            .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
+            .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
+    rsf_srvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_SRVK_ABI_VERSION, .record = &record,
+        .color = rsf_image(e->sr_color, VK_FORMAT_R16G16B16A16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .depth = rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion = rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .output = rsf_image(e->out, VK_FORMAT_R16G16B16A16_SFLOAT, e->ow, e->oh, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
+        .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1};
+    rec_drain();
+    int ok = rsf_sr_record(e->rsf, cb, &frame);
+    rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    return ok;
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -984,12 +1088,14 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
         for (size_t i = 0; i < DLSS_SIZES; i++)
             if (D.sizes[i].out) free_size(&D.sizes[i]);
+        if (D.failed) return;
         D.last = NULL, D.preset_dirty = 0;
     }
     struct Size *e = size_for(cb, w, h, ow, oh);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
-    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
+    int use_rsf = cfg_get("TOTK_RSF_RUNTIME") != NULL;
+    if (!use_rsf && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
@@ -997,7 +1103,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
     int masked = 0;
-    if (no_mv || !mv_pass(ex, e, zv, jx, jy, char_bias(), &masked)) {
+    int motion_ok = !no_mv && mv_pass(ex, e, zv, jx, jy, char_bias(), &masked);
+    if (!motion_ok) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
@@ -1012,6 +1119,11 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     uint64_t c0 = timed ? kern_now_ns() : 0;
     rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
     if (timed) T.cpu_drain += kern_now_ns() - c0;
+    if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    if (use_rsf) {
+        if (!motion_ok || !D.projection_ok) return;
+        if (!rsf_scene(ex, e, jx, jy)) return dl_fail("RSF evaluation", 0);
+    } else {
     if (!e->feat) {
         p_setu(p, "CreationNodeMask", 1);
         p_setu(p, "VisibilityNodeMask", 1);
@@ -1077,6 +1189,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
     if (timed) T.cpu_ngx += kern_now_ns() - c0;
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
+    }
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's own commands
     D.reset = 0;
     D.last = e, e->used = D.evals + 1;

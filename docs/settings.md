@@ -2,13 +2,18 @@
 
 `TOTK_RSF_RUNTIME` (`rsf_runtime` in the ini) is an experimental absolute path to
 `ReScaleFrame.Runtime.dll`. When set, graphics initialization loads the module and
-checks its native Vulkan SR, FG and latency exports. This migration hook does not
-yet initialize providers or replace NGX rendering. Default: unset. Caution: loads
+checks its native Vulkan SR, FG and latency exports. It selects the experimental
+RSF scene evaluation path configured by `rsf_backend` and `rsf_provider_dir`. Default: unset. Caution: loads
 native code into the process and retains the module until exit; restart to change it.
 
 `totk.ini.example` describes the settings for players. This page lists the rest: diagnostics, test hooks, paths and experiments. Set one as `name = value` in `totk.ini`, or as the environment variable `TOTK_NAME`, which wins over the file. Remove the line to go back to the default.
 
 ## Safety
+
+| Setting | Effect | Runtime cost | Risk |
+| --- | --- | --- | --- |
+| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `5` XeSS. Restart required. FSR4 submission is still under implementation. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
+| `rsf_provider_dir` | Absolute provider SDK runtime directory passed to RSF; required for experimental SR evaluation. Default unset. | Loads native provider DLLs. | Caution |
 
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |

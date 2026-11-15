@@ -72,6 +72,10 @@ static struct {
 // next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
 // without that file DLSS never runs, and a DLSS mode would leave the game's plain scaling at 50..67 % of the output.
 static int dlss_dll(void) {
+    if (cfg_get("TOTK_RSF_RUNTIME")) {
+        const char *path = cfg_get("TOTK_RSF_RUNTIME");
+        return path && plat_file_exists(path);
+    }
 #ifdef _WIN32
     char exe[1024], path[1024 + 32];
     if (!plat_exe_path(exe, sizeof exe)) return 1;

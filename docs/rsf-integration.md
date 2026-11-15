@@ -1,8 +1,9 @@
 # ReScaleFrame integration
 
 The requested replacement covers super resolution, frame generation and low latency
-through ReScaleFrame for NVIDIA, AMD and Intel. Implementation is pending. The current
-renderer still uses NGX directly in `runtime/vk_dlaa.c`.
+through ReScaleFrame for NVIDIA, AMD and Intel. Implementation is in progress. The
+renderer selects RSF evaluation when `rsf_runtime` is configured and retains the
+legacy NGX path during migration.
 
 `runtime/rsf_runtime.c` now provides opt-in module loading and validates the required
 native Vulkan exports before exposing them. `runtime/vk_device.c`, `create_instance`
@@ -12,7 +13,7 @@ the rendering replacement below remain pending.
 `runtime/rsf_sr.c` now binds the typed SR session API from the installed SDK and
 handles creation, planning, recording, command retirement and destruction. Failed
 cleanup preserves ownership for retry. It passes UCRT64 Clang syntax checks against
-the actual SDK. The adapter has not yet been connected to `evaluate` or exercised
+the actual SDK. The adapter is connected to `evaluate`, but has not yet been exercised
 on the GPU. Builds consume external SDK headers through `TOTK_RSF_SOURCE`, defaulting
 to the sibling ReScaleFrame checkout; no RSF headers are copied into this repository.
 
@@ -37,6 +38,17 @@ passes the new `native_vulkan_dll_exports` regression test, and a separate DLL
 probe resolves all 22 exports required by this loader. These changes live in the
 RSF checkout and must accompany the eventual package; they are not vendored here.
 This proves export availability only, not ABI setup or GPU provider operation.
+
+The experimental scene path uses `rsf_backend` and `rsf_provider_dir`, converts
+scene colour into its own RGBA16F image, transitions colour/depth/motion to sampled
+layouts and output to transfer-destination, drains the recorder, calls RSF, then
+restores GENERAL layouts and invalidates draw bindings even after refused recording.
+The provider's planned render size must match the actual scene; mismatches are
+reported and stop evaluation. Camera/depth must be valid for that evaluation.
+This path currently reports a renderer-local identity with NO_FG and AMBIGUOUS_ID;
+it does not claim input-frame ownership or authorize generation. Provider setup
+and evaluation still need game validation. DLSS early Vulkan initialization,
+FSR4 split submission, negotiated scene resizing, UI and packaging remain pending.
 
 ## Integration boundaries
 
