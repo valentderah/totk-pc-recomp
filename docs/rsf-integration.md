@@ -216,10 +216,24 @@ reported shader failures or skipped draws. DLSS creation was initially refused:
 NGX rejected the plain-name project ID. Its shipped `nvsdk_ngx.h`,
 `NVSDK_NGX_Init_with_ProjectID` contract requires a GUID-shaped custom-engine ID.
 The adapter now uses a stable project UUID. Boot no longer logs NGX initialization
-failure and scene evaluation reaches the SR recorder, which still refuses missing
-inputs (-8). The real input/simulation identity and token path remains outstanding;
+failure and scene evaluation reaches the SR recorder, which still reports
+NOT_READY (-8): `native_latency_vulkan.cpp`, `rsf_slvk_invoke` cannot find a matching
+CPU-created frame token. The real input/simulation identity and token path remains outstanding;
 this run is not successful SR acceptance. No gameplay motion coverage is inferred
 from the opening scene.
+
+`TOTK_TRACE=present` now also logs bounded input-poll and guest-present boundaries
+(first 32, then every 600), including guest thread, caller and host timestamp.
+The first four input samples include a checked, bounded guest frame-pointer walk.
+No input values are logged. In the opening-scene run, the connected pad was polled
+by `main+0x47afa8` on a different guest thread from `main+0x2dc340` presentation.
+The first two input polls precede the first present; later samples and presents
+can interleave differently. Their counters cannot identify matching frames.
+The poll's caller chain reaches the controller collector, input-manager update,
+task calculation traversal and framework calculation (`main+0x2dad80`). Further
+work must establish the framework's transfer to draw work and propagate the source
+identity through queued NVN commands; reading a global "latest input" on replay
+would incorrectly associate asynchronous frames.
 
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.

@@ -704,6 +704,13 @@ NVN_API(nvnWindowAcquireTexture) {
 // time with the frame queue) the image is free for the next acquire. Added latency: the slack of the frame (period minus
 // its work), as on the Switch, plus up to a period with the frame queue.
 NVN_API(nvnQueuePresentTexture) {
+    if (rt_trace & RT_TRACE_PRESENT) {
+        static int32_t traced;
+        int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);
+        if (n <= 32 || !(n % 600))
+            rt_log("present boundary: call %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
+                   (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
+    }
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
     movie_tick(c);   // ov_movie.c: hand over decoded movie frames that are due; needs the core, so before the wait

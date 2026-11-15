@@ -92,6 +92,24 @@ static void npad_states(Cpu *c, uint32_t want) {
     int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
     plat_mutex_unlock(&lock);
     if (live) {
+        if (rt_trace & RT_TRACE_PRESENT) {
+            static int32_t traced;
+            int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);
+            if (n <= 32 || !(n % 600))
+                rt_log("input boundary: sample %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
+                       (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
+            if (n <= 4) {
+                uint64_t fp = c->x[29];
+                for (unsigned depth = 0; depth < 8 && !(fp & 15) && mem_guest_readable(fp, 16); depth++) {
+                    uint64_t pair[2];
+                    memcpy(pair, (const void *)(uintptr_t)fp, sizeof pair);
+                    rt_log("input caller: sample %d depth %u return 0x%llx", n, depth,
+                           (unsigned long long)pair[1]);
+                    if (pair[0] <= fp || pair[0] - fp > 0x100000) break;
+                    fp = pair[0];
+                }
+            }
+        }
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
         vk_reflex_marker(6, vk_reflex_frame());   // VK_LATENCY_MARKER_INPUT_SAMPLE_NV
