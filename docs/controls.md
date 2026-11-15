@@ -129,6 +129,31 @@ bind_X = pad:west, key:space
 bind_Y = pad:north, key:mouse_l
 ```
 
+## Free camera
+
+On game 1.4.3, ZL+ZR+L3 together (LT+RT+L3 on an Xbox pad; `freecam_pad` in `totk.ini` picks another combo, `none` none)
+detach the view from Link; the same combo brings it back. The world goes on, but the game gets no gamepad input while the
+free camera is on, so Link stands where he was.
+
+| Input | Free camera |
+|---|---|
+| Left stick | forward and back along the view, and sideways |
+| ZR / ZL (RT / LT) | straight up / down, by how far the trigger is pressed |
+| Right stick | turn (yaw and pitch; pitch stops 5 degrees short of straight up or down) |
+| R / L (RB / LB) | each press doubles / halves the speed, 0.25 to 512 m/s |
+
+The keys that drive the sticks (W A S D and the arrow keys by default) move it too. Each switch starts at the game
+camera's position and view at 8 m/s; the speed follows the clock, so it is the same at any frame rate and game speed.
+The horizon stays level.
+
+How it works (`runtime/freecam.c`): the camera component update (main+0x628460) copies each component's eye, target
+and up into its sead camera. The site `freecam` (`recomp/patches-v143.txt`, main+0x6286d4) runs before that copy and
+writes the component's one-shot eye and target overrides (+0x180, +0x198), which the update takes in place of the pose
+and then clears, so the game camera's own state is never changed and resumes the frame the free camera ends. The up
+vector is levelled through the component's up offset (+0x200), which is kept and put back. Of the three components a
+frame updates, the free camera drives the two that share the player camera's eye and leaves the one at the default pose
+(eye 0, 0, 10). After a load replaced the components it picks the new ones and keeps its position.
+
 ## Mouse camera
 
 `mouse_mode = direct` (the default) turns the camera by the raw mouse motion on games 1.4.3 and 1.2.1, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt` and `recomp/patches-v121.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count

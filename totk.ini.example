@@ -480,6 +480,11 @@
 # reads as a partial tilt only.
 # walk_key = lshift
 # walk_scale = 0.51
+# Free camera (game 1.4.3): the gamepad combo that switches it, buttons by position joined with +, the pad: names of the
+# bind_ lines. While it is on the game gets no input and the view flies: the left stick along the view and sideways,
+# the triggers straight up and down, the right stick turns; each press of L halves the speed, of R doubles it
+# (docs/controls.md, "Free camera"). none turns the combo off. Default: zl+zr+lstick (LT+RT+L3 on an Xbox pad).
+# freecam_pad = zl+zr+lstick
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick

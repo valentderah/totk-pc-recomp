@@ -815,6 +815,62 @@ uint32_t input_pad_combo(const char *env, const char *s) {
     return mask;
 }
 
+// TOTK_FREECAM_PAD (live): the combo that switches the free camera (freecam.c); zl+zr+lstick (LT+RT+L3) when unset,
+// none for no combo. Under lock.
+static uint32_t freecam_pad_mask(void) {
+    static unsigned seen;
+    static int read;
+    static uint32_t mask;
+    unsigned v = cfg_version();
+    if (read && v == seen) return mask;
+    read = 1, seen = v;
+    const char *s = cfg_get("TOTK_FREECAM_PAD");
+    if (!s || !*s) s = "zl+zr+lstick";
+    mask = strcasecmp(s, "none") ? input_pad_combo("TOTK_FREECAM_PAD", s) : 0;
+    return mask;
+}
+
+static float trigger_unit(int16_t v) {   // 0..1 past a 5 % dead zone
+    float t = v / 32767.0f;
+    return t < 0.05f ? 0 : (t - 0.05f) / 0.95f;
+}
+
+// The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down the free
+// camera switches once, and the buttons stay hidden from the game until all are released. While the free camera is on
+// it gets the gamepad (and the keys' sticks, merged into sl and sr) and the game gets nothing, so Link stands still;
+// each press of L or R is a speed click. Off for other updates and with the freecam patch set off. Under lock.
+static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+    static int held, available = -1, shoulder[2];
+    if (available < 0) available = freecam_available();
+    uint32_t mask = available ? freecam_pad_mask() : 0, raw = 0;
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++)
+        if (mask >> p & 1 && pad_seen[p]) raw |= 1u << p;
+    if (!mask) held = 0;
+    else if (held) held = raw != 0;
+    else if (raw == mask) {
+        held = 1;
+        freecam_toggle();
+    }
+    if (available && freecam_on()) {
+        FreecamPad fp = {sl[0] / (float)STICK_MAX, sl[1] / (float)STICK_MAX, sr[0] / (float)STICK_MAX,
+                         sr[1] / (float)STICK_MAX, trigger_unit(trigger_seen[0]), trigger_unit(trigger_seen[1])};
+        freecam_pad(&fp);
+        for (int k = 0; k < 2; k++) {
+            int down = pad_seen[k ? PAD_R : PAD_L];
+            if (down && !shoulder[k]) freecam_speed_click(k);
+            shoulder[k] = down;
+        }
+        *b = 0;
+        sl[0] = sl[1] = sr[0] = sr[1] = 0;
+        return;
+    }
+    shoulder[0] = shoulder[1] = 1;   // a shoulder held when the free camera starts is no click
+    if (!held) return;
+    uint8_t sub[PAD_COUNT] = {0};
+    for (int p = PAD_SOUTH; p < PAD_COUNT; p++) sub[p] = mask >> p & 1;
+    *b &= ~input_map_pad_buttons(sub, pad_layout_get());
+}
+
 int input_pad_stick_percent(double pct[2]) {
     int ok = 0;
     pct[0] = pct[1] = 0;
@@ -935,6 +991,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
+    freecam_gate(&b, sl, sr);   // TOTK_FREECAM_PAD switches the free camera, which then takes the pad (freecam.c)
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();

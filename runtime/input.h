@@ -98,6 +98,15 @@ uint32_t input_pad_combo(const char *env, const char *s);
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
+
+// Free camera (freecam.c). input.c switches it with TOTK_FREECAM_PAD and, while it is on, hands it the gamepad and
+// gives the game none: sticks -1..1 with up +y after the dead zone, triggers 0..1; each L or R press is one speed click.
+typedef struct { float lx, ly, rx, ry, lt, rt; } FreecamPad;
+int freecam_available(void);   // game 1.4.3 with the freecam patch set on
+int freecam_on(void);
+void freecam_toggle(void);     // logs; input thread
+void freecam_pad(const FreecamPad *p);
+void freecam_speed_click(int faster);   // R (1) doubles the speed, L (0) halves it
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
 // read off. 0 (and both 0) without a connected gamepad. Any thread.
