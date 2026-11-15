@@ -343,6 +343,7 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
         VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
         vk_queue_unlock();
         rsf_vk_submission(source_frame, 0);
+        if (r == VK_SUCCESS && cfg_int("TOTK_RSF_FG")) vk_present_fg_submitted(si);
         return r;
     }
     sub_pending = 0;
@@ -367,12 +368,17 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame) {
     // the part signals are counted as issued at once (vk_sync.c): waiting for one on the host before its submission is
     // legal for a timeline semaphore. =0: waits here for the submission, as before; =ab with the A/B blocks.
     if (rec_async < 0) rec_async = rt_knob("REC_ASYNC", "1");
-    if (RT_KNOB_ON(rec_async)) {
+    // SDK preparation can leave resources in these command buffers, including
+    // on failure. Observe this part's actual result before telling its owner.
+    // Notify on this producer, never on a recorder that Present may wait for.
+    int fg = cfg_int("TOTK_RSF_FG") != 0;
+    if (RT_KNOB_ON(rec_async) && !fg) {
         pub_now();
         return __atomic_load_n(&r_sub_err, __ATOMIC_ACQUIRE);
     }
     pub();
     rec_drain();
+    if (r_sub_res == VK_SUCCESS && fg) vk_present_fg_submitted(si);
     return r_sub_res;
 }
 

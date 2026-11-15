@@ -147,6 +147,13 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 // source_frame belongs to this image through that flush, independently of later scene recording.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], uint64_t source_frame);
+struct rsf_fgvk_frame;
+// Scene producer, after rec_drain and outside rendering. The owner copies the
+// record and records SDK work into cb; submit that work even when preparation fails.
+int vk_present_fg_prepare(VkCommandBuffer cb, const struct rsf_fgvk_frame *frame);
+// Producer only, after a successful actual queue submit, outside the queue lock.
+// Never call on the recorder: presentation can hold its lock while waiting for it.
+void vk_present_fg_submitted(const VkSubmitInfo2 *submit);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.

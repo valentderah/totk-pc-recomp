@@ -567,6 +567,26 @@ static int retire_swapchain(void) {
     return 1;
 }
 
+int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
+    plat_rmutex_lock(&g_pl);
+    int32_t result = g_rsf_present ? rsf_present_prepare(g_rsf_present, cb, frame) : RSF_BACKEND_ERROR_NOT_READY;
+    plat_rmutex_unlock(&g_pl);
+    return result;
+}
+
+void vk_present_fg_submitted(const VkSubmitInfo2 *submit) {
+    plat_rmutex_lock(&g_pl);
+    if (g_rsf_present) {
+        // Each command is reported after the entire engine submission succeeded.
+        // Prologues and split parts are included; unrelated commands are ignored.
+        for (uint32_t i = 0; i < submit->commandBufferInfoCount; i++) {
+            void *commands[] = {submit->pCommandBufferInfos[i].commandBuffer};
+            rsf_present_submitted(g_rsf_present, commands, 1);
+        }
+    }
+    plat_rmutex_unlock(&g_pl);
+}
+
 static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_t backend) {
     VkCtx *c = vk_ctx();
     rsf_fgvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_FGVK_ABI_VERSION,
@@ -593,9 +613,10 @@ static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_
         rt_log("rsf: FG backend %u creation refused (%d)", backend, result);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
-    // Establish WSI ownership only. Generation must wait for proven source-frame,
-    // depth/motion and tonemapped HUD-less inputs; the menu remains unavailable.
-    result = rsf_present_enable(g_rsf_present, 0, 1);
+    // Request preparation. Each Present still disables interpolation until its
+    // matching depth/motion and HUD-less recordings have actually been submitted.
+    // The menu stays unavailable while the HUD-less producer is being connected.
+    result = rsf_present_enable(g_rsf_present, 1, 1);
     if (result != RSF_BACKEND_OK) return VK_ERROR_INITIALIZATION_FAILED;
     g_sc = (VkSwapchainKHR)rsf_present_chain(g_rsf_present);
     return VK_SUCCESS;

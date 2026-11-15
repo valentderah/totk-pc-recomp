@@ -9,6 +9,7 @@
 #include "rsf_camera.h"
 #include "rsf_runtime.h"
 #include "rsf_sr.h"
+#include <rescaleframe/native_fg_vulkan.h>
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -825,7 +826,57 @@ static rsf_srvk_image rsf_image(VkImage image, VkFormat format, unsigned w, unsi
     return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
 }
 
-static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy, int masked) {
+static rsf_frame_record scene_record(VkExec *ex, const struct Size *e, float jx, float jy) {
+    uint64_t now = plat_now_ns();
+    float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : 16.67f;
+    D.last_eval_ns = now;
+    if (!(dt > 0 && dt < 100)) dt = 16.67f;
+    rsf_frame_record record = {.struct_size = sizeof record, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+        .frame_id = ex->source_frame ? ex->source_frame : D.evals + 1,
+        .session_id = ex->source_frame ? 1 : 2, .view_id = 1,
+        .flags = (ex->source_frame ? 0 : RSF_FRAME_FLAG_AMBIGUOUS_ID) |
+                 (D.reset ? RSF_FRAME_FLAG_RESET : 0),
+        .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+        .frame_time_ms = dt,
+        .camera = {.struct_size = sizeof(rsf_camera_frame), .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+            .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+            .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
+            .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
+            .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
+    memcpy(record.camera.view_to_clip, D.camera_matrices.view_to_clip, sizeof record.camera.view_to_clip);
+    memcpy(record.camera.clip_to_view, D.camera_matrices.clip_to_view, sizeof record.camera.clip_to_view);
+    memcpy(record.camera.world_to_view, D.camera_matrices.world_to_view, sizeof record.camera.world_to_view);
+    memcpy(record.camera.view_to_world, D.camera_matrices.view_to_world, sizeof record.camera.view_to_world);
+    memcpy(record.camera.clip_to_previous_clip, D.camera_matrices.clip_to_previous_clip,
+           sizeof record.camera.clip_to_previous_clip);
+    return record;
+}
+
+static void fg_prepare(VkExec *ex, struct Size *e, const rsf_frame_record *record) {
+    if (!cfg_int("TOTK_RSF_FG") || !ex->source_frame) return;
+    VkCommandBuffer cb = ex->cb;
+    rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_fgvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_FGVK_ABI_VERSION, .record = record,
+        .depth = rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion = rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion_scale_x = 1, .motion_scale_y = 1};
+    rec_drain();   // SDK records directly into the producer's current command buffer.
+    int result = vk_present_fg_prepare(cb, &frame);
+    rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    static uint64_t prepared, refused;
+    if (!result) {
+        if (++prepared == 1 || !(prepared % 300))
+            rt_log("rsf: FG prepared %llu source %llu, render %ux%u output %ux%u; HUD-less admission pending",
+                (unsigned long long)prepared, (unsigned long long)record->frame_id, e->w, e->h, e->ow, e->oh);
+    } else if (++refused == 1 || !(refused % 300))
+        rt_log("rsf: FG prepare refused (%d) source %llu (%llu refusals)", result,
+            (unsigned long long)record->frame_id, (unsigned long long)refused);
+}
+
+static int rsf_scene(VkExec *ex, struct Size *e, int masked, const rsf_frame_record *source) {
     const VkCtx *c = vk_ctx();
     if (!e->rsf) {
         rsf_srvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SRVK_ABI_VERSION,
@@ -865,29 +916,8 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy, int masked)
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (masked) rsf_layout(cb, e->mask, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    uint64_t now = plat_now_ns();
-    float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : 16.67f;
-    D.last_eval_ns = now;
-    if (!(dt > 0 && dt < 100)) dt = 16.67f;
-    rsf_frame_record record = {.struct_size = sizeof record, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
-        .frame_id = ex->source_frame ? ex->source_frame : D.evals + 1,
-        .session_id = ex->source_frame ? 1 : 2, .view_id = 1,
-        // Generation still requires the final output/Present association.
-        .flags = RSF_FRAME_FLAG_NO_FG | (ex->source_frame ? 0 : RSF_FRAME_FLAG_AMBIGUOUS_ID) |
-                 (D.reset ? RSF_FRAME_FLAG_RESET : 0),
-        .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
-        .frame_time_ms = dt,
-        .camera = {.struct_size = sizeof(rsf_camera_frame), .abi_version = RSF_GAME_FRAME_ABI_VERSION,
-            .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
-            .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
-            .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
-            .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
-    memcpy(record.camera.view_to_clip, D.camera_matrices.view_to_clip, sizeof record.camera.view_to_clip);
-    memcpy(record.camera.clip_to_view, D.camera_matrices.clip_to_view, sizeof record.camera.clip_to_view);
-    memcpy(record.camera.world_to_view, D.camera_matrices.world_to_view, sizeof record.camera.world_to_view);
-    memcpy(record.camera.view_to_world, D.camera_matrices.view_to_world, sizeof record.camera.view_to_world);
-    memcpy(record.camera.clip_to_previous_clip, D.camera_matrices.clip_to_previous_clip,
-           sizeof record.camera.clip_to_previous_clip);
+    rsf_frame_record record = *source;
+    record.flags |= RSF_FRAME_FLAG_NO_FG;
     rsf_srvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_SRVK_ABI_VERSION, .record = &record,
         .color = rsf_image(e->sr_color, VK_FORMAT_R16G16B16A16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
         .depth = rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
@@ -956,6 +986,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
             rt_log("rsf: camera projection or transforms unavailable/invalid; skipping reconstruction");
         return;
     }
+    rsf_frame_record record = scene_record(ex, e, jx, jy);
+    fg_prepare(ex, e, &record);
     if (!vk_dlaa_wanted()) {
         // FG needs scene depth and independent object motion even when the
         // native colour path is retained. Never inject temporal jitter here.
@@ -970,7 +1002,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                    D.camera_depth_range[0], D.camera_depth_range[1], D.camera_depth_compare);
         return;
     }
-    int result = rsf_scene(ex, e, jx, jy, masked);
+    int result = rsf_scene(ex, e, masked, &record);
     if (result == RSF_SR_PENDING) { D.reset = 1; D.jit_ok = 0; return; }
     if (!result) return dl_fail("RSF evaluation", 0);
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording

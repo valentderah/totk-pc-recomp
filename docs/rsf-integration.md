@@ -523,3 +523,43 @@ both used SR off, low latency on, GPL off and descriptor writes on the same RTX
 4070 Laptop setup. Self-test, settings and Vulkan execution probes pass. The full
 RSF gate ran 232 tests and retains the two recorded Anomaly FG device failures;
 Rust formatting and Clippy pass independently.
+
+## FG preparation and submission leases
+
+The depth/motion producer now records SDK FG preparation with the same copied
+camera record used by reconstruction. FG-only retains native colour and zero
+injected jitter. Unknown calculation sources are refused. Preparation is
+requested on the WSI owner, but per-output admission still requires the matching
+submitted HUD-less image, so this does not enable interpolation or its menu
+control yet.
+
+With FG selected, the recorder's producer waits for each actual submit result
+and reports successful command buffers, including split parts and prologues,
+outside the queue lock. The recorder never takes the presentation lock, which
+Present may hold while waiting for recorder ordering. This reduces CPU overlap
+for now; no performance benefit is claimed. Provider notification and its
+completion fence are separate facts.
+
+RSF now refuses drain/destroy while SDK work remains recorded but unsubmitted,
+including work from failed SDK operations. A failed swapchain retirement keeps
+the owner alive for submission and a later retry. Native FSR 3 and DLSS fixtures
+exercise this refusal; they distinguish partial recording from accepted inputs
+and allow drain after submission/completion. The FSR 4 and XeSS paths compile,
+but do not have equivalent device acceptance here. See RSF's
+`docs/research/vulkan-fg-recorded-retirement-20261115.md`.
+
+FG-only opening-scene runs accepted real SDK preparation, reached the world and
+exited normally: FSR 3 completed 1,690 presents and DLSS 1,679, with zero
+validation errors, shader failures or skipped draws. These runs use SR off,
+low latency on, GPL off and descriptor writes on the RTX 4070 Laptop GPU.
+Self-test, configuration and Vulkan execution probes pass. The full RSF gate
+retains its two recorded Anomaly FG failures out of 232 tests; Rust formatting
+and Clippy pass independently. HUD-less colour, generated output and resize/
+backend-switch device acceptance remain open.
+
+The combined native-resolution DLSS run completed 1,798 presents, reached at
+least 300 successful SR evaluations and 300 accepted FG preparations, and exited
+normally with zero validation errors, shader failures or skipped draws. All 300
+SR evaluations report camera motion and the character history mask. This covers
+the shared metadata path with SR, FG preparation and low latency requested
+together, while generated output remains gated by the missing HUD-less input.
