@@ -883,13 +883,18 @@ out:
 // that selection's merge block, so the fragment goes on computing and writes nothing. An OpKill anywhere else (the end
 // of a function, a switch case) stays. NULL: nothing to change.
 // On by default on AMD's own drivers, where the fringe shows; other drivers keep the translator's OpKill, their output
-// unchanged. TOTK_DEMOTE=1 or 0 overrides on any driver.
+// unchanged. TOTK_DEMOTE=1 or 0 overrides on any driver that enables shaderDemoteToHelperInvocation (vk_caps.demote,
+// set in vk_device.c create_device); without the feature the module keeps OpKill, since the capability would be invalid.
 static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
            OP_BRANCH_CONDITIONAL = 250, OP_KILL = 252, OP_DEMOTE = 5380, CAP_DEMOTE = 5379 };
     static const char ext_name[36] = "SPV_EXT_demote_to_helper_invocation";   // 35 characters and the terminator: 9 words
     static int on = -1;
-    if (on < 0) on = rt_knob("DEMOTE", vk_caps.amd && !vk_caps.mesa ? "1" : "0");
+    if (on < 0) {
+        on = vk_caps.demote && rt_knob("DEMOTE", vk_caps.amd && !vk_caps.mesa ? "1" : "0");
+        rt_log("vk_pipeline: discard as demote: %s (shaderDemoteToHelperInvocation %d, TOTK_DEMOTE)", on ? "on" : "off",
+               vk_caps.demote);
+    }
     if (!on || n < 5) return NULL;
     uint64_t kills = 0;
     for (uint64_t i = 5; i < n;) {
