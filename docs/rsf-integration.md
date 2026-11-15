@@ -9,6 +9,13 @@ native Vulkan exports before exposing them. `runtime/vk_device.c`, `create_insta
 calls this before Vulkan initialization. This is a module lease only; SDK setup and
 the rendering replacement below remain pending.
 
+`runtime/rsf_sr.c` now binds the typed SR session API from the installed SDK and
+handles creation, planning, recording, command retirement and destruction. Failed
+cleanup preserves ownership for retry. It passes UCRT64 Clang syntax checks against
+the actual SDK. The adapter has not yet been connected to `evaluate` or exercised
+on the GPU. Builds consume external SDK headers through `TOTK_RSF_SOURCE`, defaulting
+to the sibling ReScaleFrame checkout; no RSF headers are copied into this repository.
+
 The RSF DLL previously omitted 21 native Vulkan exports because its archive link
 retained only internally referenced objects. The local RSF checkout now links
 `rsf_native_vulkan` with `WHOLE_ARCHIVE` into the runtime DLL. Its Release build

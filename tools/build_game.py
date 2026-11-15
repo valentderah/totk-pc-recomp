@@ -413,6 +413,12 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    rsf_sdk = Path(os.environ.get('TOTK_RSF_SOURCE', str(ROOT.parent / 'ReScaleFrame'))).resolve()
+    for relative in ('runtime/orchestrator/include', 'runtime/contract/include', 'sdk/game/include'):
+        headers = rsf_sdk / relative
+        if not headers.is_dir():
+            sys.exit(f'build_game: RSF SDK headers missing at {headers}; set TOTK_RSF_SOURCE to the ReScaleFrame checkout')
+        rt_inc += f' -I {cmd_path(headers)}'
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
     # the cached objects save the compile step on the next build.
