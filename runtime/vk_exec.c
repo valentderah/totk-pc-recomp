@@ -932,6 +932,13 @@ static void maybe_split(VkExec *ex) {
     n_parts++;
 }
 
+// --probe-vkexec: a split every `draws` draws between passes, parts of at least `us` (0: no minimum); the parts made
+// so far.
+uint64_t vk_exec_split_set(int draws, int us) {
+    split_n = draws, split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
+    return n_parts;
+}
+
 // The fixed-function state ops: writes into ex alone, applied by the replay and the state scan. 0: not one of them.
 static int state_op(VkExec *ex, uint32_t op, const void *a) {
     switch (op) {

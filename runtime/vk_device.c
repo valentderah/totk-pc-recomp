@@ -546,6 +546,7 @@ void vk_device_fault_report(VkResult r) {
     vk_crumbs_report();
     vk_pass_marks_report();
     vk_mem_fault_log();
+    vk_exec_pool_journal_log();
     VkCtx *c = vk_ctx();
     PFN_vkGetDeviceFaultInfoEXT get =
         c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")
