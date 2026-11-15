@@ -767,13 +767,52 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
 
 // Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
+// Under lock: the last pad_read's inputs by position, [PAD_GUIDE] the Home / Guide button (no Switch button), and its
+// left and right trigger axes, 0..32767: what the gamepad combos and the free camera read
+#define PAD_GUIDE PAD_COUNT
+static uint8_t pad_seen[PAD_COUNT + 1];
+static int16_t trigger_seen[2];
+
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
-    if (!pad_physical(pd)) return 0;
+    if (!pad_physical(pd)) {
+        memset(pad_seen, 0, sizeof pad_seen);
+        memset(trigger_seen, 0, sizeof trigger_seen);
+        return 0;
+    }
+    memcpy(pad_seen, pd, sizeof pd);
+    pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+    trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
+}
+
+uint32_t input_pad_combo(const char *env, const char *s) {
+    uint32_t mask = 0;
+    char name[32];
+    size_t n = 0;
+    for (const char *c = s;; c++) {
+        if (*c && *c != '+' && *c != ' ') {
+            if (n < sizeof name - 1) name[n++] = *c;
+            continue;
+        }
+        if (n) {
+            name[n] = 0;
+            int p = !strcasecmp(name, "guide") || !strcasecmp(name, "home") ? PAD_GUIDE : input_pad_id(name);
+            if (p == PAD_NONE) {
+                rt_log("input: %s=%s: %s is not a gamepad button (south east west north lstick rstick "
+                       "l r zl zr start back guide dpad_*, paddles)", env, s, name);
+                return 0;
+            }
+            mask |= 1u << p;
+            n = 0;
+        }
+        if (!*c) break;
+    }
+    return mask;
 }
 
 int input_pad_stick_percent(double pct[2]) {
