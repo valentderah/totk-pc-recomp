@@ -885,14 +885,14 @@ static int rsf_scene(VkExec *ex, struct Size *e, float jx, float jy) {
         .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1};
     rec_drain();
     uint64_t started = T.on > 0 ? kern_now_ns() : 0;
-    int ok = rsf_sr_record(e->rsf, cb, &frame);
+    int result = rsf_sr_record(e->rsf, cb, &frame);
     if (T.on > 0) T.cpu_ngx += kern_now_ns() - started;
     rsf_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     rsf_layout(cb, e->out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vk_exec_draw_new_cb(ex);
-    return ok;
+    return result;
 }
 
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
@@ -944,7 +944,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         return;
     }
     int result = rsf_scene(ex, e, jx, jy);
-    if (result == 2) { D.reset = 1; D.jit_ok = 0; return; }
+    if (result == RSF_SR_PENDING) { D.reset = 1; D.jit_ok = 0; return; }
     if (!result) return dl_fail("RSF evaluation", 0);
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording
     D.reset = 0;

@@ -235,6 +235,25 @@ work must establish the framework's transfer to draw work and propagate the sour
 identity through queued NVN commands; reading a global "latest input" on replay
 would incorrectly associate asynchronous frames.
 
+The corrected FidelityFX Vulkan runtime now executes FSR3 SR at native resolution
+in the opening scene on the RTX 4070 Laptop GPU. That run completed 1,671 presents
+without reported shader failures or skipped draws. A validation run with
+`TOTK_DESC_TEMPLATE=0` completed 1,640 presents with zero validation errors.
+Descriptor templates instead crash inside the validation layer at
+`vk_rec.c`, `exec_packet`'s push-template call; a matching RSF-disabled run crashes
+at the same call. This does not establish template-path validation acceptance.
+The captured opening scene is visible, but moving-scene quality, object-motion
+coverage and reduced-resolution operation remain unverified.
+
+The SR adapter distinguishes transient NOT_READY from a terminal recording
+failure. A pending frame retains its provider, native rendering and a history
+reset, without consuming the provider's output or advancing temporal jitter.
+Only status changes are logged. The lifetime fixture verifies a refused recording,
+NOT_READY and subsequent success on the same owner, followed by retirement and
+checked cleanup. The DLSS opening-scene run now completes with its token unavailable
+without permanently disabling reconstruction. This recovery path does not provide
+the missing CPU frame token.
+
 Build the runtime with UCRT64 Clang, exercise each available vendor's SR, FG and
 latency provider, and verify unsupported selections report their actual failure.
 Check HUD composition, motion, resize, provider changes, pause/load history resets,

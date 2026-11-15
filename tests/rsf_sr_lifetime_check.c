@@ -8,6 +8,7 @@
 
 struct rsf_srvk { int unused; };
 static int retire_calls, destroy_calls, refuse_destroy, refuse_plan, locks;
+static int32_t evaluation_result = -1;
 static void *last_commands;
 void rt_log(const char *format, ...) { (void)format; }
 void plat_mutex_lock(PlatMutex *mutex) { (void)mutex; assert(!locks++); }
@@ -26,7 +27,7 @@ static int32_t plan(const rsf_srvk *provider, uint32_t *w, uint32_t *h) {
 }
 static int32_t evaluate(rsf_srvk *provider, void *commands, const rsf_srvk_frame *frame) {
     assert(provider && commands && frame && locks == 1);
-    return -1; // Failed evaluation may still have recorded GPU work.
+    return evaluation_result; // Failed evaluation may still have recorded GPU work.
 }
 static void retire(rsf_srvk *provider, void *commands) {
     assert(provider && commands && locks == 1);
@@ -58,6 +59,10 @@ int main(void) {
     assert(rsf_sr_open(&setup, &first, &w, &h) && w == 1280 && h == 720);
     assert(rsf_sr_open(&setup, &second, &w, &h));
     assert(!rsf_sr_record(first, &commands, &frame));
+    evaluation_result = RSF_BACKEND_ERROR_NOT_READY;
+    assert(rsf_sr_record(first, &commands, &frame) == RSF_SR_PENDING);
+    evaluation_result = RSF_BACKEND_OK;
+    assert(rsf_sr_record(first, &commands, &frame) == RSF_SR_RECORDED);
     rsf_sr_commands_reset(&commands);
     assert(retire_calls == 2 && last_commands == &commands);
     refuse_destroy = 1;

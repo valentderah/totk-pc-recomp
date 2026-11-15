@@ -8,6 +8,8 @@ typedef struct RsfSrSession RsfSrSession;
 // Returns success only after provider creation and render-size planning. On a
 // cleanup failure, *out retains ownership despite a zero result; close it again.
 int rsf_sr_open(const rsf_srvk_setup *setup, RsfSrSession **out, uint32_t *width, uint32_t *height);
+enum { RSF_SR_FAILED = 0, RSF_SR_RECORDED = 1, RSF_SR_PENDING = 2 };
+// PENDING retains the owner for a later frame; it never authorizes using output.
 // Calls are serialized by the graphics owner. Even failed recording must be submitted.
 int rsf_sr_record(RsfSrSession *session, void *commands, const rsf_srvk_frame *frame);
 // Call after GPU completion and command-buffer reset, before recording it again.

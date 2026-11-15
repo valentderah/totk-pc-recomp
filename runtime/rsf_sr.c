@@ -7,6 +7,7 @@
 struct RsfSrSession {
     struct RsfSrSession *next;
     rsf_srvk *provider;
+    int32_t last_result;
     __typeof__(&rsf_srvk_create) create;
     __typeof__(&rsf_srvk_plan) plan;
     __typeof__(&rsf_srvk_evaluate) evaluate;
@@ -79,9 +80,10 @@ int rsf_sr_record(RsfSrSession *s, void *commands, const rsf_srvk_frame *frame) 
     if (!s || !s->provider || !commands || !frame) return 0;
     plat_mutex_lock(&sessions_lock);
     int32_t r = s->evaluate(s->provider, commands, frame);
+    if (r != RSF_BACKEND_OK && r != s->last_result) rt_log("rsf: SR evaluation refused (%d)", r);
+    s->last_result = r;
     plat_mutex_unlock(&sessions_lock);
-    if (r != RSF_BACKEND_OK) rt_log("rsf: SR evaluation refused (%d)", r);
-    return r == RSF_BACKEND_OK;
+    return r == RSF_BACKEND_OK ? RSF_SR_RECORDED : r == RSF_BACKEND_ERROR_NOT_READY ? RSF_SR_PENDING : RSF_SR_FAILED;
 }
 
 void rsf_sr_retire(RsfSrSession *s, void *commands) {
