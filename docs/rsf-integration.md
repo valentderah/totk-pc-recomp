@@ -19,11 +19,19 @@ This proves export availability only, not ABI setup or GPU provider operation.
 
 ## Integration boundaries
 
+The camera motion dispatch now also writes an R32F device-depth image at the
+render size. Each size owns that image, its view and allocation; eviction drains
+GPU work before freeing them. Its contents are valid only after `mv_pass` returns
+success for the current evaluation. Missing camera/history currently skips that
+dispatch, so an RSF caller must arrange depth production on those frames too.
+The shader compiled and passed SPIR-V validation; the changed C files passed
+UCRT64 Clang syntax checks. GPU output has not yet been checked in TotK.
+
 - `runtime/vk_dlaa.c`, `evaluate`: retain scene recognition, jitter and camera/object
   motion production; replace NGX feature creation and evaluation with RSF SR sessions.
   RSF SR ABI 2 requires sampled inputs and a transfer-destination output. Its DLSS
   path requires R32F depth and transfer-source inputs. Existing D32F depth therefore
-  needs a conversion rather than a cast of its format.
+  uses the new conversion output rather than a cast of its format.
 - `runtime/vk_device.c`: initialize the shared RSF Streamline session before Vulkan
   instance creation and route Vulkan dispatch through its resolver. Select SR and FG
   independently. The existing single graphics queue is insufficient for RSF's FFX
