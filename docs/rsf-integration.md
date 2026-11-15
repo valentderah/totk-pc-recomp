@@ -649,3 +649,31 @@ The first full build after rebase stopped at two newly upstreamed
 argument. Both now pass source 0 because the synthetic probe has no game source
 identity; the complete probe source compiles. The full renderer gate must run
 after the concurrent adapter changes settle.
+
+
+## Verification of the published RSF pin
+
+RSF `1753d4d` was built from the clean `external/ReScaleFrame` submodule,
+separately from the sibling checkout's uncommitted Skyrim work. The complete
+Release native build passed under MSVC 2026 in
+`build/checks/rsf-pinned-native`; configured SDK header/runtime paths point to
+the local vendor cache and corrected SDK receipts. The native Vulkan target
+compiled the real Streamline, FidelityFX, FSR4 and XeSS implementations.
+A failed yyjson download was replaced only after the existing local files
+matched every SHA256 in the pinned `yyjson.lock.json`.
+
+The serial CTest suite reported no failures: 204 tests ran and 14 were skipped
+for unconfigured runtime or local fixture inputs. This includes the real DLL
+export, split ABI, disabled/stub split, FSR4 argument and latency contracts.
+With the staged runtime directories supplied explicitly, the three skipped
+Vulkan device fixtures for FSR2/FSR3, DLSS and XeSS also passed. The other skips
+remain unrun. Rust `cargo fmt --all -- --check` and workspace/all-target
+Clippy with `--locked -- -D warnings` passed using an isolated target directory.
+This is runtime and synthetic-device evidence, not TotK visual acceptance.
+
+The runtime from this clean pin was staged into `build/v143-rsf/ReScaleFrame`.
+Its SHA256 is `5aa52922320376b0b8bd6b391db5d625c20cbd73f2efffd81a4cbc701800a251`,
+identical to the native build output. `tools/stage_rsf.py --source` pointed to
+the sibling checkout solely for ignored vendor binaries and license inputs;
+the first-party runtime DLL came from the pinned build above. All 27 staged
+inputs passed the existing package preflight and receipt checks.
