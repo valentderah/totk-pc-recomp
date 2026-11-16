@@ -229,10 +229,11 @@ class Emitter:
     the C (an argument here, or anything else it reads) must go into the lift cache's key: chunk_key."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
-                 v_locals=vlocals.LOCALS, v_trust=False, hooks=None, fn_enter_all=False):
+                 v_locals=vlocals.LOCALS, v_trust=False, hooks=None, fn_enter_all=False, picks=None):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
+        self.picks = picks or {}       # {contested site: (pick index, {ordered set: value})} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
@@ -241,6 +242,7 @@ class Emitter:
         # Functions that start with FN_ENTER (recomp/patches.py `hook`): None is every function
         self.hooks = None if fn_enter_all else hooks
         self.uses_patches = False
+        self.uses_picks = False
         self.stats = Counter()
         self.unsupported = Counter()
 
@@ -454,13 +456,17 @@ class Emitter:
             raise patches.PatchError(f'{a:#x}: patched instruction is a {r.kind}')
 
         def patch(i, ins, a):
-            """if (switch) { replacement } else if ... else { original } for a patched site (recomp/patches.py)."""
+            """if (switch) { replacement } else if ... else { original } for a patched site (recomp/patches.py); an
+            ordered set of a contested site tests the site's pick byte instead of its switch."""
             if ins.kind not in ('op', 'bl', 'b', 'bcond'):
                 raise patches.PatchError(f'{a:#x}: patched instruction is a {ins.kind}')
             line = '   '
+            n, values = self.picks.get(a, (None, {}))
             for (k, _), words in zip(self.patched[a], self.replacements(a)):
-                line += f' if (rt_patch_on[{k}]) {{ {" ".join(one(i, r, a) for r in words)} }} else'
+                test = f'rt_patch_pick[{n}] == {values[k]}' if k in values else f'rt_patch_on[{k}]'
+                line += f' if ({test}) {{ {" ".join(one(i, r, a) for r in words)} }} else'
             self.uses_patches = True
+            self.uses_picks |= bool(values)
             self.stats['patched_sites'] += 1
             return f'{line} {{ {one(i, ins, a)} }}'
 
@@ -537,7 +543,7 @@ class Emitter:
 def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
-    emitter.uses_patches = False
+    emitter.uses_patches = emitter.uses_picks = False
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
@@ -546,6 +552,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
+    if emitter.uses_picks:
+        protos += 'extern uint8_t rt_patch_pick[];\n'
     vdef = '#define RT_VLOCALS 1\n' if emitter.v_locals else ''   # runtime/simd.h: the V-locals accessors
     return (header(f'{name} chunk {number:04d}') + vdef + '#include "cpu.h"\n#include "simd.h"\n\n' + protos
             + '\n' + '\n\n'.join(body) + '\n')
@@ -618,7 +626,8 @@ def _emitter(name):
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
                                            spins=_W['patches'].spins_for(name, base),
-                                           hooks=_W['patches'].hooks_for(name, base), **_W['opts'])
+                                           hooks=_W['patches'].hooks_for(name, base),
+                                           picks=_W['patches'].picks_for(name, base), **_W['opts'])
     return e
 
 
@@ -733,16 +742,18 @@ def in_span(addrs, lo, hi):
     return addrs[bisect.bisect_left(addrs, lo):bisect.bisect_left(addrs, hi)]
 
 
-def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs):
+def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks=None):
     """Key of one chunk: its module, number (in its header) and functions, and the patch sites (set index and
-    replacement words, @page resolved, so the patch page is in them), spin waits and hooked functions inside its
-    address range; hook_addrs None (FN_ENTER in every function) keys apart from an empty list. Every input of the
-    chunk text that is not in generator_key or module_key must be added here, with a case in
-    tests/lift_cache_test.py."""
+    replacement words, @page resolved, so the patch page is in them), the pick index and values of its contested
+    sites, spin waits and hooked functions inside its address range; hook_addrs None (FN_ENTER in every function) keys
+    apart from an empty list. Every input of the chunk text that is not in generator_key or module_key must be added
+    here, with a case in tests/lift_cache_test.py."""
     lo, hi = fns[0][0], fns[-1][1]
-    sites = [[a, [[k, words] for k, words in patched[a]]] for a in in_span(site_addrs, lo, hi)]
+    in_chunk = in_span(site_addrs, lo, hi)
+    sites = [[a, [[k, words] for k, words in patched[a]]] for a in in_chunk]
     hooks = None if hook_addrs is None else in_span(hook_addrs, lo, hi)
-    return _key(mod_key, number, fns, sites, [[b, spins[b]] for b in in_span(spin_addrs, lo, hi)], hooks)
+    contested = [[a, picks[a][0], sorted(picks[a][1].items())] for a in in_chunk if a in (picks or {})]
+    return _key(mod_key, number, fns, sites, [[b, spins[b]] for b in in_span(spin_addrs, lo, hi)], hooks, contested)
 
 
 def _entry_check(file, entry):
@@ -902,7 +913,7 @@ def main():
         moddir = args.out / name
         moddir.mkdir(parents=True, exist_ok=True)
         mkey = module_key(gen_key, name, path, base, abs_starts)
-        patched, spins = table.for_module(name, base), table.spins_for(name, base)
+        patched, spins, picks = table.for_module(name, base), table.spins_for(name, base), table.picks_for(name, base)
         site_addrs, spin_addrs = sorted(patched), sorted(spins)
         hooks = None if args.fn_enter_all else table.hooks_for(name, base)
         stray = sorted(set(hooks or ()) - set(abs_starts.tolist()))
@@ -912,7 +923,7 @@ def main():
         hook_addrs = None if hooks is None else sorted(hooks)
         for number, (i0, i1) in enumerate(chunks):
             fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist()))
-            key = chunk_key(mkey, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs)
+            key = chunk_key(mkey, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks)
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns, key)))
         paths[name] = (str(path), base)
         starts_abs[name] = abs_starts

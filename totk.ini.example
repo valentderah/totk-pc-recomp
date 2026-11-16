@@ -466,13 +466,24 @@
 # to totk.exe.
 # mods_dir =
 # Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
+# The higher mod wins whatever two mods both change: a file, bytes of the game's data, an instruction of its code.
+# Read at start.
 # mods_order =
 # Mods switched off, names separated by |.
 # mods_disabled =
+# Mods used without their code part, names separated by |: the Mods tab's switch "Use <mod> without its code". Such a
+# mod's code modules (exefs/subsdk*, a replaced exefs/main) and the ExeFS patch files the port cannot apply are left out
+# and the rest of it is used, where otherwise the whole mod stays off. Read at start.
+# mods_no_code =
 # auto: when an enabled mod has cheats that change the game's code and the game was built without them, the game starts
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# 1: every mod is used without the code part the port cannot run, as if mods_no_code named them all: its code modules
+# (exefs/subsdk*, a replaced exefs/main) and the ExeFS patch files the port cannot apply are left out, its RomFS files,
+# cheats and the other patch files load. Its files may expect the missing code. 0: only the mods mods_no_code names.
+# Read at start. Default: 0.
+# mods_without_code = 0
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
 # the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack

@@ -1241,10 +1241,26 @@ static void tab_mods(float scale) {
     const char *after = mods_changed() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr;
     for (int i = 0; i < n; i++) {
         const ModInfo *m = mods_at(i);
-        char id[32], desc[1536];
+        char id[32], desc[4096];
         snprintf(id, sizeof id, "##mod%d", i);
-        char over[512] = "", other[512] = "";
-        if (m->overridden) snprintf(over, sizeof over, menu_text(UI_MENU_MODS_OVERRIDDEN), m->overridden, m->overridden_by);
+        char over[2048] = "", other[512] = "";
+        // what it won or lost to another mod, files, data and code alike (the conflict table, as at start)
+        static const UiTextId lost[MOD_PARTS] = {UI_MENU_MODS_OVERRIDDEN, UI_MENU_MODS_DATA_OVERRIDDEN,
+                                                 UI_MENU_MODS_CODE_OVERRIDDEN},
+                              won[MOD_PARTS] = {UI_MENU_MODS_OVERRIDES_FILES, UI_MENU_MODS_OVERRIDES_DATA,
+                                                UI_MENU_MODS_OVERRIDES_CODE};
+        for (int c = 0; c < mods_conflict_count(); c++) {
+            const ModConflict *e = mods_conflict_at(c);
+            bool lose = e->loser == m->id;
+            if (!lose && e->winner != m->id) continue;
+            const ModInfo *them = mods_by_id(lose ? e->winner : e->loser);
+            if (!them) continue;
+            size_t at = strlen(over);
+            if (at) at += (size_t)snprintf(over + at, sizeof over - at, "\n\n");
+            if (at < sizeof over)
+                snprintf(over + at, sizeof over - at, menu_text(lose ? lost[e->part] : won[e->part]), e->count,
+                         them->name);
+        }
         if (m->other_version) snprintf(other, sizeof other, menu_text(UI_MENU_MODS_OTHER_VERSION), m->other_version);
         char cheat[256] = "";
         if (m->kind & MOD_CHEATS) {   // its cheats as read at start, or the file they come from
@@ -1254,7 +1270,11 @@ static void tab_mods(float scale) {
             if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
             else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
         }
-        char code[512] = "", problem[512] = "";
+        char code[512] = "", problem[512] = "", skipped[512] = "", left[512] = "";
+        if (m->code[0] && m->problem != MOD_PLUGIN)   // used without its code
+            snprintf(skipped, sizeof skipped, menu_text(UI_MENU_MODS_CODE_SKIPPED), m->code);
+        if (m->unsupported && m->problem != MOD_EXEFS_UNSUPPORTED)
+            snprintf(left, sizeof left, menu_text(UI_MENU_MODS_EXEFS_SKIPPED), m->unsupported, m->note);
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
         else if (m->nsets || m->ndata)
@@ -1271,7 +1291,7 @@ static void tab_mods(float scale) {
         default: break;
         }
         int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
-        const char *parts[] = {over, other, cheat, code, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        const char *parts[] = {over, other, cheat, code, skipped, left, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
         for (const char *part : parts)
             if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
         const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
@@ -1285,6 +1305,20 @@ static void tab_mods(float scale) {
             snprintf(id, sizeof id, "##mod%d", to);
             opt_focus_key(id);   // the cursor follows the mod
             opt_save_soon();
+            continue;   // m is the moved mod's neighbour now; its switch row comes next frame
+        }
+        // under a mod with code the port cannot run (a code module, an ExeFS patch file it cannot apply): its switch
+        // "use without its code"; mods_without_code = 1 holds it on for every mod
+        if (m->code[0] || m->unsupported) {
+            char nid[32], label[320];
+            snprintf(nid, sizeof nid, "##modnc%d", i);
+            snprintf(label, sizeof label, menu_text(UI_MENU_MODS_WITHOUT_CODE), m->name);
+            bool all = cfg_bool("TOTK_MODS_WITHOUT_CODE") != 0;
+            if (all) opt_disable_next(UI_MENU_MODS_WITHOUT_CODE_ALL);
+            if (opt_toggle_text(nid, label, menu_text(UI_MENU_MODS_WITHOUT_CODE_DESC), all || m->no_code) && !all) {
+                mods_set_no_code(i, !m->no_code);
+                opt_save_soon();
+            }
         }
     }
     bool rebuild =

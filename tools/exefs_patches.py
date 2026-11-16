@@ -19,7 +19,8 @@ offsets count the NSO header (0x100 bytes) before main's image; a pchtxt offset 
 A pchtxt patch line applies between @enabled and @disabled; @stop ends the file.
 
 --out gets the --patches file followed by one set per file with sites (`mod_<hash>`, switch TOTK_MODPATCH_<HASH>,
-default off) and its sites. --status gets one line per file, mods by name, tab separated:
+default off, `ordered`: where sets of several files patch one site, the runtime runs the one of the mod highest on the
+Mods tab, recomp/patches.py) and its sites. --status gets one line per file, mods by name, tab separated:
 
   <file hash> <content hash> <kind> <built-in sets> <note>
 
@@ -330,7 +331,7 @@ def build(args):
         if file_sites:
             name = f'mod_{key.lower()}'
             label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
-            sets.append(f'set {name} TOTK_MODPATCH_{key} 0   # {label}')
+            sets.append(f'set {name} TOTK_MODPATCH_{key} 0 ordered   # {label}')
             for a, repl in sorted(file_sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
                 over += [s for s in builtin.get(a, []) if s not in over]
