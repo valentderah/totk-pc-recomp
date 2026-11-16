@@ -349,6 +349,7 @@ static void sampler(void *arg) {
         s.vram_total_mb = vram_total;
         nvml_sample(&s);
         adl_sample(&s);
+        plat_gpu_sensors(l, &s.gpu_temp_c, &s.gpu_power_w, &s.gpu_clock_mhz);
         plat_mutex_lock(&g_lock);
         machine_copy(&g_stats, &s);
         if (g_smp.want) plat_cond_wait_ns(&g_smp.cv, &g_lock, 500000000ull);
