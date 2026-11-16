@@ -4,8 +4,10 @@
 //!
 //!     totk-config [--dir <game folder>] [--lang en|ru|pt-BR|zh-Hans]
 //!     totk-config [--dir <folder>] --set fps_limit=120 [--set fov=] ...   (no window; an empty value resets)
-//!     totk-config [--dir <folder>] --new-profile <name> [--from current|defaults|quality|performance|deck]
+//!     totk-config [--dir <folder>] --new-profile <name> [--from current|defaults|quality|performance|potato|deck]
 //!     totk-config [--dir <folder>] --profile <name>                       (switch: totk.ini gets its settings)
+//!     totk-config [--dir <folder>] --check-update                         (the version there and the latest release)
+//!     totk-config [--dir <folder>] --download-update                      (download, check, unpack; installs nothing)
 //!     totk-config --dir <folder> --screenshot <out.bmp> [--tab <tab>] [--search <text>]   (docs and tests)
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -14,9 +16,11 @@ mod data;
 mod docs;
 mod i18n;
 mod ini;
+mod prefs;
 mod presets;
 mod profiles;
 mod theme;
+mod update;
 
 use std::path::{Path, PathBuf};
 
@@ -26,11 +30,15 @@ pub struct Args {
     pub profile: Option<String>,
     pub new_profile: Option<String>,
     pub from: Option<String>,
+    pub check_update: bool,
+    pub download_update: bool,
     pub lang: Option<String>,
     pub screenshot: Option<PathBuf>,
     pub tab: Option<String>,
     pub search: Option<String>,
     pub expand: Option<String>,
+    /// For screenshots: "new:<preset>" opens the New profile window, "update" the update confirmation.
+    pub show: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -40,11 +48,14 @@ fn parse_args() -> Args {
         profile: None,
         new_profile: None,
         from: None,
+        check_update: false,
+        download_update: false,
         lang: None,
         screenshot: None,
         tab: None,
         search: None,
         expand: None,
+        show: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -58,11 +69,14 @@ fn parse_args() -> Args {
             "--profile" => a.profile = it.next(),
             "--new-profile" => a.new_profile = it.next(),
             "--from" => a.from = it.next(),
+            "--check-update" => a.check_update = true,
+            "--download-update" => a.download_update = true,
             "--lang" => a.lang = it.next(),
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--tab" => a.tab = it.next(),
             "--search" => a.search = it.next(),
             "--expand" => a.expand = it.next(),
+            "--show" => a.show = it.next(),
             other if !other.starts_with("--") && a.dir.is_none() => a.dir = Some(PathBuf::from(other)),
             _ => {}
         }
@@ -77,7 +91,7 @@ pub fn is_game_dir(dir: &Path) -> bool {
 
 /// The per-user folder the installer keeps its state in (installer/recent.py), where the configurator remembers the
 /// last game folder.
-fn state_dir() -> Option<PathBuf> {
+pub fn state_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("TotK Recomp"))
     } else {
@@ -120,23 +134,16 @@ fn find_game_dir(args: &Args) -> Option<PathBuf> {
 
 /// The command line without a window: --set, --new-profile, --profile. Prints to the console it was started from.
 fn headless(args: Args, dir: Option<PathBuf>) -> std::process::ExitCode {
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn AttachConsole(pid: u32) -> i32;
-        }
-        // SAFETY: ATTACH_PARENT_PROCESS; fails harmlessly when there is no console
-        unsafe { AttachConsole(u32::MAX) };
-    }
+    attach_console();
     let preset = match args.from.as_deref().unwrap_or("current") {
         "current" => presets::Preset::Current,
         "defaults" => presets::Preset::Defaults,
         "quality" => presets::Preset::Quality,
         "performance" => presets::Preset::Performance,
+        "potato" => presets::Preset::Potato,
         "deck" => presets::Preset::SteamDeck,
         other => {
-            eprintln!("--from {other}: one of current, defaults, quality, performance, deck");
+            eprintln!("--from {other}: one of current, defaults, quality, performance, potato, deck");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -151,9 +158,83 @@ fn headless(args: Args, dir: Option<PathBuf>) -> std::process::ExitCode {
     }
 }
 
+/// --check-update: the version in the game folder and the latest release, without a window or a download.
+fn check_update(dir: Option<PathBuf>) -> std::process::ExitCode {
+    attach_console();
+    if let Some(d) = &dir {
+        let i = update::installed(d);
+        println!(
+            "installed: {} (setup {}){}",
+            i.run.as_deref().unwrap_or("unknown"),
+            i.setup.as_deref().unwrap_or("unknown"),
+            if i.custom { ", a build of its own" } else { "" }
+        );
+    }
+    match update::check() {
+        Ok(r) => {
+            println!("latest: {} ({}, {} bytes, sha256 {})", r.tag, r.asset.name, r.asset.size, r.asset.sha256);
+            if let Some(have) = dir.as_deref().and_then(|d| update::installed(d).version()) {
+                println!("{}", if r.version > have { "an update is available" } else { "up to date" });
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("totk-config: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// --download-update: the latest release downloaded, checked and unpacked into the updates folder, and the command
+/// that would run its setup on the game folder printed; nothing is installed.
+fn download_update(dir: Option<PathBuf>) -> std::process::ExitCode {
+    attach_console();
+    let result = (|| -> Result<PathBuf, String> {
+        let rel = update::check()?;
+        println!("latest: {} ({} bytes)", rel.tag, rel.asset.size);
+        let phase: update::Shared = Default::default();
+        let updates = update::updates_dir().ok_or("no LOCALAPPDATA folder")?;
+        let zip = update::download(&rel, &updates, &phase)?;
+        println!("downloaded and checked: {}", zip.display());
+        update::unpack(&zip, &rel, &updates)
+    })();
+    match result {
+        Ok(folder) => {
+            println!("unpacked: {}", folder.display());
+            if let Some(d) = dir {
+                println!("setup command: {:?}", update::setup_command(&folder, &d));
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("totk-config: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The console the command was started from, for the commands without a window (the exe is a GUI program).
+fn attach_console() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn AttachConsole(pid: u32) -> i32;
+        }
+        // SAFETY: ATTACH_PARENT_PROCESS; fails harmlessly when there is no console
+        unsafe { AttachConsole(u32::MAX) };
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let args = parse_args();
     let dir = find_game_dir(&args);
+    if args.download_update {
+        return download_update(dir);
+    }
+    if args.check_update {
+        return check_update(dir);
+    }
     if !args.sets.is_empty() || args.profile.is_some() || args.new_profile.is_some() {
         return headless(args, dir);
     }

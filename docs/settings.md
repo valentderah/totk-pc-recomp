@@ -18,7 +18,7 @@ it used last or the installer's install folder, and **Change…** picks another.
 - **Profiles** are named sets of settings in `profiles\<name>.ini` next to `totk.ini`, in the same format. The active
   profile is what `totk.ini` holds: choosing another stores `totk.ini`'s settings into the profile that was active
   (changes made in the in-game menu stay with it) and copies the chosen one into `totk.ini`. A new profile starts
-  from the current settings, the defaults, or the current settings with the Quality, Performance or Steam Deck changes.
+  from the current settings, the defaults, or the current settings with the Quality, Performance, Potato mode or Steam Deck changes; the window lists each change and why it is there. Potato mode is for GPUs with about 2 GB of video memory: render scale 67 %, 30 fps, grass range 50 and the shadow, filtering and anti-aliasing extras back at their defaults.
 - **Save and launch** saves and starts `totk.exe`.
 - **New settings without a new configurator.** At start it reads `totk.ini.example` (the setup puts the release's next
   to `totk.exe` at every install and update), `docs/settings.md` when there is one, and the comments of `totk.ini`. A
@@ -28,7 +28,18 @@ it used last or the installer's install folder, and **Change…** picks another.
   `totk.exe` or the configurator replaces its built-in list whole, menu texts and tabs included. The bottom of the
   left column lists the files it read.
 
-Without a window: `totk-config --set fps_limit=120 --set fov=` (an empty value resets),
+- **Updates** (Windows). The tab shows the version in the folder (the `totk.exe` that ran last, from `logs/totk.log`,
+  and the release whose setup made the folder, from `totk-install.json`) and the latest release of
+  [the project's releases](https://github.com/valentderah/totk-pc-recomp/releases) with its notes. **Download and
+  install** asks first, then downloads `TotK-Setup-<version>-windows.zip` into `%LOCALAPPDATA%\TotK Recomp\updates`,
+  refuses it unless its size and SHA-256 match what GitHub lists for it, unpacks it, starts that release's setup on
+  the folder (saves, game files and `totk.ini` stay; `totk.exe` and the shaders are rebuilt, and the setup starts the
+  game when it is done) and closes. Nothing starts while the folder's `totk.exe` runs. A folder whose `totk.exe` is a
+  build of its own (it differs from what the setup recorded) gets a warning first: the update replaces that build. The
+  configurator asks GitHub only on **Check now**, or at every start with **Check for updates when the configurator
+  opens**, which it keeps in `%LOCALAPPDATA%\TotK Recomp\configurator.json`, not in `totk.ini`.
+
+Without a window: `totk-config --set fps_limit=120 --set fov=` (an empty value resets), `totk-config --check-update`,
 `totk-config --new-profile Travel --from deck`, `totk-config --profile Travel`; `--dir <folder>` names the game folder.
 
 ## Safety

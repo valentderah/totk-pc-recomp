@@ -16,6 +16,7 @@ use std::time::SystemTime;
 
 const EXPERT: &str = "expert";
 const OTHER: &str = "other";
+const UPDATES: &str = "updates";
 const LANGS: [(&str, &str); 4] = [("en", "English"), ("ru", "Русский"), ("pt-BR", "Português (Brasil)"), ("zh-Hans", "简体中文")];
 
 enum Dialog {
@@ -23,6 +24,8 @@ enum Dialog {
     New { name: String, preset: Preset, switch: bool },
     Rename { from: String, name: String },
     Delete(String),
+    /// Confirm downloading and installing the latest release.
+    Update,
 }
 
 pub struct App {
@@ -51,6 +54,19 @@ pub struct App {
     frames: u32,
     /// Where the run-time settings and descriptions came from (docs.rs).
     sources: crate::docs::Sources,
+    /// The configurator's own settings (prefs.rs).
+    prefs: crate::prefs::Prefs,
+    /// The update worker's state (update.rs), the latest release seen, the version in the game folder.
+    upd: crate::update::Shared,
+    latest: Option<crate::update::Release>,
+    installed: crate::update::Installed,
+    /// Run the setup as soon as the download is unpacked (the player confirmed).
+    install_when_ready: bool,
+    /// --show update: open the confirmation once the check has an answer (screenshots).
+    show_update: bool,
+    /// --screenshot: when the open modal appeared, and whether the screenshot was asked for.
+    shot_modal_at: Option<f64>,
+    shot_sent: bool,
 }
 
 /// The Windows UI language as a menu language (GetUserDefaultUILanguage's primary language id).
@@ -121,9 +137,26 @@ impl App {
             screenshot: args.screenshot.clone(),
             frames: 0,
             sources: Default::default(),
+            prefs: crate::prefs::Prefs::load(),
+            upd: Default::default(),
+            latest: None,
+            installed: Default::default(),
+            install_when_ready: false,
+            show_update: args.show.as_deref() == Some("update"),
+            shot_modal_at: None,
+            shot_sent: false,
         };
         if let Some(d) = dir {
             app.open_dir(d);
+        }
+        if let Some(name) = args.show.as_deref().and_then(|s| s.strip_prefix("new:")) {
+            let preset = presets::ALL.into_iter().find(|p| format!("{p:?}").eq_ignore_ascii_case(name)).unwrap_or(Preset::Current);
+            app.dialog = Dialog::New { name: "Potato".into(), preset, switch: true };
+        }
+        // the Updates tab asked for on the command line, or --show update, checks at once
+        let wants_check = app.tab == UPDATES || app.show_update;
+        if (app.prefs.check_updates && app.screenshot.is_none() || wants_check) && cfg!(windows) {
+            crate::update::check_async(app.upd.clone());
         }
         // the language: --lang, else the menu language totk.ini sets, else the system's
         app.lang = args
@@ -144,6 +177,7 @@ impl App {
         let (cat, sources) = crate::docs::load(Some(&dir));
         self.cat = Rc::new(cat);
         self.sources = sources;
+        self.installed = crate::update::installed(&dir);
         self.store = Some(Store::new(&dir));
         self.dir = Some(dir);
         self.reload();
@@ -512,8 +546,14 @@ impl App {
             cat.tabs.iter().map(|tb| (tb.id.clone(), tr(&tb.label, &self.lang).unwrap_or(&tb.id).to_string())).collect();
         tabs.push((EXPERT.into(), t(&self.lang, "Expert").into()));
         tabs.push((OTHER.into(), t(&self.lang, "Other keys").into()));
+        if cfg!(windows) {
+            tabs.push((UPDATES.into(), t(&self.lang, "Updates").into()));
+        }
         for (id, label) in tabs {
-            let changed = if id == OTHER {
+            let newer = id == UPDATES && self.update_available();
+            let changed = if id == UPDATES {
+                0
+            } else if id == OTHER {
                 self.work.iter().filter(|(k, _)| cat.find(k).is_none()).count()
             } else {
                 cat.settings.iter().filter(|s| s.tab == id && self.work.get(&s.key).is_some()).count()
@@ -521,7 +561,9 @@ impl App {
             let selected = self.tab == id && self.search.is_empty();
             let r = ui.add_sized(
                 [ui.available_width(), 32.0],
-                egui::Button::selectable(selected, RichText::new(&label).size(16.0)).right_text(if changed > 0 {
+                egui::Button::selectable(selected, RichText::new(&label).size(16.0)).right_text(if newer {
+                    RichText::new(t(&self.lang, "new")).color(GOLD).small()
+                } else if changed > 0 {
                     RichText::new(format!("{changed}")).color(GOLD).small()
                 } else {
                     RichText::new("")
@@ -636,6 +678,10 @@ impl App {
         let searching = !self.search.trim().is_empty();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width() - 8.0);
+            if !searching && self.tab == UPDATES {
+                self.updates_page(ui);
+                return;
+            }
             if !searching && self.tab == OTHER {
                 self.other_keys(ui);
                 return;
@@ -1102,28 +1148,43 @@ impl App {
         let lang = self.lang.clone();
         let mut close = false;
         let mut action: Option<Box<dyn FnOnce(&mut App, &Ui)>> = None;
+        let update_text = if matches!(self.dialog, Dialog::Update) { self.update_confirm_text() } else { Vec::new() };
         match &mut self.dialog {
             Dialog::None => return,
             Dialog::New { name, preset, switch } => {
                 let taken = self.profiles.iter().any(|p| p.eq_ignore_ascii_case(name.trim()));
                 egui::Modal::new(egui::Id::new("new_profile")).show(&ctx, |ui| {
-                    ui.set_width(380.0);
+                    ui.set_width(620.0);
                     ui.heading(t(&lang, "New"));
                     ui.add_space(6.0);
                     ui.label(t(&lang, "Name"));
                     ui.add(egui::TextEdit::singleline(name).desired_width(340.0));
                     ui.add_space(4.0);
                     ui.label(t(&lang, "Start from"));
-                    for p in presets::ALL {
-                        let label = match p {
-                            Preset::Current => "Current settings",
-                            Preset::Defaults => "Defaults",
-                            Preset::Quality => "Quality",
-                            Preset::Performance => "Performance",
-                            Preset::SteamDeck => "Steam Deck-like",
-                        };
-                        ui.radio_value(preset, p, t(&lang, label));
-                    }
+                    ui.horizontal_wrapped(|ui| {
+                        for p in presets::ALL {
+                            ui.radio_value(preset, p, t(&lang, p.label()));
+                        }
+                    });
+                    // what the chosen preset does, and why each of its values is there
+                    egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(t(&lang, preset.description())).strong());
+                        let changes = preset.changes();
+                        if !changes.is_empty() {
+                            ui.label(RichText::new(t(&lang, "On top of the current settings:")).small().color(WEAK));
+                            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                egui::Grid::new("preset_changes").num_columns(2).spacing([12.0, 4.0]).striped(true).show(ui, |ui| {
+                                    for c in changes {
+                                        let value = c.value.map(str::to_string).unwrap_or_else(|| format!("({})", t(&lang, "default")));
+                                        ui.label(RichText::new(format!("{} = {value}", c.key.to_ascii_lowercase())).monospace().color(GOLD));
+                                        ui.add(egui::Label::new(RichText::new(t(&lang, c.why)).small()).wrap());
+                                        ui.end_row();
+                                    }
+                                });
+                            });
+                        }
+                    });
                     ui.checkbox(switch, t(&lang, "Switch to it"));
                     let valid = profiles::valid_name(name) && !taken;
                     if !valid {
@@ -1179,6 +1240,27 @@ impl App {
                     });
                 });
             }
+            Dialog::Update => {
+                let text = &update_text;
+                egui::Modal::new(egui::Id::new("update_confirm")).show(&ctx, |ui| {
+                    ui.set_width(480.0);
+                    ui.heading(t(&lang, "Install the update?"));
+                    ui.add_space(4.0);
+                    for (line, warn) in text {
+                        ui.label(if *warn { RichText::new(line).color(RED).strong() } else { RichText::new(line) });
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(RichText::new(t(&lang, "Download and install")).color(BG)).fill(GOLD)).clicked() {
+                            action = Some(Box::new(|app: &mut App, ui: &Ui| app.start_update(ui)));
+                            close = true;
+                        }
+                        if ui.button(t(&lang, "Cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            }
             Dialog::Delete(name) => {
                 egui::Modal::new(egui::Id::new("delete_profile")).show(&ctx, |ui| {
                     ui.set_width(360.0);
@@ -1210,6 +1292,221 @@ impl App {
         }
     }
 
+    // ---- updates (update.rs)
+    fn update_available(&self) -> bool {
+        match (&self.latest, self.installed.version()) {
+            (Some(rel), Some(have)) => rel.version > have,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    fn update_busy(&self) -> bool {
+        use crate::update::Phase::*;
+        matches!(*self.upd.lock().unwrap(), Checking | Downloading { .. } | Verifying | Unpacking)
+    }
+
+    /// Takes the worker's results: a checked release, and a release ready to install once the player confirmed.
+    fn poll_update(&mut self, ui: &Ui) {
+        use crate::update::Phase;
+        let phase = self.upd.lock().unwrap().clone();
+        match phase {
+            Phase::Checked(rel) => {
+                self.latest = Some(rel);
+                if std::mem::take(&mut self.show_update) {
+                    self.dialog = Dialog::Update;
+                }
+                *self.upd.lock().unwrap() = Phase::Idle;
+            }
+            Phase::Ready(folder) if self.install_when_ready => {
+                self.install_when_ready = false;
+                self.launch_setup(ui, &folder);
+            }
+            Phase::Checking | Phase::Downloading { .. } | Phase::Verifying | Phase::Unpacking => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            _ => {}
+        }
+    }
+
+    /// The lines of the confirmation: what happens, and (red) what is lost.
+    fn update_confirm_text(&self) -> Vec<(String, bool)> {
+        let l = &self.lang;
+        let mut out = Vec::new();
+        let (Some(rel), Some(dir)) = (&self.latest, &self.dir) else { return out };
+        out.push((format!("{} {} → {}", t(l, "Release"), rel.tag, dir.display()), false));
+        out.push((t(l, "The setup of the release runs on this folder: saves, game files and totk.ini stay, totk.exe and the shaders are rebuilt. This takes a while; the setup starts the game when it is done.").to_string(), false));
+        out.push((t(l, "The configurator saves your settings and closes when the setup window opens.").to_string(), false));
+        if !self.update_available() {
+            out.push((t(l, "This release is not newer than the version in the folder.").to_string(), true));
+        }
+        if self.installed.custom {
+            let i = &self.installed;
+            out.push((
+                format!(
+                    "{} ({} {}, {} {}).",
+                    t(l, "The folder runs a build of its own, not the one its setup made: the update replaces it with the release's build, and changes that are not in the release are gone"),
+                    t(l, "running"),
+                    i.run.as_deref().unwrap_or("?"),
+                    t(l, "setup"),
+                    i.setup.as_deref().unwrap_or("?")
+                ),
+                true,
+            ));
+        }
+        out
+    }
+
+    /// After the confirmation: save the settings, then download, check and unpack on a thread; poll_update starts the
+    /// setup when the release is ready.
+    fn start_update(&mut self, ui: &Ui) {
+        let Some(dir) = self.dir.clone() else { return };
+        if crate::update::game_running(&dir) {
+            self.say(ui, t(&self.lang, "Close the game first: totk.exe from this folder is running."), true);
+            return;
+        }
+        if self.dirty() && !self.save(ui) {
+            return;
+        }
+        let Some(rel) = self.latest.clone() else { return };
+        self.install_when_ready = true;
+        crate::update::fetch(rel, self.upd.clone());
+    }
+
+    fn launch_setup(&mut self, ui: &Ui, release: &Path) {
+        let Some(dir) = self.dir.clone() else { return };
+        if crate::update::game_running(&dir) {
+            self.say(ui, t(&self.lang, "Close the game first: totk.exe from this folder is running."), true);
+            return;
+        }
+        match crate::update::setup_command(release, &dir).spawn() {
+            Ok(_) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => {
+                *self.upd.lock().unwrap() = crate::update::Phase::Failed(format!("{}: {e}", t(&self.lang, "Could not start the setup")));
+            }
+        }
+    }
+
+    fn updates_page(&mut self, ui: &mut Ui) {
+        use crate::update::Phase;
+        let l = self.lang.clone();
+        let card = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+            egui::Frame::new().fill(CARD).corner_radius(10).inner_margin(14).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                add(ui);
+            });
+            ui.add_space(8.0);
+        };
+        // the folder
+        let installed = self.installed.clone();
+        card(ui, &mut |ui| {
+            ui.label(RichText::new(t(&l, "Installed")).size(17.0).strong().color(GOLD));
+            let unknown = t(&l, "unknown").to_string();
+            ui.label(format!("{}: {}", t(&l, "running"), installed.run.clone().unwrap_or_else(|| unknown.clone())))
+                .on_hover_text("logs/totk.log");
+            ui.label(format!("{}: {}", t(&l, "setup"), installed.setup.clone().unwrap_or_else(|| unknown.clone())))
+                .on_hover_text("totk-install.json");
+            if installed.custom {
+                ui.label(RichText::new(t(&l, "The folder runs a build of its own: an update replaces it with the release's build.")).color(RED));
+            }
+        });
+        // the latest release
+        let phase = self.upd.lock().unwrap().clone();
+        let busy = self.update_busy();
+        let latest = self.latest.clone();
+        let newer = self.update_available();
+        let mut check = false;
+        let mut install = false;
+        let mut prefs_changed = false;
+        let mut check_at_start = self.prefs.check_updates;
+        card(ui, &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t(&l, "Latest release")).size(17.0).strong().color(GOLD));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    check = ui.add_enabled(!busy, egui::Button::new(t(&l, "Check now"))).clicked();
+                });
+            });
+            match &latest {
+                Some(rel) => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&rel.name).size(16.0).strong());
+                        if newer {
+                            theme::badge(ui, t(&l, "new"), BG, GOLD);
+                        } else {
+                            theme::badge(ui, t(&l, "up to date"), Color32::WHITE, theme::GREEN);
+                        }
+                        ui.label(RichText::new(format!("{} · {:.0} MB", rel.published.get(..10).unwrap_or(""), rel.asset.size as f64 / 1e6)).color(WEAK));
+                        if !rel.page.is_empty() {
+                            ui.hyperlink_to(t(&l, "Release page"), &rel.page);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().id_salt("notes").max_height(260.0).show(ui, |ui| {
+                        ui.label(RichText::new(clean_notes(&rel.notes)).small());
+                    });
+                    ui.add_space(6.0);
+                    let label = format!("⬇  {} {}", t(&l, "Download and install"), rel.tag);
+                    install = ui.add_enabled(!busy && self.dir.is_some(), egui::Button::new(RichText::new(label).strong().color(BG)).fill(GOLD)).clicked();
+                }
+                None => {
+                    ui.label(RichText::new(t(&l, "Not checked yet.")).color(WEAK));
+                }
+            }
+            match &phase {
+                Phase::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t(&l, "Asking GitHub…"));
+                    });
+                }
+                Phase::Downloading { done, total } => {
+                    let f = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(f).text(format!("{} {:.0} / {:.0} MB", t(&l, "Downloading"), *done as f64 / 1e6, *total as f64 / 1e6)));
+                }
+                Phase::Verifying => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t(&l, "Checking the SHA-256…"));
+                    });
+                }
+                Phase::Unpacking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t(&l, "Unpacking…"));
+                    });
+                }
+                Phase::Ready(folder) => {
+                    ui.label(RichText::new(format!("{} {}", t(&l, "Ready:"), folder.display())).color(GOLD));
+                }
+                Phase::Failed(why) => {
+                    ui.label(RichText::new(why).color(RED));
+                }
+                _ => {}
+            }
+            ui.add_space(6.0);
+            if ui.checkbox(&mut check_at_start, t(&l, "Check for updates when the configurator opens")).changed() {
+                prefs_changed = true;
+            }
+            ui.label(RichText::new(t(&l, "Saved in the configurator's own settings, not in totk.ini.")).small().color(WEAK));
+        });
+        if check {
+            crate::update::check_async(self.upd.clone());
+        }
+        if prefs_changed {
+            self.prefs.check_updates = check_at_start;
+            if let Err(e) = self.prefs.save() {
+                self.say(ui, format!("{}: {e}", t(&self.lang, "Could not save")), true);
+            }
+        }
+        if install {
+            if self.dir.as_deref().is_some_and(crate::update::game_running) {
+                self.say(ui, t(&self.lang, "Close the game first: totk.exe from this folder is running."), true);
+            } else {
+                self.dialog = Dialog::Update;
+            }
+        }
+    }
+
     /// totk.ini written by someone else (the game's menu): reload when nothing is edited here, else ask.
     fn watch_file(&mut self, ui: &Ui) {
         let now = ui.input(|i| i.time);
@@ -1232,8 +1529,20 @@ impl App {
 
     fn take_screenshot(&mut self, ui: &Ui) {
         let Some(path) = self.screenshot.clone() else { return };
+        if self.update_busy() {
+            ui.ctx().request_repaint();
+            return;   // the picture waits for the check's answer
+        }
         self.frames += 1;
-        if self.frames == 8 {
+        // a window that opened (a modal) fades in: the picture waits a second after it appeared
+        let now = ui.input(|i| i.time);
+        let modal = !matches!(self.dialog, Dialog::None);
+        let since = *self.shot_modal_at.get_or_insert(now);
+        if !modal {
+            self.shot_modal_at = None;
+        }
+        if self.frames >= 8 && (!modal || now - since > 1.0) && !self.shot_sent {
+            self.shot_sent = true;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         let image = ui.input(|i| {
@@ -1248,6 +1557,27 @@ impl App {
         }
         ui.ctx().request_repaint();
     }
+}
+
+/// Release notes as plain text: HTML tags (<details>, <b>), GitHub's alert marks ("> [!NOTE]") and quote marks go, the
+/// words stay.
+fn clean_notes(md: &str) -> String {
+    let mut text = String::with_capacity(md.len());
+    let mut in_tag = false;
+    for c in md.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    text.lines()
+        .map(|l| l.trim_start_matches('>').trim_start())
+        .filter(|l| !(l.starts_with("[!") && l.ends_with(']')))
+        .map(|l| l.replace("**", "").replace('`', ""))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn warn_box(ui: &mut Ui, text: &str) {
@@ -1384,6 +1714,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin { left: 18, right: 10, top: 12, bottom: 0 }))
             .show(ui, |ui| self.central(ui));
         self.dialogs(ui);
+        self.poll_update(ui);
         if self.capture.is_some() {
             ui.ctx().request_repaint();
         }

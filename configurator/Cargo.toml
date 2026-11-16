@@ -16,6 +16,9 @@ eframe = { version = "0.36.2", default-features = false, features = ["glow"] }
 rfd = "0.15.4"            # MIT: the folder picker
 serde = { version = "1", features = ["derive"] }   # MIT OR Apache-2.0
 serde_json = "1"          # MIT OR Apache-2.0
+# updates from the GitHub releases (src/update.rs): HTTPS through the system's TLS (Schannel on Windows), SHA-256
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }   # MIT OR Apache-2.0
+sha2 = "0.10"            # MIT OR Apache-2.0
 
 [build-dependencies]
 embed-resource = "3"      # MIT: the icon resource (build.rs)
