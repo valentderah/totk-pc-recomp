@@ -989,14 +989,20 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // - CPU -> shadow: right before each submit (vk_mem_shadow_sync), the pools the replay resolved since the last one are
 //   queried for written pages; pages stamped after a pool's sgen are copied in by the CPU.
 // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
-//   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
-//   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
+//   reports it at the fence (vk_gpu_written), which copies the bytes the GPU changed back into guest memory.
+// Both directions go word by word while a write is pending, as the write-back merge does for imported pools: TotK's
+// particle emitters write a new particle's whole record into a free slot of a buffer the simulation shaders update
+// every frame, so that buffer is always pending. A whole-range copy back put the shadow's stale words over the fresh
+// spawns, and a CPU copy that skipped pending ranges never let them reach the GPU: falling rain showed only its
+// splashes. Each pending range keeps a base, the words guest memory and the shadow last agreed on (the shadow's bytes
+// when the range became pending). The CPU copy takes the words where guest memory differs from the base; the fence
+// copy back takes the words where the shadow differs from it. A word both changed takes the GPU's.
 // TOTK_SHADOW=1/0 (shadow in totk.ini) forces the mode on or off; the default is on for Linux and Wine.
-typedef struct { uint64_t lo, hi; } SRange;
+typedef struct { uint64_t lo, hi; uint8_t *base; int refs; } SRange;
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
-static SRange *spend;                             // shadow_lock: GPU writes recorded and not copied back yet
+static SRange *spend;                             // shadow_lock: distinct GPU writes recorded and not copied back yet
 static int nspend, cspend;
 static int64_t s_live_n, s_live_bytes;            // shadow_lock
 static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
@@ -1062,15 +1068,65 @@ static void shadow_forget(PoolRec *r) {
     plat_mutex_unlock(&shadow_lock);
 }
 
-// shadow_lock held: copies guest [a, b) into the shadow, leaving out the bytes of GPU writes not copied back yet
-// (spend from index i on).
+// A run of differing words from *at on, as byte offsets [*at, *end) of x and y (n bytes, the last word may be shorter);
+// 0 when none is left.
+static int diff_run(const uint8_t *x, const uint8_t *y, uint64_t n, uint64_t *at, uint64_t *end) {
+    uint64_t i = *at;
+    for (; i < n; i += 4) {
+        uint32_t u = 0, v = 0, w = n - i < 4 ? (uint32_t)(n - i) : 4;
+        memcpy(&u, x + i, w), memcpy(&v, y + i, w);
+        if (u != v) break;
+    }
+    if (i >= n) return 0;
+    uint64_t j = i + 4;
+    for (; j < n; j += 4) {
+        uint32_t u = 0, v = 0, w = n - j < 4 ? (uint32_t)(n - j) : 4;
+        memcpy(&u, x + j, w), memcpy(&v, y + j, w);
+        if (u == v) break;
+    }
+    *at = i, *end = j < n ? j : n;
+    return 1;
+}
+
+// shadow_lock held: src's bytes become guest [a, b) in the base of every pending range over them.
+static void base_set(uint64_t a, uint64_t b, const uint8_t *src) {
+    for (int i = 0; i < nspend; i++) {
+        SRange *p = &spend[i];
+        if (!p->base || p->lo >= b || p->hi <= a) continue;
+        uint64_t x = a > p->lo ? a : p->lo, y = b < p->hi ? b : p->hi;
+        memcpy(p->base + (x - p->lo), src + (x - a), y - x);
+    }
+}
+
+static void shadow_put(PoolRec *r, uint64_t a, uint64_t b);
+
+// shadow_lock held: the words of guest [a, b), inside pending range p, that differ from p's base go into the shadow.
+static void shadow_merge(PoolRec *r, uint64_t a, uint64_t b, const SRange *p) {
+    const uint8_t *g = (const uint8_t *)(uintptr_t)a;
+    uint64_t x = 0, y;
+    while (diff_run(g, p->base + (a - p->lo), b - a, &x, &y)) {
+        base_set(a + x, a + y, g + x);
+        shadow_put(r, a + x, a + y);
+        x = y;
+    }
+}
+
+// shadow_lock held: copies guest [a, b) into the shadow; the bytes of GPU writes not copied back yet (spend from index
+// i on) only where the CPU changed them.
 static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
     for (; i < nspend; i++)
         if (spend[i].lo < b && spend[i].hi > a) {
             if (spend[i].lo > a) shadow_copy(r, a, spend[i].lo, i + 1);
             if (spend[i].hi < b) shadow_copy(r, spend[i].hi, b, i + 1);
+            if (spend[i].base)
+                shadow_merge(r, a > spend[i].lo ? a : spend[i].lo, b < spend[i].hi ? b : spend[i].hi, &spend[i]);
             return;
         }
+    shadow_put(r, a, b);
+}
+
+// shadow_lock held: guest [a, b) into the shadow.
+static void shadow_put(PoolRec *r, uint64_t a, uint64_t b) {
     if (sdefer_now) {   // the GPU copies it later: the bytes are read from guest memory when the prologue is recorded
         if (ndq == cdq) grow((void **)&dq, &cdq, sizeof *dq);
         dq[ndq++] = (DRange){r, a, b - a};
@@ -1240,12 +1296,35 @@ void vk_mem_shadow_sync(uint64_t fence) {
 
 int vk_mem_shadow_deferred(void) { return ndq; }
 
+// Record time: the range's base is the shadow's bytes, except where an overlapping pending range has one: the GPU may
+// have written those shadow bytes since.
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     if (!shadow_on || !size) return;
+    uint64_t lo = addr, hi = addr + size;
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, addr, size);
+    PoolRec *r = e ? e->buf : NULL;
     plat_mutex_lock(&shadow_lock);
-    if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-    spend[nspend++] = (SRange){addr, addr + size};
+    int i = 0;
+    while (i < nspend && (spend[i].lo != lo || spend[i].hi != hi)) i++;
+    if (i < nspend) {
+        spend[i].refs++;
+    } else {
+        uint8_t *base = NULL;
+        if (r && r->smap && lo >= r->import_lo && hi <= r->import_hi && (base = malloc(size))) {
+            memcpy(base, r->smap + (lo - r->import_lo), size);
+            for (int k = 0; k < nspend; k++) {
+                const SRange *p = &spend[k];
+                if (!p->base || p->lo >= hi || p->hi <= lo) continue;
+                uint64_t x = lo > p->lo ? lo : p->lo, y = hi < p->hi ? hi : p->hi;
+                memcpy(base + (x - lo), p->base + (x - p->lo), y - x);
+            }
+        }
+        if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
+        spend[nspend++] = (SRange){lo, hi, base, 1};
+    }
     plat_mutex_unlock(&shadow_lock);
+    plat_mutex_unlock_shared(&pool_lock);
 }
 
 void vk_gpu_written(uint64_t addr, uint64_t size) {
@@ -1254,13 +1333,25 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
         const pidx_ent *e = pidx_find(&pool_index, addr, size);
         PoolRec *r = e ? e->buf : NULL;
         plat_mutex_lock(&shadow_lock);
+        int k = 0;
+        while (k < nspend && (spend[k].lo != addr || spend[k].hi != addr + size)) k++;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
             mem_thaw(addr, size);
-            memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
-            s_wb_bytes += size;
+            const uint8_t *s = r->smap + (addr - r->import_lo);
+            if (k < nspend && spend[k].base) {
+                uint64_t x = 0, y;
+                while (diff_run(s, spend[k].base, size, &x, &y)) {
+                    memcpy((void *)(uintptr_t)(addr + x), s + x, y - x);
+                    base_set(addr + x, addr + y, (const uint8_t *)(uintptr_t)(addr + x));
+                    s_wb_bytes += y - x;
+                    x = y;
+                }
+            } else {
+                memcpy((void *)(uintptr_t)addr, s, size);
+                s_wb_bytes += size;
+            }
         }
-        for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) { spend[i] = spend[--nspend]; break; }
+        if (k < nspend && !--spend[k].refs) free(spend[k].base), spend[k] = spend[--nspend];
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -2988,6 +3079,7 @@ void vk_mem_shutdown(void) {
     nsnap_pool = 0, snap_pool_bytes = 0;
     plat_mutex_unlock(&snap_pool_lock);
     plat_mutex_lock(&shadow_lock);
+    for (int i = 0; i < nspend; i++) free(spend[i].base);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
