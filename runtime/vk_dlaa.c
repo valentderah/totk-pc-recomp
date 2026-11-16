@@ -1110,12 +1110,16 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
             D.reset = 1;
         }
         if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+        // FSR sharpens its own output (sharpness, the setting the FSR 1 present pass reads too): the game's sharpening
+        // is part of its FXAA pass, which FSR's frames go without (vk_dlaa_skip_draw).
+        int sharp = cfg_int("TOTK_SHARPNESS");
+        sharp = sharp < 0 ? 0 : sharp > 100 ? 100 : sharp;
         // The same bias mask DLSS would get, as FSR's reactive mask: how much to favour this frame's colour
         VkFfxDispatch fd = {.color = {t->image, t->format, w, h}, .depth = {z->image, z->format, w, h},
                             .mv = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h},
                             .out = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh},
                             .jx = jx, .jy = jy, .dt_ms = dt_ms, .cam_near = cn, .cam_far = cf, .fov_y = fov,
-                            .reset = D.reset};
+                            .sharpness = (float)sharp / 100.0f, .reset = D.reset};
         if (mk) fd.reactive = (VkFfxImage){mk->mask, VK_FORMAT_R8_UNORM, w, h};
         else if (masked) fd.reactive = (VkFfxImage){e->mask, VK_FORMAT_R8_UNORM, w, h};
         c0 = timed ? kern_now_ns() : 0;
@@ -1440,6 +1444,9 @@ void vk_dlaa_frame(void) {
 // the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull};
+// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (this build's
+// translator; another hash leaves the draw alone). See vk_dlaa_skip_draw for why FSR's frames skip it.
+static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull};
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
@@ -1484,7 +1491,19 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
                    "FXAA_FS): the FXAA stays on", (unsigned long long)fx_off_frames);
         }
     }
-    if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
+    // FSR in place (the scene at least as large as the output, so no scaling pass follows) goes without the game's
+    // FXAA altogether, because with FSR on the game does not run that pass on every frame. Measured on 1.4.3 at a
+    // 2560x1440 scene and output, dynamic_res = 0, a still view: for 17 frames in every 96 the game drew the copy
+    // shader into its scratch target and then the FXAA; for the other 79 it drew the copy shader straight into the
+    // scene target, from that same target, and no FXAA. Without DLAA it ran the FXAA on every frame. The cause was not
+    // found; the period suggests the dynamic resolution controller, which keeps stepping through its tiers under the
+    // fixres patch (that only makes every tier's scale 1.0).
+    // The FXAA pass sharpens as well (that view measured 27.7 with it and 19.6 without, DLAA off, as the mean absolute
+    // Laplacian of the picture), so FSR's picture came out sharp for those 17 frames and soft for the other 79 (16.5
+    // and 8.8), and the copy of the scene onto itself softened those further (10.2 without that draw). Both draws are
+    // skipped on every frame instead and FSR sharpens its own output (evaluate): 16.8 on every frame at sharpness 80.
+    int fsr_in_place = D.done && !D.up && fsr_backend();
+    if (fxaa && !D.up && !fsr_in_place) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
     // 1.2.1 scales the light target to the output with an upscaler of its own (12 texelFetch taps around the source
     // pixel, fragment shader e6f7ae35b8479ef3 with this build's translator), not with the FXAA one, in a pass without
@@ -1504,6 +1523,21 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     uint64_t h = spirv_hash(fs);
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
+    if (fsr_in_place) {
+        static int logged_fxaa, logged_copy;
+        if (known && ex->depth.image) {
+            if (!logged_fxaa) logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its own picture (sharpness)", (unsigned long long)h);
+            return 1;
+        }
+        // the copy shader drawing the scene target onto itself: the frames below the first resolution tier
+        int copy = 0;
+        for (size_t i = 0; i < sizeof FXAA_COPY_FS / sizeof FXAA_COPY_FS[0]; i++) copy |= h == FXAA_COPY_FS[i];
+        if (copy && ex->color[0].image == D.color.image && vk_exec_draw_samples(ex, fs, D.color.img)) {
+            if (!logged_copy) logged_copy = 1, rt_log("dlaa: FSR skips the game's copy of the scene target onto itself (fragment shader %016llx)", (unsigned long long)h);
+            return 1;
+        }
+        if (fxaa) return 0;
+    }
     if (!known) return 0;
     if (!ex->depth.image) return D.up;   // the scaling pass, which DLSS replaced
     if (!fxaa && !fx_found) {

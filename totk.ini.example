@@ -203,7 +203,8 @@
 # the menu take effect at once.
 # dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
-# from 0 (off) to 100. Changes while the game runs take effect at once.
+# from 0 (off) to 100. With dlaa_backend = fsr the same sharpness also sets how much FSR sharpens the 3D scene it
+# anti-aliases. Changes while the game runs take effect at once.
 # upscaler = fsr
 # sharpness = 80
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen
@@ -293,8 +294,10 @@
 # NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
 # Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
 # reflex = off
-# The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
-# once.
+# The game's own FXAA after the post effects, which also sharpens; with DLAA on it is not needed. With dlaa_backend =
+# fsr and the scene as large as the game resolution it is always left out, and FSR sharpens instead (sharpness): the
+# game runs it on some frames only, which made the picture go soft and sharp in turns. Changes while the game runs
+# take effect at once.
 # fxaa = 1
 
 # HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with

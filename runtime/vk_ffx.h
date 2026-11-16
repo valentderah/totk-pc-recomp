@@ -23,6 +23,7 @@ typedef struct {
     float dt_ms;                // time since the previous dispatch
     float cam_near, cam_far;    // view-space distances of the depth range's ends
     float fov_y;                // vertical field of view, radians
+    float sharpness;            // FSR's own sharpening pass (RCAS) on its output, 0..1; 0: none
     int reset;                  // a new history
 } VkFfxDispatch;
 

@@ -239,6 +239,8 @@ int vk_ffx_dispatch(void *ctx, VkCommandBuffer cb, const VkFfxDispatch *d) {
     u.motionVectorScale = (struct FfxApiFloatCoords2D){1.0f, 1.0f};
     u.renderSize = (struct FfxApiDimensions2D){d->color.width, d->color.height};
     u.upscaleSize = (struct FfxApiDimensions2D){d->out.width, d->out.height};
+    u.enableSharpening = d->sharpness > 0;
+    u.sharpness = d->sharpness;
     u.frameTimeDelta = d->dt_ms;
     u.preExposure = 1.0f;
     u.reset = d->reset != 0;
