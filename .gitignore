@@ -9,6 +9,7 @@ __pycache__/
 
 # Personal paths to game files and keys
 /config.local.toml
+/.local/
 
 # Game inputs and everything derived from them. Never commit these.
 # tools/check_content.py enforces the same rule in CI and the pre-commit hook.

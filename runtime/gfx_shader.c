@@ -723,7 +723,11 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     r->handle = (uint16_t)handle;
     r->count = (uint16_t)json_int(o, e, "array", 1);
     r->separate = sep && *sep == 't';
-    r->slot = (int16_t)handle_slot(kind, r->cbuf_slot, handle, r->separate);
+    int source_cbuf = r->cbuf_slot;
+    if (kind == GFX_RES_TEX && (source_cbuf == 63 || source_cbuf == 66)) {
+        source_cbuf -= 64; r->flags |= 128; // private previous-position sampled descriptor; current fields stay intact
+    }
+    r->slot = (int16_t)handle_slot(kind, source_cbuf, handle, r->separate);
 }
 
 // SPIR-V opcodes and enumerants used below (SPIR-V 1.6 specification, section 3).

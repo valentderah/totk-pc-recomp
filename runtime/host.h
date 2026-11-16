@@ -298,6 +298,7 @@ void res_heapdef_served(void);                             // romfs.c serves the
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 float res_dlss_lod_bias(void);                             // TOTK_DLSS upscaling: texture LOD bias (<= 0)
 int res_dlss_mode(const char *mode);                       // TOTK_DLSS changed while running: new scene size
+int res_rsf_scene(unsigned width, unsigned height);       // queue exact provider dimensions for the game thread
 void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
 void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
@@ -388,3 +389,21 @@ int probe_vkmem(void), probe_vkexec(void), probe_astc(void);                 // 
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)
+
+// Read one diagnostic frame, retaining the caller even when its next link is invalid.
+static inline int rt_guest_frame_next(uint64_t *fp, uint64_t *caller) {
+    if ((*fp & 15) || !mem_guest_readable(*fp, 16)) return 0;
+    uint64_t pair[2];
+    memcpy(pair, (const void *)(uintptr_t)*fp, sizeof pair);
+    *caller = pair[1];
+    *fp = pair[0] > *fp && pair[0] - *fp <= 0x100000 ? pair[0] : 0;
+    return 1;
+}
+// First N occurrences, followed by every period; callers own counter synchronization.
+static inline int rt_log_sampled(uint64_t n, uint64_t first, uint64_t period) {
+    return n <= first || (period && n % period == 0);
+}
+
+static inline uint64_t rt_fnv_mix(uint64_t hash, uint64_t word) {
+    return (hash ^ word) * 0x100000001b3ull;
+}

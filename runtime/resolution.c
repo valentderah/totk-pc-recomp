@@ -39,6 +39,7 @@
 #include <zstd.h>
 
 #include "cfg.h"
+#include "rsf_runtime.h"
 #include "host.h"
 #include "mods.h"
 #include "ov.h"
@@ -68,33 +69,6 @@ static struct {
     int live;                  // 1.4.3 with DLSS able to run: the DLSS mode can change while the game runs
 } R;
 
-// The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
-// next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
-// without that file DLSS never runs, and a DLSS mode would leave the game's plain scaling at 50..67 % of the output.
-static int dlss_dll(void) {
-#ifdef _WIN32
-    char exe[1024], path[1024 + 32];
-    if (!plat_exe_path(exe, sizeof exe)) return 1;
-    char *last = plat_last_sep(exe);
-    if (!last) return 1;
-    snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
-    return plat_file_exists(path);
-#else
-    char exe[1024];
-    if (!plat_exe_path(exe, sizeof exe)) return 1;
-    char *last = plat_last_sep(exe);
-    if (!last) return 1;
-    *last = 0;
-    DIR *d = opendir(exe);
-    if (!d) return 1;
-    int found = 0;
-    for (struct dirent *e; !found && (e = readdir(d));)
-        found = !strncmp(e->d_name, "libnvidia-ngx-dlss.so.", 22);
-    closedir(d);
-    return found;
-#endif
-}
-
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -116,23 +90,18 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
     return fit < 1.0;
 }
 
-// The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// The reconstruction quality's scene share; native/dlaa uses the full output.
+// Disabled reconstruction or a missing runtime keeps the independent render_scale policy.
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
-        {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
+        {"dlaa", 1.0}, {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
     static int dll = -1;
-    if (!cfg_bool("TOTK_DLAA")) return 0;
+    if (!rsf_config_enabled()) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
-#ifdef _WIN32
-                rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
-                       "render_scale", m);
-#else
-                rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
-                       "scene follows render_scale", m);
-#endif
+            if (dll < 0 && !(dll = rsf_runtime_present())) {
+                rt_log("resolution: reconstruction mode %s requires rsf_runtime pointing to an existing RSF DLL; "
+                       "the scene follows render_scale", m);
             }
             return dll ? dlss[i].k : 0;
         }
@@ -191,13 +160,14 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // A reconstruction mode other than native sets the scene size instead. On 1.4.3 with the runtime installed
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
-    const char *m = cfg_value("TOTK_DLSS");
+    R.live = RT_V143 && rsf_runtime_present();
+    const char *m = cfg_value("TOTK_RSF_QUALITY");
+    if (!strcmp(m, "native")) m = "dlaa";
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
     double sk = R.dlss_k ? R.dlss_k : k;
@@ -207,7 +177,7 @@ static void decide(void) {
         rt_log("resolution: a %.0fx%.0f scene is larger than the port allows (8192 a side, a texture heap under 2 GiB "
                "past 4096 a side); %ux%u", R.ow * sk, R.oh * sk, R.sw, R.sh);
     }
-    if (R.live) scene_for(fmax(k, 2.0 / 3.0), &R.hw, &R.hh);
+    if (R.live) scene_for(fmax(k, 1.0), &R.hw, &R.hh);
     else R.hw = R.sw, R.hh = R.sh;
 }
 
@@ -610,7 +580,8 @@ void res_init(void) {
 // of log2(render / output)), so their detail survives the scaling. 0 without a DLSS mode.
 float res_dlss_lod_bias(void) {
     decide();
-    return R.dlss_k ? (float)log2(R.dlss_k) : 0.0f;
+    // Provider rounding/scaling may differ from the menu's initial heuristic.
+    return R.dlss_k && R.sw && R.ow ? (float)log2((double)R.sw / R.ow) : 0.0f;
 }
 
 // 16:9 within 1% (1366x768 counts): the shape the game's own layouts and camera are made for.
@@ -659,7 +630,10 @@ void res_fov_live(void) {
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
+    // An SR owner accepts one exact render plan. Its 90/80 percent game tiers
+    // cannot replace that plan; FG-only retains the user's DRS preference.
+    int sr = R.on && R.live && rsf_config_enabled();
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !sr;
     if (dyn == shown) return;
     shown = dyn;
     if (set < 0) {
@@ -668,7 +642,8 @@ void res_dynres_live(void) {
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn ? "on: the game's own 100, 90 or 80 %" : sr ? "off: RSF owns the exact provider render plan"
+                                                             : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
@@ -685,6 +660,35 @@ void res_wanted(unsigned out[2]) {
 #define SET_RENDER_SIZE 0x7000585bd0ull
 static uint64_t renderer;          // x0 of the game's own call of SET_RENDER_SIZE
 static volatile int size_pending;  // the page holds a size the game has not set yet
+static uint64_t rsf_scene_request; // atomic mailbox: cfg version, width and height
+
+int res_rsf_scene(unsigned width, unsigned height) {
+    // Heap bounds are fixed at startup. Never ask the renderer to allocate
+    // provider images outside the scene budget reserved before game setup.
+    if (!RT_V143 || !R.live || width < 8 || height < 8 || !R.ow || !R.oh || width > R.hw || height > R.hh ||
+        width > 65535 || height > 65535) return 0;
+    // 1.4.3 derives BOTH allocation axes from page width / console base
+    // (main f_7000581a0c -> +0xccc -> f_70000d5c24). Page height at
+    // +0xcc8 is not consumed here. Each canvas axis is then floored to eight.
+    // Choose a width whose real height also reaches the recommendation, rather
+    // than repeatedly requesting an independent height the engine cannot make.
+    unsigned wanted_w = width, wanted_h = height;
+    unsigned base = ov_handheld() ? 1280 : BASE_W;
+    for (width = (width + 7u) & ~7u;; width += 8) {
+        if (width > R.hw || width > 65535) return 0;
+        float page_width = (float)(width / scene_scale());
+        float scale = page_width / (float)base;
+        unsigned actual_w = (unsigned)floorf(((float)R.ow * scale) / 8.0f) * 8;
+        height = (unsigned)floorf(((float)R.oh * scale) / 8.0f) * 8;
+        // A fixed point also survives writing the accepted width back to page.
+        if (actual_w == width && actual_w >= wanted_w && height >= wanted_h) break;
+    }
+    if (height > R.hh || height > 65535) return 0;
+    if (width == R.sw && height == R.sh) return 2; // already the representable plan
+    uint64_t request = ((uint64_t)cfg_version() << 32) | ((uint64_t)width << 16) | height;
+    __atomic_store_n(&rsf_scene_request, request, __ATOMIC_RELEASE);
+    return 1;
+}
 
 void res_fn_hit(uint64_t addr, uint64_t x0) {
     if (addr != SET_RENDER_SIZE) return;
@@ -694,6 +698,19 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 }
 
 void res_present(Cpu *c) {
+    res_dynres_live(); // exact SR ownership follows game-side activation/reset too
+    uint64_t request = __atomic_exchange_n(&rsf_scene_request, 0, __ATOMIC_ACQUIRE);
+    if (request && rsf_config_enabled() && (unsigned)(request >> 32) == cfg_version()) {
+        unsigned w = (unsigned)(request >> 16) & 65535, h = (unsigned)request & 65535;
+        if (w != R.sw || h != R.sh) {
+            double scale = scene_scale();
+            float scene[2] = {(float)(w / scale), (float)(h / scale)};
+            memcpy((uint8_t *)rt_patch_page() + 16, scene, sizeof scene);
+            R.sw = w, R.sh = h;
+            size_pending = 1;
+            rt_log("resolution: RSF requested scene %ux%u", w, h);
+        }
+    }
     // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
     // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
     // next start.

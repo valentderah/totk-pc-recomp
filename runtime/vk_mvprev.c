@@ -9,7 +9,7 @@
 // c7 pair 0x100 apart, c5 pairs their rounded size apart, the pair's contents the same object moved a little). The
 // copy this frame does not write still holds last frame's when the frame is submitted, so the uniform snapshot
 // (vk_usnap.c) also copies both neighbours of these blocks, and vk_mvprev_find picks last frame's:
-//   self    the block was bound at the same address last frame too (an object the game did not write again): itself
+//   self    the block was bound at the same address last frame: retained immutable snapshot, not today's bytes
 //   side    one neighbour was bound in that bank last frame: that one
 //   nearer  both were (the copies of adjacent objects interleave): the one with more of its first 16 words equal to
 //           this frame's
@@ -28,6 +28,7 @@
 #include "vk.h"
 #include "vk_exec.h"
 #include "vk_dlaa.h"
+#include "vk_mvprev.h"
 
 #define CHECK 128u
 #define TABLE (1u << 14)
@@ -35,12 +36,16 @@
 
 enum { BONES = 2, PLACE = 4, CLOCK = 11, BANKS = 14 };   // NVN binding index: banks c5, c7 and c14; c3..c16
 
-// 16 bytes, so a table of TABLE entries stays in the cache: every scene draw probes it (the bytes of TOTK_MVPREV_CHECK
-// live in a table of their own, by entry index, allocated only for the check)
+// Address lookup plus a lease on the uploaded submission snapshot. No object bytes are allocated/copied per draw.
 typedef struct {
     uint64_t addr;   // 0: empty
     int index;
     uint32_t have;
+    uint64_t size, snap_gen;
+    VkDescriptorBufferInfo snapshot;
+    const uint8_t *data;
+    void *lease;
+    uint64_t target; // storage pointer owners can select a different pointee without changing identity or range
 } Seen;
 
 typedef struct { uint64_t blocks, self, side, nearer, none, checked, intact, still, small, big; } Stat;
@@ -54,6 +59,7 @@ static struct {
     uint32_t frames;
     Stat st[BANKS];  // per binding index
     uint64_t last[BANKS];   // the block the last scene draw bound per binding index
+    uint64_t last_size[BANKS], last_gen[BANKS];
     uint32_t mask;          // binding indices kept (vk_mvprev_want): bones, place and clock from the start
     uint64_t ns_draw, ns_frame;   // time in vk_mvprev_draw and vk_mvprev_frame since the last summary
 } P = {.knob = -1, .mask = 1u << BONES | 1u << PLACE | 1u << CLOCK};
@@ -76,6 +82,39 @@ static Seen *find(Seen *t, uint64_t addr, int index, int add) {
 }
 
 int vk_mvprev_on(void) { return P.on > 0; }
+
+static void clear_table(Seen *t) {
+    if (!t) return;
+    for (uint32_t i = 0; i < TABLE; i++) vk_usnap_release(t[i].lease);
+    memset(t, 0, TABLE * sizeof *t);
+}
+
+void vk_mvprev_clear(void) { clear_table(P.t[0]); clear_table(P.t[1]); }
+
+// Storage identity is its pointer's owning block (or a direct storage address), never today's pointee address.
+// Only already uploaded snapshot ranges qualify; GPU-written/live-only storage has no immutable history here.
+void vk_mvprev_storage(int key, uint64_t identity, uint64_t addr, uint64_t size) {
+    if (P.on <= 0 || !P.t[0] || !identity) return;
+    Seen *s = find(P.t[0], identity, key, 1);
+    if (!s) return;
+    uint64_t gen = vk_usnap_gen();
+    if (s->snap_gen == gen && s->size == size && s->target == addr) return;
+    vk_usnap_release(s->lease);
+    s->lease = NULL, s->data = NULL, s->size = size, s->snap_gen = gen;
+    s->target = addr;
+    if (size) s->lease = vk_usnap_retain(addr, size, &s->snapshot, &s->data);
+}
+
+int vk_mvprev_self(int index, uint64_t addr, uint64_t size, uint64_t fence,
+                   VkDescriptorBufferInfo *out, const uint8_t **bytes) {
+    if (P.on <= 0 || !P.t[1] || !size) return 0;
+    Seen *s = find(P.t[1], addr, index, 0);
+    if (!s || !s->lease || size != s->size || !fence) return 0;
+    vk_usnap_use(s->lease, fence);
+    *out = s->snapshot;
+    *bytes = s->data;
+    return 1;
+}
 
 void vk_mvprev_want(uint32_t index_mask) {
     static int fixed = -1;
@@ -135,13 +174,23 @@ static void mvprev_draw_(VkExec *ex) {
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT) return;
     int check = P.bytes[0] != NULL;   // TOTK_MVPREV_CHECK=1: the summary's checks (3.6 ms a frame)
+    uint64_t gen = vk_usnap_gen();
     for (int index = 0; index < BANKS; index++) {
         if (!(P.mask >> index & 1)) continue;
         const p_bind_buf *u = &ex->ubo[0][index];
-        if (!u->addr || !u->size || u->addr == P.last[index]) continue;   // the next draws keep the block: noted already
+        if (!u->addr || !u->size || (u->addr == P.last[index] && u->size == P.last_size[index] && gen == P.last_gen[index])) continue;
         P.last[index] = u->addr;
+        P.last_size[index] = u->size, P.last_gen[index] = gen;
         Seen *k = find(P.t[0], u->addr, index, 1);
-        if (!k || k->have || !check) continue;   // else only the address is noted
+        if (!k) continue;
+        if (k->snap_gen != gen || k->size != u->size) {
+            vk_usnap_release(k->lease);
+            k->lease = NULL, k->data = NULL, k->size = u->size, k->snap_gen = gen;
+            // Uniform snapshots are capped at 64 KiB; never claim a partial retained range as full history.
+            if (u->size <= (64u << 10))
+                k->lease = vk_usnap_retain(u->addr, u->size, &k->snapshot, &k->data);
+        }
+        if (k->have || !check) continue;
         int w = index;
         uint32_t want = u->size < CHECK ? (uint32_t)u->size : CHECK;
         const uint8_t *cur = vk_usnap_bytes(u->addr, want);
@@ -172,8 +221,10 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without DLSS (no NGX, no RTX GPU, dlaa = 0) nothing reads last frame's blocks: P.on stays 0, no tables
-    if (!vk_dlaa_available()) return;
+    // RSF reconstruction owns these histories. Still process an off transition
+    // when availability disappears so stale object/bone blocks are discarded.
+    int available = vk_dlaa_temporal_available();
+    if (!available && P.on <= 0) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
@@ -186,10 +237,11 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && cfg_bool("TOTK_DLAA");
+    int on = available && P.knob;
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
-        if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));
+        vk_mvprev_clear();
+        memset(P.last, 0, sizeof P.last);
         return;
     }
     if (P.on <= 0) return;
@@ -198,7 +250,7 @@ void vk_mvprev_frame(void) {
     P.t[1] = P.t[0], P.t[0] = t;
     uint8_t (*b)[CHECK] = P.bytes[1];
     P.bytes[1] = P.bytes[0], P.bytes[0] = b;
-    memset(P.t[0], 0, TABLE * sizeof(Seen));
+    clear_table(P.t[0]);
     memset(P.last, 0, sizeof P.last);
     if (P.timed) P.ns_frame += kern_now_ns() - t0;
     if (++P.frames % SUMMARY) return;

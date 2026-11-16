@@ -1,3 +1,4 @@
+#include <rescaleframe/sr_session.h>
 // The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
 // end on our device and the menu's pages. Free of any window system (menu.h). ImGui runs on the present path only,
 // under gfx_present.c's present lock; the event functions only queue.
@@ -725,17 +726,28 @@ static void tab_screen(float scale) {
     opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
-    opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
-    static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
-                                    UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
-    opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
-    static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
-    opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
-    static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
-                                     UI_MENU_DLSS_CHARS_FULL};
-    opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
-    static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
-    opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
+    opt_group(UI_MENU_RSF_GROUP);
+    opt_toggle("TOTK_RSF_ENABLED", UI_MENU_RSF_ENABLE, UI_MENU_RSF_ENABLE_DESC);
+    static const char *const providers[] = {"1", "2", "3", "4", "5"};
+    static const char *const provider_names[] = {"DLSS", "FSR 2", "FSR 3", "FSR 4", "XeSS"};
+    opt_choice_list("TOTK_RSF_BACKEND", UI_MENU_RSF_PROVIDER, providers, provider_names, 5, UI_MENU_RSF_PROVIDER_DESC);
+    static const UiTextId quality[] = {UI_MENU_RSF_NATIVE, UI_MENU_RSF_QUALITY_VALUE, UI_MENU_RSF_BALANCED,
+                                      UI_MENU_RSF_PERFORMANCE, UI_MENU_RSF_ULTRA};
+    opt_choice("TOTK_RSF_QUALITY", UI_MENU_RSF_QUALITY, quality, 5, UI_MENU_RSF_QUALITY_DESC);
+    if (cfg_int("TOTK_RSF_BACKEND") == RSF_SR_DLSS) {
+        static const UiTextId models[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
+        opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, models, 3, UI_MENU_DLSS_PRESET_DESC);
+        static const UiTextId character_history[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT,
+                                                    UI_MENU_DLSS_CHARS_MEDIUM, UI_MENU_DLSS_CHARS_FULL};
+        opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_RSF_CHARACTER_HISTORY, character_history, 4,
+                   UI_MENU_RSF_CHARACTER_HISTORY_DESC);
+    }
+    opt_toggle("TOTK_DLAA_OBJMV", UI_MENU_RSF_OBJECT_MOTION, UI_MENU_RSF_OBJECT_MOTION_DESC);
+    static const char *const fg[] = {"0", "1", "3", "4", "5"};
+    const char *fg_names[] = {menu_text(UI_MENU_OFF), provider_names[RSF_SR_DLSS-1], provider_names[RSF_SR_FSR3-1], provider_names[RSF_SR_FSR4-1], provider_names[RSF_SR_XESS-1]};
+    opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
+    static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_REFLEX_BOOST};
+    opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 3, UI_MENU_RSF_LATENCY_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);

@@ -28,6 +28,7 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "vk_motion_texture.h"
 #include "platform/platform.h"
 
 typedef struct {
@@ -62,6 +63,7 @@ typedef struct Tex {
     uint8_t listed;               // in owned[]
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
+    uint64_t motion_generation;   // allocation identity, never a raw VkImage handle or a revived slot identity
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
     uint64_t rel_ms;              // while released: when (coarse_ms)
     uint64_t rel_bytes;           // while released: its own memory, counted in rel_bytes_total
@@ -99,6 +101,7 @@ static int nreleased;
 static uint64_t rel_bytes_total;   // own memory of the released entries
 static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
 static uint64_t n_uploads, n_reuploads;
+static uint64_t motion_generation;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
 static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
 // TOTK_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
@@ -1424,6 +1427,7 @@ static Tex *entry_of(const tex_t *t) {
             rt_log("vk: texture aliases: %s", tex_alias ? "a new image takes the live image's content" : "a new image starts empty");
         }
         if (!(e = create_tex(t, &k, tex_alias))) return NULL;
+        e->motion_generation = motion_generation == UINT64_MAX ? 0 : ++motion_generation;
         perf_count(PERF_CNT_TEX_NEW);
         dropped_check(&k);
         e->use_seq = ++use_counter;
@@ -1765,6 +1769,32 @@ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
 }
 
 uint32_t vk_texture_epoch(void) { return __atomic_load_n(&submit_epoch, __ATOMIC_RELAXED); }
+
+int vk_texture_motion_fact(uint64_t handle, VkMotionTextureFact *out) {
+    if (!handle || !out) return 0;
+    int id = NVN_HANDLE_TEX(handle), ok = 0;
+    lock();
+    if (id < 0 || id >= ntslots || !tslots[id].used) goto end;
+    const TexSlot *s = &tslots[id];
+    const Tex *e = s->ce;
+    if (!e || !e->motion_generation || s->cepoch != submit_epoch || s->cgen != agen[sinfo[id] & 0xffff] ||
+        s->chas_view || e->released || e->pub.gone || e->pub.bound || e->pub.gpu_owned || e->wr_fence ||
+        e->pub.fb_learned || e->pub.block_views || e->pub.alpha_one || e->pub.chan[0] ||
+        e->pub.type != VK_IMAGE_TYPE_2D || e->pub.view_type != VK_IMAGE_VIEW_TYPE_2D ||
+        e->pub.layers != 1 || e->pub.samples != 1 || e->pub.aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
+        (e->pub.usage & VK_IMAGE_USAGE_STORAGE_BIT) || !(e->pub.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) goto end;
+    // An alternate descriptor over the same storage is an unproved alias, even if it currently looks read-only.
+    const Tex *head = nvn_hm_get(&by_addr, &e->key.addr);
+    if (head != e || e->next_at) goto end;
+    for (int i = 0; i < 4; i++) if (e->pub.swz[i] != NVN_TEXTURE_SWIZZLE_R + i) goto end;
+    if (s->t.d.swizzle_r != e->t.d.swizzle_r || s->t.d.swizzle_g != e->t.d.swizzle_g ||
+        s->t.d.swizzle_b != e->t.d.swizzle_b || s->t.d.swizzle_a != e->t.d.swizzle_a) goto end;
+    *out = (VkMotionTextureFact){e->pub.image, e->motion_generation,
+        {e->pub.format, e->pub.width, e->pub.height, e->pub.levels}};
+    ok = 1;
+end:
+    unlock(); return ok;
+}
 
 int vk_texture_slot_moves(int id) {
     const uint64_t *si = __atomic_load_n(&sinfo, __ATOMIC_ACQUIRE);

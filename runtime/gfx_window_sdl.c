@@ -11,6 +11,7 @@
 // TOTK_WINDOW_SIZE is in pixels. On a display that scales windows (Wayland, HiDPI) the window asks for its pixels in
 // the display's units (SDL_GetWindowDisplayScale), and SDL reports mouse positions in those units: input_sdl.c and the
 // menu scale them back (gfx_window_sdl_density).
+#include "rsf_input_gamepad.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,7 +215,10 @@ static void window_main(void *arg) {
     if (!g_video_ok) return;
     for (;;) {
         SDL_Event e;
-        if (SDL_WaitEventTimeout(&e, 100)) handle(&e);
+        if (SDL_WaitEventTimeout(&e, 100)) {
+            rsf_input_sdl_dequeued(&e,g_win ? SDL_GetWindowID(g_win) : 0);
+            handle(&e);
+        }
         else input_sdl_idle();   // a cursor change requested from another thread meanwhile
     }
 }

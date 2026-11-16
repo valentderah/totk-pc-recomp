@@ -17,6 +17,7 @@
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
+#include "rsf_frame.h"
 #include "platform/platform.h"
 
 // ---------- Descriptor pools
@@ -687,8 +688,7 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
-    vk_reflex_sleep();
-    vk_reflex_marker(0, vk_reflex_frame_begin());   // VK_LATENCY_MARKER_SIMULATION_START_NV: a new frame and its ID
+    gfx_frame_begin();
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is
     // already satisfied: fenced = 3 with fence 0.
     if (s) {
@@ -704,20 +704,36 @@ NVN_API(nvnWindowAcquireTexture) {
 // time with the frame queue) the image is free for the next acquire. Added latency: the slack of the frame (period minus
 // its work), as on the Switch, plus up to a period with the frame queue.
 NVN_API(nvnQueuePresentTexture) {
+    if (rt_trace & RT_TRACE_PRESENT) {
+        static int32_t traced;
+        int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);
+        if (rt_log_sampled(n, 32, 600))
+            rt_log("present boundary: call %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
+                   (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
+        if (n <= 2) {
+            uint64_t fp = c->x[29];
+            uint64_t caller;
+                for (unsigned depth = 0; depth < 12 && rt_guest_frame_next(&fp, &caller); depth++) {
+                rt_log("present caller: call %d depth %u return 0x%llx", n, depth,
+                       (unsigned long long)caller);
+                }
+        }
+    }
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
     movie_tick(c);   // ov_movie.c: hand over decoded movie frames that are due; needs the core, so before the wait
     res_present(c);  // resolution.c: a DLSS mode change sets the game's render size again, between frames
+    uint64_t source_frame = rsf_frame_draw_source(c);
     NVN_BLOCKING();
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
-    vk_reflex_marker(1, vk_reflex_frame());   // VK_LATENCY_MARKER_SIMULATION_END_NV
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);
     nvn_sync_ahead_present();
-    gfx_backend()->present(t, o->crop, slot);
+    gfx_backend()->present(t, o->crop, slot, source_frame);
+    rsf_frame_draw_done(c);
     o->ticket[idx] = o->presents;
     o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times

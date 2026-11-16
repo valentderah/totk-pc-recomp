@@ -61,7 +61,7 @@ static const char *const known[] = {
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
     "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "REPORT_GUARD", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
-    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
+    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSF_BACKEND", "RSF_ENABLED", "RSF_FG", "RSF_FRAME_HOOK", "RSF_LOW_LATENCY", "RSF_PROVIDER_DIR", "RSF_QUALITY", "RSF_RUNTIME", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
     "SHADER_MEMO", "SHADOW", "SHADOW_DEFER", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER", "SYNC_AHEAD",
@@ -83,7 +83,8 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
+    {"RSF_ENABLED", "display"}, {"RSF_BACKEND", "display"}, {"RSF_QUALITY", "display"},
+    {"RSF_FG", "display"}, {"RSF_LOW_LATENCY", "display"}, {"DLAA", "display"}, {"DLAA_OBJMV", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
@@ -138,7 +139,12 @@ static const CfgMeta metas[] = {
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
-    {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
+    {"DLAA", "0", "0|1", LIVE}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
+    {"RSF_BACKEND", "3", "1|2|3|4|5", LIVE},
+    {"RSF_ENABLED", "0", "0|1", LIVE},
+    {"RSF_QUALITY", "native", "native|quality|balanced|performance|ultra_performance", LIVE},
+    {"DLAA_OBJMV", "1", "0|1", RESTART},
+    {"RSF_FG", "0", "0|1|3|4|5", LIVE}, {"RSF_LOW_LATENCY", "0", "0|1|2", RESTART},
     {"DLSS_PRESET", "default", "default|k|j", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
@@ -458,6 +464,26 @@ static void screen_default(void) {
 
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
+    // New menu keys inherit existing reconstruction settings until explicitly set.
+    if (!v && !strcmp(name, "TOTK_RSF_ENABLED")) v = raw_get("TOTK_DLAA");
+    if (!v && !strcmp(name, "TOTK_RSF_BACKEND") && !raw_get("TOTK_RSF_ENABLED")) {
+        const char *legacy = raw_get("TOTK_DLAA");
+        if (legacy && strcmp(legacy, "0")) v = "1"; // Legacy reconstruction selected DLSS, never FSR.
+    }
+    // Preserve legacy latency selections through the shared runtime. An explicit
+    // RSF selection, including off, takes precedence over the legacy key.
+    if (!v && !strcmp(name, "TOTK_RSF_LOW_LATENCY")) {
+        const char *legacy = raw_get("TOTK_REFLEX");
+        if (legacy) {
+            if (!strcasecmp(legacy, "boost") || !strcmp(legacy, "2")) v = "2";
+            else if (!strcasecmp(legacy, "on") || !strcmp(legacy, "1")) v = "1";
+            else v = "0";
+        }
+    }
+    if (!v && !strcmp(name, "TOTK_RSF_QUALITY")) {
+        v = raw_get("TOTK_DLSS");
+        if (v && !strcmp(v, "dlaa")) v = "native";
+    }
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
     if (!profile_of())
         return screen_res[0] && !strcasecmp(name + PREFIX_LEN, "OUTPUT_RES") && shape_keeps_prompts() ? screen_res

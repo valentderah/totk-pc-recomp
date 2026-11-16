@@ -1,0 +1,42 @@
+#pragma once
+#include <vulkan/vulkan.h>
+#include <stddef.h>
+
+// Initialize the shared RSF SDK session before any Vulkan instance is created.
+int rsf_vk_prepare(void);
+// Drain/release providers first; SDK teardown precedes Vulkan device destruction.
+int rsf_vk_shutdown(void);
+// Reset adapter setup only after checked shutdown and Vulkan instance destruction.
+void rsf_vk_reset(void);
+// Copied engine source at actual host execution, including recorder-thread calls.
+void rsf_vk_submission(uint64_t source, uint32_t begin);
+void rsf_vk_present_event(uint64_t source, uint32_t begin);
+// features is a caller-owned contiguous writable chain, feature_bytes long, leased through device creation.
+int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features, size_t feature_bytes,
+    const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features);
+PFN_vkVoidFunction rsf_vk_instance_proc(VkInstance instance, const char *name);
+PFN_vkVoidFunction rsf_vk_device_proc(VkDevice device, const char *name);
+VkResult rsf_vk_create_instance(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
+VkResult rsf_vk_enumerate_physical_devices(VkInstance, uint32_t *, VkPhysicalDevice *);
+void rsf_vk_destroy_instance(VkInstance, const VkAllocationCallbacks *);
+void rsf_vk_destroy_surface(VkInstance, VkSurfaceKHR, const VkAllocationCallbacks *);
+VkResult rsf_vk_create_device(VkPhysicalDevice, const VkDeviceCreateInfo *, const VkAllocationCallbacks *, VkDevice *);
+void rsf_vk_destroy_device(VkDevice, const VkAllocationCallbacks *);
+
+#ifndef RSF_VULKAN_IMPL
+#define vkGetInstanceProcAddr rsf_vk_instance_proc
+#define vkGetDeviceProcAddr rsf_vk_device_proc
+#define vkCreateInstance rsf_vk_create_instance
+#define vkEnumeratePhysicalDevices rsf_vk_enumerate_physical_devices
+#define vkDestroyInstance rsf_vk_destroy_instance
+#define vkDestroySurfaceKHR rsf_vk_destroy_surface
+#define vkCreateDevice rsf_vk_create_device
+#define vkDestroyDevice rsf_vk_destroy_device
+#endif
+
+// Opaque callback signatures accepted by RSF setup structures.
+PFN_vkVoidFunction rsf_vk_generic_instance_proc(void *instance, const char *name);
+PFN_vkVoidFunction rsf_vk_generic_device_proc(void *device, const char *name);
+
+// Refuse optional startup work while retaining dispatch needed by an existing instance.
+void rsf_vk_fallback(const char *reason);

@@ -1,4 +1,4 @@
-"""The ten setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, pc_prompts, shapes, dlss,
+"""The ten setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, pc_prompts, shapes, rsf,
 cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
@@ -8,7 +8,7 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
+and its DLLs, ReScaleFrame/ (optional local runtime package), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
 romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<w>x<h>/ and romfs-patches-<style>-<w>x<h>/ (for the
 screen shapes and the prompts style this player needs, installer/screens.py), totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
@@ -25,7 +25,6 @@ one argument per line; totk.exe runs it at start when an enabled mod has code ch
 (runtime/cheats.c).
 """
 import hashlib
-import http.client
 import json
 import os
 import re
@@ -35,7 +34,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 from . import ini, screens
@@ -58,20 +56,7 @@ STAMP = '.install-key'
 
 # ---- helpers
 
-def file_sha256(path, progress=None):
-    """SHA-256 hex of a file; progress(done, total) after each block."""
-    h = hashlib.sha256()
-    total = path.stat().st_size
-    done = 0
-    with open(path, 'rb', buffering=0) as f:
-        buf = bytearray(8 << 20)
-        view = memoryview(buf)
-        while n := f.readinto(buf):
-            h.update(view[:n])
-            done += n
-            if progress:
-                progress(done, total)
-    return h.hexdigest()
+from .rsf_package import file_sha256
 
 
 def fingerprint(*parts):
@@ -100,11 +85,7 @@ def remove(path):
         path.unlink()
 
 
-def replace_file(src, dst):
-    """Copy src over dst through a temporary name, so a cancelled copy never leaves half a file under dst's name."""
-    tmp = dst.with_name(dst.name + '.tmp')
-    shutil.copy2(src, tmp)
-    os.replace(tmp, dst)
+from .rsf_package import replace_file
 
 
 def kill_tree(proc):
@@ -220,6 +201,9 @@ def migrate_state(ctx):
     """Read a recorded update by its current name. The extraction it recorded stays: its record gets the key of the
     renamed expected file, and Extract.current and the full check of output another release kept
     (runner.Context.verify_kept) still test the files against the expected hashes."""
+    legacy = ctx.state['steps'].pop('dlss', None)
+    if legacy is not None:
+        ctx.state.setdefault('legacy_steps', {})['dlss'] = legacy
     old = ctx.state.get('version')
     if old not in RENAMED_VERSIONS:
         return
@@ -1264,79 +1248,54 @@ class Shapes(Step):
         return {'folders': folders, 'sizes': sizes, 'style': style}
 
 
-# ---- 7. NVIDIA DLSS
+# ---- 7. complete local RSF package
 
-# NVIDIA's DLSS library, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship it:
-# with --dlss it downloads NVIDIA's own copy from the DLSS SDK repository (NVIDIA RTX SDK license) at a pinned tag and
-# checks its hash. The game runs without it; dlaa and the DLSS modes then do nothing.
-DLSS_DLL = 'nvngx_dlss.dll'
-DLSS_VERSION = '310.9.1'
-DLSS_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSS_DLL}'
-DLSS_SIZE = 58956912
-DLSS_SHA256 = '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'
-DLSS_LICENSE = 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
+from . import rsf_package
 
 
-def nvidia_rtx(host):
-    """An NVIDIA RTX GPU among the host check's Vulkan devices: the GPUs DLSS runs on."""
-    return any('NVIDIA' in d['name'].upper() and 'RTX' in d['name'].upper() for d in (host or {}).get('devices', []))
+def rsf_source(ctx):
+    return rsf_package.select_source(
+        explicit=getattr(ctx.options, 'rsf_package', None),
+        opt_out=getattr(ctx.options, 'no_rsf', False),
+        bundled=ctx.layout.root / rsf_package.NAME,
+        installed=ctx.dest / rsf_package.NAME,
+        recorded=getattr(ctx, 'state', {}).get('rsf_package'))
 
 
-class Dlss(Step):
-    """With --dlss on Windows and an NVIDIA RTX GPU: nvngx_dlss.dll next to totk.exe. A DLSS library the player put
-    there (another version) is kept. A failed download warns and is tried again on the next run; the game runs
-    without it."""
 
-    id = 'dlss'
+class Rsf(Step):
+    id = 'rsf'
 
     def key(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
-            return fingerprint('dlss-1', 'off')
-        return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+        source = rsf_source(ctx)
+        try:
+            return fingerprint('rsf-package-1', rsf_package.digest(source / 'manifest.json')) if source else 'rsf-native-1'
+        except OSError as error:
+            raise InstallError('rsf.invalid', path=str(source), detail=str(error)) from None
 
     def current(self, ctx, record):
-        if record.get('failed'):
+        if not rsf_source(ctx):
+            return True
+        try:
+            rsf_package.validate(ctx.dest / 'ReScaleFrame')
+            return record.get('manifest') == rsf_package.digest(ctx.dest / 'ReScaleFrame/manifest.json')
+        except (OSError, ValueError, TypeError):
             return False
-        return not record.get('installed') or (ctx.dest / DLSS_DLL).is_file()
+
+    def verify(self, ctx, record):
+        return self.current(ctx, record)
 
     def run(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
-            return {}
-        if os.name != 'nt':
-            return {'skipped': 'not_windows'}
-        if not nvidia_rtx(getattr(ctx, 'host', None)):
-            # The box is ticked by default, so most players without an RTX GPU never chose it: a log line, no warning
-            ctx.reporter.log('dlss: no NVIDIA RTX GPU among the Vulkan devices, nothing downloaded')
-            return {'skipped': 'no_rtx'}
-        rep, target = ctx.reporter, ctx.dest / DLSS_DLL
-        if target.is_file():
-            if file_sha256(target) == DLSS_SHA256:
-                return {'installed': DLSS_VERSION}
-            rep.warning('warn.dlss_kept', path=str(target))
-            return {'kept': True}
-        part = ctx.temp / (DLSS_DLL + '.part')
-        rep.progress('dlss', 'download', 0, DLSS_SIZE, 'bytes', force=True)
-        rep.log(f'dlss: {DLSS_URL} (license {DLSS_LICENSE})')
+        source = rsf_source(ctx)
+        if source is None:
+            return {'native': True}
         try:
-            part.parent.mkdir(parents=True, exist_ok=True)
-            h, done = hashlib.sha256(), 0
-            with urllib.request.urlopen(DLSS_URL, timeout=60) as r, open(part, 'wb') as f:
-                while block := r.read(1 << 20):
-                    f.write(block)
-                    h.update(block)
-                    done += len(block)
-                    rep.progress('dlss', 'download', min(done, DLSS_SIZE), DLSS_SIZE, 'bytes')
-            if done != DLSS_SIZE or h.hexdigest() != DLSS_SHA256:
-                raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
-            replace_file(part, target)
-            remove(part)
-        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
-        # which is not an OSError
-        except (OSError, http.client.HTTPException) as e:
-            remove(part)
-            rep.warning('warn.dlss_download_failed', url=DLSS_URL, detail=str(e)[:300])
-            return {'failed': True}
-        return {'installed': DLSS_VERSION}
+            ctx.reporter.progress('rsf', 'copy', force=True)
+            identity = rsf_package.install(source, ctx.dest)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise InstallError('rsf.invalid', path=str(source), detail=str(error)) from None
+        ctx.state['rsf_package'] = str(ctx.dest / 'ReScaleFrame')
+        return {'manifest': identity}
 
 
 # ---- 8. clean up
@@ -1380,13 +1339,17 @@ def rebuild_command(ctx):
     AppImage file itself instead ($APPIMAGE, set by the AppImage runtime); its AppRun passes the arguments to
     installer.gui."""
     layout = ctx.layout
+    installed = rsf_package.select_source(
+        opt_out=getattr(getattr(ctx, 'options', None), 'no_rsf', False),
+        installed=ctx.dest / rsf_package.NAME, prefill=True)
+    package_args = ['--rsf-package', str(installed)] if installed else ['--no-rsf']
     appimage = os.environ.get('APPIMAGE', '')
     if not layout.dev and appimage and Path(appimage).is_file():
-        return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)]
+        return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)] + package_args
     python = Path(sys.executable) if layout.dev else layout.python
     if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
         python = python.with_name('pythonw.exe')
-    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)]
+    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)] + package_args
 
 
 def write_rebuild_command(ctx):
@@ -1414,4 +1377,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Rsf(), Cleanup()]

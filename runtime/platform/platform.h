@@ -262,7 +262,7 @@ void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_alig
 void plat_aligned_free(void *p);
 
 // ---- process
-_Noreturn void plat_exit(int code);       // ends the process at once: other threads stop, no atexit handlers run
+_Noreturn void plat_exit(int code);       // abrupt process end: no atexit or DLL detach handlers; callers flush first
 int plat_setenv(const char *name, const char *value);    // value NULL removes it; 1 on success
 uint32_t plat_process_id(void);
 // CPU time of the process since it started (user and kernel), and wall time since it started, in ns; 0 when unknown.

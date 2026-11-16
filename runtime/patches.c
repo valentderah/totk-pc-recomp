@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "host.h"
+#include "rsf_frame.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
@@ -32,6 +33,14 @@
 #endif
 #ifndef RT_PATCH_PICK_COUNT
 #define RT_PATCH_PICK_COUNT 0
+#endif
+
+#ifdef RT_PATCH_PAGE
+__attribute__((constructor)) static void register_rsf_frame_hooks(void) {
+    if (rt_game_version != 143) return;
+    rt_register_host(RT_PATCH_PAGE + 0xf50, rsf_frame_calculation_begin);
+    rt_register_host(RT_PATCH_PAGE + 0xf40, rsf_frame_calculation_end);
+}
 #endif
 
 uint8_t rt_patch_on[RT_PATCH_COUNT > 0 ? RT_PATCH_COUNT : 1];   // read by the generated C at every patched site

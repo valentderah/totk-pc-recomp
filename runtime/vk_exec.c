@@ -1,3 +1,4 @@
+#include "rsf_runtime.h"
 // The op-stream replay core of the Vulkan back end: walks the command handles of
 // one submission into its command buffer, keeps render targets and fixed-function state, opens and closes dynamic
 // rendering passes and records clears and barriers. Draws, binds and dispatches go to vk_exec_op_draw
@@ -28,6 +29,7 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
+#include "vk_native_pass.h"
 
 #define WEAK __attribute__((weak))
 #define CALL_DEPTH 8
@@ -674,6 +676,62 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
+static uint64_t native_signature(const VkExec *ex) {
+    uint64_t h = 0xcbf29ce484222325ull;
+#define NATIVE_KEY(x) h = rt_fnv_mix(h, (uint64_t)(x))
+    NATIVE_KEY(ex->pass_w); NATIVE_KEY(ex->pass_h); NATIVE_KEY(ex->pass_layers); NATIVE_KEY(ex->pass_ncolor);
+    NATIVE_KEY(ex->pass_depth); NATIVE_KEY(ex->pass_stencil); NATIVE_KEY(ex->pass_samples);
+    for (int i = 0; i < 9; i++) {
+        const VkExecTarget *t = i == 8 ? &ex->depth : &ex->color[i];
+        NATIVE_KEY(t->image); NATIVE_KEY(t->level); NATIVE_KEY(t->base_layer); NATIVE_KEY(t->layers);
+        NATIVE_KEY(t->format); NATIVE_KEY(t->aspect); NATIVE_KEY(t->width); NATIVE_KEY(t->height);
+        NATIVE_KEY(i == 8 ? ex->resolved_native_depth : ex->resolved_native_colors[i]);
+    }
+    NATIVE_KEY(ex->resolved_native_stencil);
+#undef NATIVE_KEY
+    return h;
+}
+
+int vk_exec_native_suspend(VkExec *ex, VkNativePass *p) {
+    if (!ex || !p || !ex->cb || !ex->fence || !ex->source_frame || !ex->in_pass || !ex->rt_resolved ||
+        ex->chunked || ex->nfbl || ex->fbl_mask || ex->mark || ex->oq_open >= 0 || ex->pass_noatt ||
+        ex->pass_samples != 1 || ex->pass_layers != 1 || ex->pass_ncolor > 8 || !ex->pass_w || !ex->pass_h) return 0;
+    for (int i = 0; i < 9; i++) {
+        const VkExecTarget *t = i == 8 ? &ex->depth : &ex->color[i];
+        if (t->image && (!t->img || t->img->gone || t->img->image != t->image)) return 0;
+        if (i < 8 && t->image && !ex->resolved_native_colors[i]) return 0;
+    }
+    if ((ex->pass_depth && !ex->resolved_native_depth) || (ex->pass_stencil && !ex->resolved_native_stencil)) return 0;
+    *p = (VkNativePass){.commands = ex->cb, .fence = ex->fence, .frame = ex->source_frame,
+        .signature = native_signature(ex), .serial = ex->pass_serial, .textures = ex->tex_serial, .live = 1};
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++) p->colors[i] = ex->resolved_native_colors[i];
+    p->depth = ex->resolved_native_depth; p->stencil = ex->resolved_native_stencil;
+    // Do not call pass_end: it publishes target writes, flushes queries and runs dump/producer bookkeeping.
+    // Pipeline, descriptor, index, vertex and dynamic bindings survive End/BeginRendering and transfers.
+    vkCmdEndRendering(ex->cb); ex->recorded++; ex->in_pass = 0;
+    return 1;
+}
+
+int vk_exec_native_resume(VkExec *ex, VkNativePass *p) {
+    if (!ex || !p || !p->live || ex->in_pass || ex->cb != p->commands || ex->fence != p->fence ||
+        ex->source_frame != p->frame || !ex->rt_resolved || ex->pass_serial != p->serial || ex->tex_serial != p->textures ||
+        ex->nfbl || ex->fbl_mask || native_signature(ex) != p->signature) return 0;
+    VkRenderingAttachmentInfo colors[8] = {{0}};
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++) colors[i] = (VkRenderingAttachmentInfo){
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = p->colors[i],
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingAttachmentInfo depth = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = p->depth,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingAttachmentInfo stencil = depth; stencil.imageView = p->stencil;
+    VkRenderingInfo info = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}}, .layerCount = ex->pass_layers,
+        .colorAttachmentCount = ex->pass_ncolor, .pColorAttachments = colors,
+        .pDepthAttachment = p->depth ? &depth : NULL, .pStencilAttachment = p->stencil ? &stencil : NULL};
+    vkCmdBeginRendering(ex->cb, &info); ex->recorded++; ex->fr.passes++; ex->in_pass = 1; p->live = 0;
+    // Keep logical pass_serial and the native binding caches: no bound graphics state was changed.
+    return 1;
+}
+
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
     resolve_rt(ex);
@@ -732,6 +790,8 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pColorAttachments = ca,
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL};
+    for (uint32_t i = 0; i < 8; i++) ex->resolved_native_colors[i] = i < ex->pass_ncolor ? ca[i].imageView : VK_NULL_HANDLE;
+    ex->resolved_native_depth = da.imageView; ex->resolved_native_stencil = sa.imageView;
     vkCmdBeginRendering(ex->cb, &ri);
     ex->fr.passes++;
     ex->recorded++;
@@ -1230,6 +1290,7 @@ static void *grow_n(void *p, uint32_t *cap, size_t elem) {
 }
 
 static void copy_state(VkExec *dst, const VkExec *src) {
+    dst->source_frame = src->source_frame;
     memcpy((char *)dst + VK_EXEC_STATE_BEGIN, (const char *)src + VK_EXEC_STATE_BEGIN, VK_EXEC_STATE_END - VK_EXEC_STATE_BEGIN);
     vk_exec_dirty_all(dst);   // the bound state was replaced: no draw memo may take it for what it held
 }
@@ -1742,10 +1803,15 @@ static int chunked_on(void) {
             rt_log("vk: replay in up to %d chunks per submission of at least %d draws each, %d recording thread%s%s",
                    SC.chunks, SC.min_draws, SC.workers, SC.workers > 1 ? "s" : "", SC.check ? ", state checked" : "");
     }
-    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed;
+    // FG snapshots run at an actual draw boundary. Keep their resource and
+    // camera order serial until the chunk planner carries that boundary too.
+    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !rsf_config_fg_backend() &&
+           // FSR4 hands the serial submission-pool owner a continuation. Worker
+           // chunks own different pools and cannot consume that recording lease.
+           !(vk_dlaa_wanted() && rsf_config_sr_backend() == RSF_SR_FSR4);
 }
 
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source) {
     VkExec *ex = &X;
     SC.rec_t0 = kern_now_ns();
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
@@ -1755,6 +1821,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     nvn_pins_sweep(nvn_submit_count(), keep, 9);
     ex->cb = cb;
     ex->fence = fence;
+    ex->source_frame = source;
     ex->recorded = 0;
     ex->in_pass = 0;
     ex->mark = NULL;

@@ -1,8 +1,33 @@
 # Settings reference
 
+`TOTK_RSF_RUNTIME` (`rsf_runtime` in the ini) is an experimental absolute path to
+`ReScaleFrame.Runtime.dll`. Without an override, the loader checks
+`ReScaleFrame/ReScaleFrame.Runtime.dll` beside the executable. Graphics initialization loads the module and
+checks its native Vulkan SR, FG and latency exports. It selects the experimental
+RSF scene evaluation path configured by `rsf_backend` and `rsf_provider_dir`. Default: unset. Caution: loads
+native code into the process and retains the module until exit; restart to change it.
+
 `totk.ini.example` describes the settings for players. This page lists the rest: diagnostics, test hooks, paths and experiments. Set one as `name = value` in `totk.ini`, or as the environment variable `TOTK_NAME`, which wins over the file. Remove the line to go back to the default.
 
 ## Safety
+
+| Setting | Effect | Runtime cost | Risk |
+| --- | --- | --- | --- |
+| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `4` FSR4, `5` XeSS. Applies at the next frame boundary. FSR4 uses the external timeline split adapter; its device acceptance is still in progress. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
+| `dlaa_objmv` (default `1`) | Per-object and deformation motion history for supported shaders. Selectable as Object motion under Upscaling & Framegen; restart required. Missing history keeps camera motion. | Retained snapshot memory and motion replay. | Caution |
+| `rsf_fg` (default `0`) | Experimental frame generation: `0` off, `1` DLSS, `3` FSR3, `4` FSR4, `5` XeSS. Selectable from Upscaling & Framegen; changes drain and rebuild presentation at runtime. Unsupported inputs retain ordinary presentation. | Extra GPU work and provider resources. | Caution |
+| `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
+| `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
+| `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
+| `climb_fix` (default `1`) | Corrects the existing 1.4.3 climbing velocity loss above 60 fps. Requires the real-time frame step; lower rates keep the game's factor. `0` uses the shipping factor. | Arithmetic in the climbing velocity step. | Caution |
+
+Upscaling enable, provider and quality can change while playing. The installed providers and FG queues are prepared at graphics startup, even when both switches start off. SR histories are reset on a change; FG drains its old provider and recreates its presentation owner. Unsupported providers retain native rendering or presentation. Changing the runtime DLL path still needs a restart.
+
+Legacy `dlaa = 1` reconstruction keeps the DLSS backend when `rsf_enabled` and `rsf_backend` are both unset. Explicit RSF selections take precedence; new configurations retain the default FSR 3 backend.
+
+| Setting | Effect | Runtime cost | Risk |
+| --- | --- | --- | --- |
+| `rsf_runtime` | Absolute path to the experimental RSF runtime DLL; validates native Vulkan service exports before provider setup. Default unset. | Loads native code and retains the module until exit; restart to change. Provider setup depends on the selected mode and GPU. | Caution |
 
 - **Safe**: changes only what the row says, with no effect on stability or saves.
 - **Caution**: can slow the game, grow files, or change the picture, and undoes cleanly when removed.
@@ -183,7 +208,7 @@ Many rows below are developer tools that only act together with another setting 
 | `mvprev_grow` (default `1`) | `0` keeps only three banks in the previous-frame tables. | Object motion that depends on the other banks is no longer tracked. | Caution |
 | `mvprev_skip` | Hex bank mask of banks left out of the previous-frame copy, replacing the default. | Different banks are tracked, which changes object motion. | Caution |
 | `mvprev_trust` | Hex bank mask of banks whose found previous-frame copy is taken without the check. | A copy that does not match is used anyway, which can give wrong motion. | Caution |
-| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency, holding frames to the frame limit the pacer uses (`fps_limit`, the monitor's rate for `display`); `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
+| `reflex` (default `off`) | Legacy alias: `off`, `on`, or `boost` supplies `rsf_low_latency` as `0`, `1`, or `2` when that key is unset. Read at start. | RSF selects and owns the supported vendor latency technology. An explicit `rsf_low_latency` takes precedence. | Safe |
 
 ## Scheduling and host
 

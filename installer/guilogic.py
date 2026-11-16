@@ -27,7 +27,7 @@ TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
-STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup')
+STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'rsf', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
@@ -137,7 +137,7 @@ class Form:
     firmware: str = ''
     lang: str = ''
     dest: str = ''
-    dlss: bool = False
+    rsf_package: str = ''
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -174,6 +174,8 @@ class Form:
                     found.append(f'ui.missing_{name}')
         if self.firmware.strip() and not Path(self.firmware.strip()).is_dir():
             found.append('ui.missing_firmware')
+        if self.rsf_package.strip() and not Path(self.rsf_package.strip()).is_dir():
+            found.append('ui.missing_rsf')
         return found
 
     def command(self, python, root=None, temp=None, verify_hashes=False):
@@ -188,8 +190,10 @@ class Form:
             cmd += ['--temp', str(temp)]
         if verify_hashes:
             cmd.append('--verify')
-        if self.dlss:
-            cmd.append('--dlss')
+        if self.rsf_package.strip():
+            cmd += ['--rsf-package', self.rsf_package.strip()]
+        else:
+            cmd.append('--no-rsf')
         return cmd
 
 

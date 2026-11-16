@@ -1010,7 +1010,13 @@ void plat_exit(int code) {
 #endif
     fflush(stdout);
     fflush(stderr);
-    ExitProcess((UINT)code);
+    // This is an abrupt exit with other guest threads still live. ExitProcess
+    // runs DLL detach handlers: SDK destructors can then call Vulkan after the
+    // validation layer's state was destroyed. Skip DLL teardown as well as CRT
+    // atexit handlers; callers have already flushed the data they need to keep.
+    // TerminateProcess does not return when the target is the current process.
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+    __builtin_unreachable();
 }
 
 // _putenv_s, not SetEnvironmentVariableA: getenv reads the C runtime's copy of the environment, which only the CRT's

@@ -1,0 +1,66 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
+@@ -82,6 +82,26 @@
+             // host's layout comes from the used ones). Direct operands (c[slot][offset]) get theirs when the
+             // structured program is made.
+             Dictionary<int, int> bindings = new();
++            Dictionary<int, int> storage = new();
++            Dictionary<int, BufferDescriptor> originalStorage = new();
++            foreach (BufferDescriptor descriptor in resourceManager.GetStorageBufferDescriptors())
++                originalStorage.TryAdd(descriptor.Binding, descriptor);
++            foreach (INode node in slice)
++            {
++                if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
++                {
++                    if (load.GetSource(0).Type != OperandType.Constant) return -1;
++                    int current = load.GetSource(0).Value;
++                    if (storage.ContainsKey(current)) continue;
++                    if (!originalStorage.TryGetValue(current, out BufferDescriptor descriptor) ||
++                        descriptor.Flags != BufferUsageFlags.None || descriptor.SbCbSlot > 20 ||
++                        !resourceManager.TryGetStorageBufferBinding(descriptor.SbCbSlot + 64, descriptor.SbCbOffset, false, out int previous))
++                        return -1;
++                    storage[current] = previous;
++                }
++                // Texture/image dependent positions still have no retained previous producer.
++                if (node is Operation special && special.GetType() != typeof(Operation)) return -1;
++            }
+ 
+             foreach (INode n in slice)
+             {
+@@ -113,6 +133,11 @@
+ 
+             // 3. Which of the slice's values depend on those banks, to a fixed point (phis carry it around loops).
+             HashSet<Operand> tainted = new();
++            foreach (INode node in slice)
++            {
++                if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
++                    for (int d = 0; d < load.DestsCount; d++) tainted.Add(load.GetDest(d));
++            }
+             bool changed = true;
+ 
+             while (changed)
+@@ -224,7 +249,12 @@
+                 {
+                     Operand src = op.GetSource(s);
+ 
+-                    if (s == 0 && op.Inst == Instruction.Load && op.StorageKind == StorageKind.ConstantBuffer &&
++                    if (s == 0 && op.Inst == Instruction.Load && op.StorageKind == StorageKind.StorageBuffer &&
++                        src.Type == OperandType.Constant && storage.TryGetValue(src.Value, out int previousStorage))
++                    {
++                        c.SetSource(s, Const(previousStorage));
++                    }
++                    else if (s == 0 && op.Inst == Instruction.Load && op.StorageKind == StorageKind.ConstantBuffer &&
+                         src.Type == OperandType.Constant && bindings.TryGetValue(src.Value, out int binding))
+                     {
+                         c.SetSource(s, Const(binding));
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -66,7 +66,7 @@
+             _stagePrefix = GetShaderStagePrefix(stage);
+ 
+             _cbSlotToBindingMap = new SetBindingPair[32];   // TOTK: slots 18-31 for Transforms/MotionPrevious.cs
+-            _sbSlotToBindingMap = new SetBindingPair[16];
++            _sbSlotToBindingMap = new SetBindingPair[32];   // motion variants keep current and previous bindings separate
+             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
+             _sbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
+ 

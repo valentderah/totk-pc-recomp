@@ -25,6 +25,7 @@
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_mvprev.h"
 #include "platform/platform.h"
 
 #define ALIGN 256u
@@ -37,9 +38,12 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
+    uint8_t *cpu;    // with temporal inputs, the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
                      // map is often device memory through the BAR, written fast but read back at about a microsecond a
-                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
+                     // cache line. Without temporal consumers the bytes go into map in one copy.
+    int cpu_current; // this use of the arena populated cpu; allocation alone does not make its bytes current
+    uint32_t refs;   // submission completion plus retained history and later GPU consumers
+    uint64_t use_fence;
     uint64_t size;
 } Arena;
 
@@ -83,13 +87,14 @@ static Arena *arena_get(uint64_t need) {
             break;
         }
     plat_mutex_unlock(&free_lock);
-    if (a) return a;
+    if (a) { a->refs = 1; a->use_fence = 0; return a; }
     a = calloc(1, sizeof *a);
     if (!a) rt_fatal("vk_usnap: out of memory");
     a->size = need < ARENA_MIN ? ARENA_MIN : (need + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
                              // transfer source: DLAA copies the camera block out (vk_dlaa.c mv_pass)
-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     // Device-local through the BAR when the device has it (the GPU reads constants on every draw), else host memory.
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
@@ -103,6 +108,7 @@ static Arena *arena_get(uint64_t need) {
         return NULL;
     }
     a->map = info.pMappedData;
+    a->refs = 1;
     rt_log("vk_usnap: new arena of %.1f MiB", a->size / 1048576.0);
     return a;
 }
@@ -110,7 +116,7 @@ static Arena *arena_get(uint64_t need) {
 static void arena_done(void *arg) {   // completion thread: the GPU has read it
     Arena *a = arg;
     plat_mutex_lock(&free_lock);
-    a->next = free_arenas, free_arenas = a;
+    if (!--a->refs) a->next = free_arenas, free_arenas = a;
     plat_mutex_unlock(&free_lock);
 }
 
@@ -288,10 +294,11 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
     uint8_t *dst = U.arena->map;
-    if (vk_dlaa_available()) {
+    if (vk_dlaa_temporal_available()) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
+    U.arena->cpu_current = dst == U.arena->cpu;
     for (int i = 0; i < U.nreg; i++)
         memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
     if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
@@ -349,8 +356,8 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy where there is one (DLSS), else the device copy
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+// The host copy where temporal consumers requested one, else the device copy.
+static uint8_t *host_copy(void) { return U.arena->cpu_current ? U.arena->cpu : U.arena->map; }
 
 const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 
@@ -359,8 +366,32 @@ const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     return vk_usnap_find(addr, n, UINT32_MAX, 1, &bi) ? host_copy() + bi.offset : NULL;
 }
 
+// The upload made by vk_usnap_begin is immutable until its last lease retires. History holds it across presents;
+// use adds one completion hold per consuming submission, so clearing CPU history cannot recycle in-flight bytes.
+void *vk_usnap_retain(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out, const uint8_t **bytes) {
+    if (!vk_usnap_find(addr, size, UINT32_MAX, 1, out)) return NULL;
+    Arena *a = U.arena;
+    plat_mutex_lock(&free_lock);
+    a->refs++;
+    plat_mutex_unlock(&free_lock);
+    *bytes = host_copy() + out->offset;
+    return a;
+}
+
+void vk_usnap_release(void *lease) { if (lease) arena_done(lease); }
+
+void vk_usnap_use(void *lease, uint64_t fence) {
+    Arena *a = lease;
+    plat_mutex_lock(&free_lock);
+    int add = a->use_fence != fence;
+    if (add) a->use_fence = fence, a->refs++;
+    plat_mutex_unlock(&free_lock);
+    if (add) vk_completion_add(fence, arena_done, a);
+}
+
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
+    vk_mvprev_clear();   // device idle: release CPU history owners before destroying the retired arenas
     plat_mutex_lock(&free_lock);
     for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a->cpu), free(a);
     free_arenas = NULL;

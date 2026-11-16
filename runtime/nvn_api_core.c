@@ -15,6 +15,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
+#include "rsf_frame.h"
 #include "platform/platform.h"
 
 #define DEV_MAGIC MAGIC('D', 'E', 'V', 0)
@@ -653,6 +654,7 @@ static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
 NVN_API(nvnQueueSubmitCommands) {
+    uint64_t source = rsf_frame_draw_source(c);
     queue_t *q = arg_p(c, 0);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
@@ -668,12 +670,12 @@ NVN_API(nvnQueueSubmitCommands) {
         if (!hs) rt_fatal("nvn: out of memory (submit of %d handles)", n);
         plat_mutex_lock(&submit_lock);
         nvn_submit_prepare_async(h, hs, n);
-        f = gfx_backend()->submit(hs, n);
+        f = gfx_backend()->submit(hs, n, source);
         plat_mutex_unlock(&submit_lock);
         if (hs != local) free(hs);
     } else {
         nvn_submit_prepare(h, n);
-        f = gfx_backend()->submit(h, n);
+        f = gfx_backend()->submit(h, n, source);
     }
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}

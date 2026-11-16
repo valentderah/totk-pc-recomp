@@ -3,7 +3,6 @@ with a newer release, totk.ini and the event stream. No game files, no tools; st
 
 Run: python tests/installer_test.py
 """
-import http.client
 import io
 import json
 import re
@@ -524,7 +523,7 @@ class CleanupTest(unittest.TestCase):
         self.assertFalse((self.ctx.temp / 'check').exists())
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
-                                     str(self.ctx.layout.root), '--rebuild', str(self.dest)])
+                                     str(self.ctx.layout.root), '--rebuild', str(self.dest), '--no-rsf'])
 
     def test_appimage_rebuild_command_starts_the_appimage(self):
         # The AppImage's mount, where its Python lives, is gone once the setup exits (#560, #403)
@@ -533,7 +532,7 @@ class CleanupTest(unittest.TestCase):
         with mock.patch.dict('os.environ', {'APPIMAGE': str(appimage)}):
             self.assertEqual(self.run_cleanup(), 'ok')
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
-        self.assertEqual(lines, [str(appimage.resolve()), '--rebuild', str(self.dest)])
+        self.assertEqual(lines, [str(appimage.resolve()), '--rebuild', str(self.dest), '--no-rsf'])
 
     def test_appimage_variable_without_the_file_keeps_the_python_command(self):
         with mock.patch.dict('os.environ', {'APPIMAGE': str(Path(self.tmp.name) / 'gone.AppImage')}):
@@ -727,7 +726,7 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup'])
+                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'rsf', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()
@@ -821,78 +820,177 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
 
 
-@unittest.skipUnless(steps.os.name == 'nt', 'DLSS is Windows-only')
-class DlssTest(unittest.TestCase):
-    """The DLSS step: off without --dlss, needs an RTX GPU, keeps a player's library, verifies the download."""
-
+@unittest.skipUnless(steps.os.name == 'nt', 'RSF package installation is Windows-only')
+class RsfPackageTest(unittest.TestCase):
     def setUp(self):
+        from installer import rsf_package
+        self.pkg = rsf_package
         self.tmp = tempfile.TemporaryDirectory()
-        base = Path(self.tmp.name)
-        self.dest, temp = base / 'dest', base / 'temp'
+        self.root = Path(self.tmp.name)
+        self.source, self.dest = self.root / 'package', self.root / 'install'
+        self.source.mkdir()
+        self.make_package(self.source)
+
+    def test_source_selection_preserves_cli_and_prefill_precedence(self):
         self.dest.mkdir()
-        temp.mkdir()
-        self.src = base / 'nvngx_dlss.dll'
-        self.src.write_bytes(b'dlss' * 1000)
-        self.saved = steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256
-        steps.DLSS_URL = self.src.as_uri()   # urllib reads file: URLs as it reads https: ones
-        steps.DLSS_SIZE, steps.DLSS_SHA256 = 4000, steps.file_sha256(self.src)
-        rtx = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
-        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=rtx, reporter=Reporter(out=io.StringIO()),
-                                   options=SimpleNamespace(dlss=True))
+        manifest = self.dest / 'manifest.json'
+        manifest.write_text('{}')
+        choices = {'bundled': self.source, 'installed': self.dest}
+        self.assertEqual(self.pkg.select_source(**choices), self.source)
+        self.assertEqual(self.pkg.select_source(**choices, prefill=True), self.dest)
+        manifest.unlink()
+        self.assertEqual(self.pkg.select_source(**choices, prefill=True), self.source)
+        # One folder can play both roles: a missing installed manifest still allows bundle prefill.
+        (self.source / 'manifest.json').unlink()
+        self.assertEqual(self.pkg.select_source(bundled=self.source, installed=self.source, prefill=True), self.source)
+        self.assertIsNone(self.pkg.select_source(**choices, opt_out=True))
+        self.assertIsNone(self.pkg.select_source(**choices, explicit=self.source, opt_out=True))
+        self.assertEqual(self.pkg.select_source(**choices, explicit=str(self.source), opt_out=True, prefill=True), str(self.source))
 
     def tearDown(self):
-        steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256 = self.saved
-        self.ctx.reporter.close()
         self.tmp.cleanup()
 
-    def warnings(self):
-        return [json.loads(line)['id'] for line in self.ctx.reporter.out.getvalue().splitlines()
-                if json.loads(line)['type'] == 'warning']
+    def make_package(self, folder, tag=b'original'):
+        import struct
+        header = bytearray(90)
+        header[:2] = b'MZ'; struct.pack_into('<I', header, 60, 64)
+        header[64:68] = b'PE\0\0'; struct.pack_into('<H', header, 68, 0x8664)
+        struct.pack_into('<H', header, 86, 0x2000); struct.pack_into('<H', header, 88, 0x20b)
+        for name in self.pkg.REQUIRED:
+            path = folder / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(bytes(header) + tag if name.endswith('.dll') else b'license')
+        sl = {'binaries': {n: self.pkg.digest(folder / 'streamline' / n) for n in ('sl.common.dll', 'sl.interposer.dll')}}
+        (folder / 'streamline/streamline-sdk-build.json').write_text(json.dumps(sl))
+        (folder / 'fidelityfx/fsr3-sdk-build.json').write_text(json.dumps({'schema': 2, 'runtimeSha256': self.pkg.digest(folder / 'fidelityfx/amd_fidelityfx_vk.dll')}))
+        self.manifest(folder)
 
-    def test_off_without_the_option(self):
-        self.ctx.options.dlss = False
-        self.assertEqual(steps.Dlss().run(self.ctx), {})
-        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
-        self.assertNotEqual(steps.Dlss().key(self.ctx), steps.Dlss().key(SimpleNamespace(options=SimpleNamespace(dlss=True))))
+    def manifest(self, folder):
+        files = {p.relative_to(folder).as_posix(): self.pkg.digest(p) for p in folder.rglob('*') if p.is_file() and p.name != 'manifest.json'}
+        (folder / 'manifest.json').write_text(json.dumps({'schema': 1, 'purpose': 'development validation', 'files': files}))
 
-    def test_downloads_and_checks_the_library(self):
-        rec = steps.Dlss().run(self.ctx)
-        self.assertEqual(rec, {'installed': steps.DLSS_VERSION})
-        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), self.src.read_bytes())
-        self.assertFalse(list(self.ctx.temp.iterdir()))
-        self.assertTrue(steps.Dlss().current(self.ctx, rec))
-        (self.dest / 'nvngx_dlss.dll').unlink()
-        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+    def test_installs_complete_local_package_and_preserves_unrelated_files(self):
+        self.dest.mkdir();(self.dest / 'nvngx_dlss.dll').write_bytes(b'player legacy')
+        self.pkg.install(self.source, self.dest)
+        self.assertEqual(self.pkg.validate(self.dest / 'ReScaleFrame'), self.pkg.validate(self.source))
+        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'player legacy')
 
-    def test_a_wrong_file_is_not_installed_and_tried_again(self):
-        steps.DLSS_SHA256 = '0' * 64
-        rec = steps.Dlss().run(self.ctx)
-        self.assertEqual(rec, {'failed': True})
-        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
-        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
-        self.assertFalse(steps.Dlss().current(self.ctx, rec))
+    def test_hash_pe_missing_license_and_unsafe_paths_refuse_before_dest_change(self):
+        data = json.loads((self.source / 'manifest.json').read_text())
+        for name in ('../escape', '/absolute', 'C:/drive', 'streamline/../escape', 'NUL.dll', 'STREAMLINE/sl.common.dll'):
+            bad = json.loads(json.dumps(data));bad['files'][name] = '0' * 64
+            (self.source / 'manifest.json').write_text(json.dumps(bad))
+            with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+            self.assertFalse(self.dest.exists())
+        (self.source / 'manifest.json').write_text(json.dumps(data))
+        (self.source / 'licenses/XeSS.txt').unlink()
+        with self.assertRaises((OSError, ValueError)): self.pkg.install(self.source, self.dest)
+        self.assertFalse(self.dest.exists())
+        self.make_package(self.source)
+        (self.source / 'xess/libxell.dll').write_bytes(b'not PE');self.manifest(self.source)
+        with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        self.assertFalse(self.dest.exists())
 
-    def test_a_cut_connection_warns(self):
-        class Cut(io.BytesIO):   # a response whose connection drops mid-file
-            def read(self, n=-1):
-                raise http.client.IncompleteRead(b'dl', 3998)
+    def test_replacement_retains_backup_and_rolls_back_on_promotion_error(self):
+        self.pkg.install(self.source, self.dest)
+        original = (self.dest / 'ReScaleFrame/ReScaleFrame.Runtime.dll').read_bytes()
+        self.make_package(self.source, b'updated')
+        real_replace = self.pkg.os.replace
+        def fail_stage(src, dst):
+            if '.stage-' in Path(src).name: raise OSError('promotion failed')
+            return real_replace(src, dst)
+        with mock.patch.object(self.pkg.os, 'replace', side_effect=fail_stage):
+            with self.assertRaises(OSError): self.pkg.install(self.source, self.dest)
+        self.assertEqual((self.dest / 'ReScaleFrame/ReScaleFrame.Runtime.dll').read_bytes(), original)
+        self.pkg.install(self.source, self.dest)
+        backups = list(self.dest.glob('.ReScaleFrame.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / 'ReScaleFrame.Runtime.dll').read_bytes(), original)
 
-        with mock.patch.object(steps.urllib.request, 'urlopen', return_value=Cut()):
-            self.assertEqual(steps.Dlss().run(self.ctx), {'failed': True})
-        self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
-        self.assertFalse(list(self.ctx.temp.iterdir()))
-        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+    def test_failed_restore_keeps_named_recoverable_backup(self):
+        self.pkg.install(self.source, self.dest)
+        real_replace = self.pkg.os.replace
+        def fail_promotion_and_restore(src, dst):
+            if '.stage-' in Path(src).name or '.backup-' in Path(src).name:
+                raise OSError('blocked')
+            return real_replace(src, dst)
+        with mock.patch.object(self.pkg.os, 'replace', side_effect=fail_promotion_and_restore):
+            with self.assertRaisesRegex(OSError, 'old package retained at'):
+                self.pkg.install(self.source, self.dest)
+        backups = list(self.dest.glob('.ReScaleFrame.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.pkg.validate(backups[0])
 
-    def test_keeps_the_players_library(self):
-        (self.dest / 'nvngx_dlss.dll').write_bytes(b'newer')
-        self.assertEqual(steps.Dlss().run(self.ctx), {'kept': True})
-        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'newer')
-        self.assertEqual(self.warnings(), ['warn.dlss_kept'])
+    def test_duplicate_manifest_keys_are_rejected(self):
+        manifest = self.source / 'manifest.json'
+        manifest.write_text('{"schema": 1, ' + manifest.read_text()[1:])
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            self.pkg.install(self.source, self.dest)
+        self.assertFalse(self.dest.exists())
 
-    def test_skipped_without_an_rtx_gpu(self):
-        self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
-        self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
-        self.assertEqual(self.warnings(), [])
+    def test_unknown_or_player_modified_installed_files_are_never_overwritten(self):
+        self.pkg.install(self.source, self.dest)
+        extra = self.dest / 'ReScaleFrame/player.txt';extra.write_text('keep')
+        with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        self.assertEqual(extra.read_text(), 'keep')
+        extra.unlink(); dll = self.dest / 'ReScaleFrame/xess/libxell.dll';dll.write_bytes(b'player override')
+        with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        self.assertEqual(dll.read_bytes(), b'player override')
+
+    def test_staging_input_mutation_preserves_old_package(self):
+        self.pkg.install(self.source, self.dest)
+        original = (self.dest / 'ReScaleFrame/ReScaleFrame.Runtime.dll').read_bytes()
+        copy = self.pkg.shutil.copyfile
+        def mutate(src, dst):
+            result = copy(src, dst)
+            if Path(src).name == 'ReScaleFrame.Runtime.dll': Path(dst).write_bytes(b'changed while staging')
+            return result
+        with mock.patch.object(self.pkg.shutil, 'copyfile', side_effect=mutate):
+            with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        self.assertEqual((self.dest / 'ReScaleFrame/ReScaleFrame.Runtime.dll').read_bytes(), original)
+        self.assertFalse(list(self.dest.glob('.ReScaleFrame.stage-*')))
+
+    def test_reparse_input_and_manifest_hash_tampering_are_rejected(self):
+        bad = self.source / 'xess/libxell.dll'
+        real_stat = Path.lstat
+        def reparse(path):
+            value = real_stat(path)
+            return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400) if path == bad else value
+        with mock.patch.object(Path, 'lstat', reparse):
+            with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        bad.write_bytes(b'tampered')
+        with self.assertRaises(ValueError): self.pkg.install(self.source, self.dest)
+        self.assertFalse(self.dest.exists())
+
+    def test_default_override_native_and_rebuild_package_arguments(self):
+        ctx = SimpleNamespace(dest=self.dest, layout=SimpleNamespace(root=self.root, dev=True),
+            options=SimpleNamespace(), state={})
+        self.assertIsNone(steps.rsf_source(ctx))
+        ctx.options.rsf_package = self.source
+        self.assertEqual(steps.rsf_source(ctx), self.source)
+        first_key = steps.Rsf().key(ctx)
+        self.make_package(self.source, b'new version')
+        self.assertNotEqual(steps.Rsf().key(ctx), first_key)
+        self.pkg.install(self.source, self.dest)
+        command = steps.rebuild_command(ctx)
+        self.assertEqual(command[-2:], ['--rsf-package', str(self.dest / 'ReScaleFrame')])
+        ctx.options.no_rsf = True
+        self.assertIsNone(steps.rsf_source(ctx))
+        self.assertEqual(steps.rebuild_command(ctx)[-1], '--no-rsf')
+        self.assertEqual(steps.Rsf().run(ctx), {'native': True})
+
+    def test_explicit_invalid_cli_package_fails_without_destination_writes(self):
+        from installer import cli
+        layout = SimpleNamespace(root=self.root, temp=self.root / 'temp', release='test')
+        with mock.patch.object(cli.layouts, 'find', return_value=layout):
+            self.assertEqual(cli.main(['--dest', str(self.dest), '--rsf-package', str(self.root / 'missing')]), 1)
+        self.assertFalse(self.dest.exists())
+        self.assertFalse(layout.temp.exists())
+
+    def test_step_migrates_legacy_record_without_treating_dll_as_complete_package(self):
+        state = {'steps': {'dlss': {'installed': 'old'}}, 'version': '1.4.3'}
+        ctx = SimpleNamespace(state=state, reporter=Reporter(out=io.StringIO()))
+        steps.migrate_state(ctx)
+        self.assertNotIn('dlss', state['steps']);self.assertEqual(state['legacy_steps']['dlss']['installed'], 'old')
 
 
 if __name__ == '__main__':

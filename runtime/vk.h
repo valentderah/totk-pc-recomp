@@ -1,6 +1,10 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
+#define RSF_GRAPHICS_QUEUES 4u
 #include <vulkan/vulkan.h>
+#include "vk_snapshot_pool.h"
+#include "rsf_vulkan.h"
+#include <rescaleframe/native_sr_split_vulkan.h>
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
@@ -23,6 +27,8 @@ typedef struct VkCtx {
     uint32_t gfx_family;                    // graphics + compute + presentation on win32
     uint32_t xfer_family;                   // a transfer-only family when the GPU has one, else gfx_family
     VkQueue gfx_queue;                      // graphics + present
+    VkQueue rsf_queues[RSF_GRAPHICS_QUEUES];                  // graphics, compute, present, acquire for the RSF WSI owner
+    uint32_t rsf_queue_count;               // actual distinct queues requested in gfx_family
     VkQueue xfer_queue;                     // equals gfx_queue when xfer_shared
     int xfer_shared;                        // 1: no separate queue; serialise with gfx_queue
     VmaAllocator vma;
@@ -36,8 +42,8 @@ typedef struct VkCtx {
         has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
-        has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_hdr_metadata;                  // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+    int has_rsf_sr_split; // Win32 shared image/fence imports enabled
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -142,17 +148,22 @@ void vk_pass_marks_report(void);    // vk_device_fault_report: the AMD words and
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
-void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+// source_frame belongs to this image through that flush, independently of later scene recording.
+void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], uint64_t source_frame);
+struct rsf_fgvk_frame;
+// Scene producer, after rec_drain and outside rendering. The owner copies the
+// record and records SDK work into cb; submit that work even when preparation fails.
+int vk_present_fg_prepare(VkCommandBuffer cb, const struct rsf_fgvk_frame *frame);
+int vk_present_fg_hudless(VkCommandBuffer cb, const struct rsf_fgvk_frame *frame);
+// Producer only, after a successful actual queue submit, outside the queue lock.
+// Never call on the recorder: presentation can hold its lock while waiting for it.
+void vk_present_fg_submitted(const VkSubmitInfo2 *submit);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
-void vk_reflex_submit_frame(uint64_t id);   // this thread's submissions belong to frame id (0: the game's current one)
-uint64_t vk_reflex_submit_id(void);
-void vk_reflex_present_frame(uint64_t id);  // the present thread, before the blit of frame id
-int vk_has_reflex(void);
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -198,7 +209,7 @@ int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t fam
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
 unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
-void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
+int gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
 
 // ---- memory and textures (vk_memory.c, vk_texture.c)
@@ -431,7 +442,7 @@ void vk_mem_collect(void);                         // frees what has completed
 void vk_oom_release(void);
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
-void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
+void vk_mem_shutdown(void);                        // checked device teardown only: frees memory/textures after provider retirement
 
 // Textures. Images are keyed by storage GPU address plus descriptor and stay in VK_IMAGE_LAYOUT_GENERAL. A mirrored
 // texture (CPU-written pool storage, MNG tex_mirrored) is uploaded on first use and again when its storage pages were
@@ -528,7 +539,7 @@ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h)
 // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 // once the GPU reached it and the completion thread ran its side effects. Guest or host threads.
 void vk_sync_start(void);                  // vk_init (fatal without a device) and the completion thread; idempotent
-uint64_t vk_sync_submit(const uint64_t *handles, int n);   // records with vk_exec_record, submits; returns the value
+uint64_t vk_sync_submit(const uint64_t *handles, int n, uint64_t source); // source copied through asynchronous replay
 uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the next queued submission signals
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
 uint64_t vk_sync_fence_done(void);         // highest done value
@@ -539,7 +550,7 @@ void vk_sync_shutdown(void);               // finish, stop the completion thread
 // begun and ends. fence is the value this submission will signal. Returns the number of commands recorded into the
 // command buffer it holds at the end (0: that one stays empty and is not submitted). A weak vk_sync.c version accepts
 // empty streams only.
-int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence);
+int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source);
 // Inside vk_exec_record, outside a render pass: ends the command buffer recorded so far, submits it (after the upload
 // batch) without a signal, and returns a new begun one for the rest of the submission. The submission's timeline value
 // is signalled by its last part, whose signal covers every earlier part in submission order.
@@ -691,3 +702,69 @@ void vk_pipeline_shutdown(void);           // waits for background builds, saves
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h
+
+// Verified full-frame host mapping, or zero dimensions when unsupported.
+int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]);
+
+// Refuses while SDK work is recorded but not submitted; retain all input leases.
+int vk_present_fg_drain(void);
+
+// Serial replay owner, outside rendering. Prepares an unused final-fence slot;
+// the synchronous callback only ends/begins recording, never submits a queue.
+int vk_sync_sr_prepare(VkCommandBuffer commands, rsf_fsr4vk_handoff *handoff);
+void vk_sync_sr_cancel(void);
+// Actual final engine fence for the serial recording owner, else zero. Caller
+// already holds the replay submission lock; this accessor takes no locks.
+uint64_t vk_sync_record_fence(VkCommandBuffer commands);
+
+// Shared image allocation and conservative handoff helpers; callers own retirement.
+static inline int vk_image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, VkImage *img, VmaAllocation *mem,
+                   VkImageView *view) {
+    const VkCtx *c = vk_ctx();
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
+                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ii, &ai, img, mem, NULL) != VK_SUCCESS) return 0;
+    if (!view) return 1; // Transfer-only intermediates have no descriptor consumer.
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *img,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = f,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    return vkCreateImageView(c->device, &vi, NULL, view) == VK_SUCCESS;
+}
+
+static inline void vk_image_layout_impl(PFN_vkCmdPipelineBarrier2 emit, VkCommandBuffer cb, VkImage image, VkImageLayout before, VkImageLayout after) {
+    VkImageMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = before, .newLayout = after, .image = image,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    emit(cb, &dependency);
+}
+
+// Resolve the emitter at the call site, after any recorder interception macros.
+#define vk_image_layout(cb, image, before, after) \
+    vk_image_layout_impl(vkCmdPipelineBarrier2, (cb), (image), (before), (after))
+
+static inline rsf_srvk_image vk_rsf_image(VkImage image, VkFormat format, unsigned w, unsigned h, VkImageLayout layout) {
+    return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
+}
+
+
+// Snapshot and texture facts are provided by their storage owners.
+typedef struct {
+    VkImage image;
+    uint64_t generation;
+    VkSnapshotShape shape;
+} VkMotionTextureFact;
+void *vk_usnap_retain(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out, const uint8_t **bytes);
+void vk_usnap_release(void *lease);
+void vk_usnap_use(void *lease, uint64_t fence);
+// Pure cached lookup under the texture owner's lock, never creates or uploads a native image/view.
+int vk_texture_motion_fact(uint64_t handle, VkMotionTextureFact *);

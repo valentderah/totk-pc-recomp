@@ -23,7 +23,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 ```
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
-  nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
+  ReScaleFrame/                 optional complete local runtime/providers/licenses package and manifest.json
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -93,12 +93,14 @@ loads the saves 1.4.3 wrote.
    again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
    game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
    background for the next start.
-8. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
-   `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
-   license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
-   the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
-   folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
-   download warns, the game runs without DLSS, and the next run of the setup tries again.
+8. **Local RSF package** (`steps.py`, `Rsf`): install a complete local schema1 package from
+   `--rsf-package <folder>`, or the setup root's bundled `ReScaleFrame/` when present. The GUI has a folder
+   selector and Clear button for the same input, for all GPU vendors. There is no standalone DLL download.
+   Empty GUI input or `--no-rsf` leaves any installed runtime unchanged; native presentation remains valid without
+   a package. An explicit invalid folder is an error before the install steps change the destination. `--dlss`
+   now reports deprecation guidance pointing to `--rsf-package`; it never downloads the obsolete NGX library.
+   Existing standalone player DLLs are left alone and never counted as a complete package.
+   The old `dlss` state record is archived in `legacy_steps`, not re-used as `rsf` completion.
 9. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
@@ -183,6 +185,10 @@ data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata 
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
+
+RSF frame-hook registration lives in `patches.c`, which is compiled for the
+selected game version during setup. Its implementation stays in the prebuilt
+runtime library, so the installer needs no RSF SDK checkout.
 
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
 - Every bundled third-party piece gets a row in `THIRD_PARTY_NOTICES.md`.
@@ -269,3 +275,36 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 - Re-warm the driver cache on start after a move, GPU or driver change.
 - Per-monitor DPI in the setup window: Tk 9 has none, so a display whose scale differs from the primary one still gets
   the window stretched.
+
+## Local RSF package integrity and replacement
+
+Input is the complete folder emitted by `tools/stage_rsf.py`, whose existing `manifest.json` has schema1,
+`purpose: development validation`, and a `files` map of relative POSIX path to SHA256. The installer checks
+all required runtime, Streamline/DLSS, FidelityFX, XeSS/XeLL and license/notice inputs, provider receipt hashes,
+every listed hash, and native AMD64 PE32+ DLL headers. Absolute paths, traversal, Windows reserved names,
+case collisions, duplicate manifest keys, symlinks/reparse points and unknown package contents are refused.
+Hashes establish local integrity, not download authenticity, hardware support or game acceptance.
+No remote source/release URL is invented. This development package is not a GPL corresponding-source
+or release distribution packager; its installation does not imply those distribution obligations are met.
+
+Preflight completes before installation begins. Copying uses a unique staging directory on the destination
+volume and revalidates its contents before changing the old package. Only a fully verified existing package
+can be replaced; extra player files or modified provider files cause a clear error rather than deletion.
+The previous package is renamed to `.ReScaleFrame.backup-<id>` and retained on success. If promotion fails,
+the installer attempts to restore it; if restoration also fails the named backup remains recoverable.
+The installer removes only its own unique staging directory and never deletes old backups or unknown files.
+
+Resume keys include the package manifest SHA256, so selecting a changed package reruns this independent step.
+A normal update prefers the new bundled package when present; with neither override nor bundle, a valid
+installed package is retained. Rebuild commands record `--rsf-package <install>/ReScaleFrame` for the local
+installed package, or `--no-rsf` to preserve an empty/cleared selection, avoiding dependence on an external
+source folder that may later move. GUI form refresh checks folder existence only and never hashes a package.
+
+Installer migration CPU validation: `.venv-py314/Scripts/python -m unittest discover -s tests -p 'installer*_test.py'`
+passes134 tests with2 platform skips; log is `build/checks/installer-rsf-worker/tests.log`. New coverage includes
+manifest paths/case collisions/duplicates, missing licenses, PE/hash/reparse rejection, source mutation during staging,
+replacement rollback and failed-restore recovery, extra/modified player-file preservation, manifest-derived keys,
+legacy step migration, native and selected-package rebuild commands, invalid explicit CLI preflight without writes,
+and translated GUI form selector/clear arguments. Changed installer modules also pass `py_compile` and scoped
+`git diff --check`. These imports require the extraction Python3.14 environment (`compression.zstd`), not the lifter
+Python3.12 environment. No GPU, game or UI automation was used.

@@ -256,7 +256,8 @@ static uint32_t mix(uint32_t x, uint32_t y) {   // a fixed pseudo-random pick of
 static void analyse(void *arg) {
     (void)arg;
     VmaAllocator vma = vk_ctx()->vma;
-    for (int i = 0; i < NBUF; i++) vmaInvalidateAllocation(vma, K.mem[i], 0, VK_WHOLE_SIZE);
+    // Motion-only FG checks have no reconstructed output allocation.
+    for (int i = 0; i < NBUF; i++) if (K.mem[i]) vmaInvalidateAllocation(vma, K.mem[i], 0, VK_WHOLE_SIZE);
     uint32_t w = K.w, h = K.h, n = w * h;
     float *cur = malloc(sizeof(float) * n), *prev = malloc(sizeof(float) * n), *e_cam = NULL, *e_fin = NULL,
           *e_st = NULL;

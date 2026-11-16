@@ -1,23 +1,14 @@
-// DLAA: NVIDIA DLSS at the scene's own size (TOTK_DLAA, totk.ini dlaa). NGX is loaded at run time from the driver's
-// NGX core: on Windows _nvngx.dll, found through HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore; on Linux
-// libnvidia-ngx.so.1, which the NVIDIA driver installs on the library path. NGX loads the DLSS model from the folder of
-// the executable: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. No NVIDIA SDK code or header is
-// compiled in: the few NGX types used are declared here from the SDK's documented ABI, the way the Metroid Dread
-// recomp's dlss.c reaches the core (read for behaviour only).
-//
-// The core's parameter object is a C++ class whose virtual functions are called through its vtable: the Set overloads
-// in slots 0-7 and the Get overloads in 8-15. MSVC (the Windows core) lays out each group of overloads in reverse
-// declaration order, the Itanium C++ ABI (the Linux core, built with GCC) in declaration order. vtable_ok checks the
-// layout with a set-then-get round trip before anything relies on it.
-//
-// Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
+// Scene reconstruction through RSF, with camera/object motion and pre-HUD evaluation.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
 #include "cfg.h"
+#include "rsf_camera.h"
+#include "rsf_runtime.h"
+#include "rsf_sr.h"
+#include <rescaleframe/native_fg_vulkan.h>
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -26,197 +17,13 @@
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
-typedef int NgxResult;   // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
-#define NGX_OK(r) (((unsigned)(r) & 0xFFF00000u) != 0xBAD00000u)
-#define NGX_VERSION_API 0x15
-#define NGX_FEATURE_SUPERSAMPLING 1
-#define NGX_PERFQ_DLAA 5   // NVSDK_NGX_PerfQuality_Value: 0 performance, 1 balanced, 2 quality, 3 ultra performance
-typedef struct NgxParam NgxParam;
-typedef struct NgxHandle NgxHandle;
-typedef struct { void *slot[17]; } NgxParamVtbl;
-struct NgxParam { const NgxParamVtbl *vt; };
-typedef struct {   // NVSDK_NGX_ImageViewInfo_VK
-    VkImageView view;
-    VkImage image;
-    VkImageSubresourceRange range;
-    VkFormat format;
-    unsigned width, height;
-} NgxImageView;
-typedef struct {   // NVSDK_NGX_Resource_VK
-    union { NgxImageView img; struct { VkBuffer buffer; unsigned bytes; } buf; } r;
-    int type;      // 0 image view, 1 buffer
-    _Bool rw;
-} NgxResourceVK;
-
-typedef NgxResult (*PFN_Init)(unsigned long long app, const wchar_t *path, VkInstance, VkPhysicalDevice, VkDevice,
-                              PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr, int version, const void *info);
-typedef NgxResult (*PFN_ReqExt)(unsigned *ni, const char ***ie, unsigned *nd, const char ***de);
-typedef NgxResult (*PFN_Params)(NgxParam **);
-typedef NgxResult (*PFN_DestroyParams)(NgxParam *);
-typedef NgxResult (*PFN_Create)(VkCommandBuffer, int feature, NgxParam *, NgxHandle **);
-typedef NgxResult (*PFN_Evaluate)(VkCommandBuffer, const NgxHandle *, const NgxParam *, void *callback);
-typedef NgxResult (*PFN_Release)(NgxHandle *);
-
-static struct {
-    void *core;   // the NGX core library (an HMODULE on Windows)
-    PFN_Init init;
-    PFN_ReqExt req_ext;
-    PFN_Params caps, alloc_params;
-    PFN_DestroyParams destroy_params;
-    PFN_Create create;
-    PFN_Evaluate evaluate;
-    PFN_Release release;
-    int tried, loaded, available;
-    int wanted;   // -1 not read yet
-} N = {.wanted = -1};
-
-typedef void (*SetI)(NgxParam *, const char *, int);
-typedef void (*SetU)(NgxParam *, const char *, unsigned);
-typedef void (*SetF)(NgxParam *, const char *, float);
-typedef void (*SetP)(NgxParam *, const char *, void *);
-typedef NgxResult (*GetI)(const NgxParam *, const char *, int *);
-typedef NgxResult (*GetU)(const NgxParam *, const char *, unsigned *);
-typedef NgxResult (*GetF)(const NgxParam *, const char *, float *);
-typedef NgxResult (*GetP)(const NgxParam *, const char *, void **);
-// The SDK declares Set(u64), Set(float), Set(double), Set(u32), Set(int), Set(ID3D11Resource *), Set(ID3D12Resource *),
-// Set(void *), then the Get overloads in the same order, then Reset.
-#ifdef _WIN32
-enum { S_P = 0, S_D12, S_D11, S_I, S_U32, S_D, S_F, S_U64, G_P, G_D12, G_D11, G_I, G_U32, G_D, G_F, G_U64 };
-#else
-enum { S_U64 = 0, S_F, S_D, S_U32, S_I, S_D11, S_D12, S_P, G_U64, G_F, G_D, G_U32, G_I, G_D11, G_D12, G_P };
-#endif
-static void p_seti(NgxParam *p, const char *n, int v) { ((SetI)p->vt->slot[S_I])(p, n, v); }
-static void p_setu(NgxParam *p, const char *n, unsigned v) { ((SetU)p->vt->slot[S_U32])(p, n, v); }
-static void p_setf(NgxParam *p, const char *n, float v) { ((SetF)p->vt->slot[S_F])(p, n, v); }
-static void p_setp(NgxParam *p, const char *n, void *v) { ((SetP)p->vt->slot[S_P])(p, n, v); }
-static int p_geti(const NgxParam *p, const char *n, int *v) { return NGX_OK(((GetI)p->vt->slot[G_I])(p, n, v)); }
-static int p_getu(const NgxParam *p, const char *n, unsigned *v) { return NGX_OK(((GetU)p->vt->slot[G_U32])(p, n, v)); }
-static int p_getf(const NgxParam *p, const char *n, float *v) { return NGX_OK(((GetF)p->vt->slot[G_F])(p, n, v)); }
-static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((GetP)p->vt->slot[G_P])(p, n, v)); }
-
-#ifdef _WIN32
-#define DLSS_MODEL "nvngx_dlss.dll"
-#else
-#define DLSS_MODEL "libnvidia-ngx-dlss.so.<version>"
-#endif
-
-// NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
-// loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
-// dlaa applies after a restart; switched off, nothing else of DLAA runs.
-int vk_dlaa_wanted(void) {
-    static int wanted = -1;
-    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA");
-    return wanted;
-}
-
-static int core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
-    char path[PLAT_PATH_MAX];
-    if (!plat_ngx_core_path(path, sizeof path)) {
-        rt_log("dlaa: the driver has no NGX core (registry NGXCore missing): DLAA off");
-        return 0;
-    }
-    N.core = plat_lib_open(path);
-    if (!N.core) {
-        char why[256];
-        plat_lib_error(why, sizeof why);
-        rt_log("dlaa: cannot load %s (%s; not an NVIDIA driver, or one without NGX): DLAA off", path, why);
-        return 0;
-    }
-#define FN(f, name) N.f = plat_lib_sym(N.core, name)
-    FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
-    FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
-    FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
-    FN(alloc_params, "NVSDK_NGX_VULKAN_AllocateParameters");
-    FN(destroy_params, "NVSDK_NGX_VULKAN_DestroyParameters");
-    FN(create, "NVSDK_NGX_VULKAN_CreateFeature");
-    FN(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature");
-    FN(release, "NVSDK_NGX_VULKAN_ReleaseFeature");
-#undef FN
-    if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.create || !N.evaluate || !N.release) {
-        rt_log("dlaa: the NGX core %s lacks Vulkan entry points: DLAA off", path);
-        return 0;
-    }
-    N.loaded = 1;
-    rt_log("dlaa: NGX core %s", path);
-    return 1;
-}
-
-static int listed(const char *const *list, uint32_t n, const char *s) {
-    for (uint32_t i = 0; i < n; i++)
-        if (!strcmp(list[i], s)) return 1;
-    return 0;
-}
-
-void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
-    unsigned ni = 0, nd = 0;
-    const char **ie = NULL, **de = NULL;
-    if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
-    for (unsigned i = 0; i < ni; i++)
-        if (!listed(ext, *n, ie[i]) && *n < max) ext[(*n)++] = ie[i];
-}
-
-void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n,
-                         uint32_t max) {
-    unsigned ni = 0, nd = 0;
-    const char **ie = NULL, **de = NULL;
-    if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
-    for (unsigned i = 0; i < nd; i++) {
-        int ok = 0;
-        for (uint32_t k = 0; k < nhave && !ok; k++) ok = !strcmp(have[k].extensionName, de[i]);
-        if (!ok) rt_log("dlaa: the device lacks %s, which NGX asks for", de[i]);
-        else if (!listed(ext, *n, de[i]) && *n < max) ext[(*n)++] = de[i];
-    }
-}
-
-static int vtable_ok(void) {
-    NgxParam *p = NULL;
-    if (!NGX_OK(N.alloc_params(&p)) || !p) return 0;
-    int i = 0;
-    unsigned u = 0;
-    float f = 0;
-    void *v = NULL;
-    p_seti(p, "TotK.Test.I", -12345);
-    p_setu(p, "TotK.Test.U", 4000000000u);
-    p_setf(p, "TotK.Test.F", 1.25f);
-    p_setp(p, "TotK.Test.P", (void *)p);
-    int ok = p_geti(p, "TotK.Test.I", &i) && i == -12345 && p_getu(p, "TotK.Test.U", &u) && u == 4000000000u &&
-             p_getf(p, "TotK.Test.F", &f) && f == 1.25f && p_getp(p, "TotK.Test.P", &v) && v == (void *)p;
-    if (N.destroy_params) N.destroy_params(p);
-    if (!ok) rt_log("dlaa: NGX parameter layout check failed (i=%d u=%u f=%g p=%p): DLAA off", i, u, f, v);
-    return ok;
-}
-
-void vk_dlaa_init(void) {
-    if (!vk_dlaa_wanted() || !core_load()) return;
-    // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
-    wchar_t wdir[PLAT_PATH_MAX];
-    if (!plat_exe_dir_wide(wdir, PLAT_PATH_MAX)) {
-        rt_log("dlaa: cannot name the executable's folder for NGX: DLAA off");
-        return;
-    }
-    // 231313132: the application id NVIDIA's DLSS samples use for builds without an NVIDIA-issued id
-    const VkCtx *c = vk_ctx();
-    NgxResult r = N.init(231313132ull, wdir, c->instance, c->phys, c->device, vkGetInstanceProcAddr,
-                         vkGetDeviceProcAddr, NGX_VERSION_API, NULL);
-    if (!NGX_OK(r)) {
-        rt_log("dlaa: NGX init failed (%08x): DLAA off", (unsigned)r);
-        return;
-    }
-    if (!vtable_ok()) return;
-    NgxParam *caps = NULL;
-    int avail = 0, driver = 0;
-    if (NGX_OK(N.caps(&caps)) && caps) {
-        p_geti(caps, "SuperSampling.Available", &avail);
-        p_geti(caps, "SuperSampling.NeedsUpdatedDriver", &driver);
-    }
-    N.available = avail != 0;
-    rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
-           driver ? "; the driver needs an update" : "");
-}
-
-int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+// Reconstruction and FG independently request temporal inputs. RSF owns the
+// providers; this renderer supplies scene resources and camera/motion facts.
+static int temporal_available;
+int vk_dlaa_wanted(void) { return rsf_config_enabled(); }
+static int temporal_wanted(void) { return rsf_temporal_requested(); }
+void vk_dlaa_init(void) { temporal_available = rsf_runtime_load(); }
+int vk_dlaa_temporal_available(void) { return temporal_wanted() && temporal_available; }
 
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with
@@ -247,22 +54,33 @@ static struct {
     int ended, up;               // this frame: the scene is drawn (jitter over), DLSS wrote the scaled output
     uint64_t end_fence;          // a chunked replay: the submission and op the scan ended the scene at (ended_at)
     uint32_t end_pos;
-    struct Size {                // a DLSS feature and its work images per scene size (dynamic resolution flips it)
-        uint32_t w, h, ow, oh;   // render size, output size
+    struct Size {                // an SR session and its work images per scene size (dynamic resolution flips it)
+        uint32_t w, h, ow, oh;
+        unsigned fw, fh, gw, gh;   // FG host output and observed game-output size
         VkImage out, mv;
         VmaAllocation out_mem, mv_mem;
         VkImageView out_view, mv_view;
+        VkImage device_depth;   // R32F device depth produced with camera motion for RSF
+        VmaAllocation device_depth_mem;
+        VkImageView device_depth_view;
         VkImage mask, chars[2];  // the bias mask DLSS reads, the character class mask of this and last frame (R8)
         VmaAllocation mask_mem, chars_mem[2];
         VkImageView mask_view, chars_view[2];
         int chars_cur, chars_ok; // chars[chars_cur] is written next; chars_ok: the other holds last frame's
-        NgxHandle *feat;
+        RsfSrSession *rsf;
+        uint32_t rsf_w, rsf_h;
+        uint32_t resource_generation; // identity of this allocated work-image set
+        VkImage sr_color;
+        VmaAllocation sr_color_mem;
+        VkImage fg_srgb, fg_color; // encoded post-processing result, then byte-preserving UNORM copy
+        VmaAllocation fg_srgb_mem, fg_color_mem;
+        rsf_frame_record fg_record;
+        uint64_t fg_copied;
         uint64_t used;           // evals count when it last ran
-    } sizes[5], *last;           // last: the one the previous DLAA frame ran with
+    } sizes[5], *last, *fg_last; // last: SR/guide history; fg_last: accepted FG source
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
-    NgxParam *params;
     int failed, reset;
-    uint64_t evals, frames_missed;
+    uint64_t evals, frames_missed, guide_frames;
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
     float jx, jy;                // the offset the next scene draws take, render pixels (window x right, y down)
@@ -272,6 +90,8 @@ static struct {
     uint64_t holds;
     // camera (vk_dlaa_draw) and motion vectors (mv_pass)
     uint64_t cam_addr;           // this frame's scene camera block (c4 of a scene draw's vertex stage), 0: none seen
+    float camera_depth_range[2]; // viewport mapping observed with that camera, rather than the later bloom pass
+    uint32_t camera_depth_compare;
     VkBuffer camb;               // two CAM_SLOT slots: this frame's block and last frame's
     VmaAllocation camb_mem;
     VkBuffer mvm;                // MVM_SLOTS pairs of blocks for dlaa_mv.comp: the identity and the reprojection (mv_pass)
@@ -279,6 +99,11 @@ static struct {
     uint8_t *mvm_map;
     uint32_t mvm_slot;
     double cam_prev[16];         // last frame's view-projection (rows 3-6 of its block), for the reprojection
+    RsfCameraProjection projection;
+    int projection_ok;
+    RsfCameraMatrices camera_matrices;
+    int camera_matrices_ok;
+    uint64_t invalid_camera;
     int cam_slot, cam_prev_ok;   // the slot this frame writes / the other slot holds last frame's camera
     VkDescriptorSetLayout mv_dsl;
     VkPipelineLayout mv_layout;
@@ -288,10 +113,12 @@ static struct {
     uint64_t mv_frames, mv_none, masked;   // masked: frames with the characters' bias mask
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
+    int fg_on;                   // cached once per present; the draw hook runs on every native draw
     int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
     unsigned cfg_seen;           // cfg_version when preset was read
+    float previous_record_jitter[2];
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 #define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
@@ -299,33 +126,25 @@ static struct {
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+static int dl_active(void) { return temporal_available && D.on && (!D.failed || D.fg_on); }
 
-static void dl_fail(const char *what, NgxResult r) {
-    rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
+static void dl_fail(const char *what, int32_t r) {
+    rt_log("dlaa: %s failed (%d): SR disabled until mode change", what, r);
     D.failed = 1;
+    D.jit_ok = 0; // SR failure must not stop independent FG guide production.
 }
 
-static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, VkImage *img, VmaAllocation *mem,
-                   VkImageView *view) {
+static int free_size(struct Size *e) {
     const VkCtx *c = vk_ctx();
-    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
-                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
-                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(c->vma, &ii, &ai, img, mem, NULL) != VK_SUCCESS) return 0;
-    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *img,
-                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = f,
-                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    return vkCreateImageView(c->device, &vi, NULL, view) == VK_SUCCESS;
-}
-
-static void free_size(struct Size *e) {
-    const VkCtx *c = vk_ctx();
-    vkDeviceWaitIdle(c->device);   // a third scene size: the evicted images may still be in flight
+    if (!vk_present_fg_drain()) return 0;
+    if (!rsf_sr_close(&e->rsf)) return 0;
+    if (e->sr_color) vmaDestroyImage(c->vma, e->sr_color, e->sr_color_mem);
+    if (e->fg_srgb) vmaDestroyImage(c->vma, e->fg_srgb, e->fg_srgb_mem);
+    if (e->fg_color) vmaDestroyImage(c->vma, e->fg_color, e->fg_color_mem);
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
+    if (e->device_depth_view) vkDestroyImageView(c->device, e->device_depth_view, NULL);
+    if (e->device_depth) vmaDestroyImage(c->vma, e->device_depth, e->device_depth_mem);
     if (e->out) vmaDestroyImage(c->vma, e->out, e->out_mem);
     if (e->mv) vmaDestroyImage(c->vma, e->mv, e->mv_mem);
     if (e->mask_view) vkDestroyImageView(c->device, e->mask_view, NULL);
@@ -334,37 +153,60 @@ static void free_size(struct Size *e) {
         if (e->chars_view[i]) vkDestroyImageView(c->device, e->chars_view[i], NULL);
         if (e->chars[i]) vmaDestroyImage(c->vma, e->chars[i], e->chars_mem[i]);
     }
-    if (e->feat) N.release(e->feat);
+    if (D.fg_last == e) D.fg_last = NULL;
     memset(e, 0, sizeof *e);
+    return 1;
+}
+
+int vk_dlaa_release(void) {
+    rec_drain();
+    for (size_t i = 0; i < DLSS_SIZES; i++) {
+        if ((D.sizes[i].out || D.sizes[i].rsf) && !free_size(&D.sizes[i])) return 0;
+    }
+    D.last = D.fg_last = NULL;
+    return 1;
 }
 
 // The entry for a scene and output size: its output (RGBA16F at the output size, written by DLSS, then blitted into
 // the target) and motion vectors (RG16F at the scene size, render pixels), both kept in GENERAL like every image of the
 // back end. TotK's dynamic resolution switches between a few sizes; each keeps its feature, the least recently used
 // goes for a new one.
+static uint32_t next_resource_generation(void) {
+    static uint32_t generation;
+    uint32_t next = __atomic_add_fetch(&generation, 1, __ATOMIC_RELAXED);
+    if (!next) rt_fatal("rsf: scene resource generation exhausted");
+    return next;
+}
+
 static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
+    unsigned fg[2] = {0}, game[2], scene[2];
+    res_sizes(game, scene);
+    if (rsf_config_fg_backend()) vk_present_fg_output(game[0], game[1], fg);
     struct Size *e = NULL, *lru = &D.sizes[0];
-    for (int i = 0; i < 5; i++) {
-        if (D.sizes[i].w == w && D.sizes[i].h == h && D.sizes[i].ow == ow && D.sizes[i].oh == oh) return &D.sizes[i];
+    for (size_t i = 0; i < DLSS_SIZES; i++) {
+        if (D.sizes[i].w == w && D.sizes[i].h == h && D.sizes[i].ow == ow && D.sizes[i].oh == oh &&
+            D.sizes[i].fw == fg[0] && D.sizes[i].fh == fg[1] &&
+            D.sizes[i].gw == game[0] && D.sizes[i].gh == game[1]) return &D.sizes[i];
         if (!D.sizes[i].out && !e) e = &D.sizes[i];
         if (D.sizes[i].used < lru->used) lru = &D.sizes[i];
     }
     if (!e) {
         if (D.last == lru) D.last = NULL;
-        free_size(e = lru);
+        if (!free_size(e = lru)) return NULL;
     }
     VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) ||
-        !image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]))
+    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!vk_image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) ||
+        !vk_image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
+        !vk_image2d(w, h, VK_FORMAT_R32_SFLOAT, u, &e->device_depth, &e->device_depth_mem, &e->device_depth_view) ||
+        !vk_image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
+        !vk_image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
+        !vk_image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]))
         return NULL;
-    VkImageMemoryBarrier2 ib[5];
-    VkImage im[5] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1]};
-    for (int i = 0; i < 5; i++)
+    VkImageMemoryBarrier2 ib[6];
+    VkImage im[6] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1], e->device_depth};
+    for (int i = 0; i < 6; i++)
         ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                         .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                         .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -373,10 +215,12 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = im[i],
                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5,
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 6,
                            .pImageMemoryBarriers = ib};
     vkCmdPipelineBarrier2(cb, &di);
+    e->resource_generation = next_resource_generation();
     e->w = w, e->h = h, e->ow = ow, e->oh = oh;
+    e->fw = fg[0], e->fh = fg[1], e->gw = game[0], e->gh = game[1];
     return e;
 }
 
@@ -390,20 +234,10 @@ static void full_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
-static NgxResourceVK res_image(VkImageView v, VkImage img, VkFormat f, uint32_t w, uint32_t h, VkImageAspectFlags a,
-                               int rw) {
-    NgxResourceVK r;
-    memset(&r, 0, sizeof r);
-    r.r.img = (NgxImageView){v, img, {a, 0, 1, 0, 1}, f, w, h};
-    r.type = 0;
-    r.rw = rw;
-    return r;
-}
-
 // ---------------------------------------------------------------- timing (TOTK_DLAA_TIMES=1)
 // GPU timestamps around the camera motion dispatch, the per-object motion pass and DLSS's evaluation, and the CPU
-// time of NGX's call and of draining the recorder before it, summed and logged every TIMES_SUMMARY frames:
-//   dlaa times: gpu camera motion a ms, object motion b ms, DLSS c ms (frames timed); cpu: recorder drain d ms, NGX
+// time of RSF's call and of draining the recorder before it, summed and logged every TIMES_SUMMARY frames:
+//   dlaa times: gpu camera motion a ms, object motion b ms, DLSS c ms (frames timed); cpu: recorder drain d ms, RSF
 //   evaluate e ms, motion pass recording f ms
 // Each frame takes its own slot of TIMES_SLOTS; a slot's results are read when it comes round again (by then the GPU is
 // long done with it; not ready: that frame is left out).
@@ -416,7 +250,7 @@ static struct {
     uint32_t slot;
     int used[TIMES_SLOTS];       // the slot holds a frame's timestamps (all T_N written)
     double gpu[3];               // ms summed: camera motion, object motion, DLSS
-    uint64_t frames, cpu_drain, cpu_ngx, cpu_mv;   // ns summed
+    uint64_t frames, cpu_drain, cpu_eval, cpu_mv;   // ns summed
 } T = {.on = -1};
 
 static int times_on(void) {
@@ -446,11 +280,11 @@ static void times_begin(VkCommandBuffer cb) {
             T.gpu[2] += (double)(q[T_DL1] - q[T_DL0]) * ns;
             if (++T.frames % TIMES_SUMMARY == 0) {
                 rt_log("dlaa times: gpu camera motion %.3f ms, object motion %.3f ms, DLSS %.3f ms (%llu frames timed); "
-                       "cpu: recorder drain %.3f ms, NGX evaluate %.3f ms, motion pass recording %.3f ms",
+                       "cpu: recorder drain %.3f ms, RSF evaluate %.3f ms, motion pass recording %.3f ms",
                        T.gpu[0] / TIMES_SUMMARY, T.gpu[1] / TIMES_SUMMARY, T.gpu[2] / TIMES_SUMMARY,
-                       (unsigned long long)T.frames, T.cpu_drain / 1e6 / TIMES_SUMMARY, T.cpu_ngx / 1e6 / TIMES_SUMMARY,
+                       (unsigned long long)T.frames, T.cpu_drain / 1e6 / TIMES_SUMMARY, T.cpu_eval / 1e6 / TIMES_SUMMARY,
                        T.cpu_mv / 1e6 / TIMES_SUMMARY);
-                T.gpu[0] = T.gpu[1] = T.gpu[2] = 0, T.cpu_drain = T.cpu_ngx = T.cpu_mv = 0;
+                T.gpu[0] = T.gpu[1] = T.gpu[2] = 0, T.cpu_drain = T.cpu_eval = T.cpu_mv = 0;
             }
         }
     }
@@ -472,7 +306,7 @@ static int mv_init(void) {
     if (D.mv_ok >= 0) return D.mv_ok;
     D.mv_ok = 0;
     const VkCtx *c = vk_ctx();
-    VkDescriptorSetLayoutBinding b[8] = {
+    VkDescriptorSetLayoutBinding b[9] = {
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
@@ -480,10 +314,11 @@ static int mv_init(void) {
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
         {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+        {7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
-                                           .bindingCount = 8, .pBindings = b};
+                                           .bindingCount = 9, .pBindings = b};
     VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
                               .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -531,34 +366,13 @@ fail:
 // surfaces, which DLSS followed into a shimmer like heat haze (roofs and trees, most of all in the upscaling modes).
 // The shader is unchanged: its "this frame" block gets the identity and its "last frame" block this matrix, so it
 // applies just the one matrix to each pixel. A still camera gives the identity, and zero motion exactly.
-static int inv4(const double m[16], double o[16]) {
-    double a[4][8];
-    for (int r = 0; r < 4; r++)
-        for (int k = 0; k < 8; k++) a[r][k] = k < 4 ? m[r * 4 + k] : (k - 4 == r);
-    for (int col = 0; col < 4; col++) {
-        int piv = col;
-        for (int r = col + 1; r < 4; r++)
-            if (fabs(a[r][col]) > fabs(a[piv][col])) piv = r;
-        if (fabs(a[piv][col]) < 1e-300) return 0;
-        for (int k = 0; k < 8; k++) { double t = a[col][k]; a[col][k] = a[piv][k]; a[piv][k] = t; }
-        double d = a[col][col];
-        for (int k = 0; k < 8; k++) a[col][k] /= d;
-        for (int r = 0; r < 4; r++)
-            if (r != col) {
-                double f = a[r][col];
-                for (int k = 0; k < 8; k++) a[r][k] -= f * a[col][k];
-            }
-    }
-    for (int r = 0; r < 4; r++)
-        for (int k = 0; k < 4; k++) o[r * 4 + k] = a[r][k + 4];
-    return 1;
-}
-
 // The pass, recorded through the recorder like the replay's own commands. 0: no camera this frame (the vectors stay
 // zero and DLSS starts a new history). bias > 0 with this frame's G-buffer classes (D.ids) also writes e->mask, the
 // bias mask (dlaa_mv.comp); *masked says whether it did.
 static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked) {
     *masked = 0;
+    D.projection_ok = 0;
+    D.camera_matrices_ok = 0;
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
     VkDescriptorBufferInfo cam;
@@ -570,11 +384,17 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     }
     // this frame's view-projection as the snapshot holds it, for the reprojection; kept as last frame's for the next
     const float *cr = (const float *)vk_usnap_bytes(D.cam_addr + 48, 64);
+    const float *projection = (const float *)vk_usnap_bytes(D.cam_addr + 7 * 16, 64);
+    if (projection) D.projection_ok = rsf_camera_projection(projection, &D.projection);
+    float previous_vp[16];
+    if (D.cam_prev_ok) for (int i = 0; i < 16; i++) previous_vp[i] = (float)D.cam_prev[i];
+    if (projection && cr) D.camera_matrices_ok = rsf_camera_matrices(projection, cr,
+        D.cam_prev_ok && !D.reset ? previous_vp : NULL, &D.camera_matrices);
     double cur_vp[16], m[16], ci[16];
     int have_m = 0;
     if (cr) {
         for (int i = 0; i < 16; i++) cur_vp[i] = cr[i];
-        if (D.cam_prev_ok && inv4(cur_vp, ci)) {
+        if (D.cam_prev_ok && rsf_matrix_inverse(cur_vp, ci, 1e-300, 0)) {
             for (int r = 0; r < 4; r++)
                 for (int k = 0; k < 4; k++) {
                     double v = 0;
@@ -592,7 +412,11 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     if (cr) memcpy(D.cam_prev, cur_vp, sizeof cur_vp);
     if (!had_prev || !have_m) {   // nothing to reproject into: zero motion, new history
         e->chars_ok = 0;
-        return 0;
+        D.reset = 1;
+        // Still dispatch so the current depth reaches RSF on the first frame.
+        // Identity reprojection produces zero motion without reading old camera data.
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) m[r * 4 + k] = r == k ? 1.0 : 0.0;
     }
     VkDescriptorImageInfo zi = {D.mv_samp, zv, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo oi = {VK_NULL_HANDLE, e->mv_view, VK_IMAGE_LAYOUT_GENERAL};
@@ -617,7 +441,8 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     VkDescriptorImageInfo mki = {VK_NULL_HANDLE, e->mask_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo cpi = {VK_NULL_HANDLE, e->chars_view[cur_c ^ 1], VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo coi = {VK_NULL_HANDLE, e->chars_view[cur_c], VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet wr[8] = {
+    VkDescriptorImageInfo ddi = {VK_NULL_HANDLE, e->device_depth_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet wr[9] = {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &zi},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
@@ -633,11 +458,13 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 6, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &cpi},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 7, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &coi}};
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &coi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 8, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ddi}};
     times_begin(cb);
     times_mark(cb, T_MV0);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_pipe);
-    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_layout, 0, 8, wr);
+    rec_push(vk_pipeline_push_fn(), cb, VK_PIPELINE_BIND_POINT_COMPUTE, D.mv_layout, 0, 9, wr);
     float pc[6] = {(float)w, (float)h, jx, jy, use ? bias : 0.0f, use && e->chars_ok ? 1.0f : 0.0f};
     vkCmdPushConstants(cb, D.mv_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
     vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
@@ -646,7 +473,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     vk_mvcheck_camera(cb, e->mv, w, h, jx, jy);   // TOTK_MV_CHECK (test)
     // the characters' own motion over the camera's (vk_exec_draw.c, per-object motion)
     uint64_t c0 = T.on > 0 ? kern_now_ns() : 0;
-    if (vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
+    if (had_prev && have_m && vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
     if (T.on > 0) T.cpu_mv += kern_now_ns() - c0;
     times_mark(cb, T_OBJ);
     if (T.on > 0) T.used[T.slot] = 1;   // the DLSS marks follow in evaluate
@@ -758,8 +585,8 @@ static struct Snap *snap_for(VkCommandBuffer cb, uint32_t w, uint32_t h, VkForma
     }
     if (!e) free_snap(e = lru);
     VkImageUsageFlags u = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (!image2d(w, h, f, u, &e->before, &e->before_mem, &e->before_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u | VK_IMAGE_USAGE_STORAGE_BIT, &e->mask, &e->mask_mem, &e->mask_view)) {
+    if (!vk_image2d(w, h, f, u, &e->before, &e->before_mem, &e->before_view) ||
+        !vk_image2d(w, h, VK_FORMAT_R8_UNORM, u | VK_IMAGE_USAGE_STORAGE_BIT, &e->mask, &e->mask_mem, &e->mask_view)) {
         free_snap(e);
         return NULL;
     }
@@ -842,7 +669,7 @@ static int ended_at(const VkExec *ex) {
 }
 
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
-    if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
+    if (!D.jit_ok || !vk_dlaa_wanted() || D.failed || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
     D.ux = D.jx, D.uy = D.jy;
     __atomic_store_n(&D.jit_used, 1, __ATOMIC_RELAXED);
@@ -854,8 +681,11 @@ static void note_camera(const VkExec *ex) {
     const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
     const VkExecTarget *z = &ex->depth;
     if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
+        (!D.jdepth || z->image == D.jdepth)) {
         D.cam_addr = b->addr;
+        memcpy(D.camera_depth_range, ex->depth_range, sizeof D.camera_depth_range);
+        D.camera_depth_compare = ex->pipe.ds.df;
+    }
 }
 
 void vk_dlaa_draw(VkExec *ex) {
@@ -935,13 +765,6 @@ static float char_bias(void) {
     return n <= 0 ? 0.0f : n >= 100 ? 1.0f : (float)n / 100.0f;
 }
 
-// The quality setting DLSS is created with, from the scene's share of the output width.
-static int perf_quality(uint32_t w, uint32_t ow) {
-    if (w >= ow) return NGX_PERFQ_DLAA;
-    double k = (double)w / ow;
-    return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
-}
-
 // A target of the scene's shape (resolution.c's scene size, within 5 %; the dynamic resolution tiers keep it). In the
 // inventory the game renders the items' icons as the slots fill in, each through a G-buffer and a light target of its
 // own with a D32F depth, square (432x432 or 426x426 at a 3840x2160 scene) and with no wider G-buffer before it in the
@@ -954,30 +777,234 @@ static int scene_shaped(const VkExecTarget *c) {
     return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
+
+static void rsf_provider_log(void *user, const char *message) {
+    (void)user;
+    if (rt_trace & (RT_TRACE_GFX | RT_TRACE_PRESENT)) rt_log("rsf: %s", message);
+}
+
+static const float fallback_frame_ms = 16.67f;
+
+static rsf_frame_record scene_record(VkExec *ex, const struct Size *e, float jx, float jy) {
+    uint64_t now = plat_now_ns();
+    float dt = D.last_eval_ns ? (float)((now - D.last_eval_ns) / 1e6) : fallback_frame_ms;
+    D.last_eval_ns = now;
+    if (!(dt > 0 && dt < 100)) dt = fallback_frame_ms;
+    rsf_frame_record record = {.struct_size = sizeof record, .abi_version = RSF_GAME_FRAME_ABI_VERSION,
+        .frame_id = ex->source_frame ? ex->source_frame : D.evals + 1,
+        .session_id = ex->source_frame ? RSF_GAME_SESSION_ID : RSF_FALLBACK_SESSION_ID, .view_id = 1,
+        .resource_generation = e->resource_generation,
+        .flags = (ex->source_frame ? 0 : RSF_FRAME_FLAG_AMBIGUOUS_ID) |
+                 (D.reset ? RSF_FRAME_FLAG_RESET : 0),
+        .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+        .frame_time_ms = dt,
+        .camera = {.struct_size = sizeof(rsf_camera_frame), .abi_version = RSF_GAME_CAMERA_ABI_VERSION,
+            .render_width = e->w, .render_height = e->h, .output_width = e->ow, .output_height = e->oh,
+            .near_plane = D.projection.near_plane, .far_plane = D.projection.far_plane,
+            .vertical_fov_radians = D.projection.vertical_fov, .depth_inverted = D.projection.inverted,
+            .jitter_pixels = {jx, jy}, .frame_time_seconds = dt / 1000}};
+    if (!D.reset) memcpy(record.camera.previous_jitter_pixels, D.previous_record_jitter, sizeof D.previous_record_jitter);
+    D.previous_record_jitter[0] = jx; D.previous_record_jitter[1] = jy;
+    memcpy(record.camera.view_to_clip, D.camera_matrices.view_to_clip, sizeof record.camera.view_to_clip);
+    memcpy(record.camera.clip_to_view, D.camera_matrices.clip_to_view, sizeof record.camera.clip_to_view);
+    memcpy(record.camera.world_to_view, D.camera_matrices.world_to_view, sizeof record.camera.world_to_view);
+    memcpy(record.camera.view_to_world, D.camera_matrices.view_to_world, sizeof record.camera.view_to_world);
+    memcpy(record.camera.clip_to_previous_clip, D.camera_matrices.clip_to_previous_clip,
+           sizeof record.camera.clip_to_previous_clip);
+    return record;
+}
+
+static void fg_prepare(VkExec *ex, struct Size *e, const rsf_frame_record *record) {
+    if (!rsf_config_fg_backend() || !ex->source_frame || !e->fw || !e->fh) return;
+    rsf_frame_record output = *record;
+    output.output_width = output.camera.output_width = e->fw;
+    output.output_height = output.camera.output_height = e->fh;
+    record = &output;
+    VkCommandBuffer cb = ex->cb;
+    vk_image_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    vk_image_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rsf_fgvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_FGVK_ABI_VERSION, .record = record,
+        .depth = vk_rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion = vk_rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion_scale_x = 1, .motion_scale_y = 1};
+    rec_drain();   // SDK records directly into the producer's current command buffer.
+    int result = vk_present_fg_prepare(cb, &frame);
+    e->fg_record = *record;
+    if (result) e->fg_record.frame_id = 0;
+    else D.fg_last = e; // accepted FG colour belongs here even if SR is pending
+    vk_image_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    static uint64_t prepared, refused;
+    if (!result) {
+        if (rt_log_sampled(++prepared, 1, 300))
+            rt_log("rsf: FG prepared %llu source %llu, render %ux%u output %ux%u; HUD-less admission pending",
+                (unsigned long long)prepared, (unsigned long long)record->frame_id, e->w, e->h, e->fw, e->fh);
+    } else if (rt_log_sampled(++refused, 1, 300))
+        rt_log("rsf: FG prepare refused (%d) source %llu (%llu refusals)", result,
+            (unsigned long long)record->frame_id, (unsigned long long)refused);
+}
+
+static int rsf_scene(VkExec *ex, struct Size *e, int masked, const rsf_frame_record *source) {
+    const VkCtx *c = vk_ctx();
+    int split = rsf_config_sr_backend() == RSF_SR_FSR4;
+    rsf_fsr4vk_handoff handoff;
+    if (split && !c->has_rsf_sr_split) {
+        rt_log("rsf: FSR4 unavailable: Win32 shared image/fence imports were not enabled");
+        return RSF_SR_FAILED;
+    }
+    if (split && !vk_sync_sr_prepare(ex->cb, &handoff)) {
+        static int warned;
+        if (!warned++) rt_log("rsf: FSR4 recording deferred: no serial graphics recording lease");
+        return RSF_SR_PENDING;
+    }
+    int refused = RSF_SR_FAILED;
+    if (!e->rsf) {
+        const char *quality = cfg_value("TOTK_RSF_QUALITY");
+        rsf_srvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SRVK_ABI_VERSION,
+            .instance = c->instance, .physical_device = c->phys, .device = c->device,
+            .instance_proc = rsf_vk_generic_instance_proc, .device_proc = rsf_vk_generic_device_proc,
+            .backend = (uint32_t)rsf_config_sr_backend(),
+            .quality = !strcmp(quality, "quality") ? 1 :
+                       !strcmp(quality, "balanced") ? 2 :
+                       !strcmp(quality, "performance") ? 3 :
+                       !strcmp(quality, "ultra_performance") ? 4 : 0,
+            .output_width = e->ow, .output_height = e->oh,
+            .depth_inverted = D.projection.inverted, .depth_infinite = D.projection.infinite,
+            .runtime_directory_utf8 = rsf_provider_directory((unsigned)rsf_config_sr_backend())};
+        int opened = split ? rsf_sr_open_split(&setup, &handoff, &e->rsf, &e->rsf_w, &e->rsf_h)
+                           : rsf_sr_open(&setup, &e->rsf, &e->rsf_w, &e->rsf_h);
+        if (!opened) goto cancelled;
+    }
+    if (e->rsf_w != e->w || e->rsf_h != e->h) {
+        int plan = res_rsf_scene(e->rsf_w, e->rsf_h);
+        unsigned output[2], scene[2];
+        res_sizes(output, scene);
+        if (plan && (plan != 2 || e->w != scene[0] || e->h != scene[1])) {
+            refused = RSF_SR_PENDING;
+            goto cancelled;
+        }
+        if (!plan) {
+            rt_log("rsf: provider recommends %ux%u; scene %ux%u cannot be reconfigured within its heap budget",
+                   e->rsf_w, e->rsf_h, e->w, e->h);
+            goto cancelled;
+        }
+        // The game has reached its normalized plan. Submit actual image/camera
+        // extents; a provider with no compatible input range must refuse them.
+
+    }
+    VkCommandBuffer cb = ex->cb;
+    if (!e->sr_color) {
+        if (!vk_image2d(e->w, e->h, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            &e->sr_color, &e->sr_color_mem, NULL)) goto cancelled;
+        vk_image_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    }
+    VkImageBlit copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, D.color.level, D.color.base_layer, 1},
+        .srcOffsets = {{0, 0, 0}, {(int)e->w, (int)e->h, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {(int)e->w, (int)e->h, 1}}};
+    vkCmdBlitImage(cb, D.color.image, VK_IMAGE_LAYOUT_GENERAL, e->sr_color, VK_IMAGE_LAYOUT_GENERAL,
+                   1, &copy, VK_FILTER_NEAREST);
+    vk_image_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    vk_image_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    vk_image_layout(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (masked) vk_image_layout(cb, e->mask, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    vk_image_layout(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    rsf_frame_record record = *source;
+    record.flags |= RSF_FRAME_FLAG_NO_FG;
+    rsf_srvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_SRVK_ABI_VERSION, .record = &record,
+        .color = vk_rsf_image(e->sr_color, VK_FORMAT_R16G16B16A16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .depth = vk_rsf_image(e->device_depth, VK_FORMAT_R32_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .motion = vk_rsf_image(e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+        .output = vk_rsf_image(e->out, VK_FORMAT_R16G16B16A16_SFLOAT, e->ow, e->oh, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
+        .motion_scale_x = 1, .motion_scale_y = 1, .pre_exposure = 1, .log = rsf_provider_log};
+    if (masked) frame.bias_current_color = vk_rsf_image(e->mask, VK_FORMAT_R8_UNORM, e->w, e->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    rec_drain();
+    uint64_t started = T.on > 0 ? kern_now_ns() : 0;
+    void *continuation = cb;
+    int result = rsf_sr_record_split(e->rsf, &continuation, &frame);
+    if (split) vk_sync_sr_cancel();
+    if (!continuation) rt_fatal("rsf: terminal FSR4 split failure; recorded buffers and provider retained");
+    cb = ex->cb = continuation;
+    if (result == RSF_SR_FAILED && split) {
+        // Keep the SDK failure in provider status. Spatial recovery must be
+        // recorded AFTER its done wait, even if the DX12 dispatch was refused.
+        __typeof__(&rsf_srvk_spatial_fallback) fallback = rsf_runtime_symbol("rsf_srvk_spatial_fallback");
+        rsf_srvk_fallback call = {sizeof call, RSF_SRVK_ABI_VERSION, c->instance, c->phys, c->device,
+            rsf_vk_generic_instance_proc, rsf_vk_generic_device_proc, cb, frame.color, frame.output};
+        if (fallback && !fallback(&call)) result = RSF_SR_FALLBACK;
+    }
+    if (T.on > 0) T.cpu_eval += kern_now_ns() - started;
+    vk_image_layout(cb, e->sr_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->device_depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->mv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    if (masked) vk_image_layout(cb, e->mask, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->out, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    return result;
+cancelled:
+    if (split) vk_sync_sr_cancel();
+    return refused;
+}
+
+enum {
+    PRODUCER_ENTERED = 1, PRODUCER_FG_ACCEPTED = 2, PRODUCER_GUIDES_ONLY = 4,
+    PRODUCER_RECONSTRUCTED = 8, PRODUCER_SPATIAL = 16
+};
+enum {
+    PRODUCER_NO_SIZE = 1, PRODUCER_INVALID_CAMERA = 2, PRODUCER_PLAN_PENDING = 3,
+    PRODUCER_EVALUATION_FAILED = 4, PRODUCER_RETIREMENT_PENDING = 5
+};
+enum {
+    HUDLESS_NO_SOURCE = 1, HUDLESS_INVALID_TARGET = 2, HUDLESS_UNKNOWN_SHADER = 3,
+    HUDLESS_EXTENT_CHANGED = 4, HUDLESS_REFUSED = 5, HUDLESS_ACCEPTED = 6
+};
+// Previous-frame producer facts; the present boundary emits at most one line.
+static struct { unsigned stage, reason, camera, hudless, w, h, ow, oh, plan_w, plan_h; uint64_t source, shader; } producer_trace;
+static void producer_trace_frame(void) {
+    static unsigned previous = ~0u;
+    static uint64_t presents;
+    ++presents;
+    unsigned state = producer_trace.stage | (producer_trace.reason << 8) | (producer_trace.hudless << 16) |
+        ((unsigned)D.armed << 24) | ((unsigned)D.done << 25) | ((unsigned)D.ended << 26);
+    if ((rt_trace & RT_TRACE_PRESENT) && temporal_wanted() &&
+        (state != previous || !(presents % 300)))
+        rt_log("rsf: temporal producer source %llu stage %#x reason %u camera %#x armed %d done %d ended %d scene %ux%u output %ux%u provider plan %ux%u HUD-less gate %u shader %016llx",
+            (unsigned long long)producer_trace.source, producer_trace.stage, producer_trace.reason, producer_trace.camera,
+            D.armed, D.done, D.ended, producer_trace.w, producer_trace.h, producer_trace.ow, producer_trace.oh, producer_trace.plan_w, producer_trace.plan_h,
+            producer_trace.hudless, (unsigned long long)producer_trace.shader);
+    previous = state;
+    memset(&producer_trace, 0, sizeof producer_trace);
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
     if (!dst) dst = t;
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
+    producer_trace.stage |= PRODUCER_ENTERED; producer_trace.source = ex->source_frame;
+    producer_trace.w = w; producer_trace.h = h; producer_trace.ow = ow; producer_trace.oh = oh;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
         for (size_t i = 0; i < DLSS_SIZES; i++)
-            if (D.sizes[i].out) free_size(&D.sizes[i]);
-        D.last = NULL, D.preset_dirty = 0;
+            if (D.sizes[i].out && !free_size(&D.sizes[i])) { producer_trace.reason = PRODUCER_RETIREMENT_PENDING; D.jit_ok = 0; return; }
+        D.last = D.fg_last = NULL, D.preset_dirty = 0;
     }
     struct Size *e = size_for(cb, w, h, ow, oh);
-    if (!e) return dl_fail("work image creation", 0);
+    if (!e) { producer_trace.reason = PRODUCER_NO_SIZE; D.jit_ok = 0; return; } // Retained SDK leases may become retireable after submission.
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
-    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
-    NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
     int masked = 0;
-    if (no_mv || !mv_pass(ex, e, zv, jx, jy, char_bias(), &masked)) {
+    // Depth and camera metadata are still needed when the diagnostic requests
+    // zero motion. Produce those inputs before clearing just the vector image.
+    int motion_ok = mv_pass(ex, e, zv, jx, jy, vk_dlaa_wanted() ? char_bias() : 0.0f, &masked);
+    if (no_mv || !motion_ok) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
@@ -990,75 +1017,44 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;
-    rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
+    rec_drain();   // RSF records directly: finish all scene and motion commands first
     if (timed) T.cpu_drain += kern_now_ns() - c0;
-    if (!e->feat) {
-        p_setu(p, "CreationNodeMask", 1);
-        p_setu(p, "VisibilityNodeMask", 1);
-        p_setu(p, "Width", w);
-        p_setu(p, "Height", h);
-        p_setu(p, "OutWidth", ow);
-        p_setu(p, "OutHeight", oh);
-        p_seti(p, "PerfQualityValue", perf_quality(w, ow));
-        // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
-        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
-        p_seti(p, "DLSS.Enable.Output.Subrects", 0);
-        // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
-        // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
-        // M and L cost more on cards without FP8 (RTX 20/30). dlss_preset (D.preset, preset_check) takes one model for
-        // every mode instead.
-        int pk = D.preset ? D.preset : 11, pm = D.preset ? D.preset : 13, pl = D.preset ? D.preset : 12;
-        p_setu(p, "DLSS.Hint.Render.Preset.DLAA", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.UltraQuality", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Quality", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Balanced", (unsigned)pk);
-        p_setu(p, "DLSS.Hint.Render.Preset.Performance", (unsigned)pm);
-        p_setu(p, "DLSS.Hint.Render.Preset.UltraPerformance", (unsigned)pl);
-        NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, p, &e->feat);
-        if (!NGX_OK(r) || !e->feat) return dl_fail("DLSS feature creation", r);
-        D.reset = 1;
-        int q = perf_quality(w, ow), pr = q == 0 ? pm : q == 3 ? pl : pk;
-        rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u, quality value %d, preset %c (scene format %d, depth format "
-               "%d)", w, h, ow, oh, q, 'A' + pr - 1, (int)t->format, (int)z->format);
-    }
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
-    NgxResourceVK rc = res_image(cv, t->image, t->format, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
-    NgxResourceVK ro = res_image(e->out_view, e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-    NgxResourceVK rz = res_image(zv, z->image, z->format, w, h, VK_IMAGE_ASPECT_DEPTH_BIT, 0);
-    NgxResourceVK rm = res_image(e->mv_view, e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
-    p_setp(p, "Color", &rc);
-    p_setp(p, "Output", &ro);
-    p_setp(p, "Depth", &rz);
-    p_setp(p, "MotionVectors", &rm);
-    p_setf(p, "Jitter.Offset.X", jx);
-    p_setf(p, "Jitter.Offset.Y", jy);
-    p_setf(p, "Sharpness", 0.0f);
-    p_seti(p, "Reset", D.reset);
-    // One bias mask: the reactive one (TOTK_DLSS_REACTIVE, a test) where it ran, else the characters' (mv_pass), else
-    // none. The parameter object is reused, so it is cleared explicitly.
-    NgxResourceVK rk = mk ? res_image(mk->mask_view, mk->mask, VK_FORMAT_R8_UNORM, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0)
-                          : res_image(e->mask_view, e->mask, VK_FORMAT_R8_UNORM, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
-    p_setp(p, "DLSS.Input.Bias.Current.Color.Mask", mk || masked ? (void *)&rk : NULL);
-    p_setu(p, "DLSS.Input.Bias.Current.Color.Subrect.Base.X", 0);
-    p_setu(p, "DLSS.Input.Bias.Current.Color.Subrect.Base.Y", 0);
-    p_setf(p, "MV.Scale.X", 1.0f);
-    p_setf(p, "MV.Scale.Y", 1.0f);
-    p_setu(p, "DLSS.Render.Subrect.Dimensions.Width", w);
-    p_setu(p, "DLSS.Render.Subrect.Dimensions.Height", h);
-    p_setf(p, "DLSS.Pre.Exposure", 1.0f);
-    p_setf(p, "DLSS.Exposure.Scale", 1.0f);
-    // The time since the previous evaluation, which DLSS weighs its history by; 60 fps before the first and after a
-    // gap (a pause, a load), where no history carries over anyway.
-    uint64_t now = plat_now_ns();
-    double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
-    D.last_eval_ns = now;
-    p_setf(p, "FrameTimeDeltaInMsec", dt > 0 && dt < 100 ? (float)dt : 16.67f);
-    c0 = timed ? kern_now_ns() : 0;
-    NgxResult r = N.evaluate(cb, e->feat, p, NULL);
-    if (timed) T.cpu_ngx += kern_now_ns() - c0;
-    if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
-    if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's own commands
-    D.reset = 0;
+    producer_trace.camera = (motion_ok ? 1u : 0u) | (D.projection_ok ? 2u : 0u) | (D.camera_matrices_ok ? 4u : 0u);
+    if (!motion_ok || !D.projection_ok || !D.camera_matrices_ok) {
+        producer_trace.reason = PRODUCER_INVALID_CAMERA;
+        D.reset = 1;
+        D.jit_ok = 0;
+        if (motion_ok && ++D.invalid_camera == 1)
+            rt_log("rsf: camera projection or transforms unavailable/invalid; skipping reconstruction");
+        return;
+    }
+    rsf_frame_record record = scene_record(ex, e, jx, jy);
+    fg_prepare(ex, e, &record);
+    if (e->fg_record.frame_id == ex->source_frame && ex->source_frame) producer_trace.stage |= PRODUCER_FG_ACCEPTED;
+    if (!vk_dlaa_wanted() || D.failed) {
+        producer_trace.stage |= PRODUCER_GUIDES_ONLY;
+        // FG needs scene depth and independent object motion even when the
+        // native colour path is retained. Never inject temporal jitter here.
+        D.last = e, e->used = ++D.guide_frames, D.jdepth = z->image;
+        D.reset = 0, D.jit_ok = 0;
+        full_barrier(cb);
+        vk_exec_draw_new_cb(ex);
+        if (rt_log_sampled(D.guide_frames, 1, 300))
+            rt_log("rsf: FG guides %llu source %llu, render %ux%u output %ux%u; depth reversed %d infinite %d near %g far %g viewport %g..%g compare %#x; HUD-less admission pending",
+                   (unsigned long long)D.guide_frames, (unsigned long long)ex->source_frame, w, h, ow, oh,
+                   D.projection.inverted, D.projection.infinite, D.projection.near_plane, D.projection.far_plane,
+                   D.camera_depth_range[0], D.camera_depth_range[1], D.camera_depth_compare);
+        return;
+    }
+    int result = rsf_scene(ex, e, masked, &record);
+    producer_trace.plan_w = e->rsf_w; producer_trace.plan_h = e->rsf_h;
+    cb = ex->cb; // the split service may have ended the scene producer
+    if (result == RSF_SR_PENDING) { producer_trace.reason = PRODUCER_PLAN_PENDING; D.reset = 1; D.jit_ok = 0; return; }
+    if (!result) { producer_trace.reason = PRODUCER_EVALUATION_FAILED; return dl_fail("RSF evaluation", 0); }
+    producer_trace.stage |= result == RSF_SR_FALLBACK ? PRODUCER_SPATIAL : PRODUCER_RECONSTRUCTED;
+    if (timed) times_mark(cb, T_DL1);   // through the recorder, after RSF recording
+    D.reset = result == RSF_SR_FALLBACK;
     D.last = e, e->used = D.evals + 1;
     full_barrier(cb);
     vk_mvcheck_output(cb, e->out, ow, oh);   // TOTK_MV_CHECK (test)
@@ -1078,11 +1074,17 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     vkCmdBlitImage(cb, mvdebug ? e->mv : maskdebug && mk ? mk->mask : e->out, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                    VK_FILTER_NEAREST);
     full_barrier(cb);
-    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
+    if (dst != t) D.up = 1, vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;
     ex->recorded += 4;
-    vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
+    vk_exec_draw_new_cb(ex);   // RSF binds its own pipelines/descriptors; force the next draw to bind everything
     D.jdepth = z->image;
     next_jitter(w, ow);
+    if (result == RSF_SR_FALLBACK) {
+        static uint64_t fallbacks;
+        if (rt_log_sampled(++fallbacks, 1, 300))
+            rt_log("rsf: FSR4 spatial fallback %llu; temporal dispatch remains refused", (unsigned long long)fallbacks);
+        return;
+    }
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
                "motion, %llu with the characters' mask, %llu without a camera, %llu jitter holds; resets: %llu size, %llu "
@@ -1136,6 +1138,13 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W) {
         D.gbuf_w = D.gbuf && D.gbuf_w > z->width ? D.gbuf_w : z->width;
         D.gbuf = 1, D.armed = 0;
+        if (D.last && z->width == D.gbuf_w && scene_shaped(z) &&
+            (z->width != D.last->w || z->height != D.last->h)) {
+            // Game-side resizing can arrive a frame after the setting/plan changed.
+            // Associate this new scene's camera instead of waiting for its retired depth image.
+            D.jdepth = VK_NULL_HANDLE;
+            D.reset = 1, D.jit_ok = D.cam_prev_ok = 0;
+        }
         // target 0 is the object-class buffer (RGBA8, the scene size): the characters' bias mask reads its green. A
         // smaller pass of the same shape (640x360, seen while loading) does not replace the scene's in the same frame.
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
@@ -1223,7 +1232,6 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
     }
     if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
     if (!t.tex) return evaluate(ex, NULL);
-    D.up = 1;
     evaluate(ex, &t);
 }
 
@@ -1236,15 +1244,37 @@ void vk_dlaa_pass(VkExec *ex) {
 // texture bias that goes with it while DLSS runs.
 static void dlss_mode(void) {
     static char mode[32];
-    static int bias_on = -1;
-    const char *m = cfg_value("TOTK_DLSS");
-    if (strcmp(m, mode)) {
+    static int bias_on = -1, backend = -1;
+    static float applied_bias;
+    if (!vk_dlaa_wanted()) {
+        if (bias_on != 0) vk_sampler_dlss_bias(0.0f);
+        bias_on = 0;
+        if (mode[0]) {
+            res_dlss_mode("off"); // restore requested native/render_scale policy
+            mode[0] = 0;
+            D.preset_dirty = D.reset = 1;
+        }
+        return;
+    }
+    int selected = rsf_config_sr_backend();
+    const char *m = cfg_value("TOTK_RSF_QUALITY");
+    if (!strcmp(m, "native")) m = "dlaa";
+    if (strcmp(m, mode) || backend != selected) {
+        backend = selected;
+        D.failed = 0;
+        D.jit_ok = D.jit_used = D.cam_prev_ok = 0;
+        D.preset_dirty = 1;
+        D.reset = 1;
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
         bias_on = -1;
     }
-    int b = dl_active();
-    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
+    int b = temporal_available && D.on && vk_dlaa_wanted() && !D.failed;
+    float bias = b ? res_dlss_lod_bias() : 0.0f;
+    if (b != bias_on || bias != applied_bias) {
+        bias_on = b; applied_bias = bias;
+        vk_sampler_dlss_bias(bias);
+    }
 }
 
 
@@ -1263,10 +1293,25 @@ static void preset_check(void) {
 }
 
 void vk_dlaa_frame(void) {
+    producer_trace_frame();
+    if (rsf_config_refresh()) {
+        // The existing retirement path retries a refused SDK close without losing its owner.
+        D.preset_dirty = D.reset = 1;
+        D.failed = 0;
+        D.jit_ok = D.jit_used = D.cam_prev_ok = 0;
+        res_dynres_live();
+    }
+    D.fg_on = temporal_available && rsf_config_fg_backend() != 0;
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("TOTK_DLAA");
+    if (D.preset_dirty) {
+        // A new render plan replaces the depth image. Keeping its old association
+        // would reject every camera binding and prevent the new scene from resolving.
+        D.jdepth = VK_NULL_HANDLE;
+        D.cam_addr = 0;
+    }
+    int on = temporal_available && temporal_wanted();
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
@@ -1301,6 +1346,12 @@ void vk_dlaa_frame(void) {
 // the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull};
+static int is_fxaa_shader_hash(uint64_t hash) {
+    for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++)
+        if (hash == FXAA_FS[i]) return 1;
+    return 0;
+}
+
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
@@ -1327,6 +1378,83 @@ static uint64_t spirv_hash(const GfxShader *s) {
         if (e == s) return tab[j].h;
     }
     return 0;   // table full: no skip
+}
+
+void vk_dlaa_fg_after_draw(VkExec *ex, const GfxShader *fs) {
+    if (!D.fg_on || !fs || !ex->source_frame || ex->chunked) return;
+    struct Size *e = D.fg_last;
+    const VkExecTarget *t = &ex->color[0];
+    if (!e || e->fg_record.frame_id != ex->source_frame || e->fg_copied == ex->source_frame) {
+        if (!producer_trace.hudless) producer_trace.hudless = HUDLESS_NO_SOURCE;
+        return;
+    }
+    if (ex->pass_ncolor != 1 || !t->image || t->width != e->gw || t->height != e->gh ||
+        !scene_color(t->format) || t->samples > 1 || t->is3d || t->level || t->base_layer || ex->pass_layers != 1) {
+        if (!producer_trace.hudless) producer_trace.hudless = HUDLESS_INVALID_TARGET;
+        return;
+    }
+    uint64_t hash = spirv_hash(fs);
+    producer_trace.shader = hash;
+    if (!is_fxaa_shader_hash(hash)) { producer_trace.hudless = HUDLESS_UNKNOWN_SHADER; return; }
+    unsigned output[2];
+    if (!vk_present_fg_output(e->gw, e->gh, output) || output[0] != e->fw || output[1] != e->fh) {
+        producer_trace.hudless = HUDLESS_EXTENT_CHANGED; return;
+    }
+    VkCtx *c = vk_ctx();
+    static struct { VkPhysicalDevice physical; VkFormat format; VkFormatProperties src, dst; } blit_caps;
+    if (blit_caps.physical != c->phys || blit_caps.format != t->format) {
+        blit_caps.physical = c->phys; blit_caps.format = t->format;
+        vkGetPhysicalDeviceFormatProperties(c->phys, t->format, &blit_caps.src);
+        vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_R8G8B8A8_SRGB, &blit_caps.dst);
+    }
+    if (!(blit_caps.src.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+        !(blit_caps.dst.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) return;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!e->fg_srgb && !vk_image2d(e->gw, e->gh, VK_FORMAT_R8G8B8A8_SRGB, usage,
+        &e->fg_srgb, &e->fg_srgb_mem, NULL)) return;
+    if (!e->fg_color && !vk_image2d(e->gw, e->gh, VK_FORMAT_R8G8B8A8_UNORM, usage,
+        &e->fg_color, &e->fg_color_mem, NULL)) return;
+    // The known final scaling/FXAA draw is complete; overlay draws have not run.
+    // End rendering and restore feedback-loop targets before reading this image.
+    vk_exec_barrier(ex);
+    VkCommandBuffer cb = ex->cb;
+    vk_image_layout(cb, t->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageLayout old = e->fg_copied ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    vk_image_layout(cb, e->fg_srgb, old, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_image_layout(cb, e->fg_color, old, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, 0, 0}, {(int)e->gw, (int)e->gh, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {(int)e->gw, (int)e->gh, 1}}};
+    // Vulkan encodes linear RGB when blitting to an sRGB format. Copying those
+    // bytes into UNORM then preserves the encoding expected by the FG service.
+    vkCmdBlitImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->fg_srgb,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    vk_image_layout(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {e->gw, e->gh, 1}};
+    vkCmdCopyImage(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->fg_color,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    vk_image_layout(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->fg_srgb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_image_layout(cb, e->fg_color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    e->fg_copied = ex->source_frame;
+    rsf_fgvk_frame frame = {.struct_size = sizeof frame, .abi_version = RSF_FGVK_ABI_VERSION, .record = &e->fg_record,
+        .hudless = vk_rsf_image(e->fg_color, VK_FORMAT_R8G8B8A8_UNORM, e->gw, e->gh, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
+    rec_drain();
+    int result = vk_present_fg_hudless(cb, &frame);
+    producer_trace.hudless = result ? HUDLESS_ACCEPTED : HUDLESS_REFUSED;
+    vk_image_layout(cb, e->fg_color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    vk_exec_draw_new_cb(ex);
+    vk_exec_pass_begin(ex);   // load the existing target for the next native draw
+    static uint64_t copied, refused;
+    if (!result) {
+        if (rt_log_sampled(++copied, 1, 300))
+            rt_log("rsf: FG HUD-less %llu source %llu, %ux%u encoded, boundary %016llx",
+                (unsigned long long)copied, (unsigned long long)ex->source_frame, e->gw, e->gh, (unsigned long long)hash);
+    } else if (rt_log_sampled(++refused, 1, 300))
+        rt_log("rsf: FG HUD-less refused (%d) source %llu (%llu refusals)", result,
+            (unsigned long long)ex->source_frame, (unsigned long long)refused);
 }
 
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
@@ -1363,10 +1491,16 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
         return 1;
     }
     uint64_t h = spirv_hash(fs);
-    int known = 0;
-    for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
-    if (!known) return 0;
-    if (!ex->depth.image) return D.up;   // the scaling pass, which DLSS replaced
+    if (!is_fxaa_shader_hash(h)) return 0;
+    if (!ex->depth.image && D.up) {
+        // Reconstruction already filled this output target. Running the native
+        // scene-sized scaling shader over it samples only part of the enlarged
+        // texture. Capture the completed target at this boundary without drawing
+        // that scaling pass a second time.
+        vk_dlaa_fg_after_draw(ex, fs);
+        return 1;
+    }
+    if (!ex->depth.image) return 0; // native/FG-only scaling still produces colour
     if (!fxaa && !fx_found) {
         fx_found = 1;
         rt_log("dlaa: fxaa = 0 skips the game's FXAA (fragment shader %016llx)", (unsigned long long)h);

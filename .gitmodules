@@ -1,0 +1,3 @@
+[submodule "external/ReScaleFrame"]
+	path = external/ReScaleFrame
+	url = https://github.com/KillerPixelCrew/ReScaleFrame.git

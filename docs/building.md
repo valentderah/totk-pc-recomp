@@ -53,6 +53,14 @@ hactool reads `-k <prod.keys>`; MSYS2 shells set `HOME`, which hides its default
 
 ## Build
 
+The RSF integration reads SDK headers from the pinned `external/ReScaleFrame`
+submodule. Initialize it with `git submodule update --init external/ReScaleFrame`.
+Set `TOTK_RSF_SOURCE` to an absolute checkout path for runtime development. The
+build reads its orchestrator, contract and game SDK include directories without
+copying RSF implementation into this repository. Release installers linking a
+prebuilt host runtime do not need the SDK checkout. The separate runtime package
+lives under `ReScaleFrame/` beside the executable; `rsf_runtime` overrides its DLL.
+
 From the repository root, in PowerShell. Every step that depends on the game version takes it as `<ver>`: `v143` for
 1.4.3, `v121` for 1.2.1 or `v110` for 1.1.0. The tools default to `v121` when `--version` is left out. Saves load on any
 of them.
@@ -207,6 +215,10 @@ The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the com
 `TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
 
 ## Checks
+
+RSF live selection and boot-off provider provisioning: `python tests/rsf_live_check.py`.
+Use `--cc <clang>` and `--deps <dependency root>` with the installer toolchain.
+The contracts check frame-boundary publication and optional SDK refusal without game content or provider DLLs.
 
 Before a commit:
 

@@ -16,6 +16,7 @@
 #include "host.h"
 #include "input.h"
 #include "ov.h"
+#include "rsf_frame.h"
 #include "platform/platform.h"
 
 typedef struct { int64_t sampling; uint64_t buttons; int32_t lx, ly, rx, ry; uint32_t attributes, pad; } NpadState;
@@ -92,9 +93,24 @@ static void npad_states(Cpu *c, uint32_t want) {
     int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
     plat_mutex_unlock(&lock);
     if (live) {
+        rsf_frame_input(c);
+        if (rt_trace & RT_TRACE_PRESENT) {
+            static int32_t traced;
+            int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);
+            if (rt_log_sampled(n, 32, 600))
+                rt_log("input boundary: sample %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
+                       (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
+            if (n <= 4) {
+                uint64_t fp = c->x[29];
+                uint64_t caller;
+                for (unsigned depth = 0; depth < 8 && rt_guest_frame_next(&fp, &caller); depth++) {
+                    rt_log("input caller: sample %d depth %u return 0x%llx", n, depth,
+                           (unsigned long long)caller);
+                }
+            }
+        }
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
-        vk_reflex_marker(6, vk_reflex_frame());   // VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     }
     *out = s;
     ret_x(c, 1);

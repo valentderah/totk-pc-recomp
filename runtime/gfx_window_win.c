@@ -19,6 +19,7 @@
 #include "gfx_wsys.h"
 #include "input.h"
 #include "input_win.h"
+#include "rsf_input.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -337,6 +338,12 @@ static void window_main(void *arg) {
             // setting; set after it, fullscreen waited for the next activation and the game started in a window
             g_fs_pending = cfg_fullscreen();
             raise_window(g_hwnd);   // a frontend's player may have no way to reach a window left behind
+            // Apply the initial fullscreen extent before g_wnd_ready lets Vulkan
+            // query the surface. Activation also queues this idempotent handler.
+            if (cfg_fullscreen() && GetForegroundWindow() == g_hwnd) {
+                SendMessageW(g_hwnd, WM_APP_FULLSCREEN, 0, 0);
+                g_fs_pending = 0;
+            }
             FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
             FlashWindowEx(&fw);
         }
@@ -348,6 +355,7 @@ static void window_main(void *arg) {
     if (g_wnd_failed) return;
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        rsf_input_win_dequeued(msg.message);
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -368,7 +376,9 @@ VkSurfaceKHR wsys_surface(VkInstance inst) {
     VkWin32SurfaceCreateInfoKHR si = {.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
                                       .hinstance = GetModuleHandleW(NULL), .hwnd = g_hwnd};
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VkResult r = vkCreateWin32SurfaceKHR(inst, &si, NULL, &surface);
+    // The SDK resolver also records surface-to-window ownership for DLSS FG.
+    PFN_vkCreateWin32SurfaceKHR create = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(inst, "vkCreateWin32SurfaceKHR");
+    VkResult r = create ? create(inst, &si, NULL, &surface) : VK_ERROR_EXTENSION_NOT_PRESENT;
     if (r != VK_SUCCESS) rt_log("gfx: vkCreateWin32SurfaceKHR failed (%d)", (int)r);
     return r == VK_SUCCESS ? surface : VK_NULL_HANDLE;
 }

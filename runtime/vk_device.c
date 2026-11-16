@@ -12,9 +12,11 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "rsf_runtime.h"
+#include "vk_motion_texture.h"
 
 static VkCtx g_vk;
-static int g_ready;
+static int g_ready, g_stopping;
 static PlatMutex g_lock = PLAT_MUTEX_INIT;
 
 // ---- GPU address map for device faults
@@ -131,6 +133,7 @@ static void mesa_cache_beside_exe(void) {
 }
 
 static int create_instance(void) {
+    if (!rsf_vk_prepare()) return 0;
     mesa_cache_beside_exe();
     const char *ext[12];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
@@ -145,7 +148,6 @@ static int create_instance(void) {
     if (validate || ab_want) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
-    vk_dlaa_instance_exts(ext, &n_ext, 12);
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -190,11 +192,14 @@ static const char *missing_required(VkPhysicalDevice pd) {
 
 // Graphics+compute family that can present to the window.
 static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperties *qp, uint32_t nq) {
+    uint32_t fallback = UINT32_MAX;
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-            gfx_window_vk_presentable(g_vk.instance, pd, i))
-            return i;
-    return UINT32_MAX;
+            gfx_window_vk_presentable(g_vk.instance, pd, i)) {
+            if (!rsf_runtime_present() || qp[i].queueCount >= RSF_GRAPHICS_QUEUES) return i;
+            if (fallback == UINT32_MAX) fallback = i;
+        }
+    return fallback;
 }
 
 static int name_has(const char *s, const char *sub) {
@@ -253,6 +258,12 @@ static int pick_device(void) {
     VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
+    g_vk.rsf_queue_count = 1;
+    if (rsf_runtime_present()) {
+        if (qp[g_vk.gfx_family].queueCount >= RSF_GRAPHICS_QUEUES) g_vk.rsf_queue_count = RSF_GRAPHICS_QUEUES;
+        else rt_log("rsf: FFX3 presentation needs four distinct graphics-family queues; only %u available; other FG providers can use one",
+                    qp[g_vk.gfx_family].queueCount);
+    }
     g_vk.xfer_family = g_vk.gfx_family;
     for (uint32_t i = 0; i < nq; i++)   // a family that does transfer only (async DMA engine)
         if ((qp[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(qp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
@@ -286,7 +297,6 @@ typedef struct {
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
-    VkPhysicalDevicePresentIdFeaturesKHR pid;
 } FeatureChain;
 
 static int create_device(void) {
@@ -294,7 +304,8 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[52];
+    enum { EXT_CAPACITY = 52, RSF_EXT_CAPACITY = 48 };
+    const char *ext[EXT_CAPACITY];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
 
@@ -338,7 +349,6 @@ static int create_device(void) {
         CHAIN(fbl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT);
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
-    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's; the twelve slots after it stay for the nine below
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -355,18 +365,16 @@ static int create_device(void) {
         g_vk.has_nv_checkpoints = 1;
         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     }
-    // NVIDIA Reflex Low Latency (VK_NV_low_latency2 requires VK_KHR_present_id)
-    const char *rv = cfg_value("TOTK_REFLEX");
-    if (rv && strcmp(rv, "off") != 0 && strcmp(rv, "0") != 0) {
-        if (has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, "VK_NV_low_latency2")) {
-            g_vk.has_nv_reflex = 1;
-            ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
-            ext[n_ext++] = "VK_NV_low_latency2";
-            CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
-        } else {
-            rt_log("Reflex: VK_NV_low_latency2 not available");
-        }
+    // Vendor latency extensions and pacing are owned by RSF.
+    // Enable shared-resource imports for live switches to FSR4 when supported.
+#ifdef _WIN32
+    if (has_ext(ep, ne, "VK_KHR_external_memory_win32") &&
+        has_ext(ep, ne, "VK_KHR_external_semaphore_win32")) {
+        ext[n_ext++] = "VK_KHR_external_memory_win32";
+        ext[n_ext++] = "VK_KHR_external_semaphore_win32";
+        g_vk.has_rsf_sr_split = 1;
     }
+#endif
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
@@ -411,11 +419,6 @@ static int create_device(void) {
            : !ab_want ? "off (TOTK_ADDR_REPORT=1 turns it on; it slows recording on some drivers)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
-    // VkPresentIdKHR on a present needs the presentId feature, not just the extension
-    if (g_vk.has_nv_reflex && !c->pid.presentId) {
-        g_vk.has_nv_reflex = 0;
-        rt_log("Reflex: VK_NV_low_latency2 not available (no presentId feature)");
-    }
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
@@ -428,22 +431,44 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    float prio = 1.0f;
+    float priorities[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     VkDeviceQueueCreateInfo qi[2] = {
-        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = 1,
-         .pQueuePriorities = &prio}};
+        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family,
+         .queueCount = g_vk.rsf_queue_count, .pQueuePriorities = priorities}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
         qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
+                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = priorities};
         nqi = 2;
     }
-    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
+    // RSF may enable provider-specific nodes. Give it a separate copy of our
+    // queried feature chain; rebase links into that copy before passing it out.
+    FeatureChain enabled = *c;
+    for (VkBaseOutStructure *node = (VkBaseOutStructure *)c; node; node = node->pNext) {
+        VkBaseOutStructure *copy = (void *)((char *)&enabled + ((char *)node - (char *)c));
+        copy->pNext = node->pNext ? (void *)((char *)&enabled + ((char *)node->pNext - (char *)c)) : NULL;
+    }
+    uint32_t native_extension_count = n_ext;
+    void *enabled_features = &enabled.f2;
+    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, sizeof enabled, ext, &n_ext, RSF_EXT_CAPACITY, &enabled_features)) {
+        rsf_vk_fallback("device requirements refused");
+        n_ext = native_extension_count;
+        enabled_features = &c->f2;
+    }
+    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = enabled_features, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
+    if (r != VK_SUCCESS && rsf_runtime_present()) {
+        rsf_vk_fallback("interposed device creation refused");
+        di.pNext = &c->f2;
+        di.enabledExtensionCount = native_extension_count;
+        r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
+    }
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
+    for (uint32_t i = 0; i < g_vk.rsf_queue_count; i++)
+        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, i, &g_vk.rsf_queues[i]);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 
@@ -479,9 +504,18 @@ static int create_device(void) {
 
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
-static void destroy_all(void) {
-    gfx_window_release_vk();
+static int destroy_all(void) {
+    if (!gfx_window_release_vk()) return 0;
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.device && !vk_dlaa_release()) return 0;
+    if (g_vk.device && !vk_motion_texture_stop()) return 0;
+    // Retained object/bone/storage arenas are direct VMA allocations, separate
+    // from the native buffer pool. Release their CPU history after completion.
+    if (g_ready && g_vk.device) vk_usnap_shutdown();
+    if (!rsf_vk_shutdown()) return 0;
+    // Native textures/samplers and buffers outlive every provider and snapshot
+    // history owner. Only checked retirement permits freeing their allocations.
+    if (g_ready && g_vk.device) vk_mem_shutdown();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
@@ -497,6 +531,8 @@ static void destroy_all(void) {
     if (g_vk.instance) vkDestroyInstance(g_vk.instance, NULL);
     g_errors_total += g_vk.validation_errors;
     memset(&g_vk, 0, sizeof g_vk);
+    rsf_vk_reset();
+    return 1;
 }
 
 long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.validation_errors : 0); }
@@ -504,11 +540,23 @@ long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.
 int vk_init(void) {
     plat_mutex_lock(&g_lock);
     vk_memx_init();
+    if (g_stopping) {
+        if (!destroy_all()) { plat_mutex_unlock(&g_lock); return 0; }
+        g_ready = g_stopping = 0;
+    }
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device())
-            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
-        else destroy_all();
+        if (create_instance() && pick_device() && create_device()) {
+            g_ready = 1;
+            vk_mem_host_probe();
+            vk_upload_pools_init();
+            vk_headroom_start();
+            vk_dlaa_init();
+            int texture_motion = rsf_runtime_present() &&
+                                 cfg_bool("TOTK_DLAA_OBJMV");
+            if (!vk_motion_texture_start(texture_motion))
+                rt_log("vk: texture motion snapshots unavailable; unsupported history stays native");
+        } else if (!destroy_all()) g_stopping = 1;
     }
     int ok = g_ready;
     plat_mutex_unlock(&g_lock);
@@ -517,7 +565,12 @@ int vk_init(void) {
 
 void vk_shutdown(void) {
     plat_mutex_lock(&g_lock);
-    if (g_ready) { destroy_all(); g_ready = 0; }
+    if (g_ready || g_stopping) {
+        g_stopping = 1;
+        // Providers may refuse retirement while a CPU or GPU lease is active.
+        // Keep VkCtx available to that work and retry without recreating it.
+        if (destroy_all()) g_ready = g_stopping = 0;
+    }
     plat_mutex_unlock(&g_lock);
 }
 
