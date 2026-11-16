@@ -132,6 +132,22 @@ site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 
+# Field of view (runtime/resolution.c res_fov_live writes TOTK_FOV / 100 to page +60 and switches the set). The same two
+# camera routines as the aspect set (update main+0xcb4208, setup main+0x1252024; 1.4.3 main+0x628460, main+0xb432bc)
+# load the camera's vertical view angle (+0x13c, radians) a few words before the ratio and hand it to sead's perspective
+# projection (+0xa0, then sinf / cosf / tanf of half of it at +0xa4..+0xac); 1.4.3's setup reads the same fields through
+# x22 = camera + 0xd8. Eight more places fill a perspective projection the same way, 1.4.3 has the same eight, and
+# neither version patches them: one more inlined copy that scales an angle of another object (main+0x6c5548, 1.4.3
+# main+0x4e9754), three projection routines (main+0xdde89c, main+0x1141ce8, main+0x1a5e994; 1.4.3 main+0xc02690,
+# main+0xd42730, main+0x27d53d8) and four that fill a projection on the stack (main+0x7800f0, main+0x7805fc,
+# main+0xc764cc, main+0x21ee474; 1.4.3 main+0x63e2b4, main+0x63e744, main+0x79344, main+0x2804fec). The replacement is
+# the one of patches-v143.txt (word for word the sites of patches-v110.txt): it loads the angle as before and
+# multiplies it by the factor on the page; s8 holds the factor because the next instruction (fmul s8, s0, s1) overwrites
+# it, and x10 is kept on the stack.
+set fov      TOTK_FOV_PATCH      0
+site fov    main cb4ad8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+site fov    main 1252194 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea  # ldr s0, [x19, #0x13c] (camera setup)
+
 # Texture pool offsets past 2 GiB (MacNativeGames ca311e2d). The texture loader keeps a texture's place in its pool as a
 # 32-bit offset (main+0xad4294: sub x25, x9, x10, stored as the word w25) and widens it as a signed number for
 # nvnTextureBuilderSetStorage's offset and for SetPackagedTextureData's source (the pool's CPU address + offset). The
