@@ -356,6 +356,11 @@ def build_deps(out):
 def collect_licenses(out):
     lic = out / 'licenses'
     lic.mkdir(parents=True, exist_ok=True)
+    mng_lic = MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE'
+    if not mng_lic.is_file():
+        alt = Path(r'D:\Games\TotK-Setup-0.3.1-windows\licenses\MacNativeGames-LICENSE.txt')
+        if alt.is_file():
+            mng_lic = alt
     pairs = [
         (unpack('opus') / 'ucrt64' / 'share' / 'licenses' / 'opus' / 'COPYING', 'opus-COPYING.txt'),
         (unpack('vulkan-headers') / 'ucrt64' / 'share' / 'licenses' / 'vulkan-headers' / 'LICENSE', 'vulkan-headers-LICENSE.txt'),
@@ -365,7 +370,7 @@ def collect_licenses(out):
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
-        (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
+        (mng_lic, 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
         shutil.copy2(src, lic / name)
@@ -448,8 +453,14 @@ def build_sources(out, pgo):
     for d in TOOLS_DIRS:
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     (out / 'data').mkdir(exist_ok=True)
-    text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
-    (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
+    if (MAIN_ROOT / 'refs' / 'MacNativeGames').is_dir():
+        text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
+        (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
+    elif (ROOT / 'data' / 'shader_list.tsv').is_file():
+        shutil.copy2(ROOT / 'data' / 'shader_list.tsv', out / 'data' / 'shader_list.tsv')
+    else:
+        text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
+        (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     for p in pgo.values():
         for f in (p, p.with_suffix('.json')):
             if f.is_file():

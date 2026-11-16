@@ -151,20 +151,33 @@ def dev_layout(root):
     commit = subprocess.run(['git', '-C', str(root), 'rev-parse', '--short', 'HEAD'], capture_output=True,
                             text=True).stdout.strip()
     embed = root / 'build' / 'py314-embed' / 'py' / ('python' + EXE)
+    py314 = root / '.venv-py314' / 'Scripts' / ('python' + EXE)
     trees = sorted(p.parent.parent for p in (root / 'toolchain').glob('llvm-mingw-*/llvm-mingw-*/bin/clang' + EXE))
+    if not trees and (root / 'toolchain' / 'llvm' / 'bin' / ('clang' + EXE)).is_file():
+        trees = [root / 'toolchain' / 'llvm']
     deps = root / 'toolchain' / 'deps-mingw'
+    ninja = UCRT / ('ninja' + EXE)
+    if not ninja.is_file() and (root / 'toolchain' / 'bin' / ('ninja' + EXE)).is_file():
+        ninja = root / 'toolchain' / 'bin' / ('ninja' + EXE)
+    hactool = root / 'toolchain' / 'hactool' / ('hactool' + EXE)
+    if not hactool.is_file() and (root / 'toolchain' / 'bin' / ('hactool' + EXE)).is_file():
+        hactool = root / 'toolchain' / 'bin' / ('hactool' + EXE)
+    xlate = root / 'build' / 'xlate' / ('totk_xlate' + EXE)
+    if not xlate.is_file() and (root / 'toolchain' / 'bin' / ('totk_xlate' + EXE)).is_file():
+        xlate = root / 'toolchain' / 'bin' / ('totk_xlate' + EXE)
     semver = (root / 'VERSION').read_text(encoding='utf-8').strip()
     return Layout(
         root=root, dev=True, release=f'{semver}-dev+{commit or "unknown"}',
-        python=embed if embed.is_file() else Path(sys.executable),
+        python=embed if embed.is_file() else (py314 if py314.is_file() else Path(sys.executable)),
         tools=root / 'tools', recomp=root / 'recomp',
         llvm=trees[-1] if trees else root / 'toolchain' / 'llvm-mingw-missing', deps=deps,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libtotkrt.a',
         runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
-        ninja=UCRT / ('ninja' + EXE), hactool=root / 'toolchain' / 'hactool' / ('hactool' + EXE),
-        xlate=root / 'build' / 'xlate' / ('totk_xlate' + EXE),
+        ninja=ninja, hactool=hactool,
+        xlate=xlate,
         dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
-        shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp',
+        shader_list=root / 'data' / 'shader_list.tsv' if (root / 'data' / 'shader_list.tsv').is_file() else None,
+        ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp',
         pgo_dir=root / 'build' / 'pgo')
 
 
