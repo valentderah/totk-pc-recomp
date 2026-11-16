@@ -22,6 +22,7 @@ Many rows below are developer tools that only act together with another setting 
 | `bind_stats` | `1` counts bindings and descriptors per draw of each stage and how much of the bound state changes between draws. | Adds per-draw bookkeeping to the render thread and extra log output; frames get slower. | Caution |
 | `contact_debug` | `1` draws the contact-shadow factor in grey in place of the picture. | The frame shows a grey debug image while it is set; has no effect when contact shadows are off. | Caution |
 | `core_diag` | `1` records why ready guest threads wait for a virtual core and for how long, with a histogram every 60 presents. | Turns on host-call and SVC depth tracking and writes many log lines (one per present over 25 ms); frames get slower. | Caution |
+| `barrier_merge` (default `0`) | Experimental. `1` keeps a render pass open through the game's Barrier calls that ask only for fragment ordering and texture invalidation, when no draw of the pass can write a storage buffer or image; the next draw that samples a written target gets a by-region barrier in the pass (the feedback layout). In scenes with about a thousand such barriers a frame this cuts the passes from about 1200 to 130 and the GPU time from 24.5 to 7.8 ms. | The game's barrier orders every pixel, the in-pass by-region barrier only the pixel a draw writes: a driver that runs it per screen tile can show flicker or squares at the edges of water, decals or particles. | Caution |
 | `menu_cursor_log` | `1` logs what the menu cursor code reads at every screen change. | Only adds log lines. | Safe |
 | `perf_slow_ms` (default `50`) | Frames at least this many milliseconds long get a `perf: slow frame` log line with the time blocked per cause. | Changes how many frames are logged; a small value fills the log. | Safe |
 | `replay_check` | `1` reads every texture read-back a second time after a full drain of the replay queue and compares the two. | Stalls the replay queue at every read-back, so frames get much slower; mismatches are only counted and logged. | Caution |
@@ -153,7 +154,7 @@ Many rows below are developer tools that only act together with another setting 
 | `vram_headroom` (default `1`) | `0` turns off the spare half-block of video memory that a background thread keeps per memory type. | Texture allocations on the render thread can wait for a new block again. | Caution |
 | `vs_outs` | `all` declares all 32 vertex shader output locations; otherwise only the union of the paired fragment inputs. | Larger vertex shaders and new pipelines; unwritten outputs read the same as before. | Caution |
 | `wb_exact` (default `1`) | `0` decides write-back of GPU-written textures by page only. | A target that shares a page with data the CPU writes can go unwritten, so a name label next to the reticle can blink. | Caution |
-| `wb_merge` (default `1`) | `0` copies GPU-written ranges back as plain copies instead of writing word by word the words that changed. | In mirror memory mode the GPU's copy can overwrite words the CPU wrote, which breaks effects such as falling rain and waterfall splashes. | Caution |
+| `wb_merge` (default `1`) | `0` copies GPU-written ranges back as plain copies instead of writing word by word the words that changed; with `shadow = 1` it also leaves ranges the GPU has yet to write back out of the copy into the shadow. | In mirror memory mode, and with `shadow = 1`, the GPU's copy can overwrite words the CPU wrote, which breaks effects such as falling rain and waterfall splashes. | Caution |
 
 ## Motion vectors and DLSS
 
@@ -180,7 +181,7 @@ Many rows below are developer tools that only act together with another setting 
 | `mvprev_grow` (default `1`) | `0` keeps only three banks in the previous-frame tables. | Object motion that depends on the other banks is no longer tracked. | Caution |
 | `mvprev_skip` | Hex bank mask of banks left out of the previous-frame copy, replacing the default. | Different banks are tracked, which changes object motion. | Caution |
 | `mvprev_trust` | Hex bank mask of banks whose found previous-frame copy is taken without the check. | A copy that does not match is used anyway, which can give wrong motion. | Caution |
-| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency; `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
+| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency, holding frames to the frame limit the pacer uses (`fps_limit`, the monitor's rate for `display`); `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
 
 ## Scheduling and host
 

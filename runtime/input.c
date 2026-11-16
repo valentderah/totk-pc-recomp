@@ -498,7 +498,8 @@ typedef struct {
 } RenHdrumApi;
 
 static RenHdrumApi rh;
-static int rh_state;                          // 0 not tried, 1 loaded, -1 unavailable
+static PlatMutex rh_lock = PLAT_MUTEX_INIT;
+static volatile int32_t rh_state;             // 0 not tried, 1 loaded, -1 unavailable
 static PlatMutex dsp_lock = PLAT_MUTEX_INIT;  // guards dualsense_dsp and steam_dsp for real-time callbacks
 static RenHdcDualSenseDsp *dualsense_dsp;     // under dsp_lock (and lock on create/destroy)
 static SDL_AudioStream *ds_audio_stream;      // under lock: 4-channel 48 kHz f32 USB audio stream
@@ -517,7 +518,10 @@ static uint64_t steam_period_ns;              // RENHDRUM_VALVE_GRIP_PERIOD_NS_{
 static uint64_t steam_next_ns;                // next scheduled report 0x88 timestamp
 static uint64_t steam_last_active_ns;         // timestamp of last report 0x88 with non-zero signal
 static int steam_fails;                       // consecutive SDL_hid_write failures on steam_hid
+static int steam_init_step;                   // 0 ready, 1 awaiting 10 ms format command, 2 awaiting 200 ms settle
+static uint64_t steam_init_ns;                // deadline for the current Steam Controller grip init step
 static int haptics_thread;                    // 0 not started, 1 running
+static volatile int32_t haptics_work;         // 1 while haptics_main has active streaming, init, or audio retries to run
 static int hd_active_side[2];                 // 1 while non-zero HD rumble is playing on [0] left / [1] right
 static uint64_t hd_last_push_ns[2];           // timestamp of last non-zero HD rumble push on [0] left / [1] right
 // Under lock: a second HID handle on the Bluetooth DualSense for output report 0x32. SDL_SendJoystickEffect cannot carry
@@ -572,19 +576,6 @@ static RenHdcSettings renhdrum_make_settings(void) {
     s.bt_crisp_notes = rh_hd_bt_crisp != 0;
     s.bt_fast = false;
     return s;
-}
-
-static RenHdcDualSenseDsp *renhdrum_create_dsp(pfn_renhdrum_dualsense_dsp_create fn, int32_t vol, bool crisp) {
-    // DualSense and Steam grip DSP factories check %APPDATA%/RenHDrum/renhdrum-settings.txt first; hide APPDATA briefly
-    // when that file is present so totk.ini's volume and crisp_notes always take effect.
-    char saved[PLAT_PATH_MAX], file[PLAT_PATH_MAX + 64];
-    int hide = plat_getenv("APPDATA", saved, sizeof saved) &&
-               snprintf(file, sizeof file, "%s/RenHDrum/renhdrum-settings.txt", saved) < (int)sizeof file &&
-               plat_file_exists(file);
-    if (hide) plat_setenv("APPDATA", NULL);
-    RenHdcDualSenseDsp *dsp = fn(vol, crisp);
-    if (hide) plat_setenv("APPDATA", saved);
-    return dsp;
 }
 
 static void dsp_push_target(RenHdcDualSenseDsp *dsp, int side, float left_al, float left_fl, float left_ah,
@@ -683,29 +674,42 @@ void input_haptics_stop(void) {
 }
 
 static int renhdrum_load(void) {
-    if (rh_state) return rh_state == 1;
+    int s = (int)plat_cas32(&rh_state, 0, 0);
+    if (s) return s == 1;
+    plat_mutex_lock(&rh_lock);
+    s = (int)plat_cas32(&rh_state, 0, 0);
+    if (s) {
+        plat_mutex_unlock(&rh_lock);
+        return s == 1;
+    }
     const char *const libname = sizeof PLAT_EXE_SUFFIX > 1 ? "renhdrum.dll" : "librenhdrum.so";
-    void *mod = NULL;
     char exe_path[PLAT_PATH_MAX];
-    if (plat_exe_path(exe_path, sizeof exe_path)) {
-        for (int depth = 0; depth < 4 && !mod; depth++) {
-            char *slash = plat_last_sep(exe_path);
-            if (!slash) break;
-            *slash = '\0';
-            char candidate[PLAT_PATH_MAX + 64];
-            snprintf(candidate, sizeof candidate, "%s/%s", exe_path, libname);
-            mod = plat_lib_open(candidate);
-        }
+    if (!plat_exe_path(exe_path, sizeof exe_path)) {
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
+        return 0;
     }
-    if (!mod) {
-        char rel[64];
-        snprintf(rel, sizeof rel, "./%s", libname);
-        mod = plat_lib_open(rel);
+    char *slash = plat_last_sep(exe_path);
+    if (!slash) {
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
+        return 0;
     }
-    if (!mod && sizeof PLAT_EXE_SUFFIX == 1) mod = plat_lib_open(libname);
+    *slash = '\0';
+    char candidate[PLAT_PATH_MAX + 64];
+    if (snprintf(candidate, sizeof candidate, "%s/%s", exe_path, libname) >= (int)sizeof candidate ||
+        !plat_file_exists(candidate)) {
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
+        return 0;
+    }
+    void *mod = plat_lib_open(candidate);
     if (!mod) {
-        rh_state = -1;
-        rt_log("input: %s not found, falling back to standard SDL rumble", libname);
+        char err[128];
+        plat_lib_error(err, sizeof err);
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
+        rt_log("input: cannot load %s (%s), falling back to standard SDL rumble", libname, err);
         return 0;
     }
 #define RH_SYM(name) (pfn_renhdrum_##name)plat_lib_sym(mod, "renhdrum_" #name)
@@ -737,15 +741,30 @@ static int renhdrum_load(void) {
         !rh.engine_push_sample || !rh.engine_tick || !rh.dualsense_dsp_create || !rh.dualsense_dsp_destroy ||
         !rh.dualsense_dsp_set_target || !rh.dualsense_dsp_fill_f32 || !rh.dualsense_dsp_build_bt_report) {
         memset(&rh, 0, sizeof rh);
-        rh_state = -1;
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
         rt_log("input: %s is missing required exports, falling back to standard SDL rumble", libname);
         return 0;
     }
-    if (rh.set_nx2_mode) rh.set_nx2_mode(0);
     uint32_t ver = rh.version();
-    rh_state = 1;
+    if (ver != RENHDRUM_VERSION) {
+        memset(&rh, 0, sizeof rh);
+        plat_xchg32(&rh_state, -1);
+        plat_mutex_unlock(&rh_lock);
+        rt_log("input: %s ABI v%u.%u.%u does not match expected v%u.%u.%u, falling back to standard SDL rumble",
+               libname, ver >> 16 & 0xff, ver >> 8 & 0xff, ver & 0xff,
+               RENHDRUM_VERSION >> 16 & 0xff, RENHDRUM_VERSION >> 8 & 0xff, RENHDRUM_VERSION & 0xff);
+        return 0;
+    }
+    if (rh.set_nx2_mode) rh.set_nx2_mode(0);
+    plat_xchg32(&rh_state, 1);
+    plat_mutex_unlock(&rh_lock);
     rt_log("input: loaded %s (ABI v%u.%u.%u)", libname, ver >> 16 & 0xff, ver >> 8 & 0xff, ver & 0xff);
     return 1;
+}
+
+int input_renhdrum_available(void) {
+    return renhdrum_load();
 }
 
 static void SDLCALL dualsense_audio_cb(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
@@ -779,7 +798,6 @@ static int dualsense_try_open_audio(void) {
         ds_init_audio = 1;
     }
     int count = 0;
-    SDL_PumpEvents();
     SDL_AudioDeviceID *devs = SDL_GetAudioPlaybackDevices(&count);
     if (!devs) return 0;
     SDL_AudioDeviceID target_dev = 0;
@@ -887,6 +905,20 @@ static void steam_grip_mode(SDL_hid_device *hid, uint8_t op, uint8_t format) {
 
 static void steam_grip_tick(uint64_t now_ns) {
     if (!steam_dsp || !steam_hid || !rh.valve_grip_build_report || !steam_period_ns) return;
+    if (steam_init_step == 1) {
+        if (now_ns < steam_init_ns) return;
+        steam_grip_mode(steam_hid, 2, steam_format);
+        steam_init_step = 2;
+        steam_init_ns = now_ns + 200000000ull;
+        return;
+    }
+    if (steam_init_step == 2) {
+        if (now_ns < steam_init_ns) return;
+        if (pad) SDL_RumbleGamepad(pad, 0, 0, 0);
+        steam_init_step = 0;
+        steam_init_ns = 0;
+        steam_next_ns = now_ns;
+    }
     if (now_ns < steam_next_ns) return;
     if (!steam_next_ns || now_ns - steam_next_ns > 100000000ull)
         steam_next_ns = now_ns + steam_period_ns;
@@ -916,6 +948,8 @@ static void steam_grip_tick(uint64_t now_ns) {
                 steam_next_ns = 0;
                 steam_last_active_ns = 0;
                 steam_fails = 0;
+                steam_init_step = 0;
+                steam_init_ns = 0;
                 plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
             }
         } else {
@@ -927,7 +961,16 @@ static void steam_grip_tick(uint64_t now_ns) {
 static void haptics_main(void *arg) {
     (void)arg;
     for (;;) {
-        plat_wait_ns(1000000);
+        if (input_hd_pad_kind() == HD_PAD_NONE) {
+            plat_wait_ns(50000000ull);
+            continue;
+        }
+        if (!plat_cas32(&haptics_work, 0, 0) && cfg_version() == rh_cfg_seen) {
+            plat_wait_ns(10000000ull);
+            continue;
+        }
+        uint64_t wait_ns = 10000000ull;
+        int active = 0;
         plat_mutex_lock(&lock);
         if (pad && SDL_GamepadConnected(pad)) {
             renhdrum_sync_cfg();
@@ -959,9 +1002,19 @@ static void haptics_main(void *arg) {
                 if (renhdrum_engine) switch_hd_tick(now);
                 if (xbox_rumble) xbox_hd_tick(now);
                 if (steam_dsp) steam_grip_tick(now);
+                int usb_retry = dualsense_dsp && !ds_is_bt && !ds_audio_stream && ds_audio_tries < 10;
+                active = hd_active_side[0] || hd_active_side[1] ||
+                         (ds_is_bt && ds_bt_last_active_ns && now - ds_bt_last_active_ns < 2000000000ull) ||
+                         steam_init_step ||
+                         (steam_last_active_ns && now - steam_last_active_ns < 100000000ull) ||
+                         usb_retry;
+                if (active)
+                    wait_ns = steam_dsp && steam_period_ns == RENHDRUM_VALVE_GRIP_PERIOD_NS_8K ? 2000000ull : 4000000ull;
             }
         }
+        if (!active) plat_xchg32(&haptics_work, 0);
         plat_mutex_unlock(&lock);
+        plat_wait_ns(wait_ns);
     }
 }
 
@@ -1038,6 +1091,8 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
     steam_next_ns = 0;
     steam_last_active_ns = 0;
     steam_fails = 0;
+    steam_init_step = 0;
+    steam_init_ns = 0;
     ds_is_bt = 0;
     ds_bt_last_active_ns = 0;
     ds_bt_next_ns = 0;
@@ -1045,6 +1100,7 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
     ds_audio_last_try_ns = 0;
     hd_active_side[0] = hd_active_side[1] = 0;
     hd_last_push_ns[0] = hd_last_push_ns[1] = 0;
+    plat_xchg32(&haptics_work, 0);
 }
 
 static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
@@ -1075,7 +1131,7 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
             }
         }
         bool crisp = (wireless ? rh_ds_bt_crisp : rh_ds_crisp) != 0;
-        RenHdcDualSenseDsp *dsp = renhdrum_create_dsp(rh.dualsense_dsp_create, rh_ds_vol, crisp);
+        RenHdcDualSenseDsp *dsp = rh.dualsense_dsp_create(rh_ds_vol, crisp);
         if (!dsp) {
             if (ds_hid) SDL_hid_close(ds_hid), ds_hid = NULL;
             return;
@@ -1085,7 +1141,10 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
         plat_mutex_unlock(&dsp_lock);
         ds_is_bt = wireless ? 1 : 0;
         SDL_RumbleGamepad(opened_pad, 0, 0, 0);
-        if (!ds_is_bt) dualsense_maintain_audio(plat_now_ns());
+        if (!ds_is_bt) {
+            dualsense_maintain_audio(plat_now_ns());
+            if (!ds_audio_stream) plat_xchg32(&haptics_work, 1);
+        }
         rt_log("input: RenHDrum DualSense HD rumble active (%s, volume %d%%, crisp %s)",
                ds_is_bt ? "Bluetooth HID report 0x32" : "USB 48 kHz 4-channel audio VCM", rh_ds_vol, crisp ? "on" : "off");
     } else if (vid == 0x057E && (pid == 0x2009 || pid == 0x2006 || pid == 0x2007)) {
@@ -1159,7 +1218,7 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
         }
         steam_format = pid == 0x1302 ? RENHDRUM_VALVE_GRIP_FORMAT_MULAW_8K : RENHDRUM_VALVE_GRIP_FORMAT_MULAW_4K;
         steam_period_ns = pid == 0x1302 ? RENHDRUM_VALVE_GRIP_PERIOD_NS_8K : RENHDRUM_VALVE_GRIP_PERIOD_NS_4K;
-        RenHdcDualSenseDsp *dsp = renhdrum_create_dsp(rh.valve_grip_dsp_create, rh_steam_vol, rh_steam_crisp != 0);
+        RenHdcDualSenseDsp *dsp = rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
         if (!dsp) {
             SDL_hid_close(steam_hid);
             steam_hid = NULL;
@@ -1168,13 +1227,12 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
             return;
         }
         steam_grip_mode(steam_hid, 1, 0);
-        SDL_Delay(10);
-        steam_grip_mode(steam_hid, 2, steam_format);
-        SDL_Delay(200);
-        SDL_RumbleGamepad(opened_pad, 0, 0, 0);
+        steam_init_step = 1;
+        steam_init_ns = plat_now_ns() + 10000000ull;
         plat_mutex_lock(&dsp_lock);
         steam_dsp = dsp;
         plat_mutex_unlock(&dsp_lock);
+        plat_xchg32(&haptics_work, 1);
         rt_log("input: RenHDrum Steam Controller (2026) grip HD Rumble active (%s, volume %d%%, crisp %s)",
                pid == 0x1302 ? "USB 8 kHz" : pid == 0x1304 ? "Wireless dongle 4 kHz" : "Bluetooth 4 kHz",
                rh_steam_vol, rh_steam_crisp ? "on" : "off");
@@ -1199,7 +1257,7 @@ static void renhdrum_sync_cfg(void) {
             int crisp = ds_is_bt ? rh_ds_bt_crisp : rh_ds_crisp;
             int was_crisp = ds_is_bt ? was_ds_bt_crisp : was_ds_crisp;
             if (rh_ds_vol != was_ds_vol || crisp != was_crisp) {
-                RenHdcDualSenseDsp *new_dsp = renhdrum_create_dsp(rh.dualsense_dsp_create, rh_ds_vol, crisp != 0);
+                RenHdcDualSenseDsp *new_dsp = rh.dualsense_dsp_create(rh_ds_vol, crisp != 0);
                 if (new_dsp) {
                     plat_mutex_lock(&dsp_lock);
                     RenHdcDualSenseDsp *old = dualsense_dsp;
@@ -1230,7 +1288,7 @@ static void renhdrum_sync_cfg(void) {
             if (!rh_steam_on) renhdrum_close_pad(pad);
             else renhdrum_open_pad(pad);
         } else if (steam_dsp && (rh_steam_vol != was_steam_vol || rh_steam_crisp != was_steam_crisp)) {
-            RenHdcDualSenseDsp *new_dsp = renhdrum_create_dsp(rh.valve_grip_dsp_create, rh_steam_vol, rh_steam_crisp != 0);
+            RenHdcDualSenseDsp *new_dsp = rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
             if (new_dsp) {
                 plat_mutex_lock(&dsp_lock);
                 RenHdcDualSenseDsp *old = steam_dsp;
@@ -1360,7 +1418,8 @@ static void start(void) {
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
     // SDL3 on Windows defaults SDL_JOYSTICK_RAWINPUT to 0, opening Xbox controllers through XInput (which exposes only
     // the 2 grip motors and drops SDL_RumbleGamepadTriggers). Enable RAWINPUT when Xbox 4-motor trigger rumble is on.
-    if ((cfg_bool("TOTK_XBOX_RUMBLE") && cfg_bool("TOTK_XBOX_TRIGGERS")) || cfg_bool("TOTK_RUMBLE_TRIGGERS"))
+    if ((cfg_bool("TOTK_XBOX_RUMBLE") && cfg_bool("TOTK_XBOX_TRIGGERS") && renhdrum_load()) ||
+        cfg_bool("TOTK_RUMBLE_TRIGGERS"))
         SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
@@ -1793,14 +1852,13 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
             if (ds_is_bt) {
                 if (non_zero && (!ds_bt_last_active_ns || now - ds_bt_last_active_ns >= 2000000000ull)) {
                     ds_bt_next_ns = now;
+                    dualsense_bt_tick(now);
                 }
+                if (non_zero) plat_xchg32(&haptics_work, 1);
                 handled = ds_hid != NULL;
             } else {
-                dualsense_maintain_audio(now);
-                if (ds_audio_stream) {
-                    SDL_RumbleGamepad(pad, 0, 0, 0);
-                    handled = 1;
-                }
+                if (non_zero) plat_xchg32(&haptics_work, 1);
+                handled = ds_audio_stream != NULL;
             }
             if (handled) triggers_hd_rumble(now, left_ah > right_ah ? left_ah : right_ah);
         } else if (steam_dsp && steam_hid) {
@@ -1808,7 +1866,9 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
                             right_al, right_fl, right_ah, right_fh);
             if (non_zero && (!steam_last_active_ns || now - steam_last_active_ns >= 100000000ull)) {
                 steam_next_ns = now;
+                if (!steam_init_step) steam_grip_tick(now);
             }
+            if (non_zero) plat_xchg32(&haptics_work, 1);
             handled = 1;
         } else if (renhdrum_engine) {
             int64_t now_us = (int64_t)(now / 1000u);
@@ -1820,6 +1880,7 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
                 rh.engine_push_sample(renhdrum_engine, now_us, left_al, left_fl, left_ah, left_fh,
                                       right_al, right_fl, right_ah, right_fh);
             switch_hd_tick(now);
+            if (non_zero) plat_xchg32(&haptics_work, 1);
             handled = 1;
         } else if (xbox_rumble && rh.xbox_rumble_push_half_sample) {
             int64_t now_us = (int64_t)(now / 1000u);
@@ -1832,6 +1893,7 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
                 rh.xbox_rumble_push_half_sample(xbox_rumble, now_us, true, right_al, right_fl, right_ah, right_fh);
             }
             xbox_hd_tick(now);
+            if (non_zero) plat_xchg32(&haptics_work, 1);
             handled = 1;
         }
     }

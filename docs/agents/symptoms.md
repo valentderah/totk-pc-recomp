@@ -11,6 +11,7 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 | Symptom | Usual causes | First check |
 |---|---|---|
 | magenta, brown or stale textures; caves or sky wrong | the CPU filled the texture and the GPU never got the upload (no flush on the console) | frame dump: the texture's upload count and mirror state in `passes.txt` |
+| rain shows only its splashes on the ground, no falling drops; waterfall splashes and mist blink | a GPU write-back copies a whole range over particle records the CPU spawned in it (`vk_memory.c`: the write-back merge, and with `shadow = 1` the shadow's pending ranges) | a run with `TOTK_WB_MERGE=0` or `TOTK_SHADOW=0` against one without |
 | effects that never happen: cut grass stays up, fire does not spread | the CPU reads a GPU-rendered texture that was never written back | which texture the game reads after its fence; write-back of that target |
 | black scene, black dialog background or loading map | deferred binds read at record time; a 3D target rejected; a texture compare ignoring the channel mapping | frame dump: the first pass whose target goes black |
 | lime silhouettes, rectangles in the sky | a target outside the shader's output map overwritten instead of kept | dump: the target's previous contents versus after the pass |

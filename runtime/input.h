@@ -118,6 +118,8 @@ void input_haptics_stop(void);
 // The HD rumble / haptics controller connected now (for the Controls tab's "in use" notes); any thread.
 enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, HD_PAD_DUALSENSE_BT, HD_PAD_XBOX_USB, HD_PAD_XBOX_BT, HD_PAD_STEAM_USB, HD_PAD_STEAM_BT };
 int input_hd_pad_kind(void);
+// 1 when renhdrum.dll / librenhdrum.so is present next to the executable and matches RENHDRUM_VERSION; any thread.
+int input_renhdrum_available(void);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value. On a

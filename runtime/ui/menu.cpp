@@ -1022,29 +1022,36 @@ static void tab_controls(float scale) {
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     rows_gameplay_tweaks();
-    opt_group(UI_MENU_GROUP_HD_SWITCH);
-    opt_toggle("TOTK_HD_RUMBLE", UI_MENU_HD_RUMBLE, UI_MENU_HD_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_SWITCH));
-    static const UiTextId bt_speed[] = {UI_MENU_HD_BT_STABLE, UI_MENU_HD_BT_BALANCED, UI_MENU_HD_BT_FAST};
-    opt_choice("TOTK_HD_RUMBLE_BT_SPEED", UI_MENU_HD_BT_SPEED, bt_speed, 3, UI_MENU_HD_BT_SPEED_DESC);
-    opt_toggle("TOTK_HD_RUMBLE_CRISP", UI_MENU_HD_CRISP, UI_MENU_HD_CRISP_DESC);
-    opt_toggle("TOTK_HD_RUMBLE_BT_CRISP", UI_MENU_HD_BT_CRISP, UI_MENU_HD_BT_CRISP_DESC);
+    bool have_rh = input_renhdrum_available() != 0;
+    if (have_rh) {
+        opt_group(UI_MENU_GROUP_HD_SWITCH);
+        opt_toggle("TOTK_HD_RUMBLE", UI_MENU_HD_RUMBLE, UI_MENU_HD_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_SWITCH));
+        static const UiTextId bt_speed[] = {UI_MENU_HD_BT_STABLE, UI_MENU_HD_BT_BALANCED, UI_MENU_HD_BT_FAST};
+        opt_choice("TOTK_HD_RUMBLE_BT_SPEED", UI_MENU_HD_BT_SPEED, bt_speed, 3, UI_MENU_HD_BT_SPEED_DESC);
+        opt_toggle("TOTK_HD_RUMBLE_CRISP", UI_MENU_HD_CRISP, UI_MENU_HD_CRISP_DESC);
+        opt_toggle("TOTK_HD_RUMBLE_BT_CRISP", UI_MENU_HD_BT_CRISP, UI_MENU_HD_BT_CRISP_DESC);
+    }
     opt_group(UI_MENU_GROUP_HD_DUALSENSE);
-    opt_toggle("TOTK_DUALSENSE_HAPTICS", UI_MENU_DS_HAPTICS, UI_MENU_DS_HAPTICS_DESC, false, hd_pad_note(HD_NOTE_DUALSENSE));
-    opt_slider("TOTK_DUALSENSE_VOLUME", UI_MENU_DS_VOLUME, 10, 100, UI_MENU_DS_VOLUME_DESC, 5, "%.0f %%");
-    opt_toggle("TOTK_DUALSENSE_CRISP", UI_MENU_DS_CRISP, UI_MENU_DS_CRISP_DESC);
-    opt_toggle("TOTK_DUALSENSE_BT_CRISP", UI_MENU_DS_BT_CRISP, UI_MENU_DS_BT_CRISP_DESC);
+    if (have_rh) {
+        opt_toggle("TOTK_DUALSENSE_HAPTICS", UI_MENU_DS_HAPTICS, UI_MENU_DS_HAPTICS_DESC, false, hd_pad_note(HD_NOTE_DUALSENSE));
+        opt_slider("TOTK_DUALSENSE_VOLUME", UI_MENU_DS_VOLUME, 10, 100, UI_MENU_DS_VOLUME_DESC, 5, "%.0f %%");
+        opt_toggle("TOTK_DUALSENSE_CRISP", UI_MENU_DS_CRISP, UI_MENU_DS_CRISP_DESC);
+        opt_toggle("TOTK_DUALSENSE_BT_CRISP", UI_MENU_DS_BT_CRISP, UI_MENU_DS_BT_CRISP_DESC);
+    }
     opt_slider("TOTK_DUALSENSE_TRIGGERS", UI_MENU_DS_TRIGGERS, 0, 8, UI_MENU_DS_TRIGGERS_DESC, 1, "%.0f");
     static const UiTextId ds_trigger_modes[] = {UI_MENU_DS_TRIGGERS_R2, UI_MENU_DS_TRIGGERS_BOTH, UI_MENU_DS_TRIGGERS_L2};
     opt_choice("TOTK_DUALSENSE_TRIGGERS_MODE", UI_MENU_DS_TRIGGERS_MODE, ds_trigger_modes, 3, UI_MENU_DS_TRIGGERS_MODE_DESC);
     opt_toggle("TOTK_DUALSENSE_TRIGGER_VIBRATION", UI_MENU_DS_TRIGGER_VIBRATION, UI_MENU_DS_TRIGGER_VIBRATION_DESC);
-    opt_group(UI_MENU_GROUP_HD_XBOX);
-    opt_toggle("TOTK_XBOX_RUMBLE", UI_MENU_XBOX_RUMBLE, UI_MENU_XBOX_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_XBOX));
-    opt_toggle("TOTK_XBOX_TRIGGERS", UI_MENU_XBOX_TRIGGERS, UI_MENU_XBOX_TRIGGERS_DESC);
-    opt_group(UI_MENU_GROUP_HD_STEAM);
-    opt_toggle("TOTK_STEAM_RUMBLE", UI_MENU_STEAM_RUMBLE, UI_MENU_STEAM_RUMBLE_DESC, false,
-               hd_pad_note(HD_NOTE_STEAM));
-    opt_slider("TOTK_STEAM_VOLUME", UI_MENU_STEAM_VOLUME, 10, 100, UI_MENU_STEAM_VOLUME_DESC, 5, "%.0f %%");
-    opt_toggle("TOTK_STEAM_CRISP", UI_MENU_STEAM_CRISP, UI_MENU_STEAM_CRISP_DESC);
+    if (have_rh) {
+        opt_group(UI_MENU_GROUP_HD_XBOX);
+        opt_toggle("TOTK_XBOX_RUMBLE", UI_MENU_XBOX_RUMBLE, UI_MENU_XBOX_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_XBOX));
+        opt_toggle("TOTK_XBOX_TRIGGERS", UI_MENU_XBOX_TRIGGERS, UI_MENU_XBOX_TRIGGERS_DESC);
+        opt_group(UI_MENU_GROUP_HD_STEAM);
+        opt_toggle("TOTK_STEAM_RUMBLE", UI_MENU_STEAM_RUMBLE, UI_MENU_STEAM_RUMBLE_DESC, false,
+                   hd_pad_note(HD_NOTE_STEAM));
+        opt_slider("TOTK_STEAM_VOLUME", UI_MENU_STEAM_VOLUME, 10, 100, UI_MENU_STEAM_VOLUME_DESC, 5, "%.0f %%");
+        opt_toggle("TOTK_STEAM_CRISP", UI_MENU_STEAM_CRISP, UI_MENU_STEAM_CRISP_DESC);
+    }
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting
     // value, to set it above.
