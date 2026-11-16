@@ -131,6 +131,10 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
+// Under lock: the Switch buttons the input script pressed in the last poll, apart from the keys' and the gamepad's, so
+// a gamepad combo can count a scripted press as the gamepad's without counting the keys bound to the same buttons
+static uint64_t script_seen;
+
 static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     if (!script_state) script_load();
     if (!script_n) return;
@@ -738,13 +742,22 @@ static uint32_t speed_pad_mask(void) {
     return mask;
 }
 
-// The game speed combo: the same latch as Minus+Plus (input_map.c, chord). Once every button of it is down the speed
-// switches once, and the Switch buttons they press stay hidden from the game until all of them are released. Under lock.
+// The game speed combo: the same latch as Minus+Plus (input_map.c, chord). Once every button of it is down (on the
+// gamepad, or pressed by an input script) the speed switches once, and the Switch buttons they press stay hidden from
+// the game until all of them are released. Under lock.
 static void speed_pad_gate(uint64_t *b) {
     static int held;
     uint32_t mask = speed_pad_mask(), raw = 0;
-    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++)
-        if (mask >> p & 1 && pad_seen[p]) raw |= 1u << p;
+    int layout = pad_layout_get();
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++) {
+        if (!(mask >> p & 1)) continue;
+        // A position counts as down on the gamepad or when the input script presses the Switch buttons it stands for,
+        // as a gamepad would; the keys bound to those buttons do not (the game speed key is theirs). Home has no
+        // Switch button: gamepad only.
+        uint8_t one[PAD_COUNT] = {0};
+        if (p < PAD_COUNT) one[p] = 1;
+        if (pad_seen[p] || (p < PAD_COUNT && script_seen & input_map_pad_buttons(one, layout))) raw |= 1u << p;
+    }
     if (!mask) held = 0;
     else if (held) held = raw != 0;
     else if (raw == mask) {
@@ -846,7 +859,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
-    script_apply(&b, sl, sr);
+    script_seen = 0;
+    script_apply(&script_seen, sl, sr);
+    b |= script_seen;
     wheel_route(&b, sl, sr);
     gameplay_tweaks_apply(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), input_gameplay_active(), &b, &sl[0], &sl[1], &sr[0], &sr[1]);
     rec_apply(b, sl, sr);

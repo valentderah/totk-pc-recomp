@@ -38,7 +38,8 @@
 # game_speed_key = f9
 # A gamepad combo that does the same: buttons by position joined with +, the pad: names of the bind_ lines (south east
 # west north lstick rstick l r zl zr start back dpad_up ...) plus guide for the Home / Xbox button. The game does not see
-# the combo's buttons while they are held. Windows may open the Game Bar on the Xbox button (Settings > Gaming).
+# the combo's buttons while they are held. Windows may open the Game Bar on the Xbox button (Settings > Gaming). An
+# input script can press the combo as a gamepad would; the keys bound to its buttons do not.
 # game_speed_pad = guide+south
 
 [performance]
