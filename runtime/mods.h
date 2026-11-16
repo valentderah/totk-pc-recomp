@@ -16,8 +16,9 @@ typedef enum {
     MOD_OK,
     MOD_EMPTY,          // no RomFS file, no ExeFS patch, no cheat file
     MOD_PLUGIN,         // has code modules (exefs/subsdk*, a replaced exefs/main): the port has no module loader, so the
-                        // whole mod stays off (its RomFS files may expect that code); with TOTK_MODS_WITHOUT_CODE=1 the
-                        // rest of such a mod is used, without those code modules (ModInfo.code names them)
+                        // whole mod stays off (its RomFS files may expect that code); used without its code
+                        // (ModInfo.without_code) the rest of such a mod is used, without those code modules
+                        // (ModInfo.code names them)
     MOD_EXEFS_LATER,    // has ExeFS patches for this game's main that the game was built without: the rebuild at the
                         // next start builds them in; the whole mod stays off until then
     MOD_EXEFS_UNSUPPORTED,   // an ExeFS patch file the port cannot apply (note says why): the whole mod stays off,
