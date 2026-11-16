@@ -16,6 +16,9 @@ static struct FrameOwner { void *thread; uint64_t framework, current, completed,
 static uint64_t next_source;
 static PlatMutex latency_options_lock = PLAT_MUTEX_INIT;
 
+// Observe queue lifetimes from creation so settings can be enabled later.
+static int frame_observing(void) { return rsf_runtime_cpu_sink() != NULL; }
+
 static void latency_options(void) {
     static int applied = -1, last_result = -999;
     int requested = rsf_config_low_latency();
@@ -107,7 +110,7 @@ static uint64_t input_framework(const Cpu *c) {
 }
 
 void rsf_frame_input(Cpu *c) {
-    if (!rsf_requested()) return;
+    if (!frame_observing()) return;
     uint64_t source = 0;
     uint64_t framework = input_framework(c);
     plat_mutex_lock(&frame_lock);
@@ -130,7 +133,7 @@ void rsf_frame_input(Cpu *c) {
 }
 
 uint64_t rsf_frame_draw_source(Cpu *c) {
-    if (!rsf_requested()) return 0;
+    if (!frame_observing()) return 0;
     uint64_t source = 0;
     plat_mutex_lock(&frame_lock);
     struct FrameOwner *owner = frame_owner(c->thread, 0);
@@ -140,7 +143,7 @@ uint64_t rsf_frame_draw_source(Cpu *c) {
 }
 
 void rsf_frame_draw_done(Cpu *c) {
-    if (!rsf_requested()) return;
+    if (!frame_observing()) return;
     plat_mutex_lock(&frame_lock);
     struct FrameOwner *owner = frame_owner(c->thread, 0);
     if (owner) owner->draw = owner->draw_queue = 0;
@@ -183,7 +186,7 @@ static void publish_draw(Cpu *c, uint64_t queue, uint64_t message) {
 void rsf_frame_calculation_begin(Cpu *c) {
     // Displaced ADRP from the verified 1.4.3 framework calculation entry.
     c->x[8] = MOD_MAIN_BASE + 0x396f000;
-    if (!rsf_requested()) return;
+    if (!frame_observing()) return;
     uint64_t source = 0, abandoned = 0;
     plat_mutex_lock(&frame_lock);
     struct FrameOwner *owner = frame_owner(c->thread, 1);
@@ -204,7 +207,7 @@ void rsf_frame_calculation_begin(Cpu *c) {
 void rsf_frame_calculation_end(Cpu *c) {
     // Displaced load after the task calculation traversal, before its guard is released.
     memcpy(&c->x[0], (const void *)(uintptr_t)(c->x[19] + 0x98), sizeof c->x[0]);
-    if (!rsf_requested()) return;
+    if (!frame_observing()) return;
     uint64_t source = 0;
     plat_mutex_lock(&frame_lock);
     struct FrameOwner *owner = frame_owner(c->thread, 1);
@@ -235,7 +238,7 @@ static int trace_count(void *thread, uint64_t queue, int send) {
 
 static void observe_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
-    if (rsf_requested()) publish_draw(c, queue, message);
+    if (frame_observing()) publish_draw(c, queue, message);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, queue, 1);
         if (n)
@@ -257,7 +260,7 @@ static void observe_send(Cpu *c) {
 static void observe_receive_impl(Cpu *c, int trying) {
     uint64_t output = c->x[0], queue = c->x[1], caller = c->x[30];
     rt_original(c);
-    if (rsf_requested() && (!trying || c->x[0]) && mem_guest_readable(output, sizeof(uint64_t))) {
+    if (frame_observing() && (!trying || c->x[0]) && mem_guest_readable(output, sizeof(uint64_t))) {
         uint64_t message, source;
         memcpy(&message, (const void *)(uintptr_t)output, sizeof message);
         if (rsf_handoff_receive(queue, message, &source)) {
@@ -287,7 +290,7 @@ static void observe_try_receive(Cpu *c) { observe_receive_impl(c, 1); }
 
 static void observe_try_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
-    if (rsf_requested()) rsf_handoff_foreign(queue);
+    if (frame_observing()) rsf_handoff_foreign(queue);
     rt_original(c);
     if ((rt_trace & RT_TRACE_PRESENT) && c->x[0]) {
         int n = trace_count(c->thread, queue, 1);
@@ -303,7 +306,7 @@ HOST_OBSERVER("_ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeE
 HOST_OBSERVER("_ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE", observe_try_receive);
 // Jam inserts at the front. Keep the distinction visible in its own trace.
 static void observe_jam(Cpu *c) {
-    if (rsf_requested()) rsf_handoff_foreign(c->x[0]);
+    if (frame_observing()) rsf_handoff_foreign(c->x[0]);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, c->x[0], 1);
         if (n) rt_log("draw handoff: jam %d thread %p queue 0x%llx message 0x%llx caller 0x%llx ns %llu",
@@ -313,13 +316,13 @@ static void observe_jam(Cpu *c) {
     rt_original(c);
 }
 HOST_OBSERVER("_ZN2nn2os20JamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_jam);
-static void observe_try_jam(Cpu *c) { if (rsf_requested()) rsf_handoff_foreign(c->x[0]); rt_original(c); }
+static void observe_try_jam(Cpu *c) { if (frame_observing()) rsf_handoff_foreign(c->x[0]); rt_original(c); }
 HOST_OBSERVER("_ZN2nn2os23TryJamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_try_jam);
 static void observe_initialize(Cpu *c) {
     uint64_t queue = c->x[0];
     rt_original(c);
-    if (rsf_requested()) { retire_draw_queue(queue); rsf_handoff_initialize(queue); }
+    if (frame_observing()) { retire_draw_queue(queue); rsf_handoff_initialize(queue); }
 }
-static void observe_finalize(Cpu *c) { if (rsf_requested()) retire_draw_queue(c->x[0]); rt_original(c); }
+static void observe_finalize(Cpu *c) { if (frame_observing()) retire_draw_queue(c->x[0]); rt_original(c); }
 HOST_OBSERVER("_ZN2nn2os27InitializeLightMessageQueueEPNS0_21LightMessageQueueTypeEPmm", observe_initialize);
 HOST_OBSERVER("_ZN2nn2os25FinalizeLightMessageQueueEPNS0_21LightMessageQueueTypeE", observe_finalize);

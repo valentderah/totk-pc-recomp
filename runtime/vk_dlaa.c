@@ -22,7 +22,7 @@
 static int temporal_available;
 int vk_dlaa_wanted(void) { return rsf_config_enabled(); }
 static int temporal_wanted(void) { return rsf_temporal_requested(); }
-void vk_dlaa_init(void) { temporal_available = temporal_wanted() && rsf_runtime_load(); }
+void vk_dlaa_init(void) { temporal_available = rsf_runtime_load(); }
 int vk_dlaa_temporal_available(void) { return temporal_wanted() && temporal_available; }
 
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
@@ -1138,6 +1138,13 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W) {
         D.gbuf_w = D.gbuf && D.gbuf_w > z->width ? D.gbuf_w : z->width;
         D.gbuf = 1, D.armed = 0;
+        if (D.last && z->width == D.gbuf_w && scene_shaped(z) &&
+            (z->width != D.last->w || z->height != D.last->h)) {
+            // Game-side resizing can arrive a frame after the setting/plan changed.
+            // Associate this new scene's camera instead of waiting for its retired depth image.
+            D.jdepth = VK_NULL_HANDLE;
+            D.reset = 1, D.jit_ok = D.cam_prev_ok = 0;
+        }
         // target 0 is the object-class buffer (RGBA8, the scene size): the characters' bias mask reads its green. A
         // smaller pass of the same shape (640x360, seen while loading) does not replace the scene's in the same frame.
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
@@ -1287,10 +1294,23 @@ static void preset_check(void) {
 
 void vk_dlaa_frame(void) {
     producer_trace_frame();
+    if (rsf_config_refresh()) {
+        // The existing retirement path retries a refused SDK close without losing its owner.
+        D.preset_dirty = D.reset = 1;
+        D.failed = 0;
+        D.jit_ok = D.jit_used = D.cam_prev_ok = 0;
+        res_dynres_live();
+    }
     D.fg_on = temporal_available && rsf_config_fg_backend() != 0;
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
+    if (D.preset_dirty) {
+        // A new render plan replaces the depth image. Keeping its old association
+        // would reject every camera binding and prevent the new scene from resolving.
+        D.jdepth = VK_NULL_HANDLE;
+        D.cam_addr = 0;
+    }
     int on = temporal_available && temporal_wanted();
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");

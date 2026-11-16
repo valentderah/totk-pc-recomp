@@ -78,6 +78,12 @@ int main(void) {
     fg_mapping=(RsfFgMap){.game_w=1600,.game_h=900,.out_w=1920,.out_h=1080,.crop={0,0,1600,900},.dst={0,0,1920,1080}};
     fg_mapping_known=1;
     rsf_frame_record n=record(100,7),next=record(101,8);
+    fg_previous_known=1;fg_previous_render_w=1280;fg_previous_render_h=720;
+    rsf_fgvk_frame resized={.record=&n};
+    assert(vk_present_fg_prepare((VkCommandBuffer)1,&resized)==RSF_BACKEND_ERROR_NOT_READY);
+    assert(g_dirty && !backing.record.frame_id);
+    fg_previous_known=0;g_dirty=0;
+
     rsf_fgvk_frame frame={.record=&n};
     assert(!vk_present_fg_prepare((void *)1,&frame));
     assert(!vk_present_fg_hudless((void *)1,&frame) && hudless_calls==1);

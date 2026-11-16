@@ -11,7 +11,8 @@ void *rsf_runtime_symbol(const char *name);
 const char *rsf_runtime_path(void);
 const char *rsf_provider_directory(unsigned backend);
 
-// Effective restart-only selections, initialized after cfg_init and shared by all owners.
+// Effective selections shared by all owners. Publish live SR/FG changes at the render frame boundary.
+int rsf_config_refresh(void);
 int rsf_config_enabled(void);
 int rsf_config_fg_backend(void);
 int rsf_config_sr_backend(void);

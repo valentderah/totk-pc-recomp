@@ -535,7 +535,7 @@ static void start(void) {
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) {
-        if (rsf_requested() && !rsf_input_gamepad_watch_start()) rt_log("rsf: controller delivery watch unavailable");
+        if (rsf_runtime_present() && !rsf_input_gamepad_watch_start()) rt_log("rsf: controller delivery watch unavailable");
         test_pad_attach();
     }
     if (state == 1) {

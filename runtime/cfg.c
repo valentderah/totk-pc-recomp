@@ -139,12 +139,12 @@ static const CfgMeta metas[] = {
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
-    {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"RSF_BACKEND", "3", "1|2|3|4|5", RESTART},
-    {"RSF_ENABLED", "0", "0|1", RESTART},
+    {"DLAA", "0", "0|1", LIVE}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
+    {"RSF_BACKEND", "3", "1|2|3|4|5", LIVE},
+    {"RSF_ENABLED", "0", "0|1", LIVE},
     {"RSF_QUALITY", "native", "native|quality|balanced|performance|ultra_performance", LIVE},
     {"DLAA_OBJMV", "1", "0|1", RESTART},
-    {"RSF_FG", "0", "0|1|3|4|5", RESTART}, {"RSF_LOW_LATENCY", "0", "0|1|2", RESTART},
+    {"RSF_FG", "0", "0|1|3|4|5", LIVE}, {"RSF_LOW_LATENCY", "0", "0|1|2", RESTART},
     {"DLSS_PRESET", "default", "default|k|j", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady

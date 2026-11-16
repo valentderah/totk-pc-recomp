@@ -196,7 +196,7 @@ static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperti
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
             gfx_window_vk_presentable(g_vk.instance, pd, i)) {
-            if (!rsf_config_fg_backend() || qp[i].queueCount >= RSF_GRAPHICS_QUEUES) return i;
+            if (!rsf_runtime_present() || qp[i].queueCount >= RSF_GRAPHICS_QUEUES) return i;
             if (fallback == UINT32_MAX) fallback = i;
         }
     return fallback;
@@ -259,9 +259,9 @@ static int pick_device(void) {
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
     g_vk.rsf_queue_count = 1;
-    if (rsf_config_fg_backend()) {
+    if (rsf_runtime_present()) {
         if (qp[g_vk.gfx_family].queueCount >= RSF_GRAPHICS_QUEUES) g_vk.rsf_queue_count = RSF_GRAPHICS_QUEUES;
-        else rt_log("rsf: frame generation needs four distinct graphics-family queues; only %u available",
+        else rt_log("rsf: FFX3 presentation needs four distinct graphics-family queues; only %u available; other FG providers can use one",
                     qp[g_vk.gfx_family].queueCount);
     }
     g_vk.xfer_family = g_vk.gfx_family;
@@ -450,7 +450,7 @@ static int create_device(void) {
     }
     uint32_t native_extension_count = n_ext;
     void *enabled_features = &enabled.f2;
-    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, ext, &n_ext, RSF_EXT_CAPACITY, &enabled_features)) {
+    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, sizeof enabled, ext, &n_ext, RSF_EXT_CAPACITY, &enabled_features)) {
         rsf_vk_fallback("device requirements refused");
         n_ext = native_extension_count;
         enabled_features = &c->f2;
@@ -458,7 +458,7 @@ static int create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = enabled_features, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
-    if (r != VK_SUCCESS && rsf_requested()) {
+    if (r != VK_SUCCESS && rsf_runtime_present()) {
         rsf_vk_fallback("interposed device creation refused");
         di.pNext = &c->f2;
         di.enabledExtensionCount = native_extension_count;
@@ -552,7 +552,7 @@ int vk_init(void) {
             vk_upload_pools_init();
             vk_headroom_start();
             vk_dlaa_init();
-            int texture_motion = rsf_temporal_requested() &&
+            int texture_motion = rsf_runtime_present() &&
                                  cfg_bool("TOTK_DLAA_OBJMV");
             if (!vk_motion_texture_start(texture_motion))
                 rt_log("vk: texture motion snapshots unavailable; unsupported history stays native");

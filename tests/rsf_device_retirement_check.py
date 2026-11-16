@@ -31,8 +31,8 @@ static void vk_mem_host_probe(void) {}
 static void vk_upload_pools_init(void) {}
 static void vk_headroom_start(void) {}
 static void vk_dlaa_init(void) {}
-static int cfg_int(const char *key) { (void)key; return 1; }
 static int cfg_bool(const char *key) { (void)key; return 1; }
+static int rsf_runtime_present(void) { return 1; }
 static int vk_motion_texture_start(int enabled) { assert(enabled); return 1; }
 #define rt_log(...) ((void)0)
 static int create_instance(void) { creates++; g_vk.identity=77; return !fail_create; }
@@ -101,6 +101,7 @@ void rsf_runtime_disable(const char *reason) { assert(reason); disabled=1; }
 void rt_log(const char *format,...) { (void)format; }
 const char *rsf_runtime_path(void) { return mode==14 ? NULL:"mock"; }
 int rsf_runtime_load(void) { return mode!=0; }
+int rsf_runtime_present(void) { return mode!=14; }
 const char *rsf_provider_directory(unsigned backend) { (void)backend; return "mock"; }
 void *rsf_runtime_execution_sink(void) { return NULL; }
 static VkResult VKAPI_CALL native_instance(const VkInstanceCreateInfo *i,const VkAllocationCallbacks *a,VkInstance *out) {
@@ -175,9 +176,10 @@ int main(int argc,char **argv) {
     assert(rsf_vk_create_instance(&info,NULL,&instance)==VK_SUCCESS && native_instances==1);
     uint32_t count=0;assert(rsf_vk_enumerate_physical_devices(instance,&count,NULL)==VK_SUCCESS && count==1);
     g_vk.phys=(VkPhysicalDevice)3;assert(device_owner()==(mode!=10));
-    if(mode==4) assert(xess_calls==1 && xess_instances==1 && xess_devices==1 && sl_calls==0 && !disabled);
-    if(mode!=4 && mode!=11) assert(disabled && !rsf_requested());
-    if(mode==11) assert(!sl_calls && !xess_calls);
+    if(mode==4 || mode==11) assert(xess_calls==1 && xess_instances==1 && xess_devices==1 && sl_calls==1 && !disabled);
+    if(mode==0 || mode==3 || mode==6 || mode==7 || mode==8 || mode==9 || mode==10 || mode==14 || mode==15 || mode==16)
+        assert(disabled && !rsf_requested());
+    else assert(!disabled); // Optional SDK refusal preserves the other providers, including boot-off provisioning.
     return 0;
 }
 '''
@@ -191,7 +193,7 @@ int main(int argc,char **argv) {
                     str(c),str(ROOT/'runtime/rsf_vulkan.c'),'-o',str(exe)],check=True)
     for mode in range(17):
         subprocess.run([str(exe),str(mode)],check=True)
-    print('Actual startup fallback, native feature restoration and XeSS FG-only initialization passed (CPU only)')
+    print('Actual startup fallback, native feature restoration and boot-off provider provisioning passed (CPU only)')
 
 
 if __name__ == '__main__':

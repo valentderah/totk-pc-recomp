@@ -13,13 +13,15 @@ native code into the process and retains the module until exit; restart to chang
 
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
-| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `4` FSR4, `5` XeSS. Restart required. FSR4 uses the external timeline split adapter; its device acceptance is still in progress. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
+| `rsf_backend` (default `3`) | Experimental RSF SR provider: `1` DLSS, `2` FSR2, `3` FSR3, `4` FSR4, `5` XeSS. Applies at the next frame boundary. FSR4 uses the external timeline split adapter; its device acceptance is still in progress. | Setup can refuse unavailable SDKs or incompatible scene sizes. | Caution |
 | `dlaa_objmv` (default `1`) | Per-object and deformation motion history for supported shaders. Selectable as Object motion under Upscaling & Framegen; restart required. Missing history keeps camera motion. | Retained snapshot memory and motion replay. | Caution |
-| `rsf_fg` (default `0`) | Experimental frame generation: `0` off, `1` DLSS, `3` FSR3, `4` FSR4, `5` XeSS. Selectable from Upscaling & Framegen; restart required. Unsupported inputs retain ordinary presentation. | Extra GPU work and provider resources. | Caution |
+| `rsf_fg` (default `0`) | Experimental frame generation: `0` off, `1` DLSS, `3` FSR3, `4` FSR4, `5` XeSS. Selectable from Upscaling & Framegen; changes drain and rebuild presentation at runtime. Unsupported inputs retain ordinary presentation. | Extra GPU work and provider resources. | Caution |
 | `rsf_provider_dir` | Optional absolute provider directory override. Without it, RSF uses the package's `streamline`, `fidelityfx` or `xess` directory for each selected SR/FG backend independently. | Loads native provider DLLs. | Caution |
 | `rsf_frame_hook` (default `1`) | Reports verified 1.4.3 framework calculation boundaries to RSF. `0` retains the original instructions for diagnosis. Input samples are associated only while a hooked calculation is active. | Two host callbacks per framework calculation when patched. | Caution |
 | `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
 | `climb_fix` (default `1`) | Corrects the existing 1.4.3 climbing velocity loss above 60 fps. Requires the real-time frame step; lower rates keep the game's factor. `0` uses the shipping factor. | Arithmetic in the climbing velocity step. | Caution |
+
+Upscaling enable, provider and quality can change while playing. The installed providers and FG queues are prepared at graphics startup, even when both switches start off. SR histories are reset on a change; FG drains its old provider and recreates its presentation owner. Unsupported providers retain native rendering or presentation. Changing the runtime DLL path still needs a restart.
 
 Legacy `dlaa = 1` reconstruction keeps the DLSS backend when `rsf_enabled` and `rsf_backend` are both unset. Explicit RSF selections take precedence; new configurations retain the default FSR 3 backend.
 

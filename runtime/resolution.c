@@ -160,12 +160,12 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // A reconstruction mode other than native sets the scene size instead. On 1.4.3 with the runtime installed
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && rsf_config_enabled() && rsf_runtime_present();
+    R.live = RT_V143 && rsf_runtime_present();
     const char *m = cfg_value("TOTK_RSF_QUALITY");
     if (!strcmp(m, "native")) m = "dlaa";
     R.dlss_k = dlss_share(m);

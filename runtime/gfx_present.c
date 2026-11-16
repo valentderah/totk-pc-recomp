@@ -133,6 +133,7 @@ double gfx_window_refresh_hz(void) { return plat_cas32(&g_rate_mhz, 0, 0) / 1000
 static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static RsfPresent *g_rsf_present;
+static int g_sc_fg_backend, g_sc_sr_backend; // selections used by the last successful WSI build, including native fallback
 static VkFormat g_sc_fmt;
 static int g_sc_hdr;                        // HDR10 (TOTK_HDR, vk_hdr.c): PQ code values in Rec. 2020
 static VkExtent2D g_sc_ext;
@@ -483,6 +484,12 @@ int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
     if (map.out_w != fg_mapping.out_w || map.out_h != fg_mapping.out_h) goto done;
     rsf_fgvk_frame mapped, input = *frame;
     rsf_frame_record source = *frame->record;
+    // SDK frame-generation contexts retain their guide dimensions. Retire the
+    // old owner before recording a different SR resolution into its resources.
+    if (fg_previous_known && (source.render_width != fg_previous_render_w || source.render_height != fg_previous_render_h)) {
+        plat_xchg32(&g_dirty, 1);
+        goto done;
+    }
     int same_render = fg_previous_known && source.render_width == fg_previous_render_w && source.render_height == fg_previous_render_h;
     if (!same_render) {
         source.flags |= RSF_FRAME_FLAG_RESET;
@@ -625,11 +632,17 @@ static int build_swapchain(void) {
     VkResult r;
     int backend = rsf_config_fg_backend();
     if (plat_cas32(&g_dirty, 0, 0)) return 0;
-    if (backend && !hdr && c->rsf_queue_count == RSF_GRAPHICS_QUEUES) {
+    // Only the FFX3 Vulkan WSI service needs four distinct queues. XeSS and
+    // the other presentation services can use the engine's single graphics queue.
+    int queues_ready = backend != RSF_SR_FSR3 || c->rsf_queue_count == RSF_GRAPHICS_QUEUES;
+    if (backend && !hdr && queues_ready) {
         r = open_rsf_swapchain(&ci, (uint32_t)backend);
         if (r != VK_SUCCESS && g_rsf_present) return 0; // partial owner must retire before another WSI owner
         if (r != VK_SUCCESS) rt_log("rsf: presentation unavailable (%d); using native presentation", (int)r);
-    } else r = VK_ERROR_FEATURE_NOT_PRESENT;
+    } else {
+        if (backend && !queues_ready) rt_log("rsf: FFX3 presentation needs four distinct graphics-family queues; using native presentation");
+        r = VK_ERROR_FEATURE_NOT_PRESENT;
+    }
     if (!g_rsf_present) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
     if (r != VK_SUCCESS) {
         rt_log("gfx: swapchain creation failed (%d)", (int)r);
@@ -662,6 +675,8 @@ static int build_swapchain(void) {
         if (vkCreateImageView(c->device, &vi, NULL, &g_sc_view[i]) != VK_SUCCESS) g_sc_view[i] = VK_NULL_HANDLE;
     }
     free_capture();
+    g_sc_fg_backend = backend;
+    g_sc_sr_backend = rsf_config_sr_backend();
     return 1;
 }
 
@@ -875,6 +890,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     flip_locked();
+    if (rsf_config_fg_backend() != g_sc_fg_backend ||
+        (g_sc_fg_backend && rsf_config_sr_backend() != g_sc_sr_backend)) plat_xchg32(&g_dirty, 1);
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }

@@ -1,5 +1,6 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include <stddef.h>
 
 // Initialize the shared RSF SDK session before any Vulkan instance is created.
 int rsf_vk_prepare(void);
@@ -10,8 +11,8 @@ void rsf_vk_reset(void);
 // Copied engine source at actual host execution, including recorder-thread calls.
 void rsf_vk_submission(uint64_t source, uint32_t begin);
 void rsf_vk_present_event(uint64_t source, uint32_t begin);
-// features is a caller-owned writable copy, leased through device creation.
-int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
+// features is a caller-owned contiguous writable chain, feature_bytes long, leased through device creation.
+int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features, size_t feature_bytes,
     const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features);
 PFN_vkVoidFunction rsf_vk_instance_proc(VkInstance instance, const char *name);
 PFN_vkVoidFunction rsf_vk_device_proc(VkDevice device, const char *name);

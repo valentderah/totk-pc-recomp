@@ -4,14 +4,13 @@
 #include <string.h>
 #include "host.h"
 #include "layout.h"
-#include "patches.h"
 #include "platform/platform.h"
 #include "rsf_frame.h"
 #include <rescaleframe/native_latency_vulkan.h>
 
 const int rt_game_version = 143;
 unsigned rt_trace;
-static GuestFn begin_hook, end_hook;
+static GuestFn begin_hook = rsf_frame_calculation_begin, end_hook = rsf_frame_calculation_end;
 static int enabled, locked, away;
 static rsf_game_cpu_event events[32];
 static unsigned count;
@@ -19,11 +18,6 @@ static unsigned configurations;
 static struct { uintptr_t base; size_t size; } readable[8];
 static unsigned nreadable;
 
-void rt_register_host(uint64_t address, GuestFn fn) {
-    if (address == RT_PATCH_PAGE + 0xf50) begin_hook = fn;
-    else if (address == RT_PATCH_PAGE + 0xf40) end_hook = fn;
-    else assert(0);
-}
 void plat_mutex_lock(PlatMutex *mutex) { (void)mutex; assert(!locked++); }
 void plat_mutex_unlock(PlatMutex *mutex) { (void)mutex; assert(!--locked); }
 int kern_core_away(void) { assert(!away); away = 1; return 1; }
@@ -31,7 +25,7 @@ void kern_core_back(int *state) { assert(away && *state); away = *state = 0; }
 uint64_t plat_counter(void) { static uint64_t tick; return ++tick; }
 uint64_t plat_counter_hz(void) { return 1000000; }
 uint64_t plat_now_ns(void) { return 1; }
-int cfg_int(const char *name) { return !strcmp(name, "TOTK_RSF_ENABLED") && enabled; }
+int cfg_int(const char *name) { (void)name; return 0; } // SR/FG stay off while the loaded runtime observes identities.
 uint64_t rt_original(Cpu *c) { return c->x[0]; }
 int mem_guest_readable(uint64_t a, uint64_t n) {
     for (unsigned i = 0; i < nreadable; i++)
@@ -142,5 +136,5 @@ int rsf_config_low_latency(void) { return cfg_int("TOTK_RSF_LOW_LATENCY"); }
 int rsf_requested(void) { return rsf_config_enabled() || rsf_config_fg_backend() || rsf_config_low_latency(); }
 int rsf_temporal_requested(void) { return rsf_config_enabled() || rsf_config_fg_backend(); }
 
-void *rsf_runtime_cpu_sink(void) { return rsf_runtime_symbol("rsf_latencyvk_cpu"); }
+void *rsf_runtime_cpu_sink(void) { return enabled ? rsf_runtime_symbol("rsf_latencyvk_cpu") : NULL; }
 void *rsf_runtime_execution_sink(void) { return rsf_runtime_symbol("rsf_latencyvk_execution"); }

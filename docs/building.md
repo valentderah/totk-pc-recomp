@@ -216,6 +216,10 @@ The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the com
 
 ## Checks
 
+RSF live selection and boot-off provider provisioning: `python tests/rsf_live_check.py`.
+Use `--cc <clang>` and `--deps <dependency root>` with the installer toolchain.
+The contracts check frame-boundary publication and optional SDK refusal without game content or provider DLLs.
+
 Before a commit:
 
 - `python tools/check_content.py --staged`: nothing game-derived is staged. CI runs the same check;

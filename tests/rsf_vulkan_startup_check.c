@@ -10,6 +10,7 @@ static HMODULE runtime;
 static const char *provider_directory;
 static int backend = 1, disabled;
 unsigned rt_trace;
+int rsf_runtime_present(void) { return runtime != NULL; }
 int rsf_runtime_load(void) { return runtime != NULL; }
 const char *rsf_runtime_path(void) { return runtime ? "probe" : NULL; }
 const char *rsf_provider_directory(unsigned backend) { (void)backend; return provider_directory; }
@@ -66,7 +67,7 @@ int main(int argc, char **argv) {
     void *enabled = &features;
     const char *extensions[8];
     uint32_t extension_count = 0;
-    if (!rsf_vk_device_requirements(physical[0], &features, extensions, &extension_count, 8, &enabled)) return 1;
+    if (!rsf_vk_device_requirements(physical[0], &features, sizeof features, extensions, &extension_count, 8, &enabled)) return 1;
     VkDeviceCreateInfo device_info = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = enabled,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
         .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions};

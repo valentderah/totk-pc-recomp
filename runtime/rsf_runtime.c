@@ -10,26 +10,47 @@
 
 static PlatMutex config_lock = PLAT_MUTEX_INIT;
 static int config_ready, disabled;
-static struct { int enabled, fg, backend, latency; } config;
+// One publication keeps the render, presentation and input threads on the same selection.
+static unsigned config, config_seen;
+
+static unsigned config_read(void) {
+    return (unsigned)cfg_bool("TOTK_RSF_ENABLED") | (((unsigned)cfg_int("TOTK_RSF_FG") & 15) << 4) |
+           (((unsigned)cfg_int("TOTK_RSF_BACKEND") & 15) << 8);
+}
 
 static void config_init(void) {
     if (__atomic_load_n(&config_ready, __ATOMIC_ACQUIRE)) return;
     plat_mutex_lock(&config_lock);
     if (!config_ready) {
-        config.enabled = cfg_bool("TOTK_RSF_ENABLED");
-        config.fg = cfg_int("TOTK_RSF_FG");
-        config.backend = cfg_int("TOTK_RSF_BACKEND");
-        config.latency = cfg_int("TOTK_RSF_LOW_LATENCY");
+        config = config_read() | ((unsigned)cfg_int("TOTK_RSF_LOW_LATENCY") << 12);
+        config_seen = cfg_version();
         __atomic_store_n(&config_ready, 1, __ATOMIC_RELEASE);
     }
     plat_mutex_unlock(&config_lock);
 }
-int rsf_config_enabled(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && config.enabled; }
-int rsf_config_fg_backend(void) { config_init(); return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : config.fg; }
-int rsf_config_sr_backend(void) { config_init(); return config.backend; }
-int rsf_config_low_latency(void) { config_init(); return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : config.latency; }
-int rsf_requested(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && (config.enabled || config.fg || config.latency); }
-int rsf_temporal_requested(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && (config.enabled || config.fg); }
+static unsigned config_get(void) {
+    config_init();
+    return __atomic_load_n(&config, __ATOMIC_ACQUIRE);
+}
+int rsf_config_enabled(void) { return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && (config_get() & 1); }
+int rsf_config_fg_backend(void) { return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : (config_get() >> 4) & 15; }
+int rsf_config_sr_backend(void) { return (config_get() >> 8) & 15; }
+int rsf_config_low_latency(void) { return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : (config_get() >> 12) & 15; }
+int rsf_requested(void) { return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && !!(config_get() & 0xf0f1); }
+int rsf_temporal_requested(void) { return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && !!(config_get() & 0xf1); }
+
+int rsf_config_refresh(void) {
+    unsigned old = config_get(), version = cfg_version();
+    if (version == config_seen) return 0;
+    unsigned next = config_read() | (old & 0xf000); // latency remains a startup selection
+    if (version != cfg_version()) return 0; // a menu write crossed the read; retry next frame
+    config_seen = version;
+    __atomic_store_n(&config, next, __ATOMIC_RELEASE);
+    if (next == old) return 0;
+    rt_log("rsf: live selection: upscaling %u, backend %u, frame generation %u", next & 1,
+           (next >> 8) & 15, (next >> 4) & 15);
+    return 1;
+}
 
 static PlatMutex paths_lock = PLAT_MUTEX_INIT;
 static int paths_ready;

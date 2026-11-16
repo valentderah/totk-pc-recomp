@@ -8,6 +8,7 @@
 #include <rescaleframe/native_latency_vulkan_requirements.h>
 #include <rescaleframe/native_xess_vulkan_requirements.h>
 #include <string.h>
+#include <stdlib.h>
 
 static int prepared, active, runtime_loaded;
 static VkInstance primary_instance;
@@ -90,15 +91,35 @@ PFN_vkVoidFunction rsf_vk_generic_device_proc(void *device, const char *name) {
     return rsf_vk_device_proc(device, name);
 }
 
-int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
+int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features, size_t feature_bytes,
     const char **extensions, uint32_t *count, uint32_t capacity, void **enabled_features) {
     *enabled_features = features;
     if (!runtime_loaded || native_fallback) return 1;
+    // Negotiate XeSS before another SDK appends its own nodes. Restore the caller's
+    // chain on refusal: an SDK can modify existing nodes even when it returns an error.
+    if (xess_active) {
+        void *saved = malloc(feature_bytes);
+        if (!saved) return 0;
+        memcpy(saved, features, feature_bytes);
+        uint32_t before = *count, n = 0;
+        const char *const *names = NULL;
+        __typeof__(&rsf_xessvk_device_requirements) require_xess = rsf_runtime_symbol("rsf_xessvk_device_requirements");
+        int32_t result = require_xess ? require_xess(primary_instance, physical, &n, &names, enabled_features)
+                                     : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
+        if (result != RSF_BACKEND_OK || !append_extensions(extensions, count, capacity, names, n)) {
+            rt_log("rsf: XeSS device requirements refused (%d); retaining the native feature chain", result);
+            memcpy(features, saved, feature_bytes);
+            *enabled_features = features;
+            *count = before;
+        }
+        free(saved);
+    }
+    if (!active) return 1;
     __typeof__(&rsf_latencyvk_require_device) require = rsf_runtime_symbol("rsf_latencyvk_require_device");
     if (!require) { rt_log("rsf: missing Vulkan device-requirements service"); return 0; }
     rsf_latencyvk_device_query query = {.struct_size = sizeof query, .abi_version = 1,
         .instance = primary_instance, .physical_device = physical,
-        .instance_proc = rsf_vk_generic_instance_proc, .features = features};
+        .instance_proc = rsf_vk_generic_instance_proc, .features = *enabled_features};
     rsf_latencyvk_device_requirements requirements = {.struct_size = sizeof requirements, .abi_version = 1};
     int32_t result = require(&query, &requirements);
     if (result != RSF_BACKEND_OK) {
@@ -107,53 +128,38 @@ int rsf_vk_device_requirements(VkPhysicalDevice physical, void *features,
     }
     if (!append_extensions(extensions, count, capacity, requirements.extensions, requirements.extension_count)) return 0;
     *enabled_features = requirements.features;
-    if (xess_active) {
-        __typeof__(&rsf_xessvk_device_requirements) require_xess = rsf_runtime_symbol("rsf_xessvk_device_requirements");
-        uint32_t n = 0;
-        const char *const *names = NULL;
-        result = require_xess ? require_xess(primary_instance, physical, &n, &names, enabled_features)
-                              : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
-        if (result != RSF_BACKEND_OK) { rt_log("rsf: XeSS device requirements refused (%d)", result); return 0; }
-        if (!append_extensions(extensions, count, capacity, names, n)) return 0;
-    }
     return 1;
 }
 
 int rsf_vk_prepare(void) {
     if (prepared) return prepared > 0;
     prepared = -1;
-    int requested = rsf_requested();
-    if (!requested) { prepared = 1; return 1; }
+    // Device extensions and SDK hooks must exist before Vulkan creation, including
+    // when upscaling and frame generation will first be enabled from the menu.
+    if (!rsf_runtime_present() && !rsf_requested()) { prepared = 1; return 1; }
     if (!rsf_runtime_path() || !rsf_runtime_load()) { rsf_vk_fallback("runtime unavailable"); return 1; }
     runtime_loaded = 1;
-    int sr_backend = rsf_config_enabled() ? rsf_config_sr_backend() : 0;
-    if (sr_backend == RSF_SR_XESS || rsf_config_fg_backend() == RSF_SR_XESS) {
+    {
         __typeof__(&rsf_xessvk_initialize) initialize_xess = rsf_runtime_symbol("rsf_xessvk_initialize");
         rsf_xessvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_XESSVK_REQUIREMENTS_ABI_VERSION,
             .runtime_directory_utf8 = rsf_provider_directory(RSF_SR_XESS)};
         int32_t result = initialize_xess ? initialize_xess(&setup) : RSF_BACKEND_ERROR_MISSING_ENTRY_POINT;
-        if (result != RSF_BACKEND_OK) { rt_log("rsf: early XeSS initialization refused (%d)", result); rsf_vk_fallback("XeSS initialization refused"); return 1; }
-        xess_active = 1;
-    }
-    // Latency-only sessions request no DLSS feature. The core chooses the
-    // supported pacing owner after device creation, independently of SR.
-    if (sr_backend != RSF_SR_DLSS && rsf_config_fg_backend() != RSF_SR_DLSS && !rsf_config_low_latency()) {
-        prepared = 1; return 1;
+        if (result != RSF_BACKEND_OK) rt_log("rsf: optional XeSS initialization refused (%d)", result);
+        else xess_active = 1;
     }
     __typeof__(&rsf_slvk_initialize) initialize = rsf_runtime_symbol("rsf_slvk_initialize");
     instance_resolver = rsf_runtime_symbol("rsf_latencyvk_instance_proc");
-    if (!initialize || !instance_resolver) { rsf_vk_fallback("missing startup export"); return 1; }
+    if (!initialize || !instance_resolver) { prepared = 1; return 1; }
     rsf_slvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_SLVK_ABI_VERSION,
         .runtime_directory_utf8 = rsf_provider_directory(RSF_SR_DLSS),
         // NGX requires a GUID-shaped custom-engine identity. Stable UUIDv5 of
         // "totk-pc-recomp" in the DNS namespace, shared by every build.
         .project_id = "0a698e8c-91cc-5cb4-bb36-e1b402039c9e",
-        .features = (sr_backend == RSF_SR_DLSS ? RSF_SLVK_DLSS_SR : 0) |
-                    (rsf_config_fg_backend() == RSF_SR_DLSS ? RSF_SLVK_DLSS_FG : 0)};
+        .features = RSF_SLVK_DLSS_SR | RSF_SLVK_DLSS_FG};
     int32_t result = initialize(&setup);
     if (result != RSF_BACKEND_OK) {
-        rt_log("rsf: early Vulkan SDK initialization refused (%d)", result);
-        rsf_vk_fallback("SDK initialization refused");
+        rt_log("rsf: optional Streamline initialization refused (%d); using other providers", result);
+        prepared = 1;
         return 1;
     }
     active = 1;
@@ -200,7 +206,7 @@ VkResult rsf_vk_create_instance(const VkInstanceCreateInfo *info, const VkAlloca
     }
     PFN_vkCreateInstance create = (PFN_vkCreateInstance)rsf_vk_instance_proc(VK_NULL_HANDLE, "vkCreateInstance");
     VkResult result = create ? create(&merged, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
-    if (result != VK_SUCCESS && !native_fallback && rsf_requested()) {
+    if (result != VK_SUCCESS && !native_fallback && runtime_loaded) {
         rsf_vk_fallback("interposed instance creation refused");
         goto native;
     }
@@ -235,7 +241,7 @@ VkResult rsf_vk_enumerate_physical_devices(VkInstance instance, uint32_t *count,
     PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)
         rsf_vk_instance_proc(instance, "vkEnumeratePhysicalDevices");
     VkResult result = enumerate ? enumerate(instance, count, devices) : VK_ERROR_INITIALIZATION_FAILED;
-    if (result != VK_SUCCESS && rsf_requested()) {
+    if (result != VK_SUCCESS && runtime_loaded) {
         rsf_vk_fallback("physical-device enumeration refused");
         enumerate = (PFN_vkEnumeratePhysicalDevices)vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices");
         return enumerate ? enumerate(instance, count, devices) : VK_ERROR_INITIALIZATION_FAILED;
