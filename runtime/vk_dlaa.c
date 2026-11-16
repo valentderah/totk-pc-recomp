@@ -252,6 +252,8 @@ static int be_available(void) { return fsr_backend() ? vk_ffx_available() : N.av
 
 int vk_dlaa_available(void) { return vk_dlaa_wanted() && be_available(); }
 
+int vk_dlaa_fsr_on(void) { return fsr_backend() && vk_ffx_available() && cfg_bool("TOTK_DLAA"); }
+
 static int dl_active(void);
 static uint64_t dl_evals(void);
 

@@ -45,6 +45,11 @@ bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, U
 // unset. cur: the index in effect, -1 to find cfg_value(key) in values (no match: the value shown as it is).
 bool opt_choice_list(const char *key, UiTextId label, const char *const *values, const char *const *names, int n,
                      UiTextId desc, int cur = -1, const char *note = nullptr);
+// A choice the caller maps to settings itself (one row over two keys): value is shown between the < > arrows, with the
+// "default" mark when is_default; key gives the row its restart and environment notes. Returns the step as
+// opt_text_row does (2: A / click, -1 / +1: left / right, 0: none); the caller writes the settings and calls
+// opt_save_soon.
+int opt_choice_step(const char *key, UiTextId label, const char *value, bool is_default, UiTextId desc);
 // A row that runs an action: true on A or a click. id: unique on the page and not a setting ("##copy_info"); value:
 // shown on the right ("" none).
 bool opt_button(const char *id, UiTextId label, UiTextId desc, const char *value = "");

@@ -54,6 +54,7 @@ void vk_queue_unlock(void);
 int vk_exec_replay_workers(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 const char *vk_dlaa_name(void);   // vk_dlaa.h
+int vk_dlaa_fsr_on(void);         // vk_dlaa.h
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
@@ -665,6 +666,26 @@ static const char *present_note(void) {
     return note;
 }
 
+// The upscaler of the 3D scene, one row over two settings: dlaa (off or on) and dlaa_backend (NVIDIA DLSS or AMD FSR).
+// AMD ships FSR's Vulkan libraries for Windows only, so Linux has DLSS alone (vk_dlaa.c fsr_backend).
+static void row_upscalers(void) {
+    static const UiTextId ids[] = {UI_MENU_DLAA_OFF, UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR};
+#ifdef _WIN32
+    const int n = 3;
+#else
+    const int n = 2;
+#endif
+    int cur = !cfg_bool("TOTK_DLAA") ? 0 : n > 2 && !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr") ? 2 : 1;
+    int step = opt_choice_step("TOTK_DLAA", UI_MENU_DLAA, menu_text(ids[cur]), cur == 0, UI_MENU_DLAA_DESC);
+    if (!step) return;
+    // A / click: the next value, round to the first; left / right stop at the ends (as opt_choice_list)
+    int nv = step == 2 ? (cur + 1) % n : cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;
+    if (nv == cur) return;
+    cfg_set("TOTK_DLAA", nv ? "1" : "0");
+    if (nv) cfg_set("TOTK_DLAA_BACKEND", nv == 2 ? "fsr" : "dlss");   // off keeps the upscaler chosen last
+    opt_save_soon();
+}
+
 // ---- the tabs
 // Colour adjustment (vk_color.c): a profile writes the four values (STS78721's presets, issue #136); moving one of them
 // makes the profile Custom.
@@ -711,7 +732,6 @@ static void tab_screen(float scale) {
     row_shadow_res();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
-    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     static const UiTextId movie_aspect[] = {UI_MENU_MOVIE_ASPECT_KEEP, UI_MENU_MOVIE_ASPECT_STRETCH};
@@ -726,11 +746,7 @@ static void tab_screen(float scale) {
     opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
-    opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
-#ifdef _WIN32   // AMD ships FSR's Vulkan libraries for Windows only: Linux has DLSS alone (vk_dlaa.c fsr_backend)
-    static const UiTextId backend[] = {UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR};
-    opt_choice("TOTK_DLAA_BACKEND", UI_MENU_DLAA_BACKEND, backend, 2, UI_MENU_DLAA_BACKEND_DESC);
-#endif
+    row_upscalers();
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
     opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
@@ -739,6 +755,9 @@ static void tab_screen(float scale) {
     static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
                                      UI_MENU_DLSS_CHARS_FULL};
     opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
+    // FSR's sharpening, with the upscaler's rows: of the scene FSR anti-aliases (vk_dlaa.c evaluate) and of the picture
+    // FSR 1 scales to the window (vk_fsr.c)
+    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);

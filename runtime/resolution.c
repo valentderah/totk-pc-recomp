@@ -668,19 +668,25 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+int vk_dlaa_fsr_on(void);   // vk_dlaa.h, which needs vk.h
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
-    if (dyn == shown) return;
-    shown = dyn;
+    // AMD FSR at work (vk_dlaa.h vk_dlaa_fsr_on) holds the scene at 100 % whatever dynamic_res says, as it leaves the
+    // game's FXAA out: FSR then always gets the scene size it was started for and keeps one history.
+    int fsr = vk_dlaa_fsr_on();
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
+    int state = dyn | fsr << 1;
+    if (state == shown) return;
+    shown = state;
     if (set < 0) {
         if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
         return;
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn ? "on: the game's own 100, 90 or 80 %" : fsr ? "off while AMD FSR is on: the scene stays at 100 %"
+                                                          : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {

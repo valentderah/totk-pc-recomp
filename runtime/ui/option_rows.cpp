@@ -329,6 +329,11 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
     return true;
 }
 
+int opt_choice_step(const char *key, UiTextId label, const char *value, bool is_default, UiTextId desc) {
+    RowView v = {value, is_default, true, NULL};
+    return row(key, label, desc, v);
+}
+
 bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, UiTextId desc, const char *note) {
     enum { MAX = 32 };
     const CfgMeta *m = cfg_meta(key);
