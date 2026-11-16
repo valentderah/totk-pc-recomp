@@ -206,7 +206,8 @@ def build(work, emitted, jobs, cflags):
                      ''.join(f'void {gen.fname(t)}(Cpu *c) {{ rt_stub_call(c, {hex(t)}ull); }}\n'
                              for t in sorted(called)))
     # fma.c: a --cflags=-march=x86-64-v2 run must exercise the software fma the v2 build links, not the C runtime's.
-    srcs += [table, ROOT / 'tests' / 'diff' / 'harness.c', ROOT / 'runtime' / 'fma.c']
+    srcs += [table, ROOT / 'tests' / 'diff' / 'harness.c', ROOT / 'runtime' / 'fma.c',
+             ROOT / 'runtime' / 'cpu.c']
     objs, procs = [], []
     for s in srcs:
         o = work / (s.stem + '.o')
