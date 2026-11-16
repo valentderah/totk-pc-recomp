@@ -41,6 +41,16 @@ typedef struct { const char *lang; const char *const *text; } Row;
 static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_WINDOW] = "Performance window",
     [UI_MENU_PERF_WINDOW_DESC] = "Show full performance statistics in a separate window. Full sampling enables the existing GPU timestamp queries.",
+    [UI_MENU_INPUT_WINDOW] = "Controller input",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Show a separate controller input window.",
+    [UI_INPUT_TITLE] = "Controller input",
+    [UI_INPUT_NO_PAD] = "No controller connected",
+    [UI_INPUT_MAPPING] = "Mapped actions: %s",
+    [UI_INPUT_STICK_LEGEND] = "Dot: raw / cross: pad after dead zone",
+    [UI_INPUT_GYRO] = "Gyro (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Unknown / unavailable",
+    [UI_INPUT_DISABLED] = "Disabled",
+    [UI_INPUT_LABELS] = "Physical S/E/W/N: %s",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
     // The SDL text entry draws with SDL's ASCII debug font, so these three exist in English only (the other rows fall
     // back to it).
@@ -701,6 +711,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_WINDOW] = "Окно производительности",
     [UI_MENU_PERF_WINDOW_DESC] = "Показывать полную статистику в отдельном окне. Полный сбор включает существующие запросы времени GPU.",
+    [UI_MENU_INPUT_WINDOW] = "Ввод с контроллера",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Показывать ввод контроллера в отдельном окне.",
+    [UI_INPUT_TITLE] = "Ввод с контроллера",
+    [UI_INPUT_NO_PAD] = "Контроллер не подключён",
+    [UI_INPUT_MAPPING] = "Действия после привязок: %s",
+    [UI_INPUT_STICK_LEGEND] = "Точка: исходное / крест: после мёртвой зоны",
+    [UI_INPUT_GYRO] = "Гироскоп (рад/с)",
+    [UI_INPUT_UNKNOWN] = "Неизвестно / недоступно",
+    [UI_INPUT_DISABLED] = "Отключено",
+    [UI_INPUT_LABELS] = "Физические S/E/W/N: %s",
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
@@ -1363,6 +1383,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_WINDOW] = "Janela de desempenho",
     [UI_MENU_PERF_WINDOW_DESC] = "Mostrar as estatísticas completas em uma janela separada. A coleta completa ativa as consultas de tempo da GPU existentes.",
+    [UI_MENU_INPUT_WINDOW] = "Entrada do controle",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Mostrar a entrada do controle em uma janela separada.",
+    [UI_INPUT_TITLE] = "Entrada do controle",
+    [UI_INPUT_NO_PAD] = "Nenhum controle conectado",
+    [UI_INPUT_MAPPING] = "Ações mapeadas: %s",
+    [UI_INPUT_STICK_LEGEND] = "Ponto: bruto / cruz: após zona morta",
+    [UI_INPUT_GYRO] = "Giroscópio (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Desconhecido / indisponível",
+    [UI_INPUT_DISABLED] = "Desativado",
+    [UI_INPUT_LABELS] = "Físicos S/E/W/N: %s",
     SWKBD("Inserir texto", "Insira um nome", "Cavalo", "OK", "Cancelar", "Controle: A = OK, B = Cancelar"),
 
     [UI_MENU_TITLE] = "Configurações",
@@ -2066,6 +2096,16 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
 static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_WINDOW] = "性能独立窗口",
     [UI_MENU_PERF_WINDOW_DESC] = "在独立窗口显示完整性能统计。完整采样会启用现有的 GPU 时间戳查询。",
+    [UI_MENU_INPUT_WINDOW] = "手柄输入",
+    [UI_MENU_INPUT_WINDOW_DESC] = "在独立窗口显示手柄输入。",
+    [UI_INPUT_TITLE] = "手柄输入",
+    [UI_INPUT_NO_PAD] = "未连接手柄",
+    [UI_INPUT_MAPPING] = "映射动作：%s",
+    [UI_INPUT_STICK_LEGEND] = "圆点：原始值 / 十字：手柄死区输出",
+    [UI_INPUT_GYRO] = "陀螺仪（rad/s）",
+    [UI_INPUT_UNKNOWN] = "未知 / 不可用",
+    [UI_INPUT_DISABLED] = "已关闭",
+    [UI_INPUT_LABELS] = "实体南/东/西/北：%s",
     SWKBD("文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消"),
 
     [UI_MENU_TITLE] = "设置",
@@ -3717,6 +3757,17 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u seiner Codepatch-Stellen werden von %s überschrieben, das weiter oben in der "
                                      "Liste steht.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Er überschreibt %u Codepatch-Stellen von %s, das weiter unten in der Liste steht.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Controller-Eingabe",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Ein eigenes Fenster mit der Controller-Eingabe anzeigen.",
+    [UI_INPUT_TITLE] = "Controller-Eingabe",
+    [UI_INPUT_NO_PAD] = "Kein Controller verbunden",
+    [UI_INPUT_MAPPING] = "Zugewiesene Aktionen: %s",
+    [UI_INPUT_STICK_LEGEND] = "Punkt: Rohwert / Kreuz: Stick nach der Totzone",
+    [UI_INPUT_GYRO] = "Gyro (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Unbekannt / nicht verfügbar",
+    [UI_INPUT_DISABLED] = "Deaktiviert",
+    [UI_INPUT_LABELS] = "Physische S/O/W/N: %s",
 };
 
 // French
@@ -4652,6 +4703,17 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                      "placé plus haut dans la liste.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Il remplace %u emplacements de correctifs de code de %s, placé plus bas dans la "
                                     "liste.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Entrées de la manette",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Affiche une fenêtre séparée pour les entrées de la manette.",
+    [UI_INPUT_TITLE] = "Entrées de la manette",
+    [UI_INPUT_NO_PAD] = "Aucune manette connectée",
+    [UI_INPUT_MAPPING] = "Actions mappées : %s",
+    [UI_INPUT_STICK_LEGEND] = "Point : valeur brute / croix : stick après zone morte",
+    [UI_INPUT_GYRO] = "Gyroscope (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Inconnu / indisponible",
+    [UI_INPUT_DISABLED] = "Désactivé",
+    [UI_INPUT_LABELS] = "S/E/O/N physiques : %s",
 };
 
 // Spanish
@@ -5570,6 +5632,17 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u de sus puntos de parche de código quedan anulados por %s, que está más "
                                      "arriba en la lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Entrada del mando",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Muestra una ventana aparte con la entrada del mando.",
+    [UI_INPUT_TITLE] = "Entrada del mando",
+    [UI_INPUT_NO_PAD] = "No hay mando conectado",
+    [UI_INPUT_MAPPING] = "Acciones asignadas: %s",
+    [UI_INPUT_STICK_LEGEND] = "Punto: valor bruto / cruz: stick tras la zona muerta",
+    [UI_INPUT_GYRO] = "Giroscopio (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Desconocido / no disponible",
+    [UI_INPUT_DISABLED] = "Desactivado",
+    [UI_INPUT_LABELS] = "S/E/O/N físicos: %s",
 };
 
 // Italian
@@ -6490,6 +6563,17 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u dei suoi punti di patch del codice sono sostituiti da %s, che è più in alto "
                                      "nell'elenco.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Sostituisce %u punti di patch del codice di %s, che è più in basso nell'elenco.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Input del controller",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Mostra una finestra separata con l'input del controller.",
+    [UI_INPUT_TITLE] = "Input del controller",
+    [UI_INPUT_NO_PAD] = "Nessun controller collegato",
+    [UI_INPUT_MAPPING] = "Azioni assegnate: %s",
+    [UI_INPUT_STICK_LEGEND] = "Punto: valore grezzo / croce: levetta dopo la zona morta",
+    [UI_INPUT_GYRO] = "Giroscopio (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Sconosciuto / non disponibile",
+    [UI_INPUT_DISABLED] = "Disattivato",
+    [UI_INPUT_LABELS] = "S/E/O/N fisici: %s",
 };
 
 // Dutch
@@ -7393,6 +7477,17 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u van zijn codepatchplaatsen worden overschreven door %s, dat hoger in de "
                                      "lijst staat.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Hij overschrijft %u codepatchplaatsen van %s, dat lager in de lijst staat.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Controller-invoer",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Toont een apart venster met de controller-invoer.",
+    [UI_INPUT_TITLE] = "Controller-invoer",
+    [UI_INPUT_NO_PAD] = "Geen controller aangesloten",
+    [UI_INPUT_MAPPING] = "Toegewezen acties: %s",
+    [UI_INPUT_STICK_LEGEND] = "Stip: ruwe waarde / kruis: stick na de dode zone",
+    [UI_INPUT_GYRO] = "Gyro (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Onbekend / niet beschikbaar",
+    [UI_INPUT_DISABLED] = "Uitgeschakeld",
+    [UI_INPUT_LABELS] = "Fysieke Z/O/W/N: %s",
 };
 
 // Japanese
@@ -8151,6 +8246,17 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "ゲームデータの変更のうち %u バイトが、リストでより下にある %s のものを置き換えます。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "コードパッチ箇所のうち %u 個は、リストでより上にある %s のものが優先されます。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "%u 個のコードパッチ箇所で、リストでより下にある %s より優先されます。",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "コントローラー入力",
+    [UI_MENU_INPUT_WINDOW_DESC] = "コントローラー入力のウィンドウを別に表示します。",
+    [UI_INPUT_TITLE] = "コントローラー入力",
+    [UI_INPUT_NO_PAD] = "コントローラーが接続されていません",
+    [UI_INPUT_MAPPING] = "割り当て済みの操作: %s",
+    [UI_INPUT_STICK_LEGEND] = "点: 生の値 / 十字: デッドゾーン後のスティック",
+    [UI_INPUT_GYRO] = "ジャイロ (rad/s)",
+    [UI_INPUT_UNKNOWN] = "不明 / 利用不可",
+    [UI_INPUT_DISABLED] = "無効",
+    [UI_INPUT_LABELS] = "物理的な南/東/西/北: %s",
 };
 
 // Korean
@@ -8910,6 +9016,17 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "게임 데이터 변경 %u바이트가 목록에서 더 아래에 있는 %s의 변경을 대체합니다.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "코드 패치 위치 %u곳은 목록에서 더 위에 있는 %s의 패치가 우선합니다.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "코드 패치 위치 %u곳에서 목록에서 더 아래에 있는 %s의 패치보다 우선합니다.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "컨트롤러 입력",
+    [UI_MENU_INPUT_WINDOW_DESC] = "컨트롤러 입력을 별도 창에 표시합니다.",
+    [UI_INPUT_TITLE] = "컨트롤러 입력",
+    [UI_INPUT_NO_PAD] = "컨트롤러가 연결되지 않았습니다",
+    [UI_INPUT_MAPPING] = "할당된 동작: %s",
+    [UI_INPUT_STICK_LEGEND] = "점: 원시 값 / 십자: 데드존 적용 후 스틱",
+    [UI_INPUT_GYRO] = "자이로 (rad/s)",
+    [UI_INPUT_UNKNOWN] = "알 수 없음 / 사용 불가",
+    [UI_INPUT_DISABLED] = "사용 안 함",
+    [UI_INPUT_LABELS] = "물리적 남/동/서/북: %s",
 };
 
 // Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
@@ -9544,6 +9661,17 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
+    // Local additions (performance window and controller input overlay).
+    [UI_MENU_INPUT_WINDOW] = "Nhập từ tay cầm",
+    [UI_MENU_INPUT_WINDOW_DESC] = "Hiện cửa sổ nhập từ tay cầm riêng.",
+    [UI_INPUT_TITLE] = "Nhập từ tay cầm",
+    [UI_INPUT_NO_PAD] = "Chưa kết nối tay cầm",
+    [UI_INPUT_MAPPING] = "Hành động đã gán: %s",
+    [UI_INPUT_STICK_LEGEND] = "Chấm: giá trị thô / chữ thập: cần sau vùng chết",
+    [UI_INPUT_GYRO] = "Con quay (rad/s)",
+    [UI_INPUT_UNKNOWN] = "Không rõ / không khả dụng",
+    [UI_INPUT_DISABLED] = "Đã tắt",
+    [UI_INPUT_LABELS] = "Nút thực tế nam/đông/tây/bắc: %s",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
