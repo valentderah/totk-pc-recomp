@@ -3,11 +3,11 @@
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
 // Dutch, Japanese, Korean), and Vietnamese.
-#include <stdatomic.h>
 #include <string.h>
 
 #include "cfg.h"
-#include "ov.h"
+// The catalog needs only the language accessor, not the graphics and guest SIMD dependencies of ov.h.
+const char *ov_language(void);
 #include "platform/platform.h"
 #include "ui_text.h"
 
@@ -39,6 +39,8 @@ typedef struct { const char *lang; const char *const *text; } Row;
 #define FFX_FILES "amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll"
 
 static const char *const text_en[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Performance window",
+    [UI_MENU_PERF_WINDOW_DESC] = "Show full performance statistics in a separate window. Full sampling enables the existing GPU timestamp queries.",
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
     // The SDL text entry draws with SDL's ASCII debug font, so these three exist in English only (the other rows fall
     // back to it).
@@ -697,6 +699,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Окно производительности",
+    [UI_MENU_PERF_WINDOW_DESC] = "Показывать полную статистику в отдельном окне. Полный сбор включает существующие запросы времени GPU.",
     SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
 
     [UI_MENU_TITLE] = "Настройки",
@@ -1357,6 +1361,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Janela de desempenho",
+    [UI_MENU_PERF_WINDOW_DESC] = "Mostrar as estatísticas completas em uma janela separada. A coleta completa ativa as consultas de tempo da GPU existentes.",
     SWKBD("Inserir texto", "Insira um nome", "Cavalo", "OK", "Cancelar", "Controle: A = OK, B = Cancelar"),
 
     [UI_MENU_TITLE] = "Configurações",
@@ -2058,6 +2064,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
 // when the menu language is zh-Hans (ui_text.h menu_text). The rows are fixed width, so the strings stay close to the
 // English length; an id without a Chinese entry falls back to English.
 static const char *const text_zh_hans[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "性能独立窗口",
+    [UI_MENU_PERF_WINDOW_DESC] = "在独立窗口显示完整性能统计。完整采样会启用现有的 GPU 时间戳查询。",
     SWKBD("文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消"),
 
     [UI_MENU_TITLE] = "设置",
@@ -2801,6 +2809,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
 
 // German
 static const char *const text_de[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Leistungsfenster",
+    [UI_MENU_PERF_WINDOW_DESC] = "Vollständige Leistungsstatistik in einem eigenen Fenster anzeigen. Die vollständige Erfassung aktiviert die vorhandenen GPU-Zeitstempel-Abfragen.",
     SWKBD("Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrechen", "Controller: A = OK, B = Abbrechen"),
 
     [UI_MENU_TITLE] = "Einstellungen",
@@ -3711,6 +3721,8 @@ static const char *const text_de[UI_TEXT_COUNT] = {
 
 // French
 static const char *const text_fr[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Fenêtre de performances",
+    [UI_MENU_PERF_WINDOW_DESC] = "Affiche les statistiques de performances complètes dans une fenêtre séparée. L'échantillonnage complet active les requêtes d'horodatage GPU existantes.",
     SWKBD("Saisie de texte", "Entrez un nom", "Cheval", "OK", "Annuler", "Manette : A = OK, B = Annuler"),
 
     [UI_MENU_TITLE] = "Paramètres",
@@ -4644,6 +4656,8 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
 
 // Spanish
 static const char *const text_es[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Ventana de rendimiento",
+    [UI_MENU_PERF_WINDOW_DESC] = "Muestra las estadísticas completas de rendimiento en una ventana aparte. El muestreo completo activa las consultas de marca de tiempo de la GPU que ya existen.",
     SWKBD("Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar", "Mando: A = Aceptar, B = Cancelar"),
 
     [UI_MENU_TITLE] = "Ajustes",
@@ -5560,6 +5574,8 @@ static const char *const text_es[UI_TEXT_COUNT] = {
 
 // Italian
 static const char *const text_it[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Finestra prestazioni",
+    [UI_MENU_PERF_WINDOW_DESC] = "Mostra le statistiche complete delle prestazioni in una finestra separata. Il campionamento completo attiva le query di timestamp della GPU esistenti.",
     SWKBD("Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla"),
 
     [UI_MENU_TITLE] = "Impostazioni",
@@ -6478,6 +6494,8 @@ static const char *const text_it[UI_TEXT_COUNT] = {
 
 // Dutch
 static const char *const text_nl[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Prestatievenster",
+    [UI_MENU_PERF_WINDOW_DESC] = "Toont de volledige prestatiesstatistieken in een apart venster. Volledige meting schakelt de bestaande GPU-tijdstempelquery's in.",
     SWKBD("Tekstinvoer", "Voer een naam in", "Paard", "OK", "Annuleren", "Controller: A = OK, B = Annuleren"),
 
     [UI_MENU_TITLE] = "Instellingen",
@@ -7379,6 +7397,8 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
 
 // Japanese
 static const char *const text_ja[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "パフォーマンスウィンドウ",
+    [UI_MENU_PERF_WINDOW_DESC] = "完全なパフォーマンス統計を別ウィンドウに表示します。完全な計測では、既存の GPU タイムスタンプ クエリが有効になります。",
     SWKBD("文字入力", "名前を入力してください", "ウマ", "OK", "キャンセル", "コントローラー: A = OK、B = キャンセル"),
 
     [UI_MENU_TITLE] = "設定",
@@ -8135,6 +8155,8 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
 
 // Korean
 static const char *const text_ko[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "성능 창",
+    [UI_MENU_PERF_WINDOW_DESC] = "전체 성능 통계를 별도 창에 표시합니다. 전체 샘플링은 기존 GPU 타임스탬프 쿼리를 사용합니다.",
     SWKBD("문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소"),
 
     [UI_MENU_TITLE] = "설정",
@@ -8893,6 +8915,8 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
 // Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
 // language is vi (ui_text.h menu_text). An id without a Vietnamese entry falls back to English.
 static const char *const text_vi[UI_TEXT_COUNT] = {
+    [UI_MENU_PERF_WINDOW] = "Cửa sổ hiệu năng",
+    [UI_MENU_PERF_WINDOW_DESC] = "Hiện toàn bộ thống kê hiệu năng trong một cửa sổ riêng. Lấy mẫu đầy đủ sẽ bật các truy vấn dấu thời gian GPU sẵn có.",
     SWKBD("Nhập văn bản", "Nhập một cái tên", "Ngựa", "OK", "Hủy", "Tay cầm: A = OK, B = Hủy"),
 
     [UI_MENU_TITLE] = "Cài đặt",
@@ -9595,7 +9619,7 @@ static const char *resolve_menu_lang(void) {
     const char *sys = plat_ui_language();
     const char *lang = v && *v ? ui_text_lang(v) : sys && *sys ? ui_text_lang(sys) : "en";
     if (ui_text_defined(lang, UI_MENU_TITLE)) return lang;
-    static char base[16];   // menu_text calls this on one thread at a time, on a cfg_version change
+    char base[16];   // Independent windows may resolve the language concurrently.
     size_t n = strcspn(lang, "-");
     if (n < sizeof base && lang[n]) {
         memcpy(base, lang, n), base[n] = 0;
@@ -9607,12 +9631,13 @@ static const char *resolve_menu_lang(void) {
 }
 
 const char *menu_text(UiTextId id) {
-    static _Atomic(const char *) lang = "en";
-    static _Atomic unsigned seen = ~0u;
+    // Each drawing thread caches its own version and language, avoiding mixed publication through two independent atomics.
+    static _Thread_local const char *lang = "en";
+    static _Thread_local unsigned seen = ~0u;
     unsigned v = cfg_version();
-    if (v != atomic_load_explicit(&seen, memory_order_relaxed)) {
-        atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
-        atomic_store_explicit(&seen, v, memory_order_relaxed);
+    if (v != seen) {
+        lang = resolve_menu_lang();
+        seen = v;
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return ui_text_in(lang, id);
 }
