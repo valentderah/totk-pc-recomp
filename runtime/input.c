@@ -849,19 +849,26 @@ static float trigger_unit(int16_t v) {   // 0..1 past a 5 % dead zone
     return t < 0.05f ? 0 : (t - 0.05f) / 0.95f;
 }
 
-// The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down the free
-// camera switches once, and the buttons stay hidden from the game until all are released; the free camera key
-// switches it on its press. While the free camera is on it gets the input and the game gets nothing, so Link stands
-// still: the sticks (the keys' sticks merged into sl and sr), the trigger axes or else ZL and ZR as buttons, a press of
-// L or R as a speed click, and the mouse's motion, which input_direct_mouse_sample then keeps from the game's camera.
-// ZL, ZR, L and R are the merged Switch buttons, so the keys bound to them count. Off for other updates and with the
-// freecam patch set off. Under lock.
+// The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down (on the gamepad,
+// or as the merged Switch buttons from bound keys or an input script) the free camera switches once, and the buttons
+// stay hidden from the game until all are released; the free camera key switches it on its press. While the free camera
+// is on it gets the input and the game gets nothing, so Link stands still: the sticks (the keys' sticks merged into sl
+// and sr), the trigger axes or else ZL and ZR as buttons, a press of L or R as a speed click, and the mouse's motion,
+// which input_direct_mouse_sample then keeps from the game's camera. ZL, ZR, L and R are the merged Switch buttons, so
+// the keys bound to them count. Off for other updates and with the freecam patch set off. Under lock.
 static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     static int held, key_held, available = -1, shoulder[2];
     if (available < 0) available = freecam_available();
     uint32_t mask = available ? freecam_pad_mask() : 0, raw = 0;
-    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++)
-        if (mask >> p & 1 && pad_seen[p]) raw |= 1u << p;
+    int layout = pad_layout_get();
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++) {
+        if (!(mask >> p & 1)) continue;
+        // A position counts as down on the gamepad or through the Switch buttons it stands for in the merged buttons,
+        // so the keys bound to them and an input script press the combo too. Home has no Switch button: gamepad only.
+        uint8_t one[PAD_COUNT] = {0};
+        if (p < PAD_COUNT) one[p] = 1;
+        if (pad_seen[p] || (p < PAD_COUNT && *b & input_map_pad_buttons(one, layout))) raw |= 1u << p;
+    }
     if (!mask) held = 0;
     else if (held) held = raw != 0;
     else if (raw == mask) {

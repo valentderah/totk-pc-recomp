@@ -133,8 +133,9 @@ bind_Y = pad:north, key:mouse_l
 
 On game 1.4.3, a chosen gamepad combo or a key activates or deactivates the free camera. Neither is set by default: pick
 them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for example ZL+ZR+L3, LT+RT+L3 on an
-Xbox pad, and F6; `none` turns one off). The world goes on, but the game gets no input while the free camera is on, so
-Link stands where he was.
+Xbox pad, and F6; `none` turns one off). The combo's buttons also count when they come from the keys bound to them or
+from an input script. The world goes on, but the game gets no input while the free camera is on, so Link stands where he
+was.
 
 | Gamepad | Keyboard and mouse (default bindings) | Free camera |
 |---|---|---|
