@@ -1007,8 +1007,12 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         p_setu(p, "OutWidth", ow);
         p_setu(p, "OutHeight", oh);
         p_seti(p, "PerfQualityValue", perf_quality(w, ow));
-        // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
-        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
+        // IsHDR | MVLowRes: linear scene light, motion vectors at the render size, no exposure texture. Not AutoExposure
+        // (1 << 6): DLSS then estimated the exposure from each frame itself, and in the Depths, where the whole scene is
+        // dark, the estimate moved with the camera; distant blocks under uniform fog came out up to 0.7 levels (of 255)
+        // darker or brighter for a frame, where the game's own picture held one value (a 64x64 patch at 30.79 without
+        // DLAA read 30.09-30.79 frame to frame with AutoExposure and 30.4-30.7, steady, without it).
+        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
         // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
         // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
