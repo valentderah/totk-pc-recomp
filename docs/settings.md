@@ -20,6 +20,12 @@ Many rows below are developer tools that only act together with another setting 
 | --- | --- | --- | --- |
 | `hud_width` (default `full`) | `full` places the HUD at the screen's edges; `21:9` or `16:9` constrains it to that centered area on a wider game resolution. A cap that is not narrower than the screen, and 16:9 or taller output, keep the full layout. | Read at start. The Shapes installer step builds the selected cap only for needed screen shapes and button prompts. After a change in the Screen tab an install makes a missing layout in the background; it loads at the next start. If a capped folder is missing the full layout loads with a log message. Explicit overlay overrides and player UI mods keep their precedence. | Safe |
 
+## Separate windows
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `perf_window` (default `0`) | `1` opens a separate, non-activating performance window on Windows. | Live toggle; requests full hardware sampling and the existing GPU timestamp queries independently of `perf_overlay`. Closing the window writes this setting to 0. If an environment override keeps its effective value at 1, the window still stays closed for this process; remove the override to rearm off/on, or restart to open it again. Linux and other non-Windows platforms provide fallback behavior only: this menu toggle is hidden, existing configuration values remain readable, and no separate window, additional sampling or configuration write is requested. The in-game performance overlay keeps its own setting. | Caution |
+
 ## Diagnostics and logging
 
 | Setting | What it does | Effect of changing it | Safety |
