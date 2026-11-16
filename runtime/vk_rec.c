@@ -1,3 +1,5 @@
+// RSF headers include vk.h too: disable command redirection before any of them, so the recorder calls the driver.
+#define VK_REC_IMPL
 #include "rsf_fg_gpu.h"
 #include "rsf_runtime.h"
 // The recorder thread: see vk_rec.h. One producer (the submitting thread, between rec_begin and rec_end) and one
@@ -9,7 +11,6 @@
 // begin, end and submit the parts (rec_begin, rec_end_cb, rec_submit), so each part stays on the recorder throughout.
 // Design: Savage Wind Recomp #189 and LAS Recomp runtime/nvn/vulkan/record.c (https://github.com/peiikai/LASRecomp
 // @ a4b53a3, MIT, Copyright (c) 2026 Peiikai); the code is ours.
-#define VK_REC_IMPL
 #include <immintrin.h>
 #include <stdlib.h>
 #include <string.h>
