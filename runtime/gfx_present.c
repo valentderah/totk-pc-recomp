@@ -22,6 +22,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
+#include "host.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
@@ -246,6 +247,9 @@ static void window_settings_live(void) {
     static int started;
     static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
+    // Every present: Reflex follows the frame limit, and with fps_limit = display the window measures the monitor's
+    // rate after the swapchain is made, with no settings change to announce it. Unchanged, it returns at once.
+    if (started) reflex_apply_locked();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
@@ -306,8 +310,11 @@ static void reflex_apply_locked(void) {
     }
     int mode = reflex_mode_from_cfg();
     uint32_t min_us = 0;
-    int limit = cfg_int("TOTK_FPS_LIMIT");
-    if (limit > 0) min_us = (uint32_t)(1000000 / limit);
+    // The driver's sleep holds frames to the same rate as the pacer (frame_rate.c frame_step_limit_hz): the setting,
+    // the monitor's rate for fps_limit = display, 60 without the real-time step. cfg_int would read "display" as the
+    // setting's default, 60, and Reflex would hold a 144 Hz monitor to 60 fps.
+    double hz = frame_step_limit_hz();
+    if (hz > 0) min_us = (uint32_t)(1e6 / hz);
     if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
     g_reflex_mode = mode;
     g_reflex_min_us = min_us;
