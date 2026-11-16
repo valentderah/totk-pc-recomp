@@ -27,6 +27,9 @@ static uint64_t cell[4] __attribute__((aligned(64)));
 static int nthreads, iters;
 static int fails;
 
+int excl_epoch_check(uint32_t (*store64)(Cpu *, uint64_t, uint64_t));
+static uint32_t other_store64(Cpu *c, uint64_t a, uint64_t v) { return stx64(c, a, v); }
+
 static void wait_step(int s) { while (__atomic_load_n(&step, __ATOMIC_ACQUIRE) != s) {} }
 static void set_step(int s) { __atomic_store_n(&step, s, __ATOMIC_RELEASE); }
 
@@ -119,6 +122,7 @@ int main(int argc, char **argv) {
     inc_case(32);
     inc_case(64);
     inc_case(128);
+    fails += excl_epoch_check(other_store64);
     printf("%s\n", fails ? "FAILED" : "PASSED");
     return fails != 0;
 }
@@ -130,6 +134,7 @@ def main():
     ap.add_argument('--runtime', type=Path, default=ROOT / 'runtime', help='directory holding cpu.h')
     ap.add_argument('--threads', type=int, default=8)
     ap.add_argument('--iters', type=int, default=200000)
+    ap.add_argument('--cflags', default='-march=x86-64-v3', help='extra compiler flags, e.g. -march=x86-64-v2')
     args = ap.parse_args()
     env = dict(os.environ)
     if os.name == 'nt' and MSYS_BIN.exists():
@@ -138,8 +143,9 @@ def main():
         src = Path(tmp) / 'excl_mt.c'
         exe = Path(tmp) / ('excl_mt.exe' if os.name == 'nt' else 'excl_mt')
         src.write_text(SRC)
-        subprocess.check_call([compiler(), '-O2', '-march=x86-64-v3', '-fno-strict-aliasing', '-I', str(args.runtime),
-                               str(src), '-o', str(exe), '-lpthread'], env=env)
+        subprocess.check_call([compiler(), '-O2', '-fno-strict-aliasing', '-I', str(args.runtime),
+                               str(src), str(ROOT / 'tests' / 'excl_epoch.c'), str(args.runtime / 'cpu.c'),
+                               '-o', str(exe), '-lpthread'] + args.cflags.split(), env=env)
         return subprocess.run([str(exe), str(args.threads), str(args.iters)], env=env).returncode
 
 
