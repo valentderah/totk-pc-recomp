@@ -9,7 +9,14 @@
 // The order and the switches are totk.ini keys (cfg.c): TOTK_MODS_ORDER lists names top first, separated by '|' (a
 // Windows file name cannot hold '|'; a folder whose name does on Linux is listed as unusable); a folder it does not name
 // goes below the named ones, by name. TOTK_MODS_DISABLED lists the switched-off names. The menu changes the list in
-// place and writes both keys; the scan's state is kept to tell the menu a restart is due.
+// place and writes both keys; the scan's state is kept to tell the menu a restart is due. TOTK_MODS_NO_CODE lists the
+// mods used without their code part (their switch "use without its code"; TOTK_MODS_WITHOUT_CODE = 1 is that switch on
+// for every mod).
+//
+// The order decides every conflict, top mod winning: romfs.c serves the top mod's file, mods_exefs_apply stores the
+// top mod's data bytes last and ranks each mod's patch sets by its position (rt_patch_rank), so at a code site several
+// mods patch the top one's code runs (patches.c rt_patch_picks). What a mod won or lost goes into one conflict table
+// (mods_conflict), which the menu and the log read.
 //
 // ExeFS patch files: an .ips or .pchtxt file in the exefs folder or in atmosphere/exefs_patches/<name>/ is for the game
 // when its build id is main's (an IPS file's name, a pchtxt file's @nsobid line); others are another version's and
@@ -21,7 +28,7 @@
 //
 // Code modules: an exefs/subsdk* file is a plugin that patches main from its own start-up on the Switch, and a replaced
 // exefs/main is another game code; the port cannot load either (ModInfo.code names them): their mod stays off unless
-// mods_without_code = 1.
+// it is used without its code, which also leaves out the ExeFS patch files the port cannot apply.
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +47,10 @@ static ModInfo *mods;
 static int nmods;
 static char dir[2048];
 static char start_order[MAX_MODS][256];   // names in the scan's order and their switches, for mods_changed
-static int start_enabled[MAX_MODS];
+static int start_enabled[MAX_MODS], start_no_code[MAX_MODS];
+#define MAX_CONFLICTS 1024
+static ModConflict conflicts[MAX_CONFLICTS];
+static int nconflicts;
 
 // 1 when a file lies anywhere under path.
 static int has_file_cb(const char *name, int kind, uint64_t size, void *ctx);
@@ -142,10 +152,12 @@ static const char *problem_name(ModProblem p) {
     switch (p) {
     case MOD_EMPTY: return "empty";
     case MOD_PLUGIN:
-        return "has a code module (subsdk or main), not supported; the whole mod stays off (mods_without_code = 1 uses "
-               "the rest of it)";
+        return "has a code module (subsdk or main), not supported; the whole mod stays off (its switch \"use without "
+               "its code\" uses the rest of it)";
     case MOD_EXEFS_LATER: return "ExeFS patches wait for a rebuild of the game code; the whole mod stays off";
-    case MOD_EXEFS_UNSUPPORTED: return "an ExeFS patch file cannot be applied; the whole mod stays off";
+    case MOD_EXEFS_UNSUPPORTED:
+        return "an ExeFS patch file cannot be applied; the whole mod stays off (its switch \"use without its code\" "
+               "uses the rest of it)";
     case MOD_EXEFS_OTHER: return "its ExeFS patches are for another game version";
     case MOD_BAD_NAME: return "its folder name holds '|', which the order list uses; rename the folder";
     default: return "ok";
@@ -286,7 +298,8 @@ static int exefs_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
         return 1;
     }
     if (!strcmp(kind_s, "unsupported")) {
-        if (!w->unsupported) snprintf(m->note, sizeof m->note, "%s: %s", leaf, note);
+        if (!m->unsupported) snprintf(m->note, sizeof m->note, "%s: %s", leaf, note);
+        m->unsupported++;
         w->unsupported = 1;
     } else if (!strcmp(kind_s, "code") && m->nsets < (int)(sizeof m->sets / sizeof *m->sets)) {
         m->sets[m->nsets++] = (uint32_t)strtoul(key, NULL, 16);
@@ -339,6 +352,7 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     }
     ModInfo *m = &mods[nmods];
     memset(m, 0, sizeof *m);
+    m->id = nmods;
     char path[2100];
     if (snprintf(m->name, sizeof m->name, "%s", name) >= (int)sizeof m->name ||
         snprintf(path, sizeof path, "%s/%s", dir, name) >= (int)sizeof path) {
@@ -353,17 +367,20 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     if (m->exefs[0]) plat_fs_list(m->exefs, exefs_cb, m);
     if (m->cheats[0]) plat_fs_list(m->cheats, cheats_cb, &m->kind);
     int unsupported = exefs_check(m, path);
-    // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. A code
-    // module (m->code) never loads; with mods_without_code = 1 the rest of the mod is used, when it has a rest.
-    int rest = m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS);
-    int code_off = m->code[0] && (!cfg_bool("TOTK_MODS_WITHOUT_CODE") || !rest);
-    m->problem = strchr(m->name, '|')                                       ? MOD_BAD_NAME
-               : code_off                                                   ? MOD_PLUGIN
-               : unsupported                                                ? MOD_EXEFS_UNSUPPORTED
-               : m->pending                                                 ? MOD_EXEFS_LATER
-               : m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS) ? MOD_OK
-               : m->kind & MOD_EXEFS                                        ? MOD_EXEFS_OTHER
-                                                                            : MOD_EMPTY;
+    // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. Used without
+    // its code (its switch, or mods_without_code = 1 for every mod), the code modules (m->code) and the ExeFS patch
+    // files the port cannot apply are left out and the rest of the mod is used, when it has a rest.
+    m->no_code = listed(cfg_get("TOTK_MODS_NO_CODE"), m->name);
+    m->without_code = m->no_code || cfg_bool("TOTK_MODS_WITHOUT_CODE");
+    int usable = m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS);
+    int code_off = m->code[0] && (!m->without_code || !(m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS)));
+    m->problem = strchr(m->name, '|')                             ? MOD_BAD_NAME
+               : code_off                                         ? MOD_PLUGIN
+               : unsupported && (!m->without_code || !usable)     ? MOD_EXEFS_UNSUPPORTED
+               : m->pending                                       ? MOD_EXEFS_LATER
+               : usable                                           ? MOD_OK
+               : m->kind & MOD_EXEFS                              ? MOD_EXEFS_OTHER
+                                                                  : MOD_EMPTY;
     m->enabled = !listed(disabled, m->name);
     nmods++;
     return 1;
@@ -426,14 +443,18 @@ void mods_scan(void) {
     for (int i = 0; i < nmods; i++) {
         snprintf(start_order[i], sizeof start_order[i], "%s", mods[i].name);
         start_enabled[i] = mods[i].enabled;
+        start_no_code[i] = mods[i].no_code;
         const ModInfo *m = &mods[i];
         rt_log("mods: %s: %s,%s%s%s%s%s, %s%s%s", m->name, m->enabled ? "on" : "off", m->kind & MOD_ROMFS ? " romfs" : "",
                m->kind & MOD_EXEFS ? " exefs" : "", m->kind & MOD_SUBSDK ? " subsdk" : "",
                m->kind & MOD_CHEATS ? " cheats" : "", m->kind ? "" : " no files", problem_name(m->problem),
                m->note[0] ? ": " : "", m->note);
         if (m->code[0] && m->problem != MOD_PLUGIN)
-            rt_log("mods: %s: its code module (%s) does not load (mods_without_code = 1); the rest of the mod is used",
+            rt_log("mods: %s: used without its code: its code module (%s) does not load; the rest of the mod is used",
                    m->name, m->code);
+        if (m->unsupported && m->problem != MOD_EXEFS_UNSUPPORTED)
+            rt_log("mods: %s: used without its code: %u ExeFS patch files the port cannot apply are left out (%s); the "
+                   "rest of the mod is used", m->name, m->unsupported, m->note);
     }
     rt_log("mods: %d folders in %s", nmods, dir);
 }
@@ -575,34 +596,164 @@ void mods_rescan(void) {
     free(mods);
     mods = NULL;
     nmods = 0;
+    nconflicts = 0;
     scanned = 0;
 }
 
-// Switches the patch set mod_<key> on; 0 when this build lacks it (logged).
-static int set_on(const ModInfo *m, uint32_t key) {
+// ---- the conflict table
+
+void mods_conflict(int winner, int loser, ModPart part, uint32_t count) {
+    for (int i = 0; i < nconflicts; i++) {
+        ModConflict *c = &conflicts[i];
+        if (c->winner == winner && c->loser == loser && c->part == part) {
+            c->count += count;
+            return;
+        }
+    }
+    if (nconflicts == MAX_CONFLICTS) return;   // a mod list with more pairs than that: the rest goes unshown
+    conflicts[nconflicts++] = (ModConflict){winner, loser, part, count};
+}
+
+int mods_conflict_count(void) { return nconflicts; }
+const ModConflict *mods_conflict_at(int i) { return i >= 0 && i < nconflicts ? &conflicts[i] : NULL; }
+
+const ModInfo *mods_by_id(int id) {
+    for (int i = 0; i < nmods; i++)
+        if (mods[i].id == id) return &mods[i];
+    return NULL;
+}
+
+void mods_conflicts_log(ModPart part) {
+    static const char *const unit[MOD_PARTS] = {"files", "bytes of main's data", "code sites"};
+    for (int i = 0; i < nconflicts; i++) {
+        const ModConflict *c = &conflicts[i];
+        const ModInfo *w = mods_by_id(c->winner), *l = mods_by_id(c->loser);
+        if (c->part != part || !w || !l) continue;
+        rt_log("mods: %s: overrides %s at %u %s", w->name, l->name, c->count, unit[part]);
+        rt_log("mods: %s: %u %s overridden by %s", l->name, c->count, unit[part], w->name);
+    }
+}
+
+// Switches the patch set mod_<key> on and gives it rank; -1 when this build lacks it (logged).
+static int set_on(const ModInfo *m, uint32_t key, int rank) {
     char name[32];
     snprintf(name, sizeof name, "mod_%08x", key);
     int set = rt_patch_set(name);
-    if (set >= 0) rt_patch_switch(set, 1);
-    else rt_log("mods: %s: patch set %s is not in this build", m->name, name);
-    return set >= 0;
+    if (set >= 0) {
+        rt_patch_rank(set, rank);
+        rt_patch_switch(set, 1);
+    } else {
+        rt_log("mods: %s: patch set %s is not in this build", m->name, name);
+    }
+    return set;
+}
+
+// The mod in use whose ExeFS patch file has the patch set, NULL for a set of no mod.
+static const ModInfo *set_owner(int set) {
+    const char *name = rt_patch_name(set);
+    if (!name || strncmp(name, "mod_", 4)) return NULL;
+    uint32_t key = (uint32_t)strtoul(name + 4, NULL, 16);
+    for (int i = 0; i < nmods; i++)
+        for (int k = 0; start_enabled[i] && mods[i].problem == MOD_OK && k < mods[i].nsets; k++)
+            if (mods[i].sets[k] == key) return &mods[i];
+    return NULL;
+}
+
+// The contested code sites (patches.c): which mod's code runs at each, logged, and one site per losing mod in the
+// conflict table. Two files of one mod on one site are no conflict: the later file in the mod runs (the tie rule of
+// rt_patch_picks, as emulators apply a mod's files in name order, each over the one before).
+static void code_conflicts(void) {
+    int logged = 0, contested = 0;
+    for (int i = 0; i < rt_patch_pick_count(); i++) {
+        const RtPatchPick *p = rt_patch_pick_at(i);
+        int w = rt_patch_pick_winner(i);
+        const ModInfo *wm = w >= 0 ? set_owner(p->sets[w]) : NULL;
+        if (!wm) continue;
+        char lost[512] = "";
+        const ModInfo *seen[16];
+        int nseen = 0;
+        for (int j = 0; j < p->nsets; j++) {
+            const ModInfo *lm = j != w && rt_patch_enabled(p->sets[j]) ? set_owner(p->sets[j]) : NULL;
+            int dup = !lm || lm == wm;
+            for (int k = 0; !dup && k < nseen; k++) dup = seen[k] == lm;
+            if (dup) continue;
+            if (nseen < 16) seen[nseen++] = lm;
+            mods_conflict(wm->id, lm->id, MOD_PART_CODE, 1);
+            size_t at = strlen(lost);
+            snprintf(lost + at, sizeof lost - at, "%s%s", at ? ", " : "", lm->name);
+        }
+        if (!*lost) continue;
+        contested++;
+        if (logged++ < 32)
+            rt_log("mods: code site %s+%#x: %s's patch runs; %s's stays off (higher in the list wins)", p->module,
+                   p->offset, wm->name, lost);
+    }
+    if (logged > 32) rt_log("mods: %d more contested code sites", logged - 32);
+    if (contested) mods_conflicts_log(MOD_PART_CODE);
+}
+
+// The data bytes stored at start, by mod: the overlaps are data conflicts.
+typedef struct { uint64_t addr; int n, id, pos; } DataSpan;
+static DataSpan *spans;
+static int nspans, cap_spans, span_id, span_pos;
+static int (*span_store)(uint64_t addr, const uint8_t *bytes, int n);
+
+static int record_store(uint64_t addr, const uint8_t *bytes, int n) {
+    if (!(span_store ? span_store : store_main)(addr, bytes, n)) return 0;
+    if (nspans == cap_spans) {
+        int cap = cap_spans ? 2 * cap_spans : 256;
+        DataSpan *grown = realloc(spans, (size_t)cap * sizeof *spans);
+        if (!grown) return 1;   // stored; only its conflict goes unseen
+        spans = grown, cap_spans = cap;
+    }
+    spans[nspans++] = (DataSpan){addr, n, span_id, span_pos};
+    return 1;
+}
+
+static int by_addr(const void *a, const void *b) {
+    uint64_t x = ((const DataSpan *)a)->addr, y = ((const DataSpan *)b)->addr;
+    return (x > y) - (x < y);
+}
+
+// Bytes two mods both wrote: the higher one's stayed (mods_exefs_apply stores bottom first).
+static void data_conflicts(void) {
+    qsort(spans, (size_t)nspans, sizeof *spans, by_addr);
+    int any = 0;
+    for (int i = 0; i < nspans; i++) {
+        uint64_t end = spans[i].addr + (uint64_t)spans[i].n;
+        for (int j = i + 1; j < nspans && spans[j].addr < end; j++) {
+            if (spans[j].id == spans[i].id) continue;
+            uint64_t jend = spans[j].addr + (uint64_t)spans[j].n;
+            uint32_t n = (uint32_t)((jend < end ? jend : end) - spans[j].addr);
+            const DataSpan *hi = spans[i].pos < spans[j].pos ? &spans[i] : &spans[j];
+            mods_conflict(hi->id, hi == &spans[i] ? spans[j].id : spans[i].id, MOD_PART_DATA, n);
+            any = 1;
+        }
+    }
+    free(spans);
+    spans = NULL;
+    nspans = cap_spans = 0;
+    if (any) mods_conflicts_log(MOD_PART_DATA);
 }
 
 void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
                       int (*store)(uint64_t addr, const uint8_t *bytes, int n)) {
-    // bottom first: the top mod's data writes land last and win, as its RomFS files do. Patch sets are only switches
-    // (rt_patch_switch), so their order does not matter.
+    // bottom first: the top mod's data writes land last and win, as its RomFS files do. Patch sets are switches
+    // (rt_patch_switch); the mod's position ranks them, so where two mods patch one code site the higher one's runs
+    // (rt_patch_picks after the loop).
+    span_store = store;
     for (int i = nmods - 1; i >= 0; i--) {
         const ModInfo *m = &mods[i];
         if (!start_enabled[i] || m->problem != MOD_OK || !(m->nsets || m->ndata)) continue;
         // the data first: a mod whose data writes cannot all be stored keeps its code patches off too, as half of a
         // patch file is worse than none
-        long stored = size ? mods_exefs_data(m, base, size, code_end, store) : 0;
+        span_id = m->id, span_pos = i;
+        long stored = size ? mods_exefs_data(m, base, size, code_end, record_store) : 0;
         if (stored < 0) {
             rt_log("mods: %s: its ExeFS patch files stay off: their data writes could not all be stored", m->name);
             continue;
         }
-        for (int k = 0; k < m->nsets; k++) set_on(m, m->sets[k]);
+        for (int k = 0; k < m->nsets; k++) set_on(m, m->sets[k], i);
         char over[256];
         snprintf(over, sizeof over, "%s", m->overrides);
         for (char *s = strtok(over, ","); s; s = strtok(NULL, ",")) {
@@ -613,6 +764,10 @@ void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
         rt_log("mods: %s: %d ExeFS patch files on, %ld bytes of main's data stored", m->name, m->nsets + m->ndata,
                stored);
     }
+    span_store = NULL;
+    data_conflicts();
+    rt_patch_picks();
+    code_conflicts();
 }
 
 void mods_exefs_switch(void) {
@@ -638,12 +793,13 @@ const char *mods_dir(void) { return dir; }
 int mods_count(void) { return nmods; }
 ModInfo *mods_at(int i) { return i >= 0 && i < nmods ? &mods[i] : NULL; }
 
-// TOTK_MODS_ORDER as every listed name top first; TOTK_MODS_DISABLED as the switched-off names. A name holding '|'
-// would split into two; it is left out of both (its mod is unusable anyway).
+// TOTK_MODS_ORDER as every listed name top first; TOTK_MODS_DISABLED as the switched-off names; TOTK_MODS_NO_CODE as
+// the names used without their code. A name holding '|' would split into two; it is left out of all (its mod is
+// unusable anyway).
 static void write_keys(void) {
     size_t cap = (size_t)nmods * 257 + 1;
-    char *order = calloc(cap, 1), *off = calloc(cap, 1);
-    if (order && off) {
+    char *order = calloc(cap, 1), *off = calloc(cap, 1), *no_code = calloc(cap, 1);
+    if (order && off && no_code) {
         for (int i = 0; i < nmods; i++) {
             if (mods[i].problem == MOD_BAD_NAME) continue;
             if (*order) strcat(order, "|");
@@ -652,17 +808,29 @@ static void write_keys(void) {
                 if (*off) strcat(off, "|");
                 strcat(off, mods[i].name);
             }
+            if (mods[i].no_code) {
+                if (*no_code) strcat(no_code, "|");
+                strcat(no_code, mods[i].name);
+            }
         }
         cfg_set("TOTK_MODS_ORDER", order);
         cfg_set("TOTK_MODS_DISABLED", off);
+        cfg_set("TOTK_MODS_NO_CODE", no_code);
     }
     free(order);
     free(off);
+    free(no_code);
 }
 
 void mods_set_enabled(int i, int on) {
     if (i < 0 || i >= nmods) return;
     mods[i].enabled = on != 0;
+    write_keys();
+}
+
+void mods_set_no_code(int i, int on) {
+    if (i < 0 || i >= nmods) return;
+    mods[i].no_code = on != 0;
     write_keys();
 }
 
@@ -677,6 +845,8 @@ void mods_move(int i, int delta) {
 
 int mods_changed(void) {
     for (int i = 0; i < nmods; i++)
-        if (strcmp(mods[i].name, start_order[i]) || mods[i].enabled != start_enabled[i]) return 1;
+        if (strcmp(mods[i].name, start_order[i]) || mods[i].enabled != start_enabled[i] ||
+            mods[i].no_code != start_no_code[i])
+            return 1;
     return 0;
 }

@@ -34,11 +34,27 @@ packs, gameplay and text changes from GameBanana and similar sites, TKMM's merge
 ## Order and switches
 
 The Mods tab lists every folder in `mods`. Select a mod and press A or Enter to switch it on or off. The top face button
-or Ctrl+Up moves it up, the left face button or Ctrl+Down moves it down. When two mods change the same file, the
-higher one wins; the lower mod's row says how many of its files the higher one covers. Changes apply after a restart.
+or Ctrl+Up moves it up, the left face button or Ctrl+Down moves it down. Changes apply after a restart.
 
-The menu saves the order and the switches in `totk.ini`, under `[mods]`, by folder name: `mods_order` and
-`mods_disabled`. A folder the list does not name yet, such as a new or renamed one, goes below the named ones.
+The order decides every conflict, as in PC mod managers: when two mods change the same game file, the same bytes of the
+game's data or the same instruction of the game's code, the higher one wins. Moving a mod and restarting is enough; the
+game is not rebuilt for it. Each row lists what the mod wins and loses, by mod: "3 of its files come from X, which is
+higher in the list", "It overrides 2 code patch sites of Y, which is lower in the list", and the same for game data.
+`logs\totk.log` has the same as `mods: X: overrides Y at 2 code sites` and `mods: Y: 2 code sites overridden by X`, and
+one line per contested code site.
+
+The menu saves the order and the switches in `totk.ini`, under `[mods]`, by folder name: `mods_order`,
+`mods_disabled` and `mods_no_code`. A folder the list does not name yet, such as a new or renamed one, goes below the
+named ones.
+
+### Mods with code the port cannot run
+
+Some mods bring code the port cannot run: their own Switch code (a subsdk plugin or a replaced main, as UltraCam ships)
+or a code patch in a form the port cannot apply. Such a mod stays off as a whole, because its other files may expect
+that code. Under its row the Mods tab then shows **Use <mod> without its code** (off by default). Switched on, the code
+the port cannot run is left out and the rest of the mod loads after a restart: its game files, cheats and the code
+patches that work. The mod's row says which part is left out and why. If the game misbehaves with it, switch it off
+again. `mods_without_code = 1` under `[mods]` holds the switch on for every mod.
 
 ### Mods that change the same files
 
@@ -70,6 +86,11 @@ The rebuild needs the setup folder the game was installed from. When that folder
 
 A code patch over one of the port's own patches (the 60 FPS patch, the resolution patch and the other entries under
 **Built into the port**) turns that built-in patch off while the mod is on. The mod's row names it.
+
+When two mods patch the same instruction, the code of the higher one runs there; the other mod's patches run
+everywhere else. The rebuild builds every mod's patch in, so a new order needs only a restart. Two patch files of one
+mod that patch the same instruction: the one later by path inside the mod wins, as emulators apply a mod's files in
+name order, each over the one before. A cheat that changes the same instruction runs instead of both while it is on.
 
 A patch file may also change the game's data (constants and tables in its `.rodata` and `.data`). Those bytes are
 stored into the loaded game at start, before it runs. When two mods write the same bytes, the higher one wins,
@@ -113,8 +134,8 @@ keeps its textures at a quarter of the size.
 | This folder has no romfs, exefs or cheats files. | The archive was unpacked one level too deep (`mods\Mod\Mod\romfs`), or it holds no game files. | Move the folders up so `romfs` sits directly in the mod's folder. |
 | ... files carry another game version in their names. | The files are named for another update (`.Product.<number>.`) and the game's own files have no such name. They are still served under those names, as on a console, because the game sometimes asks for one; another update's resource size table is the exception and only lends its entries. | Nothing if the mod works. If it does nothing, download its release for your game update. |
 | Its code patches (exefs) are made for another game version. | The patch files name another update's build id. | Same: get the release for your update. |
-| This mod brings its own game code (a subsdk plugin or a replaced main). | Mods such as UltraCam ship compiled Switch code. The port cannot load it. | The whole mod stays off. **Use mods without their code** on the Mods tab (`mods_without_code = 1` under `[mods]`) uses the rest of it, which may expect the missing code. |
-| This mod patches the game code (exefs) in a way the port cannot apply. | The patch writes the game's data, not its code, or changes code in a form the port cannot build. | No workaround; the reason follows on the row. |
+| This mod brings its own game code (a subsdk plugin or a replaced main). | Mods such as UltraCam ship compiled Switch code. The port cannot load it. | The whole mod stays off. **Use <mod> without its code** under its row uses the rest of it, which may expect the missing code (see Mods with code the port cannot run). |
+| This mod patches the game code (exefs) in a way the port cannot apply. | The patch changes code in a form the port cannot build, or bytes the port cannot change at start. The reason follows on the row. | The whole mod stays off. **Use <mod> without its code** under its row leaves that patch file out and uses the rest of the mod. |
 | The folder name contains \|. | The mod list uses `\|` between names. | Rename the folder. |
 
 A mod never stops the game from starting. Whatever the port cannot use is left out and shown on the Mods tab.

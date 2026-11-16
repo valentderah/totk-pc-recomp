@@ -320,6 +320,25 @@ void rt_patch_disable(int set);                            // before the guest s
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
                                                            // the next time it runs
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
+// Contested sites (recomp/patches.py `ordered`): a site two or more ordered sets patch runs the one that is on with the
+// lowest rank (a tie: the one later in the patch file); rt_patch_pick[] holds its place, 1 up, 0 for none.
+typedef struct {
+    const char *module;                                    // "main"
+    uint32_t offset;                                       // the site's module offset
+    const int16_t *sets;                                   // its ordered sets, in the order its C tests them
+    int nsets;
+} RtPatchPick;
+void rt_patch_rank(int set, int rank);                     // an ordered set's rank (0 first: the Mods tab's position);
+                                                           // unranked sets come after every ranked one
+void rt_patch_picks(void);                                 // every contested site's pick from the sets on and their
+                                                           // ranks; rt_patch_switch of an ordered set redoes its sites
+int rt_patch_pick_count(void);
+const RtPatchPick *rt_patch_pick_at(int i);                // NULL out of range
+int rt_patch_pick_winner(int i);                           // the place in its sets of the set that runs there, -1 none
+const char *rt_patch_name(int set);                        // NULL out of range
+// --probe-mods: a set table of its own (names, n sets, its contested sites), every set off and unranked; names NULL
+// returns to the generated table.
+void rt_patch_probe_table(const char *const *names, int n, const RtPatchPick *picks, int npicks);
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns

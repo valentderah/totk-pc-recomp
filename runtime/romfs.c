@@ -467,7 +467,8 @@ static const char *owner_name(const Overlay *o) {
     return o->mod ? mods_at(o->mod - 1)->name : o->prio ? "romfs_mods" : "the port's patches";
 }
 
-// One overlay per path: the highest prio serves it; the others are dropped and counted on their mod.
+// One overlay per path: the highest prio serves it; the others are dropped and counted on their mod, and a file one
+// mod takes from another goes into the conflict table (mods_conflict).
 static void overlay_contest(void) {
     if (!noverlay) return;
     qsort(overlays, noverlay, sizeof *overlays, contest_order);
@@ -478,7 +479,7 @@ static void overlay_contest(void) {
             if (o->mod) {
                 ModInfo *m = mods_at(o->mod - 1);
                 m->overridden++;
-                if (!m->overridden_by[0]) snprintf(m->overridden_by, sizeof m->overridden_by, "%s", owner_name(w));
+                if (w->mod) mods_conflict(mods_at(w->mod - 1)->id, m->id, MOD_PART_FILES, 1);
             } else if (w->mod) {
                 rt_log("RomFS overlay: %s from mod %s replaces the one of %s", o->name, owner_name(w), owner_name(o));
             }
@@ -509,10 +510,10 @@ static void mods_overlay_log(void) {
     for (int k = 0; k < mods_count(); k++) {
         const ModInfo *m = mods_at(k);
         if (!m->enabled || !(m->kind & MOD_ROMFS) || m->problem != MOD_OK) continue;
-        rt_log("mods: %s: %u files served (%u replaced, %u added), %u overridden%s%s, %u for another game version",
-               m->name, m->replaced + m->added, m->replaced, m->added, m->overridden, m->overridden ? " by " : "",
-               m->overridden_by, m->other_version);
+        rt_log("mods: %s: %u files served (%u replaced, %u added), %u overridden, %u for another game version",
+               m->name, m->replaced + m->added, m->replaced, m->added, m->overridden, m->other_version);
     }
+    mods_conflicts_log(MOD_PART_FILES);
 }
 
 static int overlay_order(const void *a, const void *b) {

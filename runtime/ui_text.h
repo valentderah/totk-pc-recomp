@@ -84,15 +84,24 @@ typedef enum {
     UI_MENU_MODS_NONE,           // no mod folder yet: where to unpack one
     UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
     UI_MENU_MODS_ROW_DESC,       // printf: files it replaces, files it adds (as of this start)
-    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name
+    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name (the conflict table)
     UI_MENU_MODS_MOVE_HINT,
     UI_MENU_MODS_EMPTY, UI_MENU_MODS_SUBSDK, UI_MENU_MODS_EXEFS_LATER, UI_MENU_MODS_BAD_NAME,
     UI_MENU_MODS_EXEFS_UNSUPPORTED,  // printf: the file and why
     UI_MENU_MODS_EXEFS_OTHER,
     UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
     UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
-    UI_MENU_MODS_CODE_SKIPPED,       // printf: its code modules in exefs, which do not load (mods_without_code = 1)
-    UI_MENU_MODS_WITHOUT_CODE, UI_MENU_MODS_WITHOUT_CODE_DESC,   // the TOTK_MODS_WITHOUT_CODE switch
+    UI_MENU_MODS_CODE_SKIPPED,       // printf: its code modules in exefs, which do not load (used without its code)
+    UI_MENU_MODS_WITHOUT_CODE,       // printf: the mod's name; its switch "use without its code" (TOTK_MODS_NO_CODE)
+    UI_MENU_MODS_WITHOUT_CODE_DESC,
+    UI_MENU_MODS_WITHOUT_CODE_ALL,   // why that switch cannot be changed: TOTK_MODS_WITHOUT_CODE=1
+    UI_MENU_MODS_EXEFS_SKIPPED,      // printf: its ExeFS patch files left out (used without its code), the first's reason
+    // The conflict table (mods.h ModConflict), printf: the count, the other mod's name
+    UI_MENU_MODS_OVERRIDES_FILES,    // files it serves instead of a lower mod's (UI_MENU_MODS_OVERRIDDEN: the reverse)
+    UI_MENU_MODS_DATA_OVERRIDDEN,    // bytes of main's data a higher mod wrote over its own
+    UI_MENU_MODS_OVERRIDES_DATA,     // bytes of main's data it wrote over a lower mod's
+    UI_MENU_MODS_CODE_OVERRIDDEN,    // code sites where a higher mod's patch runs instead of its own
+    UI_MENU_MODS_OVERRIDES_CODE,     // code sites where its patch runs instead of a lower mod's
     UI_MENU_MODS_OTHER_VERSION,  // printf: files named for another game version, read only when asked for by name
     UI_MENU_MODS_UNUSED,         // under the switch of a mod the port cannot use
     UI_MENU_MODS_CHEATS,         // printf: its cheats as read at start
