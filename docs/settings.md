@@ -153,7 +153,7 @@ Many rows below are developer tools that only act together with another setting 
 | `vram_headroom` (default `1`) | `0` turns off the spare half-block of video memory that a background thread keeps per memory type. | Texture allocations on the render thread can wait for a new block again. | Caution |
 | `vs_outs` | `all` declares all 32 vertex shader output locations; otherwise only the union of the paired fragment inputs. | Larger vertex shaders and new pipelines; unwritten outputs read the same as before. | Caution |
 | `wb_exact` (default `1`) | `0` decides write-back of GPU-written textures by page only. | A target that shares a page with data the CPU writes can go unwritten, so a name label next to the reticle can blink. | Caution |
-| `wb_merge` (default `1`) | `0` copies GPU-written ranges back as plain copies instead of writing word by word the words that changed. | In mirror memory mode the GPU's copy can overwrite words the CPU wrote, which breaks effects such as falling rain and waterfall splashes. | Caution |
+| `wb_merge` (default `1`) | `0` copies GPU-written ranges back as plain copies instead of writing word by word the words that changed; with `shadow = 1` it also leaves ranges the GPU has yet to write back out of the copy into the shadow. | In mirror memory mode, and with `shadow = 1`, the GPU's copy can overwrite words the CPU wrote, which breaks effects such as falling rain and waterfall splashes. | Caution |
 
 ## Motion vectors and DLSS
 
