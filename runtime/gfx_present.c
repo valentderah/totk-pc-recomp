@@ -259,9 +259,6 @@ static void window_settings_live(void) {
     static int started;
     static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
-    // Every present: Reflex follows the frame limit, and with fps_limit = display the window measures the monitor's
-    // rate after the swapchain is made, with no settings change to announce it. Unchanged, it returns at once.
-    if (started) reflex_apply_locked();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
