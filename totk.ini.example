@@ -473,6 +473,10 @@
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# 1: a mod that brings its own game code (exefs/subsdk*, a replaced exefs/main), which the port cannot run, is used
+# without that code: its RomFS files, cheats and ExeFS patch files load. Its files may expect the missing code. 0: such
+# a mod stays off as a whole. Read at start. Default: 0.
+# mods_without_code = 0
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
 # the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack

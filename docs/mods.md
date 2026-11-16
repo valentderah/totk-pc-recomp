@@ -113,7 +113,7 @@ keeps its textures at a quarter of the size.
 | This folder has no romfs, exefs or cheats files. | The archive was unpacked one level too deep (`mods\Mod\Mod\romfs`), or it holds no game files. | Move the folders up so `romfs` sits directly in the mod's folder. |
 | ... files carry another game version in their names. | The files are named for another update (`.Product.<number>.`) and the game's own files have no such name. They are still served under those names, as on a console, because the game sometimes asks for one; another update's resource size table is the exception and only lends its entries. | Nothing if the mod works. If it does nothing, download its release for your game update. |
 | Its code patches (exefs) are made for another game version. | The patch files name another update's build id. | Same: get the release for your update. |
-| This mod brings its own game code (a subsdk plugin or a replaced main). | Mods such as UltraCam ship compiled Switch code. The port cannot load it. | No workaround; the whole mod stays off. |
+| This mod brings its own game code (a subsdk plugin or a replaced main). | Mods such as UltraCam ship compiled Switch code. The port cannot load it. | The whole mod stays off. **Use mods without their code** on the Mods tab (`mods_without_code = 1` under `[mods]`) uses the rest of it, which may expect the missing code. |
 | This mod patches the game code (exefs) in a way the port cannot apply. | The patch writes the game's data, not its code, or changes code in a form the port cannot build. | No workaround; the reason follows on the row. |
 | The folder name contains \|. | The mod list uses `\|` between names. | Rename the folder. |
 

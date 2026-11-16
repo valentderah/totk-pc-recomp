@@ -126,6 +126,37 @@ static void probe_data(const char *root) {
     remove_tree(root);
 }
 
+// A scan of mods with a code module the port cannot run, under mods_without_code.
+static void probe_without_code(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    static const char *const files[] = {"E/exefs/subsdk9", "H/romfs/h.bin", "H/exefs/subsdk9", "I/romfs/i.bin",
+                                        "I/exefs/main"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    mods_probe_cache("", "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "1");
+    mods_rescan();
+    mods_scan();
+    ModInfo *e = by_name("E"), *h = by_name("H"), *im = by_name("I");
+    CHECK(e && h && im, "without-code scan: three mods");
+    if (e && h && im) {
+        CHECK(e->problem == MOD_PLUGIN, "mods_without_code: a mod with only a code module stays off");
+        CHECK(h->problem == MOD_OK && EQ(h->code, "subsdk9"), "mods_without_code: RomFS + subsdk9 is used without it");
+        CHECK(im->problem == MOD_OK && EQ(im->code, "main"), "mods_without_code: RomFS + replaced main is used");
+    }
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
+    mods_rescan();
+    mods_scan();
+    h = by_name("H");
+    CHECK(h && h->problem == MOD_PLUGIN, "without mods_without_code a mod with a code module stays off");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "");
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
+}
+
 // s ends in tail, either path separator matching either.
 static int ends_with(const char *s, const char *tail) {
     size_t n = strlen(s), t = strlen(tail);
@@ -214,6 +245,7 @@ int probe_mods(void) {
         CHECK(mods_changed(), "changes seen");
     }
     probe_data(root);
+    probe_without_code(root);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
     int table = restbl_probe();
     return fails || table ? 1 : 0;

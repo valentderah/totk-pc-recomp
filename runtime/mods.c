@@ -18,6 +18,10 @@
 // rebuild at start (cheats.c), and its mod stays off until then. A file's writes into main's data (.rodata, .data,
 // .bss) are lines of build-cache/exefs.data, stored into the loaded main before the game runs (mods_exefs_data), as
 // emulators apply a patch file to the module before its dynamic linker runs.
+//
+// Code modules: an exefs/subsdk* file is a plugin that patches main from its own start-up on the Switch, and a replaced
+// exefs/main is another game code; the port cannot load either (ModInfo.code names them): their mod stays off unless
+// mods_without_code = 1.
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,14 +76,24 @@ static int ends_with_ci(const char *s, const char *tail) {
     return n >= t && !strcasecmp(s + n - t, tail);
 }
 
+// A code module of m the port cannot run, named in m->code.
+static void code_unrun(ModInfo *m, const char *name) {
+    size_t k = strlen(m->code);
+    snprintf(m->code + k, sizeof m->code - k, "%s%s", k ? ", " : "", name);
+}
+
 // What the ExeFS folder holds: MOD_EXEFS for patches (.ips, .pchtxt), MOD_SUBSDK for code modules (subsdk* plugins, a
 // replaced main). main.npdm alone is the process's metadata, not code: it counts as neither.
 static int exefs_cb(const char *name, int kind, uint64_t size, void *ctx) {
     (void)size;
-    int *k = ctx;
+    ModInfo *m = ctx;
     if (kind != PLAT_FS_FILE) return 1;
-    if (ends_with_ci(name, ".ips") || ends_with_ci(name, ".pchtxt")) *k |= MOD_EXEFS;
-    else if (!strncasecmp(name, "subsdk", 6) || !strcasecmp(name, "main")) *k |= MOD_SUBSDK;
+    if (ends_with_ci(name, ".ips") || ends_with_ci(name, ".pchtxt")) {
+        m->kind |= MOD_EXEFS;
+    } else if (!strncasecmp(name, "subsdk", 6) || !strcasecmp(name, "main")) {
+        m->kind |= MOD_SUBSDK;
+        code_unrun(m, name);
+    }
     return 1;
 }
 
@@ -127,7 +141,9 @@ static int by_order(const void *a, const void *b) {
 static const char *problem_name(ModProblem p) {
     switch (p) {
     case MOD_EMPTY: return "empty";
-    case MOD_PLUGIN: return "has a code module (subsdk or main), not supported; the whole mod stays off";
+    case MOD_PLUGIN:
+        return "has a code module (subsdk or main), not supported; the whole mod stays off (mods_without_code = 1 uses "
+               "the rest of it)";
     case MOD_EXEFS_LATER: return "ExeFS patches wait for a rebuild of the game code; the whole mod stays off";
     case MOD_EXEFS_UNSUPPORTED: return "an ExeFS patch file cannot be applied; the whole mod stays off";
     case MOD_EXEFS_OTHER: return "its ExeFS patches are for another game version";
@@ -334,12 +350,15 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     find_root(path, "exefs", m->exefs, sizeof m->exefs);
     find_root(path, "cheats", m->cheats, sizeof m->cheats);
     if (m->romfs[0] && has_file(m->romfs)) m->kind |= MOD_ROMFS;
-    if (m->exefs[0]) plat_fs_list(m->exefs, exefs_cb, &m->kind);
+    if (m->exefs[0]) plat_fs_list(m->exefs, exefs_cb, m);
     if (m->cheats[0]) plat_fs_list(m->cheats, cheats_cb, &m->kind);
     int unsupported = exefs_check(m, path);
-    // a mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code
+    // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. A code
+    // module (m->code) never loads; with mods_without_code = 1 the rest of the mod is used, when it has a rest.
+    int rest = m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS);
+    int code_off = m->code[0] && (!cfg_bool("TOTK_MODS_WITHOUT_CODE") || !rest);
     m->problem = strchr(m->name, '|')                                       ? MOD_BAD_NAME
-               : m->kind & MOD_SUBSDK                                       ? MOD_PLUGIN
+               : code_off                                                   ? MOD_PLUGIN
                : unsupported                                                ? MOD_EXEFS_UNSUPPORTED
                : m->pending                                                 ? MOD_EXEFS_LATER
                : m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS) ? MOD_OK
@@ -412,6 +431,9 @@ void mods_scan(void) {
                m->kind & MOD_EXEFS ? " exefs" : "", m->kind & MOD_SUBSDK ? " subsdk" : "",
                m->kind & MOD_CHEATS ? " cheats" : "", m->kind ? "" : " no files", problem_name(m->problem),
                m->note[0] ? ": " : "", m->note);
+        if (m->code[0] && m->problem != MOD_PLUGIN)
+            rt_log("mods: %s: its code module (%s) does not load (mods_without_code = 1); the rest of the mod is used",
+                   m->name, m->code);
     }
     rt_log("mods: %d folders in %s", nmods, dir);
 }

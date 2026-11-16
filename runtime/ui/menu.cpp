@@ -1254,7 +1254,9 @@ static void tab_mods(float scale) {
             if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
             else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
         }
-        char code[512] = "", problem[512] = "";
+        char code[512] = "", problem[512] = "", skipped[512] = "";
+        if (m->code[0] && m->problem != MOD_PLUGIN)   // used without that code (mods_without_code = 1)
+            snprintf(skipped, sizeof skipped, menu_text(UI_MENU_MODS_CODE_SKIPPED), m->code);
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
         else if (m->nsets || m->ndata)
@@ -1271,7 +1273,7 @@ static void tab_mods(float scale) {
         default: break;
         }
         int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
-        const char *parts[] = {over, other, cheat, code, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        const char *parts[] = {over, other, cheat, code, skipped, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
         for (const char *part : parts)
             if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
         const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
@@ -1287,6 +1289,10 @@ static void tab_mods(float scale) {
             opt_save_soon();
         }
     }
+    // The switch for mods with their own code shows once a mod with a code module is there (or the switch is on)
+    bool code_mods = cfg_bool("TOTK_MODS_WITHOUT_CODE");
+    for (int i = 0; i < n && !code_mods; i++) code_mods = mods_at(i)->code[0] != 0;
+    if (code_mods) opt_toggle("TOTK_MODS_WITHOUT_CODE", UI_MENU_MODS_WITHOUT_CODE, UI_MENU_MODS_WITHOUT_CODE_DESC);
     bool rebuild =
         cheats_rebuild_pending() && opt_button("##restart", UI_MENU_CHEATS_REBUILD, UI_MENU_CHEATS_REBUILD_DESC);
     static uint64_t open_failed;   // plat_now_ns until which the button says it failed

@@ -14,7 +14,8 @@ typedef enum {
     MOD_OK,
     MOD_EMPTY,          // no RomFS file, no ExeFS patch, no cheat file
     MOD_PLUGIN,         // has code modules (exefs/subsdk*, a replaced exefs/main): the port has no module loader, so the
-                        // whole mod stays off (its RomFS files may expect that code)
+                        // whole mod stays off (its RomFS files may expect that code); with TOTK_MODS_WITHOUT_CODE=1 the
+                        // rest of such a mod is used, without those code modules (ModInfo.code names them)
     MOD_EXEFS_LATER,    // has ExeFS patches for this game's main that the game was built without: the rebuild at the
                         // next start builds them in; the whole mod stays off until then
     MOD_EXEFS_UNSUPPORTED,   // an ExeFS patch file the port cannot apply (note says why): the whole mod stays off
@@ -27,7 +28,8 @@ typedef struct {
     char romfs[2048];      // UTF-8 path of its RomFS root; "" none
     char exefs[2048];      // UTF-8 path of its ExeFS folder; "" none
     char cheats[2048];     // UTF-8 path of its cheats folder; "" none
-    int kind, enabled;
+    int kind, enabled;     // kind: MOD_SUBSDK for any code module
+    char code[64];         // its code modules in exefs ("subsdk9", "main, subsdk9"): never loaded
     ModProblem problem;
     uint32_t replaced, added, overridden;   // romfs.c: files served (replacing / added), files a higher mod serves
     uint32_t other_version;                 // files named for another game version: RomFS *.Product.<n>.* the RomFS
