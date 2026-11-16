@@ -1,5 +1,5 @@
-// RSF is loaded through its exported C interface. No provider implementation or
-// GPL header is incorporated here. Keep the module alive for all borrowed exports
+// RSF is loaded through its exported C interface; only its MIT interface headers are
+// compiled in, and no provider implementation. Keep the module alive for all borrowed exports
 // and for Vulkan dispatch callbacks that may outlive provider shutdown.
 #include "cfg.h"
 #include "host.h"
