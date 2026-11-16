@@ -1151,3 +1151,20 @@ site optref main 1622bec b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x
 set ability  TOTK_ABILITY_GUARD  1
 site ability main 1622bf0 f9400115 94c424dc            # ldr x21, [x8] -> bl page+0xf60
 site ability main 1622bf4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)
+
+# Sound command lists above 200 fps (issue #337). The game thread hands its sound commands to the audio thread in
+# lists: 16 of them, of which 4 are always held (one being filled by the game thread, the others on the audio thread's
+# side), so at most 12 wait in the command ring. The game thread submits at most one list per update (main+0x9bd144,
+# when a free list is there), and the audio thread takes one per pass of its loop, one 5 ms audio frame: after a list
+# main+0x883780 goes on past the ring's check (b 0x883318). Above about 200 updates a second the ring stays full. A
+# guard in the game (main+0x9bcdc4, at the end of each update) counts the updates that find the ring of free lists
+# empty and exactly 12 lists in the command ring (0x9bce1c cmp w9, #0xc); the count goes back to 0 only when a free
+# list is there. At every multiple of 300 (10 s at 30 fps, 1.25 s at 240) it clears the sound command switch, the byte
+# at [[engine + 0x1a0] + 8] (main+0x2268bfc), and stops every active voice (main+0x226f29c). The switch is set to 1 only
+# by its constructor (main+0xf31ce8, from the engine's init main+0xf31530), so the game stays silent until it is
+# restarted. The site sends the audio thread back to the ring's check (0x8832e8, where the game's own 0x883c18 also
+# branches; x21, the engine, is not written between the check and the site), so it takes every queued list in the pass
+# and the ring does not stay full. Measured on 1.2.1 at fps_limit 240, same save and input script: sound in 5 of 118 s
+# with the set off, in 108 of 118 s with it on.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 883780 17fffee6 17fffeda   # b 0x883318 -> b 0x8832e8

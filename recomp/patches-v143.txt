@@ -1177,3 +1177,10 @@ site report  main a2310 531f7821 530f7c24 531f7821 35000184   # lsr w4, w1, #15;
 # hook. main+0x585bd0 sets the render size (runtime/resolution.c SET_RENDER_SIZE): res_fn_hit takes the renderer from
 # the game's own call at start, so a DLSS mode can change while the game runs.
 hook main 585bd0
+
+# Sound command lists above 200 fps (issue #337): as in patches-v121.txt. The audio thread's check of the command ring
+# is main+0x148aec, which wants x8 = the engine (as 0x148ae0 loads it from [x19]); after a list the site goes back to
+# it instead of on to 0x148b14, with the two instructions the game itself has at 0x149700. Measured on 1.4.3 at
+# fps_limit 240, same save and input script: sound in 2 of 118 s with the set off, in 110 of 119 s with it on.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec
