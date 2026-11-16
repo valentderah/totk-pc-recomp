@@ -104,9 +104,27 @@ int input_cursor_released(void);   // Esc or a non-client activation released th
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
+// Switch HD rumble via RenHDrum (renhdrum.dll when present): DualSense 48 kHz USB audio VCM / Bluetooth HID report
+// 0x32, Switch Pro / Joy-Con HD rumble packets, Xbox One / Series X|S 4-motor rumble, or Steam Controller (2026) grip
+// PCM streaming (HID report 0x86 / 0x88). side is 0 (left), 1 (right), or -1 (both). Returns 1 when RenHDrum handled the
+// vibration (skipping basic ERM downmixing), 0 to fall back to input_rumble. Callable from any thread.
+int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
+                    float right_al, float right_fl, float right_ah, float right_fh);
+// Leaves the controller silent (neutral HD rumble packet / silent DualSense report 0x32 / zero Xbox motors / Steam grip
+// off), frees the triggers of a DualSense that was given trigger effects (TOTK_DUALSENSE_TRIGGERS,
+// TOTK_DUALSENSE_TRIGGER_VIBRATION, TOTK_RUMBLE_TRIGGERS) and
+// destroys the RenHDrum DSP and engines. The exit paths call it before plat_exit, which runs no atexit handlers. Any thread.
+void input_haptics_stop(void);
+// The HD rumble / haptics controller connected now (for the Controls tab's "in use" notes); any thread.
+enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, HD_PAD_DUALSENSE_BT, HD_PAD_XBOX_USB, HD_PAD_XBOX_BT, HD_PAD_STEAM_USB, HD_PAD_STEAM_BT };
+int input_hd_pad_kind(void);
+// 1 when renhdrum.dll / librenhdrum.so is present next to the executable and matches RENHDRUM_VERSION; any thread.
+int input_renhdrum_available(void);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
-// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
+// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value. On a
+// DualSense, TOTK_DUALSENSE_TRIGGER_VIBRATION=1 (or TOTK_RUMBLE_TRIGGERS=1) vibrates its adaptive triggers at the level
+// of that value (dualsense.h), and at the level of the high band while input_hd_rumble plays the rumble.
 int input_rumble_triggers_enabled(void);
 
 // Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the

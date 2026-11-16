@@ -79,6 +79,14 @@
 # the CPU threads).
 # lib_prebuild = 1
 # lib_prebuild_threads = 4
+# Experimental: 1 keeps a render pass open through the game's own Barrier calls (ORDER_FRAGMENTS | INVALIDATE_TEXTURE) when
+# none of the pass's draws can write a storage buffer or image, making the writes visible to the next draw with a by-region
+# barrier instead of ending the pass. Scenes where the game issues about a thousand such barriers a frame (the water in
+# the Nachoyah Shrine, terrain decals) go from about 1200 passes and 10000 layout changes to about 130 passes and 150;
+# the GPU time there fell from 24.5 to 7.8 ms a frame. The game's barrier orders every pixel, the one inside the pass only
+# the pixel a draw writes: a driver that runs it per screen tile can show flicker or squares at the edges of water, decals
+# or particles (report any). Needs the feedback layout (the default). Read at start. Default: 0.
+# barrier_merge = 0
 # Build known pipelines ahead of time.
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
@@ -371,6 +379,33 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
+# Switch Pro Controller / Joy-Con HD Rumble, PS5 DualSense voice-coil haptics, and Xbox One / Series X|S 4-motor rumble
+# (with renhdrum.dll next to totk.exe). hd_rumble = 0, dualsense_haptics = 0 or xbox_rumble = 0 falls back to standard
+# SDL rumble. hd_rumble_bt_speed: stable, balanced or fast. xbox_triggers = 1 includes the two impulse trigger motors.
+# hd_rumble = 1
+# hd_rumble_bt_speed = fast
+# hd_rumble_crisp = 1
+# hd_rumble_bt_crisp = 1
+# dualsense_haptics = 1
+# dualsense_volume = 100
+# dualsense_crisp = 1
+# dualsense_bt_crisp = 0
+# xbox_rumble = 1
+# xbox_triggers = 1
+# Steam Controller (2026) grip HD Rumble via RenHDrum (Beta, requires Steam Input off): 8 kHz PCM over USB, 4 kHz over
+# wireless dongle or Bluetooth (Windows). steam_volume is 10 to 100 %; steam_crisp sharpens short impacts and notes.
+# steam_rumble = 1
+# steam_volume = 100
+# steam_crisp = 1
+# Adaptive triggers of a DualSense (PS5): dualsense_triggers is how hard the trigger resists, 1 (light) to 8 (heavy);
+# 0 = off. dualsense_triggers_mode selects which triggers resist: r2 (only R2 gets the drawn-bow resistance, L2 is
+# free), both (R2 + L2, with L2 lighter for shield/lock-on), or l2 (only L2). dualsense_trigger_vibration = 1 vibrates
+# both adaptive triggers with the game's rumble (0 = off). Needs neither renhdrum.dll nor dualsense_haptics, but the
+# game must see the DualSense itself, not a virtual Xbox pad (Steam Input, DS4Windows). Changes while the game runs
+# take effect at once.
+# dualsense_triggers = 0
+# dualsense_triggers_mode = r2
+# dualsense_trigger_vibration = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.

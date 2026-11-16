@@ -22,6 +22,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
+#include "input.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
@@ -85,6 +86,7 @@ void gfx_window_closed(void) {
     vk_pipeline_save();
     playtime_save();
     prof_write();   // plat_exit runs no atexit handlers
+    input_haptics_stop();
     if (restart) {
         plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");

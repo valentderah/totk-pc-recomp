@@ -42,6 +42,8 @@ do one run with it and one without (`set TOTK_VK_VALIDATION=`).
 If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
 `vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
 `set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
+`set TOTK_ADDR_REPORT=1` adds `vk: fault address` lines naming the image or buffer at the faulting address; it slows
+the game down over a session, so use it only for that run.
 
 The game keeps running behind other windows (`assume_focus = 0` in `totk.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.
