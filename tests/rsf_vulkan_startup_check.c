@@ -8,7 +8,7 @@
 
 static HMODULE runtime;
 static const char *provider_directory;
-static int backend = 1;
+static int backend = 1, disabled;
 unsigned rt_trace;
 int rsf_runtime_load(void) { return runtime != NULL; }
 const char *rsf_runtime_path(void) { return runtime ? "probe" : NULL; }
@@ -81,3 +81,16 @@ int main(int argc, char **argv) {
     vkDestroyInstance(instance, NULL);
     return !shutdown_ok;
 }
+
+int rsf_config_enabled(void) { return !disabled && cfg_int("TOTK_RSF_ENABLED"); }
+
+int rsf_config_fg_backend(void) { return cfg_int("TOTK_RSF_FG"); }
+int rsf_config_sr_backend(void) { return cfg_int("TOTK_RSF_BACKEND"); }
+int rsf_config_low_latency(void) { return cfg_int("TOTK_RSF_LOW_LATENCY"); }
+int rsf_requested(void) { return rsf_config_enabled() || rsf_config_fg_backend() || rsf_config_low_latency(); }
+int rsf_temporal_requested(void) { return rsf_config_enabled() || rsf_config_fg_backend(); }
+
+void *rsf_runtime_cpu_sink(void) { return rsf_runtime_symbol("rsf_latencyvk_cpu"); }
+void *rsf_runtime_execution_sink(void) { return rsf_runtime_symbol("rsf_latencyvk_execution"); }
+
+void rsf_runtime_disable(const char *reason) { disabled=1; rt_log("RSF disabled: %s",reason); }

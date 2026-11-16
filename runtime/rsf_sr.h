@@ -13,8 +13,6 @@ enum { RSF_SR_FAILED = 0, RSF_SR_RECORDED = 1, RSF_SR_PENDING = 2, RSF_SR_FALLBA
 // PENDING retains the owner for a later frame; it never authorizes using output.
 // Calls are serialized by the graphics owner. Even failed recording must be submitted.
 int rsf_sr_record(RsfSrSession *session, void *commands, const rsf_srvk_frame *frame);
-// Call after GPU completion and command-buffer reset, before recording it again.
-void rsf_sr_retire(RsfSrSession *session, void *commands);
 // Renderer command-pool reuse boundary: prior GPU work is complete and a new
 // recording has begun (implicitly resetting the command buffer's previous use).
 void rsf_sr_commands_reset(void *commands);

@@ -92,10 +92,7 @@ def main(argv=None):
     source = rsf_source(ctx)
     if source is not None:
         try:
-            rsf_package.validate(source)
-            existing = dest / 'ReScaleFrame'
-            if existing.exists() or existing.is_symlink():
-                rsf_package.validate(existing)
+            rsf_package.preflight(source, dest)
         except (OSError, ValueError, TypeError, KeyError) as error:
             rep.error('rsf.invalid', {'path': str(source), 'detail': str(error)})
             rep.emit('end', result='failed', seconds=0)

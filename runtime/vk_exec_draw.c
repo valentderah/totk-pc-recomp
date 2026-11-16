@@ -485,7 +485,7 @@ typedef struct VkExecDraw {
     uint64_t cur_fence;
     CbState B;
     struct { uint64_t handle; VkDescriptorImageInfo descriptor; } snapshot_native[32];
-    struct { uint64_t current, previous; VkMotionTextureFact fact; VkSampler sampler; int captured; } snapshot_draw;
+    struct { uint64_t previous; VkMotionTextureFact fact; VkSampler sampler; int captured; } snapshot_draw;
     DescSigs DS;
     BindStats BS;
     RsState RS;
@@ -1448,40 +1448,43 @@ static void upd_note(VkExec *ex, const p_update_ub *u) {
 }
 
 // 1 when recorded updates supply every byte of the pointer, without needing a base snapshot or live backing.
-static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
-    uint8_t seen[8] = {0};
-    size_t have = 0;
-    if (n > sizeof seen) return 0;
-    VkExecDraw *D = ex->draw;
-    const VkExecUpd *u = ex->upd;   // a chunk: the scan's list of the submission, of which upd_n precede this op
-    uint32_t cnt = ex->upd_n, mask = UINT32_MAX;
+static int upd_view(const VkExec *ex, const VkExecUpd **rows, uint32_t *count, uint32_t *mask) {
+    *rows = ex->upd; *count = ex->upd_n; *mask = UINT32_MAX;
     if (!ex->chunked) {
-        if (D->UPD.fence != ex->fence) return 0;
-        u = D->UPD.u, cnt = D->UPD.n, mask = UPD_N - 1;
+        const UpdRing *ring = &ex->draw->UPD;
+        if (ring->fence != ex->fence) return 0;
+        *rows = ring->u; *count = ring->n; *mask = UPD_N - 1;
     }
+    return 1;
+}
+
+// Return a byte-coverage mask, retaining partial newest-first updates for pointer fallback.
+static unsigned upd_read_mask(const VkExec *ex, uint64_t a, void *out, size_t n) {
+    if (n > 8) return 0;
+    unsigned seen = 0, complete = (1u << n) - 1;
+    const VkExecUpd *u;
+    uint32_t cnt, mask;
+    if (!upd_view(ex, &u, &cnt, &mask)) return 0;
     for (uint32_t i = cnt, end = !ex->chunked && cnt > UPD_N ? cnt - UPD_N : 0; i-- > end;) {
         const VkExecUpd *e = &u[i & mask];
         if (a >= e->hi || a + n <= e->lo) continue;
         uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
-        for (uint64_t p = lo; p < hi; p++) {
-            if (seen[p - a]) continue;   // newer updates win, including a later partial overwrite
-            ((uint8_t *)out)[p - a] = e->data[p - e->lo];
-            seen[p - a] = 1;
-            if (++have == n) return 1;
+        for (uint64_t pos = lo; pos < hi; pos++) {
+            unsigned bit = 1u << (pos - a);
+            if (seen & bit) continue;
+            ((uint8_t *)out)[pos - a] = e->data[pos - e->lo];
+            seen |= bit;
+            if (seen == complete) return seen;
         }
     }
-    return 0;
+    return seen;
 }
 
 // Applies the updates of this submission that touch [a, a+n) onto out, oldest first (ub_bind's merged copies).
 static void upd_apply(const VkExec *ex, uint64_t a, uint8_t *out, size_t n) {
-    const UpdRing *U = &ex->draw->UPD;
-    const VkExecUpd *u = ex->upd;
-    uint32_t cnt = ex->upd_n, mask = UINT32_MAX;
-    if (!ex->chunked) {
-        if (U->fence != ex->fence) return;
-        u = U->u, cnt = U->n, mask = UPD_N - 1;
-    }
+    const VkExecUpd *u;
+    uint32_t cnt, mask;
+    if (!upd_view(ex, &u, &cnt, &mask)) return;
     for (uint32_t i = !ex->chunked && cnt > UPD_N ? cnt - UPD_N : 0; i < cnt; i++) {
         const VkExecUpd *e = &u[i & mask];
         uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
@@ -1495,7 +1498,10 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     const p_bind_buf *u = &ex->ubo[st][r->cbuf_slot - 3];
     uint64_t off = (uint64_t)r->handle * 4, a = 0;
     VkMemSpan sp;
-    if (!u->addr || u->size < off + 8 || upd_read(ex, u->addr + off, &a, 8)) return a;
+    if (!u->addr || u->size < off + 8) return 0;
+    uint64_t updated = 0;
+    unsigned covered = upd_read_mask(ex, u->addr + off, &updated, 8);
+    if (covered == 0xff) return updated;
     // Resolve the pointer from the same submission snapshot as ubo_info. The game can rewrite the live block
     // while replay records; using it here can bind another frame's storage allocation (or the zero fallback).
     VkDescriptorBufferInfo snap;
@@ -1505,7 +1511,8 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
         if (!vk_mem_resolve(u->addr + off, 8, &sp)) return 0;
         memcpy(&a, (const void *)(uintptr_t)(u->addr + off), 8);
     }
-    upd_apply(ex, u->addr + off, (uint8_t *)&a, 8);
+    for (unsigned i = 0; i < 8; i++) if (covered & (1u << i))
+        ((uint8_t *)&a)[i] = ((const uint8_t *)&updated)[i];
     return a;
 }
 
@@ -3635,7 +3642,6 @@ static int mo_storage_range(VkExec *ex, const GfxShaderRes *r, uint64_t *identit
     // The translated address compensation still reads c0/current pointer low bits. Until those are duplicated too,
     // admit only aligned pointers in both captured and consuming frames, where compensation is identically zero.
     if (lead) return 0;
-    if (!vk_mem_resolve(b->addr - lead, 1, &sp)) return 0;
     uint64_t n = b->size ? b->size + lead : sp.avail;
     if (n > sp.avail) n = sp.avail;
     if (n > LIM.sbo_max) n = LIM.sbo_max;
@@ -3991,8 +3997,8 @@ static uint64_t mo_blocks_key(const VkExec *ex, uint32_t banks) {
     for (int b = 3; b <= 16; b++) {
         if (!(banks >> b & 1) || b == 4) continue;
         const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][b - 3];
-        key = (key ^ u->addr) * 0x100000001b3ull;
-        key = (key ^ u->size) * 0x100000001b3ull;
+        key = rt_fnv_mix(key, u->addr);
+        key = rt_fnv_mix(key, u->size);
     }
     return key;
 }
@@ -4020,7 +4026,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     // the variant: the translation of the same code and answers, kept per shader once found; it names the banks the
     // position depends on (0: none, the shader is skipped from then on)
-    static struct { const GfxShader *of, *vs; uint32_t banks; } vmemo[1024];
+    static struct { const GfxShader *of, *vs; uint32_t banks; int classified, storage, previous_storage, previous_texture; } vmemo[1024];
     uint32_t vi = (uint32_t)((uintptr_t)D->B.st.vs * 0x9E3779B97F4A7C15ull >> 54);
     if (vmemo[vi].of != D->B.st.vs) {
         int has, pending = 0;
@@ -4035,17 +4041,25 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         uint32_t extra = gfx_shader_outputs(v, io) & ~gfx_shader_outputs(D->B.st.vs, io);
         uint32_t banks = extra ? gfx_shader_mvprev_banks(v) & 0x1fff8u : 0;
         vmemo[vi].of = D->B.st.vs, vmemo[vi].vs = v, vmemo[vi].banks = banks;
+        vmemo[vi].classified = 0;
         vk_mvprev_want((banks & ~(1u << 4)) >> 3);   // binding index = bank - 3
     }
     const GfxShader *vs = vmemo[vi].vs;
     uint32_t banks = vmemo[vi].banks;
     // Old cached variants used current storage for both positions. They lack the separate binding contract.
-    const GfxShaderRes *sr;
-    int ns = gfx_shader_resources(vs, GFX_RES_SSBO, &sr), previous_storage = 0;
-    for (int i = 0; i < ns; i++) previous_storage |= sr[i].cbuf_slot >= 64;
-    if (ns && !previous_storage) { MO.storage++; return; }
-    int nt = gfx_shader_resources(vs, GFX_RES_TEX, &sr), previous_texture = 0;
-    for (int i = 0; i < nt; i++) previous_texture |= !!(sr[i].flags & 128);
+    if (!vmemo[vi].classified) {
+        const GfxShaderRes *sr;
+        int ns = gfx_shader_resources(vs, GFX_RES_SSBO, &sr), previous_storage = 0;
+        for (int i = 0; i < ns; i++) previous_storage |= sr[i].cbuf_slot >= 64;
+        int nt = gfx_shader_resources(vs, GFX_RES_TEX, &sr), previous_texture = 0;
+        for (int i = 0; i < nt; i++) previous_texture |= !!(sr[i].flags & 128);
+        vmemo[vi].storage = ns;
+        vmemo[vi].previous_storage = previous_storage;
+        vmemo[vi].previous_texture = previous_texture;
+        vmemo[vi].classified = 1;
+    }
+    int previous_storage = vmemo[vi].previous_storage, previous_texture = vmemo[vi].previous_texture;
+    if (vmemo[vi].storage && !previous_storage) { MO.storage++; return; }
     if (previous_texture && !D->snapshot_draw.captured) return;
     if (!banks || (!(banks & ~(1u << 4)) && !previous_storage && !previous_texture)) {
         MO.no_out++;
@@ -4402,7 +4416,7 @@ static int restart_for(const VkExec *ex, int prim, int itype) {
 
 static uint64_t texture_draw_identity(const VkExec *ex, const p_draw_idx *d) {
     uint64_t h = 0xcbf29ce484222325ull;
-#define TEXTURE_KEY(x) h = (h ^ (uint64_t)(x)) * 0x100000001b3ull
+#define TEXTURE_KEY(x) h = rt_fnv_mix(h, (uint64_t)(x))
     TEXTURE_KEY((uintptr_t)ex->draw->B.st.vs); TEXTURE_KEY(d->ibuf); TEXTURE_KEY(d->count);
     TEXTURE_KEY(d->base_vertex); TEXTURE_KEY(d->base_instance); TEXTURE_KEY(d->instances); TEXTURE_KEY(d->itype);
     for (int i = 0; i < 16; i++) { TEXTURE_KEY(ex->vbuf[i].address); TEXTURE_KEY(ex->vbuf[i].size); TEXTURE_KEY(ex->pipe.vstream[i].stride); }
@@ -4410,6 +4424,7 @@ static uint64_t texture_draw_identity(const VkExec *ex, const p_draw_idx *d) {
     return h;
 }
 static void texture_snapshot_before(VkExec *ex, const p_draw_idx *d) {
+    if (!ex || ex->chunked) return ;
     VkExecDraw *D = ex->draw;
     D->snapshot_draw.captured = 0;
     if (!vk_motion_texture_active() || !vk_mvprev_on() || !D->B.st_valid || !D->B.st.ds.dt || !D->B.st.ds.dw ||
@@ -4454,10 +4469,10 @@ static void texture_snapshot_before(VkExec *ex, const p_draw_idx *d) {
         uint64_t address = 0; int how;
         if (!u->addr || !u->size) return;
         if (!vk_mvprev_find(bank - 3, u->addr, u->size, &address, &how)) have_previous = 0;
-        key = (key ^ u->addr) * 0x100000001b3ull;
-        old = (old ^ address) * 0x100000001b3ull;
+        key = rt_fnv_mix(key, u->addr);
+        old = rt_fnv_mix(old, address);
     }
-    D->snapshot_draw.current = key; D->snapshot_draw.previous = have_previous ? old : 0;
+    D->snapshot_draw.previous = have_previous ? old : 0;
     D->snapshot_draw.fact = fact; D->snapshot_draw.sampler = native.sampler;
     D->snapshot_draw.captured = vk_motion_texture_capture(ex, key, &fact, native.sampler);
 }

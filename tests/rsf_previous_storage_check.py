@@ -1,11 +1,10 @@
 """Actual storage range/history/descriptor functions with distinct old/new pointees and delayed fences."""
 from pathlib import Path
-import runpy
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-base = runpy.run_path(str(root / 'tests/rsf_retained_history_check.py'))
-fixture = base['fixture'].split('int main(void) {')[0]
+from rsf_retained_history_check import fixture as base_fixture
+fixture = base_fixture.split('int main(void) {')[0]
 draw = (root / 'runtime/vk_exec_draw.c').read_text()
 fixture = fixture.replace('assert(a == (uintptr_t)guest && n == sizeof guest);',
                           'assert(a >= (uintptr_t)guest && a < (uintptr_t)guest+256);')
@@ -82,10 +81,11 @@ int main(void) {
     return 0;
 }
 '''
-out = root / 'build/checks/rsf-storage-variant-worker'
-out.mkdir(parents=True, exist_ok=True)
-(out / 'previous-storage.c').write_text(fixture)
-subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
-                '-Werror', str(out / 'previous-storage.c'), '-o', str(out / 'previous-storage.exe')], check=True)
-subprocess.run([str(out / 'previous-storage.exe')], check=True)
-print('previous storage address/content, ranges, leases, alignment and missing-history refusals passed')
+if __name__ == '__main__':
+    out = root / 'build/checks/rsf-storage-variant-worker'
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'previous-storage.c').write_text(fixture)
+    subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
+                    '-Werror', str(out / 'previous-storage.c'), '-o', str(out / 'previous-storage.exe')], check=True)
+    subprocess.run([str(out / 'previous-storage.exe')], check=True)
+    print('previous storage address/content, ranges, leases, alignment and missing-history refusals passed')

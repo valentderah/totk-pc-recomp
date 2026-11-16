@@ -466,6 +466,10 @@ const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     // New menu keys inherit existing reconstruction settings until explicitly set.
     if (!v && !strcmp(name, "TOTK_RSF_ENABLED")) v = raw_get("TOTK_DLAA");
+    if (!v && !strcmp(name, "TOTK_RSF_BACKEND") && !raw_get("TOTK_RSF_ENABLED")) {
+        const char *legacy = raw_get("TOTK_DLAA");
+        if (legacy && strcmp(legacy, "0")) v = "1"; // Legacy reconstruction selected DLSS, never FSR.
+    }
     // Preserve legacy latency selections through the shared runtime. An explicit
     // RSF selection, including off, takes precedence over the legacy key.
     if (!v && !strcmp(name, "TOTK_RSF_LOW_LATENCY")) {

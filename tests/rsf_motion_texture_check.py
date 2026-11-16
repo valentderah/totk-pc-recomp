@@ -2,15 +2,14 @@
 from pathlib import Path
 import subprocess
 
+from rsf_snapshot_currentness_check import extract_function
+
 root = Path(__file__).resolve().parents[1]
 out = root / 'build/checks/rsf-texture-caller-worker'
 out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_exec.c').read_text()
 
 
-def function(name):
-    start = source.index(name)
-    return source[start:source.index('\n}\n', start) + 3]
 
 
 fixture = r'''
@@ -41,9 +40,9 @@ void rc_vkCmdCopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage 
     copied_pixel[(uintptr_t)d]=native_pixel; events[nevents++]='C';
 }
 '''
-fixture += function('static uint64_t native_signature(')
-fixture += function('int vk_exec_native_suspend(')
-fixture += function('int vk_exec_native_resume(')
+fixture += extract_function(source, 'static uint64_t native_signature(')
+fixture += extract_function(source, 'int vk_exec_native_suspend(')
+fixture += extract_function(source, 'int vk_exec_native_resume(')
 fixture += r'''
 int main(void) {
     recording=pthread_self(); assert(vk_motion_texture_start(1));
@@ -60,6 +59,11 @@ int main(void) {
     assert(nevents==6 && !memcmp(events,"EBCBRD",6));
     assert(native_pixel==11 && copied_pixel[1]==11 && ex.in_pass);
     assert(!vk_motion_texture_previous(&ex,123,&fact,sampler,&old));
+    ex.chunked=1; ex.source_frame=100;
+    assert(!vk_motion_texture_capture(&ex,123,&fact,sampler));
+    assert(!vk_motion_texture_previous(&ex,123,&fact,sampler,&old));
+    assert(M.frame==1); // Worker refusal must precede every global history mutation.
+    ex.chunked=0; ex.source_frame=1;
     vk_motion_texture_submitted(ex.cb,91); // actual final fence is not source 1 or ex.fence 41
     ex.cb=(VkCommandBuffer)2; ex.fence=42; ex.source_frame=2; native_pixel=22;
     assert(!vk_motion_texture_capture(&ex,123,&fact,sampler)); wait_shape(M.pool,fact.shape,READY);

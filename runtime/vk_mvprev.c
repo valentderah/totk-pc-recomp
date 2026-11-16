@@ -174,10 +174,10 @@ static void mvprev_draw_(VkExec *ex) {
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT) return;
     int check = P.bytes[0] != NULL;   // TOTK_MVPREV_CHECK=1: the summary's checks (3.6 ms a frame)
+    uint64_t gen = vk_usnap_gen();
     for (int index = 0; index < BANKS; index++) {
         if (!(P.mask >> index & 1)) continue;
         const p_bind_buf *u = &ex->ubo[0][index];
-        uint64_t gen = vk_usnap_gen();
         if (!u->addr || !u->size || (u->addr == P.last[index] && u->size == P.last_size[index] && gen == P.last_gen[index])) continue;
         P.last[index] = u->addr;
         P.last_size[index] = u->size, P.last_gen[index] = gen;

@@ -1,3 +1,4 @@
+#include "rsf_runtime.h"
 // Host input for nn::hid (runtime/ov_input.c): an SDL3 gamepad (no SDL window needed), the keyboard and the mouse,
 // merged into Switch npad button bits and stick axes. Button order follows libnx HidNpadButton (ISC). The key and pad
 // bindings are the tables in input_map.c (totk.ini overrides them). The keyboard and the mouse come from the window
@@ -534,7 +535,7 @@ static void start(void) {
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) {
-        if (!rsf_input_gamepad_watch_start()) rt_log("rsf: controller delivery watch unavailable");
+        if (rsf_requested() && !rsf_input_gamepad_watch_start()) rt_log("rsf: controller delivery watch unavailable");
         test_pad_attach();
     }
     if (state == 1) {

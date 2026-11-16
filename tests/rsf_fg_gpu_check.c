@@ -51,7 +51,8 @@ int main(void){
     allocation_fail=1;assert(!rsf_fg_gpu_prepare(cb,1,&m,NULL,&in,&out));assert(!rsf_fg_gpu_pending()&&creates==1&&destroys==1);
     allocation_fail=0;RsfFgLease*s=rsf_fg_gpu_prepare(cb,1,&m,NULL,&in,&out);assert(s&&creates==4&&rsf_fg_gpu_pending()&&drains==1);
     assert(out.depth.width==2560&&out.motion.height==1600&&out.record->camera.output_height==1600);
-    rsf_fg_gpu_submitted(cb);assert(!rsf_fg_gpu_pending());
+    assert(rsf_fg_gpu_commands_pending(cb) && !rsf_fg_gpu_commands_pending((VkCommandBuffer)999));
+    rsf_fg_gpu_submitted(cb);assert(!rsf_fg_gpu_pending() && !rsf_fg_gpu_commands_pending(cb));
     rsf_fgvk_frame color_only={.struct_size=sizeof color_only,.abi_version=RSF_FGVK_ABI_VERSION,
         .record=&record,.hudless=in.hudless};
     assert(rsf_fg_gpu_hudless(cb,s,&color_only,&out)&&rsf_fg_gpu_pending());
@@ -105,3 +106,5 @@ int main(void){
     assert(drains==dispatches);rsf_fg_gpu_release();assert(destroys==creates&&deleted_views==views);
     return 0;
 }
+
+PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void) { return push; }

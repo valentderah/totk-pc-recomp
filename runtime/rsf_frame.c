@@ -10,14 +10,16 @@
 #include <rescaleframe/native_latency_vulkan.h>
 #include <rescaleframe/native_cpu.h>
 
+enum { FRAME_OWNERS = 32, TRACE_OWNERS = 1024 };
 static PlatMutex frame_lock = PLAT_MUTEX_INIT;
-static struct FrameOwner { void *thread; uint64_t framework, current, completed, draw, draw_queue; int sampled; } frames[32];
+static struct FrameOwner { void *thread; uint64_t framework, current, completed, draw, draw_queue; int sampled; } frames[FRAME_OWNERS];
 static uint64_t next_source;
 static PlatMutex latency_options_lock = PLAT_MUTEX_INIT;
 
 static void latency_options(void) {
     static int applied = -1, last_result = -999;
-    int requested = cfg_int("TOTK_RSF_LOW_LATENCY");
+    int requested = rsf_config_low_latency();
+    if (__atomic_load_n(&applied, __ATOMIC_ACQUIRE) == requested) return;
     __typeof__(&rsf_latencyvk_options) configure = rsf_runtime_symbol("rsf_latencyvk_options");
     if (!configure) return;
     plat_mutex_lock(&latency_options_lock);
@@ -25,27 +27,15 @@ static void latency_options(void) {
         int32_t result = configure((uint32_t)requested, 0);
         if (result != last_result || result == RSF_BACKEND_OK)
             rt_log("rsf: low latency requested %d, options result %d", requested, result);
-        if (result == RSF_BACKEND_OK) applied = requested;
+        if (result == RSF_BACKEND_OK) __atomic_store_n(&applied, requested, __ATOMIC_RELEASE);
         last_result = result;
     }
     plat_mutex_unlock(&latency_options_lock);
 }
 
-static int tracking_enabled(void) {
-    // These selections require restart. Queue initialization happens after
-    // cfg_init, before any framework calculation opens a source.
-    static int cached = -1;
-    int value = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
-    if (value < 0) {
-        value = !!(cfg_int("TOTK_RSF_ENABLED") || cfg_int("TOTK_RSF_FG") || cfg_int("TOTK_RSF_LOW_LATENCY"));
-        __atomic_store_n(&cached, value, __ATOMIC_RELEASE);
-    }
-    return value;
-}
-
-static struct FrameOwner *frame_owner(void *thread) {
+static struct FrameOwner *frame_owner(void *thread, int create) {
     if (!thread) return NULL;
-    for (unsigned i = 0; i < 32; i++) if (!frames[i].thread || frames[i].thread == thread) {
+    for (unsigned i = 0; i < FRAME_OWNERS; i++) if ((create && !frames[i].thread) || frames[i].thread == thread) {
         frames[i].thread = thread;
         return &frames[i];
     }
@@ -54,10 +44,10 @@ static struct FrameOwner *frame_owner(void *thread) {
 
 static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
     if (!source) return;
-    __typeof__(&rsf_latencyvk_cpu) sink = rsf_runtime_symbol("rsf_latencyvk_cpu");
+    __typeof__(&rsf_latencyvk_cpu) sink = rsf_runtime_cpu_sink();
     if (!sink) return;
     rsf_game_cpu_event event = {.struct_size = sizeof event, .stage = stage,
-        .session_id = 1, .source_frame_id = source, .timestamp_qpc = plat_counter(),
+        .session_id = RSF_GAME_SESSION_ID, .source_frame_id = source, .timestamp_qpc = plat_counter(),
         .qpc_frequency = plat_counter_hz(), .event_version = RSF_GAME_CPU_EVENT_VERSION,
         .render_expected = stage == RSF_GAME_CPU_FRAME_END && !(flags & RSF_GAME_CPU_RENDER_SKIPPED),
         .flags = RSF_GAME_CPU_INPUT_KEYED | flags};
@@ -67,10 +57,10 @@ static void cpu_fact(uint64_t source, uint32_t stage, uint32_t flags) {
     if (stage == RSF_GAME_CPU_INPUT_SAMPLE) latency_options();
     sink(&event);
     kern_core_back(&away);
-    if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+    if ((rt_trace & RT_TRACE_PRESENT) && (rt_log_sampled(source, 16, 600)))
         rt_log("rsf source: %llu stage %u flags %#x", (unsigned long long)source, stage, event.flags);
     if ((rt_trace & RT_TRACE_PRESENT) && stage == RSF_GAME_CPU_SIMULATION_END &&
-        (source <= 16 || !(source % 600))) {
+        (rt_log_sampled(source, 16, 600))) {
         __typeof__(&rsf_native_cpu_read) read = rsf_runtime_symbol("rsf_native_cpu_read");
         __typeof__(&rsf_native_cpu_counters_get) counters = rsf_runtime_symbol("rsf_native_cpu_counters_get");
         rsf_native_cpu_frame accepted = {.struct_size = sizeof accepted};
@@ -117,15 +107,16 @@ static uint64_t input_framework(const Cpu *c) {
 }
 
 void rsf_frame_input(Cpu *c) {
+    if (!rsf_requested()) return;
     uint64_t source = 0;
     uint64_t framework = input_framework(c);
     plat_mutex_lock(&frame_lock);
-    struct FrameOwner *owner = NULL;
-    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread && frames[i].current) owner = &frames[i];
+    struct FrameOwner *owner = frame_owner(c->thread, 0);
+    if (owner && !owner->current) owner = NULL;
     if (!owner && framework) {
         // Worker execution carries the same framework owner through the task's
         // calc context. Only one active traversal of that owner may match.
-        for (unsigned i = 0; i < 32; i++) if (frames[i].current && frames[i].framework == framework) {
+        for (unsigned i = 0; i < FRAME_OWNERS; i++) if (frames[i].current && frames[i].framework == framework) {
             if (owner) { owner = NULL; break; }
             owner = &frames[i];
         }
@@ -139,23 +130,27 @@ void rsf_frame_input(Cpu *c) {
 }
 
 uint64_t rsf_frame_draw_source(Cpu *c) {
+    if (!rsf_requested()) return 0;
     uint64_t source = 0;
     plat_mutex_lock(&frame_lock);
-    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread) source = frames[i].draw;
+    struct FrameOwner *owner = frame_owner(c->thread, 0);
+    if (owner) source = owner->draw;
     plat_mutex_unlock(&frame_lock);
     return source;
 }
 
 void rsf_frame_draw_done(Cpu *c) {
+    if (!rsf_requested()) return;
     plat_mutex_lock(&frame_lock);
-    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread) frames[i].draw = frames[i].draw_queue = 0;
+    struct FrameOwner *owner = frame_owner(c->thread, 0);
+    if (owner) owner->draw = owner->draw_queue = 0;
     plat_mutex_unlock(&frame_lock);
 }
 
 static void retire_draw_queue(uint64_t queue) {
-    rsf_handoff_finalize(queue);
+    rsf_handoff_foreign(queue);
     plat_mutex_lock(&frame_lock);
-    for (unsigned i = 0; i < 32; i++) if (frames[i].draw_queue == queue) frames[i].draw = frames[i].draw_queue = 0;
+    for (unsigned i = 0; i < FRAME_OWNERS; i++) if (frames[i].draw_queue == queue) frames[i].draw = frames[i].draw_queue = 0;
     plat_mutex_unlock(&frame_lock);
 }
 
@@ -172,26 +167,26 @@ static void publish_draw(Cpu *c, uint64_t queue, uint64_t message) {
         }
     }
     plat_mutex_lock(&frame_lock);
-    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread &&
+    for (unsigned i = 0; i < FRAME_OWNERS; i++) if (frames[i].thread == c->thread &&
         frames[i].framework == framework && !frames[i].current) source = frames[i].completed;
     plat_mutex_unlock(&frame_lock);
     if (!rsf_handoff_publish(queue, message, c->thread, framework, source)) return;
     plat_mutex_lock(&frame_lock);
-    for (unsigned i = 0; i < 32; i++) if (frames[i].thread == c->thread && frames[i].completed == source)
+    for (unsigned i = 0; i < FRAME_OWNERS; i++) if (frames[i].thread == c->thread && frames[i].completed == source)
         frames[i].completed = 0;
     plat_mutex_unlock(&frame_lock);
     cpu_fact(source, RSF_GAME_CPU_FRAME_END, 0);
-    if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+    if ((rt_trace & RT_TRACE_PRESENT) && (rt_log_sampled(source, 16, 600)))
         rt_log("rsf draw published: queue 0x%llx source %llu", (unsigned long long)queue, (unsigned long long)source);
 }
 
 void rsf_frame_calculation_begin(Cpu *c) {
     // Displaced ADRP from the verified 1.4.3 framework calculation entry.
     c->x[8] = MOD_MAIN_BASE + 0x396f000;
-    if (!cfg_int("TOTK_RSF_ENABLED") && !cfg_int("TOTK_RSF_FG") && !cfg_int("TOTK_RSF_LOW_LATENCY")) return;
+    if (!rsf_requested()) return;
     uint64_t source = 0, abandoned = 0;
     plat_mutex_lock(&frame_lock);
-    struct FrameOwner *owner = frame_owner(c->thread);
+    struct FrameOwner *owner = frame_owner(c->thread, 1);
     if (owner) {
         abandoned = owner->current;
         source = owner->current = ++next_source;
@@ -209,9 +204,10 @@ void rsf_frame_calculation_begin(Cpu *c) {
 void rsf_frame_calculation_end(Cpu *c) {
     // Displaced load after the task calculation traversal, before its guard is released.
     memcpy(&c->x[0], (const void *)(uintptr_t)(c->x[19] + 0x98), sizeof c->x[0]);
+    if (!rsf_requested()) return;
     uint64_t source = 0;
     plat_mutex_lock(&frame_lock);
-    struct FrameOwner *owner = frame_owner(c->thread);
+    struct FrameOwner *owner = frame_owner(c->thread, 1);
     if (owner) {
         source = owner->current;
         owner->completed = source;
@@ -223,10 +219,10 @@ void rsf_frame_calculation_end(Cpu *c) {
 
 static int trace_count(void *thread, uint64_t queue, int send) {
     static PlatMutex lock = PLAT_MUTEX_INIT;
-    static struct { void *thread; uint64_t queue; unsigned count[2]; } owners[1024];
+    static struct { void *thread; uint64_t queue; unsigned count[2]; } owners[TRACE_OWNERS];
     int result = 0;
     plat_mutex_lock(&lock);
-    for (unsigned i = 0; i < 1024; i++) if (!owners[i].thread || (owners[i].thread == thread && owners[i].queue == queue)) {
+    for (unsigned i = 0; i < TRACE_OWNERS; i++) if (!owners[i].thread || (owners[i].thread == thread && owners[i].queue == queue)) {
         owners[i].thread = thread;
         owners[i].queue = queue;
         unsigned n = ++owners[i].count[send];
@@ -239,7 +235,7 @@ static int trace_count(void *thread, uint64_t queue, int send) {
 
 static void observe_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
-    if (tracking_enabled()) publish_draw(c, queue, message);
+    if (rsf_requested()) publish_draw(c, queue, message);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, queue, 1);
         if (n)
@@ -248,14 +244,11 @@ static void observe_send(Cpu *c) {
                    (unsigned long long)caller, (unsigned long long)plat_now_ns());
         if (n == 1) {
             uint64_t fp = c->x[29];
-            for (unsigned depth = 0; depth < 8 && !(fp & 15) && mem_guest_readable(fp, 16); depth++) {
-                uint64_t pair[2];
-                memcpy(pair, (const void *)(uintptr_t)fp, sizeof pair);
+            uint64_t caller;
+                for (unsigned depth = 0; depth < 8 && rt_guest_frame_next(&fp, &caller); depth++) {
                 rt_log("handoff caller: queue 0x%llx depth %u return 0x%llx", (unsigned long long)queue,
-                       depth, (unsigned long long)pair[1]);
-                if (pair[0] <= fp || pair[0] - fp > 0x100000) break;
-                fp = pair[0];
-            }
+                       depth, (unsigned long long)caller);
+                }
         }
     }
     rt_original(c);
@@ -264,15 +257,15 @@ static void observe_send(Cpu *c) {
 static void observe_receive_impl(Cpu *c, int trying) {
     uint64_t output = c->x[0], queue = c->x[1], caller = c->x[30];
     rt_original(c);
-    if (tracking_enabled() && (!trying || c->x[0]) && mem_guest_readable(output, sizeof(uint64_t))) {
+    if (rsf_requested() && (!trying || c->x[0]) && mem_guest_readable(output, sizeof(uint64_t))) {
         uint64_t message, source;
         memcpy(&message, (const void *)(uintptr_t)output, sizeof message);
         if (rsf_handoff_receive(queue, message, &source)) {
             plat_mutex_lock(&frame_lock);
-            struct FrameOwner *owner = frame_owner(c->thread);
+            struct FrameOwner *owner = frame_owner(c->thread, 1);
             if (owner) { owner->draw = source; owner->draw_queue = queue; }
             plat_mutex_unlock(&frame_lock);
-            if ((rt_trace & RT_TRACE_PRESENT) && (source <= 16 || !(source % 600)))
+            if ((rt_trace & RT_TRACE_PRESENT) && (rt_log_sampled(source, 16, 600)))
                 rt_log("rsf draw consumed: thread %p queue 0x%llx source %llu", c->thread,
                        (unsigned long long)queue, (unsigned long long)source);
         }
@@ -294,7 +287,7 @@ static void observe_try_receive(Cpu *c) { observe_receive_impl(c, 1); }
 
 static void observe_try_send(Cpu *c) {
     uint64_t queue = c->x[0], message = c->x[1], caller = c->x[30];
-    if (tracking_enabled()) rsf_handoff_foreign(queue);
+    if (rsf_requested()) rsf_handoff_foreign(queue);
     rt_original(c);
     if ((rt_trace & RT_TRACE_PRESENT) && c->x[0]) {
         int n = trace_count(c->thread, queue, 1);
@@ -310,7 +303,7 @@ HOST_OBSERVER("_ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeE
 HOST_OBSERVER("_ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE", observe_try_receive);
 // Jam inserts at the front. Keep the distinction visible in its own trace.
 static void observe_jam(Cpu *c) {
-    if (tracking_enabled()) rsf_handoff_foreign(c->x[0]);
+    if (rsf_requested()) rsf_handoff_foreign(c->x[0]);
     if (rt_trace & RT_TRACE_PRESENT) {
         int n = trace_count(c->thread, c->x[0], 1);
         if (n) rt_log("draw handoff: jam %d thread %p queue 0x%llx message 0x%llx caller 0x%llx ns %llu",
@@ -320,13 +313,13 @@ static void observe_jam(Cpu *c) {
     rt_original(c);
 }
 HOST_OBSERVER("_ZN2nn2os20JamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_jam);
-static void observe_try_jam(Cpu *c) { if (tracking_enabled()) rsf_handoff_foreign(c->x[0]); rt_original(c); }
+static void observe_try_jam(Cpu *c) { if (rsf_requested()) rsf_handoff_foreign(c->x[0]); rt_original(c); }
 HOST_OBSERVER("_ZN2nn2os23TryJamLightMessageQueueEPNS0_21LightMessageQueueTypeEm", observe_try_jam);
 static void observe_initialize(Cpu *c) {
     uint64_t queue = c->x[0];
     rt_original(c);
-    if (tracking_enabled()) { retire_draw_queue(queue); rsf_handoff_initialize(queue); }
+    if (rsf_requested()) { retire_draw_queue(queue); rsf_handoff_initialize(queue); }
 }
-static void observe_finalize(Cpu *c) { if (tracking_enabled()) retire_draw_queue(c->x[0]); rt_original(c); }
+static void observe_finalize(Cpu *c) { if (rsf_requested()) retire_draw_queue(c->x[0]); rt_original(c); }
 HOST_OBSERVER("_ZN2nn2os27InitializeLightMessageQueueEPNS0_21LightMessageQueueTypeEPmm", observe_initialize);
 HOST_OBSERVER("_ZN2nn2os25FinalizeLightMessageQueueEPNS0_21LightMessageQueueTypeE", observe_finalize);

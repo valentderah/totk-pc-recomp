@@ -1,29 +1,33 @@
 """CPU contracts for actual quality selection, provider negotiation and FG boundary admission."""
 from pathlib import Path
 import subprocess
+
+from rsf_snapshot_currentness_check import extract_region, extract_function
 root=Path(__file__).resolve().parents[1]
 out=root/'build/checks/rsf-reduced-quality-worker';out.mkdir(parents=True,exist_ok=True)
 s=(root/'runtime/vk_dlaa.c').read_text()
-def between(a,b): return s[s.index(a):s.index(b,s.index(a))]
+def between(a,b): return extract_region(s, a, b)
 incs=['-I',str(root/'runtime')]
 for d in ('runtime/orchestrator/include','runtime/contract/include','sdk/game/include'):
     incs+=['-I',str(root/'external/ReScaleFrame'/d)]
 def run(name,code):
+    code = 'static inline __attribute__((unused)) int rt_log_sampled(unsigned long long n,unsigned long long first,unsigned long long period) {return n<=first || (period && n%period==0);}\n' + "#define RSF_GAME_SESSION_ID 1u\n#define RSF_FALLBACK_SESSION_ID 2u\n#define RSF_GRAPHICS_QUEUES 4u\n" + '#define rsf_config_enabled() cfg_bool("TOTK_RSF_ENABLED")\n#define rsf_config_fg_backend() cfg_int("TOTK_RSF_FG")\n#define rsf_config_sr_backend() cfg_int("TOTK_RSF_BACKEND")\n#define rsf_config_low_latency() cfg_int("TOTK_RSF_LOW_LATENCY")\n#define rsf_requested() (rsf_config_enabled() || rsf_config_fg_backend() || rsf_config_low_latency())\n#define rsf_temporal_requested() (rsf_config_enabled() || rsf_config_fg_backend())\n' + code
     path=out/(name+'.c');path.write_text('// '+'TOTK_RECOMP_'+'GENERATED_FROM_GAME_CODE\n'+code)
     subprocess.run(['C:/msys64/ucrt64/bin/clang.exe','-std=gnu11','-O2','-Wall','-Werror',*incs,str(path),'-o',str(out/(name+'.exe'))],check=True)
     subprocess.run([str(out/(name+'.exe'))],check=True)
 run('live-modes',r'''
+
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static struct { int preset_dirty,reset,failed,jit_ok,jit_used,cam_prev_ok; } D;
+static int temporal_available=1;
+static struct { int preset_dirty,reset,failed,jit_ok,jit_used,cam_prev_ok,on; } D={.on=1};
 static int enabled=1,selected=1,bias_calls,mode_calls;
 static float negotiated_bias=-.5f;
 static char requested[32]="quality",posted[32];
 static int vk_dlaa_wanted(void) {return enabled;}
 static int cfg_int(const char *n) {(void)n;return selected;}
 static const char *cfg_value(const char *n) {(void)n;return requested;}
-static int dl_active(void) {return !D.failed;}
 static void vk_sampler_dlss_bias(float b) {(void)b;bias_calls++;}
 static float res_dlss_lod_bias(void) {return negotiated_bias;}
 static int res_dlss_mode(const char *m) {snprintf(posted,sizeof posted,"%s",m);mode_calls++;return 1;}
@@ -55,8 +59,8 @@ static int refuse;
 #define rt_log(...) ((void)0)
 #define rec_drain() ((void)0)
 #define vk_exec_draw_new_cb(...) ((void)0)
-#define rsf_layout(...) ((void)0)
-static rsf_srvk_image rsf_image(VkImage i,VkFormat f,unsigned w,unsigned h,VkImageLayout l) {
+#define vk_image_layout(...) ((void)0)
+static rsf_srvk_image vk_rsf_image(VkImage i,VkFormat f,unsigned w,unsigned h,VkImageLayout l) {
     return (rsf_srvk_image){0,(uint64_t)i,f,w,h,l,1};
 }
 static int vk_present_fg_prepare(VkCommandBuffer cb,const rsf_fgvk_frame *f) {
@@ -93,8 +97,8 @@ static uint64_t spirv_hash(const GfxShader *f) {(void)f;return 123;}
 static int cfg_bool(const char *key) {(void)key;return 1;}
 static int vk_exec_draw_samples(VkExec *ex,const GfxShader *fs,const void *t) {(void)ex;(void)fs;(void)t;return 0;}
 static unsigned captured;
-static void vk_dlaa_fg_after_draw(VkExec *ex,const GfxShader *fs) {(void)ex;(void)fs;captured++;}
-'''+s[s.index('int vk_dlaa_skip_draw('):]+r'''
+static void vk_dlaa_fg_after_draw(VkExec *ex,const GfxShader *fs) {(void)ex;(void)fs;if (D.fg_on) captured++;}
+'''+s[s.index('static int is_fxaa_shader_hash('):s.index('\n}', s.index('static int is_fxaa_shader_hash('))+2]+s[s.index('int vk_dlaa_skip_draw('):]+r'''
 int main(void) {
     VkExec ex={0};GfxShader fs={0};D.up=1;
     assert(vk_dlaa_skip_draw(&ex,&fs));D.fg_on=1;
@@ -117,7 +121,7 @@ typedef struct {void *device,*instance,*phys;int has_rsf_sr_split;} VkCtx;
 typedef struct {VkCommandBuffer cb;} VkExec;
 struct Size {unsigned w,h,ow,oh,rsf_w,rsf_h;RsfSrSession *rsf;VkImage sr_color,device_depth,mv,mask,out;void *sr_color_mem;VkImageView sr_color_view;};
 static struct {struct {int inverted,infinite;} projection;struct {unsigned level,base_layer;VkImage image;} color;} D;
-static struct {int on;uint64_t cpu_ngx;} T;
+static struct {int on;uint64_t cpu_eval;} T;
 static VkCtx ctx={.has_rsf_sr_split=1};
 static int backend=1,quality=1,posted,recorded;
 static unsigned planned_w,planned_h;
@@ -126,13 +130,13 @@ static const char *names[]={"native","quality","balanced","performance"};
 #define rt_log(...) ((void)0)
 #define rt_fatal(...) abort()
 #define rsf_provider_log NULL
-#define image2d(...) 1
+#define vk_image2d(...) 1
 static VkCtx *vk_ctx(void) {return &ctx;}
 static int cfg_int(const char *n) {(void)n;return backend;}
 static const char *cfg_value(const char *n) {(void)n;return names[quality];}
 static const char *rsf_provider_directory(unsigned b) {assert(b==(unsigned)backend);return "ignored";}
-static rsf_vk_function rsf_instance_proc(void *o,const char *n) {(void)o;(void)n;return NULL;}
-static rsf_vk_function rsf_device_proc(void *o,const char *n) {(void)o;(void)n;return NULL;}
+static rsf_vk_function rsf_vk_generic_instance_proc(void *o,const char *n) {(void)o;(void)n;return NULL;}
+static rsf_vk_function rsf_vk_generic_device_proc(void *o,const char *n) {(void)o;(void)n;return NULL;}
 static int vk_sync_sr_prepare(VkCommandBuffer cb,rsf_fsr4vk_handoff *h) {assert(cb);(void)h;return 1;}
 static void vk_sync_sr_cancel(void) {}
 static void res_sizes(unsigned *o,unsigned *scene) {o[0]=1920;o[1]=1080;scene[0]=1136;scene[1]=640;}
@@ -146,8 +150,8 @@ int rsf_sr_open_split(const rsf_srvk_setup *setup,const rsf_fsr4vk_handoff *hand
 }
 static uint64_t kern_now_ns(void) {return 0;}
 static void rec_drain(void) {}
-static void rsf_layout(VkCommandBuffer cb,VkImage image,VkImageLayout a,VkImageLayout b) {(void)cb;(void)image;(void)a;(void)b;}
-static rsf_srvk_image rsf_image(VkImage i,VkFormat f,unsigned w,unsigned h,VkImageLayout l) {return (rsf_srvk_image){ctx.device,(uint64_t)i,f,w,h,l,1};}
+static void vk_image_layout(VkCommandBuffer cb,VkImage image,VkImageLayout a,VkImageLayout b) {(void)cb;(void)image;(void)a;(void)b;}
+static rsf_srvk_image vk_rsf_image(VkImage i,VkFormat f,unsigned w,unsigned h,VkImageLayout l) {return (rsf_srvk_image){ctx.device,(uint64_t)i,f,w,h,l,1};}
 VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage(VkCommandBuffer c,VkImage a,VkImageLayout b,VkImage d,VkImageLayout e,uint32_t n,const VkImageBlit *r,VkFilter f) {
     (void)c;(void)a;(void)b;(void)d;(void)e;(void)n;(void)f;assert(r->srcOffsets[1].x==(int)planned_w && r->dstOffsets[1].y==(int)planned_h);
 }
@@ -190,18 +194,19 @@ print('Actual quality/balanced/performance provider-plan negotiation for DLSS/FS
 run('independent-fg-and-jitter',r'''
 #include <assert.h>
 #include <vulkan/vulkan.h>
-static struct {int available;} N={1};
+static int temporal_available=1;
 static struct {int on,failed,fg_on,jit_ok,jit_used;VkImage jdepth;float jx,jy,ux,uy;} D;
-static int enabled=1;
+static int enabled=1,wanted_reads;
 #define rt_log(...) ((void)0)
 typedef struct {struct {VkImage image;} depth;} VkExec;
-static int vk_dlaa_wanted(void) {return enabled;}
+static int vk_dlaa_wanted(void) {wanted_reads++;return enabled;}
 static int ended_at(const VkExec *ex) {(void)ex;return 0;}
-'''+between('static int dl_active(', 'static int image2d(')+between('void vk_dlaa_viewport(', '// The scene camera:')+r'''
+'''+between('static int dl_active(', 'static int free_size(')+between('void vk_dlaa_viewport(', '// The scene camera:')+r'''
 int main(void) {
     D.on=D.fg_on=D.jit_ok=1;D.jdepth=(VkImage)1;D.jx=.25f;D.jy=-.25f;
     assert(dl_active());dl_fail("test",-1);assert(dl_active() && !D.jit_ok);
     VkExec ex={.depth.image=(VkImage)1};VkViewport v={.x=3,.y=4};
+    int reads=wanted_reads;vk_dlaa_viewport(&ex,&v);assert(wanted_reads==reads);
     D.jit_ok=1;vk_dlaa_viewport(&ex,&v);assert(v.x==3 && v.y==4); // failed SR leaves FG unjittered
     D.failed=0;enabled=0;vk_dlaa_viewport(&ex,&v);assert(v.x==3 && v.y==4); // first disabled frame too
     enabled=1;vk_dlaa_viewport(&ex,&v);assert(v.x==3.25f && v.y==3.75f);
@@ -209,3 +214,76 @@ int main(void) {
 }
 ''')
 print('Independent FG admission and unjittered disabled/failed SR: passed (CPU only)')
+
+
+cfg_source = (root / 'runtime/cfg.c').read_text(encoding='utf-8')
+run('legacy-backend', r'''
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#define strcasecmp _stricmp
+#define PREFIX "TOTK_"
+#define PREFIX_LEN 5
+static const char *legacy_enabled, *legacy_quality, *explicit_enabled, *explicit_backend;
+static const char *raw_get(const char *name) {
+    if (!strcmp(name,"TOTK_DLAA")) return legacy_enabled;
+    if (!strcmp(name,"TOTK_DLSS")) return legacy_quality;
+    if (!strcmp(name,"TOTK_RSF_ENABLED")) return explicit_enabled;
+    if (!strcmp(name,"TOTK_RSF_BACKEND")) return explicit_backend;
+    return NULL;
+}
+static int profile_of(void) {return 0;}
+static int shape_keeps_prompts(void) {return 0;}
+static char screen_res[1];
+static const struct {const char *key,*value;} DECK[]={{"",""}};
+''' + extract_function(cfg_source, 'const char *cfg_get(') + r'''
+static int backend(void) {const char *v=cfg_get("TOTK_RSF_BACKEND");return v?atoi(v):3;}
+int main(void) {
+    assert(backend()==3);
+    legacy_enabled="1";legacy_quality="quality";
+    assert(!strcmp(cfg_get("TOTK_RSF_ENABLED"),"1") && backend()==1);
+    explicit_backend="5";assert(backend()==5);explicit_backend=NULL;
+    explicit_enabled="1";assert(backend()==3);
+    explicit_enabled="0";assert(backend()==3);
+    explicit_enabled=NULL;legacy_enabled="0";assert(backend()==3);
+    legacy_enabled=NULL;assert(backend()==3);
+    return 0;
+}
+''')
+print('Actual legacy reconstruction backend migration and explicit/new-config precedence passed')
+
+evaluate_prefix = s[s.index('static void evaluate('):s.index('    if (e != D.last)', s.index('static void evaluate('))]
+run('failed-size-jitter', r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+typedef uint64_t VkCommandBuffer;
+typedef struct {unsigned width,height;} VkExecTarget;
+typedef struct {VkCommandBuffer cb;uint64_t source_frame;} VkExec;
+struct Size {int out;};
+static struct {VkExecTarget color,depth;int jit_ok,preset_dirty;struct Size sizes[5],*last,*fg_last;} D;
+#define DLSS_SIZES (sizeof D.sizes/sizeof D.sizes[0])
+enum {PRODUCER_ENTERED=1,PRODUCER_NO_SIZE=1,PRODUCER_RETIREMENT_PENDING=5};
+static struct {unsigned stage,reason,w,h,ow,oh;uint64_t source;} producer_trace;
+static int free_ok,size_ok;
+static void vk_exec_barrier(VkExec *ex) {(void)ex;}
+static int free_size(struct Size *e) {(void)e;return free_ok;}
+static struct Size *size_for(VkCommandBuffer cb,unsigned w,unsigned h,unsigned ow,unsigned oh) {
+    (void)cb;(void)w;(void)h;(void)ow;(void)oh;return size_ok?&D.sizes[0]:NULL;
+}
+''' + evaluate_prefix + r'''
+    (void)z;
+}
+int main(void) {
+    VkExec ex={1,1};D.color=(VkExecTarget){64,64};D.depth=D.color;
+    D.sizes[0].out=1;D.preset_dirty=D.jit_ok=1;
+    evaluate(&ex,NULL);assert(!D.jit_ok && D.preset_dirty);
+    free_ok=1;D.jit_ok=1;
+    evaluate(&ex,NULL);assert(!D.jit_ok && !D.preset_dirty);
+    size_ok=1;D.jit_ok=1;
+    evaluate(&ex,NULL);assert(D.jit_ok);
+    return 0;
+}
+''')
+print('Actual size-retirement/allocation refusal clears reconstruction jitter')
+

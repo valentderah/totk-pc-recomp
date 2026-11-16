@@ -11,6 +11,7 @@ includes = [root / "runtime"] + [root / "external/ReScaleFrame" / d for d in
     ("runtime/orchestrator/include", "runtime/contract/include", "sdk/game/include")]
 
 def run(name, code):
+    code = "#define RSF_GAME_SESSION_ID 1u\n#define RSF_FALLBACK_SESSION_ID 2u\n#define RSF_GRAPHICS_QUEUES 4u\n" + "#define rec_commands_reset(cb) (rsf_sr_commands_reset(cb), vk_motion_texture_commands_reset(cb))\n" + '#define rsf_config_enabled() cfg_bool("TOTK_RSF_ENABLED")\n#define rsf_config_fg_backend() cfg_int("TOTK_RSF_FG")\n#define rsf_config_sr_backend() cfg_int("TOTK_RSF_BACKEND")\n#define rsf_config_low_latency() cfg_int("TOTK_RSF_LOW_LATENCY")\n#define rsf_requested() (rsf_config_enabled() || rsf_config_fg_backend() || rsf_config_low_latency())\n#define rsf_temporal_requested() (rsf_config_enabled() || rsf_config_fg_backend())\n' + code
     source = out / (name + ".c")
     source.write_text(marker + code, encoding="utf-8")
     command = [compiler, "-std=gnu11", "-O1", "-Wall", "-Werror", str(source), str(root / "runtime/rsf_split.c"), "-o", str(out / (name + ".exe"))]
@@ -23,6 +24,7 @@ sync = (root / "runtime/vk_sync.c").read_text()
 claim = sync[sync.index("static int claim_slot("):sync.index("static CmdSlot *take_slot(")]
 handoff = sync[sync.index("static _Thread_local struct { int prepared"):sync.index("// The copies the replay")]
 run("record-handoff", r'''
+
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -113,7 +115,7 @@ run("record-submit", r'''
 #include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
-static int sub_pending, rec_async=1, locked, pending, notices, driver_calls, queued, motion_notices;
+static int sub_pending, rec_async=1, locked, pending, notices, driver_calls, queued, motion_notices, fg_lease, fg_notices;
 static volatile VkResult r_sub_res, r_sub_err;
 static volatile uint64_t q_subs,r_subs;
 static struct { uint64_t submits; } RS_;
@@ -128,14 +130,15 @@ static void *put(int op,size_t bytes) { assert(op==R_Submit); free(packet); pack
 static void pub_now(void) { }
 static void pub(void) { }
 static void rec_drain(void);
-static int cfg_int(const char *key) { (void)key; return 0; }
+int cfg_int(const char *key) { (void)key; return 1; }
 static int rt_knob(const char *key,const char *def) { (void)key;(void)def; return 1; }
 static void rsf_vk_submission(uint64_t frame,int begin) { assert(frame==33); (void)begin; }
 static void vk_queue_lock(void) { assert(!locked++); }
 static void vk_queue_unlock(void) { assert(!--locked); }
 static int rsf_sr_commands_pending(void *cb) { assert(cb); return pending; }
 static int rsf_sr_commands_submitted(void *cb) { assert(cb && !locked); notices++; return 1; }
-static void vk_present_fg_submitted(const VkSubmitInfo2 *si) { (void)si; abort(); }
+static int rsf_fg_gpu_commands_pending(VkCommandBuffer cb) {return cb==(void *)10 && fg_lease;}
+static void vk_present_fg_submitted(const VkSubmitInfo2 *si) {(void)si;fg_notices++;}
 static VkResult result;
 static void vk_motion_texture_submitted(VkCommandBuffer cb, uint64_t final_fence) {
     assert(cb==(void *)10 && final_fence==91 && final_fence!=41 && !locked && !result);
@@ -167,6 +170,9 @@ int main(void) {
     assert(driver_calls==3 && motion_notices==2);
     cb.commandBuffer=(void *)10;waits[1].value=40;signals[1].value=41;
     assert(!rec_submit(&si,33,91) && driver_calls==4 && motion_notices==3 && notices==2);
+    fg_lease=1; sub_pending=1;
+    assert(!rec_submit(&si,33,91) && driver_calls==5 && !queued && fg_notices==1);
+    fg_lease=0;
     free(packet); return 0;
 }
 ''')
@@ -175,6 +181,7 @@ print("FSR4 actual recording and submit functions: passed (CPU only)")
 exec_source = (root / "runtime/vk_exec.c").read_text()
 chunked = exec_source[exec_source.index("static int chunked_on("):exec_source.index("int vk_exec_record(")]
 run("serial-admission", r'''
+#include <rescaleframe/sr_session.h>
 #include <assert.h>
 #include <string.h>
 static struct { int workers,chunks,min_draws,check,skew_us; } SC={.workers=2,.chunks=4};
@@ -211,7 +218,7 @@ typedef struct { VkDevice device; VkPhysicalDevice phys; VkInstance instance; in
 typedef struct { VkCommandBuffer cb; } VkExec;
 struct Size { unsigned w,h,ow,oh,rsf_w,rsf_h; RsfSrSession *rsf; VkImage sr_color,device_depth,mv,mask,out; void *sr_color_mem; VkImageView sr_color_view; };
 static struct { struct { int inverted,infinite; } projection; struct { unsigned level,base_layer; VkImage image; } color; } D;
-static struct { int on; uint64_t cpu_ngx; } T;
+static struct { int on; uint64_t cpu_eval; } T;
 static VkCtx context={.has_rsf_sr_split=1};
 static VkCommandBuffer initial=(void *)10, resumed=(void *)11;
 static int prepare=1, opened, cancelled, fallback_calls, changed, transitions;
@@ -226,8 +233,8 @@ static const char *rsf_provider_directory(unsigned backend) { assert(backend==4)
 #define rt_fatal(...) abort()
 static uint64_t kern_now_ns(void) { return 0; }
 static void rec_drain(void) { }
-static rsf_vk_function rsf_instance_proc(void *o,const char *n) { (void)o;(void)n; return NULL; }
-static rsf_vk_function rsf_device_proc(void *o,const char *n) { (void)o;(void)n; return NULL; }
+static rsf_vk_function rsf_vk_generic_instance_proc(void *o,const char *n) { (void)o;(void)n; return NULL; }
+static rsf_vk_function rsf_vk_generic_device_proc(void *o,const char *n) { (void)o;(void)n; return NULL; }
 static int vk_sync_sr_prepare(VkCommandBuffer cb,rsf_fsr4vk_handoff *h) { assert(cb==initial); (void)h; return prepare; }
 static void vk_sync_sr_cancel(void) { cancelled++; }
 int rsf_sr_open_split(const rsf_srvk_setup *s,const rsf_fsr4vk_handoff *h,RsfSrSession **out,uint32_t *w,uint32_t *height) {
@@ -237,11 +244,11 @@ int rsf_sr_open(const rsf_srvk_setup *s,RsfSrSession **o,uint32_t *w,uint32_t *h
 static void res_sizes(unsigned *o,unsigned *scene) {o[0]=1920;o[1]=1080;scene[0]=1128;scene[1]=632;}
 static int res_rsf_scene(unsigned w,unsigned h) { (void)w;(void)h;return 1; }
 #define rsf_provider_log NULL
-#define image2d(...) 1
-static rsf_srvk_image rsf_image(VkImage image,VkFormat format,unsigned w,unsigned h,VkImageLayout layout) {
+#define vk_image2d(...) 1
+static rsf_srvk_image vk_rsf_image(VkImage image,VkFormat format,unsigned w,unsigned h,VkImageLayout layout) {
     return (rsf_srvk_image){0,(uint64_t)image,format,w,h,layout,1};
 }
-static void rsf_layout(VkCommandBuffer cb,VkImage image,VkImageLayout before,VkImageLayout after) {
+static void vk_image_layout(VkCommandBuffer cb,VkImage image,VkImageLayout before,VkImageLayout after) {
     assert(cb==(changed?resumed:initial)); transitions++;
     if (image==expected_output) { assert(before==output_layout);output_layout=after; }
 }
@@ -297,6 +304,9 @@ size_type = scene_source[size_start:size_end] + "};\n"
 allocation = scene_source[scene_source.index("static uint32_t next_resource_generation("):scene_source.index("static void full_barrier(")]
 record = scene_source[scene_source.index("static rsf_frame_record scene_record("):scene_source.index("static void fg_prepare(")]
 run("scene-resource-generation", r'''
+#define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
+static int cfg_int(const char *key) {(void)key;return 1;}
+static const float fallback_frame_ms=16.67f;
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -317,7 +327,7 @@ static struct {
 } D;
 #define rt_fatal(...) abort()
 static unsigned next_image;
-static int image2d(uint32_t w,uint32_t h,VkFormat f,VkImageUsageFlags u,VkImage *i,VmaAllocation *a,VkImageView *v) {
+static int vk_image2d(uint32_t w,uint32_t h,VkFormat f,VkImageUsageFlags u,VkImage *i,VmaAllocation *a,VkImageView *v) {
     (void)f;(void)u;(void)a;(void)v;assert(w && h);*i=(VkImage)(uintptr_t)++next_image;return 1;
 }
 static int free_size(struct Size *e) { memset(e,0,sizeof *e);return 1; }

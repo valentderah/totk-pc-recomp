@@ -1,13 +1,16 @@
 """Actual presentation wrappers with a single immediately reusable fake backing slot."""
 from pathlib import Path
 import subprocess
+
+from rsf_snapshot_currentness_check import extract_region
 root=Path(__file__).resolve().parents[1]
 out=root/'build/checks/fg-history-worker';out.mkdir(parents=True,exist_ok=True)
 text=(root/'runtime/gfx_present.c').read_text()
-def between(a,b): return text[text.index(a):text.index(b,text.index(a))]
+def between(a,b): return extract_region(text, a, b)
 code=r'''
 #include <assert.h>
 #include <stdint.h>
+static int rt_log_sampled(uint64_t n,uint64_t first,uint64_t period) { return n<=first || (period && !(n%period)); }
 #include <string.h>
 #include <vulkan/vulkan.h>
 #include "rsf_present.h"
@@ -24,8 +27,8 @@ static VkExtent2D g_sc_ext={1920,1080};
 static VkSemaphore g_render_done[1];
 static uint32_t g_flip_idx;
 static uint64_t g_flip_source,g_flip_pid;
-static int g_flip_on,g_flip_fg_valid;
-static RsfFgSnapshot g_flip_fg;
+static int g_flip_on;
+static rsf_frame_record g_flip_fg;
 static RsfFgHistory fg_history;
 static RsfFgMap fg_mapping,fg_previous_mapping;
 static int fg_mapping_known,fg_previous_known;
@@ -83,11 +86,11 @@ int main(void) {
     n.resource_generation=7;
     frame.record=&next;assert(!vk_present_fg_prepare((void *)1,&frame));
     assert(!rsf_fg_gpu_find(100)); // backing reused before Present N
-    queue(100);assert(g_flip_fg_valid);
+    queue(100);assert(g_flip_fg.frame_id);
     rsf_frame_record later=record(102,9);frame.record=&later;
     assert(!vk_present_fg_prepare((void *)1,&frame)); // prep after deferred snapshot
     flip_locked();assert(!anonymous && presented.frame_id==100 && presented.session_id==3 && presented.view_id==2 && presented.resource_generation==7);
-    assert(!g_flip_fg_valid && !g_flip_fg.record.frame_id);
+    assert(!g_flip_fg.frame_id && !g_flip_fg.frame_id);
     queue(101);flip_locked();assert(!anonymous && presented.frame_id==101 && presented.resource_generation==8);
     queue(999);flip_locked();assert(anonymous);
     fg_mapping.dst[0]=1;fg_mapping.dst[2]--;
@@ -101,7 +104,7 @@ int main(void) {
         later=record(200+i,11+i);frame.record=&later;assert(!vk_present_fg_prepare((void *)1,&frame));
     }
     queue(100);flip_locked();assert(anonymous); // expiration refuses, never borrows latest
-    queue(263);assert(g_flip_fg_valid);fg_forget();flip_locked();assert(anonymous);
+    queue(263);assert(g_flip_fg.frame_id);fg_forget();flip_locked();assert(anonymous);
     assert(flips==7);return 0;
 }
 '''

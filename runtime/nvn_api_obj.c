@@ -707,19 +707,16 @@ NVN_API(nvnQueuePresentTexture) {
     if (rt_trace & RT_TRACE_PRESENT) {
         static int32_t traced;
         int32_t n = __atomic_add_fetch(&traced, 1, __ATOMIC_RELAXED);
-        if (n <= 32 || !(n % 600))
+        if (rt_log_sampled(n, 32, 600))
             rt_log("present boundary: call %d, thread %p, return 0x%llx, ns %llu", n, c->thread,
                    (unsigned long long)c->x[30], (unsigned long long)plat_now_ns());
         if (n <= 2) {
             uint64_t fp = c->x[29];
-            for (unsigned depth = 0; depth < 12 && !(fp & 15) && mem_guest_readable(fp, 16); depth++) {
-                uint64_t pair[2];
-                memcpy(pair, (const void *)(uintptr_t)fp, sizeof pair);
+            uint64_t caller;
+                for (unsigned depth = 0; depth < 12 && rt_guest_frame_next(&fp, &caller); depth++) {
                 rt_log("present caller: call %d depth %u return 0x%llx", n, depth,
-                       (unsigned long long)pair[1]);
-                if (pair[0] <= fp || pair[0] - fp > 0x100000) break;
-                fp = pair[0];
-            }
+                       (unsigned long long)caller);
+                }
         }
     }
     win_t *o = arg_p(c, 1);

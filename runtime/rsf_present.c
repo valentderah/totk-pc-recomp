@@ -9,8 +9,6 @@ struct RsfPresent {
     uint64_t chain;
     uint32_t layout;
     int ready;
-    __typeof__(&rsf_fgvk_create_with_host) create;
-    __typeof__(&rsf_fgvk_image_layout) image_layout;
     __typeof__(&rsf_fgvk_enable_options) enable;
     __typeof__(&rsf_fgvk_images) images;
     __typeof__(&rsf_fgvk_acquire) acquire;
@@ -47,8 +45,10 @@ int32_t rsf_present_open(const rsf_fgvk_setup *setup, const rsf_fgvk_host_option
     RsfPresent *s = calloc(1, sizeof *s);
     if (!s) return RSF_BACKEND_ERROR_FEATURE_FAILED;
 #define BIND(field, symbol) s->field = rsf_runtime_symbol(symbol); if (!s->field) { free(s); return RSF_BACKEND_ERROR_MISSING_ENTRY_POINT; }
-    BIND(create, "rsf_fgvk_create_with_host");
-    BIND(image_layout, "rsf_fgvk_image_layout");
+    __typeof__(&rsf_fgvk_create_with_host) create = rsf_runtime_symbol("rsf_fgvk_create_with_host");
+    if (!create) { free(s); return RSF_BACKEND_ERROR_MISSING_ENTRY_POINT; }
+    __typeof__(&rsf_fgvk_image_layout) image_layout = rsf_runtime_symbol("rsf_fgvk_image_layout");
+    if (!image_layout) { free(s); return RSF_BACKEND_ERROR_MISSING_ENTRY_POINT; }
     BIND(enable, "rsf_fgvk_enable_options");
     BIND(images, "rsf_fgvk_images");
     BIND(acquire, "rsf_fgvk_acquire");
@@ -60,14 +60,14 @@ int32_t rsf_present_open(const rsf_fgvk_setup *setup, const rsf_fgvk_host_option
     BIND(drain, "rsf_fgvk_drain");
     BIND(destroy, "rsf_fgvk_destroy");
 #undef BIND
-    int32_t result = s->create(setup, backend, count, host, &s->provider, &s->chain);
+    int32_t result = create(setup, backend, count, host, &s->provider, &s->chain);
     if (result != RSF_BACKEND_OK || !s->provider || !s->chain) {
         if (s->provider || s->chain) *out = s;
         else free(s);
         return result != RSF_BACKEND_OK ? result : RSF_BACKEND_ERROR_FEATURE_FAILED;
     }
     *out = s;
-    result = s->image_layout(s->provider, &s->layout);
+    result = image_layout(s->provider, &s->layout);
     if (result == RSF_BACKEND_OK && !s->layout) return RSF_BACKEND_ERROR_FEATURE_FAILED;
     if (result == RSF_BACKEND_OK) s->ready = 1;
     return result;

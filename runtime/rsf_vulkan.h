@@ -32,3 +32,10 @@ void rsf_vk_destroy_device(VkDevice, const VkAllocationCallbacks *);
 #define vkCreateDevice rsf_vk_create_device
 #define vkDestroyDevice rsf_vk_destroy_device
 #endif
+
+// Opaque callback signatures accepted by RSF setup structures.
+PFN_vkVoidFunction rsf_vk_generic_instance_proc(void *instance, const char *name);
+PFN_vkVoidFunction rsf_vk_generic_device_proc(void *device, const char *name);
+
+// Refuse optional startup work while retaining dispatch needed by an existing instance.
+void rsf_vk_fallback(const char *reason);

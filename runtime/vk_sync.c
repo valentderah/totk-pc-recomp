@@ -413,15 +413,14 @@ uint64_t vk_sync_record_fence(VkCommandBuffer commands) {
 int vk_sync_sr_prepare(VkCommandBuffer commands, rsf_fsr4vk_handoff *handoff) {
     VkCtx *c = vk_ctx();
     if (!handoff || !c || !c->has_rsf_sr_split || !vk_sync_record_fence(commands) || !cmd_pool ||
-        commands != slots[cur_slot].cb || sr_split.prepared) return 0;
+        sr_split.prepared) return 0;
     rec_drain();
     int next = claim_slot(c, cur_fence);
     // Completion alone does not release executable command references. Reset
     // before retiring borrowed SDK views, outside the session's recording lock.
     VkResult reset = vkResetCommandBuffer(slots[next].cb, 0);
     if (reset != VK_SUCCESS) rt_fatal("vk: FSR4 continuation reset failed (%d)", reset);
-    rsf_sr_commands_reset(slots[next].cb);
-    vk_motion_texture_commands_reset(slots[next].cb);
+    rec_commands_reset(slots[next].cb);
     sr_split.prepared = 1; sr_split.consumed = 0;
     sr_split.old_slot = cur_slot; sr_split.next_slot = next;
     *handoff = (rsf_fsr4vk_handoff){sizeof *handoff, RSF_SRVK_SPLIT_TRACKED_ABI_VERSION,
@@ -473,8 +472,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
         VkResult result = vkBeginCommandBuffer(cb, &bi);
         if (result != VK_SUCCESS) rt_fatal("vk: prologue command begin failed (%d)", result);
-        rsf_sr_commands_reset(cb);
-        vk_motion_texture_commands_reset(cb);
+        rec_commands_reset(cb);
     } else {
         rec_begin(cb, fence, 0, 0);   // a command buffer of the part pool: the recorder's like the parts
     }
@@ -716,8 +714,7 @@ void vk_sync_shutdown(void) {
             // Pool destruction discards executable references just as reset
             // does. All submitted work completed before reaching this point.
             for (int i = 0; i < nslots; i++) {
-                rsf_sr_commands_reset(slots[i].cb);
-                vk_motion_texture_commands_reset(slots[i].cb);
+                rec_commands_reset(slots[i].cb);
             }
         }
         perf_gpu_stats = NULL;

@@ -11,12 +11,6 @@ int rsf_fg_map_valid(const RsfFgMap *m) {
     return 1;
 }
 int rsf_fg_map_equal(const RsfFgMap *a,const RsfFgMap *b) { return !memcmp(a,b,sizeof *a); }
-int rsf_fg_map_sample(const RsfFgMap *m,unsigned sw,unsigned sh,int x,int y,int p[2]) {
-    if (!rsf_fg_map_valid(m)||!sw||!sh||x<m->dst[0]||y<m->dst[1]||x>=m->dst[0]+m->dst[2]||y>=m->dst[1]+m->dst[3]) return 0;
-    p[0]=(int)floor(((x+0.5-m->dst[0])*m->crop[2]/m->dst[2]+m->crop[0])*sw/m->game_w);
-    p[1]=(int)floor(((y+0.5-m->dst[1])*m->crop[3]/m->dst[3]+m->crop[1])*sh/m->game_h);
-    return 1;
-}
 void rsf_fg_map_motion(const RsfFgMap *m,unsigned sw,unsigned sh,float s[2]) {
     s[0]=(float)((double)m->dst[2]*m->game_w/(m->crop[2]*(double)sw));
     s[1]=(float)((double)m->dst[3]*m->game_h/(m->crop[3]*(double)sh));
@@ -26,20 +20,21 @@ static void mul(const float a[16],const float b[16],float out[16]) {
     memcpy(out,t,sizeof t);
 }
 static void affine(const RsfFgMap *m,float a[16],float inv[16]) {
-    memset(a,0,64); memset(inv,0,64); a[10]=a[15]=inv[10]=inv[15]=1;
+    memset(a,0,64); a[10]=a[15]=1;
+    if(inv) { memset(inv,0,64); inv[10]=inv[15]=1; }
     for(int k=0;k<2;k++) {
         double g=k?m->game_h:m->game_w,o=k?m->out_h:m->out_w;
         double s=m->dst[k+2]*g/(m->crop[k+2]*o);
         double t=(2.0*m->dst[k]+m->dst[k+2])/o-1-s*((2.0*m->crop[k]+m->crop[k+2])/g-1);
         if(k) t=-t; // Window Y points down; clip Y points up.
         a[k*5]=(float)s; a[12+k]=(float)t;
-        inv[k*5]=(float)(1/s); inv[12+k]=(float)(-t/s);
+        if(inv) { inv[k*5]=(float)(1/s); inv[12+k]=(float)(-t/s); }
     }
 }
 int rsf_fg_map_camera(const RsfFgMap *m,const RsfFgMap *old,rsf_frame_record *r) {
     if(!rsf_fg_map_valid(m)||!r||!r->render_width||!r->render_height) return 0;
     if(!old||!rsf_fg_map_valid(old)) { old=m; r->flags|=RSF_FRAME_FLAG_RESET; }
-    float a[16],ai[16],p[16],pi[16],s[2]; affine(m,a,ai); affine(old,p,pi);
+    float a[16],ai[16],p[16],s[2]; affine(m,a,ai); affine(old,p,NULL);
     mul(r->camera.view_to_clip,a,r->camera.view_to_clip);
     mul(ai,r->camera.clip_to_view,r->camera.clip_to_view);
     mul(ai,r->camera.clip_to_previous_clip,r->camera.clip_to_previous_clip);

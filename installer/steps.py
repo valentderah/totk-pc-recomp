@@ -56,20 +56,7 @@ STAMP = '.install-key'
 
 # ---- helpers
 
-def file_sha256(path, progress=None):
-    """SHA-256 hex of a file; progress(done, total) after each block."""
-    h = hashlib.sha256()
-    total = path.stat().st_size
-    done = 0
-    with open(path, 'rb', buffering=0) as f:
-        buf = bytearray(8 << 20)
-        view = memoryview(buf)
-        while n := f.readinto(buf):
-            h.update(view[:n])
-            done += n
-            if progress:
-                progress(done, total)
-    return h.hexdigest()
+from .rsf_package import file_sha256
 
 
 def fingerprint(*parts):
@@ -98,11 +85,7 @@ def remove(path):
         path.unlink()
 
 
-def replace_file(src, dst):
-    """Copy src over dst through a temporary name, so a cancelled copy never leaves half a file under dst's name."""
-    tmp = dst.with_name(dst.name + '.tmp')
-    shutil.copy2(src, tmp)
-    os.replace(tmp, dst)
+from .rsf_package import replace_file
 
 
 def kill_tree(proc):
@@ -1271,19 +1254,12 @@ from . import rsf_package
 
 
 def rsf_source(ctx):
-    if getattr(ctx.options, 'no_rsf', False):
-        return None
-    explicit = getattr(ctx.options, 'rsf_package', None)
-    if explicit is not None:
-        return Path(explicit).absolute()
-    bundled = ctx.layout.root / 'ReScaleFrame'
-    if bundled.exists() or bundled.is_symlink():
-        return bundled
-    installed = ctx.dest / 'ReScaleFrame'
-    if installed.exists() or installed.is_symlink():
-        return installed
-    recorded = getattr(ctx, 'state', {}).get('rsf_package')
-    return Path(recorded).absolute() if recorded and Path(recorded).is_dir() else None
+    return rsf_package.select_source(
+        explicit=getattr(ctx.options, 'rsf_package', None),
+        opt_out=getattr(ctx.options, 'no_rsf', False),
+        bundled=ctx.layout.root / rsf_package.NAME,
+        installed=ctx.dest / rsf_package.NAME,
+        recorded=getattr(ctx, 'state', {}).get('rsf_package'))
 
 
 
@@ -1363,7 +1339,10 @@ def rebuild_command(ctx):
     AppImage file itself instead ($APPIMAGE, set by the AppImage runtime); its AppRun passes the arguments to
     installer.gui."""
     layout = ctx.layout
-    package_args = ['--rsf-package', str(ctx.dest / 'ReScaleFrame')] if not getattr(getattr(ctx, 'options', None), 'no_rsf', False) and (ctx.dest / 'ReScaleFrame/manifest.json').is_file() else ['--no-rsf']
+    installed = rsf_package.select_source(
+        opt_out=getattr(getattr(ctx, 'options', None), 'no_rsf', False),
+        installed=ctx.dest / rsf_package.NAME, prefill=True)
+    package_args = ['--rsf-package', str(installed)] if installed else ['--no-rsf']
     appimage = os.environ.get('APPIMAGE', '')
     if not layout.dev and appimage and Path(appimage).is_file():
         return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)] + package_args

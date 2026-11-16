@@ -69,13 +69,6 @@ static struct {
     int live;                  // 1.4.3 with DLSS able to run: the DLSS mode can change while the game runs
 } R;
 
-// Before device creation, only runtime presence is known. Provider setup later
-// verifies capability and the negotiated render extent.
-static int dlss_dll(void) {
-    const char *path = rsf_runtime_path();
-    return path && path[0] && plat_file_exists(path);
-}
-
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -97,16 +90,16 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
     return fit < 1.0;
 }
 
-// The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// The reconstruction quality's scene share; native/dlaa uses the full output.
+// Disabled reconstruction or a missing runtime keeps the independent render_scale policy.
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
         {"dlaa", 1.0}, {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
     static int dll = -1;
-    if (!cfg_bool("TOTK_RSF_ENABLED")) return 0;
+    if (!rsf_config_enabled()) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
+            if (dll < 0 && !(dll = rsf_runtime_present())) {
                 rt_log("resolution: reconstruction mode %s requires rsf_runtime pointing to an existing RSF DLL; "
                        "the scene follows render_scale", m);
             }
@@ -172,7 +165,7 @@ static void decide(void) {
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_RSF_ENABLED") && dlss_dll();
+    R.live = RT_V143 && rsf_config_enabled() && rsf_runtime_present();
     const char *m = cfg_value("TOTK_RSF_QUALITY");
     if (!strcmp(m, "native")) m = "dlaa";
     R.dlss_k = dlss_share(m);
@@ -639,7 +632,7 @@ void res_dynres_live(void) {
     if (set == -2) set = rt_patch_set("fixres");
     // An SR owner accepts one exact render plan. Its 90/80 percent game tiers
     // cannot replace that plan; FG-only retains the user's DRS preference.
-    int sr = R.on && R.live && cfg_bool("TOTK_RSF_ENABLED");
+    int sr = R.on && R.live && rsf_config_enabled();
     int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !sr;
     if (dyn == shown) return;
     shown = dyn;
@@ -672,14 +665,13 @@ static uint64_t rsf_scene_request; // atomic mailbox: cfg version, width and hei
 int res_rsf_scene(unsigned width, unsigned height) {
     // Heap bounds are fixed at startup. Never ask the renderer to allocate
     // provider images outside the scene budget reserved before game setup.
-    if (!RT_V143 || !R.live || !width || !height || width > R.hw || height > R.hh ||
+    if (!RT_V143 || !R.live || width < 8 || height < 8 || !R.ow || !R.oh || width > R.hw || height > R.hh ||
         width > 65535 || height > 65535) return 0;
     // 1.4.3 derives BOTH allocation axes from page width / console base
     // (main f_7000581a0c -> +0xccc -> f_70000d5c24). Page height at
     // +0xcc8 is not consumed here. Each canvas axis is then floored to eight.
     // Choose a width whose real height also reaches the recommendation, rather
     // than repeatedly requesting an independent height the engine cannot make.
-    if (width < 8 || height < 8 || !R.ow || !R.oh) return 0;
     unsigned wanted_w = width, wanted_h = height;
     unsigned base = ov_handheld() ? 1280 : BASE_W;
     for (width = (width + 7u) & ~7u;; width += 8) {
@@ -708,7 +700,7 @@ void res_fn_hit(uint64_t addr, uint64_t x0) {
 void res_present(Cpu *c) {
     res_dynres_live(); // exact SR ownership follows game-side activation/reset too
     uint64_t request = __atomic_exchange_n(&rsf_scene_request, 0, __ATOMIC_ACQUIRE);
-    if (request && cfg_bool("TOTK_RSF_ENABLED") && (unsigned)(request >> 32) == cfg_version()) {
+    if (request && rsf_config_enabled() && (unsigned)(request >> 32) == cfg_version()) {
         unsigned w = (unsigned)(request >> 16) & 65535, h = (unsigned)request & 65535;
         if (w != R.sw || h != R.sh) {
             double scale = scene_scale();

@@ -267,10 +267,11 @@ class App:
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(dpi.px(8), 0))
         self.label(f, 'ui.compressed_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
         self.label(f, 'ui.firmware_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        bundled = self.layout.root / 'ReScaleFrame'
-        selected = self.run_args.get('rsf_package')
-        if selected is None and not self.run_args.get('no_rsf'):
-            selected = (self.rebuild / 'ReScaleFrame') if self.rebuild and (self.rebuild / 'ReScaleFrame/manifest.json').is_file() else bundled if bundled.is_dir() else ''
+        from . import rsf_package
+        selected = rsf_package.select_source(
+            explicit=self.run_args.get('rsf_package'), opt_out=self.run_args.get('no_rsf'),
+            bundled=self.layout.root / rsf_package.NAME,
+            installed=self.rebuild / rsf_package.NAME if self.rebuild else None, prefill=True)
         self.rsf_var = tk.StringVar(value=str(selected or ''))
         self.label(f, 'ui.rsf', wraplength=WRAP).pack(anchor='w', pady=(dpi.px(8), 0))
         runtime_row = ttk.Frame(f)
@@ -407,7 +408,7 @@ class App:
     def pick_rsf(self):
         path = filedialog.askdirectory(title=self.cat('ui.pick_rsf'), mustexist=True)
         if path:
-            self.rsf_var.set(path)
+            self.rsf_var.set(os.path.normpath(path))
 
     def pick_dest(self):
         path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False)

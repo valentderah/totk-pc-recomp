@@ -1,3 +1,5 @@
+#include "rsf_fg_gpu.h"
+#include "rsf_runtime.h"
 // The recorder thread: see vk_rec.h. One producer (the submitting thread, between rec_begin and rec_end) and one
 // consumer (the recorder) share a ring of 64-bit words. A packet is a header word (op, length in words) and the
 // call's arguments; its pointers point into the packet itself, so the recorder passes the payload to the driver as
@@ -214,14 +216,18 @@ static int rec_own(void) {
 }
 
 // vkBeginCommandBuffer (one submission) and the breadcrumb, on the thread that records cb.
+void rec_commands_reset(VkCommandBuffer commands) {
+    rsf_sr_commands_reset(commands);
+    vk_motion_texture_commands_reset(commands);
+}
+
 static void begin_now(VkCommandBuffer cb, int crumb, uint64_t n, int retire) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VkResult result = vkBeginCommandBuffer(cb, &bi);
     if (result != VK_SUCCESS) rt_fatal("vk: recorder command begin failed (%d)", result);
     if (retire) {
-        rsf_sr_commands_reset(cb);
-        vk_motion_texture_commands_reset(cb);
+        rec_commands_reset(cb);
     }
     if (crumb) vk_crumb(cb, crumb, n);
 }
@@ -350,6 +356,11 @@ typedef struct {
     VkCommandBufferSubmitInfo cbi[2];
     VkSemaphoreSubmitInfo wait[2], sig[2];
 } A_Submit;
+static int fg_pending(const VkSubmitInfo2 *si) {
+    for (uint32_t i=0;i<si->commandBufferInfoCount;i++)
+        if (rsf_fg_gpu_commands_pending(si->pCommandBufferInfos[i].commandBuffer)) return 1;
+    return 0;
+}
 static int sr_pending(const VkSubmitInfo2 *si) {
     for (uint32_t i = 0; i < si->commandBufferInfoCount; i++)
         if (rsf_sr_commands_pending(si->pCommandBufferInfos[i].commandBuffer)) return 1;
@@ -364,15 +375,21 @@ static void motion_submitted(const VkSubmitInfo2 *si, uint64_t final_fence) {
     for (uint32_t i = 0; i < si->commandBufferInfoCount; i++)
         vk_motion_texture_submitted(si->pCommandBufferInfos[i].commandBuffer, final_fence);
 }
+static VkResult submit_queue(const VkSubmitInfo2 *si, uint64_t source) {
+    rsf_vk_submission(source, 1);
+    vk_queue_lock();
+    VkResult result = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
+    vk_queue_unlock();
+    rsf_vk_submission(source, 0);
+    return result;
+}
+
 VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame, uint64_t final_fence) {
+    int fg = fg_pending(si);
     if (!sub_pending) {
-        rsf_vk_submission(source_frame, 1);
-        vk_queue_lock();
-        VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, si, VK_NULL_HANDLE);
-        vk_queue_unlock();
-        rsf_vk_submission(source_frame, 0);
+        VkResult r = submit_queue(si, source_frame);
         if (r == VK_SUCCESS) { sr_submitted(si); motion_submitted(si, final_fence); }
-        if (r == VK_SUCCESS && cfg_int("TOTK_RSF_FG")) vk_present_fg_submitted(si);
+        if (r == VK_SUCCESS && fg) vk_present_fg_submitted(si);
         return r;
     }
     sub_pending = 0;
@@ -400,7 +417,6 @@ VkResult rec_submit(const VkSubmitInfo2 *si, uint64_t source_frame, uint64_t fin
     // SDK preparation can leave resources in these command buffers, including
     // on failure. Observe this part's actual result before telling its owner.
     // Notify on this producer, never on a recorder that Present may wait for.
-    int fg = cfg_int("TOTK_RSF_FG") != 0;
     if (RT_KNOB_ON(rec_async) && !fg && !sr_pending(si)) {
         pub_now();
         return __atomic_load_n(&r_sub_err, __ATOMIC_ACQUIRE);
@@ -425,11 +441,7 @@ static void submit_run(const A_Submit *a) {
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
                         .pSignalSemaphoreInfos = a->nsig ? a->sig : NULL,
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->nwait ? a->wait : NULL};
-    rsf_vk_submission(a->source, 1);
-    vk_queue_lock();
-    VkResult r = vkQueueSubmit2(vk_ctx()->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vk_queue_unlock();
-    rsf_vk_submission(a->source, 0);
+    VkResult r = submit_queue(&si, a->source);
     if (r == VK_SUCCESS) motion_submitted(&si, a->final_fence);
     r_sub_res = r;
     if (r != VK_SUCCESS && __atomic_load_n(&r_sub_err, __ATOMIC_RELAXED) == VK_SUCCESS)

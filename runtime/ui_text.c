@@ -155,8 +155,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "How far around the camera grass grows (the game's: 62.5 m). Higher keeps the "
                                  "grass in meadows further out instead of growing it in just in front of you; lower "
                                  "draws less of it. Takes effect at the next start.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "Uses the selected upscaler for the 3D scene. Install the complete runtime package beside the game. Restart after changing.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
                                  "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
@@ -164,24 +162,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                  "Applies at once.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
     [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduces the faint trails behind moving characters, animals and what they hold: DLSS takes "
-                                "less of the previous frames there. Stronger removes more of the trails and leaves those "
-                                "edges a little less smooth. Applies at once.",
     [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
     [UI_MENU_DLSS_CHARS_FULL] = "Full",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
-                          "they replace the 3D render scale. Takes effect at once.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
-    [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Reduces system latency on NVIDIA GPUs using VK_NV_low_latency2. On + Boost keeps GPU clocks high in CPU-bound scenes.",
-    [UI_MENU_REFLEX_OFF] = "Off",
-    [UI_MENU_REFLEX_ON] = "On",
     [UI_MENU_REFLEX_BOOST] = "On + Boost",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
@@ -745,8 +729,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "Как далеко вокруг камеры растёт трава (в игре 62,5 м). Выше: трава на лугах видна "
                                  "дальше и не вырастает прямо перед вами; ниже: травы меньше. Действует после "
                                  "перезапуска.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "Использует выбранный алгоритм для 3D-сцены. Установите полный пакет среды выполнения рядом с игрой. После изменения нужен перезапуск.",
     [UI_MENU_DLSS_PRESET] = "Модель DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
                                  "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
@@ -754,24 +736,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                  "мерцания. K: самая чёткая модель во всех режимах. Действует сразу.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Автоматически", [UI_MENU_DLSS_PRESET_K] = "K (самая чёткая)",
     [UI_MENU_DLSS_PRESET_J] = "J (меньше шлейфов)",
-    [UI_MENU_DLSS_CHARS] = "Шлейфы персонажей в DLSS",
-    [UI_MENU_DLSS_CHARS_DESC] = "Убирает слабые шлейфы за движущимися персонажами, животными и тем, что они держат: DLSS "
-                                "берёт там меньше от прошлых кадров. Чем сильнее, тем меньше шлейфов и тем чуть менее "
-                                "гладкие края. Действует сразу.",
     [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
     [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
-    [UI_MENU_DLSS] = "Режим DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
-                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
-                          "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
-    [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Снижает задержку системы на видеокартах NVIDIA с помощью VK_NV_low_latency2. «Вкл + Ускорение» удерживает высокие частоты GPU при упоре в процессор.",
-    [UI_MENU_REFLEX_OFF] = "Выкл",
-    [UI_MENU_REFLEX_ON] = "Вкл",
     [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
@@ -1748,16 +1716,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "Usa o algoritmo selecionado para a cena 3D. Instale o pacote completo de execução junto ao jogo. Reinicie após alterar.",
-    [UI_MENU_DLSS] = "Modo do DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
-                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
-                          "GPU; eles substituem a escala 3D. Vale na hora.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (nativo)",
-    [UI_MENU_DLSS_QUALITY] = "Qualidade",
-    [UI_MENU_DLSS_BALANCED] = "Equilibrado",
-    [UI_MENU_DLSS_PERFORMANCE] = "Desempenho", [UI_MENU_DLSS_ULTRA] = "Ultra Desempenho",
     [UI_MENU_DLSS_PRESET] = "Modelo do DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Qual modelo do DLSS roda. Automático segue a recomendação da NVIDIA para cada modo: K "
                                  "para DLAA, Qualidade e Equilibrado, M para Desempenho, L para Ultra Desempenho. J: um "
@@ -1765,19 +1723,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                  "o modelo mais nítido em todos os modos. Vale na hora.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático", [UI_MENU_DLSS_PRESET_K] = "K (mais nítido)",
     [UI_MENU_DLSS_PRESET_J] = "J (menos rastro)",
-    [UI_MENU_DLSS_CHARS] = "Rastros de personagens no DLSS",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduz os rastros fracos atrás de personagens, animais e do que eles seguram em movimento: "
-                                "ali o DLSS usa menos dos quadros anteriores. Mais forte remove mais rastros e deixa essas "
-                                "bordas um pouco menos suaves. Vale na hora.",
     [UI_MENU_DLSS_CHARS_OFF] = "Desligado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Médio",
     [UI_MENU_DLSS_CHARS_FULL] = "Total",
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Reduz a latência do sistema em GPUs NVIDIA usando VK_NV_low_latency2. Ligado + Boost mantém os clocks da GPU altos quando limitado pela CPU.",
-    [UI_MENU_REFLEX_OFF] = "Desligado",
-    [UI_MENU_REFLEX_ON] = "Ligado",
     [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
@@ -2470,31 +2420,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "使用所选算法重建三维场景。请将完整运行时包安装到游戏旁。更改后需要重启。",
-    [UI_MENU_DLSS] = "DLSS 模式",
-    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
-    [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
-    [UI_MENU_DLSS_QUALITY] = "质量",
-    [UI_MENU_DLSS_BALANCED] = "平衡",
-    [UI_MENU_DLSS_PERFORMANCE] = "性能",
-    [UI_MENU_DLSS_ULTRA] = "超级性能",
     [UI_MENU_DLSS_PRESET] = "DLSS 模型",
     [UI_MENU_DLSS_PRESET_DESC] = "运行哪个 DLSS 模型。自动按 NVIDIA 对各模式的建议：DLAA、质量和平衡用 K，性能用 M，超级性能用 L。"
                                  "J：移动角色身后的拖影略少，闪烁略多。K：所有模式都用最清晰的模型。立即生效。",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "自动", [UI_MENU_DLSS_PRESET_K] = "K（最清晰）",
     [UI_MENU_DLSS_PRESET_J] = "J（拖影更少）",
-    [UI_MENU_DLSS_CHARS] = "DLSS 角色拖影",
-    [UI_MENU_DLSS_CHARS_DESC] = "减少移动中的角色、动物及其手持物品身后的淡淡拖影：DLSS 在这些位置少用之前的帧。越强拖影越少，"
-                                "这些边缘也略欠平滑。立即生效。",
     [UI_MENU_DLSS_CHARS_OFF] = "关", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
     [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex 低延迟",
-    [UI_MENU_REFLEX_DESC] = "在支持 VK_NV_low_latency2 的 NVIDIA 显卡上降低系统延迟。开 + 增强 (On + Boost) 会在 CPU 瓶颈时保持 GPU 高频率。",
-    [UI_MENU_REFLEX_OFF] = "关",
-    [UI_MENU_REFLEX_ON] = "开",
     [UI_MENU_REFLEX_BOOST] = "开 + 增强",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "

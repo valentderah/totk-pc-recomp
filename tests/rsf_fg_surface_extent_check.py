@@ -9,6 +9,8 @@ end=text.index('// Returns 1 with a usable swapchain',start)
 actual=text[start:end]
 code=r'''
 #include <assert.h>
+#define RSF_GRAPHICS_QUEUES 4u
+#define rsf_config_fg_backend() cfg_int("TOTK_RSF_FG")
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 #include "rsf_present.h"
@@ -17,7 +19,6 @@ code=r'''
 #define vk_hdr_set_active(...) ((void)0)
 #define vk_hdr_metadata(...) ((void)0)
 #define free_capture() ((void)0)
-#define reflex_apply_locked() ((void)0)
 typedef struct {VkDevice device;VkPhysicalDevice phys;unsigned rsf_queue_count;} VkCtx;
 static VkCtx context={.rsf_queue_count=4};
 static VkCtx *vk_ctx(void) {return &context;}

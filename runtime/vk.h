@@ -1,6 +1,8 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
+#define RSF_GRAPHICS_QUEUES 4u
 #include <vulkan/vulkan.h>
+#include "vk_snapshot_pool.h"
 #include "rsf_vulkan.h"
 #include <rescaleframe/native_sr_split_vulkan.h>
 #include <stdint.h>
@@ -25,7 +27,7 @@ typedef struct VkCtx {
     uint32_t gfx_family;                    // graphics + compute + presentation on win32
     uint32_t xfer_family;                   // a transfer-only family when the GPU has one, else gfx_family
     VkQueue gfx_queue;                      // graphics + present
-    VkQueue rsf_queues[4];                  // graphics, compute, present, acquire for the RSF WSI owner
+    VkQueue rsf_queues[RSF_GRAPHICS_QUEUES];                  // graphics, compute, present, acquire for the RSF WSI owner
     uint32_t rsf_queue_count;               // actual distinct queues requested in gfx_family
     VkQueue xfer_queue;                     // equals gfx_queue when xfer_shared
     int xfer_shared;                        // 1: no separate queue; serialise with gfx_queue
@@ -41,12 +43,12 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata;                  // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+    int has_rsf_sr_split; // Win32 shared image/fence imports enabled
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
-    int has_rsf_sr_split;                   // Win32 shared image/fence imports enabled
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
@@ -714,3 +716,55 @@ void vk_sync_sr_cancel(void);
 // Actual final engine fence for the serial recording owner, else zero. Caller
 // already holds the replay submission lock; this accessor takes no locks.
 uint64_t vk_sync_record_fence(VkCommandBuffer commands);
+
+// Shared image allocation and conservative handoff helpers; callers own retirement.
+static inline int vk_image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, VkImage *img, VmaAllocation *mem,
+                   VkImageView *view) {
+    const VkCtx *c = vk_ctx();
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
+                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ii, &ai, img, mem, NULL) != VK_SUCCESS) return 0;
+    if (!view) return 1; // Transfer-only intermediates have no descriptor consumer.
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *img,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = f,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    return vkCreateImageView(c->device, &vi, NULL, view) == VK_SUCCESS;
+}
+
+static inline void vk_image_layout_impl(PFN_vkCmdPipelineBarrier2 emit, VkCommandBuffer cb, VkImage image, VkImageLayout before, VkImageLayout after) {
+    VkImageMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = before, .newLayout = after, .image = image,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    emit(cb, &dependency);
+}
+
+// Resolve the emitter at the call site, after any recorder interception macros.
+#define vk_image_layout(cb, image, before, after) \
+    vk_image_layout_impl(vkCmdPipelineBarrier2, (cb), (image), (before), (after))
+
+static inline rsf_srvk_image vk_rsf_image(VkImage image, VkFormat format, unsigned w, unsigned h, VkImageLayout layout) {
+    return (rsf_srvk_image){vk_ctx()->device, (uint64_t)image, format, w, h, layout, 1};
+}
+
+
+// Snapshot and texture facts are provided by their storage owners.
+typedef struct {
+    VkImage image;
+    uint64_t generation;
+    VkSnapshotShape shape;
+} VkMotionTextureFact;
+void *vk_usnap_retain(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out, const uint8_t **bytes);
+void vk_usnap_release(void *lease);
+void vk_usnap_use(void *lease, uint64_t fence);
+// Pure cached lookup under the texture owner's lock, never creates or uploads a native image/view.
+int vk_texture_motion_fact(uint64_t handle, VkMotionTextureFact *);

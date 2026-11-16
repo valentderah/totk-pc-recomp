@@ -7,14 +7,9 @@
 #define DLAA_SCENE_MIN_W 320u
 
 int vk_dlaa_wanted(void);   // the setting is on (the device may still lack DLSS)
-// Legacy extension-list hooks. RSF startup and Vulkan dispatch are handled by rsf_vulkan.c.
-// vk_dlaa_init checks that the configured RSF module was loaded.
-void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max);
-void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max);
+// RSF startup and Vulkan dispatch are handled by rsf_vulkan.c.
 void vk_dlaa_init(void);
 int vk_dlaa_release(void); // drained graphics owner; failure preserves provider ownership
-// 1 when reconstruction is enabled and RSF exports loaded. Provider admission occurs at evaluation.
-int vk_dlaa_available(void);
 // Motion/depth production is independent of reconstruction when FG is selected.
 int vk_dlaa_temporal_available(void);
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the

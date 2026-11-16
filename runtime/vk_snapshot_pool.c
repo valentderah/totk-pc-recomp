@@ -8,7 +8,7 @@ typedef struct {
     VkSnapshotShape shape;
     VkSnapshotBacking backing;
     uint64_t generation, frame, producer, fence, commands[VK_SNAPSHOT_COMMANDS];
-    int state, recorded, submitted, published, released;
+    int state, submitted, published, released;
 } Slot;
 struct VkSnapshotPool {
     PlatMutex lock;
@@ -22,9 +22,7 @@ struct VkSnapshotPool {
     Slot slots[VK_SNAPSHOT_SLOTS];
 };
 
-static int same_shape(const VkSnapshotShape *a, const VkSnapshotShape *b) {
-    return a->format == b->format && a->width == b->width && a->height == b->height && a->levels == b->levels;
-}
+
 static int shape_valid(const VkSnapshotShape *s) {
     if (!s || s->format == VK_FORMAT_UNDEFINED || !s->width || !s->height || !s->levels || s->levels > 32) return 0;
     uint32_t n = s->width > s->height ? s->width : s->height, levels = 1;
@@ -37,7 +35,7 @@ static int pending(const Slot *s) {
 }
 static void recycle(VkSnapshotPool *p, Slot *s) {
     if (s->state == LEASED && s->released && !pending(s) && s->fence <= p->done) {
-        s->state = READY; s->recorded = s->submitted = s->published = 0;
+        s->state = READY; s->producer = s->submitted = s->published = 0;
     }
 }
 static Slot *token_slot(VkSnapshotPool *p, VkSnapshotToken t) {
@@ -107,16 +105,16 @@ int vk_snapshot_pool_acquire(VkSnapshotPool *p, const VkSnapshotShape *shape, ui
     for (int i = 0; i < VK_SNAPSHOT_SLOTS; i++) {
         Slot *s = &p->slots[i]; recycle(p, s);
         if (s->state == EMPTY && empty < 0) empty = i;
-        if (!same_shape(&s->shape, shape)) continue;
+        if (!vk_snapshot_shape_equal(&s->shape, shape)) continue;
         if (s->state == READY && s->generation != UINT64_MAX) ready = i;
         requested |= s->state == QUEUED || s->state == BUILDING;
         rejected |= s->state == REJECTED;
     }
     if (ready >= 0) {
         Slot *s = &p->slots[ready];
-        if (p->resources >= p->limits.frame_resources || s->backing.copy_bytes > p->limits.frame_copy_bytes - p->copy_bytes) goto end;
+        if (s->backing.copy_bytes > p->limits.frame_copy_bytes - p->copy_bytes) goto end;
         s->state = LEASED; s->generation++; s->frame = frame; s->producer = s->fence = 0;
-        s->released = s->recorded = s->submitted = s->published = 0;
+        s->released = s->producer = s->submitted = s->published = 0;
         *token = (VkSnapshotToken){(uint32_t)ready, s->generation}; *out = s->backing;
         p->resources++; p->copy_bytes += s->backing.copy_bytes; ok = 1;
     } else if (!requested && !rejected && empty >= 0) {
@@ -125,16 +123,22 @@ int vk_snapshot_pool_acquire(VkSnapshotPool *p, const VkSnapshotShape *shape, ui
 end:
     plat_mutex_unlock(&p->lock); return ok;
 }
-int vk_snapshot_pool_cancel(VkSnapshotPool *p, VkSnapshotToken t) {
+static int release_token(VkSnapshotPool *p, VkSnapshotToken t, int cancel) {
     if (!p) return 0;
-    plat_mutex_lock(&p->lock); Slot *s = token_slot(p, t); int ok = s && !s->recorded;
+    plat_mutex_lock(&p->lock);
+    Slot *s = token_slot(p, t);
+    int ok = s && (cancel ? !s->producer : !s->released);
     if (ok) { s->released = 1; recycle(p, s); }
-    plat_mutex_unlock(&p->lock); return ok;
+    plat_mutex_unlock(&p->lock);
+    return ok;
+}
+int vk_snapshot_pool_cancel(VkSnapshotPool *p, VkSnapshotToken t) {
+    return release_token(p, t, 1);
 }
 int vk_snapshot_pool_record(VkSnapshotPool *p, VkSnapshotToken t, uint64_t tag) {
     if (!p) return 0;
-    plat_mutex_lock(&p->lock); Slot *s = token_slot(p, t); int ok = s && !s->released && !s->recorded && add_command(s, tag);
-    if (ok) s->producer = tag, s->recorded = 1;
+    plat_mutex_lock(&p->lock); Slot *s = token_slot(p, t); int ok = s && !s->released && !s->producer && add_command(s, tag);
+    if (ok) s->producer = tag;
     plat_mutex_unlock(&p->lock); return ok;
 }
 int vk_snapshot_pool_publish(VkSnapshotPool *p, VkSnapshotToken t, uint64_t frame) {
@@ -149,10 +153,7 @@ int vk_snapshot_pool_consume(VkSnapshotPool *p, VkSnapshotToken t, uint64_t tag)
     plat_mutex_unlock(&p->lock); return ok;
 }
 int vk_snapshot_pool_release(VkSnapshotPool *p, VkSnapshotToken t) {
-    if (!p) return 0;
-    plat_mutex_lock(&p->lock); Slot *s = token_slot(p, t); int ok = s && !s->released;
-    if (ok) { s->released = 1; recycle(p, s); }
-    plat_mutex_unlock(&p->lock); return ok;
+    return release_token(p, t, 0);
 }
 void vk_snapshot_pool_submitted(VkSnapshotPool *p, uint64_t tag, uint64_t fence) {
     if (!p || !tag || !fence) return;
@@ -174,7 +175,7 @@ void vk_snapshot_pool_commands_reset(VkSnapshotPool *p, uint64_t tag) {
     for (int i = 0; i < VK_SNAPSHOT_SLOTS; i++) {
         Slot *s = &p->slots[i]; if (s->state != LEASED) continue;
         for (int j = 0; j < VK_SNAPSHOT_COMMANDS; j++) if (s->commands[j] == tag) s->commands[j] = 0;
-        if (s->producer == tag && !s->submitted) s->recorded = s->published = 0, s->producer = 0;
+        if (s->producer == tag && !s->submitted) s->producer = s->published = 0, s->producer = 0;
         recycle(p, s);
     }
     plat_mutex_unlock(&p->lock);

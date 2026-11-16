@@ -5,12 +5,12 @@
              Dictionary<int, int> bindings = new();
              Dictionary<int, int> storage = new();
 +            Dictionary<int, SetBindingPair> textures = new();
-             foreach (INode node in slice)
-             {
-                 if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
-@@ -103,8 +104,31 @@
-                     }
-                     if (!found) return -1;
+             Dictionary<int, BufferDescriptor> originalStorage = new();
+             foreach (BufferDescriptor descriptor in resourceManager.GetStorageBufferDescriptors())
+                 originalStorage.TryAdd(descriptor.Binding, descriptor);
+@@ -99,8 +100,31 @@
+                         return -1;
+                     storage[current] = previous;
                  }
 -                // Texture/image dependent positions still have no retained previous producer.
 -                if (node is Operation special && special.GetType() != typeof(Operation)) return -1;
@@ -42,7 +42,7 @@
              }
  
              foreach (INode n in slice)
-@@ -130,6 +154,9 @@
+@@ -126,6 +150,9 @@
                  }
              }
  
@@ -52,7 +52,7 @@
              if (banks == 0)
              {
                  return -1;
-@@ -139,8 +166,8 @@
+@@ -135,8 +162,8 @@
              HashSet<Operand> tainted = new();
              foreach (INode node in slice)
              {
@@ -63,7 +63,7 @@
              }
              bool changed = true;
  
-@@ -195,6 +222,14 @@
+@@ -191,6 +218,14 @@
                          prev[phi.Dest] = dest;
                          copy = new PhiNode(dest);
                      }

@@ -2,6 +2,8 @@
 from pathlib import Path
 import subprocess
 
+from rsf_snapshot_currentness_check import extract_function
+
 root = Path(__file__).resolve().parents[1]
 out = root / 'build/checks/rsf-texture-caller-worker'
 shader = out / 'xlate/ryujinx/src/Ryujinx.Graphics.Shader'
@@ -68,9 +70,6 @@ subprocess.run([str(sdk/'glslangValidator.exe'),'-V',str(out/'texture.vert'),'-o
 subprocess.run([str(sdk/'spirv-val.exe'),str(out/'texture.spv')],check=True)
 
 source=(root/'runtime/gfx_shader.c').read_text()
-def function(name):
-    start=source.index(name)
-    return source[start:source.index('\n}\n',start)+3]
 fixture='''#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,7 +79,7 @@ struct GfxShader { GfxShaderRes res[GFX_RES_KINDS][8]; int nres[GFX_RES_KINDS]; 
 static int fmt_code(const char *s) { (void)s; return 0; }
 '''
 for name in ('static const char *json_key(', 'static long json_int(', 'static void json_str(', 'static int handle_slot(', 'static void add_res('):
-    fixture+=function(name)
+    fixture+=extract_function(source, name)
 fixture+=r'''int main(void) {
     GfxShader s={0};
     const char *old="{\"binding\":1,\"type\":3,\"cbuf_slot\":-1,\"handle\":8,\"flags\":16}";

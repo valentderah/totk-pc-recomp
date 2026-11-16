@@ -42,3 +42,7 @@ void vk_snapshot_pool_commands_reset(VkSnapshotPool *, uint64_t command_tag);
 void vk_snapshot_pool_collect(VkSnapshotPool *, uint64_t completed_final_fence);
 // Off hot path. Refuses while references, recorded/unsubmitted commands or unfinished GPU work remain.
 int vk_snapshot_pool_stop(VkSnapshotPool *);
+
+static inline int vk_snapshot_shape_equal(const VkSnapshotShape *a, const VkSnapshotShape *b) {
+    return a->format == b->format && a->width == b->width && a->height == b->height && a->levels == b->levels;
+}

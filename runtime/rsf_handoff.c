@@ -40,7 +40,6 @@ void rsf_handoff_foreign(uint64_t address) {
     plat_mutex_unlock(&lock);
 }
 
-void rsf_handoff_finalize(uint64_t address) { rsf_handoff_foreign(address); }
 
 int rsf_handoff_publish(uint64_t address, uint64_t message, void *publisher, uint64_t framework, uint64_t source) {
     int accepted = 0;

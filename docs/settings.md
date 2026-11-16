@@ -21,6 +21,8 @@ native code into the process and retains the module until exit; restart to chang
 | `rsf_low_latency` (default `0`) | `0` off, `1` on, `2` boost where supported, independently of upscaling. Restart required; available from Upscaling & Framegen. | The runtime owns input-boundary pacing and source-associated submission/Present markers. | Caution |
 | `climb_fix` (default `1`) | Corrects the existing 1.4.3 climbing velocity loss above 60 fps. Requires the real-time frame step; lower rates keep the game's factor. `0` uses the shipping factor. | Arithmetic in the climbing velocity step. | Caution |
 
+Legacy `dlaa = 1` reconstruction keeps the DLSS backend when `rsf_enabled` and `rsf_backend` are both unset. Explicit RSF selections take precedence; new configurations retain the default FSR 3 backend.
+
 | Setting | Effect | Runtime cost | Risk |
 | --- | --- | --- | --- |
 | `rsf_runtime` | Absolute path to the experimental RSF runtime DLL; validates native Vulkan service exports before provider setup. Default unset. | Loads native code and retains the module until exit; restart to change. Provider setup depends on the selected mode and GPU. | Caution |

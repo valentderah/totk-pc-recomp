@@ -179,3 +179,6 @@ REC_CMDS(REC_DECL)
 #define vkCmdWriteTimestamp rc_vkCmdWriteTimestamp
 #define vkCmdWriteTimestamp2 rc_vkCmdWriteTimestamp2
 #endif
+
+// Prior command references have been reset or destroyed; notify temporal resource owners.
+void rec_commands_reset(VkCommandBuffer commands);

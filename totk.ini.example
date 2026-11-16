@@ -279,9 +279,9 @@
 # rsf_quality = native
 # Object/deformation motion history for supported shaders. Restart after changing.
 # dlaa_objmv = 1
-# Absolute paths, configured for the installed RSF package:
+# Optional absolute overrides; provider_dir names one vendor folder (shown for FSR).
 # rsf_runtime = C:\ReScaleFrame\ReScaleFrame.Runtime.dll
-# rsf_provider_dir = C:\ReScaleFrame\providers
+# rsf_provider_dir = C:\ReScaleFrame\fidelityfx
 # Frame generation is experimental: 0 off, 1 DLSS, 3 FSR3, 4 FSR4, 5 XeSS.
 # Select it in Upscaling & Framegen; changing it takes effect after restart.
 # rsf_fg = 0

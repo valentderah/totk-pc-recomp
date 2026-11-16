@@ -6,6 +6,30 @@
 #include "platform/platform.h"
 #include "rsf_runtime.h"
 #include <string.h>
+#include <rescaleframe/sr_session.h>
+
+static PlatMutex config_lock = PLAT_MUTEX_INIT;
+static int config_ready, disabled;
+static struct { int enabled, fg, backend, latency; } config;
+
+static void config_init(void) {
+    if (__atomic_load_n(&config_ready, __ATOMIC_ACQUIRE)) return;
+    plat_mutex_lock(&config_lock);
+    if (!config_ready) {
+        config.enabled = cfg_bool("TOTK_RSF_ENABLED");
+        config.fg = cfg_int("TOTK_RSF_FG");
+        config.backend = cfg_int("TOTK_RSF_BACKEND");
+        config.latency = cfg_int("TOTK_RSF_LOW_LATENCY");
+        __atomic_store_n(&config_ready, 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&config_lock);
+}
+int rsf_config_enabled(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && config.enabled; }
+int rsf_config_fg_backend(void) { config_init(); return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : config.fg; }
+int rsf_config_sr_backend(void) { config_init(); return config.backend; }
+int rsf_config_low_latency(void) { config_init(); return __atomic_load_n(&disabled, __ATOMIC_ACQUIRE) ? 0 : config.latency; }
+int rsf_requested(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && (config.enabled || config.fg || config.latency); }
+int rsf_temporal_requested(void) { config_init(); return !__atomic_load_n(&disabled, __ATOMIC_ACQUIRE) && (config.enabled || config.fg); }
 
 static PlatMutex paths_lock = PLAT_MUTEX_INIT;
 static int paths_ready;
@@ -40,17 +64,80 @@ const char *rsf_runtime_path(void) {
     return runtime_path[0] && plat_file_exists(runtime_path) ? runtime_path : NULL;
 }
 
+int rsf_runtime_present(void) {
+    const char *path = cfg_get("TOTK_RSF_RUNTIME");
+    if (!path || !*path) {
+        package_paths();
+        path = runtime_path;
+    }
+    return path && *path && plat_file_exists(path);
+}
+
 const char *rsf_provider_directory(unsigned backend) {
     const char *override = cfg_get("TOTK_RSF_PROVIDER_DIR");
     if (override && *override) return override;
     package_paths();
-    if (backend != 1 && backend != 2 && backend != 3 && backend != 4 && backend != 5) return NULL;
-    const char *path = provider_paths[backend == 1 ? 0 : backend == 5 ? 2 : 1];
+    unsigned provider;
+    switch (backend) {
+    case RSF_SR_DLSS: provider = 0; break;
+    case RSF_SR_FSR2: case RSF_SR_FSR3: case RSF_SR_FSR4: provider = 1; break;
+    case RSF_SR_XESS: provider = 2; break;
+    default: return NULL;
+    }
+    const char *path = provider_paths[provider];
     return *path ? path : NULL;
 }
 
+// Export pointers are immutable after successful load; the module lease is process-wide.
+static struct { const char *name; void *address; int required; } exports[] = {
+    {"rsf_fgvk_acquire", NULL, 1},
+    {"rsf_fgvk_create_with_host", NULL, 1},
+    {"rsf_fgvk_destroy", NULL, 1},
+    {"rsf_fgvk_drain", NULL, 0},
+    {"rsf_fgvk_enable_options", NULL, 1},
+    {"rsf_fgvk_get_status", NULL, 0},
+    {"rsf_fgvk_hudless", NULL, 1},
+    {"rsf_fgvk_image_layout", NULL, 0},
+    {"rsf_fgvk_images", NULL, 1},
+    {"rsf_fgvk_prepare", NULL, 1},
+    {"rsf_fgvk_present_source", NULL, 1},
+    {"rsf_fgvk_submitted", NULL, 1},
+    {"rsf_get_runtime_version", NULL, 1},
+    {"rsf_latencyvk_cpu", NULL, 1},
+    {"rsf_latencyvk_device_created", NULL, 0},
+    {"rsf_latencyvk_device_destroyed", NULL, 0},
+    {"rsf_latencyvk_execution", NULL, 1},
+    {"rsf_latencyvk_get_status", NULL, 0},
+    {"rsf_latencyvk_instance_proc", NULL, 1},
+    {"rsf_latencyvk_options", NULL, 1},
+    {"rsf_latencyvk_require_device", NULL, 0},
+    {"rsf_latencyvk_shutdown", NULL, 1},
+    {"rsf_slvk_initialize", NULL, 1},
+    {"rsf_native_cpu_read", NULL, 0},
+    {"rsf_native_cpu_counters_get", NULL, 0},
+    {"vkGetDeviceProcAddr", NULL, 0},
+    {"rsf_srvk_create", NULL, 1},
+    {"rsf_srvk_destroy", NULL, 1},
+    {"rsf_srvk_evaluate", NULL, 1},
+    {"rsf_srvk_fsr4_create", NULL, 0},
+    {"rsf_srvk_fsr4_destroy", NULL, 0},
+    {"rsf_srvk_fsr4_evaluate", NULL, 0},
+    {"rsf_srvk_fsr4_info", NULL, 0},
+    {"rsf_srvk_fsr4_plan", NULL, 0},
+    {"rsf_srvk_fsr4_retire_commands", NULL, 0},
+    {"rsf_srvk_fsr4_submitted", NULL, 0},
+    {"rsf_srvk_plan", NULL, 1},
+    {"rsf_srvk_retire_commands", NULL, 1},
+    {"rsf_srvk_spatial_fallback", NULL, 0},
+    {"rsf_xessvk_device_requirements", NULL, 0},
+    {"rsf_xessvk_initialize", NULL, 0},
+    {"rsf_xessvk_instance_requirements", NULL, 0},
+    {"rsf_xessvk_shutdown", NULL, 0},
+};
+
 static void *module;
 static int tried, ready;
+static void *cpu_sink, *execution_sink;
 
 int rsf_runtime_load(void) {
     if (tried) return ready;
@@ -67,29 +154,33 @@ int rsf_runtime_load(void) {
     // Validate every service needed by the replacement before allowing callers
     // to borrow an export. Export presence does not establish ABI compatibility
     // or provider availability; setup calls must check those independently.
-    static const char *const required[] = {
-        "rsf_get_runtime_version", "rsf_slvk_initialize",
-        "rsf_latencyvk_instance_proc", "rsf_latencyvk_options",
-        "rsf_latencyvk_cpu", "rsf_latencyvk_execution",
-        "rsf_latencyvk_shutdown", "rsf_srvk_create", "rsf_srvk_plan",
-        "rsf_srvk_evaluate", "rsf_srvk_retire_commands", "rsf_srvk_destroy",
-        "rsf_fgvk_create_with_host", "rsf_fgvk_images", "rsf_fgvk_acquire",
-        "rsf_fgvk_enable_options", "rsf_fgvk_prepare", "rsf_fgvk_hudless",
-        "rsf_fgvk_submitted", "rsf_fgvk_present_source", "rsf_fgvk_destroy"
-    };
     int missing = 0;
-    for (unsigned i = 0; i < sizeof required / sizeof required[0]; i++) {
-        if (!plat_lib_sym(module, required[i])) {
-            rt_log("rsf: runtime lacks required export %s", required[i]);
+    for (unsigned i = 0; i < sizeof exports / sizeof exports[0]; i++) {
+        exports[i].address = plat_lib_sym(module, exports[i].name);
+        if (exports[i].required && !exports[i].address) {
+            rt_log("rsf: runtime lacks required export %s", exports[i].name);
             missing = 1;
         }
     }
     if (missing) return 0;
     ready = 1;
+    __atomic_store_n(&cpu_sink, rsf_runtime_symbol("rsf_latencyvk_cpu"), __ATOMIC_RELEASE);
+    __atomic_store_n(&execution_sink, rsf_runtime_symbol("rsf_latencyvk_execution"), __ATOMIC_RELEASE);
     rt_log("rsf: native Vulkan service exports loaded; providers await setup");
     return 1;
 }
 
 void *rsf_runtime_symbol(const char *name) {
-    return ready && name ? plat_lib_sym(module, name) : NULL;
+    if (!ready || !name) return NULL;
+    for (unsigned i = 0; i < sizeof exports / sizeof exports[0]; i++)
+        if (!strcmp(name, exports[i].name)) return exports[i].address;
+    return plat_lib_sym(module, name);
+}
+
+void *rsf_runtime_cpu_sink(void) { return __atomic_load_n(&cpu_sink, __ATOMIC_ACQUIRE); }
+void *rsf_runtime_execution_sink(void) { return __atomic_load_n(&execution_sink, __ATOMIC_ACQUIRE); }
+
+void rsf_runtime_disable(const char *reason) {
+    if (!__atomic_exchange_n(&disabled, 1, __ATOMIC_ACQ_REL))
+        rt_log("rsf: %s; optional RSF features disabled, using native Vulkan", reason);
 }

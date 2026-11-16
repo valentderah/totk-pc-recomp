@@ -2,19 +2,19 @@
 from pathlib import Path
 import subprocess
 
+from rsf_snapshot_currentness_check import extract_function
+
 root = Path(__file__).resolve().parents[1]
 out = root / 'build/checks/rsf-storage-rebase-worker'
 out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_exec_draw.c').read_text()
 
 
-def function(name):
-    start = source.index(name)
-    return source[start:source.index('\n}\n', start) + 3]
 
 
 fixture = r'''
 #include <stdint.h>
+static uint64_t rt_fnv_mix(uint64_t h,uint64_t word) { return (h^word)*0x100000001b3ull; }
 #include <assert.h>
 typedef struct { uint64_t addr, size; } p_bind_buf;
 typedef struct { uint64_t buffer, offset, range; } VkDescriptorBufferInfo;
@@ -29,8 +29,8 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
     *out = (VkDescriptorBufferInfo){123, u->addr, u->size}; return 1;
 }
 '''
-fixture += function('static int mo_prev_cached(')
-fixture += function('static uint64_t mo_blocks_key(')
+fixture += extract_function(source, 'static int mo_prev_cached(')
+fixture += extract_function(source, 'static uint64_t mo_blocks_key(')
 fixture += r'''
 int main(void) {
     VkExec ex = {0}; ex.ubo[0][2] = (p_bind_buf){0x1000, 128};

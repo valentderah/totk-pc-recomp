@@ -820,7 +820,7 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
 
 
-@unittest.skipUnless(steps.os.name == 'nt', 'DLSS is Windows-only')
+@unittest.skipUnless(steps.os.name == 'nt', 'RSF package installation is Windows-only')
 class RsfPackageTest(unittest.TestCase):
     def setUp(self):
         from installer import rsf_package
@@ -830,6 +830,22 @@ class RsfPackageTest(unittest.TestCase):
         self.source, self.dest = self.root / 'package', self.root / 'install'
         self.source.mkdir()
         self.make_package(self.source)
+
+    def test_source_selection_preserves_cli_and_prefill_precedence(self):
+        self.dest.mkdir()
+        manifest = self.dest / 'manifest.json'
+        manifest.write_text('{}')
+        choices = {'bundled': self.source, 'installed': self.dest}
+        self.assertEqual(self.pkg.select_source(**choices), self.source)
+        self.assertEqual(self.pkg.select_source(**choices, prefill=True), self.dest)
+        manifest.unlink()
+        self.assertEqual(self.pkg.select_source(**choices, prefill=True), self.source)
+        # One folder can play both roles: a missing installed manifest still allows bundle prefill.
+        (self.source / 'manifest.json').unlink()
+        self.assertEqual(self.pkg.select_source(bundled=self.source, installed=self.source, prefill=True), self.source)
+        self.assertIsNone(self.pkg.select_source(**choices, opt_out=True))
+        self.assertIsNone(self.pkg.select_source(**choices, explicit=self.source, opt_out=True))
+        self.assertEqual(self.pkg.select_source(**choices, explicit=str(self.source), opt_out=True, prefill=True), str(self.source))
 
     def tearDown(self):
         self.tmp.cleanup()

@@ -1,4 +1,4 @@
-// Optional Vulkan allocator backend. No call site starts this pool yet; texture motion admission stays refused.
+// Vulkan image allocator for the motion-texture snapshot pool.
 #include "vk.h"
 #include "vk_snapshot_pool.h"
 #include <limits.h>

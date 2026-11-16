@@ -9,7 +9,15 @@ source = (root / "runtime/vk_dlaa.c").read_text(encoding="utf-8")
 start = source.index("static void fg_prepare(")
 end = source.index("\nstatic int rsf_scene(", start)
 harness = "// " + ("TOTK_RECOMP_" + "GENERATED_FROM_GAME_CODE") + "\n"
-harness += r'''#include <assert.h>
+harness += r'''static inline __attribute__((unused)) int rt_log_sampled(unsigned long long n,unsigned long long first,unsigned long long period) {return n<=first || (period && n%period==0);}
+
+#define rsf_config_enabled() cfg_bool("TOTK_RSF_ENABLED")
+#define rsf_config_fg_backend() cfg_int("TOTK_RSF_FG")
+#define rsf_config_sr_backend() cfg_int("TOTK_RSF_BACKEND")
+#define rsf_config_low_latency() cfg_int("TOTK_RSF_LOW_LATENCY")
+#define rsf_requested() (rsf_config_enabled() || rsf_config_fg_backend() || rsf_config_low_latency())
+#define rsf_temporal_requested() (rsf_config_enabled() || rsf_config_fg_backend())
+#include <assert.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 #include <rescaleframe/native_fg_vulkan.h>
@@ -22,8 +30,8 @@ static int refused;
 #define rt_log(...) ((void)0)
 #define rec_drain() ((void)0)
 #define vk_exec_draw_new_cb(...) ((void)0)
-#define rsf_layout(...) ((void)0)
-static rsf_srvk_image rsf_image(VkImage image, VkFormat format, unsigned w, unsigned h, VkImageLayout layout) {
+#define vk_image_layout(...) ((void)0)
+static rsf_srvk_image vk_rsf_image(VkImage image, VkFormat format, unsigned w, unsigned h, VkImageLayout layout) {
     return (rsf_srvk_image){0, (uint64_t)image, format, w,h,layout,1};
 }
 static int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *f) {

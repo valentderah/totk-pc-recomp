@@ -148,7 +148,6 @@ static int create_instance(void) {
     if (validate || ab_want) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
-    vk_dlaa_instance_exts(ext, &n_ext, 12);
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -197,7 +196,7 @@ static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperti
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
             gfx_window_vk_presentable(g_vk.instance, pd, i)) {
-            if (!cfg_int("TOTK_RSF_FG") || qp[i].queueCount >= 4) return i;
+            if (!rsf_config_fg_backend() || qp[i].queueCount >= RSF_GRAPHICS_QUEUES) return i;
             if (fallback == UINT32_MAX) fallback = i;
         }
     return fallback;
@@ -260,8 +259,8 @@ static int pick_device(void) {
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
     g_vk.rsf_queue_count = 1;
-    if (cfg_int("TOTK_RSF_FG")) {
-        if (qp[g_vk.gfx_family].queueCount >= 4) g_vk.rsf_queue_count = 4;
+    if (rsf_config_fg_backend()) {
+        if (qp[g_vk.gfx_family].queueCount >= RSF_GRAPHICS_QUEUES) g_vk.rsf_queue_count = RSF_GRAPHICS_QUEUES;
         else rt_log("rsf: frame generation needs four distinct graphics-family queues; only %u available",
                     qp[g_vk.gfx_family].queueCount);
     }
@@ -298,7 +297,6 @@ typedef struct {
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
-    VkPhysicalDevicePresentIdFeaturesKHR pid;
 } FeatureChain;
 
 static int create_device(void) {
@@ -306,7 +304,8 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[52];
+    enum { EXT_CAPACITY = 52, RSF_EXT_CAPACITY = 48 };
+    const char *ext[EXT_CAPACITY];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
 
@@ -350,7 +349,6 @@ static int create_device(void) {
         CHAIN(fbl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT);
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
-    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's; the twelve slots after it stay for the nine below
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -450,14 +448,22 @@ static int create_device(void) {
         VkBaseOutStructure *copy = (void *)((char *)&enabled + ((char *)node - (char *)c));
         copy->pNext = node->pNext ? (void *)((char *)&enabled + ((char *)node->pNext - (char *)c)) : NULL;
     }
+    uint32_t native_extension_count = n_ext;
     void *enabled_features = &enabled.f2;
-    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, ext, &n_ext, 48, &enabled_features)) {
-        free(c);
-        return 0;
+    if (!rsf_vk_device_requirements(g_vk.phys, &enabled.f2, ext, &n_ext, RSF_EXT_CAPACITY, &enabled_features)) {
+        rsf_vk_fallback("device requirements refused");
+        n_ext = native_extension_count;
+        enabled_features = &c->f2;
     }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = enabled_features, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
+    if (r != VK_SUCCESS && rsf_requested()) {
+        rsf_vk_fallback("interposed device creation refused");
+        di.pNext = &c->f2;
+        di.enabledExtensionCount = native_extension_count;
+        r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
+    }
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
@@ -546,7 +552,7 @@ int vk_init(void) {
             vk_upload_pools_init();
             vk_headroom_start();
             vk_dlaa_init();
-            int texture_motion = (cfg_int("TOTK_RSF_ENABLED") || cfg_int("TOTK_RSF_FG")) &&
+            int texture_motion = rsf_temporal_requested() &&
                                  cfg_bool("TOTK_DLAA_OBJMV");
             if (!vk_motion_texture_start(texture_motion))
                 rt_log("vk: texture motion snapshots unavailable; unsupported history stays native");

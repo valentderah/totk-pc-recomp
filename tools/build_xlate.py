@@ -99,8 +99,9 @@ def prepare_sources() -> Path:
     for junk in list(src.glob("src/*/obj")) + list(src.glob("src/*/bin")):
         shutil.rmtree(junk)
     patches = sorted((XLATE / "patches").glob("*.patch"))
-    if len(patches) != 17:
-        sys.exit(f"expected 17 patches, found {len(patches)}")
+    expected_patches = 17
+    if len(patches) != expected_patches:
+        sys.exit(f"expected {expected_patches} patches, found {len(patches)}")
     for patch in patches:
         # git apply works outside a repository when given a directory; --check first so a failure names the patch.
         for extra in (["--check"], []):

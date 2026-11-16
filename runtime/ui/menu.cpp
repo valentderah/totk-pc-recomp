@@ -1,3 +1,4 @@
+#include <rescaleframe/sr_session.h>
 // The in-game menu core: Dear ImGui state, the event queue the window adapter fills, gamepad navigation, the Vulkan back
 // end on our device and the menu's pages. Free of any window system (menu.h). ImGui runs on the present path only,
 // under gfx_present.c's present lock; the event functions only queue.
@@ -733,7 +734,7 @@ static void tab_screen(float scale) {
     static const UiTextId quality[] = {UI_MENU_RSF_NATIVE, UI_MENU_RSF_QUALITY_VALUE, UI_MENU_RSF_BALANCED,
                                       UI_MENU_RSF_PERFORMANCE, UI_MENU_RSF_ULTRA};
     opt_choice("TOTK_RSF_QUALITY", UI_MENU_RSF_QUALITY, quality, 5, UI_MENU_RSF_QUALITY_DESC);
-    if (cfg_int("TOTK_RSF_BACKEND") == 1) {
+    if (cfg_int("TOTK_RSF_BACKEND") == RSF_SR_DLSS) {
         static const UiTextId models[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
         opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, models, 3, UI_MENU_DLSS_PRESET_DESC);
         static const UiTextId character_history[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT,
@@ -743,7 +744,7 @@ static void tab_screen(float scale) {
     }
     opt_toggle("TOTK_DLAA_OBJMV", UI_MENU_RSF_OBJECT_MOTION, UI_MENU_RSF_OBJECT_MOTION_DESC);
     static const char *const fg[] = {"0", "1", "3", "4", "5"};
-    const char *fg_names[] = {menu_text(UI_MENU_OFF), "DLSS", "FSR 3", "FSR 4", "XeSS"};
+    const char *fg_names[] = {menu_text(UI_MENU_OFF), provider_names[RSF_SR_DLSS-1], provider_names[RSF_SR_FSR3-1], provider_names[RSF_SR_FSR4-1], provider_names[RSF_SR_XESS-1]};
     opt_choice_list("TOTK_RSF_FG", UI_MENU_RSF_FG, fg, fg_names, 5, UI_MENU_RSF_FG_DESC);
     static const UiTextId latency[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_RSF_LOW_LATENCY", UI_MENU_RSF_LATENCY, latency, 3, UI_MENU_RSF_LATENCY_DESC);

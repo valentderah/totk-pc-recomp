@@ -47,6 +47,13 @@ int rsf_sr_close(RsfSrSession **owner) {
     return 1;
 }
 
+static void session_register(RsfSrSession *s) {
+    plat_mutex_lock(&sessions_lock);
+    s->next = sessions;
+    sessions = s;
+    plat_mutex_unlock(&sessions_lock);
+}
+
 int rsf_sr_open(const rsf_srvk_setup *setup, RsfSrSession **out, uint32_t *width, uint32_t *height) {
     if (!setup || !out || *out || !width || !height || !rsf_runtime_load()) return 0;
     RsfSrSession *s = calloc(1, sizeof *s);
@@ -76,10 +83,7 @@ int rsf_sr_open(const rsf_srvk_setup *setup, RsfSrSession **out, uint32_t *width
     }
     *width = w;
     *height = h;
-    plat_mutex_lock(&sessions_lock);
-    s->next = sessions;
-    sessions = s;
-    plat_mutex_unlock(&sessions_lock);
+    session_register(s);
     *out = s;
     return 1;
 }
@@ -92,15 +96,6 @@ int rsf_sr_record(RsfSrSession *s, void *commands, const rsf_srvk_frame *frame) 
     s->last_result = r;
     plat_mutex_unlock(&sessions_lock);
     return r == RSF_BACKEND_OK ? RSF_SR_RECORDED : r == RSF_BACKEND_ERROR_NOT_READY ? RSF_SR_PENDING : RSF_SR_FAILED;
-}
-
-void rsf_sr_retire(RsfSrSession *s, void *commands) {
-    plat_mutex_lock(&sessions_lock);
-    if (s && commands) {
-        if (s->split_provider) s->split_retire(s->split_provider, commands);
-        else if (s->provider) s->retire(s->provider, commands);
-    }
-    plat_mutex_unlock(&sessions_lock);
 }
 
 void rsf_sr_commands_reset(void *commands) {
@@ -153,9 +148,7 @@ int rsf_sr_open_split(const rsf_srvk_setup *setup, const rsf_fsr4vk_handoff *han
         return 0;
     }
     split_info_log(s->split_provider);
-    plat_mutex_lock(&sessions_lock);
-    s->next = sessions; sessions = s;
-    plat_mutex_unlock(&sessions_lock);
+    session_register(s);
     *out = s; *width = w; *height = h;
     return 1;
 }

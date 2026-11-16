@@ -1,3 +1,4 @@
+#include "rsf_runtime.h"
 // The op-stream replay core of the Vulkan back end: walks the command handles of
 // one submission into its command buffer, keeps render targets and fixed-function state, opens and closes dynamic
 // rendering passes and records clears and barriers. Draws, binds and dispatches go to vk_exec_op_draw
@@ -677,7 +678,7 @@ void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
 static uint64_t native_signature(const VkExec *ex) {
     uint64_t h = 0xcbf29ce484222325ull;
-#define NATIVE_KEY(x) h = (h ^ (uint64_t)(x)) * 0x100000001b3ull
+#define NATIVE_KEY(x) h = rt_fnv_mix(h, (uint64_t)(x))
     NATIVE_KEY(ex->pass_w); NATIVE_KEY(ex->pass_h); NATIVE_KEY(ex->pass_layers); NATIVE_KEY(ex->pass_ncolor);
     NATIVE_KEY(ex->pass_depth); NATIVE_KEY(ex->pass_stencil); NATIVE_KEY(ex->pass_samples);
     for (int i = 0; i < 9; i++) {
@@ -1804,10 +1805,10 @@ static int chunked_on(void) {
     }
     // FG snapshots run at an actual draw boundary. Keep their resource and
     // camera order serial until the chunk planner carries that boundary too.
-    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !cfg_int("TOTK_RSF_FG") &&
+    return SC.workers > 0 && SC.chunks > 1 && !vk_dump_armed && !rsf_config_fg_backend() &&
            // FSR4 hands the serial submission-pool owner a continuation. Worker
            // chunks own different pools and cannot consume that recording lease.
-           !(vk_dlaa_wanted() && cfg_int("TOTK_RSF_BACKEND") == 4);
+           !(vk_dlaa_wanted() && rsf_config_sr_backend() == RSF_SR_FSR4);
 }
 
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence, uint64_t source) {

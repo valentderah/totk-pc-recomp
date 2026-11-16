@@ -1,18 +1,14 @@
 """Combine actual snapshot/lease/history functions with synthetic uploads and delayed fences."""
 from pathlib import Path
-import runpy
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-base = runpy.run_path(str(root / 'tests/rsf_snapshot_currentness_check.py'))
-fixture = base['fixture'].split('int main(void) {')[0]
+from rsf_snapshot_currentness_check import fixture as base_fixture, extract_function
+fixture = base_fixture.split('int main(void) {')[0]
 snapshot = (root / 'runtime/vk_usnap.c').read_text()
 history = (root / 'runtime/vk_mvprev.c').read_text()
 
 
-def function(source, name):
-    start = source.index(name)
-    return source[start:source.index('\n}\n', start) + 3]
 
 
 fixture = fixture.replace('static Arena arena;', 'static Arena arena, second;')
@@ -41,10 +37,10 @@ static void complete(uint64_t fence) {
             pending[i].done(pending[i].arg); pending[i].done = NULL; completions++;
         }
 }
-''' + function(snapshot, 'static void arena_done(') + fixture[end:]
-fixture += function(snapshot, 'void *vk_usnap_retain(')
+''' + extract_function(snapshot, 'static void arena_done(') + fixture[end:]
+fixture += extract_function(snapshot, 'void *vk_usnap_retain(')
 fixture += 'void vk_usnap_release(void *lease) { if (lease) arena_done(lease); }\n'
-fixture += function(snapshot, 'void vk_usnap_use(')
+fixture += extract_function(snapshot, 'void vk_usnap_use(')
 fixture += r'''
 #include <math.h>
 #define VK_FORMAT_D32_SFLOAT 126
@@ -105,10 +101,11 @@ int main(void) {
     return 0;
 }
 '''
-out = root / 'build/checks/rsf-retained-history-worker'
-out.mkdir(parents=True, exist_ok=True)
-(out / 'retained.c').write_text(fixture)
-subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
-                '-Werror', str(out / 'retained.c'), '-o', str(out / 'retained.exe')], check=True)
-subprocess.run([str(out / 'retained.exe')], check=True)
-print('retained same-address history, uploaded bytes, unchanged/range cases and delayed retirement passed')
+if __name__ == '__main__':
+    out = root / 'build/checks/rsf-retained-history-worker'
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'retained.c').write_text(fixture)
+    subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
+                    '-Werror', str(out / 'retained.c'), '-o', str(out / 'retained.exe')], check=True)
+    subprocess.run([str(out / 'retained.exe')], check=True)
+    print('retained same-address history, uploaded bytes, unchanged/range cases and delayed retirement passed')

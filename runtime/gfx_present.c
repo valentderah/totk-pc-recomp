@@ -153,8 +153,7 @@ static uint8_t *g_cap_ptr;
 static VkDeviceSize g_cap_size;
 static int g_cap_w, g_cap_h, g_cap_valid;
 static RsfFgHistory fg_history;
-static RsfFgSnapshot g_flip_fg;
-static int g_flip_fg_valid;
+static rsf_frame_record g_flip_fg;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
 static uint64_t g_flip_source;    // owned by the pending swapchain image, under g_pl
@@ -351,9 +350,7 @@ static void flip_locked(void) {
     g_flip_on = 0;
     uint64_t source = g_flip_source;
     g_flip_source = 0;
-    int fg_valid = g_flip_fg_valid;
-    RsfFgSnapshot prepared = g_flip_fg;
-    g_flip_fg_valid = 0;
+    rsf_frame_record prepared = g_flip_fg;
     memset(&g_flip_fg, 0, sizeof g_flip_fg);
     if (!g_sc) return;
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -365,7 +362,7 @@ static void flip_locked(void) {
     VkResult r;
     if (g_rsf_present) {
         r = (VkResult)rsf_present_flip(g_rsf_present, &pi,
-            source && fg_valid && prepared.record.frame_id == source ? &prepared.record : NULL);
+            source && prepared.frame_id == source ? &prepared : NULL);
     } else r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
     latency_note(g_flip_pid);
@@ -382,7 +379,7 @@ static void flip_locked(void) {
                 (unsigned long long)status.last_present_count, status.result);
         }
     }
-    if ((rt_trace & RT_TRACE_PRESENT) && source && (source <= 16 || !(source % 600)))
+    if ((rt_trace & RT_TRACE_PRESENT) && source && (rt_log_sampled(source, 16, 600)))
         rt_log("rsf host present: source %llu image %u result %d", (unsigned long long)source, g_flip_idx, (int)r);
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
@@ -397,12 +394,6 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
-static rsf_vk_function present_instance_proc(void *instance, const char *name) {
-    return (rsf_vk_function)vkGetInstanceProcAddr(instance, name);
-}
-static rsf_vk_function present_device_proc(void *device, const char *name) {
-    return (rsf_vk_function)vkGetDeviceProcAddr(device, name);
-}
 static void present_lock(void *user) { (void)user; vk_queue_lock(); }
 static void present_unlock(void *user) { (void)user; vk_queue_unlock(); }
 static int32_t present_submit(void *user, uint32_t count, const void *submits, uint64_t fence) {
@@ -414,7 +405,7 @@ static int32_t present_submit(void *user, uint32_t count, const void *submits, u
 }
 
 static void fg_forget(void);
-static int retire_swapchain(void) {
+static int drain_and_idle(void) {
     VkCtx *c = vk_ctx();
     // SDK workers can take the queue lock while draining. Hold only g_pl here.
     if (rsf_fg_gpu_pending()) return 0;
@@ -422,7 +413,12 @@ static int retire_swapchain(void) {
     vk_queue_lock();
     VkResult idle = vkDeviceWaitIdle(c->device);
     vk_queue_unlock();
-    if (idle != VK_SUCCESS) return 0;
+    return idle == VK_SUCCESS;
+}
+
+static int retire_swapchain(void) {
+    VkCtx *c = vk_ctx();
+    if (!drain_and_idle()) return 0;
     rsf_fg_gpu_release();
     fg_forget();
     for (uint32_t i = 0; i < g_sc_n; i++) {
@@ -446,18 +442,18 @@ static unsigned fg_previous_render_w, fg_previous_render_h;
 static void fg_forget(void) {
     fg_mapping_known = fg_previous_known = 0;
     rsf_fg_history_clear(&fg_history);
-    g_flip_fg_valid = 0;
     memset(&g_flip_fg, 0, sizeof g_flip_fg);
 }
 static void fg_pending_snapshot(uint64_t source) {
     // Actual Present mapping belongs to this output image, not a later prepare.
-    g_flip_fg_valid = rsf_fg_history_snapshot(&fg_history, source,
-        fg_mapping_known ? &fg_mapping : NULL, &g_flip_fg);
+    RsfFgSnapshot snapshot;
+    rsf_fg_history_snapshot(&fg_history, source, fg_mapping_known ? &fg_mapping : NULL, &snapshot);
+    g_flip_fg = snapshot.record;
 }
 
 int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]) {
     plat_rmutex_lock(&g_pl);
-    int ok = g_rsf_present && !g_sc_hdr && fg_mapping_known && rsf_fg_map_valid(&fg_mapping) &&
+    int ok = g_rsf_present && !g_sc_hdr && fg_mapping_known &&
         w == fg_mapping.game_w && h == fg_mapping.game_h;
     out[0] = ok ? g_sc_ext.width : 0;
     out[1] = ok ? g_sc_ext.height : 0;
@@ -465,20 +461,14 @@ int vk_present_fg_output(unsigned w, unsigned h, unsigned out[2]) {
     return ok;
 }
 
-static int fg_recycle(int release_sources) {
-    if (rsf_fg_gpu_pending()) return 0;
-    if (rsf_present_drain(g_rsf_present) != RSF_BACKEND_OK) return 0;
-    vk_queue_lock();
-    VkResult idle = vkDeviceWaitIdle(vk_ctx()->device);
-    vk_queue_unlock();
-    if (idle != VK_SUCCESS) return 0;
-    if (release_sources) rsf_fg_gpu_clear();
-    else rsf_fg_gpu_recycle();
+static int fg_recycle(void) {
+    if (!drain_and_idle()) return 0;
+    rsf_fg_gpu_clear();
     return 1;
 }
 int vk_present_fg_drain(void) {
     plat_rmutex_lock(&g_pl);
-    int ok = fg_recycle(1);
+    int ok = fg_recycle();
     plat_rmutex_unlock(&g_pl);
     return ok;
 }
@@ -486,33 +476,30 @@ int vk_present_fg_drain(void) {
 int vk_present_fg_prepare(VkCommandBuffer cb, const rsf_fgvk_frame *frame) {
     plat_rmutex_lock(&g_pl);
     int32_t result = RSF_BACKEND_ERROR_NOT_READY;
-    if (g_rsf_present && fg_mapping_known && frame && frame->record) {
-        RsfFgMap map = fg_mapping;
-        map.out_w = g_sc_ext.width; map.out_h = g_sc_ext.height;
-        // A resize needs a newly observed fitted rectangle before recording guides.
-        if (rsf_fg_map_valid(&map) && map.out_w == fg_mapping.out_w && map.out_h == fg_mapping.out_h) {
-            rsf_fgvk_frame mapped, input = *frame;
-            rsf_frame_record source = *frame->record;
-            int same_render = fg_previous_known && source.render_width == fg_previous_render_w && source.render_height == fg_previous_render_h;
-            if (!same_render) {
-                source.flags |= RSF_FRAME_FLAG_RESET;
-                source.camera.previous_jitter_pixels[0] = source.camera.previous_jitter_pixels[1] = 0;
-            }
-            input.record = &source;
-            uint64_t fence = vk_sync_record_fence(cb);
-            RsfFgLease *lease = rsf_fg_gpu_prepare(cb, fence, &map, same_render ? &fg_previous_mapping : NULL, &input, &mapped);
-            if (lease) {
-                result = rsf_present_prepare(g_rsf_present, cb, &mapped);
-                if (result == RSF_BACKEND_OK) {
-                    // The SDK owns private copies; this CPU snapshot survives
-                    // fence-based reuse of the mapper's backing slot.
-                    rsf_fg_history_remember(&fg_history, mapped.record, &map);
-                    fg_previous_mapping = map; fg_previous_known = 1;
-                    fg_previous_render_w = source.render_width; fg_previous_render_h = source.render_height;
-                }
-            }
-        }
+    if (!g_rsf_present || !fg_mapping_known || !frame || !frame->record) goto done;
+    RsfFgMap map = fg_mapping;
+    map.out_w = g_sc_ext.width; map.out_h = g_sc_ext.height;
+    // A resize needs a newly observed fitted rectangle before recording guides.
+    if (map.out_w != fg_mapping.out_w || map.out_h != fg_mapping.out_h) goto done;
+    rsf_fgvk_frame mapped, input = *frame;
+    rsf_frame_record source = *frame->record;
+    int same_render = fg_previous_known && source.render_width == fg_previous_render_w && source.render_height == fg_previous_render_h;
+    if (!same_render) {
+        source.flags |= RSF_FRAME_FLAG_RESET;
+        source.camera.previous_jitter_pixels[0] = source.camera.previous_jitter_pixels[1] = 0;
     }
+    input.record = &source;
+    uint64_t fence = vk_sync_record_fence(cb);
+    RsfFgLease *lease = rsf_fg_gpu_prepare(cb, fence, &map, same_render ? &fg_previous_mapping : NULL, &input, &mapped);
+    if (!lease) goto done;
+    result = rsf_present_prepare(g_rsf_present, cb, &mapped);
+    if (result == RSF_BACKEND_OK) {
+        // The SDK owns private copies; this snapshot survives backing-slot reuse.
+        rsf_fg_history_remember(&fg_history, mapped.record, &map);
+        fg_previous_mapping = map; fg_previous_known = 1;
+        fg_previous_render_w = source.render_width; fg_previous_render_h = source.render_height;
+    }
+done:
     plat_rmutex_unlock(&g_pl);
     return result;
 }
@@ -548,13 +535,13 @@ static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_
     rsf_fgvk_setup setup = {.struct_size = sizeof setup, .abi_version = RSF_FGVK_ABI_VERSION,
         .graphics = {.struct_size = sizeof(rsf_srvk_setup), .abi_version = RSF_SRVK_ABI_VERSION,
             .instance = c->instance, .physical_device = c->phys, .device = c->device,
-            .instance_proc = present_instance_proc, .device_proc = present_device_proc,
-            .backend = (uint32_t)cfg_int("TOTK_RSF_BACKEND"),
+            .instance_proc = rsf_vk_generic_instance_proc, .device_proc = rsf_vk_generic_device_proc,
+            .backend = (uint32_t)rsf_config_sr_backend(),
             .output_width = info->imageExtent.width, .output_height = info->imageExtent.height,
             .runtime_directory_utf8 = rsf_provider_directory(backend)},
         .queue_family = c->gfx_family, .create_info = info,
         .graphics_submit = present_submit, .lock_queues = present_lock, .unlock_queues = present_unlock};
-    for (unsigned i = 0; i < 4; i++) setup.queues[i] = c->rsf_queues[i];
+    for (unsigned i = 0; i < RSF_GRAPHICS_QUEUES; i++) setup.queues[i] = c->rsf_queues[i];
     rsf_fgvk_host_options host = {.struct_size = sizeof host, .abi_version = RSF_FGVK_HOST_ABI_VERSION,
         .timeline_enabled = 1};
 #ifdef _WIN32
@@ -571,7 +558,6 @@ static VkResult open_rsf_swapchain(const VkSwapchainCreateInfoKHR *info, uint32_
     }
     // Request preparation. Each Present still disables interpolation until its
     // matching depth/motion and HUD-less recordings have actually been submitted.
-    // The menu stays unavailable while the HUD-less producer is being connected.
     result = rsf_present_enable(g_rsf_present, 1, 1);
     if (result != RSF_BACKEND_OK) return VK_ERROR_INITIALIZATION_FAILED;
     g_sc = (VkSwapchainKHR)rsf_present_chain(g_rsf_present);
@@ -637,9 +623,9 @@ static int build_swapchain(void) {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE};
     VkResult r;
-    int backend = cfg_int("TOTK_RSF_FG");
+    int backend = rsf_config_fg_backend();
     if (plat_cas32(&g_dirty, 0, 0)) return 0;
-    if (backend && !hdr && c->rsf_queue_count == 4) {
+    if (backend && !hdr && c->rsf_queue_count == RSF_GRAPHICS_QUEUES) {
         r = open_rsf_swapchain(&ci, (uint32_t)backend);
         if (r != VK_SUCCESS && g_rsf_present) return 0; // partial owner must retire before another WSI owner
         if (r != VK_SUCCESS) rt_log("rsf: presentation unavailable (%d); using native presentation", (int)r);
@@ -652,7 +638,7 @@ static int build_swapchain(void) {
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
     vk_hdr_set_active(hdr);
-    if (hdr && !g_rsf_present) vk_hdr_metadata(g_sc, 1);
+    if (hdr) vk_hdr_metadata(g_sc, 1);
     g_sc_ext = ext;
     g_sc_n = MAX_IMAGES;
     if (g_rsf_present) {
@@ -662,7 +648,7 @@ static int build_swapchain(void) {
             return 0;
         }
         for (uint32_t i = 0; i < g_sc_n; i++) g_sc_img[i] = (VkImage)images[i];
-        rt_log("rsf: presentation images %u, first 0x%llx", g_sc_n, (unsigned long long)(g_sc_n ? images[0] : 0));
+        rt_log("rsf: presentation images %u, first 0x%llx", g_sc_n, (unsigned long long)images[0]);
     } else if (vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img) != VK_SUCCESS) {
         g_sc_n = 0;
         return 0;
@@ -1124,7 +1110,7 @@ int gfx_window_release_vk(void) {
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
-        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
+        g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);

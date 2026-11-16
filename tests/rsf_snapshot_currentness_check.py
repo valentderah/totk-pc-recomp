@@ -4,11 +4,15 @@ import subprocess
 
 root = Path(__file__).resolve().parents[1]
 out = root / 'build/checks/rsf-storage-rebase-worker'
-out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_usnap.c').read_text()
 
 
-def function(name):
+def extract_region(source, begin, end):
+    start = source.index(begin)
+    return source[start:source.index(end, start)]
+
+
+def extract_function(source, name):
     start = source.index(name)
     return source[start:source.index('\n}\n', start) + 3]
 
@@ -68,7 +72,7 @@ static void vk_completion_add(uint64_t fence, void (*done)(void *), void *arg) {
 '''
 for name in ('void vk_usnap_begin(', 'void vk_usnap_end(', 'static int first_above(',
              'int vk_usnap_find('):
-    fixture += function(name)
+    fixture += extract_function(source, name)
 start = source.index('static uint8_t *host_copy(')
 fixture += source[start:source.index('// The upload made', start)]
 fixture += r'''
@@ -101,9 +105,11 @@ int main(void) {
     return 0;
 }
 '''
-(out / 'snapshot-currentness.c').write_text(fixture)
-subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
-                '-Werror', str(out / 'snapshot-currentness.c'), '-o',
-                str(out / 'snapshot-currentness.exe')], check=True)
-subprocess.run([str(out / 'snapshot-currentness.exe')], check=True)
-print('snapshot arena reuse with temporal on/off/on and CPU read currentness passed')
+if __name__ == '__main__':
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'snapshot-currentness.c').write_text(fixture)
+    subprocess.run(['C:/msys64/ucrt64/bin/clang.exe', '-std=gnu11', '-Wall', '-Wextra',
+                    '-Werror', str(out / 'snapshot-currentness.c'), '-o',
+                    str(out / 'snapshot-currentness.exe')], check=True)
+    subprocess.run([str(out / 'snapshot-currentness.exe')], check=True)
+    print('snapshot arena reuse with temporal on/off/on and CPU read currentness passed')

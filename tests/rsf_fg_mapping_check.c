@@ -2,6 +2,12 @@
 #include <math.h>
 #include <string.h>
 #include "rsf_fg_map.h"
+static int rsf_fg_map_sample(const RsfFgMap *m,unsigned sw,unsigned sh,int x,int y,int p[2]) {
+    if (!rsf_fg_map_valid(m)||!sw||!sh||x<m->dst[0]||y<m->dst[1]||x>=m->dst[0]+m->dst[2]||y>=m->dst[1]+m->dst[3]) return 0;
+    p[0]=(int)floor(((x+0.5-m->dst[0])*m->crop[2]/m->dst[2]+m->crop[0])*sw/m->game_w);
+    p[1]=(int)floor(((y+0.5-m->dst[1])*m->crop[3]/m->dst[3]+m->crop[1])*sh/m->game_h);
+    return 1;
+}
 static int close_to(float a,float b){return fabsf(a-b)<1e-4f;}
 static void identity(float m[16]) {memset(m,0,64);for(int i=0;i<4;i++)m[i*5]=1;}
 static void transform(const float p[4],const float m[16],float out[4]) {for(int c=0;c<4;c++){out[c]=0;for(int r=0;r<4;r++)out[c]+=p[r]*m[r*4+c];}}

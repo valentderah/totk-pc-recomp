@@ -5,13 +5,12 @@ Run with .venv/Scripts/python tests/rsf_storage_pointer_check.py. No Vulkan devi
 from pathlib import Path
 import subprocess
 
+from rsf_snapshot_currentness_check import extract_function
+
 root = Path(__file__).resolve().parents[1]
 out = root / 'build/checks/rsf-storage-rebase-worker'
 out.mkdir(parents=True, exist_ok=True)
 source = (root / 'runtime/vk_exec_draw.c').read_text()
-def function(name):
-    start = source.index(name)
-    return source[start:source.index('\n}\n', start) + 3]
 fixture = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -43,9 +42,9 @@ static int vk_mem_resolve(uint64_t a, uint64_t n, VkMemSpan *sp) {
     (void)a; (void)n; (void)sp; return backed;
 }
 '''
-fixture += function('static int upd_read(')
-fixture += function('static void upd_apply(')
-fixture += function('static uint64_t ubo_ptr(')
+fixture += extract_function(source, 'static int upd_view(')
+fixture += extract_function(source, 'static unsigned upd_read_mask(')
+fixture += extract_function(source, 'static uint64_t ubo_ptr(')
 fixture += r'''
 int main(void) {
     uint64_t live[2] = {0, 0x9988776600dead00};

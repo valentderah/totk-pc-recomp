@@ -3,7 +3,6 @@
 
 // Sidecar ownership follows the observed native queue lifecycle and FIFO order.
 void rsf_handoff_initialize(uint64_t queue);
-void rsf_handoff_finalize(uint64_t queue);
 // Before a verified blocking framework draw publication. Source zero is explicit
 // unassociated work. A refusal never changes the native queue operation.
 int rsf_handoff_publish(uint64_t queue, uint64_t message, void *publisher, uint64_t framework, uint64_t source);

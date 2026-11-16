@@ -38,7 +38,7 @@ int main(void) {
     assert(rsf_handoff_receive(0x100, 1, &source) && !source);
     rsf_handoff_initialize(0x100);
     assert(rsf_handoff_publish(0x100, 1, &publisher, 7, 105));
-    rsf_handoff_finalize(0x100);
+    rsf_handoff_foreign(0x100);
     assert(rsf_handoff_receive(0x100, 1, &source) && !source);
     rsf_handoff_initialize(0x200);
     assert(!rsf_handoff_receive(0x200, 1, &source)); // Unobserved prior publication invalidates freshness.

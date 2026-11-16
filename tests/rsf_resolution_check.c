@@ -121,3 +121,7 @@ int main(void) {
     R.dlss_k=0;assert(res_dlss_lod_bias()==0);
     return 0;
 }
+
+int rsf_config_enabled(void) { return cfg_bool("TOTK_RSF_ENABLED"); }
+
+int rsf_runtime_present(void) { const char *path=rsf_runtime_path(); return path && *path && plat_file_exists(path); }

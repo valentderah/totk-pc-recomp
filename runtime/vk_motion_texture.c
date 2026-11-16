@@ -63,6 +63,7 @@ static VkImageMemoryBarrier2 image_barrier(VkImage image, uint32_t levels, VkIma
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1}};
 }
 int vk_motion_texture_capture(VkExec *ex, uint64_t key, const VkMotionTextureFact *fact, VkSampler sampler) {
+    if (!ex || ex->chunked) return 0;
     if (!M.pool || !key || !fact || !sampler || !frame_begin(ex->source_frame)) return 0;
     Read *row = NULL;
     for (int i = 0; i < READS; i++) {
@@ -108,6 +109,7 @@ int vk_motion_texture_capture(VkExec *ex, uint64_t key, const VkMotionTextureFac
 }
 int vk_motion_texture_previous(VkExec *ex, uint64_t key, const VkMotionTextureFact *fact,
                                VkSampler sampler, VkDescriptorImageInfo *out) {
+    if (!ex || ex->chunked) return 0;
     if (!M.pool || !fact || !out || !frame_begin(ex->source_frame)) return 0;
     // A duplicate native draw identity in this frame cannot choose a previous occurrence honestly.
     for (int i = 0; i < READS; i++) if (M.reads[0][i].used && M.reads[0][i].key == key && M.reads[0][i].ambiguous) return 0;
@@ -115,8 +117,7 @@ int vk_motion_texture_previous(VkExec *ex, uint64_t key, const VkMotionTextureFa
         Read *r = &M.reads[1][i];
         if (!r->used || r->ambiguous || r->key != key || r->frame + 1 != ex->source_frame ||
             r->image_generation != fact->generation || r->sampler != sampler ||
-            r->shape.format != fact->shape.format || r->shape.width != fact->shape.width ||
-            r->shape.height != fact->shape.height || r->shape.levels != fact->shape.levels) continue;
+            !vk_snapshot_shape_equal(&r->shape, &fact->shape)) continue;
         if (!vk_snapshot_pool_publish(M.pool, r->token, r->frame) ||
             !vk_snapshot_pool_consume(M.pool, r->token, (uint64_t)(uintptr_t)ex->cb)) return 0;
         *out = (VkDescriptorImageInfo){sampler, r->backing.view, VK_IMAGE_LAYOUT_GENERAL}; return 1;

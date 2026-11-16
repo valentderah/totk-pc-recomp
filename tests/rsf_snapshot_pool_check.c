@@ -44,7 +44,7 @@ static void wait_shape(VkSnapshotPool *p, VkSnapshotShape shape, int expected) {
     plat_mutex_lock(&p->lock);
     for (;;) {
         int found = 0;
-        for (int i=0;i<VK_SNAPSHOT_SLOTS;i++) if (same_shape(&p->slots[i].shape,&shape) && p->slots[i].state==expected) found=1;
+        for (int i=0;i<VK_SNAPSHOT_SLOTS;i++) if (vk_snapshot_shape_equal(&p->slots[i].shape,&shape) && p->slots[i].state==expected) found=1;
         if (found) break;
         plat_cond_wait(&p->changed,&p->lock);
     }

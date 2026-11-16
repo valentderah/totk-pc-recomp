@@ -1,10 +1,13 @@
 --- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
 +++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
-@@ -82,6 +82,30 @@
+@@ -82,6 +82,26 @@
              // host's layout comes from the used ones). Direct operands (c[slot][offset]) get theirs when the
              // structured program is made.
              Dictionary<int, int> bindings = new();
 +            Dictionary<int, int> storage = new();
++            Dictionary<int, BufferDescriptor> originalStorage = new();
++            foreach (BufferDescriptor descriptor in resourceManager.GetStorageBufferDescriptors())
++                originalStorage.TryAdd(descriptor.Binding, descriptor);
 +            foreach (INode node in slice)
 +            {
 +                if (node is Operation load && load.Inst == Instruction.Load && load.StorageKind == StorageKind.StorageBuffer)
@@ -12,18 +15,11 @@
 +                    if (load.GetSource(0).Type != OperandType.Constant) return -1;
 +                    int current = load.GetSource(0).Value;
 +                    if (storage.ContainsKey(current)) continue;
-+                    bool found = false;
-+                    foreach (BufferDescriptor descriptor in resourceManager.GetStorageBufferDescriptors())
-+                    {
-+                        if (descriptor.Binding != current) continue;
-+                        if (descriptor.Flags != BufferUsageFlags.None || descriptor.SbCbSlot > 20 ||
-+                            !resourceManager.TryGetStorageBufferBinding(descriptor.SbCbSlot + 64, descriptor.SbCbOffset, false, out int previous))
-+                            return -1;
-+                        storage[current] = previous;
-+                        found = true;
-+                        break;
-+                    }
-+                    if (!found) return -1;
++                    if (!originalStorage.TryGetValue(current, out BufferDescriptor descriptor) ||
++                        descriptor.Flags != BufferUsageFlags.None || descriptor.SbCbSlot > 20 ||
++                        !resourceManager.TryGetStorageBufferBinding(descriptor.SbCbSlot + 64, descriptor.SbCbOffset, false, out int previous))
++                        return -1;
++                    storage[current] = previous;
 +                }
 +                // Texture/image dependent positions still have no retained previous producer.
 +                if (node is Operation special && special.GetType() != typeof(Operation)) return -1;
@@ -31,7 +27,7 @@
  
              foreach (INode n in slice)
              {
-@@ -113,6 +137,11 @@
+@@ -113,6 +133,11 @@
  
              // 3. Which of the slice's values depend on those banks, to a fixed point (phis carry it around loops).
              HashSet<Operand> tainted = new();
@@ -43,7 +39,7 @@
              bool changed = true;
  
              while (changed)
-@@ -224,7 +253,12 @@
+@@ -224,7 +249,12 @@
                  {
                      Operand src = op.GetSource(s);
  
