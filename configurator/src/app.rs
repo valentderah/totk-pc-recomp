@@ -1149,6 +1149,7 @@ impl App {
         let mut close = false;
         let mut action: Option<Box<dyn FnOnce(&mut App, &Ui)>> = None;
         let update_text = if matches!(self.dialog, Dialog::Update) { self.update_confirm_text() } else { Vec::new() };
+        let update_tag = self.latest.as_ref().map(|r| r.tag.clone()).unwrap_or_default();
         match &mut self.dialog {
             Dialog::None => return,
             Dialog::New { name, preset, switch } => {
@@ -1243,19 +1244,20 @@ impl App {
             Dialog::Update => {
                 let text = &update_text;
                 egui::Modal::new(egui::Id::new("update_confirm")).show(&ctx, |ui| {
-                    ui.set_width(480.0);
-                    ui.heading(t(&lang, "Install the update?"));
+                    ui.set_width(460.0);
+                    ui.heading(format!("{} {}?", t(&lang, "Update to"), update_tag));
                     ui.add_space(4.0);
-                    for (line, warn) in text {
-                        ui.label(if *warn { RichText::new(line).color(RED).strong() } else { RichText::new(line) });
+                    for (line, tone) in text {
+                        tone.show(ui, line);
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(RichText::new(t(&lang, "Download and install")).color(BG)).fill(GOLD)).clicked() {
+                        let go = RichText::new(format!("{} {}", t(&lang, "Update to"), update_tag)).strong().color(BG);
+                        if ui.add(egui::Button::new(go).fill(GOLD)).clicked() {
                             action = Some(Box::new(|app: &mut App, ui: &Ui| app.start_update(ui)));
                             close = true;
                         }
-                        if ui.button(t(&lang, "Cancel")).clicked() {
+                        if ui.button(t(&lang, "Not now")).clicked() {
                             close = true;
                         }
                     });
@@ -1329,34 +1331,31 @@ impl App {
         }
     }
 
-    /// The lines of the confirmation: what happens, and (red) what is lost.
-    fn update_confirm_text(&self) -> Vec<(String, bool)> {
+    /// The confirmation: what stays, what the setup does, and (as a calm note) what is worth knowing about this folder.
+    /// Red is kept for real errors (a failed download, a running game), not for an update that works as meant.
+    fn update_confirm_text(&self) -> Vec<(String, Tone)> {
         let l = &self.lang;
         let mut out = Vec::new();
-        let (Some(rel), Some(dir)) = (&self.latest, &self.dir) else { return out };
-        out.push((format!("{} {} → {}", t(l, "Release"), rel.tag, dir.display()), false));
-        out.push((t(l, "The setup of the release runs on this folder: saves, game files and totk.ini stay, totk.exe and the shaders are rebuilt. This takes a while; the setup starts the game when it is done.").to_string(), false));
-        out.push((t(l, "The configurator saves your settings and closes when the setup window opens.").to_string(), false));
-        if !self.update_available() {
-            out.push((t(l, "This release is not newer than the version in the folder.").to_string(), true));
-        }
+        let Some(rel) = &self.latest else { return out };
+        out.push((t(l, "Your saves, game files and settings stay. The setup rebuilds totk.exe and the shaders (a few minutes) and starts the game when done.").to_string(), Tone::Body));
         if self.installed.custom {
-            let i = &self.installed;
             out.push((
                 format!(
-                    "{} ({} {}, {} {}).",
-                    t(l, "The folder runs a build of its own, not the one its setup made: the update replaces it with the release's build, and changes that are not in the release are gone"),
-                    t(l, "running"),
-                    i.run.as_deref().unwrap_or("?"),
-                    t(l, "setup"),
-                    i.setup.as_deref().unwrap_or("?")
+                    "{} ({}). {} {} {}",
+                    t(l, "This folder runs a custom build"),
+                    self.installed.run.as_deref().unwrap_or("?"),
+                    t(l, "The update installs the official"),
+                    rel.tag,
+                    t(l, "build in its place.")
                 ),
-                true,
+                Tone::Note,
             ));
+        } else if !self.update_available() {
+            out.push((t(l, "This folder already has this version; the setup installs it again.").to_string(), Tone::Note));
         }
+        out.push((t(l, "The configurator saves your settings and closes while the setup runs.").to_string(), Tone::Small));
         out
     }
-
     /// After the confirmation: save the settings, then download, check and unpack on a thread; poll_update starts the
     /// setup when the release is ready.
     fn start_update(&mut self, ui: &Ui) {
@@ -1401,13 +1400,22 @@ impl App {
         let installed = self.installed.clone();
         card(ui, &mut |ui| {
             ui.label(RichText::new(t(&l, "Installed")).size(17.0).strong().color(GOLD));
-            let unknown = t(&l, "unknown").to_string();
-            ui.label(format!("{}: {}", t(&l, "running"), installed.run.clone().unwrap_or_else(|| unknown.clone())))
-                .on_hover_text("logs/totk.log");
-            ui.label(format!("{}: {}", t(&l, "setup"), installed.setup.clone().unwrap_or_else(|| unknown.clone())))
-                .on_hover_text("totk-install.json");
+            // the version that ran (logs/totk.log), else the setup's (totk-install.json); a custom build says so in words
+            let version = installed.run.clone().or_else(|| installed.setup.clone()).unwrap_or_else(|| t(&l, "unknown").to_string());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&version).size(16.0).strong());
+                if installed.custom {
+                    theme::badge(ui, t(&l, "custom build"), BG, NOTE);
+                }
+            })
+            .response
+            .on_hover_text(t(&l, "The version of the totk.exe that ran last, from logs/totk.log."));
+            if let Some(setup) = &installed.setup {
+                ui.label(RichText::new(format!("{} {setup}", t(&l, "Set up with release"))).small().color(WEAK))
+                    .on_hover_text("totk-install.json");
+            }
             if installed.custom {
-                ui.label(RichText::new(t(&l, "The folder runs a build of its own: an update replaces it with the release's build.")).color(RED));
+                Tone::Note.show(ui, t(&l, "An update installs the official build of the release in place of this one."));
             }
         });
         // the latest release
@@ -1445,7 +1453,7 @@ impl App {
                         ui.label(RichText::new(clean_notes(&rel.notes)).small());
                     });
                     ui.add_space(6.0);
-                    let label = format!("⬇  {} {}", t(&l, "Download and install"), rel.tag);
+                    let label = format!("⬇  {} {}", t(&l, "Update to"), rel.tag);
                     install = ui.add_enabled(!busy && self.dir.is_some(), egui::Button::new(RichText::new(label).strong().color(BG)).fill(GOLD)).clicked();
                 }
                 None => {
@@ -1556,6 +1564,28 @@ impl App {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ui.ctx().request_repaint();
+    }
+}
+
+/// How a line of the update texts reads: the body, a calm note (amber with an info mark, for what is worth knowing
+/// but expected), or small grey print.
+#[derive(Clone, Copy)]
+enum Tone {
+    Body,
+    Note,
+    Small,
+}
+
+/// A muted amber for notes, between the text and the gold accent.
+const NOTE: Color32 = Color32::from_rgb(226, 196, 128);
+
+impl Tone {
+    fn show(self, ui: &mut Ui, text: &str) {
+        match self {
+            Tone::Body => ui.label(text),
+            Tone::Note => ui.label(RichText::new(format!("ℹ  {text}")).color(NOTE)),
+            Tone::Small => ui.label(RichText::new(text).small().color(WEAK)),
+        };
     }
 }
 
