@@ -1079,35 +1079,59 @@ static int merge_wanted(void) {
     return merge_on;
 }
 
+// The word at byte offset i of p's n bytes; a last word shorter than 4 bytes reads as zero-extended. The common case
+// is a fixed 4-byte load: a memcpy of variable size is a library call per word.
+static uint32_t word_at(const uint8_t *p, uint64_t i, uint64_t n) {
+    uint32_t v = 0;
+    if (n - i >= 4) memcpy(&v, p + i, 4);
+    else memcpy(&v, p + i, n - i);
+    return v;
+}
+
 // A run of differing words from *at on, as byte offsets [*at, *end) of x and y (n bytes, the last word may be shorter);
 // 0 when none is left.
 static int diff_run(const uint8_t *x, const uint8_t *y, uint64_t n, uint64_t *at, uint64_t *end) {
     uint64_t i = *at;
     while (i + 64 <= n && !memcmp(x + i, y + i, 64)) i += 64;   // most words are equal: skip them a block at a time
-    for (; i < n; i += 4) {
-        uint32_t u = 0, v = 0, w = n - i < 4 ? (uint32_t)(n - i) : 4;
-        memcpy(&u, x + i, w), memcpy(&v, y + i, w);
-        if (u != v) break;
-    }
+    while (i < n && word_at(x, i, n) == word_at(y, i, n)) i += 4;
     if (i >= n) return 0;
     uint64_t j = i + 4;
-    for (; j < n; j += 4) {
-        uint32_t u = 0, v = 0, w = n - j < 4 ? (uint32_t)(n - j) : 4;
-        memcpy(&u, x + j, w), memcpy(&v, y + j, w);
-        if (u == v) break;
-    }
+    while (j < n && word_at(x, j, n) != word_at(y, j, n)) j += 4;
     *at = i, *end = j < n ? j : n;
     return 1;
 }
 
-// shadow_lock held: src's bytes become guest [a, b) in the base of every pending range over them.
-static void base_set(uint64_t a, uint64_t b, const uint8_t *src) {
+// The pending ranges with a base over a guest range, found once per merge rather than once per differing run: the
+// game's particle buffers differ in many short runs, and about a hundred ranges are pending at a time. n < 0: more than
+// BASES_NEAR, every range is checked.
+#define BASES_NEAR 16
+typedef struct { int n, at[BASES_NEAR]; } BaseSet;
+
+// shadow_lock held: the pending ranges with a base over guest [a, b). Valid while spend is unchanged.
+static void bases_over(uint64_t a, uint64_t b, BaseSet *s) {
+    s->n = 0;
     for (int i = 0; i < nspend; i++) {
-        SRange *p = &spend[i];
-        if (!p->base || p->lo >= b || p->hi <= a) continue;
-        uint64_t x = a > p->lo ? a : p->lo, y = b < p->hi ? b : p->hi;
-        memcpy(p->base + (x - p->lo), src + (x - a), y - x);
+        if (!spend[i].base || spend[i].lo >= b || spend[i].hi <= a) continue;
+        if (s->n == BASES_NEAR) { s->n = -1; return; }
+        s->at[s->n++] = i;
     }
+}
+
+// shadow_lock held: src's bytes become guest [a, b) in p's base, where they overlap.
+static void base_put(const SRange *p, uint64_t a, uint64_t b, const uint8_t *src) {
+    if (!p->base || p->lo >= b || p->hi <= a) return;
+    uint64_t x = a > p->lo ? a : p->lo, y = b < p->hi ? b : p->hi;
+    memcpy(p->base + (x - p->lo), src + (x - a), y - x);
+}
+
+// shadow_lock held: src's bytes become guest [a, b) in the base of every pending range over them; s holds those
+// ranges for a span that contains [a, b).
+static void base_set(const BaseSet *s, uint64_t a, uint64_t b, const uint8_t *src) {
+    if (s->n < 0) {
+        for (int i = 0; i < nspend; i++) base_put(&spend[i], a, b, src);
+        return;
+    }
+    for (int k = 0; k < s->n; k++) base_put(&spend[s->at[k]], a, b, src);
 }
 
 static void shadow_put(PoolRec *r, uint64_t a, uint64_t b);
@@ -1116,8 +1140,10 @@ static void shadow_put(PoolRec *r, uint64_t a, uint64_t b);
 static void shadow_merge(PoolRec *r, uint64_t a, uint64_t b, const SRange *p) {
     const uint8_t *g = (const uint8_t *)(uintptr_t)a;
     uint64_t x = 0, y;
+    BaseSet bs;
+    bases_over(a, b, &bs);
     while (diff_run(g, p->base + (a - p->lo), b - a, &x, &y)) {
-        base_set(a + x, a + y, g + x);
+        base_set(&bs, a + x, a + y, g + x);
         shadow_put(r, a + x, a + y);
         x = y;
     }
@@ -1352,9 +1378,11 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
             const uint8_t *s = r->smap + (addr - r->import_lo);
             if (k < nspend && spend[k].base) {
                 uint64_t x = 0, y;
+                BaseSet bs;
+                bases_over(addr, addr + size, &bs);
                 while (diff_run(s, spend[k].base, size, &x, &y)) {
                     memcpy((void *)(uintptr_t)(addr + x), s + x, y - x);
-                    base_set(addr + x, addr + y, (const uint8_t *)(uintptr_t)(addr + x));
+                    base_set(&bs, addr + x, addr + y, (const uint8_t *)(uintptr_t)(addr + x));
                     s_wb_bytes += y - x;
                     x = y;
                 }
