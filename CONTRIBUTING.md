@@ -36,7 +36,7 @@ Open pull requests against `dev`. Branch from the current `dev` and rebase on it
 ### Before you start
 
 - Search the open pull requests and issues on the topic. When another pull request already covers it, improve that one or say in yours how they differ.
-- Fixes are reviewed before features, in order of how many players the bug hits. A feature with a design in [docs/milestones/](docs/milestones/) (mods, cheats, the menu) follows that design. For a feature without one, open an issue first.
+- Fixes are reviewed before features, in order of how many players the bug hits. A feature with a design in `docs/milestones/` (mods, cheats, the menu) follows that design. For a feature without one, open an issue first.
 - Find out where the bug reproduces: OS, GPU vendor and generation, driver, game update, settings. Put that in the description.
 
 ### What the change must keep

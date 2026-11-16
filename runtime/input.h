@@ -28,6 +28,20 @@ uint64_t input_buttons_last(void);
 // mouse_direct.c: the right stick's side a mouse shake gives while Ultrahand holds an object (-1 / +1), 0 while the
 // mouse does not shake; input.c puts it on the stick
 int input_direct_mouse_shake(void);
+enum {
+    INPUT_CAM_UNCLASSIFIED = 0,
+    INPUT_CAM_FREE_ROAM,
+    INPUT_CAM_AIM,
+    INPUT_CAM_SCOPE,
+    INPUT_CAM_LOCK_ON,
+    INPUT_CAM_MENU_WHEEL,
+    INPUT_CAM_ABILITY,
+    INPUT_CAM_ULTRAHAND_OBJECT,
+    INPUT_CAM_VEHICLE,
+    INPUT_CAM_DISABLED,
+};
+int input_camera_context(void);
+int input_gameplay_active(void);
 // menu_cursor.c: the L ability wheel or a D-pad strip has the focus: 1 / 0, -1 with the menu cursor off (not read)
 int menu_cursor_shortcut(void);
 // menu_cursor.c: the pointer in the game's menus (1.4.3). poll: once per pad read, adds a click's A or B; pointer: a
@@ -35,6 +49,15 @@ int menu_cursor_shortcut(void);
 void menu_cursor_poll(uint64_t *buttons);
 int menu_cursor_pointer(void);
 int menu_cursor_map(void);   // the Purah Pad's map is open: the mouse's stick is the left one (its cursor)
+// a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left click is B, right click A (input.c poll_merged)
+int menu_cursor_dialogue(void);
+// A menu screen (not the ability wheel, a D-pad strip or the map) has the game's focus box, whichever device was used
+// last: input.c turns the scroll wheel into steps of its focus. 0 with the menu cursor off.
+int menu_cursor_menu(void);
+// A D-pad strip's screen (ShortCut_00) is open; it has no focus box while held. 0 with the menu cursor off.
+int menu_cursor_strip(void);
+// The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
+int menu_cursor_camera(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
@@ -92,6 +115,20 @@ int input_rumble_triggers_enabled(void);
 void input_motion_start(void);
 // TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
+// The Controls tab's Calibrate gyro row: start a bias measurement on the open gamepad (starts the sensor thread when
+// the game has not yet). Callable from any thread.
+void input_motion_calibrate(void);
+// What the Calibrate gyro row shows (MOTION_CALIB_*): NONE no bias for this controller, COLLECTING, DONE a bias in
+// effect (measured in this run or loaded from totk.ini), FAILED the last attempt got no samples and no bias is in
+// effect, MOVED the last attempt was rejected because the controller moved. pad receives the name of the controller the
+// bias belongs to (empty when none), copied so the caller does not read a buffer another thread may be rewriting.
+enum { MOTION_CALIB_NONE, MOTION_CALIB_COLLECTING, MOTION_CALIB_DONE, MOTION_CALIB_FAILED, MOTION_CALIB_MOVED };
+int input_motion_calib_state(char *pad, size_t cap);
+// The bias's own switch (gyro_calibration, live). Off: no collection, the fusion takes the raw gyro, and the row's
+// state reads as before any calibration while the saved keys stay in totk.ini.
+int input_gyro_calibration_enabled(void);
+// The fusion's own read of the same switch (motion_fusion.c); input.c reaches it for the row's state.
+int motion_calibration_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);
@@ -109,3 +146,9 @@ MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
 void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
+// Start a bias measurement at now_ns: samples while the controller rests, then the bias or a rejection (MOTION_CALIB_*).
+// pad is the controller's identity, written to totk.ini with the bias.
+void motion_calibrate_start(MotionFusion *m, const char *pad, uint64_t now_ns);
+int motion_calib_poll(MotionFusion *m, uint64_t now_ns);   // MOTION_CALIB_*; ends an attempt whose samples stopped
+void motion_bias_load(MotionFusion *m);    // take the bias from totk.ini (TOTK_GYRO_BIAS_*)
+void motion_bias_reset(MotionFusion *m);   // no bias and no attempt (another controller)

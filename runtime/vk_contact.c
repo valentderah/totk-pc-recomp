@@ -3,9 +3,11 @@
 // (is_gbuffer), lights it in half resolution, and then composites the lighting into that scene colour in one pass
 // whose only target is the scene colour, with a D16 depth that sorts pixels into material classes (is_composite).
 // When the pass after the composite begins, or a dispatch or copy comes first, runtime/shaders/contact_shadow.comp
-// marches each pixel a short way toward the sun through the linear depth and darkens the scene colour where the ray
-// passes behind nearby geometry: the small shadows at feet, under stones and in grass that the shadow maps are too
-// coarse for. Transparent surfaces, the sky and post-processing come after, untouched.
+// marches each pixel of a surface facing the sun (normal from the linear depth) a short way toward the sun through the
+// linear depth and darkens the scene colour where the ray passes behind nearby geometry: the small shadows at feet,
+// under stones and in grass that the shadow maps are too coarse for. Surfaces turned away from the sun are left alone:
+// they get no direct light to take away, and the colour the composite wrote already holds their ambient light and fog.
+// Transparent surfaces, the sky and post-processing come after, untouched.
 //
 // vk_contact_plan decides that in replay order and vk_contact_exec records it: a chunked replay's scan
 // plans the march (vk_exec.c scan_contact) and the chunk that holds its op records it.

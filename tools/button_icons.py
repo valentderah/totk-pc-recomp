@@ -18,7 +18,9 @@ start, MacNativeGames found).
 The button guide in play (bottom right) draws its buttons, L and ZL among them, from images of the common layout
 archive instead (timg/__Combined.bntx, Nt_KeyTexL_00 and Nt_KeyTexZL_00): bntx_redraw paints the same icons into them,
 the size unchanged. The Xbox prompts redraw L and ZL, the keyboard and mouse ones every image (PC_HUD_TEXTURES: A, B, X,
-Y, L, ZL and the stick's two). Prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
+Y, L, ZL and the stick's two) with the keys of pc_binds. The font's glyphs use pc_binds(text=True): a text prompt shows
+Y as T, the button guide the left mouse button. Prompts drawn as fixed images (some tutorial animations) keep the
+Switch icons.
 
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
@@ -212,12 +214,18 @@ PC_HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX
                    'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE052,
                    'Nt_KeyTexLSt_01': 0xE05E}
 PC_MOUSE = ('mouse_l', 'mouse_r', 'mouse_m')
+# The text prompts (the button font: the menus' guides, the dialogue log's) show Y as T, the key runtime/input_map.c
+# binds next to the left mouse button: while a game menu has the pointer the left button is that menu's A
+# (runtime/menu_cursor.c), and T presses Y everywhere. The button guide in play and the action prompt keep the left
+# button (PC_BINDS), which attacks there.
+PC_TEXT_KEYS = {'Y': 't'}
 
 
-def pc_binds(ini_text=None):
+def pc_binds(ini_text=None, text=False):
     """PC_BINDS with the first key of each bind_<action> line of a totk.ini text over it (a line without a key entry,
-    or with key:default, keeps the default)."""
-    binds = dict(PC_BINDS)
+    or with key:default, keeps the default). text: the binds the button font is drawn with, where a button of
+    PC_TEXT_KEYS shows its first key that is not a mouse button (PC_TEXT_KEYS's without a line)."""
+    binds = dict(PC_BINDS, **(PC_TEXT_KEYS if text else {}))
     for line in (ini_text or '').splitlines():
         line = line.split('#')[0].split(';')[0].strip()
         if not line.lower().startswith('bind_') or '=' not in line:
@@ -225,8 +233,11 @@ def pc_binds(ini_text=None):
         action, value = (s.strip() for s in line.split('=', 1))
         keys = [e.strip()[4:].strip().lower() for e in value.split(',') if e.strip().lower().startswith('key:')]
         keys = [k for k in keys if k != 'default']
-        if keys and action[5:].upper() in binds:
-            binds[action[5:].upper()] = keys[0]
+        button = action[5:].upper()
+        if text and button in PC_TEXT_KEYS:
+            keys = [k for k in keys if not k.startswith('mouse_')] or keys
+        if keys and button in binds:
+            binds[button] = keys[0]
     return binds
 
 

@@ -36,7 +36,8 @@ typedef struct VkCtx {
         has_nv_checkpoints,                 // VK_NV_device_diagnostic_checkpoints (TOTK_PASS_CRUMBS=1, vk_crumbs.c)
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
-        has_hdr_metadata;                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -60,6 +61,7 @@ typedef struct {
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
     int mesa;                          // a Mesa driver the game runs on: RADV, ANV or NVK
     int intel_igpu_win;                // Intel's Windows driver on an integrated GPU (UHD, Iris Xe, Core Ultra graphics)
+    int demote;                        // shaderDemoteToHelperInvocation enabled: modules may use OpDemoteToHelperInvocation
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa, intel_igpu_win
@@ -147,6 +149,10 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, const int out[4]);
 void vk_fsr_release(void);   // before the device goes away
+void vk_reflex_submit_frame(uint64_t id);   // this thread's submissions belong to frame id (0: the game's current one)
+uint64_t vk_reflex_submit_id(void);
+void vk_reflex_present_frame(uint64_t id);  // the present thread, before the blit of frame id
+int vk_has_reflex(void);
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
@@ -415,6 +421,9 @@ int vk_mem_span_live(const VkMemSpan *sp);
 // from then on are freed once the timeline reaches it.
 void vk_mem_note_fence(uint64_t timeline_value);
 void vk_mem_fault_log(void);   // vk_device_fault_report: the deferred-free state, lock-free
+// vk_device_fault_report: the last descriptor pool events (vk_exec_draw.c journal: CbRes made, pools handed out and
+// reset), lock-free.
+void vk_exec_pool_journal_log(void);
 void vk_mem_collect(void);                         // frees what has completed
 // After a failed allocation, on a thread that may hold the texture lock and the upload lock (cmd_lock) but no VMA
 // lock: frees the headroom blocks and the completed upload batches and deferred objects, and requests the release
