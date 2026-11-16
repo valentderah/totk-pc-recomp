@@ -189,7 +189,7 @@ static const CfgMeta metas[] = {
     {"QUICKSAVE", "0", "0|1", LIVE},        // quicksave.c: one key saves (an autosave), another loads it
     {"QUICKSAVE_KEY", "f6", NULL, LIVE}, {"QUICKLOAD_KEY", "f7", NULL, LIVE},   // Half-Life's keys; a key name or none
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
-    {"FREECAM_PAD", "zl+zr+lstick", NULL, LIVE}, {"FREECAM_KEY", "f6", NULL, LIVE},
+    {"FREECAM_PAD", "none", NULL, LIVE}, {"FREECAM_KEY", "none", NULL, LIVE},
     // Gameplay Tweaks
     {"GAMEPLAY_TWEAKS_ENABLED", "0", "0|1", LIVE},
     {"GAMEPLAY_ULTRAHAND_ROTATE", "1", "0|1", LIVE}, {"GAMEPLAY_ULTRAHAND_C_AXIS", "1", "0|1", LIVE},

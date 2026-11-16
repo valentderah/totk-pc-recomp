@@ -21,11 +21,12 @@
 // the anchor is driven. When no driven component has been updated for LOST_NS (a load replaced them) the next one
 // away from the default anchors again; the free camera keeps its own position.
 //
-// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD (ZL+ZR+L3 by default) or TOTK_FREECAM_KEY (F6) switches
-// it. While it is on the game gets no input; the left stick flies along the view and to the side, ZR and ZL straight
-// up and down, the right stick and the mouse turn, and each press of L or R halves or doubles the speed. Keys work
-// through their bindings: the keys' sticks, and the keys bound to ZL, ZR, L and R. Every driven component steps the
-// flight by the wall-clock time since the last step, so the speed is the same at any frame rate and game speed.
+// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD or TOTK_FREECAM_KEY switches it (both none by default, so the
+// player opts in). While it is on the game gets no input; the left stick flies along the view and to the side, ZR and
+// ZL straight up and down, the right stick and the mouse turn, and each press of L or R halves or doubles the speed.
+// Keys work through their bindings: the keys' sticks, and the keys bound to ZL, ZR, L and R. Every driven component
+// steps the flight by the wall-clock time since the last step, so the speed is the same at any frame rate and game
+// speed.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>

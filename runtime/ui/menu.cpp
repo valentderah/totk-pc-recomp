@@ -962,7 +962,7 @@ static void rows_freecam(void) {
     names[N - 1] = menu_text(UI_MENU_OFF);
     if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
     opt_choice_list("TOTK_FREECAM_PAD", UI_MENU_FREECAM_PAD, combos, names, N, UI_MENU_FREECAM_PAD_DESC);
-    // The free camera key: keys no default binding uses ("none" rather than an empty value turns it off: unset is f6)
+    // The free camera key: keys no default binding uses (none, the default, turns it off)
     static const char *const keys[] = {"none", "f2", "f3", "f4", "f5", "f6", "f7", "f9"};
     const char *key_names[] = {menu_text(UI_MENU_OFF), "F2", "F3", "F4", "F5", "F6", "F7", "F9"};
     if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);

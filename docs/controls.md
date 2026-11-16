@@ -131,9 +131,10 @@ bind_Y = pad:north, key:mouse_l
 
 ## Free camera
 
-On game 1.4.3, ZL+ZR+L3 together (LT+RT+L3 on an Xbox pad) or F6 detach the view from Link; the same combo or key brings
-it back (`freecam_pad` and `freecam_key` in `totk.ini` and on the Controls tab pick others, `none` none). The world goes
-on, but the game gets no input while the free camera is on, so Link stands where he was.
+On game 1.4.3, a chosen gamepad combo or a key activates or deactivates the free camera. Neither is set by default: pick
+them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for example ZL+ZR+L3, LT+RT+L3 on an
+Xbox pad, and F6; `none` turns one off). The world goes on, but the game gets no input while the free camera is on, so
+Link stands where he was.
 
 | Gamepad | Keyboard and mouse (default bindings) | Free camera |
 |---|---|---|

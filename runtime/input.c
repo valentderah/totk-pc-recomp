@@ -815,8 +815,8 @@ uint32_t input_pad_combo(const char *env, const char *s) {
     return mask;
 }
 
-// TOTK_FREECAM_PAD (live): the combo that switches the free camera (freecam.c); zl+zr+lstick (LT+RT+L3) when unset,
-// none for no combo. Under lock.
+// TOTK_FREECAM_PAD (live): the combo that switches the free camera (freecam.c), for example zl+zr+lstick (LT+RT+L3);
+// none, the default (the settings table), for no combo. Under lock.
 static uint32_t freecam_pad_mask(void) {
     static unsigned seen;
     static int read;
@@ -824,13 +824,12 @@ static uint32_t freecam_pad_mask(void) {
     unsigned v = cfg_version();
     if (read && v == seen) return mask;
     read = 1, seen = v;
-    const char *s = cfg_get("TOTK_FREECAM_PAD");
-    if (!s || !*s) s = "zl+zr+lstick";
-    mask = strcasecmp(s, "none") ? input_pad_combo("TOTK_FREECAM_PAD", s) : 0;
+    const char *s = cfg_value("TOTK_FREECAM_PAD");
+    mask = *s && strcasecmp(s, "none") ? input_pad_combo("TOTK_FREECAM_PAD", s) : 0;
     return mask;
 }
 
-// TOTK_FREECAM_KEY (live): the key that switches the free camera, f6 by default (the settings table), none for no key.
+// TOTK_FREECAM_KEY (live): the key that switches the free camera; none, the default (the settings table), for no key.
 // Under lock.
 static int freecam_key(void) {
     static unsigned seen;
