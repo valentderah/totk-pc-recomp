@@ -3,7 +3,7 @@
 Lifted code cannot be byte-patched when the game runs, so a patch is applied when the C is generated. A patch file
 (gen.py --patches) has these kinds of lines; `#` starts a comment, fields are separated by whitespace:
 
-  set  <name> <env> <default>               a patch set: a run-time switch <env>=0/1, <default> when it is unset
+  set  <name> <env> <default> [ordered]     a patch set: a run-time switch <env>=0/1, <default> when it is unset
   site <set> <module> <address> <original> <replacement> [<replacement> ...]
 
   spin <module> <head> <back-edge> [<back-edge> ...]
@@ -22,10 +22,22 @@ the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +92..95 t
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
 `if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Several
 sets may patch one address (cheats that write different values there): `if (a) {..} else if (b) {..} else {..}`, the
-first set in file order wins. The original may be any instruction but br, blr and ret; a replacement's last word may be
+first set in file order wins.
+
+An `ordered` set belongs to something the player puts in an order (a mod of the Mods tab: tools/exefs_patches.py marks
+its sets so). A site that two or more ordered sets patch is contested: the run time, not the file order, picks which
+of them runs. Each contested site gets a byte rt_patch_pick[<n>] (n counts the contested sites, by module name and
+offset), and each of its ordered alternatives tests `rt_patch_pick[<n>] == <j>`, j being the alternative's place
+among the site's ordered sets in file order (1 up; 0 runs none of them): one byte load for the whole group. The
+runtime fills the bytes from the sets that are on and their ranks (runtime/patches.c rt_patch_picks: the lowest rank
+wins, a tie goes to the set later in the file). The other alternatives of a contested site keep their place and
+their rt_patch_on test, so a cheat before the mods' sets still wins while it is on. A site with at most one ordered
+set, and a table without contested sites, is emitted exactly as without the keyword.
+
+The original may be any instruction but br, blr and ret; a replacement's last word may be
 a bl (lifted with the site's return address), a b or b.cond / cbz / tbz (its target joins the function's labels when
 inside it) or a ret; earlier words must not branch. Every alternative of a site writes the same flags. The generator
-writes patches.h (set names, switches, the page address) next to layout.h for the runtime.
+writes patches.h (set names, switches, the page address, the contested sites) next to layout.h for the runtime.
 
 A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <head> that only another thread can end,
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
@@ -40,6 +52,7 @@ without any keeps it in every function, as does gen.py --fn-enter-all (a whole-g
 from pathlib import Path
 
 PAGE = 0x1000
+PICK_MAX = 255   # ordered sets on one site: rt_patch_pick is a byte, 0 for none
 
 
 class PatchError(ValueError):
@@ -56,15 +69,35 @@ def adrp(pc, target, rd):
 
 class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg)], original)]}} (the
-    alternatives of a site in file order); page. What the generated C takes from here (for_module, spins_for, hooks_for)
-    is in the lift cache's key (recomp/gen.py chunk_key); a new kind of line the Emitter reads must go there too."""
+    alternatives of a site in file order); page; ordered: the indices of the ordered sets. What the generated C takes
+    from here (for_module, picks_for, spins_for, hooks_for) is in the lift cache's key (recomp/gen.py chunk_key); a new
+    kind of line the Emitter reads must go there too."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None, ordered=()):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
         self.hooks = hooks or {}   # {module: {function offset}}; empty: FN_ENTER in every function
+        self.ordered = set(ordered)
+
+    def picks(self):
+        """The contested sites, by module name and offset: [(module, offset, [ordered set index in file order])]; the
+        list index is the site's rt_patch_pick byte."""
+        out = []
+        for name in sorted(self.sites):
+            for off in sorted(self.sites[name]):
+                sets = [k for k, _, _ in self.sites[name][off] if k in self.ordered]
+                if len(sets) > 1:
+                    if len(sets) > PICK_MAX:
+                        raise PatchError(f'{name}+{off:#x}: {len(sets)} ordered sets, at most {PICK_MAX}')
+                    out.append((name, off, sets))
+        return out
+
+    def picks_for(self, name, base):
+        """{absolute address of a contested site: (its pick index, {ordered set index: the value that runs it})}."""
+        return {base + off: (n, {k: j + 1 for j, k in enumerate(sets)})
+                for n, (mod, off, sets) in enumerate(self.picks()) if mod == name}
 
     def hooks_for(self, name, base):
         """The absolute addresses of the module's hooked functions, or None when the table has no hook line at all
@@ -89,17 +122,19 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins, hooks = [], {}, {}, {}, {}
+    sets, index, sites, spins, hooks, ordered = [], {}, {}, {}, {}, set()
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
         f = raw.split('#', 1)[0].split()
         if not f:
             continue
         where = f'{path}:{no}'
-        if f[0] == 'set' and len(f) == 4:
+        if f[0] == 'set' and (len(f) == 4 or len(f) == 5 and f[4] == 'ordered'):
             if f[1] in index:
                 raise PatchError(f'{where}: set {f[1]} defined twice')
             index[f[1]] = len(sets)
+            if len(f) == 5:
+                ordered.add(len(sets))
             sets.append((f[1], f[2], int(f[3])))
         elif f[0] == 'site' and len(f) >= 6:
             if f[1] not in index:
@@ -139,7 +174,7 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins, hooks)
+    return Table(sets, sites, page, spins, hooks, ordered)
 
 
 def check(table, mod, name):
@@ -175,4 +210,10 @@ def header_text(table, marker):
              '// X(index, name, env switch, default)',
              '#define RT_PATCH_SETS(X) ' + ' '.join(f'X({i}, {n}, "{e}", {d})' for i, (n, e, d) in
                                                     enumerate(table.sets)), '']
+    picks = table.picks()
+    if picks:   # none: the header is what it was before ordered sets
+        lines += [f'#define RT_PATCH_PICK_COUNT {len(picks)}',
+                  '// X(index, module, module offset, its ordered sets in the order its C tests them: rt_patch_pick 1 up)',
+                  '#define RT_PATCH_PICKS(X) ' + ' '.join(f'X({i}, "{m}", {o:#x}, {", ".join(map(str, s))})'
+                                                         for i, (m, o, s) in enumerate(picks)), '']
     return '\n'.join(lines)

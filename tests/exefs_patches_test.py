@@ -209,7 +209,7 @@ class Tool(unittest.TestCase):
         code, dat, bad = self.key('Code'), self.key('Data'), self.key('Bad')
         self.assertEqual([status[k][2] for k in (code, dat, bad)], ['code', 'data', 'unsupported'])
         self.assertEqual([status[k][4] for k in (code, dat)], ['data 1', 'data 9'])   # bytes its data lines hold
-        self.assertIn(f'set mod_{code.lower()} TOTK_MODPATCH_{code} 0', (self.d / 'out.txt').read_text())
+        self.assertIn(f'set mod_{code.lower()} TOTK_MODPATCH_{code} 0 ordered', (self.d / 'out.txt').read_text())
         self.assertEqual(sorted((f[0], f[2], f[3], f[4:]) for f in data),
                          sorted([(code, '2200', '51', []), (dat, '1000', 'aa', []),
                                  (dat, '2118', '3100000000000000', ['base'])]))
