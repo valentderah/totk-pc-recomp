@@ -204,21 +204,34 @@ SN T FN(slow)(Cpu *c, int op, T a, T b, T d) {
 // The complement of FREDO for every op but RSQRTS, as one compare: |r| ordered and not the smallest normal (LLVM folds
 // it to fcmp one, a single ucomiss + jne for scalars and one vcmpps for vectors).
 #define FOK(r) ((__builtin_elementwise_abs(r) < FN(fv)(MINN)) | (__builtin_elementwise_abs(r) > FN(fv)(MINN)))
+// FOK against the thread's threshold (cpu.h rt_fpcr_threshold), the check of the fast paths: the same as FOK in
+// round-to-nearest, where the threshold is the smallest normal, and false for every result under a directed RMode,
+// where the threshold is NaN, so that RMode needs no test of its own. The threshold is a memory operand of the compare.
+#define FOKT(r, th) ((__builtin_elementwise_abs(r) < (th)) | (__builtin_elementwise_abs(r) > (th)))
+// A result FOKT rejected. A NaN result in round-to-nearest goes straight to fix: the host already ran the operation
+// on the operands FPCR.FZ flushes (MXCSR.DAZ), so slow would compute the same NaN and return fix of the flushed
+// operands, and fix's result for these ops is never tiny, so slow's FZ result flush would leave it alone. RSQRTS
+// keeps the slow path because its fix result can be tiny.
 SN T FN(redo)(Cpu *c, int op, T a, T b, T d, T r) {
-    if (c->fpcr & (FPCR_FZ | FPCR_RM)) return FN(slow)(c, op, a, b, d);
+    uint64_t fpcr = c->fpcr;
+    if (op != FOP_RSQRTS && !(fpcr & FPCR_RM) && r != r) {
+        if (fpcr & FPCR_FZ) a = FN(flush)(a), b = FN(flush)(b), d = FN(flush)(d);
+        return FN(fix)(c, op, a, b, d);
+    }
+    if (fpcr & (FPCR_FZ | FPCR_RM)) return FN(slow)(c, op, a, b, d);
     return FBAD(op, r) ? FN(fix)(c, op, a, b, d) : r;
 }
 
 // Scalar FP op (constant op folds the selection). RMode = nearest runs on the host, with or without FZ. A directed
-// RMode is rare, so it shares the result check's branch: the host result, computed in round-to-nearest, is then
-// thrown away and redo recomputes in the FPCR mode. Min and max do not round, so RMode does not matter to them.
+// RMode is rare, so it shares the result check (the FOKT threshold): the host result, computed in round-to-nearest,
+// is then thrown away and redo recomputes in the FPCR mode. Min and max do not round, so RMode does not matter to them.
 SI T FN(op)(Cpu *c, int op, T a, T b, T d) {
     if (FMINMAX(op)) {
         if (c->fpcr & FPCR_FZ) a = FN(flush)(a), b = FN(flush)(b);
         return FN(minmax)(c, op, a, b);
     }
     T r = FCALC(op, a, b, d, K, FMA_S);
-    if (__builtin_expect((op == FOP_RSQRTS ? FREDO(op, r) : !FOK(r)) | simd_directed(c), 0))
+    if (__builtin_expect(op == FOP_RSQRTS ? FREDO(op, r) | simd_directed(c) : !FOKT(r, SIMD_CAT(simd_th, F)(c)), 0))
         r = FN(redo)(c, op, a, b, d, r);
     return r;
 }
@@ -226,6 +239,24 @@ SI T FN(op)(Cpu *c, int op, T a, T b, T d) {
 SN VT FN(vslow)(Cpu *c, int op, VT a, VT b, VT d) {
     VT r;
     for (int i = 0; i < NL; i++) r[i] = FN(op)(c, op, a[i], b[i], d[i]);
+    return r;
+}
+// Slow path of FN(vop) for a vector with flagged lanes. The operands come in c->fp_arg, stored by the caller just
+// before the call: passing three vectors by value costs every call site a stack copy of each (Win64 passes them by
+// reference), and the frames of the large lifted functions grow past a page (a ___chkstk_ms call at every entry). The
+// scratch is per thread and nothing runs between the store and the loads here. In round-to-nearest a lane that passed
+// the check equals what the scalar op returns for it (same host operation, same MXCSR), so only the flagged lanes go
+// through FN(op); the vector result is recomputed here rather than passed in, which keeps the call sites small. A
+// directed RMode reruns every lane.
+SN VT FN(vredo)(Cpu *c, int op) {
+    VT a, b, d;
+    memcpy(&a, &c->fp_arg[0], sizeof a);
+    memcpy(&b, &c->fp_arg[1], sizeof b);
+    memcpy(&d, &c->fp_arg[2], sizeof d);
+    if (c->fpcr & FPCR_RM) return FN(vslow)(c, op, a, b, d);
+    VT r = FCALC(op, a, b, d, VK, FMA_V);
+    for (int i = 0; i < NL; i++)
+        if (op == FOP_RSQRTS ? FREDO(op, r[i]) : !FOK(r[i])) r[i] = FN(op)(c, op, a[i], b[i], d[i]);
     return r;
 }
 
@@ -239,8 +270,8 @@ SI VT FN(vflush)(VT a) {
     return (VT)FN(vsel)(den, u & SGN, u);
 }
 
-// Vector FP op: native lanes; any lane FREDO flags (or a directed FPCR.RMode, checked in the same branch) reruns all
-// lanes through the scalar path. Min and max ignore RMode, as in FN(op).
+// Vector FP op: native lanes; a lane FREDO flags, or a directed FPCR.RMode (the FOKT threshold, or the RSQRTS test),
+// takes FN(vredo). Min and max ignore RMode, as in FN(op).
 SI VT FN(vop)(Cpu *c, int op, VT a, VT b, VT d) {
     VT r;
     if (FMINMAX(op)) {
@@ -254,9 +285,13 @@ SI VT FN(vop)(Cpu *c, int op, VT a, VT b, VT d) {
         return r;
     }
     r = FCALC(op, a, b, d, VK, FMA_V);
-    if (__builtin_expect((op == FOP_RSQRTS ? __builtin_reduce_or(FREDO(op, r)) != 0 : __builtin_reduce_and(FOK(r)) == 0)
-                         | simd_directed(c), 0))
-        return FN(vslow)(c, op, a, b, d);
+    if (__builtin_expect(op == FOP_RSQRTS ? (__builtin_reduce_or(FREDO(op, r)) != 0) | simd_directed(c)
+                                          : __builtin_reduce_and(FOKT(r, SIMD_CAT(simd_thv, F)(c))) == 0, 0)) {
+        memcpy(&c->fp_arg[0], &a, sizeof a);
+        memcpy(&c->fp_arg[1], &b, sizeof b);
+        memcpy(&c->fp_arg[2], &d, sizeof d);
+        return FN(vredo)(c, op);
+    }
     return r;
 }
 

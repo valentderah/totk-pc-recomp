@@ -18,7 +18,11 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
     uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
-    uint8_t _pad[512 - 344];
+    uint64_t _pad0;          // 344
+    float fp_th_s[4];        // 352: FP result check threshold, every lane (rt_fpcr_threshold, runtime/simd_fp.h FOKT)
+    double fp_th_d[2];       // 368
+    __uint128_t fp_arg[3];   // 384: operands of a vector FP op handed to its slow path (runtime/simd_fp.h FN(vredo))
+    uint8_t _pad[512 - 432];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -27,6 +31,8 @@ _Static_assert(offsetof(Cpu, pc) == 264, "pc");
 _Static_assert(offsetof(Cpu, nzcv) == 272, "nzcv");
 _Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
 _Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
+_Static_assert(offsetof(Cpu, fp_th_s) == 352 && offsetof(Cpu, fp_th_d) == 368, "fp_th");
+_Static_assert(offsetof(Cpu, fp_arg) == 384, "fp_arg");
 _Static_assert(offsetof(Cpu, v) == 512, "v");
 
 typedef void (*GuestFn)(Cpu *);
@@ -39,12 +45,24 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
 void rt_udf(Cpu *c, uint64_t pc) __attribute__((noreturn));
 uint64_t rt_ticks(void);
 
+// The FP fast paths of runtime/simd_fp.h test FPCR.RMode and the result in one compare: a result is good when its
+// magnitude differs from c->fp_th_*. In round-to-nearest the threshold is the smallest normal, so NaN and +-smallest
+// normal fail as before; under a directed RMode it is NaN, both compares are unordered and every result goes through
+// the redo path, which rounds in the FPCR mode. It must follow every change of c->fpcr: rt_fpcr_sync sets it, and so
+// does code that creates a Cpu or copies fpcr into one. A zeroed threshold is wrong, not merely slow: it passes
+// +-smallest normal.
+static inline void rt_fpcr_threshold(Cpu *c) {
+    int directed = (c->fpcr & (3u << 22)) != 0;
+    for (int i = 0; i < 4; i++) c->fp_th_s[i] = directed ? __builtin_nanf("") : 0x1p-126f;
+    for (int i = 0; i < 2; i++) c->fp_th_d[i] = directed ? __builtin_nan("") : 0x1p-1022;
+}
+
 #if defined(__aarch64__)
 static inline uint64_t rt_get_fpcr(void) { uint64_t v; __asm__ volatile("mrs %0, fpcr" : "=r"(v)); return v; }
 static inline uint64_t rt_get_fpsr(void) { uint64_t v; __asm__ volatile("mrs %0, fpsr" : "=r"(v)); return v; }
 static inline void rt_set_fpcr(uint64_t v) { __asm__ volatile("msr fpcr, %0" :: "r"(v)); }
 static inline void rt_set_fpsr(uint64_t v) { __asm__ volatile("msr fpsr, %0" :: "r"(v)); }
-static inline void rt_fpcr_sync(const Cpu *c) { (void)c; }
+static inline void rt_fpcr_sync(Cpu *c) { rt_fpcr_threshold(c); }
 #else
 // Host FP state is not the guest's here: code lifted with --simd=c keeps FPCR/FPSR in Cpu (c->fpcr, zeroed
 // with the Cpu), so the host-side reset in thread start-up has nothing to do.
@@ -56,12 +74,20 @@ static inline void rt_set_fpsr(uint64_t v) { (void)v; }
 // the slow paths of runtime/simd.h, which switch RC around one operation). The FP helpers rely on it without checking,
 // so it is set wherever FPCR or the host FP context changes: MSR FPCR (recomp/lifter.py), rt_call (thread and fiber
 // entry, host code calling guest code), fiber resume (runtime/kernel.c fiber_resumed; fibers keep their own MXCSR).
-static inline void rt_fpcr_sync(const Cpu *c) {
+// It also sets the FP result check threshold (rt_fpcr_threshold).
+static inline void rt_fpcr_sync(Cpu *c) {
+    rt_fpcr_threshold(c);
     unsigned cur = __builtin_ia32_stmxcsr();
     unsigned want = (cur & ~0xE040u) | (c->fpcr & (1u << 24) ? 0x8040u : 0);   // FTZ 0x8000, DAZ 0x40, RC 0x6000
     if (cur != want) __builtin_ia32_ldmxcsr(want);
 }
 #endif
+// MSR FPCR (recomp/lifter.py): the first guest write of a directed rounding mode (FPCR.RMode, bits 22-23) is logged
+// once with the caller (main.c rt_fpcr_rmode), to learn whether the game ever leaves round-to-nearest. A test of the
+// value just stored, at the MSR sites only.
+void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr);
+#define RT_FPCR_NOTE(c, lr) \
+    do { if (__builtin_expect((c)->fpcr & (3ull << 22), 0)) rt_fpcr_rmode((c)->fpcr, lr); } while (0)
 
 // ---- memory: guest addresses are host addresses
 typedef uint16_t __attribute__((aligned(1), may_alias)) u16u;
@@ -69,7 +95,9 @@ typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
 typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
 typedef uint8_t __attribute__((may_alias)) u8a;
 
-// Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
+// Function-entry hook: one predictable branch per call while g_fnprof is 0. The generator emits it only in the
+// functions of the patch table's `hook` lines (recomp/patches.py), or in every function for a table without any and
+// with gen.py --fn-enter-all.
 extern volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)

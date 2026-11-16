@@ -136,6 +136,7 @@ static void state_reset(VkExec *ex) {
     vk_pipe_state_defaults(&ex->pipe);
     ex->barrier_at = -1;
     ex->oq_open = -1;
+    vk_exec_dirty_all(ex);
 }
 
 // ---- render targets
@@ -410,6 +411,8 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h) {
 static void resolve_rt_as(VkExec *ex, int peek) {
     if (ex->rt_resolved) return;
     ex->rt_resolved = 1;
+    int32_t fmt0[8], ds0[2] = {ex->pipe.depth_fmt, ex->pipe.samples};
+    memcpy(fmt0, ex->pipe.color_fmt, sizeof fmt0);
     const p_set_rt *r = &ex->rt;
     int n = r->n < 0 ? 0 : r->n > 8 ? 8 : r->n;
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0, scale = 1;
@@ -451,6 +454,8 @@ static void resolve_rt_as(VkExec *ex, int peek) {
     ex->pass_ncolor = (uint32_t)n;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
+    if (memcmp(fmt0, ex->pipe.color_fmt, sizeof fmt0) || ds0[0] != ex->pipe.depth_fmt || ds0[1] != ex->pipe.samples)
+        ex->pipe_gen++;   // the pipeline's target formats changed
 }
 
 static void resolve_rt(VkExec *ex) { resolve_rt_as(ex, 0); }
@@ -528,13 +533,36 @@ static void tfr_note(const VkExecTarget *t, uint64_t stamp) {
     plat_mutex_lock(&tfr_lock);
     TargetFrames *e = tfr_find(t);
     if (!e) {
-        e = tfr_set(t);
+        // the way rendered longest ago, indexed from the set's start: the ways past the last set are RP's words
+        TargetFrames *s = tfr_set(t);
+        e = s;
         for (int i = 1; i < TFR_WAYS; i++)
-            if (e[i].last < e->last) e = &e[i];
+            if (s[i].last < e->last) e = &s[i];
         *e = (TargetFrames){t->image, t->level, t->base_layer, 0, 0};
     }
     if (e->last != stamp) e->prev = e->last, e->last = stamp;
     plat_mutex_unlock(&tfr_lock);
+}
+
+// --probe-vkexec: a new target noted into a full set takes the way rendered longest ago, and the set after it keeps
+// its entries. The ways are stamped so that a search stepping from the way it picked last would leave the set. 1 when
+// it holds; the two sets are cleared afterwards.
+int vk_exec_tfr_check(void) {
+    VkExecTarget t[TFR_WAYS + 1];
+    for (int n = 0, k = 1; n <= TFR_WAYS; k++) {
+        t[n] = (VkExecTarget){.image = (VkImage)(uintptr_t)k};
+        n += tfr_set(&t[n]) == tfr[0];
+    }
+    static const uint64_t last[TFR_WAYS] = {8, 7, 100, 6, 100, 100, 5, 100};
+    TargetFrames next[TFR_WAYS];
+    for (int i = 0; i < TFR_WAYS; i++) tfr[0][i] = (TargetFrames){t[i].image, 0, 0, last[i], 0};
+    memcpy(next, tfr[1], sizeof next);
+    tfr_note(&t[TFR_WAYS], 200);
+    plat_mutex_lock(&tfr_lock);
+    int ok = tfr_find(&t[TFR_WAYS]) == &tfr[0][6] && !memcmp(next, tfr[1], sizeof next);
+    plat_mutex_unlock(&tfr_lock);
+    memset(tfr, 0, sizeof tfr[0] * 2);
+    return ok;
 }
 
 static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
@@ -626,6 +654,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     for (int i = 0; i < nwant; i++)
         if (!has_image(ex->fbl_img, ex->nfbl, want[i]))
             ib[n++] = layout_barrier(want[i], wasp[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
+    if (n || nwant != ex->nfbl) ex->fbl_serial++;   // the images in the feedback layout changed
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
@@ -903,6 +932,13 @@ static void maybe_split(VkExec *ex) {
     n_parts++;
 }
 
+// --probe-vkexec: a split every `draws` draws between passes, parts of at least `us` (0: no minimum); the parts made
+// so far.
+uint64_t vk_exec_split_set(int draws, int us) {
+    split_n = draws, split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
+    return n_parts;
+}
+
 // The fixed-function state ops: writes into ex alone, applied by the replay and the state scan. 0: not one of them.
 static int state_op(VkExec *ex, uint32_t op, const void *a) {
     switch (op) {
@@ -944,8 +980,16 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
         memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
         ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
         break;
-    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
-    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
+    case OP_DEPTH_CLAMP: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.depth_clamp != v) ex->pipe.depth_clamp = v, ex->pipe_gen++;
+        break;
+    }
+    case OP_RASTER_DISCARD: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.raster_discard != v) ex->pipe.raster_discard = v, ex->pipe_gen++;
+        break;
+    }
     case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
     case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
     case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
@@ -1147,6 +1191,7 @@ static void *grow_n(void *p, uint32_t *cap, size_t elem) {
 
 static void copy_state(VkExec *dst, const VkExec *src) {
     memcpy((char *)dst + VK_EXEC_STATE_BEGIN, (const char *)src + VK_EXEC_STATE_BEGIN, VK_EXEC_STATE_END - VK_EXEC_STATE_BEGIN);
+    vk_exec_dirty_all(dst);   // the bound state was replaced: no draw memo may take it for what it held
 }
 
 static int draw_op(uint32_t op) { return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND; }
@@ -1313,6 +1358,7 @@ static void chunk_record(Rec *r, int k) {
     const Chunk *next = k + 1 < __atomic_load_n(&SC.nch, __ATOMIC_ACQUIRE) ? &SC.ch[k + 1] : NULL;
     ex->cb = rec_cb(r, RP.fence);
     ex->fence = RP.fence, ex->recorded = 0, ex->in_pass = 0, ex->nviews = 0, ex->barrier_at = -1, ex->nfbl = 0;
+    ex->fbl_serial++;
     ex->part_start = 0;
     x_cur = ex;
     chunk_k = k;
@@ -1678,6 +1724,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->nviews = 0;
     ex->barrier_at = -1;
     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
+    ex->fbl_serial++;
     ex->fr.submits++;
     ex->split_draws = ex->part_start = 0;
     ex->part_t0 = kern_now_ns();

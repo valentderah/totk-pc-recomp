@@ -1770,6 +1770,7 @@ int probe_fs(void) {
     pcpu = plat_aligned_alloc(sizeof(Cpu), 64);
     need(pcpu != NULL, "probe Cpu");
     memset(pcpu, 0, sizeof *pcpu);
+    rt_fpcr_threshold(pcpu);
     uint8_t *stack = mem_kernel_alloc(0x10000, 16);
     pcpu->sp = (uint64_t)(uintptr_t)stack + 0x10000;
     pcpu->excl_addr = ~0ull;

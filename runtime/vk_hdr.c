@@ -18,8 +18,8 @@
 // 3. vk_hdr_encode: on the present, the crop rectangle goes to PQ code values in an RGBA16F image (shaders/hdr_encode.comp)
 //    that FSR 1 or the blit scale into the swapchain. vk_hdr_ui_*: the in-game menu draws into an RGBA8 image and
 //    shaders/hdr_ui.frag blends it onto the swapchain at the HUD's white.
-// The tonemap's approach is RenoDX's TotK mod by souperman9 and Musa on ShortFuse's RenoDX (github.com/clshortfuse/renodx,
-// src/games/totk, MIT); the code is ours.
+// The tonemap's colour reconstruction is adapted from RenoDX's TotK mod by souperman9 and Musa on ShortFuse's RenoDX
+// (github.com/clshortfuse/renodx, src/games/totk, MIT; THIRD_PARTY_NOTICES.md); the rest of this file is ours.
 #include "vk.h"
 
 #include <math.h>

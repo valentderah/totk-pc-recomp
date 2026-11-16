@@ -1445,6 +1445,7 @@ static RtThread *thr_new(int prio, int core, uint64_t mask) {
     Cpu *c = plat_aligned_alloc(sizeof(Cpu), 64);
     if (!t || !c) rt_fatal("kernel: thread allocation");
     memset(c, 0, sizeof *c);
+    rt_fpcr_threshold(c);
     plat_cond_init(&t->cv);
     t->prio = prio;
     t->core = core;
@@ -2259,6 +2260,7 @@ static void fiber_switch_to(RtThread *t, const Cpu *from, Fiber *to) {
     dst->tpidr = from->tpidr;
     dst->tpidrro = from->tpidrro;
     dst->fpcr = from->fpcr;
+    rt_fpcr_threshold(dst);   // fiber_resumed syncs MXCSR on the other side; the threshold follows fpcr at once
     dst->fpsr = from->fpsr;
     dst->excl_addr = ~0ull;
     dst->thread = t;
@@ -2291,6 +2293,7 @@ void kern_fiber_initialize(Cpu *c) {
         plat_fiber_free(f->host);
     }
     memset(f->cpu, 0, sizeof *f->cpu);
+    rt_fpcr_threshold(f->cpu);
     f->cpu->excl_addr = ~0ull;
     f->addr = addr;
     f->func = c->x[1];
