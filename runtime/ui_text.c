@@ -274,6 +274,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Lower values make weak vibration stronger.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Trigger vibration (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Vibrates the triggers of an Xbox controller too.",
+    [UI_MENU_NO_DIRECTINPUT] = "Disable DirectInput (Windows)",
+    [UI_MENU_NO_DIRECTINPUT_DESC] = "Skips Windows DirectInput when scanning controllers, keeping XInput and HIDAPI on. "
+                                    "Turn on if a wireless or virtual controller hangs the game at start or when plugged "
+                                    "in. Generic DirectInput-only pads stop working while on.",
     [UI_MENU_PAD_LAYOUT] = "Button layout",
     [UI_MENU_PAD_LAYOUT_DESC] = "Which button is A. Nintendo: the right one, as on a Switch. Xbox: the bottom one, as "
                                 "labelled on an Xbox controller (cross on a PlayStation controller). Automatic picks "
@@ -823,6 +827,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Чем ниже значение, тем сильнее слабая вибрация.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Вибрация триггеров (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Вибрация и в триггерах контроллера Xbox.",
+    [UI_MENU_NO_DIRECTINPUT] = "Отключить DirectInput (Windows)",
+    [UI_MENU_NO_DIRECTINPUT_DESC] = "Пропускает Windows DirectInput при поиске контроллеров, оставляя XInput и HIDAPI. "
+                                    "Включите, если беспроводной или виртуальный контроллер вешает игру при запуске "
+                                    "или подключении. Обычные DirectInput-геймпады при этом не работают.",
     [UI_MENU_PAD_LAYOUT] = "Раскладка кнопок",
     [UI_MENU_PAD_LAYOUT_DESC] = "Какая кнопка работает как A. Nintendo: правая, как на Switch. Xbox: нижняя, как "
                                 "подписано на контроллере Xbox (крест на контроллере PlayStation). Автоматически: "
@@ -1289,6 +1297,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Valores menores deixam a vibração fraca mais forte.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Vibração dos gatilhos (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Também vibra os gatilhos de um controle de Xbox.",
+    [UI_MENU_NO_DIRECTINPUT] = "Desativar DirectInput (Windows)",
+    [UI_MENU_NO_DIRECTINPUT_DESC] = "Ignora o DirectInput do Windows ao buscar controles, mantendo XInput e HIDAPI. "
+                                    "Ative se um controle sem fio ou virtual travar o jogo ao iniciar ou ao conectar. "
+                                    "Controles genéricos que só usam DirectInput param de funcionar.",
     [UI_MENU_PAD_LAYOUT] = "Layout dos botões",
     [UI_MENU_PAD_LAYOUT_DESC] = "Qual botão é o A. Nintendo: o da direita, como no Switch. Xbox: o de baixo, como "
                                 "indicado no controle de Xbox (cruz no controle de PlayStation). Automático escolhe "
@@ -1919,6 +1931,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "数值越低，弱振动越强。",
     [UI_MENU_RUMBLE_TRIGGERS] = "扳机振动（Xbox）",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Xbox 手柄的扳机也会振动。",
+    [UI_MENU_NO_DIRECTINPUT] = "禁用 DirectInput（Windows）",
+    [UI_MENU_NO_DIRECTINPUT_DESC] = "搜索手柄时跳过 Windows DirectInput，仅保留 XInput 和 HIDAPI。"
+                                    "若无线或虚拟手柄在启动或接入时导致游戏卡死，请开启此项。"
+                                    "开启后仅支持 DirectInput 的通用手柄将无法使用。",
     [UI_MENU_PAD_LAYOUT] = "按键布局",
     [UI_MENU_PAD_LAYOUT_DESC] = "哪个按键是 A。Nintendo：右侧按键，与 Switch 相同。Xbox：下方按键，"
                                 "与 Xbox 手柄上的标注一致（PlayStation 手柄上为叉键）。自动："

@@ -371,6 +371,10 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
+# Skip Windows DirectInput when scanning controllers, keeping XInput and HIDAPI on (0 = default, 1 = disable DirectInput).
+# Set to 1 if a wireless or virtual controller hangs the game at startup or when connected after boot; generic pads that
+# only work over DirectInput will not be detected while 1. Read at start.
+# no_directinput = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
