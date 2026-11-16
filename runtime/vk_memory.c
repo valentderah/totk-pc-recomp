@@ -1083,6 +1083,7 @@ static int merge_wanted(void) {
 // 0 when none is left.
 static int diff_run(const uint8_t *x, const uint8_t *y, uint64_t n, uint64_t *at, uint64_t *end) {
     uint64_t i = *at;
+    while (i + 64 <= n && !memcmp(x + i, y + i, 64)) i += 64;   // most words are equal: skip them a block at a time
     for (; i < n; i += 4) {
         uint32_t u = 0, v = 0, w = n - i < 4 ? (uint32_t)(n - i) : 4;
         memcpy(&u, x + i, w), memcpy(&v, y + i, w);
