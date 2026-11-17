@@ -1,0 +1,21 @@
+#version 450
+// SMAA on an HDR10 picture (runtime/vk_smaa.c): the picture is linear light with the HUD's white at 1.0 and highlights
+// above it, but SMAA's edge detection expects perceptual colour in 0..1. This pass writes that colour for the edge pass
+// only: highlights roll off with c / (1 + c) and a gamma curve spreads the darks; the blend pass still averages the
+// linear picture, which is the physically right place to mix pixels.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D colorTex;
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D dst;
+
+layout(push_constant) uniform Params {
+    vec4 metrics;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.metrics.z) || p.y >= int(pc.metrics.w)) return;
+    vec3 c = max(texelFetch(colorTex, p, 0).rgb, vec3(0.0));
+    imageStore(dst, p, vec4(pow(c / (1.0 + c), vec3(1.0 / 2.2)), 1.0));
+}
