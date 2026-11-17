@@ -30,6 +30,7 @@
 #define CHECKPOINT_RET (RT_V143 ? 0xbdb48cull : RT_V110 ? 0xeb8c14ull : 0xe7a954ull)
 #define NVN_RET (RT_V143 ? 0xbe0360ull : RT_V110 ? 0xebcdecull : 0xe7eb2cull)
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
+#define CTOR_WAITING 1                   // after a DT_INIT that musl deferred (sdk's, called before main's)
 
 // The init_array sizes (1.1.0 and 1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); MacNativeGames' boot check
 // expects the same. The three tables carry the same rows, so cb_module_inits walks them by the size of one.
@@ -40,6 +41,7 @@ static const InitCount inits_143[] = {{"main", 10717}, {"subsdk0", 45}, {"sdk", 
 #define expected_inits (RT_V143 ? inits_143 : RT_V110 ? inits_110 : inits_121)
 
 static volatile int32_t inits_done, checkpoint_seen;
+static int sdk_first;   // a mod plugin ran: sdk's DT_INIT came first (cb_module_inits)
 uint64_t rt_guest_start_ns;
 
 static const RtLoaded *module_named(const char *name) {
@@ -77,15 +79,28 @@ static void cb_loader_ready(Cpu *c) {
 // afterwards (MacNativeGames loader.c:458-462).
 static void cb_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
+    if (rt_config()->plugin_init) plugin_init_run(c, module_named("sdk"));   // the plugin service run ends there
+    // A mod plugin's init runs after sdk's and before the game's (plugin_init.c plugins_start): sdk's DT_INIT then
+    // comes first, as on the Switch; without a plugin the order stays main, subsdk0, sdk. Called first, sdk's DT_INIT
+    // only registers sdk with its own musl (__nnmusl_init_dso returns 1: deferred), and main's DT_INIT then finishes
+    // sdk from musl's list of waiting modules (the log shows sdk's RELRO protected and 44 pages of sdk's data written
+    // during it on 1.4.3): sdk's flag stays 1 and its DT_INIT is not called again (a second call would protect its
+    // locked RELRO again, and the SDK aborts).
+    sdk_first = plugins_start(c, module_named("sdk"));
     for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) {
         const RtLoaded *m = module_named(expected_inits[k].name);
         uint64_t entries = m->init_array_size / 8;
         if (!m->init) rt_fatal("boot: %s has no DT_INIT", m->name);
-        rt_log("boot: ENTER %s DT_INIT (%llu init_array entries)", m->name, (unsigned long long)entries);
-        rt_call(c, m->init, 0);
+        int deferred = sdk_first && m == module_named("sdk");
+        if (!deferred) {
+            rt_log("boot: ENTER %s DT_INIT (%llu init_array entries)", m->name, (unsigned long long)entries);
+            rt_call(c, m->init, 0);
+        }
         uint32_t state = ctor_state(m);
         rt_logf("boot: DT_INIT %s state=%u (%llu)\n", m->name, state, (unsigned long long)entries);
-        if (state != CTOR_DONE) rt_fatal("boot: %s DT_INIT left its constructor flag at %u, not 2", m->name, state);
+        if (state != (deferred ? CTOR_WAITING : CTOR_DONE))
+            rt_fatal("boot: %s DT_INIT left its constructor flag at %u, not %d", m->name, state,
+                     deferred ? CTOR_WAITING : CTOR_DONE);
         if (entries != expected_inits[k].entries)
             rt_fatal("boot: %s has %llu init_array entries, this game version has %llu", m->name, (unsigned long long)entries,
                      (unsigned long long)expected_inits[k].entries);
@@ -118,8 +133,9 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
             rt_fatal("boot: checkpoint %s reached from %s, expected main+%#llx", detail, at,
                      (unsigned long long)CHECKPOINT_RET);
         if (!plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: checkpoint %s before DT_INIT", detail);
-        for (int i = 0; i < ldr_count(); i++)
-            if (ctor_state(ldr_module(i)) != CTOR_DONE)
+        for (int i = 0; i < ldr_count(); i++)   // a plugin's init does not run at play time (plugin_init.c)
+            if (!ldr_module(i)->plugin && ctor_state(ldr_module(i)) != CTOR_DONE &&
+                !(sdk_first && !strcmp(ldr_module(i)->name, "sdk") && ctor_state(ldr_module(i)) == CTOR_WAITING))
                 rt_fatal("boot: checkpoint %s: %s constructor flag reads %u", detail, ldr_module(i)->name,
                          ctor_state(ldr_module(i)));
         plat_xchg32(&checkpoint_seen, 1);
@@ -341,11 +357,29 @@ static void prewarm_main(void *arg) {
     return;
 }
 
+// --plugin-init DIR: the modules load and nn::init::Start runs as at boot, and its module-init callback runs sdk's
+// DT_INIT and each plugin's instead of the game's constructors, writes the record and exits (plugin_init.c). No game
+// constructor, nnMain, shader prewarm, graphics or audio runs.
+void rt_boot_plugin_init(void) {
+    check_npdm();
+    plugin_init_setup();
+    ldr_load(rt_config()->exefs);
+    rt_patches_init();   // the generated code reads the patch page
+    cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
+    cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
+    cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
+    hostfn_seal();
+    rt_guest_start_ns = kern_now_ns();
+    kern_run_on_guest_main(guest_main);
+    rt_fatal("boot: the guest main thread ended");
+}
+
 void rt_boot(void) {
     check_npdm();
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
     // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits for them.
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
+    plugins_setup();   // a mod plugin's environment (plugin_init.c), before its imports bind
     ldr_load(rt_config()->exefs);
     rt_patches_init();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on

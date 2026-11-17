@@ -383,6 +383,60 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(self.outputs(), [False, False])
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
+    def plugin_setup(self, kind):
+        """A mod with an exlaunch plugin; the fake service run writes its status line of that kind."""
+        plugin = self.dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9'
+        plugin.write_bytes(b'NSO0')
+        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja',
+                                          deps=None, sysroot=None, runtime_lib_for=lambda cpu: None,
+                                          pgo=lambda version: None, expected=lambda version: 'expected.json')
+        saved = self.run_tool
+
+        def run_tool(ctx, step, script, args, parse=None, cwd=None):
+            code, log = saved(ctx, step, script, args, parse, cwd)
+            args = [str(a) for a in args]
+            if Path(script).name == 'exefs_plugins.py':
+                Path(args[args.index('--patches-out') + 1]).write_text('patches\n')
+                status = Path(args[args.index('--status') + 1])
+                status.parent.mkdir(parents=True, exist_ok=True)
+                h = 0x811C9DC5   # FNV-1a 32 of "SQ/exefs/subsdk9", as tools/exefs_plugins.py keys it
+                for b in b'SQ/exefs/subsdk9':
+                    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+                status.write_text(f'{h:08X}\t00000000\t{kind}\t-\tnote\n')
+                return (1 if kind == 'unsupported' else 0), log
+            return code, log
+        steps.run_tool = run_tool
+        return plugin
+
+    def test_plugin_stage(self):
+        # the lift with the plugin, a totk.exe of it, the service run, then the lift with its hook sites
+        plugin = self.plugin_setup('plugin')
+        steps.Lift().run(self.ctx)
+        self.assertEqual([c[0] for c in self.calls], ['exefs_patches.py', 'gen.py', 'build_game.py',
+                                                      'exefs_plugins.py', 'gen.py', 'exefs_patches.py --folded'])
+        first, last = self.calls[1][1], self.calls[4][1]
+        self.assertEqual(first[first.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--patches') + 1], str(self.ctx.temp / 'patches-plugins.txt'))
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+
+    def test_refused_plugin_is_not_lifted(self):
+        # a refused plugin: its status line stays (the Mods tab says why), the game is lifted without it
+        self.plugin_setup('unsupported')
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        self.assertNotIn('--plugins', last)
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_failed_plugin_build_warns(self):
+        self.plugin_setup('plugin')
+        self.fail = {'build_game.py'}
+        steps.Lift().run(self.ctx)
+        self.assertNotIn('--plugins', self.calls[-2][1])
+        self.assertFalse(steps.plugins_status(self.ctx).is_file())
+        self.assertIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
 
 class CompileLockedTest(unittest.TestCase):
     """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
