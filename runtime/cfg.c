@@ -83,7 +83,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
+    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
@@ -110,7 +110,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_RELEASED_MIB", "performance"}, {"TEX_BLOCK_MIB", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"MEMX", "performance"}, {"BIND_INC", "performance"}, {"TEX_MEMO", "performance"}, {"VB_USED", "performance"}, {"DESC_TEMPLATE", "performance"},
-    {"SYNC_AHEAD", "performance"}, {"DLAA_EFFECTS_AFTER", "performance"}, {"SHADOW_DEFER", "performance"}, {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+    {"SYNC_AHEAD", "performance"}, {"SHADOW_DEFER", "performance"}, {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
     {"OPTREF_GUARD", "performance"}, {"ABILITY_GUARD", "performance"}, {"REPORT_GUARD", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"ADDR_REPORT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
@@ -139,7 +139,7 @@ static const CfgMeta metas[] = {
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"DLSS_PRESET", "default", "default|k|j", LIVE},
+    {"DLSS_PRESET", "default", "default|k|j", LIVE}, {"DLAA_EFFECTS_AFTER", "1", "0|1", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"MOVIE_ASPECT", "keep", "keep|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
@@ -220,7 +220,6 @@ static const CfgMeta metas[] = {
     {"OPTREF_GUARD", "1", "0|1", RESTART}, {"ABILITY_GUARD", "1", "0|1", RESTART}, {"REPORT_GUARD", "1", "0|1", RESTART},
     // render fixes
     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
-    {"DLAA_EFFECTS_AFTER", "1", "0|1", LIVE},
     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"MEMX", "1", "0|1|check", RESTART}, {"BIND_INC", "0", "0|1|check", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
     {"VB_USED", "1", "0|1", RESTART},
     {"DESC_TEMPLATE", "1", "0|1", RESTART},

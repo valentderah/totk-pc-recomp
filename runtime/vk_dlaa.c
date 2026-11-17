@@ -267,7 +267,7 @@ static struct {
     VkImage glight;              // this frame: the light target among the G-buffer's targets (gbuf_light)
     VkExecTarget glight_z;       // that G-buffer's depth, the scene depth
     VkImage light_z;             // this frame: the D16 depth the lighting draws into the light target with
-    int fx_on;                   // dlaa_effects_after, read at each present
+    int fx_on;                   // dlaa_effects_after, read at each present while DLSS runs
     int fx_seen, fx_open, fx_bad;   // this frame: the point found / the scene not ended since / drawn on after it
     uint32_t fx_steady;          // DLSS frames in a row with the point found and nothing of the scene after it
     // jitter (vk_dlaa_viewport)
@@ -1168,7 +1168,7 @@ static void gbuf_light(const VkExec *ex) {
 // (fx_watch: a G-buffer pass, or the lighting's depth into the light target again, up to the bloom): a frame that
 // breaks it puts DLSS back at the bloom until it holds again, so a frame the rule does not fit changes the picture at
 // most once a second instead of from frame to frame.
-// dlaa_effects_after = 0 (the Advanced tab, read each frame): DLSS at the bloom, effects included.
+// dlaa_effects_after = 0 (the Screen tab, read each frame): DLSS at the bloom, effects included.
 #define FX_STEADY 60u
 
 static int effects_point(const VkExec *ex) {
@@ -1347,7 +1347,6 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    D.fx_on = cfg_bool("TOTK_DLAA_EFFECTS_AFTER");
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
@@ -1360,6 +1359,7 @@ void vk_dlaa_frame(void) {
         return;
     }
     if (!dl_active()) return;
+    D.fx_on = cfg_bool("TOTK_DLAA_EFFECTS_AFTER");
     if (!D.done) D.frames_missed++;
     else D.fx_steady = D.fx_seen ? D.fx_steady + (D.fx_steady < FX_STEADY) : 0;
     D.fx_seen = D.fx_open = D.fx_bad = 0;

@@ -134,11 +134,6 @@
 # fix_c0 = 1
 # New GPU memory pools start zero-filled, as Switch memory does.
 # fix_zero = 1
-# With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
-# as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
-# processes these effects too, as before. The upscaling DLSS modes always process them. Changes while the game runs
-# take effect at once.
-# dlaa_effects_after = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
 # skip push constants that did not change, bind only the vertex buffers a draw reads, compare and copy each draw's
@@ -302,6 +297,11 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
+# as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
+# processes these effects too, as before. The upscaling DLSS modes always process them. Changes while the game runs
+# take effect at once.
+# dlaa_effects_after = 1
 # NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
 # Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
 # reflex = off
