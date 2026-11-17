@@ -86,12 +86,26 @@ static uint8_t *read_path_verified(const char *path, const char *want, size_t *l
     return p;
 }
 
+// Mod plugins of the layout whose file is gone (their mod was removed): a rebuild without them is due (cheats.c
+// rebuild_if_needed), keyed by their paths.
+static int plugins_gone;
+static uint32_t plugins_gone_key = 0x811C9DC5u;
+
+int ldr_plugins_gone(uint32_t *key) {
+    if (plugins_gone) *key = (*key ^ plugins_gone_key) * 0x01000193u;
+    return plugins_gone;
+}
+
 // 1 when the plugin file of lay is the one the build lifted; logged when not.
 static int plugin_file_ok(const RtLayoutEntry *lay) {
     size_t len;
     uint8_t *p = read_file(lay->file, &len);
     if (!p) {
         rt_log("loader: %s: cannot read %s; the plugin is left out", lay->name, lay->file);
+        if (!plat_file_exists(lay->file)) {
+            plugins_gone++;
+            for (const char *c = lay->file; *c; c++) plugins_gone_key = (plugins_gone_key ^ (uint8_t)*c) * 0x01000193u;
+        }
         return 0;
     }
     uint8_t d[32];
