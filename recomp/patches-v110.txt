@@ -103,6 +103,11 @@ set pooloff  TOTK_POOL_OFFSET_PATCH 1
 site pooloff main 9b93a8 93407f22 2a1903e2
 site pooloff main 9b93c4 8b39c101 8b394101
 
+# Fixed scene tier: the 1.1.0 controller (main+0xce8d74, 1.2.1 main+0xcc26f4) returns its scale through w23 in
+# the shared epilogue. res_dynres_live enables this set when dynamic_res is off, preserving the configured render_scale.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main ce9280 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
 # Sun shadow map: the size rounded here is used for width (+0x3d8), height (+0x3f8) and viewport together.
 # runtime/resolution.c shadow_init supplies the fixed size at page +92; the default remains the game's size.
 site shadow main d0760c 11001d6b @page:x11 b9405d6b 11001d6b

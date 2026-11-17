@@ -648,7 +648,7 @@ void res_fov_live(void) {
     rt_log("resolution: field of view %d%% of the game's", pct);
 }
 
-// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and patches-v143.txt,
+// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (patches-v110.txt, patches-v121.txt and patches-v143.txt,
 // set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90 or 80 %) mostly
 // from a fixed cost model made for the Switch: one term grows with the object counts, one with (scene width / 1600)
 // squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers that prediction when the
