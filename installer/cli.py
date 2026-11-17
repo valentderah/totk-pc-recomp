@@ -12,7 +12,6 @@ line, 3 cancelled (Ctrl+C or Ctrl+Break).
 Windows with an NVIDIA RTX GPU (steps.py, Dlss).
 """
 import argparse
-import hashlib
 import signal
 import sys
 import time
@@ -22,7 +21,7 @@ from . import layout as layouts
 from . import state as statefile
 from .events import Reporter
 from .runner import Context, run_steps
-from .steps import all_steps, migrate_state
+from .steps import adopt_old_temp, all_steps, migrate_state
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -31,17 +30,6 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         Reporter().error('cli.usage', {'detail': message})
         sys.exit(2)
-
-
-# The temp folder inside the install folder when the layout names none (the Linux release); the check step does not
-# count it when it requires an empty install folder
-TEMP_IN_DEST = '.setup-temp'
-
-
-def temp_folder(base, dest):
-    """One temp folder per install folder, so two installs never share generated files."""
-    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]
-    return base / f'{dest.name or "root"}-{tag}'
 
 
 def cancel(signum, frame):
@@ -58,8 +46,8 @@ def main(argv=None):
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, ru, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--root', type=Path, help='release folder or repository (default: the folder above installer/)')
-    ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
-                                              'the install folder on Linux, build/install-temp in a repository)')
+    ap.add_argument('--temp', type=Path, help='temp folder (default: build-cache/work in the install folder on Windows, '
+                                              '.setup-temp there on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
@@ -72,10 +60,12 @@ def main(argv=None):
             signal.signal(getattr(signal, name), cancel)
     layout = layouts.find(args.root)
     dest = args.dest.resolve()
-    base = args.temp or layout.temp
-    temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
+    temp = layouts.temp_for(layout, dest, args.temp)
+    adopted = adopt_old_temp(layout, dest, temp)
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
     rep = Reporter(log_path=log)
+    if adopted:
+        rep.log(adopted)
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)

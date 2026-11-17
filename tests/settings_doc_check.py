@@ -45,6 +45,18 @@ def main():
     problems = [f'{name}: in runtime/cfg.c known[], described in neither totk.ini.example nor docs/settings.md'
                 for name in sorted(known - in_example - in_doc)]
     problems += [f'{name}: in docs/settings.md, not in runtime/cfg.c known[]' for name in sorted(in_doc - known)]
+    # cfg_value and the cfg_int/cfg_double/cfg_bool over it stop the game when the key is unset and metas[] has no row;
+    # a line that tests cfg_get of the same key first reads it only when it is set
+    metas = set(re.findall(r'\{"([A-Z0-9_]+)", "[^"]*", (?:"[^"]*"|NULL)', cfg))
+    unsafe = set()
+    for path in sorted((ROOT / 'runtime').rglob('*')):
+        if path.suffix in ('.c', '.cpp', '.h'):
+            for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                for name in re.findall(r'\bcfg_(?:value|int|double|bool)\("TOTK_([A-Z0-9_]+)"\)', line):
+                    if name not in metas and f'cfg_get("TOTK_{name}")' not in line:
+                        unsafe.add((name, path.relative_to(ROOT).as_posix()))
+    problems += [f'{name}: {where} reads it through cfg_value, runtime/cfg.c metas[] has no row: the game stops '
+                 f'when it is unset' for name, where in sorted(unsafe)]
     defaults = code_defaults(cfg)
     for name, written, _ in rows:
         code = defaults.get(name.upper())

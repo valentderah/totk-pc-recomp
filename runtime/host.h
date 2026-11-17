@@ -25,7 +25,9 @@ void rt_log_raw(const char *p, size_t n);
 const char *rt_log_path(void);                  // the log file, NULL when this run writes none
 enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
-       RT_TRACE_HOSTCOUNT = 512 };   // no TOTK_TRACE name of its own: hostfn_count switches it (host.h)
+       RT_TRACE_HOSTCOUNT = 512,     // no TOTK_TRACE name of its own: hostfn_count switches it (host.h)
+       RT_TRACE_PLUGIN = 1024 };     // no name either: the plugin service run (plugin_init.c) sees every SVC through
+                                     // rt_plugin_svc while it runs a plugin's init
 extern unsigned rt_trace;                       // from TOTK_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
 // prof_win.c: TOTK_PROFILE=<path> sampling profiler; TOTK_TRACE=perf frame timing (waits of the render thread)
 // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
@@ -150,6 +152,7 @@ uint32_t mem_set_attribute(uint64_t a, uint64_t n, uint32_t mask, uint32_t at); 
 uint32_t mem_map(uint64_t dst, uint64_t src, uint64_t n);                       // 0x04
 uint32_t mem_unmap(uint64_t dst, uint64_t src, uint64_t n);                     // 0x05
 uint32_t mem_query(uint64_t a, RtMemoryInfo *out);                              // 0x06
+extern void (*mem_query_hook)(uint64_t a, RtMemoryInfo *r);   // plugin service run only: adjusts mem_query's answer
 uint32_t mem_map_physical(uint64_t a, uint64_t n);                              // 0x2C
 uint32_t mem_unmap_physical(uint64_t a, uint64_t n);                            // 0x2D
 int mem_info(uint32_t id, uint64_t *out);                  // GetInfo memory ids 2-7, 12-17, 21, 22, 28; 0 if not a memory id
@@ -199,13 +202,24 @@ int rt_oom_forced_left(int site);                          // forced failures st
 typedef struct {
     const char *name; uint64_t base, size, text_end, data_off;   // text_end, data_off: offsets from base
     uint64_t init, init_array, init_array_size, ctor_flag;  // absolute guest addresses; init_array_size in bytes
+    int plugin;                                             // a mod's code module (layout plugin<N>), not a game module
 } RtLoaded;
 void ldr_load(const char *exefs_dir);                      // load, relocate (overrides applied), seal; once
+extern GuestFn ldr_plugin_import;                          // set before ldr_load (plugin_init.c): every JUMP_SLOT
+                                                           // import of a plugin binds to this observer
+// The module tables of the runtime library: it is built once per release (tools/build_game.py --make-runtime-lib),
+// before an install's layout (recomp/layout.py) adds its mod plugins after sdk, so they do not use that MOD_COUNT.
+#define RT_MAX_MODULES 32
 int ldr_count(void);
+int ldr_plugins_gone(uint32_t *key);                       // layout plugins whose file is gone; mixes their paths into key
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none
 const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address
+uint64_t ldr_nso_size(const char *dir, const char *file);   // image size of an ExeFS NSO (SHA-256 checked)
+void ldr_map_image(const char *dir, const char *file, uint64_t base, uint64_t *text_end, uint64_t *data_off);
+                                                           // its segments at base (reserved by the caller), not
+                                                           // linked: the plugin service run's rtld (plugin_init.c)
 uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len);   // whole file, SHA-256 checked against
                                                            // modules.c (fatal on mismatch); free() it
 
@@ -358,13 +372,27 @@ int rt_knob(const char *name, const char *def);
 void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
                                                            // present interval (60 Hz ticks)
 // ---- boot (boot.c, main.c)
-typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; const char *shot, *gpu; } RtConfig;
+typedef struct {
+    const char *exefs, *romfs, *profile;
+    int boot;
+    double seconds;
+    const char *shot, *gpu;
+    const char *plugin_init;   // --plugin-init DIR: the plugin service run writes its record there (plugin_init.c)
+} RtConfig;
                                                            // romfs: directory with romfs.bin and index.json;
                                                            // frames: --frames N (0 = no limit); shot: --shot
                                                            // PATH; gpu: TOTK_GPU
 const RtConfig *rt_config(void);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
 void rt_boot(void);                                        // boot.c
+void rt_boot_plugin_init(void);                            // boot.c: --plugin-init, the plugin service run
+void plugin_init_setup(void);                              // plugin_init.c: before ldr_load
+void plugin_init_run(Cpu *c, const RtLoaded *sdk);         // plugin_init.c: from the module-init callback; exits
+void plugins_setup(void);                                  // plugin_init.c: rt_boot, before ldr_load; nothing
+                                                           // without a plugin in the build
+int plugins_start(Cpu *c, const RtLoaded *sdk);            // plugin_init.c: from the module-init callback, before
+                                                           // the game's constructors; 1 when it ran sdk's DT_INIT
+                                                           // (a plugin's init ran after it)
 // Modes of totk.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.

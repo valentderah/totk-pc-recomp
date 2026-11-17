@@ -1146,7 +1146,8 @@ int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { ret
 // The setup writes the shaped folders for the displays connected when it ran (installer/steps.py Shapes). After a
 // monitor change the menu can start the same generator for the shape of the game resolution: the setup's Python and
 // tools/make_romfs_patches.py, which build-cache/rebuild.txt names (installer/steps.py write_rebuild_command: line 1 the
-// Python, pythonw on Windows, so no console opens; line 4 the setup's folder), on the install folder's romfs/. Child
+// Python, pythonw on Windows, so no console opens; line 4 the setup's folder; both relative to the install folder for
+// the build kit, installer/layout.py), on the install folder's romfs/. Child
 // processes the game does not wait for: the generator writes manifest.tsv last, so a folder it has not finished is not
 // taken, and the next start loads the finished one.
 static int prepare_tools(char *python, size_t pcap, char *script, size_t scap, char *dir, size_t dcap) {
@@ -1166,8 +1167,12 @@ static int prepare_tools(char *python, size_t pcap, char *script, size_t scap, c
         lines[k++] = p;
         p = e + 1;
     }
-    int ok = k >= 4 && !strcmp(lines[1], "-c") && snprintf(python, pcap, "%s", lines[0]) < (int)pcap &&
-             snprintf(script, scap, "%s/tools/make_romfs_patches.py", lines[3]) < (int)scap;
+    int ok = k >= 4 && !strcmp(lines[1], "-c");
+    if (ok) {   // the build kit's lines are relative to the install folder
+        const char *at0 = plat_path_absolute(lines[0]) ? "" : dir, *at3 = plat_path_absolute(lines[3]) ? "" : dir;
+        ok = snprintf(python, pcap, "%s%s%s", at0, *at0 ? "/" : "", lines[0]) < (int)pcap &&
+             snprintf(script, scap, "%s%s%s/tools/make_romfs_patches.py", at3, *at3 ? "/" : "", lines[3]) < (int)scap;
+    }
     free(text);
     snprintf(path, sizeof path, "%s/romfs/romfs.bin", dir);
     return ok && plat_file_exists(python) && plat_file_exists(script) && plat_file_exists(path);

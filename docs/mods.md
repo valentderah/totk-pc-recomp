@@ -49,8 +49,8 @@ named ones.
 
 ### Mods with code the port cannot run
 
-Some mods bring code the port cannot run: their own Switch code (a subsdk plugin or a replaced main, as UltraCam ships)
-or a code patch in a form the port cannot apply. Such a mod stays off as a whole, because its other files may expect
+Some mods bring code the port cannot run: their own Switch code (a replaced main, or a subsdk plugin the rebuild
+refused, as it refuses UltraCam's) or a code patch in a form the port cannot apply. Such a mod stays off as a whole, because its other files may expect
 that code. Under its row the Mods tab then shows **Use <mod> without its code** (off by default). Switched on, the code
 the port cannot run is left out and the rest of the mod loads after a restart: its game files, cheats and the code
 patches that work. The mod's row says which part is left out and why. If the game misbehaves with it, switch it off
@@ -80,9 +80,11 @@ ahead of time, so these patches are built into `totk.exe`:
 2. Until the rebuild succeeds, the whole mod stays off, its other files included.
 3. After the rebuild the mod switches on and off from the Mods tab like any other, without another rebuild.
 
-The rebuild needs the setup folder the game was installed from. When that folder was moved or deleted, run
-`TotK-Setup.exe` again on the same install folder: it does the same job. `mods_rebuild = off` under `[mods]` in
-`totk.ini` turns the automatic rebuild off.
+The rebuild runs from `build-kit` in the game folder, which the setup put there: the setup folder can be deleted
+and the game folder moved. After a move, a game with a code plugin mod rebuilds once at its next start. A game
+installed by an older setup (no `build-kit` in its folder) still rebuilds from that setup folder until a newer
+setup runs once on it.
+`mods_rebuild = off` under `[mods]` in `totk.ini` turns the automatic rebuild off.
 
 A code patch over one of the port's own patches (the 60 FPS patch, the resolution patch and the other entries under
 **Built into the port**) turns that built-in patch off while the mod is on. The mod's row names it.
@@ -95,6 +97,41 @@ name order, each over the one before. A cheat that changes the same instruction 
 A patch file may also change the game's data (constants and tables in its `.rodata` and `.data`). Those bytes are
 stored into the loaded game at start, before it runs. When two mods write the same bytes, the higher one wins,
 as with files.
+
+## Code plugins (exefs subsdk)
+
+Some mods ship their own Switch code as an exlaunch plugin: a file `exefs\subsdk<N>` (The Second Quest's MSFix, Full
+Inventory Expansion's sort fixer, Quick Weapon Durability). On the Switch the plugin starts with the game and
+redirects some of the game's instructions into its own code. The port does the same with the plugin's code compiled
+ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc-recomp/issues/845) by itaskaev2:
+
+1. The rebuild (the same one as for code patches above) compiles the plugins with the game, then starts the game's
+   code in a service mode that runs only one plugin's start-up (`totk.exe --plugin-init`), twice per plugin, and
+   records which instructions it redirects. Each redirect becomes a code site of the mod, built into `totk.exe`. Each
+   plugin is judged on its own: one that is refused, or whose start-up crashes or never returns, stays off with its
+   reason, and the other plugins are built in.
+2. At every start each plugin's start-up runs again, before the game's own start-up code, in the same setting: it
+   sees the game's own instructions, as in its service run. Its redirects are compared with the record of the
+   rebuild. When they match, the mod's code sites go on. When they do not, the plugin stays off for this run, the
+   mod's row says why, and the next start runs the rebuild.
+3. The plugin keeps what its start-up made (its memory, its tables), so its code works as on the Switch. The start
+   costs about 50 ms per plugin; the game runs no differently without a plugin.
+4. Removing a plugin mod from the mods folder starts the rebuild at the next start, which builds the game without
+   it (half a minute on 12 cores with the lift cache). A plugin mod switched off on the Mods tab only stays off.
+
+The Mods tab order decides between a plugin and another mod's patch on the same instruction, as for code patches. A
+plugin site over one of the port's own patches turns that built-in patch off while the mod is on.
+
+The rebuild refuses a plugin when its start-up or the code its redirects reach needs what the port does not give it:
+system calls other than the few its start-up needs (memory queries and maps, the clock, debug output), library calls
+outside a reviewed list (memory and string functions, the heap, text formatting), threads, services or input; a
+redirect that is not one of exlaunch's hook shapes (inline hook, replace hook, call-site rewrite); or two runs of its
+start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes. The
+row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without its
+code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
+reads input and opens sockets.
+
+`plugin_trace = 1` in `totk.ini` logs the first call into each of a plugin's hooks (`plugins: hook entry ... reached`).
 
 ## Cheats
 
@@ -134,7 +171,9 @@ keeps its textures at a quarter of the size.
 | This folder has no romfs, exefs or cheats files. | The archive was unpacked one level too deep (`mods\Mod\Mod\romfs`), or it holds no game files. | Move the folders up so `romfs` sits directly in the mod's folder. |
 | ... files carry another game version in their names. | The files are named for another update (`.Product.<number>.`) and the game's own files have no such name. They are still served under those names, as on a console, because the game sometimes asks for one; another update's resource size table is the exception and only lends its entries. | Nothing if the mod works. If it does nothing, download its release for your game update. |
 | Its code patches (exefs) are made for another game version. | The patch files name another update's build id. | Same: get the release for your update. |
-| This mod brings its own game code (a subsdk plugin or a replaced main). | Mods such as UltraCam ship compiled Switch code. The port cannot load it. | The whole mod stays off. **Use <mod> without its code** under its row uses the rest of it, which may expect the missing code (see Mods with code the port cannot run). |
+| This mod brings its own game code (a subsdk plugin or a replaced main). | The mod replaces the game's main code, which the port cannot load. | The whole mod stays off. **Use <mod> without its code** under its row uses the rest of it, which may expect the missing code (see Mods with code the port cannot run). |
+| Its plugin ... cannot run in the port: ... | The rebuild refused the mod's code plugin; the reason follows (see Code plugins). | The whole mod stays off. **Use <mod> without its code** under its row uses the rest of it. |
+| Its plugin stays off this time: it started differently from the build. | The plugin redirected other instructions at this start than in the rebuild, for example after the mod was updated in place. | Nothing: the next start runs the rebuild. |
 | This mod patches the game code (exefs) in a way the port cannot apply. | The patch changes code in a form the port cannot build, or bytes the port cannot change at start. The reason follows on the row. | The whole mod stays off. **Use <mod> without its code** under its row leaves that patch file out and uses the rest of the mod. |
 | The folder name contains \|. | The mod list uses `\|` between names. | Rename the folder. |
 

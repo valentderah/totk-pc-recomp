@@ -111,6 +111,15 @@ of them.
    $env:SCCACHE = "path\to\sccache.exe"
    .venv\Scripts\python tools\build_game.py --version <ver>
    ```
+
+   A build into another `--out` (a task build, or a private lift of a patch change with `--gen generated\<ver>-<tag>`)
+   hardlinks the objects of the main build `build\<ver>` and compiles only `runtime/` and the generated files whose
+   compile differs. An object is reused when the main `build.ninja` has the same compiler, flags and rule, the main
+   build is up to date, and every file its compile read according to the main Ninja deps log (the `.c`, the `runtime/`
+   and generated headers, the system headers) has the same bytes in this build's trees and has not changed since the
+   object was written, and neither has the compiler. A lift that changes one patch site then compiles one or two chunks
+   instead of all of them. The build prints `reused N of M generated objects`; `--verbose` lists the others with the
+   reason, and `--full-build` compiles everything.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
    For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:

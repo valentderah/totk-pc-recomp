@@ -92,6 +92,10 @@ typedef enum {
     UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
     UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
     UI_MENU_MODS_CODE_SKIPPED,       // printf: its code modules in exefs, which do not load (used without its code)
+    UI_MENU_MODS_PLUGIN_ON,          // printf: the hooks of its plugin (runtime/plugin_init.c) that run
+    UI_MENU_MODS_PLUGIN_REFUSED,     // printf: its plugin file, why the build refused it (English, from the tool)
+    UI_MENU_MODS_PLUGIN_STAYS_OFF,   // after UI_MENU_MODS_PLUGIN_REFUSED when the whole mod stays off
+    UI_MENU_MODS_PLUGIN_OFF,         // printf: why its plugin's start differed from the build (English)
     UI_MENU_MODS_WITHOUT_CODE,       // printf: the mod's name; its switch "use without its code" (TOTK_MODS_NO_CODE)
     UI_MENU_MODS_WITHOUT_CODE_DESC,
     UI_MENU_MODS_WITHOUT_CODE_ALL,   // why that switch cannot be changed: TOTK_MODS_WITHOUT_CODE=1

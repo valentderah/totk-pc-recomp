@@ -26,9 +26,14 @@
 // .bss) are lines of build-cache/exefs.data, stored into the loaded main before the game runs (mods_exefs_data), as
 // emulators apply a patch file to the module before its dynamic linker runs.
 //
-// Code modules: an exefs/subsdk* file is a plugin that patches main from its own start-up on the Switch, and a replaced
-// exefs/main is another game code; the port cannot load either (ModInfo.code names them): their mod stays off unless
-// it is used without its code, which also leaves out the ExeFS patch files the port cannot apply.
+// Code modules: an exefs/subsdk* file is a plugin that patches main from its own start-up on the Switch (exlaunch).
+// The setup builds it in (tools/exefs_plugins.py, after the design in #845 by itaskaev2) and writes its line into
+// build-cache/plugins.status (the format of exefs.status): `plugin`, its patch set mod_<hash> holds its hook sites and
+// its init runs at every start (plugin_init.c); `unsupported`, the note says why the build refused it. A plugin without
+// a line waits for the rebuild like an ExeFS patch file; one whose start differed from the build is listed in
+// build-cache/plugins.stale (mods_plugin_off) and waits for it too. A replaced exefs/main is another game code the port
+// cannot load. A code module the port cannot run (ModInfo.code names them) keeps its mod off unless it is used without
+// its code, which also leaves out the ExeFS patch files the port cannot apply.
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +97,8 @@ static void code_unrun(ModInfo *m, const char *name) {
     snprintf(m->code + k, sizeof m->code - k, "%s%s", k ? ", " : "", name);
 }
 
+static void plugin_file(ModInfo *m, const char *leaf);
+
 // What the ExeFS folder holds: MOD_EXEFS for patches (.ips, .pchtxt), MOD_SUBSDK for code modules (subsdk* plugins, a
 // replaced main). main.npdm alone is the process's metadata, not code: it counts as neither.
 static int exefs_cb(const char *name, int kind, uint64_t size, void *ctx) {
@@ -100,7 +107,10 @@ static int exefs_cb(const char *name, int kind, uint64_t size, void *ctx) {
     if (kind != PLAT_FS_FILE) return 1;
     if (ends_with_ci(name, ".ips") || ends_with_ci(name, ".pchtxt")) {
         m->kind |= MOD_EXEFS;
-    } else if (!strncasecmp(name, "subsdk", 6) || !strcasecmp(name, "main")) {
+    } else if (!strncasecmp(name, "subsdk", 6)) {
+        m->kind |= MOD_SUBSDK;
+        plugin_file(m, name);
+    } else if (!strcasecmp(name, "main")) {
         m->kind |= MOD_SUBSDK;
         code_unrun(m, name);
     }
@@ -202,6 +212,7 @@ static int same_build(const char *hex, size_t n) {
 
 // build-cache/<name> next to totk.exe, read once into *text; "" when there is none (mods_probe_cache sets the text).
 static char *status_text, *data_text;
+static int no_stale_file;   // --probe-mods: plugins.stale stays in memory
 static const char *build_cache(const char *name, char **text) {
     if (*text) return *text;
     char path[2100];
@@ -217,14 +228,17 @@ static const char *build_cache(const char *name, char **text) {
     return *text;
 }
 
+static char *plugin_status_text, *plugin_stale_text;
 static const char *exefs_status(void) { return build_cache("exefs.status", &status_text); }
 static const char *exefs_data(void) { return build_cache("exefs.data", &data_text); }
+static const char *plugin_status(void) { return build_cache("plugins.status", &plugin_status_text); }
+static const char *plugin_stale(void) { return build_cache("plugins.stale", &plugin_stale_text); }
 
-// The status line of key: its kind, built-in sets and note, NUL-terminated copies; 0 when none.
-static int status_line(const char *key, const char *content, char *kind, char *over, char *note) {
+// The line of key in a status text: its kind, built-in sets and note, NUL-terminated copies; 0 when none.
+static int status_in(const char *text, const char *key, const char *content, char *kind, char *over, char *note) {
     char want[20];
     snprintf(want, sizeof want, "%s\t%s\t", key, content);
-    for (const char *line = exefs_status(); *line;) {
+    for (const char *line = text; *line;) {
         const char *end = strchr(line, '\n');
         size_t len = end ? (size_t)(end - line) : strlen(line);
         if (len > 18 && !memcmp(line, want, 18)) {
@@ -244,6 +258,69 @@ static int status_line(const char *key, const char *content, char *kind, char *o
         line = end ? end + 1 : line + len;
     }
     return 0;
+}
+
+static int status_line(const char *key, const char *content, char *kind, char *over, char *note) {
+    return status_in(exefs_status(), key, content, kind, over, note);
+}
+
+// The reason plugins.stale gives for key and content, or NULL.
+static const char *stale_reason(const char *key, const char *content, char *out, size_t cap) {
+    char want[20];
+    snprintf(want, sizeof want, "%s\t%s\t", key, content);
+    for (const char *line = plugin_stale(); *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len > 18 && !memcmp(line, want, 18)) {
+            size_t n = len - 18;
+            if (n && line[len - 1] == '\r') n--;
+            snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), line + 18);
+            return out;
+        }
+        line = end ? end + 1 : line + len;
+    }
+    return NULL;
+}
+
+// One exefs/subsdk* file of m: a built plugin joins its patch sets, a refused one is code it cannot run, one the build
+// lacks (or whose start differed from the build) waits for the rebuild.
+static void plugin_file(ModInfo *m, const char *leaf) {
+    char path[4300], rel[600];
+    snprintf(path, sizeof path, "%s/%s", m->exefs, leaf);
+    size_t root = strlen(dir) + 1 + strlen(m->name) + 1;   // m->exefs is <dir>/<mod>/<exefs place>
+    snprintf(rel, sizeof rel, "%s/%s/%s", m->name, strlen(m->exefs) > root ? m->exefs + root : "exefs", leaf);
+    uint64_t n = 0;
+    char *data = (char *)plat_file_read(path, &n);
+    if (!data) {
+        rt_log("mods: %s: cannot read %s", m->name, path);
+        code_unrun(m, leaf);
+        return;
+    }
+    char key[9], content[9], kind[16], over[256], note[256], stale[256];
+    snprintf(key, sizeof key, "%08X", fnv(rel, strlen(rel)));
+    snprintf(content, sizeof content, "%08X", fnv(data, (size_t)n));
+    free(data);
+    if (!status_in(plugin_status(), key, content, kind, over, note) || stale_reason(key, content, stale, sizeof stale)) {
+        m->pending++;
+        m->pending_key = (m->pending_key ^ fnv(key, 8)) * 0x01000193u;
+        m->pending_key = (m->pending_key ^ fnv(content, 8)) * 0x01000193u;
+        return;
+    }
+    if (!strcmp(kind, "plugin") && m->nsets < (int)(sizeof m->sets / sizeof *m->sets) &&
+        m->nplugins < (int)(sizeof m->plugin_keys / sizeof *m->plugin_keys)) {
+        uint32_t k = (uint32_t)strtoul(key, NULL, 16);
+        m->sets[m->nsets++] = k;
+        m->plugin_keys[m->nplugins] = k;
+        m->plugin_contents[m->nplugins++] = (uint32_t)strtoul(content, NULL, 16);
+        const char *hooks = strstr(note, ", ");
+        m->plugin_hooks += hooks ? atoi(hooks + 2) : 0;
+        size_t at = strlen(m->overrides);
+        if (*over) snprintf(m->overrides + at, sizeof m->overrides - at, "%s%s", at ? "," : "", over);
+    } else {
+        code_unrun(m, leaf);
+        if (!m->plugin_note[0]) snprintf(m->plugin_note, sizeof m->plugin_note, "%s", note);
+    }
+    if (!m->plugin_file[0]) snprintf(m->plugin_file, sizeof m->plugin_file, "%s", leaf);
 }
 
 typedef struct {
@@ -369,11 +446,12 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     int unsupported = exefs_check(m, path);
     // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. Used without
     // its code (its switch, or mods_without_code = 1 for every mod), the code modules (m->code) and the ExeFS patch
-    // files the port cannot apply are left out and the rest of the mod is used, when it has a rest.
+    // files the port cannot apply are left out and the rest of the mod is used, when it has a rest. Each plugin of a
+    // mod is built or refused on its own (tools/exefs_plugins.py), so a built plugin is such a rest too.
     m->no_code = listed(cfg_get("TOTK_MODS_NO_CODE"), m->name);
     m->without_code = m->no_code || cfg_bool("TOTK_MODS_WITHOUT_CODE");
     int usable = m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS);
-    int code_off = m->code[0] && (!m->without_code || !(m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS)));
+    int code_off = m->code[0] && (!m->without_code || !(m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS) || m->nplugins));
     m->problem = strchr(m->name, '|')                             ? MOD_BAD_NAME
                : code_off                                         ? MOD_PLUGIN
                : unsupported && (!m->without_code || !usable)     ? MOD_EXEFS_UNSUPPORTED
@@ -592,6 +670,14 @@ void mods_probe_cache(const char *status, const char *data) {
     data_text = dup_text(data);
 }
 
+void mods_probe_plugins(const char *status, const char *stale) {
+    free(plugin_status_text);
+    free(plugin_stale_text);
+    plugin_status_text = dup_text(status);
+    plugin_stale_text = dup_text(stale);
+    no_stale_file = status != NULL;
+}
+
 void mods_rescan(void) {
     free(mods);
     mods = NULL;
@@ -767,6 +853,53 @@ void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
     span_store = NULL;
     data_conflicts();
     rt_patch_picks();
+    code_conflicts();
+}
+
+// build-cache/plugins.stale next to totk.exe: one more line (--probe-mods keeps it in memory).
+static void stale_append(const char *line) {
+    size_t had = plugin_stale_text ? strlen(plugin_stale_text) : 0, n = strlen(line);
+    char *grown = realloc(plugin_stale_text, had + n + 1);
+    if (grown) {
+        if (!plugin_stale_text) grown[0] = 0;
+        memcpy(grown + had, line, n + 1);
+        plugin_stale_text = grown;
+    }
+    char path[2100];
+    if (no_stale_file || !plat_exe_path(path, sizeof path)) return;
+    char *cut = strrchr(path, '/'), *back = strrchr(path, '\\');
+    if (back > cut) cut = back;
+    if (!cut || snprintf(cut + 1, sizeof path - (size_t)(cut + 1 - path), "build-cache/plugins.stale") >=
+                    (int)(sizeof path - (size_t)(cut + 1 - path)))
+        return;
+    FILE *f = fopen(path, "ab");
+    if (!f) {
+        rt_log("mods: cannot write %s", path);
+        return;
+    }
+    fputs(line, f);
+    fclose(f);
+}
+
+void mods_plugin_off(int set, const char *why) {
+    const ModInfo *owner = set_owner(set);
+    rt_patch_switch(set, 0);
+    if (!owner) return;
+    ModInfo *m = (ModInfo *)owner;
+    snprintf(m->plugin_off, sizeof m->plugin_off, "%s", why);
+    const char *name = rt_patch_name(set);
+    uint32_t key = name ? (uint32_t)strtoul(name + 4, NULL, 16) : 0;
+    for (int k = 0; k < m->nplugins; k++) {
+        if (m->plugin_keys[k] != key) continue;
+        char line[400];
+        snprintf(line, sizeof line, "%08X\t%08X\t%s\n", key, m->plugin_contents[k], why);
+        stale_append(line);
+    }
+    rt_log("mods: %s: its plugin stays off this run (%s); it waits for the rebuild at the next start", m->name, why);
+    int kept = 0;   // the code conflicts counted anew without the set
+    for (int i = 0; i < nconflicts; i++)
+        if (conflicts[i].part != MOD_PART_CODE) conflicts[kept++] = conflicts[i];
+    nconflicts = kept;
     code_conflicts();
 }
 

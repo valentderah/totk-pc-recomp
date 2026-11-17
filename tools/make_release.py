@@ -19,13 +19,15 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                install compiles that update's code and the runtime libraries with it
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
+               Everything else is the build kit the setup copies into the install folder (installer/layout.py KIT_ITEMS)
 
 --prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
 
 Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
 it, generated/v143, and for --prove its build/extracted/<version> (they are read, nothing is written to them). The
-runtime library reads only what both versions' layout.h share (MOD_COUNT, MOD_MAIN_BASE), so either serves.
+runtime library reads only what both versions' layout.h share (MOD_MAIN_BASE; its module tables hold RT_MAX_MODULES, so an
+install's layout may add mod plugins), so either serves.
 
 A release also needs build/xlate built from the current sources (tools/build_xlate.py); the script stops first if not.
 
@@ -115,7 +117,7 @@ LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'button_icons.py', 'check_content.py', 'check_isa.py', 'extract.py',
                'hostmem.py', 'make_romfs_patches.py', 'ncz.py', 'pack_shader_cache.py', 'prepare_shaders.py',
                'romfs_index.py', 'shader_census.py', 'shader_list.py', 'ultrawide_layout.py', 'cheats.py',
-               'exefs_patches.py']
+               'exefs_patches.py', 'exefs_plugins.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 

@@ -1271,7 +1271,13 @@ static void tab_mods(float scale) {
             if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
             else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
         }
-        char code[512] = "", problem[512] = "", skipped[512] = "", left[512] = "";
+        char code[512] = "", problem[768] = "", skipped[512] = "", left[512] = "", plugin[512] = "";
+        if (m->plugin_off[0])   // its plugin's start differed from the build (plugin_init.c)
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_OFF), m->plugin_off);
+        else if (m->plugin_hooks && m->problem == MOD_OK)
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_ON), m->plugin_hooks);
+        else if (m->plugin_note[0] && m->problem != MOD_PLUGIN)   // used without its code: the refusal stays visible
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_REFUSED), m->plugin_file, m->plugin_note);
         if (m->code[0] && m->problem != MOD_PLUGIN)   // used without its code
             snprintf(skipped, sizeof skipped, menu_text(UI_MENU_MODS_CODE_SKIPPED), m->code);
         if (m->unsupported && m->problem != MOD_EXEFS_UNSUPPORTED)
@@ -1282,7 +1288,16 @@ static void tab_mods(float scale) {
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
-        case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
+        case MOD_PLUGIN:
+            if (m->plugin_note[0]) {   // the build refused its plugin, and says why
+                int n = snprintf(problem, sizeof problem, menu_text(UI_MENU_MODS_PLUGIN_REFUSED), m->plugin_file,
+                                 m->plugin_note);
+                if (n >= 0 && n < (int)sizeof problem)
+                    snprintf(problem + n, sizeof problem - n, " %s", menu_text(UI_MENU_MODS_PLUGIN_STAYS_OFF));
+            } else {
+                snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK));
+            }
+            break;
         case MOD_EXEFS_LATER: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EXEFS_LATER)); break;
         case MOD_EXEFS_UNSUPPORTED:
             snprintf(problem, sizeof problem, menu_text(UI_MENU_MODS_EXEFS_UNSUPPORTED), m->note);
@@ -1292,7 +1307,8 @@ static void tab_mods(float scale) {
         default: break;
         }
         int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
-        const char *parts[] = {over, other, cheat, code, skipped, left, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        const char *parts[] = {over, other, cheat, code, plugin, skipped, left, problem,
+                               menu_text(UI_MENU_MODS_MOVE_HINT)};
         for (const char *part : parts)
             if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
         const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
