@@ -931,6 +931,22 @@ class ShapesTest(unittest.TestCase):
         self.assertTrue(all('--hud' not in c for c in self.calls))
         self.assertFalse((self.dest / 'romfs-patches-2560x1080-hud16x9').exists())
 
+    def test_full_hud_keeps_the_key_of_a_setup_before_hud_width(self):
+        # An install that writes no capped folder keeps the Shapes key it had, so its next setup run prepares nothing
+        screens.displays = lambda: [(2560, 1080), (2560, 1600)]
+        step = steps.Shapes()
+        sizes, style = step.wanted(self.ctx)
+        old = steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes)
+        self.assertEqual(step.key(self.ctx), old)
+        (self.dest / 'totk.ini').write_text('hud_width = full\n')
+        self.assertEqual(step.key(self.ctx), old)
+        # a cap no shape here is wider than writes nothing either
+        screens.displays = lambda: [(2560, 1600)]
+        del self.ctx.shapes_wanted
+        (self.dest / 'totk.ini').write_text('hud_width = 16:9\n')
+        sizes, style = step.wanted(self.ctx)
+        self.assertEqual(step.key(self.ctx), steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes))
+
     def test_capped_pc_prompts_reuse_bindings(self):
         screens.displays = lambda: [(3840, 1080)]
         (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\nbind_attack = key:f\n')

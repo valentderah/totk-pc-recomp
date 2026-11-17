@@ -1444,8 +1444,12 @@ class Shapes(Step):
         sizes, style = self.wanted(ctx)
         # The pc prompts' shaped folders are drawn from the same bindings as romfs-patches-pc, so they follow its key
         prompts = ctx.keys.get('pc_prompts', '') if style == 'pc' else ''
-        return fingerprint('shapes-3', ctx.keys.get('prepare', ''), prompts, style or 'nintendo',
-                           hud_width(ctx.dest), *sizes)
+        # Without a capped folder to write (hud_width full, or no shape wider than the cap) the key stays the one a
+        # setup before hud_width wrote, so an existing install does not prepare its shaped folders again
+        hud = hud_width(ctx.dest)
+        if not any(shape_hud(size, hud) for size in sizes):
+            return fingerprint('shapes-2', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', *sizes)
+        return fingerprint('shapes-3', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', hud, *sizes)
 
     def current(self, ctx, record):
         return not record.get('failed') and all((ctx.dest / name / 'manifest.tsv').is_file()
