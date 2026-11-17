@@ -1104,6 +1104,18 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+# The four sites above reach the cascades only through the copy of the parameters into the cascade boundaries
+# (main+0x5680ec, in the per-view update). The game's shadow controller sets bit 1 of the scene's depth shadow flags
+# when it starts (main+0xb74494), with that bit the per-view update skips the copy (main+0x567f6c), and the controller
+# writes the boundaries itself each frame in main+0x68318c: d[0] at main+0x683680, d[1..n-1] at main+0x6836ec and the
+# far d[n] at main+0x683740 (d = [cascade set + 0x308]). In Hyrule Field the four sites alone leave the cascades as
+# they are at 100 (issue #606 has the same on 1.2.1). These two multiply d[1..n] where the controller stores them, by
+# page +64 (20 m times shadow_range / 100) over 20; d[0], the first cascade's start, stays. The function computes the
+# boundaries from the controller's own fields and its arguments and reads neither the parameters nor d, so a boundary
+# is scaled once on either path. x25 (written at main+0x683704 before any read), x16, s18 and s19 are dead at the
+# sites.
+site cascade main 6836ec bd000711 @page:x25 bd404332 1e269013 1e331a52 1e320a32 bd000712   # str s17, [x24, #4] -> adrp x25, page; ldr s18, [x25, #64]; fmov s19, #20.0; fdiv s18, s18, s19; fmul s18, s17, s18; str s18, [x24, #4]
+site cascade main 683740 bc2ed9b0 @page:x16 bd404212 1e269013 1e331a52 1e320a12 bc2ed9b2   # str s16, [x13, w14, sxtw #2] -> the same through x16 with fmul s18, s16, s18; str s18, [x13, w14, sxtw #2]
 
 # Climbing (issues #35, #276, #1001): the climb controller's velocity step (main+0x1f49754, shared by wall and ladder
 # climbing, climb jumps and climb-overs) multiplies the requested velocity by a factor that makes up for a movement loss
