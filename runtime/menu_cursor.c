@@ -378,6 +378,7 @@ static void log_screen(const Focus *f, const char *nm, int n, float lw, float lh
 int menu_cursor_screen_name(char *out, int n) {
     if (out && n > 0) out[0] = 0;
     if (!out || n <= 1) return 0;
+    if (!RT_V143) return 0;   // SCREEN_MGR_V143 is a 1.4.3 address; on 1.1.0 and 1.2.1 it is not a screen manager
     main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
     Focus f = focus_now();
     if (!f.screen) return 0;
@@ -391,6 +392,7 @@ int menu_cursor_screen_name(char *out, int n) {
 // walks. Any thread, like menu_cursor_screen_name.
 int menu_cursor_screen_open(const char *want) {
     if (!want || !*want) return 0;
+    if (!RT_V143) return 0;   // SCREEN_MGR_V143 is a 1.4.3 address; on 1.1.0 and 1.2.1 it is not a screen manager
     main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
     uint64_t sm = screen_mgr();
     if (!sm) return 0;
@@ -418,6 +420,7 @@ int menu_cursor_screen_open(const char *want) {
 // template they were built from, which is exact: no position threshold, and no pane-name offset this port does not have.
 int menu_cursor_focus_is_tab(const char *screen) {
     if (!screen || !*screen) return 0;
+    if (!RT_V143) return 0;   // SCREEN_MGR_V143 is a 1.4.3 address; on 1.1.0 and 1.2.1 it is not a screen manager
     main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
     Focus f = focus_now();
     if (!f.node) return 0;

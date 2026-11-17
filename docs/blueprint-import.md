@@ -29,7 +29,8 @@ word **Import**, right of "Back":
 
 While the picker is open the game receives no input (`input_menu(1)`), the pointer is released to the picker without
 being forced to the centre, and the settings menu's **Blueprints tab is gone**: the Autobuild screen is the only entry
-point. `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
+point. `blueprint_hint = 1` (`TOTK_BLUEPRINT_HINT`) turns the row on; it is **off by default**, so a player who does not
+import blueprints sees the Autobuild screen exactly as the game draws it and pays nothing for the feature.
 
 There is no slot to pick. An import behaves exactly like a creation made in the game: the new blueprint becomes the
 first card of the history, every card that was drawn above the discarded one moves down one place, and the oldest free
@@ -270,7 +271,8 @@ game version and every pad layout.
   drained by `input.c` for the map zoom, so it cannot grow without bound.
 * **The import.** The picker's answer is recorded and the next presented frame (`bp_hint_frame`) hands it to a thread of
   its own, because `bp_import_newest` walks the game's memory. The present path never waits.
-* **Off switch.** `blueprint_hint = 0` (`TOTK_BLUEPRINT_HINT`) leaves the screen exactly as the game draws it.
+* **Off by default.** `blueprint_hint` (`TOTK_BLUEPRINT_HINT`) is 0 unless the player sets it to 1, so the screen walk
+  the row needs on each pad read never runs for a player who does not import. `blueprint_hint = 1` turns the row on.
 
 
 ## 7. Verification
