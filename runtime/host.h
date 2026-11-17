@@ -384,6 +384,11 @@ void rt_boot(void);                                        // boot.c
 void rt_boot_plugin_init(void);                            // boot.c: --plugin-init, the plugin service run
 void plugin_init_setup(void);                              // plugin_init.c: before ldr_load
 void plugin_init_run(Cpu *c, const RtLoaded *sdk);         // plugin_init.c: from the module-init callback; exits
+void plugins_setup(void);                                  // plugin_init.c: rt_boot, before ldr_load; nothing
+                                                           // without a plugin in the build
+int plugins_start(Cpu *c, const RtLoaded *sdk);            // plugin_init.c: from the module-init callback, before
+                                                           // the game's constructors; 1 when it ran sdk's DT_INIT
+                                                           // (a plugin's init ran after it)
 // Modes of totk.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.

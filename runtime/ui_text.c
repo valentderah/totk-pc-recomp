@@ -586,6 +586,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                       "stays off while this mod is on.",
     [UI_MENU_MODS_CODE_SKIPPED] = "Its own game code (%s) does not load: the rest of the mod is used. Switch the mod "
                                   "off if the game misbehaves with it.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Its plugin runs: %d hooks into the game code.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Its plugin %s cannot run in the port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "The whole mod stays off. Its switch \"Use ... without its code\" below uses the "
+                                      "rest of it.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Its plugin stays off this time: it started differently from the build (%s). The game "
+                                "rebuilds it at the next start.",
     [UI_MENU_MODS_WITHOUT_CODE] = "Use %s without its code",
     [UI_MENU_MODS_WITHOUT_CODE_DESC] = "The mod above brings code the port cannot run: its own game code (a subsdk "
                                        "plugin or a replaced main) or code patches (exefs) the port cannot apply. Off: "
@@ -1161,6 +1167,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                       "который выключен, пока этот мод включён.",
     [UI_MENU_MODS_CODE_SKIPPED] = "Его собственный код игры (%s) не загружается: используется остальная часть мода. "
                                   "Выключите мод, если игра с ним ведёт себя странно.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Его плагин работает: перехватов в коде игры: %d.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Его плагин %s не может работать в порте: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "Мод выключен целиком. Его переключатель «... без его кода» ниже включает "
+                                      "остальную часть мода.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Его плагин в этот раз выключен: он запустился не так, как при сборке (%s). Игра "
+                                "пересоберёт его при следующем запуске.",
     [UI_MENU_MODS_WITHOUT_CODE] = "%s без его кода",
     [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Мод выше приносит код, который порт не может запустить: свой код игры (плагин "
                                        "subsdk или заменённый main) или патчи кода (exefs), которые порт не может "
@@ -1770,6 +1782,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                       "%s, que fica desligado enquanto este mod está ligado.",
     [UI_MENU_MODS_CODE_SKIPPED] = "O código próprio do jogo dele (%s) não é carregado: o resto do mod é usado. "
                                   "Desligue o mod se o jogo se comportar mal com ele.",
+    [UI_MENU_MODS_PLUGIN_ON] = "O plugin dele está ativo: %d ganchos no código do jogo.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "O plugin %s dele não pode rodar no port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "O mod inteiro fica desligado. A chave \"Usar ... sem o código dele\", abaixo, "
+                                      "usa o resto dele.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "O plugin dele fica desligado desta vez: ele iniciou de forma diferente da compilação "
+                                "(%s). O jogo o recompila na próxima inicialização.",
     [UI_MENU_MODS_WITHOUT_CODE] = "Usar %s sem o código dele",
     [UI_MENU_MODS_WITHOUT_CODE_DESC] = "O mod acima traz código que o port não consegue rodar: código próprio do jogo "
                                        "(um plugin subsdk ou um main substituído) ou patches de código (exefs) que o "
@@ -2458,6 +2476,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
     [UI_MENU_MODS_CODE_SKIPPED] = "它自带的游戏代码（%s）不会加载：模组的其余部分照常使用。如果游戏因此表现异常，请关闭此模组。",
+    [UI_MENU_MODS_PLUGIN_ON] = "它的插件正在运行：游戏代码中有 %d 处挂钩。",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "它的插件 %s 无法在移植版中运行：%s。",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "整个模组保持关闭。打开下方它的“不带代码使用 ...”开关即可使用其余部分。",
+    [UI_MENU_MODS_PLUGIN_OFF] = "它的插件本次保持关闭：启动情况与构建时不同（%s）。游戏会在下次启动时重新构建它。",
     [UI_MENU_MODS_WITHOUT_CODE] = "不带代码使用 %s",
     [UI_MENU_MODS_WITHOUT_CODE_DESC] = "上方的模组带有移植版无法运行的代码：它自己的游戏代码（subsdk 插件或替换的 main），或移植版无法应用的代码补丁（exefs）。关闭：整个模组保持关闭。开启：跳过这些代码，使用模组的其余部分：其 RomFS 文件、金手指和可用的代码补丁。它的文件可能依赖缺失的代码；如果游戏表现异常，请再次关闭。下次启动时生效。",
     [UI_MENU_MODS_WITHOUT_CODE_ALL] = "已对所有模组开启：totk.ini 中 mods_without_code = 1。",

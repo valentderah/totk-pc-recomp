@@ -53,6 +53,13 @@ typedef struct {
     uint32_t data_bytes;                    // the bytes its usable ExeFS patch files write into main's data, as their
                                             // status lines count them ("data <bytes>")
     char overrides[256];                    // the port's own patch sets its patches replace, comma separated
+    // Its exefs/subsdk* plugins (build-cache/plugins.status, tools/exefs_plugins.py): the built ones are patch sets in
+    // sets[] whose init runs at start (plugin_init.c); a refused one is a code module it cannot run (code).
+    int nplugins, plugin_hooks;             // built plugins and their hooks
+    uint32_t plugin_keys[4], plugin_contents[4];   // their file and content hashes, for plugins.stale
+    char plugin_file[64];                   // the first plugin's file name
+    char plugin_note[256];                  // why the build refused a plugin ("" none)
+    char plugin_off[256];                   // why its plugin stays off this run: its start differed from the build
 } ModInfo;
 
 // What two mods both change, the higher one winning: files (romfs.c), bytes of main's data and code sites
@@ -105,5 +112,11 @@ void mods_rescan(void);
 // The ExeFS patch files of the enabled mods that the build lacks, their FNV-1a mixed into *key (cheats.c starts the
 // rebuild for them).
 int mods_exefs_pending(uint32_t *key);
+// From plugin_init.c plugins_start: the plugin patch set `set` stays off this run (why), its mod's row says so,
+// build-cache/plugins.stale marks its file for the rebuild at the next start, and the code conflicts are counted anew.
+void mods_plugin_off(int set, const char *why);
+// --probe-mods: the texts of build-cache/plugins.status and plugins.stale instead of the files; the stale lines
+// mods_plugin_off adds stay in memory.
+void mods_probe_plugins(const char *status, const char *stale);
 // The hex of the game main's build id (64 digits), "" when exefs/main cannot be read.
 const char *mods_main_build_id(void);

@@ -24,7 +24,7 @@
 static uint64_t g_svcs;
 void (*volatile svc_test_exit_hook)(unsigned code);
 uint64_t rt_svc_tick_offset;
-void (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);
+int (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);
 uint32_t (*rt_process_memory)(int unmap, uint64_t dst, uint32_t process, uint64_t src, uint64_t size);
 
 RtStats rt_stats(void) {
@@ -159,7 +159,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
 static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
     __atomic_fetch_add(&g_svcs, 1, __ATOMIC_RELAXED);
     if (rt_trace & (RT_TRACE_SVC | RT_TRACE_PLUGIN)) {
-        if ((rt_trace & RT_TRACE_PLUGIN) && rt_plugin_svc) rt_plugin_svc(c, imm, pc);
+        if ((rt_trace & RT_TRACE_PLUGIN) && rt_plugin_svc && rt_plugin_svc(c, imm, pc)) return;   // refused, x0 set
         char at[160];
         if (rt_trace & RT_TRACE_SVC)
             rt_log("svc %#x at %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", imm, ldr_describe(pc, at, sizeof at),

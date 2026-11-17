@@ -41,6 +41,7 @@ extern void (*volatile svc_test_exit_hook)(unsigned code);   // svc 0x07 calls i
 
 // ---- mod plugin service run (plugin_init.c sets these; the game calls none of the SVCs they serve)
 extern uint64_t rt_svc_tick_offset;   // added to GetSystemTick (0x1E): the service run's second run picks other ticks
-extern void (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);   // with RT_TRACE_PLUGIN: sees each SVC first
+extern int (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);   // with RT_TRACE_PLUGIN: sees each SVC
+                                      // first; 1: refused, the result is in x0 and the SVC does not run
 extern uint32_t (*rt_process_memory)(int unmap, uint64_t dst, uint32_t process, uint64_t src, uint64_t size);
                                       // Map/UnmapProcessMemory (0x74/0x75); NULL outside the service run: fatal

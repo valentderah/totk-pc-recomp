@@ -38,6 +38,7 @@ void rt_dispatch_init(const RtModule *mods, int count);
 
 // The host function for a guest address, or NULL when nothing is there. Does not run guest code.
 GuestFn rt_dispatch_lookup(uint64_t pc);
+int rt_dispatch_reroute(uint64_t a, GuestFn fn);   // plugin trace only (dispatch.c); 0 when it cannot
 
 // "0x7000001234 (main+0x1234)" for a guest address inside a module, else the bare address. Returns buf.
 const char *rt_guest_name(uint64_t pc, char *buf, int size);

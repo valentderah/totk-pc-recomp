@@ -86,6 +86,26 @@ static uint8_t *read_path_verified(const char *path, const char *want, size_t *l
     return p;
 }
 
+// 1 when the plugin file of lay is the one the build lifted; logged when not.
+static int plugin_file_ok(const RtLayoutEntry *lay) {
+    size_t len;
+    uint8_t *p = read_file(lay->file, &len);
+    if (!p) {
+        rt_log("loader: %s: cannot read %s; the plugin is left out", lay->name, lay->file);
+        return 0;
+    }
+    uint8_t d[32];
+    char hex[65];
+    rt_sha256(p, len, d);
+    free(p);
+    hex32(d, hex);
+    if (strcmp(hex, lay->sha256)) {
+        rt_log("loader: %s: %s changed since the build lifted it; the plugin is left out", lay->name, lay->file);
+        return 0;
+    }
+    return 1;
+}
+
 uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len) {
     const char *want = NULL;
     for (int i = 0; i < rt_exefs_sha256_count; i++)
@@ -484,8 +504,14 @@ void ldr_load(const char *exefs_dir) {
     if (nmods) rt_fatal("ldr_load called twice");
     if (!mem_layout()->pool) rt_fatal("ldr_load before mem_init");
     if (rt_layout_count > MOD_COUNT) rt_fatal("loader: %d modules in the layout", rt_layout_count);
-    for (int i = 0; i < rt_layout_count; i++) load_module(&mods[i], exefs_dir, &rt_layout[i]);
-    nmods = rt_layout_count;
+    int n = 0;
+    for (int i = 0; i < rt_layout_count; i++) {
+        // A mod plugin's file that is gone or changed since the build is left out at play time: its patch set cannot
+        // run (plugin_init.c plugins_start keeps it off); the plugin service run needs it and stops.
+        if (rt_layout[i].file && !rt_config()->plugin_init && !plugin_file_ok(&rt_layout[i])) continue;
+        load_module(&mods[n++], exefs_dir, &rt_layout[i]);
+    }
+    nmods = n;
     ovr_used = calloc(hostfn_table_size(0) + 1, sizeof(int));
     obs_used = calloc(hostfn_table_size(1) + 1, sizeof(int));
     for (int i = 0; i < nmods; i++) {

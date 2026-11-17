@@ -1,8 +1,23 @@
-// The plugin service run: totk.exe --plugin-init DIR runs the DT_INIT of every mod code module (recomp/layout.py
-// plugin<N>, an exlaunch plugin such as a mod's exefs/subsdk9) on this runtime's own kernel and sdk, records what the
-// init did and exits before any game module's constructor, nnMain, graphics or audio. The record is the input of
-// tools/exefs_plugins.py (checks) and, later, of the generator's hook sites; at play time a plugin's init does not run.
-// The design follows #845 by itaskaev2, with the init run natively instead of under Unicorn.
+// Mod plugins' inits (recomp/layout.py plugin<N>, an exlaunch plugin such as a mod's exefs/subsdk9), run natively on
+// this runtime's own kernel and sdk. The design follows #845 by itaskaev2, with the init run natively instead of under
+// Unicorn, and run again at every start instead of an image taken after one run at build time.
+//
+// The service run: totk.exe --plugin-init DIR runs every plugin's DT_INIT, records what the init did and exits before
+// any game module's constructor, nnMain, graphics or audio. The record is the input of tools/exefs_plugins.py, which
+// checks it and writes the plugin's patch set (its hook sites, recomp/patches.py `plugin` lines).
+//
+// At every start (plugins_start, from the module-init callback in boot.c): when the build has a plugin whose patch set
+// its mod switched on, sdk's DT_INIT runs first, then the plugin's, in the same environment as in the service run, and
+// then the game's constructors. That is the order of the Switch's rtld, which runs the modules' DT_INITs from the last
+// loaded to the first (oss-rtld, librtld/source/ld.cpp __rtld_modules_init walks g_pAutoLoadList backwards; the list is
+// filled in address order by __rtld_relocate_modules in librtld/source/relocation.cpp: main, subsdk*, sdk), so sdk
+// runs before a subsdk plugin and the plugin before the game's main. The plugin keeps what its init made: heap blocks,
+// its GOT, its alias addresses. What the init wrote into the game modules (its hook branches) and the plugin's .text
+// after it (its stubs and trampolines) are compared with the record the build used (patches.h RT_PLUGIN_WRITES and
+// RT_PLUGINS): equal, the plugin's set stays on and the generated hook sites call into it; different, the set goes off
+// for this run, the reason is logged and the mod waits for a rebuild (mods.c mods_plugin_off). The branches written
+// into main's .text are taken back afterwards: the lifted code is the code that runs, and main keeps the game's bytes.
+// Without a plugin in the build none of this runs (RT_PLUGIN_COUNT 0).
 //
 // What exlaunch's init needs from the process, and how this run gives it:
 //   - Its module walk (exl::util::FindModules) reads QueryMemory from 0 up and takes every Code RX, Code R, CodeData
@@ -31,9 +46,18 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "dispatch.h"
 #include "host.h"
 #include "kernel.h"
+#include "mods.h"
 #include "platform/platform.h"
+
+#if __has_include("patches.h")
+#include "patches.h"
+#endif
+#ifndef RT_PLUGIN_COUNT
+#define RT_PLUGIN_COUNT 0
+#endif
 
 #define PAGE 0x1000ull
 #define GiB (1ull << 30)
@@ -63,6 +87,8 @@ static int naliases;
 static uint64_t rtld_base, rtld_size, rtld_text_end, rtld_data_off;
 static uint64_t pool_base;
 static int running;   // a plugin's init runs: svcs and imports are counted
+static int play;      // plugins_start: a refused SVC fails the plugin instead of ending the process
+static char failed[256];   // play: why the running init was refused
 static uint64_t svc_count[0x80], info_count[16], info_65001;
 static struct { const char *name; uint64_t calls; } imports[MAX_IMPORTS];
 static int nimports;
@@ -187,34 +213,44 @@ static void write_record(const char *refused);
 
 static void refuse(const char *why) {
     rt_log("plugin-init: refused: %s", why);
+    if (play) {   // the init goes on with an error result; the plugin stays off (plugins_start)
+        if (!failed[0]) snprintf(failed, sizeof failed, "%s", why);
+        return;
+    }
     write_record(why);
     fflush(NULL);
     plat_exit(3);
 }
 
-static void plugin_svc(Cpu *c, uint32_t imm, uint64_t pc) {
-    if (!running) return;
+#define R_NOT_IMPLEMENTED 0xF601u
+
+static int plugin_svc(Cpu *c, uint32_t imm, uint64_t pc) {
+    if (!running) return 0;
     svc_count[imm & 0x7F]++;
     char why[256], at[128];
     switch (imm) {
-    case 0x06: case 0x1E: case 0x27: case 0x74: case 0x75: return;
+    case 0x06: case 0x1E: case 0x27: case 0x74: case 0x75: return 0;
     case 0x29: {
         uint32_t id = (uint32_t)c->x[1];
         if ((id >= 2 && id <= 5) || (id >= 12 && id <= 15)) {
             info_count[id]++;
-            return;
+            return 0;
         }
         if (id == 65001) {
             info_65001++;
-            return;
+            return 0;
         }
         snprintf(why, sizeof why, "GetInfo id %u at %s", id, ldr_describe(pc, at, sizeof at));
         refuse(why);
+        c->x[0] = R_NOT_IMPLEMENTED;
+        return 1;
     }
     }
     snprintf(why, sizeof why, "svc %#x at %s (only QueryMemory, GetSystemTick, OutputDebugString, GetInfo 2-5, 12-15 "
              "and 65001, Map/UnmapProcessMemory are served)", imm, ldr_describe(pc, at, sizeof at));
     refuse(why);
+    c->x[0] = R_NOT_IMPLEMENTED;
+    return 1;
 }
 
 // Every JUMP_SLOT import of a plugin binds here (loader.c resolve): counted by name, then the guest definition runs,
@@ -363,14 +399,25 @@ static void write_record(const char *refused) {
 }
 
 // ---- setup and run
-// Before ldr_load: the import observer, the svc hooks, the pool and the stand-in for rtld.
-void plugin_init_setup(void) {
+static int layout_plugins(void) {
     int plugins = 0;
     for (int i = 0; i < rt_layout_count; i++) plugins += rt_layout[i].file != NULL;
-    if (!plugins) rt_fatal("plugin-init: this build's layout has no plugin module (recomp/gen.py --plugins)");
+    return plugins;
+}
+
+static void environment(void);
+
+// Before ldr_load: the import observer, the svc hooks, the pool and the stand-in for rtld.
+void plugin_init_setup(void) {
+    if (!layout_plugins()) rt_fatal("plugin-init: this build's layout has no plugin module (recomp/gen.py --plugins)");
     plat_file_mkdir_p(rt_config()->plugin_init);
     const char *off = cfg_get("TOTK_PLUGIN_TICK_OFFSET");
     rt_svc_tick_offset = off ? strtoull(off, NULL, 0) : 0;
+    environment();
+}
+
+// The environment of a plugin's init, the same in the service run and at every start.
+static void environment(void) {
     ldr_plugin_import = plugin_import;
     rt_process_memory = process_memory;
     rt_plugin_svc = plugin_svc;
@@ -390,6 +437,13 @@ void plugin_init_setup(void) {
     rt_log("plugin-init: rtld at %#llx+%#llx, alias pool %#llx+%llu GiB, tick offset %#llx", (unsigned long long)rtld_base,
            (unsigned long long)rtld_size, (unsigned long long)pool_base, POOL_SIZE / GiB,
            (unsigned long long)rt_svc_tick_offset);
+}
+
+// rt_boot, before ldr_load: the plugins' environment when the build has one (nothing otherwise).
+void plugins_setup(void) {
+    if (!RT_PLUGIN_COUNT || !layout_plugins()) return;
+    play = 1;
+    environment();
 }
 
 // From nn::init::Start's module-init callback (boot.c), in place of the game's constructors. rtld initialises the
@@ -426,4 +480,203 @@ void plugin_init_run(Cpu *c, const RtLoaded *sdk) {
            naliases, live);
     fflush(NULL);
     plat_exit(0);
+}
+
+// ---- at every start
+#if RT_PLUGIN_COUNT
+static const struct { const char *module; int set; const char *sha256; } plugin_tab[] = {
+#define X(i, mod, set, sha) {mod, set, sha},
+    RT_PLUGINS(X)
+#undef X
+};
+static const struct { int plugin; const char *module; uint64_t off; uint32_t old, now; } write_tab[] = {
+#define X(p, mod, off, old, now) {p, mod, off, old, now},
+    RT_PLUGIN_WRITES(X)
+#undef X
+};
+#define NWRITES ((int)(sizeof write_tab / sizeof *write_tab))
+#ifdef RT_PLUGIN_ROOTS
+static const struct { const char *module; uint64_t off; } root_tab[] = {
+#define X(mod, off) {mod, off},
+    RT_PLUGIN_ROOTS(X)
+#undef X
+};
+#define NROOTS ((int)(sizeof root_tab / sizeof *root_tab))
+#else
+#define NROOTS 0
+#endif
+
+static const RtLoaded *loaded(const char *name) {
+    for (int i = 0; i < ldr_count(); i++)
+        if (!strcmp(ldr_module(i)->name, name)) return ldr_module(i);
+    return NULL;
+}
+
+// TOTK_PLUGIN_TRACE = 1: the first call of each hook entry (patches.h RT_PLUGIN_ROOTS: callbacks, replace and call
+// targets) is logged with its count so far; the entries run through count_entry, their dispatch slots rerouted once
+// at start (dispatch.c rt_dispatch_reroute). The calls inside the plugin are direct and not counted.
+static struct { uint64_t addr; GuestFn fn; uint64_t calls; } traced[64];
+static int ntraced;
+
+static void count_entry(Cpu *c) {
+    for (int i = 0; i < ntraced; i++) {
+        if (traced[i].addr != c->pc) continue;
+        if (__atomic_add_fetch(&traced[i].calls, 1, __ATOMIC_RELAXED) == 1) {
+            char at[128];
+            rt_log("plugins: hook entry %s reached (first call)", ldr_describe(c->pc, at, sizeof at));
+        }
+        __attribute__((musttail)) return traced[i].fn(c);
+    }
+    rt_fatal("plugins: traced entry %#llx without its function", (unsigned long long)c->pc);
+}
+
+static void trace_entries(void) {
+#ifdef RT_PLUGIN_ROOTS
+    for (int i = 0; i < NROOTS && ntraced < 64; i++) {
+        const RtLoaded *m = loaded(root_tab[i].module);
+        if (!m) continue;
+        uint64_t a = m->base + root_tab[i].off;
+        GuestFn f = rt_dispatch_lookup(a);
+        if (!f) continue;
+        traced[ntraced] = (typeof(traced[0])){a, f, 0};
+        if (rt_dispatch_reroute(a, count_entry)) ntraced++;
+        else rt_log("plugins: trace: cannot reroute %#llx", (unsigned long long)a);
+    }
+#endif
+    rt_log("plugins: trace: %d hook entries counted", ntraced);
+}
+
+// Takes back the words the inits changed in the sealed part (.text, .rodata) of a game module: main keeps the game's
+// own bytes, the lifted code being what runs.
+static void restore_sealed(const RtLoaded *m, const uint8_t *was) {
+    for (uint64_t off = 0; off < m->data_off; off += PAGE) {
+        const uint8_t *now = (const uint8_t *)(uintptr_t)(m->base + off);
+        if (!memcmp(now, was + off, PAGE)) continue;
+        if (!plat_mem_protect(m->base + off, PAGE, PLAT_PROT_RW)) rt_fatal("plugins: cannot unseal %s+%#llx", m->name,
+                                                                         (unsigned long long)off);
+        memcpy((void *)(uintptr_t)(m->base + off), was + off, PAGE);
+        plat_mem_protect(m->base + off, PAGE, PLAT_PROT_READ);
+    }
+}
+#endif
+
+int plugins_start(Cpu *c, const RtLoaded *sdk) {
+#if RT_PLUGIN_COUNT
+    if (!play) return 0;
+    int run[RT_PLUGIN_COUNT] = {0}, nrun = 0;
+    char why[RT_PLUGIN_COUNT][256];
+    for (int i = 0; i < RT_PLUGIN_COUNT; i++) {
+        why[i][0] = 0;
+        const RtLoaded *m = loaded(plugin_tab[i].module);
+        if (!rt_patch_enabled(plugin_tab[i].set)) continue;
+        if (!m) {   // loader.c left it out (its file is gone or changed): its set cannot run
+            mods_plugin_off(plugin_tab[i].set, "its file is not the one the build lifted");
+            continue;
+        }
+        if (!m->init) {
+            mods_plugin_off(plugin_tab[i].set, "it has no DT_INIT");
+            continue;
+        }
+        run[i] = 1, nrun++;
+    }
+    if (!nrun) return 0;
+    uint64_t t0 = plat_now_ms();
+    rt_log("boot: ENTER %s DT_INIT first: a mod plugin's init runs before the game's constructors", sdk->name);
+    rt_call(c, sdk->init, 0);
+    pre = calloc((size_t)ldr_count(), sizeof *pre);
+    if (!pre) rt_fatal("plugins: out of memory");
+    for (int i = 0; i < ldr_count(); i++) {   // the game modules before the plugins run
+        const RtLoaded *m = ldr_module(i);
+        if (m->plugin) continue;
+        pre[i] = malloc(m->size);
+        if (!pre[i]) rt_fatal("plugins: out of memory for a copy of %s", m->name);
+        memcpy(pre[i], (const void *)(uintptr_t)m->base, m->size);
+    }
+    for (int i = RT_PLUGIN_COUNT - 1; i >= 0; i--) {
+        if (!run[i]) continue;
+        const RtLoaded *m = loaded(plugin_tab[i].module);
+        rt_log("plugins: ENTER %s DT_INIT at %#llx", m->name, (unsigned long long)m->init);
+        failed[0] = 0;
+        running = 1;
+        rt_trace |= RT_TRACE_PLUGIN;
+        rt_call(c, m->init, 0);
+        rt_trace &= ~(unsigned)RT_TRACE_PLUGIN;
+        running = 0;
+        if (failed[0]) snprintf(why[i], sizeof why[i], "its init asked for what the port does not serve: %s", failed);
+    }
+    for (int i = 0; i < naliases; i++)
+        if (aliases[i].live) flush(&aliases[i]);
+    // What the inits wrote into the game modules, word by word, against the record of the build.
+    uint8_t seen[NWRITES > 0 ? NWRITES : 1];
+    memset(seen, 0, sizeof seen);
+    int unexpected = 0;
+    char first[160] = "";
+    for (int i = 0; i < ldr_count(); i++) {
+        const RtLoaded *m = ldr_module(i);
+        if (!pre[i]) continue;
+        const uint8_t *now = (const uint8_t *)(uintptr_t)m->base;
+        for (uint64_t off = 0; off < m->size; off += PAGE) {
+            if (!memcmp(now + off, pre[i] + off, PAGE)) continue;
+            for (uint64_t w = off; w < off + PAGE; w += 4) {
+                uint32_t a, b;
+                memcpy(&a, pre[i] + w, 4);
+                memcpy(&b, now + w, 4);
+                if (a == b) continue;
+                int k = 0;
+                while (k < NWRITES && !(write_tab[k].off == w && !strcmp(write_tab[k].module, m->name) &&
+                                        write_tab[k].old == a && write_tab[k].now == b))
+                    k++;
+                if (k < NWRITES) {
+                    seen[k] = 1;
+                } else if (!unexpected++) {
+                    snprintf(first, sizeof first, "%s+%#llx %08x -> %08x", m->name, (unsigned long long)w, a, b);
+                }
+            }
+        }
+        restore_sealed(m, pre[i]);
+        free(pre[i]);
+    }
+    free(pre);
+    pre = NULL;
+    for (int i = 0; i < RT_PLUGIN_COUNT; i++) {
+        if (!run[i] || why[i][0]) continue;
+        const RtLoaded *m = loaded(plugin_tab[i].module);
+        int missing = 0;
+        for (int k = 0; k < NWRITES; k++) missing += write_tab[k].plugin == i && !seen[k];
+        char hex[65];
+        sha256_hex((const void *)(uintptr_t)m->base, m->text_end, hex);
+        if (unexpected)
+            snprintf(why[i], sizeof why[i], "the inits wrote %d words the build did not record (first %s)", unexpected,
+                     first);
+        else if (missing)
+            snprintf(why[i], sizeof why[i], "%d of the words the build recorded were not written", missing);
+        else if (strcmp(hex, plugin_tab[i].sha256))
+            snprintf(why[i], sizeof why[i], "its code after the init is not the one the build lifted");
+    }
+    mem_query_hook = NULL;    // the game's own QueryMemory sees its address space as without plugins
+    rt_process_memory = NULL; // a callback that maps process memory stops with a named fatal (svc.c)
+    int on = 0;
+    for (int i = 0; i < RT_PLUGIN_COUNT; i++) {
+        if (!run[i]) continue;
+        if (why[i][0]) {
+            rt_log("plugins: %s stays off: %s", plugin_tab[i].module, why[i]);
+            mods_plugin_off(plugin_tab[i].set, why[i]);
+            continue;
+        }
+        int hooks = 0;
+        for (int k = 0; k < NWRITES; k++) hooks += write_tab[k].plugin == i;
+        rt_log("plugins: %s: init ran, %d hooks on (set %s)", plugin_tab[i].module, hooks,
+               rt_patch_name(plugin_tab[i].set));
+        on++;
+    }
+    int live = 0;
+    for (int i = 0; i < naliases; i++) live += aliases[i].live;
+    rt_log("plugins: %d of %d plugins on in %llu ms (%d process-memory maps, %d kept)", on, nrun,
+           (unsigned long long)(plat_now_ms() - t0), naliases, live);
+    if (on && cfg_bool("TOTK_PLUGIN_TRACE")) trace_entries();
+    return 1;
+#else
+    (void)c, (void)sdk;
+    return 0;
+#endif
 }

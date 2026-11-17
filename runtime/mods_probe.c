@@ -197,6 +197,97 @@ static void probe_code(const char *root) {
     remove_tree(root);
 }
 
+// build-cache/plugins.status lines (tools/exefs_plugins.py) that refuse the probe's subsdk9 files of E and H: they stay
+// code the port cannot run.
+static const char *refused_plugins(void) {
+    static char text[256];
+    snprintf(text, sizeof text, "%08X\t%08X\tunsupported\t-\tthe init called svc 0x40\n"
+             "%08X\t%08X\tunsupported\t-\tthe init called svc 0x40\n", fnv("E/exefs/subsdk9", 15), fnv("probe", 5),
+             fnv("H/exefs/subsdk9", 15), fnv("probe", 5));
+    return text;
+}
+
+// Mod plugins (build-cache/plugins.status, plugins.stale; mods.c plugin_file, mods_plugin_off) in a folder of their own:
+//   P  RomFS + a built plugin (7 hooks)       its set on, ranked by the order; a contested site with Q's patch file
+//   Q  an ExeFS patch file on P's site
+//   R  a plugin the build has no line for     waits for the rebuild
+//   S  RomFS + a refused plugin               off, the reason kept; used without its code, the rest runs
+// Then P's start differs from the build (mods_plugin_off): its set goes off, Q's code runs at the site, the conflict
+// goes, a stale line marks P's file, and the next scan has P wait for the rebuild.
+static void probe_plugins(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
+    char q[160];
+    snprintf(q, sizeof q, "Q/exefs/%s.ips", bid);
+    static const char *const files[] = {"P/romfs/p.bin", "P/exefs/subsdk9", "R/exefs/subsdk9", "S/romfs/s.bin",
+                                        "S/exefs/subsdk9"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    put(root, q);
+    static char names[3][16];
+    static const char *const table[] = {"fps60", names[1], names[2]};
+    set_name(names[1], sizeof names[1], "P/exefs/subsdk9");
+    set_name(names[2], sizeof names[2], q);
+    char status[256], plugins[256];
+    snprintf(status, sizeof status, "%08X\t%08X\tcode\t-\t\n", fnv(q, strlen(q)), fnv("probe", 5));
+    snprintf(plugins, sizeof plugins, "%08X\t%08X\tplugin\tfps60\tplugin0, 7 hooks\n"
+             "%08X\t%08X\tunsupported\t-\tthe code its hooks reach has svc 0x40\n", fnv("P/exefs/subsdk9", 15),
+             fnv("probe", 5), fnv("S/exefs/subsdk9", 15), fnv("probe", 5));
+    static const int16_t s0[] = {1, 2};
+    static const RtPatchPick picks[] = {{"main", 0x100, s0, 2}};
+    mods_probe_cache(status, "");
+    mods_probe_plugins(plugins, "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_NO_CODE", "");
+    for (int round = 0; round < 2; round++) {
+        cfg_set("TOTK_MODS_ORDER", round ? "Q|P" : "P|Q");
+        mods_rescan();
+        mods_scan();
+        rt_patch_probe_table(table, 3, picks, 1);
+        rt_patch_switch(0, 1);
+        mods_exefs_apply(0, 0, 0, NULL);
+        const ModInfo *pm = by_name("P"), *qm = by_name("Q"), *rm = by_name("R"), *sm = by_name("S");
+        CHECK(pm && qm && rm && sm, "plugin scan: four mods");
+        if (!pm || !qm || !rm || !sm) break;
+        CHECK(pm->problem == MOD_OK && pm->nsets == 1 && pm->nplugins == 1 && pm->plugin_hooks == 7 && !pm->code[0] &&
+                  EQ(pm->overrides, "fps60"), "a built plugin: its set, its hooks, the built-in set it replaces");
+        CHECK(rt_patch_enabled(1) && !rt_patch_enabled(0), "the plugin's set on, the built-in set it replaces off");
+        CHECK(rt_patch_pick_winner(0) == (round ? 1 : 0), round ? "Q above P: Q's patch runs at their site"
+                                                                : "P above Q: P's plugin hook runs at their site");
+        CHECK(mods_conflict_count() == 1 && mods_conflict_at(0)->part == MOD_PART_CODE &&
+                  mods_conflict_at(0)->winner == (round ? qm : pm)->id,
+              "the conflict table: a plugin site against a patch file goes by the order");
+        CHECK(rm->problem == MOD_EXEFS_LATER && rm->pending == 1, "a plugin the build lacks waits for the rebuild");
+        CHECK(sm->problem == MOD_PLUGIN && EQ(sm->code, "subsdk9") && strstr(sm->plugin_note, "svc 0x40"),
+              "a refused plugin keeps its mod off and says why");
+    }
+    // P above Q, then P's start differs from the build
+    cfg_set("TOTK_MODS_ORDER", "P|Q");
+    mods_rescan();
+    mods_scan();
+    rt_patch_probe_table(table, 3, picks, 1);
+    mods_exefs_apply(0, 0, 0, NULL);
+    mods_plugin_off(1, "probe: 1 of the words the build recorded were not written");
+    const ModInfo *pm = by_name("P");
+    CHECK(!rt_patch_enabled(1) && rt_patch_pick_winner(0) == 1, "a plugin off at start: the other mod's patch runs");
+    CHECK(pm && strstr(pm->plugin_off, "were not written"), "its row says why");
+    CHECK(mods_conflict_count() == 0, "its conflict goes with it");
+    cfg_set("TOTK_MODS_NO_CODE", "S");
+    mods_rescan();
+    mods_scan();
+    pm = by_name("P");
+    const ModInfo *sm = by_name("S");
+    CHECK(pm && pm->problem == MOD_EXEFS_LATER && pm->pending == 1, "the next start: its file waits for the rebuild");
+    CHECK(sm && sm->problem == MOD_OK && sm->plugin_note[0], "a refused plugin used without its code: the rest runs");
+    rt_patch_probe_table(NULL, 0, NULL, 0);
+    cfg_set("TOTK_MODS_NO_CODE", "");
+    cfg_set("TOTK_MODS_ORDER", "");
+    mods_probe_cache(NULL, NULL);
+    mods_probe_plugins(refused_plugins(), "");
+    remove_tree(root);
+}
+
 // Mods with code the port cannot run (a code module, an ExeFS patch file it cannot apply): used without that code
 // by their own switch (mods_no_code) or by mods_without_code for every mod.
 static void probe_without_code(const char *root) {
@@ -292,6 +383,7 @@ int probe_mods(void) {
     if (back > cut) cut = back;
     if (!cut) return 1;
     strcpy(cut + 1, "mods-probe");
+    mods_probe_plugins(refused_plugins(), "");   // not the build's own plugins.status
     remove_tree(root);
     plat_file_mkdir_p(root);
     static const char *const files[] = {
@@ -362,6 +454,8 @@ int probe_mods(void) {
     probe_data(root);
     probe_without_code(root);
     probe_code(root);
+    probe_plugins(root);
+    mods_probe_plugins(NULL, NULL);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
     int table = restbl_probe();
     return fails || table ? 1 : 0;
