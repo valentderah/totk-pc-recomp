@@ -57,8 +57,7 @@ enum { NODE_BUTTON = 0x18, NODE_SCREEN = 0x20, BTN_LAYOUT = 0x20, BTN_FLAGS = 0x
 // nn::ui2d::DrawInfo: projection (4 x 4) and view (3 x 4); nn::ui2d::Layout: root pane, size, name
 enum { DI_PROJ = 0x10, DI_VIEW = 0x50, LYT_ROOT = 0x18, LYT_SIZE = 0x28, LYT_NAME = 0x30 };
 // nn::ui2d::Pane
-enum { PANE_NAME = 0x08, PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59, PANE_BASE = 0x5b,
-       PANE_MTX = 0x70 };
+enum { PANE_PARENT = 0x18, PANE_SIZE = 0x50, PANE_FLAG = 0x58, PANE_ALPHA = 0x59, PANE_BASE = 0x5b, PANE_MTX = 0x70 };
 
 // How far the pointer moves, in layout units (1280 x 720 across the picture: 1.5 window pixels at 1080p, 3 at 4K),
 // before it takes back a focus that the wheel, the keys or the pad moved away from it (menu_cursor_poll)
