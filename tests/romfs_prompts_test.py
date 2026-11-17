@@ -169,6 +169,64 @@ def bflyt(panes):
     return b'FLYT' + struct.pack('<HHIIHH', 0xFEFF, 0x14, 0x08000000, 0x14 + len(sections), len(panes) + 1, 0) + sections
 
 
+def diamond_bflyt():
+    """The action prompt's bars, flashes and textured bases, in addition to its letter panes."""
+    original = bflyt(PANES)
+    sections = [original[20:]]
+    names = ['N_BtnA_00', 'N_BtnA_01', 'N_CompanionBtnA_00', 'N_BtnB_00', 'N_BtnX_00', 'N_BtnY_00',
+             'N_LoopA_03', 'P_CaptureX_00', 'P_CaptureY_00', 'W_BaseX_00', 'W_BaseY_00',
+             'T_GuideX_00', 'T_GuideY_00', 'T_GuideX_TW', 'T_GuideY_TW']
+    names += [f'P_Capture{k}_{n:02}' for k in 'ABXY' for n in (1, 2, 3)]
+    bases = ['P_BaseA_00', 'P_BaseA_01', 'P_BaseB_00', 'P_BaseX_00', 'P_BaseY_00']
+    for i, name in enumerate(names + bases):
+        section = bytearray(0x80)
+        section[:4] = b'pic1' if name in bases else b'txt1' if name.startswith('T_') else b'pan1'
+        struct.pack_into('<I', section, 4, len(section))
+        section[12:12 + len(name)] = name.encode()
+        section[9] = i % 9
+        struct.pack_into('<8f', section, 0x2c, i * 3, i * -2, 0, 0, 0, i * 10, 1, -1 if i % 2 else 1)
+        if name in bases: struct.pack_into('<H', section, 0x64, bases.index(name))
+        elif name.startswith('T_'):
+            struct.pack_into('<H', section, 0x56, 4)
+            struct.pack_into('<I', section, 0x64, 0x70)
+            section[0x70:0x74] = b'G\0\0\0'
+        sections.append(section)
+    material = bytearray(12 + 4 * len(bases))
+    material[:4] = b'mat1'
+    struct.pack_into('<H', material, 8, len(bases))
+    for i in range(len(bases)):
+        struct.pack_into('<I', material, 12 + 4 * i, len(material))
+        entry = bytearray(0x30)
+        entry[:8] = f'Base{i:03}'.encode() + b'\0'
+        struct.pack_into('<H', entry, 0x2c, i)
+        material += entry
+    struct.pack_into('<I', material, 4, len(material))
+    sections.append(material)
+    textures = bytearray(12 + 4 * len(bases))
+    textures[:4] = b'txl1'
+    struct.pack_into('<H', textures, 8, len(bases))
+    for i in range(len(bases)):
+        struct.pack_into('<I', textures, 12 + 4 * i, len(textures) - 12)
+        textures += f'Nt_KeyBtnSubBase{i}'.encode() + b'\0'
+    struct.pack_into('<I', textures, 4, len(textures))
+    sections.append(textures)
+    body = b''.join(sections)
+    count = len(PANES) + 1 + len(names) + len(bases) + 2
+    return b'FLYT' + struct.pack('<HHIIHH', 0xFEFF, 20, 0x08000000, 20 + len(body), count, 0) + body
+
+
+def pane_positions(data):
+    """Synthetic layout pane x/y, read independently of the generator."""
+    pos, out = 20, {}
+    while pos < len(data):
+        magic, size = data[pos:pos + 4], struct.unpack_from('<I', data, pos + 4)[0]
+        if magic in (b'pan1', b'pic1', b'txt1'):
+            name = data[pos + 12:pos + 36].split(b'\0')[0].decode()
+            out[name] = struct.unpack_from('<2f', data, pos + 0x2c)
+        pos += size
+    return out
+
+
 def pane_texts(data):
     pos, out = struct.unpack_from('<H', data, 6)[0], {}
     while pos + 8 <= len(data):
@@ -333,7 +391,7 @@ class Romfs:
             self.common: sarc({'anim/ShortCutBG_00_In.bflan': bflan(('C_CaptureBG_00', 'C_CaptureClearBG_00',
                                                                       'P_CaptureClearBG_00', 'N_Other_00')),
                                'anim/AutoBuilder_00_In.bflan': bflan(('C_CaptureBG_00',)),
-                               'blyt/DoCommand_00.bflyt': bflyt(PANES),
+                               'blyt/DoCommand_00.bflyt': diamond_bflyt(),
                                'blyt/Title_00.bflyt': bflyt({'N_Title_00': 'Z'}),
                                'timg/__Combined.bntx': bntx(images)}),
             DEFAULT_FONT: sarc(default),
@@ -444,6 +502,20 @@ class PromptsTest(unittest.TestCase):
                 for path, texts in messages.items():
                     self.assertEqual((texts['T_Name_00'], texts['Greeting']), ('A', 'Hello'))
                     self.assertEqual(sarc_files(romfs.read(out, path))['LayoutMsg/Other_00.msbt'], msbt({'T_A_00': 'A'}))
+
+    def test_xbox_label_diamond_moves_letters_bars_and_hold_flashes(self):
+        for romfs, _, out, _ in self.each(('xbox-label',)):
+            before = sarc_files(romfs.contents[romfs.common])['blyt/DoCommand_00.bflyt']
+            after = sarc_files(romfs.read(out, romfs.common))['blyt/DoCommand_00.bflyt']
+            old, new = pane_positions(before), pane_positions(after)
+            self.assertEqual(new['T_A_00'], (2, -39))
+            self.assertEqual(new['T_B_00'], (39, 1))
+            self.assertEqual(new['T_X_00'], (-38, 0))
+            self.assertEqual(new['T_Y_00'], (1, 39))
+            self.assertEqual(new['N_BtnA_00'], old['N_BtnB_00'])
+            self.assertEqual(new['N_BtnB_00'], old['N_BtnA_00'])
+            self.assertEqual(new['N_LoopA_03'], tuple(a + b - c for a, b, c in
+                             zip(old['N_LoopA_03'], old['P_CaptureB_01'], old['P_CaptureA_01'])))
 
     def test_other_buttons_are_drawn_as_xbox_icons(self):
         for romfs, style, out, _ in self.each():

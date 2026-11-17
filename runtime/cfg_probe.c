@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -135,6 +136,9 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "1") && m->live, "meta: fps60 defaults to 1 and is live");
     m = cfg_meta("ASYNC_PREEMPT");
     CHECK(m && EQ(m->values, "0|1|2") && !m->live, "meta: async_preempt takes 0|1|2 and needs a restart");
+    m = cfg_meta("HUD_WIDTH");
+    CHECK(m && EQ(m->def, "full") && EQ(m->values, "full|21:9|16:9") && !m->live,
+          "meta: HUD width defaults to full and changes after restart");
     m = cfg_meta("totk_vk_present");
     CHECK(m && EQ(m->key, "VK_PRESENT") && EQ(m->values, "mailbox|fifo|immediate") && m->live,
           "meta: prefix and case are accepted");
@@ -363,12 +367,48 @@ int probe_cfg(void) {
         }
         snprintf(f, sizeof f, "%s/romfs-index.bin", dir);
         plat_setenv("TOTK_ROMFS_INDEX", f);
+        plat_setenv("TOTK_HUD_WIDTH", NULL);
+        static const char *const capped[] = {"romfs-patches-2560x1080-hud16x9",
+                                             "romfs-patches-xbox-2560x1080-hud16x9",
+                                             "romfs-patches-3840x1080-hud21x9"};
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_delete(f);
+        }
+        cfg_set("TOTK_HUD_WIDTH", "full");
         CHECK(romfs_shaped_ready(2560, 1080) && romfs_shaped_ready(5120, 2160) && !romfs_shaped_ready(3440, 1440),
               "shape: 5120x2160 finds 2560x1080's layout folder, 3440x1440 does not");
         CHECK(romfs_shaped_prompts_ready("romfs-patches-xbox", 5120, 2160) &&
                   !romfs_shaped_prompts_ready("romfs-patches-xbox", 2560, 1080) &&
                   !romfs_shaped_prompts_ready("romfs-patches-pc", 5120, 2160),
               "shape: an older install's exact-size prompts folder serves that size only");
+        cfg_set("TOTK_HUD_WIDTH", "16:9");
+        CHECK(romfs_shaped_ready(5120, 2160) && romfs_shape_missing(5120, 2160, NULL),
+              "HUD: a full layout allows wide output but does not hide a missing selected cap");
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s", dir, capped[i]);
+            plat_file_mkdir_p(f);
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_write(f, "#\n", 2);
+        }
+        CHECK(!romfs_shape_missing(5120, 2160, "romfs-patches-xbox") &&
+                  romfs_shape_missing(5120, 2160, "romfs-patches-pc"),
+              "HUD: canonical capped layouts serve aliases, including Xbox; missing PC prompts still need preparation");
+        cfg_set("TOTK_HUD_WIDTH", "21:9");
+        CHECK(romfs_shape_missing(5120, 2160, NULL) && !romfs_shape_missing(5120, 1440, NULL),
+              "HUD: a different cap needs a different folder; 5120x1440 uses the 3840x1080 shape");
+        cfg_set("TOTK_HUD_WIDTH", "full");
+        CHECK(!romfs_shaped_ready(5120, 1440), "HUD: switching to full does not reuse a capped-only layout");
+        cfg_set("TOTK_HUD_WIDTH", "21:9");
+        CHECK(!romfs_shape_missing(1920, 1080, NULL), "HUD: 16:9 output ignores a wider cap");
+        plat_setenv("TOTK_ROMFS_PATCHES", "0");
+        CHECK(!romfs_shape_missing(5120, 2160, NULL), "HUD: explicit overlay overrides do not request generated layouts");
+        plat_setenv("TOTK_ROMFS_PATCHES", NULL);
+        cfg_set("TOTK_HUD_WIDTH", "full");
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_delete(f);
+        }
         plat_setenv("TOTK_ROMFS_INDEX", NULL);
     }
     uint8_t pd[PAD_COUNT] = {0};
@@ -496,7 +536,11 @@ int probe_cfg(void) {
         char name[96];
         snprintf(name, sizeof name, "TOTK_%s", m->key);
         plat_setenv(name, "");
-        CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
+        // cfg_get may supply a display or device-profile default (notably OUTPUT_RES on an ultrawide monitor).
+        // The metadata default is used only when those leave the setting unset.
+        const char *effective = cfg_get(name);
+        CHECK(EQ(cfg_value(name), effective && *effective ? effective : m->def),
+              "cfg_value uses the effective default, falling back to the metadata table");
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {

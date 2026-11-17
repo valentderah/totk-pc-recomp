@@ -203,6 +203,13 @@
 # laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
 # too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
+# HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
+# 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the
+# corners of a 32:9 screen stay clear. A cap not narrower than the screen is the same as full, and a 16:9 or taller
+# screen ignores it. The installer's Shapes step prepares only the selected cap for the shapes of connected displays
+# and output_res, with the selected button prompts. full creates no capped layouts. After changing this setting,
+# prepare a missing layout in the Screen tab or rerun setup, then restart. A missing capped folder keeps the full HUD.
+# hud_width = full
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400); above 100 supersamples the scene (anti-aliasing). The scene stays within 8192 pixels a side
 # and within a texture heap under 2 GiB (8192x2304 at most on a 5120x1440 output); the log says when it is smaller.
