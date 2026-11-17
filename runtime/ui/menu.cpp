@@ -416,9 +416,6 @@ static int fonts_up(float scale) {
     for (uint8_t *d : data) free(d);
     rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
     g_font_scale = ok ? scale : 0;
-    // The blueprint preview's offscreen targets and pipeline need the device and the ImGui backend's descriptor pool, so
-    // this is the first moment they can be made. A failure is not fatal: the picker then draws through the draw list.
-    if (ok) preview3d_init();
     return ok;
 }
 
@@ -2060,6 +2057,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     int folders_wait = open ? folders_tick(false) : 0;   // before the rows, whose notes it sets
+    // The blueprint preview's offscreen targets and pipeline are made the first time the picker is drawn, not at start:
+    // they are two 1024x1024 images, a pipeline and about 60 MiB of host-visible buffers, and a player who never opens a
+    // blueprint should not pay for them. It has to be after ImGui_ImplVulkan_NewFrame because the target is registered
+    // with the backend as a texture (ImGui_ImplVulkan_AddTexture), which is what the descriptor pool belongs to. A
+    // failure is not fatal: preview3d_init remembers that it was tried and the picker draws through the draw list.
+    if (!preview3d_ready() && bp_picker_is_open()) preview3d_init();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
     toast_draw(t, scale);
