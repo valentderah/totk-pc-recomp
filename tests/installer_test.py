@@ -391,7 +391,11 @@ class LiftRunTest(unittest.TestCase):
             (self.dest / 'mods' / name / 'exefs').mkdir(parents=True, exist_ok=True)
             (self.dest / 'mods' / name / 'exefs' / 'subsdk9').write_bytes(b'NSO0' + name.encode())
         plugin = self.dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9'
-        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja',
+        dll = self.dest.parent / 'release-bin' / 'SDL3.dll'
+        dll.parent.mkdir(exist_ok=True)
+        dll.write_bytes(b'MZ')
+        (self.ctx.temp / 'build').mkdir(parents=True, exist_ok=True)
+        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja', dlls=[dll],
                                           deps=None, sysroot=None, runtime_lib_for=lambda cpu: None,
                                           pgo=lambda version: None, expected=lambda version: 'expected.json')
         saved = self.run_tool
@@ -426,6 +430,8 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(last[last.index('--plugins') + 1], str(plugin))
         self.assertEqual(last[last.index('--patches') + 1], str(self.ctx.temp / 'patches-plugins.txt'))
         self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        # the service run's totk.exe finds its DLLs beside it
+        self.assertTrue((self.ctx.temp / 'build' / 'SDL3.dll').is_file())
 
     def test_refused_plugin_is_not_lifted(self):
         # a refused plugin: its status line stays (the Mods tab says why), the game is lifted without it

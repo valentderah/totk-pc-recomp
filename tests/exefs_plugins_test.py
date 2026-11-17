@@ -13,6 +13,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -398,6 +399,7 @@ class PerPlugin(unittest.TestCase):
         (self.d / 'patches.txt').write_text('set fps60 TOTK_FPS60 1\n')
         self.runs = []
         saved = xp.run, xp.hook_impls
+        self.real_run = xp.run
         self.addCleanup(lambda: (setattr(xp, 'run', saved[0]), setattr(xp, 'hook_impls', saved[1])))
         xp.run, xp.hook_impls = self.fake_run, lambda rec: IMPLS
 
@@ -443,6 +445,20 @@ class PerPlugin(unittest.TestCase):
         self.assertNotIn(f'mod_{key["B"].lower()}', text)
         self.assertNotIn(f'mod_{key["C"].lower()}', text)
         self.assertIn((out / 'plugin0' / 'run1' / 'plugin0.img').resolve().as_posix(), text)
+
+    def test_run_reasons(self):
+        # the real run(): a hang becomes its own reason, a crash names the FATAL line
+        saved = xp.subprocess.run
+        self.addCleanup(setattr, xp.subprocess, 'run', saved)
+
+        def hang(cmd, **kw):
+            raise xp.subprocess.TimeoutExpired(cmd, kw['timeout'], output=b'started', stderr=None)
+        xp.subprocess.run = hang
+        self.assertEqual(self.real_run(None, self.d / 'h', 0, 7, 'plugin0'), (None, 'its init did not return within 7 s'))
+        xp.subprocess.run = lambda cmd, **kw: SimpleNamespace(returncode=0xC0000005, stdout='x\nFATAL: access violation '
+                                                              '(0xc0000005) at host 1\n', stderr='')
+        code, why = self.real_run(None, self.d / 'c', 0, 7, 'plugin0')
+        self.assertEqual(why, 'its init crashed the service run: access violation (0xc0000005) at host 1')
 
     def test_ran_view_leaves_out_plugins_that_did_not_run(self):
         rec = record()

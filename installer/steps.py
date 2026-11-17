@@ -997,6 +997,9 @@ class Lift(Step):
             if not code:
                 code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
             if not code:
+                # the service run's totk.exe loads its DLLs from its own folder, as the installed one does
+                for dll in layout.dlls:
+                    replace_file(dll, ctx.temp / 'build' / dll.name)
                 code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
                     '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
                     ctx.dest / 'mods', '--patches', patches, '--patches-out', ctx.temp / 'patches-plugins.txt',
