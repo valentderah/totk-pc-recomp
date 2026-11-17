@@ -1,9 +1,24 @@
 """Run a mod plugin's init in the plugin service run and check what it did: the build step before the generator emits
 a plugin's hook sites. After the design in #845 by itaskaev2; the init runs on this port's runtime (totk.exe
---plugin-init, runtime/plugin_init.c) instead of under Unicorn.
+--plugin-init, runtime/plugin_init.c) instead of under Unicorn, and it runs again at every start of the game in the
+same environment (plugin_init.c plugins_start), so the plugin keeps real state (its heap blocks, its GOT, its alias
+addresses). The record says what the build expects that start-up to write.
 
   python tools/exefs_plugins.py --exe build/<ver>-x/totk.exe --out <dir>     # two runs, their diff, the check
   python tools/exefs_plugins.py --check <dir>/run1                           # the check of one record
+  python tools/exefs_plugins.py --exe <exe> --out <dir> --mods <mods folder> --patches <patch file>
+                                --patches-out <patch file> --status <file>   # and the patch lines for the generator
+
+With --mods, --patches, --patches-out and --status, an accepted plugin becomes one `ordered` patch set mod_<hash>
+(recomp/patches.py: a plugin line, its expected writes, stubs, seeds, orig lines and its hook sites) appended to the
+--patches file into --patches-out, and every plugin gets a line of --status (runtime/mods.c reads it as
+build-cache/plugins.status), in the format of tools/exefs_patches.py --status:
+
+  <file hash> <content hash> <kind> <built-in sets> <note>
+
+file hash: FNV-1a 32 of "<mod folder name>/<path of the NSO in the mod>"; content hash: the same over its bytes; kind
+`plugin` (note: the module and its hook count) or `unsupported` (note: the first reason); built-in sets: the port's
+own sets with a site the plugin hooks too ("-" none), which the runtime switches off while the mod is on.
 
 The exe must be built with the plugin in its layout (recomp/gen.py --plugins). --out gets run1/ and run2/, one record
 each; run2 adds a large offset to every GetSystemTick (TOTK_PLUGIN_TICK_OFFSET), so the init picks other alias
@@ -24,10 +39,14 @@ The check (check_record) accepts a record only when every rule holds; each broke
       record lists them), which the generator can emit as a patch site whose replacement is that branch;
     - a replace hook (Full Inventory Expansion's Sort Fixer): `b` from a function start of main to a function start of
       the plugin's lift; the Orig trampoline (the original relocated, b site+4) is listed when the pool holds one.
-Not checked here yet: a site shared with a built-in patch set or another mod, and svcs in the code the callbacks
-reach (both need the generator's view).
+  - the code the hooks reach (the stubs, exlaunch's hook impls, the callbacks, the replace and call targets, and what
+    they reach by direct branches and calls, reach()) has no svc but OutputDebugString and calls only the imports
+    REACH_IMPORTS. An indirect call (blr) is not followed: what it reaches cannot be known before the run.
+A site shared with a built-in patch set turns that set off while the mod is on (the status line names it); a site
+shared with another mod goes through the run time's pick (the Mods tab order, runtime/patches.c).
 """
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -36,18 +55,30 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'recomp'))
-from nso import Nso  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cheats import fnv  # noqa: E402
+from exefs_patches import EXEFS_PLACES, builtin_sites  # noqa: E402
+from nso import R_AARCH64_JUMP_SLOT, Nso  # noqa: E402
 
 ALLOWED_SVCS = {0x06: 'QueryMemory', 0x1E: 'GetSystemTick', 0x27: 'OutputDebugString', 0x29: 'GetInfo',
                 0x74: 'MapProcessMemory', 0x75: 'UnmapProcessMemory'}
 ALLOWED_INFO = {2, 3, 4, 5, 12, 13, 14, 15, 65001}
-# Reviewed one by one: SNPrintf formats into the caller's buffer; GetDisplayVersion is answered by the service run;
-# mersenne_twister_engine<uint64_t, ...>::_M_gen_rand (Full Inventory Expansion's alias picker) refills the state of the
-# engine object it is given, which lives in the plugin's .bss; memcmp and strlen only read. malloc stays out: Quick
-# Weapon Durability's init keeps a heap block's address in its .bss, and that block does not exist at play time.
-ALLOWED_IMPORTS = {'_ZN2nn4util8SNPrintfEPcmPKcz', '_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE', 'memcmp', 'strlen',
-                   '_ZNSt23mersenne_twister_engineImLm64ELm312ELm156ELm31ELm13043109905998158313ELm29ELm6148914691236517205'
-                   'ELm17ELm8202884508482404352ELm37ELm18444473444759240704ELm43ELm6364136223846793005EE11_M_gen_randEv'}
+# Reviewed one by one: SNPrintf formats into the caller's buffer; GetDisplayVersion is answered by the runtime with
+# the build's game version; mersenne_twister_engine<uint64_t, ...>::_M_gen_rand (Full Inventory Expansion's alias
+# picker) refills the state of the engine object it is given, which lives in the plugin's .bss; memcmp and strlen only
+# read; memcpy, memmove and memset write the buffers they are given; malloc and free use the game's heap (sdk's musl
+# allocator), and since the init runs again at every start, a block it keeps exists at play time (Quick Weapon
+# Durability's init keeps one in its .bss).
+SAFE_LIBC = {'malloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp', 'strlen'}
+MT_GEN_RAND = ('_ZNSt23mersenne_twister_engineImLm64ELm312ELm156ELm31ELm13043109905998158313ELm29ELm6148914691236517205'
+               'ELm17ELm8202884508482404352ELm37ELm18444473444759240704ELm43ELm6364136223846793005EE11_M_gen_randEv')
+SNPRINTF = '_ZN2nn4util8SNPrintfEPcmPKcz'
+ALLOWED_IMPORTS = SAFE_LIBC | {SNPRINTF, '_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE', MT_GEN_RAND}
+# The imports the code the hooks reach may call while the game runs (reach()). Each reviewed for what it touches: the
+# libc ones above (the caller's buffers and the game's heap), SNPrintf (the caller's buffer). Nothing that waits,
+# talks to a service or changes memory mappings.
+REACH_IMPORTS = SAFE_LIBC | {SNPRINTF}
+SVC_OUTPUT_DEBUG_STRING = 0x27
 HOOK_IMPLS = ('exl_inline_hook_impl', 'exl_inline_float_hook_impl')
 STUR_X30 = 0xF81F03FE   # stur x30, [sp, #-0x10]
 LDUR_X30 = 0xF85F03FE   # ldur x30, [sp, #-0x10]
@@ -241,6 +272,203 @@ def check_record(rec, impls):
     return hooks, reasons
 
 
+# ---- the code the hooks reach
+def plt_imports(nso, img, base, text_end):
+    """{absolute address of a PLT stub: the import its GOT slot binds} (adrp x16; ldr x17, [x16, #slot]; add x16, x16,
+    #slot; br x17), from the JUMP_SLOT relocations."""
+    slots = {off: nso.syms[sym][0] for off, typ, sym, _ in nso.relocs if typ == R_AARCH64_JUMP_SLOT}
+    out = {}
+    for o in range(0, text_end - 16, 4):
+        w0, w1, _, w3 = struct.unpack_from('<4I', img, o)
+        if w0 & 0x9F00001F != 0x90000010 or w1 & 0xFFC003FF != 0xF9400211 or w3 != 0xD61F0220:
+            continue
+        imm = sext((w0 >> 29 & 3) | (w0 >> 5 & 0x7FFFF) << 2, 21)
+        slot = ((o & ~0xFFF) + (imm << 12)) + (w1 >> 10 & 0xFFF) * 8
+        if slot in slots:
+            out[base + o] = slots[slot]
+    return out
+
+
+def reach(img, base, text_end, roots, plt, stubs=()):
+    """What the code from roots (absolute addresses in the plugin's .text) reaches by falling through, direct branches
+    and direct calls: (svc immediates, {import: calls}, indirect calls, words outside the .text it branched to). A
+    stub's b to its trampoline counts as its return (recomp/patches.py `stub`)."""
+    svcs, imports, indirect, outside = set(), {}, 0, set()
+    seen, work = set(), list(roots)
+    stub_rets = {s + 12 for s in stubs}
+    while work:
+        a = work.pop()
+        while True:
+            if a in seen:
+                break
+            if a in plt:
+                imports[plt[a]] = imports.get(plt[a], 0) + 1
+                break
+            if not base <= a < base + text_end:
+                outside.add(a)
+                break
+            seen.add(a)
+            w = struct.unpack_from('<I', img, a - base)[0]
+            if a in stub_rets:
+                break
+            if w & 0xFFE0001F == 0xD4000001:   # svc #imm
+                svcs.add(w >> 5 & 0xFFFF)
+            if w & 0x7C000000 == 0x14000000:   # b, bl
+                t = branch_target(w, a)
+                if w >> 31:
+                    work.append(t)
+                else:
+                    a = t
+                    continue
+            elif pc_relative(w, a) and pc_relative(w, a)[0][0] in ('b.cond', 'cbz', 'tbz'):
+                work.append(pc_relative(w, a)[1])
+            elif w & 0xFFFFFC1F == 0xD63F0000:   # blr
+                indirect += 1
+            elif is_indirect(w):   # br, ret: the path ends
+                break
+            elif w == 0 or w & 0xFFE0001F == 0xD4200000:   # udf, brk: ends too
+                break
+            a += 4
+    return svcs, imports, indirect, outside
+
+
+def reach_check(rec, hooks, impls):
+    """Reasons the code the hooks reach breaks the rules (svcs, imports), and a summary line."""
+    reasons, notes = [], []
+    for p in (m for m in rec['modules'] if m['plugin'] and m['name'] in rec['images']):
+        img, base = rec['images'][p['name']], p['base']
+        roots, stubs = set(), set()
+        for h in hooks:
+            for k in ('stub', 'callback', 'target'):
+                if h.get(k, '').startswith(p['name'] + '+'):
+                    roots.add(base + int(h[k].split('+')[1], 16))
+            if h['kind'] == 'inline' and h['stub'].startswith(p['name'] + '+'):
+                stubs.add(base + int(h['stub'].split('+')[1], 16))
+        roots |= {a for a in impls if base <= a < base + p['text_end']}
+        nso = Nso(p['file']) if p.get('file') and Path(p['file']).is_file() else None
+        plt = plt_imports(nso, img, base, p['text_end']) if nso else {}
+        svcs, imports, indirect, outside = reach(img, base, p['text_end'], sorted(roots), plt, stubs)
+        for imm in sorted(svcs - {SVC_OUTPUT_DEBUG_STRING}):
+            reasons.append(f'the code its hooks reach has svc {imm:#x}')
+        for name in sorted(set(imports) - REACH_IMPORTS):
+            reasons.append(f'the code its hooks reach calls the import {name}')
+        notes.append(f'{p["name"]}: hooks reach {len(roots)} roots, imports {", ".join(sorted(imports)) or "none"}, '
+                     f'{indirect} indirect calls not followed' + (f', {len(outside)} branches out of its .text'
+                                                                  if outside else ''))
+    return reasons, notes
+
+
+# ---- patch lines and status for the generator and the runtime
+def mod_of(nso_path, mods):
+    """(mod folder name, path of the NSO in the mod) of a plugin file under the mods folder, else None."""
+    try:
+        rel = Path(nso_path).resolve().relative_to(Path(mods).resolve())
+    except ValueError:
+        return None
+    return rel.parts[0], '/'.join(rel.parts[1:])
+
+
+def hooks_of(hooks, module):
+    """The hooks whose stub or target lies in the plugin module: its own, when one record holds several plugins."""
+    return [h for h in hooks if (h.get('stub') or h.get('target') or '').split('+')[0] == module]
+
+
+def plugin_lines(rec, hooks, name, record_dir, module):
+    """The patch lines of the accepted plugin module (recomp/patches.py) for set name: the plugin line, the expected
+    writes (the words at its hooks' sites), the stubs, the seeds, the orig lines and the hook sites."""
+    lines = []
+    mods = {m['name']: m for m in rec['modules']}
+    p = mods[module]
+    img = rec['images'][p['name']]
+    text_sha = hashlib.sha256(img[:p['text_end']]).hexdigest()
+    lines.append(f'plugin {name} {p["name"]} {text_sha} {(Path(record_dir) / p["image"]).resolve().as_posix()}')
+    own = {int(h['site'].split('+')[1], 16) for h in hooks}
+    for w in rec['writes']:
+        if w['module'] == 'main' and w['offset'] in own:
+            lines.append(f'expect {name} {w["module"]} {w["offset"]:x} {w["old"]:08x} {w["new"]:08x}')
+    seeds, stubs = {}, {}
+
+    def at(ref):
+        mod, off = ref.split('+')
+        return mod, int(off, 16)
+
+    for h in hooks:
+        site = int(h['site'].split('+')[1], 16)
+        if h['kind'] == 'inline':
+            sm, so = at(h['stub'])
+            stubs.setdefault(sm, set()).add(so)
+            cm, co = at(h['callback'])
+            seeds.setdefault(cm, set()).add(co)
+            # the hook impl the stub calls: its bl, as check_record read it
+            stub_at = mods[sm]['base'] + so
+            impl = branch_target(struct.unpack_from('<I', rec['images'][sm], so + 4)[0], stub_at + 4)
+            seeds.setdefault(sm, set()).add(impl - mods[sm]['base'])
+            lines.append(f'site {name} main {site:x} {u(h["original"]):08x} @call:{sm}+{so:x} {u(h["original"]):08x}')
+        else:
+            tm, to = at(h['target'])
+            seeds.setdefault(tm, set()).add(to)
+            new = next(w['new'] for w in rec['writes'] if w['module'] == 'main' and w['offset'] == site)
+            lines.append(f'site {name} main {site:x} {u(h["original"]):08x} {new:08x}')
+            if h['kind'] == 'replace' and h.get('trampoline'):
+                rm, ro = at(h['trampoline'])
+                lines.append(f'orig {name} {rm} {ro:x} main {site:x}')
+    for m in sorted(stubs):
+        lines += [f'stub {m} {o:x}' for o in sorted(stubs[m])]
+    for m in sorted(seeds):
+        lines.append(f'seed {m} ' + ' '.join(f'{o:x}' for o in sorted(seeds[m])))
+    return lines
+
+
+def plugin_files(mods):
+    """[(mod folder name, path in the mod, file)] of the exlaunch plugins of the mods folder, by mod name: the subsdk*
+    files of each mod's first ExeFS place (tools/exefs_patches.py EXEFS_PLACES, runtime/mods.c find_root). A replaced
+    main is no plugin."""
+    out = []
+    for mod in sorted((d for d in Path(mods).iterdir() if d.is_dir()), key=lambda d: d.name) if Path(mods).is_dir() else []:
+        exefs = next((mod / w for w in EXEFS_PLACES if (mod / w).is_dir()), None)
+        if exefs:
+            for f in sorted(exefs.iterdir(), key=lambda f: f.name.lower()):
+                if f.is_file() and f.name.lower().startswith('subsdk'):
+                    out.append((mod.name, f.relative_to(mod).as_posix(), f))
+    return out
+
+
+def emit(rec, hooks, reasons, record_dir, args):
+    """--patches-out and --status from the record (accepted or not)."""
+    text = args.patches.read_text() if args.patches else ''
+    builtin = builtin_sites(text)
+    status, sets = [], []
+    files = {str(f.resolve()): (m, rel, f) for m, rel, f in plugin_files(args.mods)}
+    plugins = [m for m in rec['modules'] if m['plugin']]
+    for p in plugins:
+        hit = files.get(str(Path(p.get('file', '')).resolve()))
+        if not hit:
+            print(f'plugins: {p["name"]}: {p.get("file")} is not under {args.mods}')
+            continue
+        mod, rel, f = hit
+        key, content = fnv(f'{mod}/{rel}'.encode()), fnv(f.read_bytes())
+        if reasons:
+            note = reasons[0].replace('\t', ' ')
+            status.append(f'{key}\t{content}\tunsupported\t-\t{note}')
+            print(f'plugins: unsupported {mod}/{rel} ({note})')
+            continue
+        name = f'mod_{key.lower()}'
+        own = hooks_of(hooks, p['name'])
+        sites = [int(h['site'].split('+')[1], 16) for h in own]
+        over = sorted({b for a in sites for b in builtin.get(a, [])})
+        label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
+        sets.append([f'set {name} TOTK_MODPATCH_{key} 0 ordered   # {label}'] + plugin_lines(rec, own, name, record_dir,
+                                                                                          p['name']))
+        status.append(f'{key}\t{content}\tplugin\t{",".join(over) or "-"}\t{p["name"]}, {len(own)} hooks')
+        print(f'plugins: plugin {mod}/{rel} as {p["name"]}, {len(own)} hooks' + (f', over {", ".join(over)}'
+                                                                                  if over else ''))
+    if sets:
+        text += '\n# Mod plugins (tools/exefs_plugins.py)\n' + '\n'.join(line for s in sets for line in s) + '\n'
+    args.patches_out.write_text(text)
+    args.status.parent.mkdir(parents=True, exist_ok=True)
+    args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
+
+
 # ---- two runs
 def where_is(v, rec):
     """What an address-like value points into, for the diff listing."""
@@ -307,7 +535,12 @@ def run(exe, out, tick_offset, timeout):
 
 
 def report(rec, label):
-    hooks, reasons = check_record(rec, hook_impls(rec))
+    impls = hook_impls(rec)
+    hooks, reasons = check_record(rec, impls)
+    more, notes = reach_check(rec, hooks, impls)
+    reasons += more
+    for n in notes:
+        print(f'  {n}')
     print(f'{label}: {len(rec["writes"])} words written into game modules, {len(rec["aliases"])} process-memory maps, '
           f'svcs {", ".join(f"{ALLOWED_SVCS.get(u(k), hex(u(k)))} x{v}" for k, v in rec["svcs"].items())}; '
           f'GetInfo {", ".join(f"{k} x{v}" for k, v in rec["get_info"].items())}; '
@@ -323,7 +556,7 @@ def report(rec, label):
         print(f'  REFUSED: {r}')
     if not reasons:
         print(f'  accepted: {len(hooks)} hooks')
-    return reasons
+    return hooks, reasons
 
 
 def main():
@@ -332,9 +565,21 @@ def main():
     ap.add_argument('--out', type=Path, help='directory for run1/ and run2/')
     ap.add_argument('--check', type=Path, help='check the record in this directory only')
     ap.add_argument('--timeout', type=int, default=300)
+    ap.add_argument('--mods', type=Path, help='the mods folder the plugins come from')
+    ap.add_argument('--patches', type=Path, help='the patch file so far')
+    ap.add_argument('--patches-out', type=Path, help='the patch file with the plugins\' sets added')
+    ap.add_argument('--status', type=Path, help='the plugin status file (build-cache/plugins.status)')
     args = ap.parse_args()
+    sys.stdout.reconfigure(errors='replace')
+    emitting = bool(args.patches_out or args.status)
+    if emitting and not (args.mods and args.patches_out and args.status):
+        ap.error('--mods, --patches-out and --status go together')
     if args.check:
-        return 1 if report(load_record(args.check), str(args.check)) else 0
+        rec = load_record(args.check)
+        hooks, bad = report(rec, str(args.check))
+        if emitting:
+            emit(rec, hooks, bad, args.check, args)
+        return 1 if bad else 0
     if not args.exe or not args.out:
         ap.error('--exe and --out, or --check')
     recs = []
@@ -346,11 +591,18 @@ def main():
             return 1
         recs.append(load_record(d))
         print(f'run {i}: exit {code}, tick offset {offset:#x}')
-    bad = report(recs[0], 'run 1')
+    hooks, bad = report(recs[0], 'run 1')
     diff = diff_records(*recs)
     print(f'run 1 against run 2: {len(diff)} differences' + (':' if diff else ''))
     for line in diff:
         print(f'  {line}')
+    # Words of a game module or of a plugin's .text that differ between the runs: the start-up could not be compared
+    # with the record. Its .data and .bss may differ (alias addresses).
+    unstable = [line for line in diff if line.startswith('write ') or '(.text)' in line or '(.rodata)' in line]
+    if unstable:
+        bad = bad + [f'two runs of the init differ in code: {unstable[0]}']
+    if emitting:
+        emit(recs[0], hooks, bad, args.out / 'run1', args)
     return 1 if bad else 0
 
 

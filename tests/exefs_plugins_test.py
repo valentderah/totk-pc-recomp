@@ -1,8 +1,13 @@
 """recomp/layout.py with and without mod plugins, and tools/exefs_plugins.py's check of a plugin service run record:
-a synthetic exlaunch-shaped record with one inline hook that passes, and one bad record per rule. No game files.
+a synthetic exlaunch-shaped record with one inline hook that passes, and one bad record per rule; the check of the
+code the hooks reach; the patch lines of the three hook kinds; and what recomp/patches.py and recomp/gen.py make of
+those lines (the hook call, the stub's return, the unpatched copy a replace hook's trampoline reaches, the start-up
+record in patches.h). The start-up comparison itself runs in the game (runtime/plugin_init.c plugins_start); its
+mods.c side is in totk.exe --probe-mods. No game files.
 
 Run with .venv (lz4 and numpy, as recomp/): python tests/exefs_plugins_test.py
 """
+import hashlib
 import json
 import struct
 import sys
@@ -14,7 +19,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'recomp'))
 import exefs_plugins as xp  # noqa: E402
+import gen  # noqa: E402
 import layout  # noqa: E402
+import patches  # noqa: E402
 from nso import Nso  # noqa: E402
 
 
@@ -276,6 +283,215 @@ class Diff(unittest.TestCase):
         self.assertIn('plugin0+0x13450', lines[0])
         self.assertIn('alias pool', lines[0])
         self.assertEqual(xp.diff_records(a, record()), [])
+
+
+# ---- the code the hooks reach
+SVC_40, RET_W, NOP = 0xD4000801, 0xD65F03C0, 0xD503201F
+
+
+def code(words, at=0):
+    img = bytearray(0x200)
+    for i, w in enumerate(words):
+        struct.pack_into('<I', img, at + 4 * i, w)
+    return bytes(img)
+
+
+class Reach(unittest.TestCase):
+    BASE = 0x7005200000
+
+    def test_follows_calls_and_finds_svc(self):
+        # root: bl +0x40; ret.  callee at 0x40: svc 0x40; ret
+        img = bytearray(code([b(self.BASE, self.BASE + 0x40, True), RET_W]))
+        struct.pack_into('<II', img, 0x40, SVC_40, RET_W)
+        svcs, imports, indirect, outside = xp.reach(bytes(img), self.BASE, 0x200, [self.BASE], {})
+        self.assertEqual(svcs, {0x40})
+
+    def test_imports_through_plt(self):
+        img = code([b(self.BASE, self.BASE + 0x80, True), RET_W])
+        svcs, imports, _, _ = xp.reach(img, self.BASE, 0x200, [self.BASE], {self.BASE + 0x80: 'malloc'})
+        self.assertEqual((svcs, imports), (set(), {'malloc': 1}))
+
+    def test_stub_returns_at_its_trampoline_branch(self):
+        # stur; bl impl; ldur; b trampoline (where an svc sits): the b is the stub's return
+        stub = [xp.STUR_X30, b(self.BASE + 4, self.BASE + 0x40, True), xp.LDUR_X30, b(self.BASE + 12, self.BASE + 0x100)]
+        img = bytearray(code(stub))
+        struct.pack_into('<I', img, 0x40, RET_W)
+        struct.pack_into('<I', img, 0x100, SVC_40)
+        self.assertEqual(xp.reach(bytes(img), self.BASE, 0x200, [self.BASE], {}, stubs={self.BASE})[0], set())
+        self.assertEqual(xp.reach(bytes(img), self.BASE, 0x200, [self.BASE], {})[0], {0x40})
+
+    def test_indirect_calls_counted(self):
+        img = code([0xD63F0100, RET_W])   # blr x8
+        self.assertEqual(xp.reach(img, self.BASE, 0x200, [self.BASE], {})[2], 1)
+
+    def test_check_refuses_svc_in_callback(self):
+        rec = record()
+        img = bytearray(rec['images']['plugin0'])
+        struct.pack_into('<II', img, CB_OFF, SVC_40, RET_W)
+        struct.pack_into('<I', img, IMPL_OFF, RET_W)
+        rec['images']['plugin0'] = bytes(img)
+        hooks, _ = xp.check_record(rec, IMPLS)
+        reasons, _ = xp.reach_check(rec, hooks, IMPLS)
+        self.assertTrue(any('svc 0x40' in r for r in reasons), reasons)
+
+    def test_check_allows_output_debug_string(self):
+        rec = record()
+        img = bytearray(rec['images']['plugin0'])
+        struct.pack_into('<II', img, CB_OFF, 0xD40004E1, RET_W)   # svc 0x27
+        struct.pack_into('<I', img, IMPL_OFF, RET_W)
+        rec['images']['plugin0'] = bytes(img)
+        hooks, _ = xp.check_record(rec, IMPLS)
+        self.assertEqual(xp.reach_check(rec, hooks, IMPLS)[0], [])
+
+
+# ---- patch lines of the three hook kinds
+class Lines(unittest.TestCase):
+    def lines(self, rec):
+        hooks, reasons = xp.check_record(rec, IMPLS)
+        self.assertEqual(reasons, [])
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'plugin0.img').write_bytes(rec['images']['plugin0'])
+            rec['modules'][2]['image'] = 'plugin0.img'
+            return xp.plugin_lines(rec, xp.hooks_of(hooks, 'plugin0'), 'mod_x', d, 'plugin0')
+
+    def test_inline(self):
+        out = self.lines(record(original=0xAA0003F3))
+        self.assertIn(f'site mod_x main {SITE_OFF:x} aa0003f3 @call:plugin0+{STUB_OFF:x} aa0003f3', out)
+        self.assertIn(f'stub plugin0 {STUB_OFF:x}', out)
+        self.assertIn(f'seed plugin0 {CB_OFF:x} {IMPL_OFF:x}', out)
+        self.assertIn(f'expect mod_x main {SITE_OFF:x} aa0003f3 {b(MAIN + SITE_OFF, PLUGIN + STUB_OFF):08x}', out)
+        self.assertTrue(out[0].startswith('plugin mod_x plugin0 '))
+
+    def test_replace(self):
+        site, prologue = MAIN + SITE_OFF, 0xA9BA7BFD
+        new = b(site, PLUGIN + THUNK_OFF)
+        w = [{'module': 'main', 'offset': SITE_OFF, 'old': prologue, 'new': new, 'fn_start': True}]
+        out = self.lines(record(original=prologue, writes=w))
+        self.assertIn(f'site mod_x main {SITE_OFF:x} a9ba7bfd {new:08x}', out)
+        self.assertIn(f'orig mod_x plugin0 {TRAMP_OFF:x} main {SITE_OFF:x}', out)
+        self.assertIn(f'seed plugin0 {THUNK_OFF:x}', out)
+
+    def test_call(self):
+        new = b(MAIN + SITE_OFF, PLUGIN + THUNK_OFF, True)
+        w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': new}]
+        out = self.lines(record(writes=w))
+        self.assertIn(f'site mod_x main {SITE_OFF:x} 94000010 {new:08x}', out)
+        self.assertFalse(any(x.startswith(('orig', 'stub')) for x in out))
+
+
+# ---- the generator on those lines
+def code_nso(words_at, size_text=0x5000):
+    """An NSO as nso() whose .text holds words_at {offset: word}."""
+    raw = bytearray(nso(size_text))
+    for off, w in words_at.items():
+        struct.pack_into('<I', raw, 0x100 + off, w)
+    return bytes(raw)
+
+
+FN = 0x100   # the hooked main function: mov x19, x0; mov x0, x19; ret
+
+
+class Generator(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.d = Path(tmp.name)
+        exefs = self.d / 'exefs'
+        exefs.mkdir()
+        (exefs / 'main').write_bytes(code_nso({FN: 0xAA0003F3, FN + 4: 0xAA1303E0, FN + 8: RET_W}))
+        (exefs / 'sdk').write_bytes(nso(0x1000))
+        stub = PLUGIN_TEXT_STUB = 0x4000
+        self.plugin_file = self.d / 'subsdk9'
+        self.plugin_file.write_bytes(nso(0x5000))
+        self.mods = layout.layout(exefs, [self.plugin_file])
+        self.bases = {n: b_ for n, b_, _ in self.mods}
+        pb = self.bases['plugin0']
+        # the image after the init: a stub at 0x4000 (b to a trampoline at 0x2000), an impl at 0x4100, a callback at
+        # 0x4200
+        img = bytearray(Nso(str(self.plugin_file)).image)
+        struct.pack_into('<4IQ', img, stub, xp.STUR_X30, b(pb + stub + 4, pb + 0x4100, True), xp.LDUR_X30,
+                         b(pb + stub + 12, pb + 0x2000), pb + 0x4200)
+        struct.pack_into('<I', img, 0x4100, RET_W)
+        struct.pack_into('<I', img, 0x4200, RET_W)
+        struct.pack_into('<II', img, 0x2000, 0xAA0003F3, b(pb + 0x2004, self.bases['main'] + FN + 4))
+        (self.d / 'plugin0.img').write_bytes(bytes(img))
+        n = Nso(str(self.plugin_file))
+        self.sha = hashlib.sha256(bytes(img[n.text[0]:n.text[0] + n.text[1]])).hexdigest()
+
+    def table(self, site_line, extra=()):
+        text = '\n'.join(['set mod_x TOTK_MODPATCH_X 0 ordered',
+                          f'plugin mod_x plugin0 {self.sha} {(self.d / "plugin0.img").as_posix()}',
+                          f'expect mod_x main {FN:x} aa0003f3 14000000', site_line, *extra]) + '\n'
+        (self.d / 'p.txt').write_text(text)
+        return patches.load(self.d / 'p.txt', self.mods)
+
+    def emit(self, table, name, entry, end, origs=()):
+        mod = gen.open_module(name, self.d / ('exefs/main' if name == 'main' else 'subsdk9'), self.bases[name], table,
+                              plugin=name != 'main')
+        e = gen.Emitter(mod, {entry}, table.for_module(name, self.bases[name]), origs=set(origs))
+        return gen.chunk_text(name, 0, e, [(entry, end)])
+
+    def test_inline_hook_calls_the_stub_then_the_original(self):
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000',
+                                                                                         'seed plugin0 4100 4200'])
+        m = self.bases['main'] + FN
+        c = self.emit(t, 'main', m, m + 12)
+        stub = self.bases['plugin0'] + 0x4000
+        on = c[c.index('if (rt_patch_on[0])'):]
+        self.assertLess(on.index(f'f_{stub:x}(c);'), on.index('} else {'))   # the hook, then the original, when on
+        head = on[:on.index(f'f_{stub:x}(c);')]
+        self.assertNotIn('c->x[30] =', head)                                  # no x30 written for the call
+        self.assertIn(f'void f_{stub:x}(Cpu *c);', c)
+        h = patches.header_text(t, 'MARK')
+        self.assertIn('#define RT_PLUGIN_COUNT 1', h)
+        self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u)', h)
+        self.assertIn('X("plugin0", 0x4100) X("plugin0", 0x4200)', h)
+
+    def test_stub_returns_instead_of_branching_to_its_trampoline(self):
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])
+        stub = self.bases['plugin0'] + 0x4000
+        c = self.emit(t, 'plugin0', stub, stub + 16)
+        body = c[c.index(f'void f_{stub:x}(Cpu *c) {{'):]
+        self.assertIn('return;', body)
+        self.assertNotIn(f'{self.bases["plugin0"] + 0x2000:#x}', body)   # the trampoline is not reached
+
+    def test_replace_hook_keeps_an_unpatched_copy(self):
+        pb = self.bases['plugin0']
+        m = self.bases['main'] + FN
+        new = b(m, pb + 0x4200)
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 {new:08x}', [f'orig mod_x plugin0 2000 main {FN:x}',
+                                                                        'seed plugin0 4200'])
+        self.assertEqual(t.origs_for('main', self.bases['main']), {m})
+        self.assertEqual(t.orig_entries('plugin0', self.bases), {pb + 0x2000: m})
+        c = self.emit(t, 'main', m, m + 12, origs=[m])
+        copy = c[c.index(f'void fo_{m:x}(Cpu *c) {{'):]
+        self.assertNotIn('rt_patch_on', copy)
+        self.assertIn('rt_patch_on[0]', c[:c.index(f'void fo_{m:x}')])
+        tab = gen.table_text('plugin0', [pb + 0x4200, pb + 0x2000], {pb + 0x2000: gen.orig_name(m)})
+        self.assertIn(f'void fo_{m:x}(Cpu *c);', tab)
+        self.assertIn(f'fo_{m:x}', tab[tab.index('_fn_ptrs'):])
+
+    def test_image_must_match_its_hash(self):
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])
+        t.plugins['plugin0']['sha256'] = '0' * 64
+        with self.assertRaises(patches.PatchError):
+            gen.open_module('plugin0', self.plugin_file, self.bases['plugin0'], t)
+
+    def test_chunk_key_takes_the_unpatched_copy(self):
+        # the lift cache (recomp/gen.py chunk_key): a chunk whose function gets an unpatched copy is keyed apart, and a
+        # chunk without one keeps the key it had before plugins
+        fns = [(0x100, 0x10c)]
+        plain = gen.chunk_key('m', 0, fns, {}, [], {}, [], None, None)
+        self.assertEqual(gen.chunk_key('m', 0, fns, {}, [], {}, [], None, None, {0x200}), plain)
+        self.assertNotEqual(gen.chunk_key('m', 0, fns, {}, [], {}, [], None, None, {0x100}), plain)
+        site = {0x100: [(0, [('call', 0x7005204000), 0xAA0003F3])]}
+        self.assertNotEqual(gen.chunk_key('m', 0, fns, site, [0x100], {}, [], None, None),
+                            gen.chunk_key('m', 0, fns, {0x100: [(0, [('call', 0x7005204010), 0xAA0003F3])]}, [0x100],
+                                          {}, [], None, None))
+
+    def test_no_plugin_lines_no_plugin_header(self):
+        (self.d / 'q.txt').write_text('set fps60 TOTK_FPS60 0\n')
+        self.assertNotIn('PLUGIN', patches.header_text(patches.load(self.d / 'q.txt', self.mods), 'MARK'))
 
 
 if __name__ == '__main__':

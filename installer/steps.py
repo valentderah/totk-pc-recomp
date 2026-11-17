@@ -19,7 +19,8 @@ lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, 
 those. A change of the mods' code cheats then costs a few seconds of lift and the chunks holding its sites, not a full
 lift or compile.
 
-Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py),
+plugins.status (tools/exefs_plugins.py; plugins.stale is the game's list of plugins whose start differed) and
 rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
 one argument per line; totk.exe runs it at start when an enabled mod has code cheats the build lacks
 (runtime/cheats.c).
@@ -866,6 +867,43 @@ def exefs_files(ctx):
     return sorted(out)
 
 
+def plugin_files(ctx):
+    """The exlaunch plugins of the mods folder (each mod's exefs/subsdk*, in the first ExeFS place, as
+    tools/exefs_plugins.py finds them), by mod name, for the lift key and the plugin stage."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    out = []
+    for mod in sorted((m for m in mods.iterdir() if m.is_dir()), key=lambda m: m.name):
+        exefs = next((mod / w for w in EXEFS_PLACES if (mod / w).is_dir()), None)
+        if exefs:
+            out += sorted((f for f in exefs.iterdir() if f.is_file() and f.name.lower().startswith('subsdk')),
+                          key=lambda f: f.name.lower())
+    return out
+
+
+def plugins_status(ctx):
+    """The build's plugin status file (tools/exefs_plugins.py --status), which runtime/mods.c reads."""
+    return ctx.dest / 'build-cache' / 'plugins.status'
+
+
+def built_plugins(status, files, mods):
+    """The files of the plugins the status file lists as built (kind `plugin`), in the order of files. The key is
+    FNV-1a 32 of "<mod folder>/<path in the mod>", as tools/exefs_plugins.py and runtime/mods.c compute it."""
+    if not status.is_file():
+        return []
+    built = {line.split('\t')[0] for line in status.read_text(encoding='utf-8').splitlines()
+             if len(line.split('\t')) >= 3 and line.split('\t')[2] == 'plugin'}
+
+    def key(f):
+        rel = f.relative_to(mods).as_posix()
+        h = 0x811C9DC5
+        for b in rel.encode():
+            h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+        return f'{h:08X}'
+    return [f for f in files if key(f) in built]
+
+
 def exefs_status(ctx):
     """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
     return ctx.dest / 'build-cache' / 'exefs.status'
@@ -890,9 +928,12 @@ class Lift(Step):
     def key(self, ctx):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
-        files = cheat_files(ctx) + exefs_files(ctx)
+        # A mod plugin is built by running its init on a totk.exe of this build (tools/exefs_plugins.py), so the
+        # runtime is in the key too when there is one.
+        files = cheat_files(ctx) + exefs_files(ctx) + plugin_files(ctx)
+        extra = [ctx.layout.tools / 'exefs_plugins.py', runtime_key(ctx)] if plugin_files(ctx) else []
         return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
-                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *extra, *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
@@ -943,12 +984,44 @@ class Lift(Step):
             else:
                 patches = ctx.temp / out
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
+        # The mods' exlaunch plugins (tools/exefs_plugins.py, after the design in #845 by itaskaev2): a lift with the
+        # plugins in the layout, a totk.exe of it in build/ (the compile step's folder, so it recompiles only what
+        # the hook sites change after), the plugin service run, and the plugins' patch sets for the lift below. A
+        # refused plugin gets its reason in plugins.status; a failed stage costs the plugins, not the install.
+        plugins = plugin_files(ctx)
+        drop([plugins_status(ctx), ctx.dest / 'build-cache' / 'plugins.stale'])
+        lift_plugins = []
+        if plugins:
+            listed = ['--plugins', ','.join(str(f) for f in plugins)]
+            code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches] + listed, parse)
+            if not code:
+                code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
+            if not code:
+                code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
+                    '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
+                    ctx.dest / 'mods', '--patches', patches, '--patches-out', ctx.temp / 'patches-plugins.txt',
+                    '--status', plugins_status(ctx)])
+                # exit 1 with a status file: refused plugins, their reasons in it; the rest goes on
+                if plugins_status(ctx).is_file() and (ctx.temp / 'patches-plugins.txt').is_file():
+                    code = 0
+            if code:
+                drop([plugins_status(ctx)])
+                skipped['warn.plugins_skipped'] = log
+            else:
+                patches = ctx.temp / 'patches-plugins.txt'
+                lift_plugins = built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods')
+        if lift_plugins:
+            args += ['--plugins', ','.join(str(f) for f in lift_plugins)]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
         if code and patches != plain:
             for tool, out, outputs, inputs, warn in stages:
                 if inputs and warn not in skipped:
                     drop(outputs)
                     skipped[warn] = log
+            if lift_plugins:
+                drop([plugins_status(ctx)])
+                skipped.setdefault('warn.plugins_skipped', log)
+            args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
             code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
@@ -982,6 +1055,21 @@ def runtime_key(ctx):
                        layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
 
 
+def build_args(ctx, gen):
+    """tools/build_game.py's arguments for a totk.exe of the lifted C in gen, built in <temp>/build."""
+    layout, dest = ctx.layout, ctx.dest
+    cpu = getattr(ctx, 'cpu', 'v3')
+    lib = layout.runtime_lib_for(cpu)
+    pgo = layout.pgo(game_version(ctx))
+    return ['--gen', gen, '--out', ctx.temp / 'build', '--toolchain', layout.llvm, '--cpu', cpu,
+            *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
+            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
+            '--ninja', layout.ninja,
+            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
+            '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
+            '--profile', dest / 'profile']
+
+
 class Compile(Step):
     id = 'compile'
 
@@ -1012,16 +1100,7 @@ class Compile(Step):
 
         rep.progress('compile', 'compile', force=True)
         cpu = getattr(ctx, 'cpu', 'v3')
-        lib = layout.runtime_lib_for(cpu)
-        pgo = layout.pgo(game_version(ctx))
-        code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
-            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
-            *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
-            '--ninja', layout.ninja,
-            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
-            '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
-            '--profile', dest / 'profile'], parse)
+        code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', build_args(ctx, ctx.temp / 'gen'), parse)
         exe = build / ('totk' + EXE)
         if code and link_output_locked(log):
             raise InstallError('compile.exe_locked', path=str(exe), log=str(log))
