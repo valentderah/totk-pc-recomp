@@ -182,17 +182,29 @@ static void layout_name(uint64_t scr, char *out, size_t n) {
 // A D-pad strip has no focus box either while it is held open: *strip is ShortCut_00 being open. *camera is the
 // Purah Pad's camera (the ability wheel's camera): the frame and its pointer CameraPointer_00 open without AppMap_00,
 // which the Scope has with them.
+// *event is one of the windows an event opens without a focus box (event_screen) being open.
 // TOTK_MENU_CURSOR_LOG=1 logs the open screens whenever the set changes.
 enum { SM_COUNT = 0x8, SM_SCREENS = 0x10 };
 #define DIALOGUE_SCREEN "MessageDialog_00"   // the box a character's lines and the game's messages are shown in
 #define DIALOGUE_GAP_MS 500                  // how long after the box closed a click is still the dialogue's
 static uint64_t dialogue_scr;                // game thread only
-static int map_open(int *strip, int *camera) {
+// The windows an event opens with no focus box, layout names from 1.4.3's Common.Product.140 layout archive: an item
+// received (GetWindow_00, the Light of Blessing after a shrine), an ability received, a Purah Pad feature unlocked, a
+// cutscene's lines and a character's name card, the heart and stamina gauges raised at a statue. hide_hud keeps the
+// HUD's layer on while one is open (menu_cursor_ui_open): the player waits on them after a cutscene.
+static int event_screen(const char *nm) {
+    static const char *const names[] = {"GetWindow_00", "SpecialPowerGetWindow_00", "AppOpenDemoWindow_00",
+                                        "MessageDemo_00", "DemoNickname_00", "HeartGaugeDemo_00", "StaminaGaugeDemo_00"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        if (!strcmp(nm, names[i])) return 1;
+    return 0;
+}
+static int map_open(int *strip, int *camera, int *event) {
     uint64_t sm = screen_mgr();
     if (!sm) return 0;
     int32_t n = (int32_t)rd32(sm + SM_COUNT);
     uint64_t arr = rd64(sm + SM_SCREENS);
-    *strip = *camera = 0;
+    *strip = *camera = *event = 0;
     if (n <= 0 || n > 1024 || !ok_at(arr, 8ull * (uint64_t)n)) return 0;
     const char *e = cfg_get("TOTK_MENU_CURSOR_LOG");
     int verbose = e && !strcmp(e, "1"), pad = 0, map = 0, bg = 0, pointer = 0;
@@ -210,6 +222,7 @@ static int map_open(int *strip, int *camera) {
         if (!strcmp(nm, DIALOGUE_SCREEN)) dialogue_scr = scr;
         pointer |= !strcmp(nm, "CameraPointer_00");
         *strip |= !strcmp(nm, "ShortCut_00");
+        *event |= event_screen(nm);
         if (!verbose) continue;
         for (const char *c = nm; *c; c++) h = (h ^ (uint8_t)*c) * 1099511628211ull;
         if (len < sizeof list - 64) len += (size_t)snprintf(list + len, sizeof list - len, "%s%s", len ? " " : "", nm);
@@ -319,6 +332,7 @@ static volatile int32_t g_pointer;   // a menu has the pointer: input_cursor_all
 static volatile int32_t g_map;       // the Purah Pad's map is open (not the Scope): the mouse moves its cursor
 static volatile int32_t g_dialogue;  // a dialogue box is on screen and TOTK_DIALOGUE_CLICK is on: left B, right A
 static volatile int32_t g_menu;      // a menu screen has the focus box, from either device (the scroll wheel's steps)
+static volatile int32_t g_ui_open;   // a game menu, the map, a dialogue box or an event window is on screen
 static volatile int32_t g_strip;     // a D-pad strip's screen is open (the scroll wheel's steps along it)
 static volatile int32_t g_camera;    // the Purah Pad's camera is open (the scroll wheel zooms it)
 
@@ -328,6 +342,7 @@ int menu_cursor_dialogue(void) { return __atomic_load_n(&g_dialogue, __ATOMIC_RE
 int menu_cursor_menu(void) { return __atomic_load_n(&g_menu, __ATOMIC_RELAXED); }
 int menu_cursor_strip(void) { return __atomic_load_n(&g_strip, __ATOMIC_RELAXED); }
 int menu_cursor_camera(void) { return __atomic_load_n(&g_camera, __ATOMIC_RELAXED); }
+int menu_cursor_ui_open(void) { return __atomic_load_n(&g_ui_open, __ATOMIC_RELAXED); }
 
 static int enabled(void) {
     if (!RT_V143) return 0;
@@ -378,6 +393,19 @@ void menu_cursor_poll(uint64_t *buttons) {
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
     int cursor = enabled(), talk = dialogue_enabled();
+    // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries. On 1.4.3 the
+    // scan runs whatever the settings say, for menu_cursor_ui_open.
+    uint64_t now = plat_now_ms();
+    static uint64_t map_at;
+    static int map, map_logged, dialogue_logged, strip, camera, ui_menu, event;
+    if (RT_V143 && (!map_at || now - map_at >= 100)) {
+        map_at = now, map = map_open(&strip, &camera, &event);
+        Focus uf = focus_now();
+        char un[48] = "";
+        if (uf.screen) layout_name(uf.screen, un, sizeof un);
+        ui_menu = uf.screen && !gameplay_screen(un);
+    }
+    __atomic_store_n(&g_ui_open, RT_V143 && (ui_menu || map || event || dialogue_shown()), __ATOMIC_RELAXED);
     if (!cursor && !talk) {
         set_pointer(0);
         __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
@@ -387,11 +415,6 @@ void menu_cursor_poll(uint64_t *buttons) {
         __atomic_store_n(&g_camera, 0, __ATOMIC_RELAXED);
         return;
     }
-    // The open screens are scanned every 100 ms, not at every pad read: each screen costs memory queries
-    uint64_t now = plat_now_ms();
-    static uint64_t map_at;
-    static int map, map_logged, dialogue_logged, strip, camera;
-    if (!map_at || now - map_at >= 100) map_at = now, map = map_open(&strip, &camera);
     // Between two lines of a conversation the game closes the box and opens it again, so a click made in that gap still
     // counts as dialogue for DIALOGUE_GAP_MS after the box was last open. The first clicks after a conversation fall
     // in it too and are B or A, as they are for a player who taps the button through the last line.
