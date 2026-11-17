@@ -510,9 +510,10 @@ static void shadow_init(uint8_t *page) {
 // ---- start: the patch page and the sets
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
-// TOTK_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m.
-// Other values multiply those distances through the cascade patch set (recomp/patches-v143.txt), so the sharp first
-// cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
+// TOTK_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m by
+// the depth shadow parameters' defaults; in the field the shadow controller computes the boundaries from the camera
+// each frame instead. Other values multiply the boundaries through the cascade patch set (recomp/patches-v143.txt and
+// patches-v121.txt; the controller's sites take page +64 over 20 as the factor), so the sharp first cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
 // texels per metre (TOTK_SHADOW_SCALE pays that back).
 static void res_shadow_range(void) {
     int pct = cfg_int("TOTK_SHADOW_RANGE"), set = rt_patch_set("cascade");
