@@ -196,6 +196,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrects physics that misbehave above 30 frames per second, and objects that stay see-through or invisible above 60.",
     [UI_MENU_CLIMB_FIX] = "Climbing speed fix",
     [UI_MENU_CLIMB_FIX_DESC] = "Keeps climbing walls and ladders at full speed above 60 frames per second, so Link reaches the top.",
+    [UI_MENU_GAME_SPEED] = "Game speed",
+    [UI_MENU_GAME_SPEED_DESC] = "How much game time passes in a real second, at the same frame rate: 2x runs the "
+        "whole game twice as fast, 0.5x in slow motion. Sound keeps its pitch. With a key or combo below, the game "
+        "starts at 1x and each press switches between 1x and this speed.",
+    [UI_MENU_GAME_SPEED_NEEDS] = "Needs: %s",
+    [UI_MENU_GAME_SPEED_KEY] = "Game speed key",
+    [UI_MENU_GAME_SPEED_KEY_DESC] = "A key that switches between 1x and the game speed. Off: the game speed always "
+        "applies.",
+    [UI_MENU_GAME_SPEED_PAD] = "Game speed combo",
+    [UI_MENU_GAME_SPEED_PAD_DESC] = "Gamepad buttons pressed together that switch between 1x and the game speed. The "
+        "game does not see them while they are held.",
+    [UI_PAD_HOME] = "Home",
     [UI_MENU_GAME_LANG] = "Game language", [UI_MENU_GAME_LANG_DESC] = "Language of the game's text and voices.",
     [UI_MENU_GAME_LANG_AUTO] = "Automatic",
     [UI_MENU_OPERATION_MODE] = "Console mode",
@@ -773,6 +785,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX_DESC] = "Исправляет физику, которая ломается при частоте выше 30 кадров в секунду, и объекты, которые выше 60 остаются полупрозрачными или невидимыми.",
     [UI_MENU_CLIMB_FIX] = "Исправление скорости лазания",
     [UI_MENU_CLIMB_FIX_DESC] = "Сохраняет нормальную скорость лазания по стенам и лестницам выше 60 кадров в секунду, чтобы Линк добирался до верха.",
+    [UI_MENU_GAME_SPEED] = "Скорость игры",
+    [UI_MENU_GAME_SPEED_DESC] = "Сколько игрового времени проходит за реальную секунду при той же частоте кадров: при "
+        "2x вся игра идёт вдвое быстрее, при 0.5x — замедленно. Высота звука не меняется. С клавишей или сочетанием "
+        "ниже игра начинается на 1x, и каждое нажатие переключает между 1x и этой скоростью.",
+    [UI_MENU_GAME_SPEED_NEEDS] = "Нужно: %s",
+    [UI_MENU_GAME_SPEED_KEY] = "Клавиша скорости игры",
+    [UI_MENU_GAME_SPEED_KEY_DESC] = "Клавиша, которая переключает между 1x и скоростью игры. Выкл.: скорость игры "
+        "действует всегда.",
+    [UI_MENU_GAME_SPEED_PAD] = "Сочетание скорости игры",
+    [UI_MENU_GAME_SPEED_PAD_DESC] = "Кнопки геймпада, нажатые вместе, переключают между 1x и скоростью игры. Пока они "
+        "удерживаются, игра их не видит.",
+    [UI_PAD_HOME] = "Home",
     [UI_MENU_GAME_LANG] = "Язык игры", [UI_MENU_GAME_LANG_DESC] = "Язык текста и озвучки игры.",
     [UI_MENU_GAME_LANG_AUTO] = "Автоматически",
     [UI_MENU_OPERATION_MODE] = "Режим консоли",
@@ -1306,6 +1330,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrige a física que se comporta mal acima de 30 quadros por segundo e objetos que ficam transparentes ou invisíveis acima de 60.",
     [UI_MENU_CLIMB_FIX] = "Correção da velocidade de escalada",
     [UI_MENU_CLIMB_FIX_DESC] = "Mantém a escalada de paredes e escadas na velocidade normal acima de 60 quadros por segundo, para que Link chegue ao topo.",
+    [UI_MENU_GAME_SPEED] = "Velocidade do jogo",
+    [UI_MENU_GAME_SPEED_DESC] = "Quanto tempo de jogo passa em um segundo real, com a mesma taxa de quadros: 2x roda "
+        "o jogo inteiro duas vezes mais rápido, 0,5x em câmera lenta. O som mantém o tom. Com uma tecla ou combinação "
+        "abaixo, o jogo começa em 1x e cada toque alterna entre 1x e esta velocidade.",
+    [UI_MENU_GAME_SPEED_NEEDS] = "Requer: %s",
+    [UI_MENU_GAME_SPEED_KEY] = "Tecla da velocidade do jogo",
+    [UI_MENU_GAME_SPEED_KEY_DESC] = "Uma tecla que alterna entre 1x e a velocidade do jogo. Desligado: a velocidade "
+        "do jogo vale sempre.",
+    [UI_MENU_GAME_SPEED_PAD] = "Combinação da velocidade do jogo",
+    [UI_MENU_GAME_SPEED_PAD_DESC] = "Botões do controle pressionados juntos que alternam entre 1x e a velocidade do "
+        "jogo. O jogo não os vê enquanto estão pressionados.",
+    [UI_PAD_HOME] = "Home",
     [UI_MENU_GAME_LANG] = "Idioma do jogo", [UI_MENU_GAME_LANG_DESC] = "Idioma dos textos e das vozes do jogo.",
     [UI_MENU_GAME_LANG_AUTO] = "Automático",
     [UI_MENU_OPERATION_MODE] = "Modo do console",
@@ -1956,6 +1992,14 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                  "以及帧率高于 60 时一直半透明或不可见的物体。",
     [UI_MENU_CLIMB_FIX] = "攀爬速度修正",
     [UI_MENU_CLIMB_FIX_DESC] = "帧率高于 60 时让攀爬墙壁和梯子保持正常速度，林克能爬到顶。",
+    [UI_MENU_GAME_SPEED] = "游戏速度",
+    [UI_MENU_GAME_SPEED_DESC] = "在相同帧率下，每一秒现实时间里流逝的游戏时间：2x 让整个游戏以两倍速度运行，0.5x 为慢动作。声音保持音高。设置了下方的按键或组合键时，游戏以 1x 开始，每按一次在 1x 和此速度之间切换。",
+    [UI_MENU_GAME_SPEED_NEEDS] = "需要：%s",
+    [UI_MENU_GAME_SPEED_KEY] = "游戏速度键",
+    [UI_MENU_GAME_SPEED_KEY_DESC] = "在 1x 和游戏速度之间切换的按键。关闭：游戏速度始终生效。",
+    [UI_MENU_GAME_SPEED_PAD] = "游戏速度组合键",
+    [UI_MENU_GAME_SPEED_PAD_DESC] = "同时按下即可在 1x 和游戏速度之间切换的手柄按键。按住期间游戏不会收到这些按键。",
+    [UI_PAD_HOME] = "Home 键",
     [UI_MENU_GAME_LANG] = "游戏语言",
     [UI_MENU_GAME_LANG_DESC] = "游戏文本和语音的语言。",
     [UI_MENU_GAME_LANG_AUTO] = "自动",

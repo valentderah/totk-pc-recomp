@@ -354,6 +354,7 @@ const char *rt_patch_name(int set);                        // NULL out of range
 // returns to the generated table.
 void rt_patch_probe_table(const char *const *names, int n, const RtPatchPick *picks, int npicks);
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
+void frame_speed_toggle(void);                             // TOTK_GAME_SPEED_PAD pressed (input thread): 1x <-> game speed
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
 double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown

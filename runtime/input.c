@@ -132,6 +132,10 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
+// Under lock: the Switch buttons the input script pressed in the last poll, apart from the keys' and the gamepad's, so
+// a gamepad combo can count a scripted press as the gamepad's without counting the keys bound to the same buttons
+static uint64_t script_seen;
+
 static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     if (!script_state) script_load();
     if (!script_n) return;
@@ -662,13 +666,52 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
 
 // Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
+// Under lock: the last pad_read's inputs by position, [PAD_GUIDE] the Home / Guide button (no Switch button), and its
+// left and right trigger axes, 0..32767: what the gamepad combos and the free camera read
+#define PAD_GUIDE PAD_COUNT
+static uint8_t pad_seen[PAD_COUNT + 1];
+static int16_t trigger_seen[2];
+
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
-    if (!pad_physical(pd)) return 0;
+    if (!pad_physical(pd)) {
+        memset(pad_seen, 0, sizeof pad_seen);
+        memset(trigger_seen, 0, sizeof trigger_seen);
+        return 0;
+    }
+    memcpy(pad_seen, pd, sizeof pd);
+    pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+    trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
+}
+
+uint32_t input_pad_combo(const char *env, const char *s) {
+    uint32_t mask = 0;
+    char name[32];
+    size_t n = 0;
+    for (const char *c = s;; c++) {
+        if (*c && *c != '+' && *c != ' ') {
+            if (n < sizeof name - 1) name[n++] = *c;
+            continue;
+        }
+        if (n) {
+            name[n] = 0;
+            int p = !strcasecmp(name, "guide") || !strcasecmp(name, "home") ? PAD_GUIDE : input_pad_id(name);
+            if (p == PAD_NONE) {
+                rt_log("input: %s=%s: %s is not a gamepad button (south east west north lstick rstick "
+                       "l r zl zr start back guide dpad_*, paddles)", env, s, name);
+                return 0;
+            }
+            mask |= 1u << p;
+            n = 0;
+        }
+        if (!*c) break;
+    }
+    return mask;
 }
 
 int input_pad_stick_percent(double pct[2]) {
@@ -687,6 +730,49 @@ int input_pad_stick_percent(double pct[2]) {
 }
 
 static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_buttons_last)
+
+// TOTK_GAME_SPEED_PAD (live): the combo that switches the game speed between 1x and TOTK_GAME_SPEED (frame_rate.c);
+// none without the setting. Under lock.
+static uint32_t speed_pad_mask(void) {
+    static unsigned seen;
+    static int read;
+    static uint32_t mask;
+    unsigned v = cfg_version();
+    if (read && v == seen) return mask;
+    read = 1, seen = v;
+    const char *s = cfg_get("TOTK_GAME_SPEED_PAD");
+    mask = s && *s ? input_pad_combo("TOTK_GAME_SPEED_PAD", s) : 0;
+    if (mask) rt_log("input: game speed combo %s", s);
+    return mask;
+}
+
+// The game speed combo: the same latch as Minus+Plus (input_map.c, chord). Once every button of it is down (on the
+// gamepad, or pressed by an input script) the speed switches once, and the Switch buttons they press stay hidden from
+// the game until all of them are released. Under lock.
+static void speed_pad_gate(uint64_t *b) {
+    static int held;
+    uint32_t mask = speed_pad_mask(), raw = 0;
+    int layout = pad_layout_get();
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++) {
+        if (!(mask >> p & 1)) continue;
+        // A position counts as down on the gamepad or when the input script presses the Switch buttons it stands for,
+        // as a gamepad would; the keys bound to those buttons do not (the game speed key is theirs). Home has no
+        // Switch button: gamepad only.
+        uint8_t one[PAD_COUNT] = {0};
+        if (p < PAD_COUNT) one[p] = 1;
+        if (pad_seen[p] || (p < PAD_COUNT && script_seen & input_map_pad_buttons(one, layout))) raw |= 1u << p;
+    }
+    if (!mask) held = 0;
+    else if (held) held = raw != 0;
+    else if (raw == mask) {
+        held = 1;
+        frame_speed_toggle();
+    }
+    if (!held) return;
+    uint8_t sub[PAD_COUNT] = {0};
+    for (int p = PAD_SOUTH; p < PAD_COUNT; p++) sub[p] = mask >> p & 1;
+    *b &= ~input_map_pad_buttons(sub, pad_layout_get());
+}
 
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
@@ -777,7 +863,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
-    script_apply(&b, sl, sr);
+    script_seen = 0;
+    script_apply(&script_seen, sl, sr);
+    b |= script_seen;
     wheel_route(&b, sl, sr);
     gameplay_tweaks_apply(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), input_gameplay_active(), &b, &sl[0], &sl[1], &sr[0], &sr[1]);
     rec_apply(b, sl, sr);
@@ -787,6 +875,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
+    speed_pad_gate(&b);   // TOTK_GAME_SPEED_PAD switches the game speed (frame_rate.c)
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();

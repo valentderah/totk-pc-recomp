@@ -8,3 +8,5 @@ void binds_rows(float scale);
 void binds_after_page(void);
 // A cell waits for a press (or its press is still reaching the menu): B, Esc, L / R and the tab keys stay on the page.
 bool binds_modal(void);
+// A gamepad input by position (PAD_*): the label the open pad has on a face button, else its place on the pad.
+const char *binds_pad_label(int pad);
