@@ -296,6 +296,7 @@ static struct {
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
     int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
+    int fixed_exposure;          // dlss_fixed_exposure the features are created with (preset_check)
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
     unsigned cfg_seen;           // cfg_version when preset was read
@@ -1007,12 +1008,13 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         p_setu(p, "OutWidth", ow);
         p_setu(p, "OutHeight", oh);
         p_seti(p, "PerfQualityValue", perf_quality(w, ow));
-        // IsHDR | MVLowRes: linear scene light, motion vectors at the render size, no exposure texture. Not AutoExposure
-        // (1 << 6): DLSS then estimated the exposure from each frame itself, and in the Depths, where the whole scene is
-        // dark, the estimate moved with the camera; distant blocks under uniform fog came out up to 0.7 levels (of 255)
-        // darker or brighter for a frame, where the game's own picture held one value (a 64x64 patch at 30.79 without
-        // DLAA read 30.09-30.79 frame to frame with AutoExposure and 30.4-30.7, steady, without it).
-        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1));
+        // IsHDR | MVLowRes: linear scene light, motion vectors at the render size, no exposure texture; AutoExposure
+        // (1 << 6) unless dlss_fixed_exposure. With AutoExposure DLSS estimates the exposure from each frame itself, and
+        // in the Depths, where the whole scene is dark, the estimate moved with the camera; distant blocks under uniform
+        // fog came out up to 0.7 levels (of 255) darker or brighter for a frame, where the game's own picture held one
+        // value (a 64x64 patch at 30.79 without DLAA read 30.09-30.79 frame to frame with AutoExposure and 30.4-30.7,
+        // steady, without it). Without it DLSS takes the exposure as 1.
+        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (D.fixed_exposure ? 0 : 1 << 6));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
         // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
         // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
@@ -1333,18 +1335,21 @@ static void dlss_mode(void) {
 }
 
 
-// The preset, read again when a setting changed (the menu); a different one recreates the features at the next DLAA run.
+// The preset and dlss_fixed_exposure, read again when a setting changed (the menu); a different one recreates the
+// features at the next DLAA run.
 static void preset_check(void) {
     unsigned v = cfg_version();
     if (v == D.cfg_seen) return;
     D.cfg_seen = v;
-    int p = preset_value();
-    if (p == D.preset) return;
-    if (D.evals) {
+    int p = preset_value(), x = cfg_bool("TOTK_DLSS_FIXED_EXPOSURE");
+    if (p == D.preset && x == D.fixed_exposure) return;
+    if (D.evals && p != D.preset) {
         if (p) rt_log("dlaa: DLSS preset %c in every mode; the features are created again", 'A' + p - 1);
         else rt_log("dlaa: DLSS presets per mode; the features are created again");
     }
-    D.preset = p, D.preset_dirty = 1, D.reset = 1;
+    if (D.evals && x != D.fixed_exposure)
+        rt_log("dlaa: DLSS %s; the features are created again", x ? "exposure fixed at 1" : "auto exposure");
+    D.preset = p, D.fixed_exposure = x, D.preset_dirty = 1, D.reset = 1;
 }
 
 void vk_dlaa_frame(void) {
