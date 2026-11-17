@@ -72,11 +72,12 @@ static char g_result_note[128];
 static int g_result_ok;
 static uint64_t g_result_until_ns;
 
-// TOTK_BLUEPRINT_HINT=0 leaves the Autobuild screen entirely as the game draws it.
-static int enabled(void) {
-    const char *v = cfg_get("TOTK_BLUEPRINT_HINT");
-    return !(v && !strcmp(v, "0"));
-}
+// TOTK_BLUEPRINT_HINT=1 draws the Import row; unset leaves the Autobuild screen entirely as the game draws it.
+//
+// cfg_bool, not cfg_get: the default in cfg.c's table is what decides the unset case. cfg_get returns NULL for a key
+// that is neither in the environment nor in totk.ini, and a check written as "not the string 0" would then read NULL as
+// "on" - which is how this row shipped enabled for everyone while the table said 0.
+static int enabled(void) { return cfg_bool("TOTK_BLUEPRINT_HINT"); }
 
 // 1 while the Autobuild screen is up. The screen is found among the open screens, not through the focus box: on that
 // screen the focus box is only on a list row or a tab, and the import row must be there on all of it. The game thread
