@@ -11,6 +11,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set grass    TOTK_PATCH_GRASS    0
+set cascade  TOTK_PATCH_CASCADE  0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -1143,6 +1144,18 @@ spin sdk 3d3250 3d3270   # 9 instructions; loads
 # goes in just before the rounding, as the community's shadow resolution mods do (1.1.0: mov w11, #1024 over the
 # computation). Found by a write watch on the size field (the writer was this function, and no other).
 site shadow main cec22c 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
+
+# Sun shadow cascade distances (runtime/resolution.c res_shadow_range switches the set on; issue #606). On 1.2.1 the
+# depth shadow parameters (depth_shadow_near_0_0..3 and depth_shadow_far_0, whose constructor defaults at
+# main+0x114c2f8.. are 20, 40, 80, 160 and 2000 m) do not reach the sun's cascades: the game's shadow controller sets
+# bit 1 of the scene's depth shadow flags when it starts (main+0xc7b0e8), and with that bit the per-view update
+# (main+0xa2cff4) skips its copy of those parameters into the cascade boundaries. The controller writes the boundaries
+# itself each frame in main+0xcebdf4: d[0] at main+0xcec2ac, d[1..n-1] at main+0xcec314 and the far d[n] at
+# main+0xcec36c (d = [cascade set + 0x308], read by main+0xa2d6ec). The set multiplies d[1..n] where they are stored,
+# by page +64 (20 m times shadow_range / 100) over 20; d[0], the first cascade's start, stays. x3, s16 and s17 are
+# dead at both sites.
+site cascade main cec314 bd000446 @page:x3 bd404070 1e269011 1e311a10 1e3008d0 bd000450   # str s6, [x2, #4] -> adrp x3, page; ldr s16, [x3, #64]; fmov s17, #20.0; fdiv s16, s16, s17; fmul s16, s6, s16; str s16, [x2, #4]
+site cascade main cec36c bc29d945 @page:x3 bd404070 1e269011 1e311a10 1e3008b0 bc29d950   # str s5, [x10, w9, sxtw #2] -> the same with fmul s16, s5, s16; str s16, [x10, w9, sxtw #2]
 
 # Grass range (runtime/resolution.c res_grass_range; patches-v143.txt describes the set and the page). The near grass
 # map's constructor loads its extent, step and texture sizes at main+0xfe58b4..0xfe5950, and main+0x1a30a28 sets the
