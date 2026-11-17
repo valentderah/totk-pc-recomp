@@ -754,6 +754,10 @@ extern "C" void preview3d_set_camera(float yaw, float pitch, float zoom) {
 // compared against the new names. The geometry itself stays in the shared buffers, which are keyed by part name.
 extern "C" void preview3d_invalidate(void) {
     S.dirty = 1;
+    // The frame counter drives the once-per-build diagnostic lines (the first vertices, the framed box, the draw count).
+    // Restarting it here makes them say one thing per blueprint instead of one thing per process, which is what they are
+    // for: a new file is exactly when its geometry needs looking at.
+    S.frame = 0;
     memset(S.fuse_done, 0, sizeof S.fuse_done);
 }
 
@@ -959,5 +963,7 @@ extern "C" void preview3d_record(void *command_buffer) {
     barrier(cb, S.color, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    rt_log("preview3d: %d parts in %d draws (%ux%u)", bp->actors, drawn, w, h);
+    // Once per build, not once per redraw: this pass runs on every camera move and every resize, and the line says the
+    // same thing each time. A drag logged it hundreds of times a second.
+    if (S.frame < 4) rt_log("preview3d: %d parts in %d draws (%ux%u)", bp->actors, drawn, w, h);
 }
