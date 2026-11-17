@@ -496,6 +496,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Fills the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of reading zeros.",
     [UI_MENU_FIX_ZERO] = "Zero new GPU memory",
     [UI_MENU_FIX_ZERO_DESC] = "New GPU memory pools start zero-filled, as Switch memory does.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Fog and particles after DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "With DLAA, fog, dust and other particles are drawn over the picture DLSS has"
+                                        " already smoothed, as the game draws them without DLSS: small particles in "
+                                        "fog (shrines) no longer vanish or leave trails. Off: DLSS also processes "
+                                        "these effects, as before. DLAA mode only; the upscaling DLSS modes always "
+                                        "process them. Applies at once.",
     [UI_MENU_BIND_SKIP] = "Skip repeated binds",
     [UI_MENU_BIND_SKIP_DESC] = "Optimisation: skips bindings that did not change.",
     [UI_MENU_SHADER_MEMO] = "Shader memo", [UI_MENU_SHADER_MEMO_DESC] = "Optimisation: remembers shader lookups.",
@@ -1070,6 +1076,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
     [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Туман и частицы после DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "С DLAA туман, пыль и другие частицы рисуются поверх картинки, уже сглаженной"
+                                        " DLSS, как игра рисует их без DLSS: мелкие частицы в тумане (святилища) "
+                                        "больше не пропадают и не оставляют шлейфов. Выкл.: DLSS обрабатывает и эти "
+                                        "эффекты, как раньше. Только в режиме DLAA; режимы DLSS с повышением "
+                                        "разрешения обрабатывают их всегда. Применяется сразу.",
     [UI_MENU_BIND_SKIP] = "Пропуск повторных привязок",
     [UI_MENU_BIND_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся привязки.",
     [UI_MENU_SHADER_MEMO] = "Память шейдеров", [UI_MENU_SHADER_MEMO_DESC] = "Оптимизация: запоминает поиск шейдеров.",
@@ -1493,6 +1505,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Preenche o banco de constantes c0 reservado ao driver (tamanhos de armazenamento, tamanho do dispatch, tamanho do ponto, instância base) em vez de ler zeros.",
     [UI_MENU_FIX_ZERO] = "Zerar memória nova da GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Novos pools de memória da GPU começam zerados, como a memória do Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Névoa e partículas após o DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Com DLAA, a névoa, a poeira e outras partículas são desenhadas sobre a "
+                                        "imagem já suavizada pelo DLSS, como o jogo as desenha sem DLSS: partículas "
+                                        "pequenas na névoa (santuários) não somem mais nem deixam rastros. Desligado:"
+                                        " o DLSS também processa esses efeitos, como antes. Só no modo DLAA; os modos"
+                                        " de DLSS que aumentam a resolução sempre os processam. Aplica-se na hora.",
     [UI_MENU_BIND_SKIP] = "Pular bindings repetidos",
     [UI_MENU_BIND_SKIP_DESC] = "Otimização: pula bindings que não mudaram.",
     [UI_MENU_SHADER_MEMO] = "Memória de shaders", [UI_MENU_SHADER_MEMO_DESC] = "Otimização: lembra as buscas de shaders.",
@@ -2219,6 +2237,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "基础实例），而不是读取零值。",
     [UI_MENU_FIX_ZERO] = "清零新的 GPU 内存",
     [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 内存池初始内容为零，与 Switch 内存一致。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之后绘制雾和粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，雾、灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS 时的"
+                                        "绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：DLSS 也处理这些效果，与以"
+                                        "前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
     [UI_MENU_BIND_SKIP] = "跳过重复绑定",
     [UI_MENU_BIND_SKIP_DESC] = "优化：跳过没有变化的绑定。",
     [UI_MENU_SHADER_MEMO] = "着色器查找缓存",

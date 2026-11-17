@@ -227,7 +227,8 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 // So: after the G-buffer, a pass at the scene size with exactly one colour target (R11G11B10F or RGBA16F) and the D32F
 // depth arms the frame with that pair; the next pass at most a quarter as wide ends the scene (no jitter after it) and,
 // when the scene is as wide as the output, runs DLAA on the armed target first. Bloom, tonemap, post and HUD then all
-// work on the anti-aliased picture.
+// work on the anti-aliased picture. With DLAA the scene ends before that, at the first pass into the light target after
+// the lighting: the fog and the particles then go over DLAA's picture (effects_point).
 // Upscaling (a scene smaller than the output: TOTK_DLSS quality/balanced/performance, or the game's own 5/6): measured
 // at a 960x536 scene, 1920x1080 output, the bloom and its composite write back into the light target at the scene size,
 // then one full-screen draw (the FXAA shader below, which also scales) reads it into an output-sized R11G11B10F target
@@ -262,7 +263,13 @@ static struct {
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     NgxParam *params;
     int failed, reset;
-    uint64_t evals, frames_missed;
+    uint64_t evals, frames_missed, fx_frames;   // fx_frames: DLAA ran before the effects (effects_point)
+    VkImage glight;              // this frame: the light target among the G-buffer's targets (gbuf_light)
+    VkExecTarget glight_z;       // that G-buffer's depth, the scene depth
+    VkImage light_z;             // this frame: the D16 depth the lighting draws into the light target with
+    int fx_on;                   // dlaa_effects_after, read at each present
+    int fx_seen, fx_open, fx_bad;   // this frame: the point found / the scene not ended since / drawn on after it
+    uint32_t fx_steady;          // DLSS frames in a row with the point found and nothing of the scene after it
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
     float jx, jy;                // the offset the next scene draws take, render pixels (window x right, y down)
@@ -1084,10 +1091,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     D.jdepth = z->image;
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
-        rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
-               "motion, %llu with the characters' mask, %llu without a camera, %llu jitter holds; resets: %llu size, %llu "
-               "camera, %llu target; reactive mask %llu, without its copy %llu)",
-               (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.frames_missed,
+        rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu before the effects, %llu frames without the "
+               "DLAA point, %llu with camera motion, %llu with the characters' mask, %llu without a camera, %llu jitter "
+               "holds; resets: %llu size, %llu camera, %llu target; reactive mask %llu, without its copy %llu)",
+               (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.fx_frames, (unsigned long long)D.frames_missed,
                (unsigned long long)D.mv_frames, (unsigned long long)D.masked, (unsigned long long)D.mv_none,
                (unsigned long long)D.holds, (unsigned long long)D.why[0], (unsigned long long)D.why[1],
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
@@ -1127,8 +1134,73 @@ static int bloom_start(const VkExec *ex, uint32_t scene_w) {
     return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
+// The light target is one of the G-buffer's targets (the emissive surfaces go into it there), the only one of a scene
+// colour format and the depth's size. NULL when that is not so.
+static void gbuf_light(const VkExec *ex) {
+    const VkExecTarget *z = &ex->depth, *l = NULL;
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        if (!t->image || !scene_color(t->format) || t->width != z->width || t->height != z->height || t->level ||
+            t->samples > 1 || t->is3d)
+            continue;
+        if (l) return (void)(D.glight = VK_NULL_HANDLE);
+        l = t;
+    }
+    D.glight = l ? l->image : VK_NULL_HANDLE, D.glight_z = *z, D.light_z = VK_NULL_HANDLE;
+}
+
+// DLAA (the scene as wide as the output) runs on the solid scene alone, before the effects. Measured in a shrine and
+// in the yard of Lookout Landing (3840x2160, frame dumps and a log of the passes into the light target): after the
+// G-buffer the deferred lighting draws into the light target with a D16 depth of its own, and from there on every draw
+// into the light target blends: in the shrine a fog layer with the scene depth, the volumetric fog drawn at half size
+// and blended over the whole picture by a full-screen draw without depth (79 % of the pixels change), and the dust with
+// the scene depth (dots of 1-3 pixels and soft discs); in the yard the field's effects composite without depth, then
+// the particles with the scene depth; with an ability's targeting view open, the highlight of the objects it can take,
+// with a D16 depth of its own, another one than the lighting's. Run at the bloom, DLSS took the dust and the fog in
+// with the motion of the walls behind them and no jitter of their own, and wiped out the smallest motes. So the first
+// pass into the light target after the lighting runs DLSS before it, and the effects are drawn over its picture without
+// jitter, as the game draws them without DLSS. The lighting is the first pass into the light target with a D16 depth
+// after the G-buffer, and its depth tells the lighting from the effects: the order of the effects changes from frame
+// to frame (the yard's half-size effects pass is there in some frames only; the ability highlight comes before the
+// fog layer in some frames and after it in others), and every rule that waited for one of them, or took any D16 pass
+// for the lighting, ran DLSS before some effects in one frame and after them in the next, and the picture flickered.
+// The point is also taken only where it held for FX_STEADY frames in a row with nothing of the scene drawn after it
+// (fx_watch: a G-buffer pass, or the lighting's depth into the light target again, up to the bloom): a frame that
+// breaks it puts DLSS back at the bloom until it holds again, so a frame the rule does not fit changes the picture at
+// most once a second instead of from frame to frame.
+// dlaa_effects_after = 0 (the Advanced tab, read each frame): DLSS at the bloom, effects included.
+#define FX_STEADY 60u
+
+static int effects_point(const VkExec *ex) {
+    const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
+    if (!D.fx_on || D.fx_bad || !D.glight || D.ended || ex->pass_ncolor != 1 || c->image != D.glight || c->level) return 0;
+    if (!D.light_z) {
+        if (z->image && z->format == VK_FORMAT_D16_UNORM) D.light_z = z->image;
+        return 0;
+    }
+    if (z->image == D.light_z) return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    if (c->width < o[0] || !scene_shaped(c) || !scene_large(c)) return 0;
+    D.fx_seen = D.fx_open = 1;
+    return D.fx_steady >= FX_STEADY;
+}
+
+static void fx_watch(const VkExec *ex) {
+    const VkExecTarget *z = &ex->depth;
+    if (bloom_start(ex, D.glight_z.width)) {
+        D.fx_open = 0;
+        return;
+    }
+    int light = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) light |= ex->color[i].image == D.glight;
+    int geometry = ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= D.gbuf_w;
+    if (geometry || (light && z->image && z->image == D.light_z)) D.fx_seen = D.fx_open = 0, D.fx_bad = 1;
+}
+
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
+    if (D.fx_open && dl_active()) fx_watch(ex);
     if (!dl_active() || D.done) return 0;
     // The G-buffer: several colour targets with a D32F depth of at least DLAA_SCENE_MIN_W wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
@@ -1141,7 +1213,16 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
             c->samples <= 1 && !c->is3d && (!D.ids_ok || c->width >= D.ids.width))
             D.ids = *c, D.ids_ok = 1;
+        if (z->width >= D.gbuf_w) gbuf_light(ex);
         return 0;
+    }
+    if (effects_point(ex)) {
+        D.color = *c, D.depth = D.glight_z, D.armed = 1;
+        D.end_fence = ex->fence, D.end_pos = ex->pos;
+        __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
+        D.done = 1, D.fx_frames++;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place
+        return 1;
     }
     // A pass into one scene colour target of the G-buffer's size or larger without depth while nothing is armed ends
     // the scene once the bloom chain follows with still nothing armed: in the inventory (1.4.3) the preview's light
@@ -1266,22 +1347,27 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
+    D.fx_on = cfg_bool("TOTK_DLAA_EFFECTS_AFTER");
     int on = N.available && cfg_bool("TOTK_DLAA");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
-        D.nodepth = VK_NULL_HANDLE;
+        D.fx_seen = D.fx_open = D.fx_bad = 0, D.fx_steady = 0;
+        D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
         D.hold = 0;
         return;
     }
     if (!dl_active()) return;
     if (!D.done) D.frames_missed++;
+    else D.fx_steady = D.fx_seen ? D.fx_steady + (D.fx_steady < FX_STEADY) : 0;
+    D.fx_seen = D.fx_open = D.fx_bad = 0;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0, D.nodepth = VK_NULL_HANDLE;
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0;
+    D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
     D.cam_addr = 0;
 }
 
