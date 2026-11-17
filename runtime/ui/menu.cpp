@@ -41,9 +41,8 @@ extern "C" {
 #include "cheats.h"
 #include "cfg.h"
 #include "fs.h"
-#include "gfx_wsys.h"
 #include "input.h"
-#include "input_wsys.h"
+#include "input_wsys.h"   // ikb_pointer: the picker's pointer position
 #include "input_map.h"
 #include "mods.h"
 #include "perfmon.h"
@@ -146,24 +145,6 @@ extern "C" void menu_event_wheel(float dx, float dy) {
 extern "C" void menu_event_focus(int focused) { push({EV_FOCUS, focused, 0, 0, 0}); }
 
 static void drain_events(ImGuiIO &io) {
-    // The window system reports the pointer in client pixels, while the overlay is laid out in swapchain pixels and
-    // io.DisplaySize is that size. At a display scale above 100% the two differ (1280x720 client, 1920x1080 swapchain at
-    // 150%): without this ratio every click lands short of its row and nothing in the port's own UI can be pressed.
-    float sx = 1.0f, sy = 1.0f;
-    {
-        int cw = 0, ch = 0;
-        wsys_client_size(&cw, &ch);
-        if (cw > 0 && ch > 0 && io.DisplaySize.x > 0 && io.DisplaySize.y > 0) {
-            sx = io.DisplaySize.x / (float)cw;
-            sy = io.DisplaySize.y / (float)ch;
-        }
-        static int logged;
-        if (!logged) {
-            logged = 1;
-            rt_log("menu: pointer scale %.3f,%.3f (swapchain %.0fx%.0f, client %dx%d)", sx, sy, io.DisplaySize.x,
-                   io.DisplaySize.y, cw, ch);
-        }
-    }
     Ev q[EV_MAX];
     plat_mutex_lock(&ev_lock);
     int n = ev_n;
@@ -174,7 +155,7 @@ static void drain_events(ImGuiIO &io) {
         const Ev &e = q[i];
         switch (e.type) {
         case EV_KEY: io.AddKeyEvent((ImGuiKey)e.a, e.b != 0); break;
-        case EV_POS: io.AddMousePosEvent(e.x * sx, e.y * sy); break;
+        case EV_POS: io.AddMousePosEvent(e.x, e.y); break;
         case EV_BUTTON: io.AddMouseButtonEvent(e.a, e.b != 0); break;
         case EV_WHEEL: io.AddMouseWheelEvent(e.x, e.y); break;
         case EV_FOCUS: io.AddFocusEvent(e.a != 0); break;
