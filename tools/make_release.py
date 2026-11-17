@@ -19,6 +19,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                install compiles that update's code and the runtime libraries with it
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
+               Everything else is the build kit the setup copies into the install folder (installer/layout.py KIT_ITEMS)
 
 --prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.

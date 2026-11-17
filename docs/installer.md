@@ -1,8 +1,9 @@
 # Installer
 
 A public release that turns the player's own game files into a playable TotK folder. The release carries no game
-data and no code derived from the game: the installer builds the game on the player's machine. The installed folder
-holds only the game; the installer and its tools stay outside it.
+data and no code derived from the game: the installer builds the game on the player's machine. On Windows the
+installed folder also holds the build kit, the installer's tools the game rebuilds itself with for code mods, so the
+setup folder can be deleted after the install and the install folder moved.
 
 ## What the player does
 
@@ -16,7 +17,8 @@ holds only the game; the installer and its tools stay outside it.
      needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
+4. Plays `totk.exe` from the install folder. The setup folder and the source NSP or XCI (or NSZ, XCZ) can be deleted,
+   and the install folder can be moved: code mods rebuild the game with the build kit inside it.
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
@@ -32,16 +34,25 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
   totk-install.json              what built this folder: release version, input hashes, finished steps
+  build-kit/                     Windows: the release folder without TotK-Setup.exe (about 0.65 GB); the game's rebuild
+                                 for code mods runs the setup window from it
+  build-cache/                   what the rebuild built in (cheats.status, exefs.status, plugins.status), rebuild.txt,
+                                 and work/: the generated C, the lift cache and the objects (about 1.6 GB, Windows)
 ```
 
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
-`shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
-shaders. A newer release that changes nothing game-derived skips the rebuild. The window starts with the last install folder
-and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
-`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
-stay empty. A reinstall or a switch to another game version starts filled in.
+`shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, replaces `build-kit/` with its own files,
+rebuilds `totk.exe` and re-prepares the shaders. The setup is an installer and updater: nothing after the install needs
+its folder. An install made by a setup before the build kit kept its temp folder in that setup's folder
+(`<setup>/temp/<install name>-<hash>`, the setup `build-cache/rebuild.txt` named); the first newer setup moves it into
+`build-cache/work` when both are on one disk (on another it starts empty) and writes the new `rebuild.txt`. Until then
+the old `rebuild.txt` keeps using the old setup folder. A newer release that changes nothing game-derived skips the
+rebuild. The window starts with the last install folder and the base, update, keys and firmware paths it ran with (paths
+only, never the keys file's contents), kept in `%LOCALAPPDATA%\TotK Recomp\setup.json`
+(`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist stay empty. A reinstall or a switch
+to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -53,21 +64,28 @@ loads the saves 1.4.3 wrote.
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
-2. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
+2. **Kit** (Windows): copy the release folder without `TotK-Setup.exe` into `build-kit/` in the install folder
+   (`installer/steps.py` `Kit`, `installer/layout.py` `KIT_ITEMS`); every step after it runs its tools from there, so
+   the commands the build records (the compiler's path in the Ninja file) are the ones the game's rebuild runs later.
+   A newer setup replaces the kit; the kit's own rebuild keeps it. The steps' keys fingerprint file contents, not
+   paths (`runtime_key` leaves out the lines of `clang --version` that name its folder), so a rebuild from the kit
+   or from a moved install folder keeps every step the setup recorded.
+3. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
    from the firmware into `shared-fonts/` (MacNativeGames' `extract_shared_fonts.py`, which verifies every NCA layer
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
-3. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
-4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
-   to the installer. The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
-   (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
-   tools refuse costs those cheats or patches, not the install. The patch files' writes into main's data go to
-   `build-cache/exefs.data`, which the game stores into main at start; after the lift they are checked against the
-   bytes the lifted code read as constants (`<gen>/main/folded.txt`, its jump tables).
-5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
+4. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
+5. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into the temp folder,
+   `build-cache/work` in the install folder (`.setup-temp` on Linux, `--temp DIR` elsewhere). The code cheats of the
+   mods' cheat files and the mods' ExeFS patch files become patch sets first (`tools/cheats.py`,
+   `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the tools refuse costs
+   those cheats or patches, not the install. The patch files' writes into main's data go to `build-cache/exefs.data`,
+   which the game stores into main at start; after the lift they are checked against the bytes the lifted code read as
+   constants (`<gen>/main/folded.txt`, its jump tables).
+6. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
    (`build_game.py --runtime-lib`; about 3 min on 24 cores).
-6. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
+7. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
    patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
@@ -82,7 +100,7 @@ loads the saves 1.4.3 wrote.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **Shapes**: the UI laid out for each screen shape this player needs, `romfs-patches-<w>x<h>`
+8. **Shapes**: the UI laid out for each screen shape this player needs, `romfs-patches-<w>x<h>`
    (`--aspect`), and with Xbox or PC prompts in `totk.ini` that layout with those prompts too,
    `romfs-patches-<style>-<w>x<h>` (`--prompts <style> --aspect --reuse romfs-patches-<style>`, which hard-links every
    file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
@@ -93,39 +111,44 @@ loads the saves 1.4.3 wrote.
    again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
    game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
    background for the next start.
-8. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+9. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-9. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+10. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder. The next lift lifts again only the chunks whose inputs
-changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices) and rewrites only
-those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds of lift
-(discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the whole lift)
-and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A cheat set added
-or removed before others in the patch file moves their set indices, so the chunks of their sites are lifted too. A
-change to `recomp/*.py` lifts everything.
+The generated C and the objects stay in the temp folder, inside the install folder. The next lift lifts again only the
+chunks whose inputs changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices)
+and rewrites only those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds
+of lift (discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the
+whole lift) and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A
+cheat set added or removed before others in the patch file moves their set indices, so the chunks of their sites are
+lifted too. A change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
-whatever the working folder), one argument per line. When an enabled mod has code cheats or ExeFS patch files the build
-lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
-window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
-offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start at all leaves no
-`rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. The rebuild needs the
-release folder the setup ran from: a moved or deleted release folder means running a setup again. On Linux the command
-starts the AppImage file itself (`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone
-once the setup exits; a moved or deleted AppImage means running a setup again. Installs set up by an AppImage before
-this change hold a command into that mount: running the new setup once on the install folder writes the new one.
+whatever the working folder), one argument per line. On Windows it names the build kit relative to the install folder
+(`build-kit\python\pythonw.exe`, `build-kit`, `--rebuild .`): `totk.exe` takes the program from its own folder and
+starts the command there, so no path of the setup or of the install folder is stored. When an enabled mod has code
+cheats or ExeFS patch files the build lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c`
+`rebuild_if_needed`); the window runs the setup on the folder at once and starts the game again when it succeeds. A
+failed or cancelled rebuild offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the
+same files from starting it again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start
+at all leaves no `rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. A moved
+install folder keeps its incremental rebuild: the kit's builds run `tools/build_game.py --portable`, whose Ninja file
+and deps log name every path relative to the kit (3.5 s to rebuild after a move instead of a full compile). A build with
+a mod plugin names the plugin's file by its absolute path (`recomp/layout.py`), so after a move the game finds it gone
+and runs the rebuild once. On Linux the command starts the AppImage file itself (`$APPIMAGE --rebuild <install
+folder>`), because the AppImage's mounted folder is gone once the setup exits; a moved or deleted AppImage means running
+a setup again. Installs set up by an AppImage before this change hold a command into that mount: running the new setup
+once on the install folder writes the new one.
 
 ## Command line
 
@@ -170,7 +193,8 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
 The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
-TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
+TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console); the
+                      rest is what the Kit step copies into the install folder's build-kit/
 installer/            the installer: steps, CLI, window, en/ru/zh-Hans text catalog
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)

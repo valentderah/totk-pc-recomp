@@ -44,6 +44,9 @@ big machine does not run out of memory on the largest chunks. Each phase reports
 of its processes (Windows job object accounting: committed private bytes).
 
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
+--portable (the setup's builds, installer/steps.py build_args) writes every path on the tools' drive relative to the
+folder above tools/, through '..' where needed, so the install folder that holds the build kit, the generated C and the
+build folder can move and the next build stays incremental (PORTABLE).
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
 from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx, VMA) then come from --deps DIR
 (default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs copied next to
@@ -117,6 +120,13 @@ def set_cpu(cpu):
 # keeps the names equal between the training build and a build from another tree (a worktree, an install).
 PGO_NAMES = ['-mllvm', '-static-func-full-module-prefix=false']
 PGO_INPUT = None   # the .profdata of --pgo FILE: every compile depends on it, so a new profile rebuilds them
+# --portable (the setup's builds in an install folder, installer/steps.py build_args): build.ninja names every path on
+# ROOT's drive relative to ROOT, the compiler too. clang names its own headers by its absolute folder whatever argv[0]
+# says, so with --toolchain the compiles also get -resource-dir and --sysroot relative to ROOT (the folders clang would
+# take itself); the Ninja deps log then holds no absolute path. Ninja runs in ROOT, so a folder that holds ROOT, the
+# generated C and the build folder (the install folder with build-kit/ and build-cache/work/) can move without a full
+# recompile.
+PORTABLE = False
 
 
 def set_pgo(pgo, out):
@@ -210,12 +220,25 @@ MEM_BUDGET = 50 * GiB  # total for all compile jobs
 
 def below_root(p):
     """Resolved p relative to ROOT, else to MAIN_ROOT (the same relative path through the worktree's junctions), else
-    absolute."""
+    absolute; with --portable relative to ROOT through '..' when it is on ROOT's drive."""
     p = Path(p).resolve()
     for root in (ROOT, MAIN_ROOT):
         if p.is_relative_to(root):
             return p.relative_to(root)
+    if PORTABLE:
+        try:
+            return Path(os.path.relpath(p, ROOT))
+        except ValueError:   # another drive
+            pass
     return p
+
+
+def tool_arg(p):
+    """A program for a Ninja command line: relative like the other paths with --portable (with backslashes on Windows:
+    CreateProcess does not find a relative program named with forward slashes), else absolute."""
+    if not PORTABLE:
+        return cmd_arg(p.as_posix())
+    return cmd_arg(str(below_root(p)) if WIN else below_root(p).as_posix())
 
 
 def ninja_path(p):
@@ -434,7 +457,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
         f'builddir = {ninja_path(out)}',
-        f'cc = {cache}{cmd_arg(CLANG.as_posix())}',
+        f'cc = {cache}{tool_arg(CLANG)}',
         f'genflags = {" ".join(GEN_FLAGS)} {inc}',
         f'rtflags = {" ".join(RT_FLAGS)} {rt_inc}',
         f'ldflags = {" ".join(LINK_FLAGS)}',
@@ -456,7 +479,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '  description = CC $in',
         '',
         'rule rc',
-        f'  command = {cmd_arg(WINDRES.as_posix())} -I {cmd_path(RUNTIME)} -O coff $in -o $out',
+        f'  command = {tool_arg(WINDRES)} -I {cmd_path(RUNTIME)} -O coff $in -o $out',
         '  description = RC $in',
         '',
         'rule link',
@@ -498,7 +521,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     exe = out / EXE
     if make_lib:
         exe = out / LIB_NAME
-        lines += ['', 'rule ar', f'  command = {cmd_arg(AR.as_posix())} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
+        lines += ['', 'rule ar', f'  command = {tool_arg(AR)} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
                   'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
         return '\n'.join(lines), objs, exe
     rule = 'link'
@@ -862,8 +885,14 @@ def main():
                     help='compile the generated code at -O2 without a profile (the --pgo level), for A/B builds')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--portable', action='store_true',
+                    help='paths in build.ninja relative to the tools\' folder, also through .. (an install folder that '
+                         'moves with its build kit and build folder)')
     args = ap.parse_args()
     set_cpu(args.cpu)
+    if args.portable:
+        global PORTABLE
+        PORTABLE = True
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
     out = (args.out or ROOT / 'build' / args.version).resolve()
@@ -902,6 +931,12 @@ def main():
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+        if PORTABLE and WIN:
+            resource = sorted((TOOLCHAIN_BIN.parent / 'lib' / 'clang').glob('*'))
+            if len(resource) != 1:
+                sys.exit(f'--portable: {TOOLCHAIN_BIN.parent / "lib" / "clang"} holds {len(resource)} version folders')
+            for flags in (GEN_FLAGS, RT_FLAGS):
+                flags += ['-resource-dir', cmd_path(resource[0]), f'--sysroot={cmd_path(TOOLCHAIN_BIN.parent)}']
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []

@@ -1,5 +1,6 @@
 {
  "step.check": "Checking the computer and the game files",
+ "step.kit": "Copying the build kit into the game folder",
  "step.fonts": "Extracting the system fonts",
  "step.extract": "Extracting the game",
  "step.lift": "Translating the game code to C",
@@ -17,6 +18,7 @@
  "phase.check.unpack_base": "Unpacking the compressed base game",
  "phase.check.unpack_update": "Unpacking the compressed update",
  "phase.check.versions": "Checking the game versions",
+ "phase.kit.copy": "Copying the tools the game rebuilds itself with for code mods",
  "phase.fonts.extract": "Extracting the shared fonts from the firmware",
  "phase.fonts.copy": "Copying the shared fonts into the install folder",
  "phase.extract.hash_base": "Computing the checksum of the base game",
@@ -95,6 +97,8 @@
  "lift.failed": "Translating the game code failed (exit code {code}). Details: {log}",
  "compile.failed": "Compiling {game_exe} failed (exit code {code}). Details: {log}",
  "compile.exe_in_use": "{path} is in use. Close the game and run the installer again.",
+ "kit.in_use": "{path} is in use. Close the game and any open setup or rebuild window, then run the installer again.",
+ "kit.copy_failed": "The build kit cannot be copied to {path}: {detail}",
  "compile.exe_locked": "{path} cannot be written: another program holds it, a game started from that folder or an antivirus that flagged the file. Close the game, add the setup's folder and the install folder to the antivirus exclusions, restart Windows, then run the installer again. Details: {log}",
  "prepare.xlate_in_use": "{path} is in use. Close the game, end any totk_xlate process left from an earlier run, then run the installer again.",
  "prepare.shader_list_missing": "The shader list is missing.",
