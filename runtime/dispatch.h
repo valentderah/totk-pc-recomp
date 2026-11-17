@@ -19,8 +19,10 @@ typedef struct RtModule {
 } RtModule;
 
 // The module glue that tools/build_game.py writes for each build (build/<version>/modules.c), from layout.json and
-// layout.h: every module of the layout, and the modules linked into this executable.
-typedef struct RtLayoutEntry { const char *name; uint64_t base, size; } RtLayoutEntry;
+// layout.h: every module of the layout, and the modules linked into this executable. A mod's code module
+// (recomp/layout.py plugin<N>, after sdk) also names its NSO file and that file's SHA-256; a game module has NULL there
+// and is read from the ExeFS directory.
+typedef struct RtLayoutEntry { const char *name; uint64_t base, size; const char *file, *sha256; } RtLayoutEntry;
 extern const RtLayoutEntry rt_layout[];
 extern const int rt_layout_count;
 int rt_linked_modules(RtModule *out, int max);

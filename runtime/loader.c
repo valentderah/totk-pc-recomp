@@ -52,6 +52,7 @@ typedef struct {
 } Mod;
 
 static Mod mods[MOD_COUNT];
+GuestFn ldr_plugin_import;
 static int nmods;
 static uint64_t identity_refs, stubs;
 static int *ovr_used, *obs_used;   // per linked table entry, plus probe overrides counted separately
@@ -74,6 +75,17 @@ static void hex32(const uint8_t d[32], char out[65]) {
     for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
+static uint8_t *read_path_verified(const char *path, const char *want, size_t *len, const char *hint) {
+    uint8_t *p = read_file(path, len);
+    if (!p) rt_fatal("loader: cannot read %s (%s)", path, hint);
+    uint8_t d[32];
+    char hex[65];
+    rt_sha256(p, *len, d);
+    hex32(d, hex);
+    if (strcmp(hex, want)) rt_fatal("loader: %s has SHA-256 %s, expected %s", path, hex, want);
+    return p;
+}
+
 uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len) {
     const char *want = NULL;
     for (int i = 0; i < rt_exefs_sha256_count; i++)
@@ -81,14 +93,7 @@ uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len) {
     if (!want) rt_fatal("loader: no expected SHA-256 for %s in modules.c", file);
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", dir, file);
-    uint8_t *p = read_file(path, len);
-    if (!p) rt_fatal("loader: cannot read %s (extract the game first: tools/extract.py)", path);
-    uint8_t d[32];
-    char hex[65];
-    rt_sha256(p, *len, d);
-    hex32(d, hex);
-    if (strcmp(hex, want)) rt_fatal("loader: %s has SHA-256 %s, expected %s", path, hex, want);
-    return p;
+    return read_path_verified(path, want, len, "extract the game first: tools/extract.py");
 }
 
 // ---- NSO
@@ -139,6 +144,32 @@ static void nso_segment(const uint8_t *raw, const Seg *s, uint8_t *dst, const ch
     } else if (lz4_decompress(raw + s->file_off, s->csize, dst, s->size) != s->size) {
         rt_fatal("loader: %s segment %d: LZ4 data is corrupt", name, i);
     }
+}
+
+// The plugin service run's stand-in for rtld (plugin_init.c): an ExeFS NSO's image, read and checked like a module but
+// neither relocated, linked nor sealed. Nothing runs it; exlaunch only reads it while it walks the address space.
+uint64_t ldr_nso_size(const char *dir, const char *file) {
+    size_t len;
+    uint8_t *raw = ldr_read_verified(dir, file, &len);
+    Seg seg[3];
+    uint64_t size = nso_segments(raw, len, file, seg);
+    free(raw);
+    return size;
+}
+
+void ldr_map_image(const char *dir, const char *file, uint64_t base, uint64_t *text_end, uint64_t *data_off) {
+    size_t len;
+    uint8_t *raw = ldr_read_verified(dir, file, &len);
+    Seg seg[3];
+    uint64_t size = nso_segments(raw, len, file, seg);
+    if (!plat_mem_commit(base, size)) rt_fatal("loader: cannot commit %s at %#llx", file, (unsigned long long)base);
+    for (int i = 0; i < 3; i++) {
+        if ((uint64_t)seg[i].mem_off + seg[i].size > size) rt_fatal("loader: %s segment %d exceeds the image", file, i);
+        nso_segment(raw, &seg[i], (uint8_t *)(uintptr_t)(base + seg[i].mem_off), file, i);
+    }
+    free(raw);
+    *text_end = seg[0].mem_off + seg[0].size;
+    *data_off = seg[2].mem_off;
 }
 
 // ---- symbols
@@ -273,9 +304,12 @@ static uint64_t decode_ctor_flag(const Mod *m) {
     return 0;
 }
 
+// A plugin (lay->file set) comes from its mod folder, checked against the hash the build took when it lifted it.
 static void load_module(Mod *m, const char *dir, const RtLayoutEntry *lay) {
     size_t len;
-    uint8_t *raw = ldr_read_verified(dir, lay->name, &len);
+    uint8_t *raw = lay->file ? read_path_verified(lay->file, lay->sha256, &len, "the mod's code module the build "
+                                                  "lifted; rebuild after changing mods")
+                             : ldr_read_verified(dir, lay->name, &len);
     Seg seg[3];
     uint64_t size = nso_segments(raw, len, lay->name, seg);
     if (size != lay->size)
@@ -291,6 +325,7 @@ static void load_module(Mod *m, const char *dir, const RtLayoutEntry *lay) {
     }
     free(raw);
     m->pub.name = lay->name;
+    m->pub.plugin = lay->file != NULL;
     m->pub.base = lay->base;
     m->pub.size = size;
     m->pub.text_end = seg[0].mem_off + seg[0].size;
@@ -328,7 +363,11 @@ static Res resolve(Mod *m, uint32_t si, int jump) {
     uint64_t guest = sym_defined(m, si) ? m->pub.base + m->syms[si].value : find_symbol(name, NULL);
     GuestFn f;
     Res r;
-    if (jump && (f = hostfn_observer(name))) {
+    if (jump && m->pub.plugin && ldr_plugin_import) {   // the plugin service run counts the plugin's calls by name
+        uint64_t to = (f = hostfn_override(name)) ? hostfn_register(name, f) : guest;
+        if (!to) to = hostfn_register(name, unresolved_stub);
+        r = (Res){hostfn_register_observer(name, ldr_plugin_import, to), RES_OBSERVER};
+    } else if (jump && (f = hostfn_observer(name))) {
         r = (Res){hostfn_register_observer(name, f, guest), RES_OBSERVER};
         mark_used(1, name);
     } else if ((f = hostfn_override(name))) {

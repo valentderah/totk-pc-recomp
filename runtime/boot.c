@@ -77,6 +77,7 @@ static void cb_loader_ready(Cpu *c) {
 // afterwards (MacNativeGames loader.c:458-462).
 static void cb_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
+    if (rt_config()->plugin_init) plugin_init_run(c, module_named("sdk"));   // the plugin service run ends there
     for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) {
         const RtLoaded *m = module_named(expected_inits[k].name);
         uint64_t entries = m->init_array_size / 8;
@@ -118,8 +119,8 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
             rt_fatal("boot: checkpoint %s reached from %s, expected main+%#llx", detail, at,
                      (unsigned long long)CHECKPOINT_RET);
         if (!plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: checkpoint %s before DT_INIT", detail);
-        for (int i = 0; i < ldr_count(); i++)
-            if (ctor_state(ldr_module(i)) != CTOR_DONE)
+        for (int i = 0; i < ldr_count(); i++)   // a plugin's init does not run at play time (plugin_init.c)
+            if (!ldr_module(i)->plugin && ctor_state(ldr_module(i)) != CTOR_DONE)
                 rt_fatal("boot: checkpoint %s: %s constructor flag reads %u", detail, ldr_module(i)->name,
                          ctor_state(ldr_module(i)));
         plat_xchg32(&checkpoint_seen, 1);
@@ -339,6 +340,23 @@ static void prewarm_main(void *arg) {
         gfx_shader_prepare_recorded(cpus, cpus / 2 > 16 ? 16 : cpus / 2 < 1 ? 1 : cpus / 2);
     }
     return;
+}
+
+// --plugin-init DIR: the modules load and nn::init::Start runs as at boot, and its module-init callback runs sdk's
+// DT_INIT and each plugin's instead of the game's constructors, writes the record and exits (plugin_init.c). No game
+// constructor, nnMain, shader prewarm, graphics or audio runs.
+void rt_boot_plugin_init(void) {
+    check_npdm();
+    plugin_init_setup();
+    ldr_load(rt_config()->exefs);
+    rt_patches_init();   // the generated code reads the patch page
+    cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
+    cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
+    cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
+    hostfn_seal();
+    rt_guest_start_ns = kern_now_ns();
+    kern_run_on_guest_main(guest_main);
+    rt_fatal("boot: the guest main thread ended");
 }
 
 void rt_boot(void) {

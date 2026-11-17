@@ -562,6 +562,9 @@ static uint64_t run_start(const uint8_t *p, uint64_t i, uint8_t v) {   // first 
     return i;
 }
 
+// The plugin service run (plugin_init.c) shows rtld, its process-memory aliases and its free pool here.
+void (*mem_query_hook)(uint64_t a, RtMemoryInfo *r);
+
 uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
     RtMemoryInfo r = {.base = a & ~(PAGE - 1), .size = PAGE};
     uint64_t low = L.aslr.base;
@@ -632,6 +635,7 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         r.size = hi - lo;
     }
     plat_mutex_unlock_shared(&lock);
+    if (mem_query_hook) mem_query_hook(a, &r);
     if (out) *out = r;
     return R_OK;
 }

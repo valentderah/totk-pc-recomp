@@ -3,6 +3,8 @@
 // The SVC entry of the lifted code: preemption checkpoint, trace, then the thread and
 // synchronization SVCs (kernel.c), IPC (ipc.c), memory (memory.c), Break, OutputDebugString, GetInfo and ExitProcess. The 21 SVCs
 // TotK has but never reaches on MNG's boot path stop with a named fatal, the caller and the guest backtrace.
+// GetSystemTick, GetInfo 65001 and Map/UnmapProcessMemory are for mod plugins (exlaunch): the game calls none of them,
+// and process memory is mapped only in the plugin service run (plugin_init.c).
 #include <stdio.h>
 #include <string.h>
 
@@ -17,9 +19,13 @@
 #define ST_STACK 0xBu
 #define PERM_RW 3u
 #define PROGRAM_ID 0x0100f2c0115b6000ull
+#define CUR_PROCESS 0xFFFF8001u   // Horizon's pseudo handle of the current process
 
 static uint64_t g_svcs;
 void (*volatile svc_test_exit_hook)(unsigned code);
+uint64_t rt_svc_tick_offset;
+void (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);
+uint32_t (*rt_process_memory)(int unmap, uint64_t dst, uint32_t process, uint64_t src, uint64_t size);
 
 RtStats rt_stats(void) {
     return (RtStats){__atomic_load_n(&g_svcs, __ATOMIC_RELAXED), kern_threads_created(), hostfn_calls()};
@@ -121,6 +127,7 @@ static void get_info(Cpu *c, uint64_t pc) {
     case 18: v = PROGRAM_ID; break;
     case 20: v = user_exception_context(); break;   // the SDK keeps e.g. the dying message at +0x1C0
     case 23: v = 1; break;
+    case 65001: v = CUR_PROCESS; break;   // Mesosphere's current process handle (exlaunch's way to its own memory)
     default: {
         char why[64];
         snprintf(why, sizeof why, "GetInfo id %u (handle %#x, sub id %#llx)", id, (uint32_t)c->x[2],
@@ -151,11 +158,13 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
 
 static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
     __atomic_fetch_add(&g_svcs, 1, __ATOMIC_RELAXED);
-    if (rt_trace & RT_TRACE_SVC) {
+    if (rt_trace & (RT_TRACE_SVC | RT_TRACE_PLUGIN)) {
+        if ((rt_trace & RT_TRACE_PLUGIN) && rt_plugin_svc) rt_plugin_svc(c, imm, pc);
         char at[160];
-        rt_log("svc %#x at %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", imm, ldr_describe(pc, at, sizeof at),
-               (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
-               (unsigned long long)c->x[3]);
+        if (rt_trace & RT_TRACE_SVC)
+            rt_log("svc %#x at %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", imm, ldr_describe(pc, at, sizeof at),
+                   (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
+                   (unsigned long long)c->x[3]);
     }
     if (kern_svc(c, imm)) return;
     uint64_t *x = c->x;
@@ -210,6 +219,11 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         return;
     }
     case 0x29: get_info(c, pc); return;
+    case 0x1E: x[0] = rt_ticks() + rt_svc_tick_offset; return;   // GetSystemTick (19.2 MHz)
+    case 0x74: case 0x75:   // MapProcessMemory / UnmapProcessMemory(x0 dst, w1 process, x2 src, x3 size)
+        if (!rt_process_memory) svc_fatal(c, imm, pc, "process memory is mapped only in the plugin service run");
+        x[0] = rt_process_memory(imm == 0x75, x[0], (uint32_t)x[1], x[2], x[3]);
+        return;
     case 0x07: {   // ExitProcess, as closing the window (gfx_window_closed): pipeline cache, shader records and
                    // profile saved, logs flushed, exit code 0
         char at[160];

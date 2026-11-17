@@ -38,3 +38,9 @@ extern volatile int kern_test_cv_old_order;           // WaitProcessWideKeyAtomi
                                                       // the key (MNG's pre-fix order, the negative control)
 extern void (*volatile kern_test_cv_hook)(void);      // called right after the lock release, holding the kernel lock
 extern void (*volatile svc_test_exit_hook)(unsigned code);   // svc 0x07 calls it instead of ExitProcess (probes)
+
+// ---- mod plugin service run (plugin_init.c sets these; the game calls none of the SVCs they serve)
+extern uint64_t rt_svc_tick_offset;   // added to GetSystemTick (0x1E): the service run's second run picks other ticks
+extern void (*rt_plugin_svc)(Cpu *c, uint32_t imm, uint64_t pc);   // with RT_TRACE_PLUGIN: sees each SVC first
+extern uint32_t (*rt_process_memory)(int unmap, uint64_t dst, uint32_t process, uint64_t src, uint64_t size);
+                                      // Map/UnmapProcessMemory (0x74/0x75); NULL outside the service run: fatal
