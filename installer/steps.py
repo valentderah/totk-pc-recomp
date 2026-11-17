@@ -1009,7 +1009,10 @@ class Lift(Step):
                 skipped['warn.plugins_skipped'] = log
             else:
                 patches = ctx.temp / 'patches-plugins.txt'
-                lift_plugins = built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods')
+                # With one plugin built, the layout keeps every plugin of the service runs: the records hold addresses
+                # of that layout. A refused plugin stays loaded at play, its init never runs (no patch set).
+                if built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods'):
+                    lift_plugins = plugins
         if lift_plugins:
             args += ['--plugins', ','.join(str(f) for f in lift_plugins)]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)

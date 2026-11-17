@@ -103,12 +103,15 @@ Inventory Expansion's sort fixer, Quick Weapon Durability). On the Switch the pl
 redirects some of the game's instructions into its own code. The port does the same with the plugin's code compiled
 ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc-recomp/issues/845) by itaskaev2:
 
-1. The rebuild (the same one as for code patches above) compiles the plugin with the game, starts the game's code
-   once in a service mode that runs only the plugin's start-up (`totk.exe --plugin-init`), twice, and records which
-   instructions it redirects. Each redirect becomes a code site of the mod, built into `totk.exe`.
-2. At every start the plugin's start-up runs again, before the game's own start-up code, in the same setting. Its
-   redirects are compared with the record of the rebuild. When they match, the mod's code sites go on. When they do
-   not, the plugin stays off for this run, the mod's row says why, and the next start runs the rebuild.
+1. The rebuild (the same one as for code patches above) compiles the plugins with the game, then starts the game's
+   code in a service mode that runs only one plugin's start-up (`totk.exe --plugin-init`), twice per plugin, and
+   records which instructions it redirects. Each redirect becomes a code site of the mod, built into `totk.exe`. Each
+   plugin is judged on its own: one that is refused, or whose start-up crashes or never returns, stays off with its
+   reason, and the other plugins are built in.
+2. At every start each plugin's start-up runs again, before the game's own start-up code, in the same setting: it
+   sees the game's own instructions, as in its service run. Its redirects are compared with the record of the
+   rebuild. When they match, the mod's code sites go on. When they do not, the plugin stays off for this run, the
+   mod's row says why, and the next start runs the rebuild.
 3. The plugin keeps what its start-up made (its memory, its tables), so its code works as on the Switch. The start
    costs about 50 ms per plugin; the game runs no differently without a plugin.
 
@@ -119,8 +122,9 @@ The rebuild refuses a plugin when its start-up or the code its redirects reach n
 system calls other than the few its start-up needs (memory queries and maps, the clock, debug output), library calls
 outside a reviewed list (memory and string functions, the heap, text formatting), threads, services or input; a
 redirect that is not one of exlaunch's hook shapes (inline hook, replace hook, call-site rewrite); or two runs of its
-start-up that differ in code. The row then says **Its plugin ... cannot run in the port** with the reason, and the
-mod stays off; **Use <mod> without its code** uses the rest of it. UltraCam stays refused: it hooks the graphics API,
+start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes. The
+row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without its
+code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
 reads input and opens sockets.
 
 `plugin_trace = 1` in `totk.ini` logs the first call into each of a plugin's hooks (`plugins: hook entry ... reached`).
