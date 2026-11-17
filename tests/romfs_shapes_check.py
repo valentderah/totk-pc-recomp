@@ -164,7 +164,8 @@ def main():
         source = folder / 'harness.c'
         source.write_text(HARNESS)
         exe = folder / ('harness.exe' if os.name == 'nt' else 'harness')
-        command = [args.cc, '-O2', '-flto', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
+        # lld links the LTO objects: MSYS2 UCRT64 Clang's default linker (GNU ld) cannot take LLVM bitcode
+        command = [args.cc, '-O2', '-flto', '-fuse-ld=lld', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
                    '-I', str(folder), '-I', str(ROOT / 'runtime'), str(source), '-o', str(exe)]
         subprocess.run(command, check=True, cwd=ROOT)
         env = os.environ.copy()
