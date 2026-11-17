@@ -1404,7 +1404,24 @@ class PcPrompts(Step):
 
 # ---- 6b. screen shapes
 
-SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-xbox|-xbox-label|-pc)?-\d+x\d+$')
+SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-xbox|-xbox-label|-pc)?-\d+x\d+(?:-hud(?:16|21)x9)?$')
+
+
+def hud_width(dest):
+    """The selected HUD cap, with the same default as runtime/cfg.c."""
+    try:
+        text = (dest / 'totk.ini').read_text(encoding='utf-8-sig', errors='replace')
+    except OSError:
+        text = ''
+    value = (screens.ini_value(text, 'hud_width') or 'full').lower()
+    return value if value in ('16:9', '21:9') else 'full'
+
+
+def shape_hud(size, hud):
+    """The selected cap when at least 1% narrower than the shape, as make_romfs_patches.py requires."""
+    w, h = (int(v) for v in size.split('x'))
+    cap = {'16:9': 16 / 9, '21:9': 21 / 9}.get(hud)
+    return hud if cap and cap < w / h * 0.99 else None
 
 
 class Shapes(Step):
@@ -1412,7 +1429,7 @@ class Shapes(Step):
     in totk.ini, romfs-patches-<style>-<w>x<h> (that layout with those prompts), for the shapes this player needs:
     those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
     game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15
-    sizes for every prompts style, 64 folders. The key holds the shapes and the style, so a run of the setup after a
+    sizes for every prompts style, 64 folders. The key holds the shapes, prompts style and selected HUD width, so a run after a
     monitor or settings change (or its rebuild mode) writes only these again; the game's settings menu can also start
     the generator for the shape in use (runtime/ui/menu.cpp row_output_res)."""
 
@@ -1427,10 +1444,12 @@ class Shapes(Step):
         sizes, style = self.wanted(ctx)
         # The pc prompts' shaped folders are drawn from the same bindings as romfs-patches-pc, so they follow its key
         prompts = ctx.keys.get('pc_prompts', '') if style == 'pc' else ''
-        return fingerprint('shapes-2', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', *sizes)
+        return fingerprint('shapes-3', ctx.keys.get('prepare', ''), prompts, style or 'nintendo',
+                           hud_width(ctx.dest), *sizes)
 
     def current(self, ctx, record):
-        return all((ctx.dest / name / 'manifest.tsv').is_file() for name in record.get('folders', []))
+        return not record.get('failed') and all((ctx.dest / name / 'manifest.tsv').is_file()
+                                               for name in record.get('folders', []))
 
     def run(self, ctx):
         layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
@@ -1442,31 +1461,38 @@ class Shapes(Step):
         version = version_tag(game_version(ctx))
         plain = dest / f'romfs-patches-{style}' if style else None
         folders, failed = [], None
+        hud = hud_width(dest)
         for i, size in enumerate(sizes):
             rep.progress('shapes', 'layouts', i, len(sizes), 'shapes', force=True)
-            out = dest / f'romfs-patches-{size}'
-            code, log = run_tool(ctx, 'shapes', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--aspect', size])
-            if code:
-                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-            folders.append(out.name)
-            # Only the Common archive differs from romfs-patches-<style>: --reuse links the fonts, messages and size
-            # table from there. Optional like that folder: the game keeps the Switch prompts with this layout.
-            if not plain or not (plain / 'manifest.tsv').is_file():
-                continue
-            out = dest / f'romfs-patches-{style}-{size}'
-            code, log = run_tool(ctx, f'shapes-{style}', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--prompts', style,
-                                  '--aspect', size, '--reuse', plain, *(pc_binds(dest) if style == 'pc' else ())])
-            if code:
-                remove(out)
-                failed = failed or (code, log)
-            else:
+            cap = shape_hud(size, hud)
+            # Keep the full layout as a fallback, plus only the cap this player selected for this shape.
+            for variant in (None, cap) if cap else (None,):
+                suffix = '-hud' + variant.replace(':', 'x') if variant else ''
+                hud_args = ['--hud', variant] if variant else []
+                out = dest / f'romfs-patches-{size}{suffix}'
+                code, log = run_tool(ctx, 'shapes', layout.tools / 'make_romfs_patches.py',
+                                     ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--aspect', size,
+                                      *hud_args])
+                if code:
+                    raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
                 folders.append(out.name)
+                # Reuse the selected prompts' fonts/messages/table; PC layouts retain the player's bindings.
+                if not plain or not (plain / 'manifest.tsv').is_file():
+                    continue
+                out = dest / f'romfs-patches-{style}-{size}{suffix}'
+                code, log = run_tool(ctx, f'shapes-{style}', layout.tools / 'make_romfs_patches.py',
+                                     ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--prompts', style,
+                                      '--aspect', size, *hud_args, '--reuse', plain,
+                                      *(pc_binds(dest) if style == 'pc' else ())])
+                if code:
+                    remove(out)
+                    failed = failed or (code, log)
+                else:
+                    folders.append(out.name)
         rep.progress('shapes', 'layouts', len(sizes), len(sizes), 'shapes', force=True)
         if failed:
             rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
-        return {'folders': folders, 'sizes': sizes, 'style': style}
+        return {'folders': folders, 'sizes': sizes, 'style': style, 'hud': hud, 'failed': bool(failed)}
 
 
 # ---- 7. NVIDIA DLSS

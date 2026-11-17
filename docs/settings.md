@@ -14,6 +14,12 @@ Many rows below are developer tools that only act together with another setting 
 
 `tests/settings_doc_check.py` fails when a name in `known[]` (`runtime/cfg.c`) is described neither here nor in `totk.ini.example`, or when a default here differs from the code.
 
+## HUD placement
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `hud_width` (default `full`) | `full` places the HUD at the screen's edges; `21:9` or `16:9` constrains it to that centered area on a wider game resolution. A cap that is not narrower than the screen, and 16:9 or taller output, keep the full layout. | Read at start. The Shapes installer step builds the selected cap only for needed screen shapes and button prompts. Changing it in the Screen tab may require preparing the layout there or rerunning setup before restarting. If a capped folder is missing the full layout loads with a log message. Explicit overlay overrides and player UI mods keep their precedence. | Safe |
+
 ## Diagnostics and logging
 
 | Setting | What it does | Effect of changing it | Safety |
