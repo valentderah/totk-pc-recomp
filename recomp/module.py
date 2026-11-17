@@ -10,7 +10,7 @@ from collections import OrderedDict
 import numpy as np
 
 from lifter import Insn, Lifter, Unsupported, hx
-from nso import Nso, R_AARCH64_RELATIVE
+from nso import DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, Nso, R_AARCH64_RELATIVE
 
 LIFT_CACHE = 1 << 16  # lifted instructions kept per module; analyses revisit nearby addresses only
 
@@ -33,10 +33,11 @@ def _read_encoded(img, off, enc, pc_base):
 
 
 class Module:
-    def __init__(self, name, path, base, simd='c'):
+    def __init__(self, name, path, base, simd='c', plugin=False):
         self.name = name
         self.nso = Nso(str(path))
         self.base = base
+        self.plugin = plugin   # a mod's code module (recomp/layout.py plugin<N>): its init functions are seeds too
         n = self.nso
         self.image = bytes(n.image)
         self.lo = base + n.text[0]
@@ -83,7 +84,7 @@ class Module:
     def eh_frame_functions(self):
         """Function starts from .eh_frame_hdr's binary search table (absolute addresses)."""
         img, hdr = self.image, self.nso.eh_start
-        if not hdr or hdr >= len(img):
+        if not hdr or hdr >= len(img) or self.nso.eh_end <= hdr:   # MOD0 with an empty .eh_frame_hdr range (exlaunch)
             return []
         _, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
         off = hdr + 4
@@ -100,9 +101,25 @@ class Module:
             starts.append(self.base + loc)
         return starts
 
+    def init_functions(self):
+        """DT_INIT and the DT_INIT_ARRAY entries (absolute addresses). rtld calls DT_INIT only; the module's DT_INIT
+        runs the array through blr (SDK and exlaunch modules alike), so the entries are seeds too. An entry holds its
+        target as the addend of its R_AARCH64_RELATIVE relocation, or as the word itself when no relocation names it."""
+        dyn, out = self.nso.dyn, []
+        if dyn.get(DT_INIT):
+            out.append(self.base + dyn[DT_INIT])
+        if dyn.get(DT_INIT_ARRAY):
+            addends = {off: add for off, typ, _, add in self.nso.relocs if typ == R_AARCH64_RELATIVE}
+            for off in range(dyn[DT_INIT_ARRAY], dyn[DT_INIT_ARRAY] + dyn.get(DT_INIT_ARRAYSZ, 0), 8):
+                out.append(self.base + addends.get(off, self.nso.u64(off)))
+        return out
+
     def seeds(self):
-        """Known function starts: .eh_frame_hdr, exported FUNC symbols, R_AARCH64_RELATIVE targets in .text."""
+        """Known function starts: .eh_frame_hdr, exported FUNC symbols, R_AARCH64_RELATIVE targets in .text; for a
+        plugin also its init functions (exlaunch's DT_INIT starts inside a function discovery would merge it into)."""
         starts = set(self.eh_frame_functions())
+        if self.plugin:
+            starts.update(self.init_functions())
         for _, info, shndx, value, _ in self.nso.syms:
             if shndx and (info & 0xF) == 2:
                 starts.add(self.base + value)

@@ -242,6 +242,13 @@ def read_layout(gen):
     return [(m['name'], int(m['base'], 16), int(m['size'], 16)) for m in data]
 
 
+def read_plugin_files(gen):
+    """{plugin<N>: (NSO path, SHA-256)} from layout.json: the mod code modules recomp/layout.py placed after sdk. They
+    are no ExeFS files, so the runtime reads each from its path and checks it against this hash."""
+    data = json.loads((gen / 'layout.json').read_text())
+    return {m['name']: (m['file'], m['sha256']) for m in data if 'file' in m}
+
+
 def chunk_files(gen, mod):
     """The C files of one module: the chunks listed in <mod>/manifest.json, then <mod>_table.c."""
     d = gen / mod
@@ -366,9 +373,11 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version):
+def module_glue(layout, linked, hashes, paths, version, plugins=None):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version and the default game paths (host.h). plugins: read_plugin_files(); a plugin
+    row of the layout table also names its file and hash."""
+    plugins = plugins or {}
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -376,7 +385,9 @@ def module_glue(layout, linked, hashes, paths, version):
         out.append(f'_Static_assert(MOD_{u}_BASE == {base:#x}ull && MOD_{u}_SIZE == {size:#x}ull, '
                    f'"layout.h and layout.json disagree on {name}");')
     out += ['', 'const RtLayoutEntry rt_layout[] = {']
-    out += [f'    {{"{n}", MOD_{n.upper()}_BASE, MOD_{n.upper()}_SIZE}},' for n, _, _ in layout]
+    out += [f'    {{"{n}", MOD_{n.upper()}_BASE, MOD_{n.upper()}_SIZE' +
+            (f', {c_string(plugins[n][0])}, {c_string(plugins[n][1])}' if n in plugins else '') + '},'
+            for n, _, _ in layout]
     out += ['};', f'const int rt_layout_count = {len(layout)};', '']
     for name in linked:
         out += [f'extern const uint64_t {name}_fn_addrs[];', f'extern const GuestFn {name}_fn_ptrs[];',
@@ -923,10 +934,11 @@ def main():
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
-    missing = [n for n in names if n not in hashes]
+    plugins = read_plugin_files(gen)
+    missing = [n for n in names if n not in hashes and n not in plugins]
     if missing:
         sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
+    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version, plugins))
     if has_romfs:
         count, size, dt = romfs_index.write(paths['romfs'], out)
         print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')

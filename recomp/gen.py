@@ -3,7 +3,11 @@
 
 Usage: gen.py --exefs build/extracted/v121/exefs --out generated/v121 [--modules main,subsdk0,sdk] [--jobs N]
               [--limit N] [--chunk-fns N] [--chunk-bytes B] [--big-fn B] [--patches FILE] [--v-locals K [--v-trust]]
-              [--no-cache] [--fn-enter-all]
+              [--no-cache] [--fn-enter-all] [--plugins NSO[,NSO...]]
+
+--plugins places a mod's code modules (exlaunch plugins) after sdk as plugin0..N (recomp/layout.py) and lifts them with
+the game modules; their DT_INIT and init_array entries are seeds too (Module.init_functions). Without it the output is
+what it was before plugins existed.
 
 Output, under --out:
   layout.h, layout.json        module bases (recomp/layout.py)
@@ -63,7 +67,7 @@ import patches  # noqa: E402
 import regs  # noqa: E402
 import vlocals  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
-from layout import layout, write as write_layout  # noqa: E402
+from layout import layout, plugin_files, write as write_layout  # noqa: E402
 from lifter import hx  # noqa: E402
 from module import Module  # noqa: E402
 
@@ -853,7 +857,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
     ap.add_argument('--out', type=Path, required=True)
-    ap.add_argument('--modules', default='main,subsdk0,sdk')
+    ap.add_argument('--modules', default='main,subsdk0,sdk', help='modules to lift (default main,subsdk0,sdk and every '
+                                                                  '--plugins module)')
+    ap.add_argument('--plugins', default='', help='comma-separated plugin NSOs (exefs/subsdk* of a mod), in mod load '
+                                                   'order: lifted as plugin0..N after sdk')
     ap.add_argument('--jobs', type=int, help='emit workers (default: by free memory and CPU count)')
     ap.add_argument('--limit', type=int, default=0, help='emit only the first N functions of each module')
     ap.add_argument('--chunk-fns', type=int, default=3000, help='functions per chunk at most')
@@ -887,11 +894,13 @@ def main():
     gen_key = generator_key(opts)
 
     t0 = time.perf_counter()
-    mods = layout(args.exefs)
-    write_layout(mods, args.out)
+    plugins = [Path(p) for p in args.plugins.split(',') if p]
+    mods = layout(args.exefs, plugins)
+    files = plugin_files(plugins)
+    write_layout(mods, args.out, files)
     table = patches.load(args.patches, mods) if args.patches else patches.Table()
     write_if_changed(args.out / 'patches.h', patches.header_text(table, GENERATED_MARKER))
-    want = args.modules.split(',')
+    want = args.modules.split(',') + list(files)
     unknown = set(want) - {n for n, _, _ in mods}
     if unknown:
         raise SystemExit(f'not in {args.exefs}: {", ".join(sorted(unknown))}')
@@ -901,8 +910,8 @@ def main():
         if name not in want:
             continue
         t = time.perf_counter()
-        path = args.exefs / name
-        mod = Module(name, path, base, 'c')
+        path = Path(files[name][0]) if name in files else args.exefs / name
+        mod = Module(name, path, base, 'c', plugin=name in files)
         patches.check(table, mod, name)
         starts, dstats = discover(mod)
         est = estimate_sizes(mod, starts)
