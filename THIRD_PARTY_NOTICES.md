@@ -67,11 +67,17 @@ committed here.
 
 What that means in practice, and it is worth being explicit:
 
-- A build of this repository **as published** links the decoder, so the resulting `totk.exe` is a GPL-2.0 work.
-  Redistributing that binary means honouring GPL-2.0 for it, including the source of the decoder.
-- A build that does not want that can drop `runtime/model_meshcodec.c` from the link; the preview then falls back
-  to each part's collision body (`runtime/blueprint_shape.c`), which is a real, if coarse, picture - the same
-  fallback the community viewer uses for the parts it has no model for.
+- **The decoder is not part of the default build, and no release includes it.** `tools/build_game.py` links the
+  library only when `build/<ver>/libmeshcodec.a` is already there, and nothing in the build chain puts it there:
+  it is a separate optional step (`tools/build_meshcodec.py`, step 2b of `docs/building.md`) that a person runs
+  deliberately. `tools/make_release.py` and `tools/package_build.py` do not run it and do not carry the library,
+  so a build of this repository **as published** is MIT and has a preview that falls back to collision bodies.
+- **A build that does run that step is a GPL-2.0 work.** That is the choice the step makes: linking the decoder
+  makes the resulting `totk.exe` GPL-2.0, and redistributing that binary means honouring GPL-2.0 for it, including
+  the source of the decoder. The person who runs it is the one who decides to take that on.
+- A build that wants the preview without that consequence keeps the fallback: the preview then draws each part's
+  collision body (`runtime/blueprint_shape.c`), which is a real, if coarse, picture - the same fallback the
+  community viewer uses for the parts it has no model for.
 - Nothing here re-licenses the rest of the port. The alternative to GPL-2.0 would be a clean-room
   reimplementation of MeshCodec, which has not been done.
 
