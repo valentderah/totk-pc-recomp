@@ -129,6 +129,15 @@ def amount(cat, done, total, unit):
 
 # ---- the form ----------------------------------------------------------------------------------------------------
 
+def fsr_default(adapters):
+    """Whether the window ticks Download AMD FSR at start: with an AMD display adapter among adapters (their names,
+    screens.windows_adapter_names), and when none could be listed, as before. The step downloads on any GPU when
+    ticked (steps.Fsr); unticked by default on other GPUs, their players only download it when they choose to."""
+    if not adapters:
+        return True
+    return any('AMD' in a.upper() or 'RADEON' in a.upper() for a in adapters)
+
+
 @dataclass
 class Form:
     base: str = ''

@@ -141,7 +141,7 @@
  "ui.dlss": "Download NVIDIA DLSS (nvngx_dlss.dll) for NVIDIA RTX graphics cards",
  "ui.dlss_help": "From NVIDIA's DLSS SDK on GitHub, under NVIDIA's RTX SDK license (github.com/NVIDIA/DLSS). It makes the dlaa and DLSS settings work; without it they do nothing.",
  "ui.fsr": "Download AMD FSR SDK libraries (FSR 3.1/4) for compatible Vulkan graphics cards",
- "ui.fsr_help": "From AMD's FSR SDK on GitHub, under AMD's FSR SDK license (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). The SDK selects an upscaler version supported by your GPU. Required for AMD FSR in Upscalers; without it that choice does nothing.",
+ "ui.fsr_help": "From AMD's FSR SDK on GitHub, under AMD's FSR SDK license (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). The SDK selects an upscaler version supported by your GPU. Required for AMD FSR in Upscalers; without it that choice does nothing. Ticked at start when the computer has an AMD graphics card.",
  "ui.compressed_help": "Compressed NSZ and XCZ files work as they are: the setup unpacks them by itself (until the game data is extracted, that needs as much free space as the unpacked files take).",
  "ui.type_game": "Game files (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Key files (*.keys)",

@@ -141,7 +141,7 @@
  "ui.dlss": "Загрузить NVIDIA DLSS (nvngx_dlss.dll) для видеокарт NVIDIA RTX",
  "ui.dlss_help": "Из DLSS SDK от NVIDIA на GitHub, по лицензии NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Без него настройки dlaa и DLSS ничего не делают.",
  "ui.fsr": "Загрузить библиотеки AMD FSR SDK (FSR 3.1/4) для совместимых видеокарт с Vulkan",
- "ui.fsr_help": "Из FSR SDK от AMD на GitHub, по лицензии AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). SDK выбирает версию апскейлера, поддерживаемую видеокартой. Библиотеки нужны для AMD FSR в пункте «Апскейлеры»; без них этот выбор ничего не делает.",
+ "ui.fsr_help": "Из FSR SDK от AMD на GitHub, по лицензии AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). SDK выбирает версию апскейлера, поддерживаемую видеокартой. Библиотеки нужны для AMD FSR в пункте «Апскейлеры»; без них этот выбор ничего не делает. Отмечено по умолчанию, если в компьютере есть видеокарта AMD.",
  "ui.compressed_help": "Сжатые файлы NSZ и XCZ подходят как есть: установка сама их распакует (для этого, пока извлекаются данные игры, нужно столько свободного места, сколько занимают распакованные файлы).",
  "ui.type_game": "Файлы игры (NSP, XCI, NSZ, XCZ)",
  "ui.type_keys": "Файлы ключей (*.keys)",
