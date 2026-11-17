@@ -4,8 +4,8 @@ a plugin's hook sites. After the design in #845 by itaskaev2; the init runs on t
 same environment (plugin_init.c plugins_start), so the plugin keeps real state (its heap blocks, its GOT, its alias
 addresses). The record says what the build expects that start-up to write.
 
-  python tools/exefs_plugins.py --exe build/<ver>-x/totk.exe --out <dir>     # two runs, their diff, the check
-  python tools/exefs_plugins.py --check <dir>/run1                           # the check of one record
+  python tools/exefs_plugins.py --exe build/<ver>-x/totk.exe --out <dir>     # per plugin: two runs, diff, check
+  python tools/exefs_plugins.py --check <dir>/<plugin>/run1                  # the check of one record
   python tools/exefs_plugins.py --exe <exe> --out <dir> --mods <mods folder> --patches <patch file>
                                 --patches-out <patch file> --status <file>   # and the patch lines for the generator
 
@@ -20,11 +20,16 @@ file hash: FNV-1a 32 of "<mod folder name>/<path of the NSO in the mod>"; conten
 `plugin` (note: the module and its hook count) or `unsupported` (note: the first reason); built-in sets: the port's
 own sets with a site the plugin hooks too ("-" none), which the runtime switches off while the mod is on.
 
-The exe must be built with the plugin in its layout (recomp/gen.py --plugins). --out gets run1/ and run2/, one record
-each; run2 adds a large offset to every GetSystemTick (TOTK_PLUGIN_TICK_OFFSET), so the init picks other alias
-addresses. The words that differ between the two records are listed with what they look like, not refused: an init
-keeps its alias addresses and the regions GetInfo gave it in its .data, and a plugin's callbacks must not use them
-(the generator's check of the code the callbacks reach, still to come).
+The exe must be built with the plugins in its layout (recomp/gen.py --plugins). Each plugin runs in service runs of
+its own (TOTK_PLUGIN_ONLY): the other plugins stay loaded, their inits do not run. A plugin that is refused, crashes,
+hangs or fails the check is refused alone, with its reason; the others are built in. At every start the game runs each
+init against the game's own bytes as well (runtime/plugin_init.c plugins_start takes a plugin's writes back before the
+next init), so a plugin's own record is what its start must match. --out gets list/ (a run without inits, which names
+the plugin modules), and <plugin>/run1 and <plugin>/run2 for each plugin; run2 adds a large offset to every
+GetSystemTick (TOTK_PLUGIN_TICK_OFFSET), so the init picks other alias addresses. The words that differ between the two
+records are listed with what they look like, not refused: an init keeps its alias addresses and the regions GetInfo
+gave it in its .data, and a plugin's callbacks must not use them. A difference in code (a write into a game module,
+the plugin's .text or .rodata) refuses the plugin: its start could not be compared with the record.
 
 The check (check_record) accepts a record only when every rule holds; each broken rule is one reason:
   - the run was not refused (an svc outside the served set, such as CreateSession of exlaunch's process-handle
@@ -88,6 +93,19 @@ TICK_OFFSET = 0x0123456789AB
 
 def u(v):
     return int(v, 16) if isinstance(v, str) else v
+
+
+def ran_view(rec):
+    """The record as seen from the plugins whose inits ran: a plugin that only stayed loaded (TOTK_PLUGIN_ONLY) counts
+    as a module that is no plugin, so its exports and code are not checked as this record's. A record without "ran"
+    (every init ran) comes back as it is."""
+    if all(m.get('ran', True) for m in rec['modules'] if m['plugin']):
+        return rec
+    view = dict(rec)
+    view['modules'] = [dict(m, plugin=False) if m['plugin'] and not m.get('ran', True) else m for m in rec['modules']]
+    names = {m['name'] for m in view['modules'] if m['plugin']}
+    view['images'] = {k: v for k, v in rec['images'].items() if k in names}
+    return view
 
 
 # ---- instructions
@@ -433,35 +451,35 @@ def plugin_files(mods):
     return out
 
 
-def emit(rec, hooks, reasons, record_dir, args):
-    """--patches-out and --status from the record (accepted or not)."""
+def emit(results, args):
+    """--patches-out and --status from the checked plugins. results: one (module, its NSO file, its record or None,
+    the record's directory, hooks, reasons) per plugin of the layout; no reasons: accepted."""
     text = args.patches.read_text() if args.patches else ''
     builtin = builtin_sites(text)
     status, sets = [], []
     files = {str(f.resolve()): (m, rel, f) for m, rel, f in plugin_files(args.mods)}
-    plugins = [m for m in rec['modules'] if m['plugin']]
-    for p in plugins:
-        hit = files.get(str(Path(p.get('file', '')).resolve()))
+    for module, file, rec, record_dir, hooks, reasons in results:
+        hit = files.get(str(Path(file or '').resolve()))
         if not hit:
-            print(f'plugins: {p["name"]}: {p.get("file")} is not under {args.mods}')
+            print(f'plugins: {module}: {file} is not under {args.mods}')
             continue
         mod, rel, f = hit
         key, content = fnv(f'{mod}/{rel}'.encode()), fnv(f.read_bytes())
         if reasons:
-            note = reasons[0].replace('\t', ' ')
+            note = ' '.join(reasons[0].split())
             status.append(f'{key}\t{content}\tunsupported\t-\t{note}')
             print(f'plugins: unsupported {mod}/{rel} ({note})')
             continue
         name = f'mod_{key.lower()}'
-        own = hooks_of(hooks, p['name'])
+        own = hooks_of(hooks, module)
         sites = [int(h['site'].split('+')[1], 16) for h in own]
         over = sorted({b for a in sites for b in builtin.get(a, [])})
         label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
         sets.append([f'set {name} TOTK_MODPATCH_{key} 0 ordered   # {label}'] + plugin_lines(rec, own, name, record_dir,
-                                                                                          p['name']))
-        status.append(f'{key}\t{content}\tplugin\t{",".join(over) or "-"}\t{p["name"]}, {len(own)} hooks')
-        print(f'plugins: plugin {mod}/{rel} as {p["name"]}, {len(own)} hooks' + (f', over {", ".join(over)}'
-                                                                                  if over else ''))
+                                                                                          module))
+        status.append(f'{key}\t{content}\tplugin\t{",".join(over) or "-"}\t{module}, {len(own)} hooks')
+        print(f'plugins: plugin {mod}/{rel} as {module}, {len(own)} hooks' + (f', over {", ".join(over)}'
+                                                                               if over else ''))
     if sets:
         text += '\n# Mod plugins (tools/exefs_plugins.py)\n' + '\n'.join(line for s in sets for line in s) + '\n'
     args.patches_out.write_text(text)
@@ -469,7 +487,7 @@ def emit(rec, hooks, reasons, record_dir, args):
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
 
 
-# ---- two runs
+# ---- the service runs
 def where_is(v, rec):
     """What an address-like value points into, for the diff listing."""
     for m in rec['modules']:
@@ -524,17 +542,34 @@ def diff_records(a, b):
     return out
 
 
-def run(exe, out, tick_offset, timeout):
+def run(exe, out, tick_offset, timeout, only):
+    """One service run into out, only module `only`'s init running ("-": none). (exit code or None, why the run gave
+    no record or None); a refused run writes its record too."""
     out.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, TOTK_PLUGIN_TICK_OFFSET=f'{tick_offset:#x}', TOTK_BACKGROUND_WINDOW='1',
-               TOTK_ASSUME_FOCUS='1')
-    r = subprocess.run([str(exe), '--plugin-init', str(out)], env=env, capture_output=True, text=True,
-                       errors='replace', timeout=timeout)
+    for f in out.iterdir():   # an earlier run's record must not pass for this one's
+        if f.is_file() and (f.name in ('record.json', 'run.log') or f.suffix == '.img'):
+            f.unlink()
+    env = dict(os.environ, TOTK_PLUGIN_TICK_OFFSET=f'{tick_offset:#x}', TOTK_PLUGIN_ONLY=only,
+               TOTK_BACKGROUND_WINDOW='1', TOTK_ASSUME_FOCUS='1')
+    try:
+        r = subprocess.run([str(exe), '--plugin-init', str(out)], env=env, capture_output=True, text=True,
+                           errors='replace', timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        log = b''.join(x if isinstance(x, bytes) else x.encode() for x in (e.stdout, e.stderr) if x)
+        (out / 'run.log').write_text(log.decode(errors='replace'), encoding='utf-8')
+        return None, f'its init did not return within {timeout} s'
     (out / 'run.log').write_text(r.stdout + r.stderr, encoding='utf-8')
-    return r.returncode
+    if not (out / 'record.json').is_file():
+        # the runtime's crash report names the fault in a FATAL line (an access violation, an abort)
+        fatal = next((line.split('FATAL:', 1)[1].strip() for line in (r.stdout + r.stderr).splitlines()
+                      if 'FATAL:' in line), None)
+        return r.returncode, (f'its init crashed the service run: {fatal}' if fatal else
+                              f'its init ended the service run without a record (exit {r.returncode & 0xFFFFFFFF:#x})')
+    return r.returncode, None
 
 
 def report(rec, label):
+    rec = ran_view(rec)
     impls = hook_impls(rec)
     hooks, reasons = check_record(rec, impls)
     more, notes = reach_check(rec, hooks, impls)
@@ -559,12 +594,40 @@ def report(rec, label):
     return hooks, reasons
 
 
+def plugin_runs(exe, out, module, timeout):
+    """The two service runs of one plugin (run2 with the tick offset) into out/<module>: (its first record or None,
+    hooks, reasons)."""
+    recs = []
+    for i, offset in enumerate((0, TICK_OFFSET), 1):
+        d = out / module / f'run{i}'
+        code, why = run(exe, d, offset, timeout, module)
+        if why:
+            print(f'{module} run {i}: {why}; see {d / "run.log"}')
+            return None, [], [why]
+        recs.append(load_record(d))
+        print(f'{module} run {i}: exit {code}, tick offset {offset:#x}')
+        if recs[0].get('refused'):   # refused: a second run says nothing more
+            hooks, bad = report(recs[0], f'{module} run 1')
+            return recs[0], hooks, bad
+    hooks, bad = report(recs[0], f'{module} run 1')
+    diff = diff_records(ran_view(recs[0]), ran_view(recs[1]))
+    print(f'{module} run 1 against run 2: {len(diff)} differences' + (':' if diff else ''))
+    for line in diff:
+        print(f'  {line}')
+    # Words of a game module or of the plugin's .text that differ between the runs: the start-up could not be compared
+    # with the record. Its .data and .bss may differ (alias addresses).
+    unstable = [line for line in diff if line.startswith('write ') or '(.text)' in line or '(.rodata)' in line]
+    if unstable:
+        bad = bad + [f'two runs of the init differ in code: {unstable[0]}']
+    return recs[0], hooks, bad
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--exe', type=Path, help='totk.exe built with the plugin in its layout')
-    ap.add_argument('--out', type=Path, help='directory for run1/ and run2/')
+    ap.add_argument('--exe', type=Path, help='totk.exe built with the plugins in its layout')
+    ap.add_argument('--out', type=Path, help='directory for list/ and <plugin>/run1, run2')
     ap.add_argument('--check', type=Path, help='check the record in this directory only')
-    ap.add_argument('--timeout', type=int, default=300)
+    ap.add_argument('--timeout', type=int, default=120, help='seconds a service run may take')
     ap.add_argument('--mods', type=Path, help='the mods folder the plugins come from')
     ap.add_argument('--patches', type=Path, help='the patch file so far')
     ap.add_argument('--patches-out', type=Path, help='the patch file with the plugins\' sets added')
@@ -578,32 +641,26 @@ def main():
         rec = load_record(args.check)
         hooks, bad = report(rec, str(args.check))
         if emitting:
-            emit(rec, hooks, bad, args.check, args)
+            emit([(m['name'], m.get('file'), rec, args.check, hooks, bad) for m in ran_view(rec)['modules']
+                  if m['plugin']], args)
         return 1 if bad else 0
     if not args.exe or not args.out:
         ap.error('--exe and --out, or --check')
-    recs = []
-    for i, offset in enumerate((0, TICK_OFFSET), 1):
-        d = args.out / f'run{i}'
-        code = run(args.exe, d, offset, args.timeout)
-        if not (d / 'record.json').is_file():
-            print(f'run {i}: no record (exit {code}); see {d / "run.log"}')
-            return 1
-        recs.append(load_record(d))
-        print(f'run {i}: exit {code}, tick offset {offset:#x}')
-    hooks, bad = report(recs[0], 'run 1')
-    diff = diff_records(*recs)
-    print(f'run 1 against run 2: {len(diff)} differences' + (':' if diff else ''))
-    for line in diff:
-        print(f'  {line}')
-    # Words of a game module or of a plugin's .text that differ between the runs: the start-up could not be compared
-    # with the record. Its .data and .bss may differ (alias addresses).
-    unstable = [line for line in diff if line.startswith('write ') or '(.text)' in line or '(.rodata)' in line]
-    if unstable:
-        bad = bad + [f'two runs of the init differ in code: {unstable[0]}']
+    # A run without any init names the plugin modules of the exe's layout and checks that the service run works at all:
+    # without it no plugin can be built.
+    code, why = run(args.exe, args.out / 'list', 0, args.timeout, '-')
+    if why:
+        print(f'the service run without inits gave no record: {why}; see {args.out / "list" / "run.log"}')
+        return 2
+    listing = load_record(args.out / 'list')
+    results = []
+    for m in (m for m in listing['modules'] if m['plugin']):
+        rec, hooks, bad = plugin_runs(args.exe, args.out, m['name'], args.timeout)
+        print(f'{m["name"]}: ' + (f'refused: {bad[0]}' if bad else f'accepted, {len(hooks)} hooks'))
+        results.append((m['name'], m.get('file'), rec, args.out / m['name'] / 'run1', hooks, bad))
     if emitting:
-        emit(recs[0], hooks, bad, args.out / 'run1', args)
-    return 1 if bad else 0
+        emit(results, args)
+    return 1 if any(r[5] for r in results) else 0
 
 
 if __name__ == '__main__':

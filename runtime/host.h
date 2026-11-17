@@ -207,7 +207,11 @@ typedef struct {
 void ldr_load(const char *exefs_dir);                      // load, relocate (overrides applied), seal; once
 extern GuestFn ldr_plugin_import;                          // set before ldr_load (plugin_init.c): every JUMP_SLOT
                                                            // import of a plugin binds to this observer
+// The module tables of the runtime library: it is built once per release (tools/build_game.py --make-runtime-lib),
+// before an install's layout (recomp/layout.py) adds its mod plugins after sdk, so they do not use that MOD_COUNT.
+#define RT_MAX_MODULES 32
 int ldr_count(void);
+int ldr_plugins_gone(uint32_t *key);                       // layout plugins whose file is gone; mixes their paths into key
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none

@@ -383,11 +383,19 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(self.outputs(), [False, False])
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
-    def plugin_setup(self, kind):
-        """A mod with an exlaunch plugin; the fake service run writes its status line of that kind."""
+    def plugin_setup(self, kind, more=()):
+        """A mod with an exlaunch plugin (SQ), and one more mod per (name, kind) of more; the fake service run writes
+        each plugin's status line of its kind."""
+        kinds = {'SQ': kind, **dict(more)}
+        for name in kinds:
+            (self.dest / 'mods' / name / 'exefs').mkdir(parents=True, exist_ok=True)
+            (self.dest / 'mods' / name / 'exefs' / 'subsdk9').write_bytes(b'NSO0' + name.encode())
         plugin = self.dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9'
-        plugin.write_bytes(b'NSO0')
-        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja',
+        dll = self.dest.parent / 'release-bin' / 'SDL3.dll'
+        dll.parent.mkdir(exist_ok=True)
+        dll.write_bytes(b'MZ')
+        (self.ctx.temp / 'build').mkdir(parents=True, exist_ok=True)
+        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja', dlls=[dll],
                                           deps=None, sysroot=None, runtime_lib_for=lambda cpu: None,
                                           pgo=lambda version: None, expected=lambda version: 'expected.json')
         saved = self.run_tool
@@ -399,11 +407,14 @@ class LiftRunTest(unittest.TestCase):
                 Path(args[args.index('--patches-out') + 1]).write_text('patches\n')
                 status = Path(args[args.index('--status') + 1])
                 status.parent.mkdir(parents=True, exist_ok=True)
-                h = 0x811C9DC5   # FNV-1a 32 of "SQ/exefs/subsdk9", as tools/exefs_plugins.py keys it
-                for b in b'SQ/exefs/subsdk9':
-                    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
-                status.write_text(f'{h:08X}\t00000000\t{kind}\t-\tnote\n')
-                return (1 if kind == 'unsupported' else 0), log
+                lines = []
+                for name, k in kinds.items():
+                    h = 0x811C9DC5   # FNV-1a 32 of "<mod>/exefs/subsdk9", as tools/exefs_plugins.py keys it
+                    for b in f'{name}/exefs/subsdk9'.encode():
+                        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+                    lines.append(f'{h:08X}\t00000000\t{k}\t-\tnote\n')
+                status.write_text(''.join(lines))
+                return (1 if 'unsupported' in kinds.values() else 0), log
             return code, log
         steps.run_tool = run_tool
         return plugin
@@ -419,6 +430,8 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(last[last.index('--plugins') + 1], str(plugin))
         self.assertEqual(last[last.index('--patches') + 1], str(self.ctx.temp / 'patches-plugins.txt'))
         self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        # the service run's totk.exe finds its DLLs beside it
+        self.assertTrue((self.ctx.temp / 'build' / 'SDL3.dll').is_file())
 
     def test_refused_plugin_is_not_lifted(self):
         # a refused plugin: its status line stays (the Mods tab says why), the game is lifted without it
@@ -427,6 +440,18 @@ class LiftRunTest(unittest.TestCase):
         last = self.calls[4][1]
         self.assertNotIn('--plugins', last)
         self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_refused_plugin_stays_in_the_layout_of_a_built_one(self):
+        # one plugin built, one refused: the lift with the hook sites keeps both in the layout (the records hold the
+        # addresses of the service runs' layout); the refused one has no patch set, its status line says why
+        self.plugin_setup('plugin', [('ZZ', 'unsupported')])
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        mods = self.dest / 'mods'
+        self.assertEqual(last[last.index('--plugins') + 1],
+                         ','.join(str(mods / n / 'exefs' / 'subsdk9') for n in ('SQ', 'ZZ')))
+        self.assertIn('unsupported', steps.plugins_status(self.ctx).read_text())
         self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
 
     def test_failed_plugin_build_warns(self):

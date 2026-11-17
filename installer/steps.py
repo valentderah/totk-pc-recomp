@@ -929,9 +929,10 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         # A mod plugin is built by running its init on a totk.exe of this build (tools/exefs_plugins.py), so the
-        # runtime is in the key too when there is one.
+        # runtime is in the key too when there is one, and this file, which runs that stage: a plugin stage that failed
+        # (warn.plugins_skipped, the game built without the plugins) runs again once a release changes it.
         files = cheat_files(ctx) + exefs_files(ctx) + plugin_files(ctx)
-        extra = [ctx.layout.tools / 'exefs_plugins.py', runtime_key(ctx)] if plugin_files(ctx) else []
+        extra = [ctx.layout.tools / 'exefs_plugins.py', Path(__file__), runtime_key(ctx)] if plugin_files(ctx) else []
         return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
                            ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *extra, *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
@@ -997,6 +998,9 @@ class Lift(Step):
             if not code:
                 code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
             if not code:
+                # the service run's totk.exe loads its DLLs from its own folder, as the installed one does
+                for dll in layout.dlls:
+                    replace_file(dll, ctx.temp / 'build' / dll.name)
                 code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
                     '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
                     ctx.dest / 'mods', '--patches', patches, '--patches-out', ctx.temp / 'patches-plugins.txt',
@@ -1009,7 +1013,10 @@ class Lift(Step):
                 skipped['warn.plugins_skipped'] = log
             else:
                 patches = ctx.temp / 'patches-plugins.txt'
-                lift_plugins = built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods')
+                # With one plugin built, the layout keeps every plugin of the service runs: the records hold addresses
+                # of that layout. A refused plugin stays loaded at play, its init never runs (no patch set).
+                if built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods'):
+                    lift_plugins = plugins
         if lift_plugins:
             args += ['--plugins', ','.join(str(f) for f in lift_plugins)]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)

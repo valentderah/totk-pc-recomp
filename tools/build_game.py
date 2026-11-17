@@ -188,8 +188,10 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
 # functions sit on it). mouse_direct.c and ov_ability.c also register host callbacks relative to that version's patch
-# page. A library source that includes one of PER_VERSION_HEADERS stops the library build (library_sources).
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c'}
+# page. plugin_init.c reads the install's own plugin records from patches.h (RT_PLUGINS, RT_PLUGIN_WRITES): a mod plugin
+# the rebuild built in. A library source that includes one of PER_VERSION_HEADERS stops the library build
+# (library_sources).
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c', 'plugin_init.c'}
 PER_VERSION_HEADERS = ('"patches.h"', '"romfs_config.h"')
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')

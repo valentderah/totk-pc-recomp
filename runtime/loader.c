@@ -47,11 +47,11 @@ typedef struct {
     uint64_t *plt_slot, *plt_stub, nplt;   // PLT stubs sorted by GOT slot (ldr_plt_stub), built on first use
     // statistics
     uint64_t kinds[K_COUNT], sym_import, sym_own;
-    uint32_t imports, import_to[MOD_COUNT], weak_unresolved, strong_unresolved;
+    uint32_t imports, import_to[RT_MAX_MODULES], weak_unresolved, strong_unresolved;
     uint32_t init_off;
 } Mod;
 
-static Mod mods[MOD_COUNT];
+static Mod mods[RT_MAX_MODULES];
 GuestFn ldr_plugin_import;
 static int nmods;
 static uint64_t identity_refs, stubs;
@@ -86,12 +86,26 @@ static uint8_t *read_path_verified(const char *path, const char *want, size_t *l
     return p;
 }
 
+// Mod plugins of the layout whose file is gone (their mod was removed): a rebuild without them is due (cheats.c
+// rebuild_if_needed), keyed by their paths.
+static int plugins_gone;
+static uint32_t plugins_gone_key = 0x811C9DC5u;
+
+int ldr_plugins_gone(uint32_t *key) {
+    if (plugins_gone) *key = (*key ^ plugins_gone_key) * 0x01000193u;
+    return plugins_gone;
+}
+
 // 1 when the plugin file of lay is the one the build lifted; logged when not.
 static int plugin_file_ok(const RtLayoutEntry *lay) {
     size_t len;
     uint8_t *p = read_file(lay->file, &len);
     if (!p) {
         rt_log("loader: %s: cannot read %s; the plugin is left out", lay->name, lay->file);
+        if (!plat_file_exists(lay->file)) {
+            plugins_gone++;
+            for (const char *c = lay->file; *c; c++) plugins_gone_key = (plugins_gone_key ^ (uint8_t)*c) * 0x01000193u;
+        }
         return 0;
     }
     uint8_t d[32];
@@ -503,7 +517,7 @@ static void seal(Mod *m) {
 void ldr_load(const char *exefs_dir) {
     if (nmods) rt_fatal("ldr_load called twice");
     if (!mem_layout()->pool) rt_fatal("ldr_load before mem_init");
-    if (rt_layout_count > MOD_COUNT) rt_fatal("loader: %d modules in the layout", rt_layout_count);
+    if (rt_layout_count > RT_MAX_MODULES) rt_fatal("loader: %d modules in the layout", rt_layout_count);
     int n = 0;
     for (int i = 0; i < rt_layout_count; i++) {
         // A mod plugin's file that is gone or changed since the build is left out at play time: its patch set cannot
@@ -622,7 +636,7 @@ uint64_t ldr_plt_stub(const char *module, const char *name) {
 typedef struct {
     const char *name;
     uint64_t kinds[K_COUNT], total, sym_import, sym_own;
-    uint32_t imports, to[MOD_COUNT], weak, init_off, init_array;
+    uint32_t imports, to[RT_MAX_MODULES], weak, init_off, init_array;
 } Expect;
 static const Expect expect_121[] = {
     {"main", {508816, 1415, 32, 641}, 510904, 2088, 0, 675, {0, 16, 647}, 12, 0x30, 10673},

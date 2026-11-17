@@ -13,6 +13,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -377,6 +378,98 @@ class Lines(unittest.TestCase):
         out = self.lines(record(writes=w))
         self.assertIn(f'site mod_x main {SITE_OFF:x} 94000010 {new:08x}', out)
         self.assertFalse(any(x.startswith(('orig', 'stub')) for x in out))
+
+
+# ---- one service run per plugin
+class PerPlugin(unittest.TestCase):
+    """main() with three plugins in three mods and a stand-in for the service run: plugin0 hooks its site, plugin1's
+    init ends the run without a record (a crash), plugin2's run is refused (an svc). Each gets its own status line;
+    only plugin0's set goes into the patch file."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.d = Path(tmp.name)
+        self.files = []
+        for name in ('A', 'B', 'C'):
+            f = self.d / 'mods' / name / 'exefs' / 'subsdk9'
+            f.parent.mkdir(parents=True)
+            f.write_bytes(nso(PLUGIN_TEXT) + name.encode())
+            self.files.append(f)
+        (self.d / 'patches.txt').write_text('set fps60 TOTK_FPS60 1\n')
+        self.runs = []
+        saved = xp.run, xp.hook_impls
+        self.real_run = xp.run
+        self.addCleanup(lambda: (setattr(xp, 'run', saved[0]), setattr(xp, 'hook_impls', saved[1])))
+        xp.run, xp.hook_impls = self.fake_run, lambda rec: IMPLS
+
+    def fake_run(self, exe, out, tick_offset, timeout, only):
+        self.runs.append(only)
+        out.mkdir(parents=True, exist_ok=True)
+        if only == 'plugin1':
+            return 0xC0000005, 'its init ended the service run without a record (exit 0xc0000005)'
+        rec = record(writes=[] if only != 'plugin0' else None)
+        rec['modules'][2]['file'] = str(self.files[0])
+        for i in (1, 2):
+            rec['modules'].append(dict(rec['modules'][2], name=f'plugin{i}', base=PLUGIN + i * 0x100000,
+                                       file=str(self.files[i])))
+        for m in rec['modules'][2:]:
+            m['ran'] = m['name'] == only
+        if only == 'plugin2':
+            rec['refused'] = 'svc 0x1 at plugin2+0x50a0'
+        (out / 'plugin0.img').write_bytes(rec.pop('images')['plugin0'])
+        rec['modules'][2]['image'] = 'plugin0.img'
+        (out / 'record.json').write_text(json.dumps(rec))
+        return 3 if rec['refused'] else 0, None
+
+    def test_each_plugin_alone(self):
+        out, status, patched = self.d / 'rec', self.d / 'plugins.status', self.d / 'patches-out.txt'
+        argv = sys.argv
+        sys.argv = ['exefs_plugins.py', '--exe', 'totk.exe', '--out', str(out), '--mods', str(self.d / 'mods'),
+                    '--patches', str(self.d / 'patches.txt'), '--patches-out', str(patched), '--status', str(status)]
+        try:
+            code = xp.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(code, 1)
+        self.assertEqual(self.runs, ['-', 'plugin0', 'plugin0', 'plugin1', 'plugin2'])
+        lines = {line.split('\t')[0]: line.split('\t') for line in status.read_text().splitlines()}
+        key = {n: xp.fnv(f'{n}/exefs/subsdk9'.encode()) for n in 'ABC'}
+        self.assertEqual(lines[key['A']][2:], ['plugin', '-', 'plugin0, 1 hooks'])
+        self.assertEqual(lines[key['B']][2], 'unsupported')
+        self.assertIn('ended the service run', lines[key['B']][4])
+        self.assertEqual(lines[key['C']][2], 'unsupported')
+        self.assertIn('svc 0x1', lines[key['C']][4])
+        text = patched.read_text()
+        self.assertIn(f'set mod_{key["A"].lower()} ', text)
+        self.assertNotIn(f'mod_{key["B"].lower()}', text)
+        self.assertNotIn(f'mod_{key["C"].lower()}', text)
+        self.assertIn((out / 'plugin0' / 'run1' / 'plugin0.img').resolve().as_posix(), text)
+
+    def test_run_reasons(self):
+        # the real run(): a hang becomes its own reason, a crash names the FATAL line
+        saved = xp.subprocess.run
+        self.addCleanup(setattr, xp.subprocess, 'run', saved)
+
+        def hang(cmd, **kw):
+            raise xp.subprocess.TimeoutExpired(cmd, kw['timeout'], output=b'started', stderr=None)
+        xp.subprocess.run = hang
+        self.assertEqual(self.real_run(None, self.d / 'h', 0, 7, 'plugin0'), (None, 'its init did not return within 7 s'))
+        xp.subprocess.run = lambda cmd, **kw: SimpleNamespace(returncode=0xC0000005, stdout='x\nFATAL: access violation '
+                                                              '(0xc0000005) at host 1\n', stderr='')
+        code, why = self.real_run(None, self.d / 'c', 0, 7, 'plugin0')
+        self.assertEqual(why, 'its init crashed the service run: access violation (0xc0000005) at host 1')
+
+    def test_ran_view_leaves_out_plugins_that_did_not_run(self):
+        rec = record()
+        rec['modules'].append(dict(rec['modules'][2], name='plugin1', base=PLUGIN + 0x100000, ran=False))
+        rec['modules'][2]['ran'] = True
+        rec['images']['plugin1'] = rec['images']['plugin0']
+        view = xp.ran_view(rec)
+        self.assertEqual([m['name'] for m in view['modules'] if m['plugin']], ['plugin0'])
+        self.assertEqual(set(view['images']), {'plugin0'})
+        whole = record()   # no "ran": every init ran, the record is its own view
+        self.assertIs(xp.ran_view(whole), whole)
 
 
 # ---- the generator on those lines

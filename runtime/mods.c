@@ -446,11 +446,12 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     int unsupported = exefs_check(m, path);
     // A mod whose code part the port cannot use is off as a whole: its RomFS files may expect that code. Used without
     // its code (its switch, or mods_without_code = 1 for every mod), the code modules (m->code) and the ExeFS patch
-    // files the port cannot apply are left out and the rest of the mod is used, when it has a rest.
+    // files the port cannot apply are left out and the rest of the mod is used, when it has a rest. Each plugin of a
+    // mod is built or refused on its own (tools/exefs_plugins.py), so a built plugin is such a rest too.
     m->no_code = listed(cfg_get("TOTK_MODS_NO_CODE"), m->name);
     m->without_code = m->no_code || cfg_bool("TOTK_MODS_WITHOUT_CODE");
     int usable = m->nsets || m->ndata || m->kind & (MOD_ROMFS | MOD_CHEATS);
-    int code_off = m->code[0] && (!m->without_code || !(m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS)));
+    int code_off = m->code[0] && (!m->without_code || !(m->kind & (MOD_ROMFS | MOD_EXEFS | MOD_CHEATS) || m->nplugins));
     m->problem = strchr(m->name, '|')                             ? MOD_BAD_NAME
                : code_off                                         ? MOD_PLUGIN
                : unsupported && (!m->without_code || !usable)     ? MOD_EXEFS_UNSUPPORTED
