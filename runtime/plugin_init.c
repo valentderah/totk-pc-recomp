@@ -636,7 +636,11 @@ int plugins_start(Cpu *c, const RtLoaded *sdk) {
         }
         run[i] = 1, nrun++;
     }
-    if (!nrun) return 0;
+    if (!nrun) {   // every plugin's mod off or gone: the game sees its address space as without plugins
+        mem_query_hook = NULL;
+        rt_process_memory = NULL;
+        return 0;
+    }
     uint64_t t0 = plat_now_ms();
     rt_log("boot: ENTER %s DT_INIT first: a mod plugin's init runs before the game's constructors", sdk->name);
     rt_call(c, sdk->init, 0);
