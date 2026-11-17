@@ -379,6 +379,17 @@ static inline char *plat_last_sep(const char *path) {
         if (*p == '/' || *p == '\\') last = (char *)p;
     return last;
 }
+// 1 when path does not depend on the working directory: it starts with a separator (a root or UNC path) or, on
+// Windows, with a drive letter and a separator.
+static inline int plat_path_absolute(const char *path) {
+    if (path[0] == '/' || path[0] == '\\') return 1;
+#ifdef _WIN32
+    char c = path[0];
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+#else
+    return 0;
+#endif
+}
 // Environment variable as UTF-8 into out; its length, or 0 when unset, empty or too long for cap.
 size_t plat_getenv(const char *name, char *out, size_t cap);
 // The user's UI language as a BCP-47 tag ("ru-RU", "en-US"); "" when the system gives none. Valid for the process.

@@ -516,7 +516,10 @@ static void plain_name(char *s) {
 
 // ---- rebuild: code cheats and ExeFS patches the build lacks
 // The setup writes build-cache\rebuild.txt (installer/steps.py write_rebuild_command), the command that starts its
-// window in rebuild mode on this install folder, one argument per line. When an enabled mod has code cheats this build
+// window in rebuild mode on this install folder, one argument per line. The build kit's command (installer/layout.py)
+// is relative to the install folder: its program is taken from this exe's folder, and the command runs with that
+// folder as its working folder, against which the setup resolves its other arguments. When an enabled mod has code
+// cheats this build
 // lacks (CHEAT_REBUILD) or ExeFS patch files it lacks (mods_exefs_pending), or the build has a mod plugin whose file is
 // gone (ldr_plugins_gone: its mod was removed), the game runs it and exits; the setup lifts and compiles them in (or the
 // plugin out) and starts the game again.
@@ -555,6 +558,7 @@ static void rebuild_if_needed(const char *dir) {
         return;
     }
     const char *argv[32];
+    char program[PLAT_PATH_MAX + 64];
     int argc = 0;
     for (char *line = cmd; line && *line && argc < 31;) {
         char *end = strchr(line, '\n'), *next = end ? end + 1 : NULL;
@@ -565,6 +569,10 @@ static void rebuild_if_needed(const char *dir) {
         line = next;
     }
     argv[argc] = NULL;
+    // CreateProcess resolves a relative program against this process's working folder, which a shortcut may set
+    if (argc && !plat_path_absolute(argv[0]) &&
+        snprintf(program, sizeof program, "%s%s", dir, argv[0]) < (int)sizeof program)
+        argv[0] = program;
     if (argc < 2 || !plat_file_write(skip_path, want, strlen(want))) {
         rt_log("cheats: %d code cheats and %d ExeFS patch files or plugins differ from the build; cannot start the "
                "rebuild (%s)", need, patches, cmd_path);

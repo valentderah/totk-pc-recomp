@@ -1,5 +1,5 @@
-"""The ten setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, pc_prompts, shapes, dlss,
-cleanup.
+"""The eleven setup steps of docs/installer.md: check, kit, fonts, extract, lift, compile, prepare, pc_prompts, shapes,
+dlss, cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -11,8 +11,10 @@ Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ 
 and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
 romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<w>x<h>/ and romfs-patches-<style>-<w>x<h>/ (for the
 screen shapes and the prompts style this player needs, installer/screens.py), totk_xlate.exe, the
-shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
-Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
+shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json, and on Windows build-kit/ (Kit): the release
+folder the steps after the kit step run from, and the game's rebuild with them.
+Temp folder (build-cache/work in the install folder on Windows, .setup-temp there on Linux, <temp>/<dest name>-<hash>
+with --temp or in a repository; installer/layout.py temp_for): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
 logs/: the next run lifts into the same gen/, where recomp/gen.py lifts again only the chunks whose inputs changed (its
 lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, and Ninja in build/ recompiles only
@@ -22,8 +24,8 @@ lift or compile.
 Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py),
 plugins.status (tools/exefs_plugins.py; plugins.stale is the game's list of plugins whose start differed) and
 rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
-one argument per line; totk.exe runs it at start when an enabled mod has code cheats the build lacks
-(runtime/cheats.c).
+one argument per line, relative to the install folder for the build kit; totk.exe runs it at start when an enabled mod
+has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
 import http.client
@@ -40,6 +42,7 @@ import urllib.request
 from pathlib import Path
 
 from . import ini, screens
+from . import layout as layouts
 from .layout import EXE, SUPPORTED, version_tag
 from .runner import InstallError, Step
 
@@ -53,6 +56,7 @@ from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, totk.exe, seed files
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
+KIT_NEED = 1 * GiB        # the build kit (Kit), about 0.65 GB
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
 
@@ -598,6 +602,8 @@ class Check(Step):
                 dest_need -= romfs.stat().st_size
         if ctx.will_run('fonts'):
             dest_need += FONTS_NEED
+        if ctx.will_run('kit') and layouts.uses_kit(ctx.layout):
+            dest_need += KIT_NEED
         if ctx.will_run('prepare') or ctx.will_run('extract'):
             dest_need += DEST_EXTRA
         if ctx.will_run('lift') or ctx.will_run('compile'):
@@ -648,6 +654,110 @@ class Check(Step):
             ctx.keys = {}
             ctx.plan(ctx.forced | {'extract', 'lift', 'compile', 'prepare'})
         ctx.state['version'] = found
+
+
+# ---- 1b. build kit
+
+class Kit(Step):
+    """The build kit (installer/layout.py, Windows release): the release folder without TotK-Setup.exe, copied into
+    <install>/build-kit. Every step after this one runs its tools from there (settle), and the game's rebuild for its
+    mods starts the setup window from there, so the setup folder can go once the install is done and the install
+    folder can move. A newer setup replaces the kit; the kit's own rebuild keeps it. The steps' keys fingerprint file
+    contents, not paths, so the kit, a copy of the setup's files, keeps every step the setup recorded."""
+
+    id = 'kit'
+
+    def key(self, ctx):
+        return fingerprint('kit-1', ctx.layout.release if layouts.uses_kit(ctx.layout) else 'none')
+
+    def current(self, ctx, record):
+        if not layouts.uses_kit(ctx.layout):
+            return True
+        kit = layouts.kit_folder(ctx.dest)
+        if not layouts.is_release(kit):
+            return False
+        found = layouts.release_layout(kit)
+        return found.release == ctx.layout.release and not found.missing(getattr(ctx, 'cpu', 'v3'))
+
+    def run(self, ctx):
+        layout, rep = ctx.layout, ctx.reporter
+        if not layouts.uses_kit(layout):
+            return {}
+        kit = layouts.kit_folder(ctx.dest)
+        if layout.root.resolve() == kit.resolve():   # the kit's own rebuild: it is in place
+            return {}
+        new, old = kit.with_name(layouts.KIT + '.new'), kit.with_name(layouts.KIT + '.old')
+        try:
+            remove(new)   # what a cancelled or failed run left
+            remove(old)
+        except OSError as e:
+            raise InstallError('kit.in_use', path=str(e.filename or old)) from None
+        files = []
+        for name in layouts.KIT_ITEMS:
+            src = layout.root / name
+            if src.is_dir():
+                files += [f for f in sorted(src.rglob('*')) if f.is_file() and '__pycache__' not in f.parts]
+            elif src.is_file():
+                files.append(src)
+        total, done = size_of(files), 0
+        rep.progress('kit', 'copy', 0, total, 'bytes', force=True)
+        try:
+            for f in files:
+                dst = new / f.relative_to(layout.root)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)
+                done += f.stat().st_size
+                rep.progress('kit', 'copy', done, total, 'bytes')
+        except OSError as e:
+            raise InstallError('kit.copy_failed', path=str(e.filename or new), detail=str(e)) from None
+        # An open rebuild window, or a layout generator the game's settings menu started, holds files of the old kit:
+        # then nothing is replaced, and the message asks to close the game and run the setup again
+        try:
+            if kit.exists():
+                os.replace(kit, old)
+            os.replace(new, kit)
+        except OSError:
+            raise InstallError('kit.in_use', path=str(kit)) from None
+        try:
+            remove(old)
+        except OSError as e:
+            rep.log(f'kit: the old kit stays until the next run: {e}')
+        rep.log(f'kit: {len(files)} files, {total / GiB:.2f} GiB in {kit}')
+        return {'bytes': total}
+
+    def settle(self, ctx):
+        if not layouts.uses_kit(ctx.layout):
+            return
+        kit = layouts.kit_folder(ctx.dest).resolve()
+        if ctx.layout.root.resolve() != kit:
+            ctx.layout = layouts.release_layout(kit)
+            ctx.reporter.log(f'kit: the next steps run from {kit}')
+
+
+def adopt_old_temp(layout, dest, temp):
+    """An install by a setup before the build kit has its temp folder (generated C, lift cache, objects) in that
+    setup's folder: <setup>/temp/<install name>-<hash>, the setup build-cache/rebuild.txt names. The first run of a
+    setup with the build kit moves it into the install folder when both are on one disk, and the steps' keys decide
+    what of it still holds. On another disk the new temp folder starts empty: an update recompiles everything anyway
+    (the compiler's path is in every compile command), so a copy would save only part of the lift.
+    Runs before the run's log opens in temp; returns the line for the log, None when there was nothing to move."""
+    if not layouts.uses_kit(layout) or temp != dest / layouts.TEMP_IN_DEST or temp.exists():
+        return None
+    try:
+        lines = (dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return None
+    if len(lines) < 4 or lines[1] != '-c' or not os.path.isabs(lines[3]):
+        return None
+    old = layouts.temp_folder(Path(lines[3]) / 'temp', dest)
+    if not (old / 'gen').is_dir():
+        return None
+    try:
+        temp.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(old, temp)
+        return f'temp: moved the temp folder of the setup in {lines[3]} to {temp}'
+    except OSError as e:
+        return f'temp: the temp folder {old} stays where it is ({e}); {temp} starts empty'
 
 
 # ---- 2. fonts
@@ -1056,7 +1166,10 @@ def runtime_key(ctx):
     """Fingerprint of what totk.exe is built from besides the lifted code: the runtime, the toolchain and the build
     tools. Shader preparation depends on these, not on the code cheats a lift adds."""
     layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
-    clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
+    # without the lines that name clang's folder: the build kit of a moved install folder is the same toolchain
+    clang = '\n'.join(line for line in subprocess.run([str(layout.clang), '--version'], capture_output=True,
+                                                       text=True).stdout.splitlines()
+                      if not line.startswith(('InstalledDir:', 'Configuration file:')))
     tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py', 'check_isa.py')]
     return fingerprint('runtime-1', cpu, layout.runtime_lib_for(cpu), layout.runtime, layout.deps or 'system',
                        layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
@@ -1450,10 +1563,11 @@ class Cleanup(Step):
         return {}
 
 
-# Puts the release folder (the argument after -c) on sys.path and runs installer.gui with the rest. `-m installer.gui`
-# finds the package only through the release Python's ._pth: the Linux release's Python and the dev-mode embeddable one
-# lack that entry, and totk.exe starts the command in the install folder.
-REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
+# Puts the release folder or the build kit (the argument after -c, made absolute: the kit's is relative to the install
+# folder) on sys.path and runs installer.gui with the rest. `-m installer.gui` finds the package only through the
+# release Python's ._pth: the Linux release's Python and the dev-mode embeddable one lack that entry, and totk.exe
+# starts the command in the install folder.
+REBUILD_BOOT = ('import os, runpy, sys; sys.path.insert(0, os.path.abspath(sys.argv.pop(1))); '
                 "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)")
 
 
@@ -1472,7 +1586,13 @@ def rebuild_command(ctx):
     python = Path(sys.executable) if layout.dev else layout.python
     if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
         python = python.with_name('pythonw.exe')
-    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)]
+    root, dest = str(layout.root), str(ctx.dest)
+    if layouts.uses_kit(layout) and layout.root.resolve() == layouts.kit_folder(ctx.dest).resolve():
+        # the build kit: paths relative to the install folder, which totk.exe resolves against its own folder and
+        # starts the command in, so a moved install folder keeps its rebuild
+        python = Path(layouts.KIT) / python.relative_to(layout.root)
+        root, dest = layouts.KIT, '.'
+    return [str(python), '-c', REBUILD_BOOT, root, '--root', root, '--rebuild', dest]
 
 
 def write_rebuild_command(ctx):
@@ -1500,4 +1620,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Cleanup()]
+    return [Check(), Kit(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Cleanup()]

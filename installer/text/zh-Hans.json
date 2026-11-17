@@ -1,5 +1,6 @@
 {
  "step.check": "检查电脑和游戏文件",
+ "step.kit": "正在把构建工具包复制到游戏文件夹",
  "step.fonts": "正在提取系统字体",
  "step.extract": "解包游戏",
  "step.lift": "将游戏代码转换为 C 代码",
@@ -17,6 +18,7 @@
  "phase.check.unpack_base": "正在解压压缩的游戏本体",
  "phase.check.unpack_update": "正在解压压缩的更新",
  "phase.check.versions": "检查游戏版本",
+ "phase.kit.copy": "正在复制游戏为代码模组重新构建自身所用的工具",
  "phase.fonts.extract": "正在从固件中提取共享字体",
  "phase.fonts.copy": "正在将共享字体复制到安装文件夹",
  "phase.extract.hash_base": "计算游戏本体的校验和",
@@ -95,6 +97,8 @@
  "lift.failed": "游戏代码转换失败（退出代码 {code}）。详情：{log}",
  "compile.failed": "编译 {game_exe} 失败（退出代码 {code}）。详情：{log}",
  "compile.exe_in_use": "{path} 正在使用中。请关闭游戏后重新运行安装程序。",
+ "kit.in_use": "{path} 正在被占用。请关闭游戏以及所有打开的安装或重新构建窗口，再重新运行安装程序。",
+ "kit.copy_failed": "无法把构建工具包复制到 {path}：{detail}",
  "compile.exe_locked": "无法写入 {path}：另一个程序正在占用它，可能是从该文件夹启动的游戏，或标记了该文件的杀毒软件。请关闭游戏，将安装程序文件夹和安装文件夹加入杀毒软件的排除项，重启 Windows，然后重新运行安装程序。详情：{log}",
  "prepare.xlate_in_use": "{path} 正在被占用。请关闭游戏，结束上次残留的 totk_xlate 进程，再重新运行安装程序。",
  "prepare.shader_list_missing": "缺少着色器列表。",
