@@ -1559,6 +1559,10 @@ static uint64_t eager_allocs, eager_snapshots, eager_taken, eager_fallback, eage
 enum { EB_READY, EB_NONE, EB_OTHER_VALUE, EB_WR_FENCE, EB_NOT_DONE, EB_N };
 static uint64_t eager_why[EB_N];   // tex_lock
 static uint64_t eager_logged;      // fallbacks logged one by one, up to EAGER_LOG_MAX
+// Fence write-backs that waited for a staging copy (vk_upload_flush(1) in write_back_n) and the time they waited, the
+// stall wb_eager removes; counted with wb_eager = 0 too while frame-ahead is in effect, so both settings compare (tex_lock).
+static uint64_t wb_block_n, wb_block_ns, wb_block_max_ns;
+static int wb_count_blocks;   // frame-ahead in effect: the exit line is written whatever wb_eager is
 enum { EAGER_LOG_MAX = 20 };
 
 static void eager_release(Tex *e);
@@ -1566,7 +1570,8 @@ static void eager_release(Tex *e);
 static void wb_eager_init(void) {
     const char *v = cfg_get("TOTK_WB_EAGER");
     int want = v && !strcmp(v, "0") ? EAGER_OFF : v && !strcmp(v, "check") ? EAGER_CHECK : EAGER_ON;
-    wb_eager = want != EAGER_OFF && !nvn_sync_ahead_on() ? EAGER_OFF : want;
+    wb_count_blocks = nvn_sync_ahead_on();
+    wb_eager = want != EAGER_OFF && !wb_count_blocks ? EAGER_OFF : want;
     if (want != EAGER_OFF && wb_eager == EAGER_OFF)
         rt_log("vk: wb_eager: off, frame-ahead (sync_ahead) is not in effect");
 }
@@ -2320,7 +2325,11 @@ void vk_texture_eager_record(VkCommandBuffer cb, uint64_t fence) {
 
 void vk_texture_eager_log(void) {
     static int32_t done;
-    if (wb_eager <= EAGER_OFF || plat_xchg32(&done, 1)) return;
+    if (!wb_count_blocks || plat_xchg32(&done, 1)) return;
+    rt_log("vk: fence write-backs waited for the GPU %llu times, %.1f ms in all, longest %.2f ms (wb_eager %s)",
+           (unsigned long long)wb_block_n, (double)wb_block_ns / 1e6, (double)wb_block_max_ns / 1e6,
+           wb_eager == EAGER_CHECK ? "check, the compare reads included" : wb_eager == EAGER_ON ? "1" : "0");
+    if (wb_eager <= EAGER_OFF) return;
     rt_log("vk: wb_eager: %llu snapshots, %llu taken without a wait, %llu fell back to the blocking path (%llu staging buffers allocated)",
            (unsigned long long)eager_snapshots, (unsigned long long)eager_taken, (unsigned long long)eager_fallback,
            (unsigned long long)eager_allocs);
@@ -2371,7 +2380,15 @@ static void write_back_n(Tex **v, int n) {
                 if (wb_region(e, lv, ly, &q->ep.g, &q->ep.r) && texels_read_record(e, &q->ep.g, &q->ep.r, &q->ep.t)) np++, nrec++;
             }
     }
-    if (nrec) vk_upload_flush(1);
+    if (nrec) {
+        uint64_t t0 = wb_count_blocks ? plat_now_ns() : 0;
+        vk_upload_flush(1);
+        if (wb_count_blocks) {
+            uint64_t d = plat_now_ns() - t0;
+            wb_block_n++, wb_block_ns += d;
+            if (d > wb_block_max_ns) wb_block_max_ns = d;
+        }
+    }
     for (int i = 0; i < np; i++) {
         WbPart *q = &p[i];
         size_t bytes = q->ep.g.img * (size_t)q->ep.g.nz;
