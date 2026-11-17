@@ -1,4 +1,4 @@
-﻿# The 3D preview of a blueprint (proposed separately)
+# The 3D preview of a blueprint (proposed separately)
 
 This document describes the part of the blueprint work that draws a build's parts in 3D inside the picker, before the
 file is imported. **It is not part of the import change.** The import, the `.cai`/`.txt` readers, the picker and the
@@ -49,6 +49,14 @@ read from the player's own RomFS and decoded at runtime, placed by the CAI's own
 render is one offscreen Vulkan pass with a real depth buffer (`runtime/ui/preview3d.cpp`), shown as a single textured quad
 inside the panel; `layout_preview` and the CPU projection in `runtime/blueprint_picker.c` remain as the fallback for a
 machine where the offscreen target cannot be created.
+
+**Nothing of that is built until the picker is opened.** The pass needs two 1024x1024 images, a pipeline and about 60 MiB
+of host-visible buffers, and a player who never opens a blueprint should not pay for them, so `preview3d_init` runs from
+the first frame the picker is drawn rather than at start. It has to be there rather than earlier because the target is
+registered with the ImGui back end as a texture (`ImGui_ImplVulkan_AddTexture`), so the back end's descriptor pool must
+already exist; it has to be there rather than later because the same frame draws the quad. `preview3d_init` remembers
+that it was tried, so a machine where the target cannot be made falls back to the draw list once and is not retried every
+frame.
 
 **Why the CAI alone is not enough.** A CAI blob holds each part's *placement* — a rotation, a position and a scale — and
 the actor's name, and nothing else: no mesh. The actor name is what makes a real model possible: the game ships one model
