@@ -30,6 +30,7 @@ extern "C" VkDevice vk_device(void);
 extern "C" VmaAllocator vk_vma(void);
 extern "C" void vk_queue_lock(void);
 extern "C" void vk_queue_unlock(void);
+extern "C" uint64_t plat_now_ns(void);
 
 // The runtime's headers are C and carry no extern "C" guards of their own.
 extern "C" {
@@ -452,6 +453,17 @@ static int shape_is_hidden_blade(const BfresModel *m, int index) {
 // `hide_blade` drops the shapes whose material is one of the model's `_Hide` materials: a fused weapon keeps its handle and
 // loses its blade, and the model says which shapes those are - the blade's material is `Mt_Blade_Hide`, so the rule is the
 // model's own material naming, not a list of items.
+// The slot a part already has, or -1. Separated from upload_part_named so the caller can tell "this part still has to be
+// decoded" from "this part is already on the GPU": only the first kind costs time, and only the first kind may be
+// postponed to the next frame.
+static int part_slot_of(const char *name, int hide_blade) {
+    char key[96];
+    snprintf(key, sizeof key, "%s%s", name, hide_blade ? "|<fused>" : "");
+    for (int i = 0; i < S.part_count; i++)
+        if (!strcmp(S.parts[i].name, key)) return i;
+    return -1;
+}
+
 static int upload_part_named(const char *name, int as_model_name, int hide_blade) {
     char key[96];
     snprintf(key, sizeof key, "%s%s", name, hide_blade ? "|<fused>" : "");
@@ -859,11 +871,26 @@ extern "C" void preview3d_record(void *command_buffer) {
     // Nothing is slid onto anything here.
 
     int drawn = 0;
+    // Decoding a part is the expensive half of this pass: a RomFS read, a zstd inflate and a MeshCodec decode, measured at
+    // 25 ms on a 20-part build and 543 ms for the frame that first drew one. Every part is decoded once and then reused by
+    // name, so the cost is a one-off per part - but paying it for a whole blueprint inside one frame stalls the present,
+    // which is a visible hitch when a file is highlighted. So the work is spread: a frame decodes parts until it has spent
+    // its budget, then draws what it has and marks the image dirty so the next frame carries on. A build therefore fills in
+    // over a few frames instead of freezing on one.
+    const uint64_t decode_budget_ns = 8ull * 1000000ull;   // 8 ms: well inside a 60 fps frame, so no visible hitch
+    const uint64_t started_ns = plat_now_ns();
+    int postponed = 0;
     for (int k = 0; k < bp->actors; k++) {
         const char *name = bp->names[k];
         if (!name || !*name) continue;
         const char *sub = bp->sub_names[k];
         const int fused = sub && *sub;
+        // A part already on the GPU costs nothing to draw, so it is never postponed; only a part that still has to be
+        // decoded is held back once the budget is spent.
+        if (part_slot_of(name, fused) < 0 && plat_now_ns() - started_ns > decode_budget_ns) {
+            postponed = 1;
+            break;
+        }
         // A fused weapon loses the shapes fusion covers: the blade is what the material replaces, so it is hidden, and the
         // hidden shape's own coordinates are what locate the material (see fuse_placement).
         const int slot = fused ? upload_part_named(name, 0, 1) : upload_part(name);
@@ -963,7 +990,12 @@ extern "C" void preview3d_record(void *command_buffer) {
     barrier(cb, S.color, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    // A frame that ran out of budget left parts undecoded, so the image is incomplete: mark it dirty and the next frame
+    // records again, picking up where this one stopped. Without this the picture would stay permanently short of the parts
+    // that did not fit, because nothing else would ask for another record.
+    if (postponed) S.dirty = 1;
     // Once per build, not once per redraw: this pass runs on every camera move and every resize, and the line says the
     // same thing each time. A drag logged it hundreds of times a second.
-    if (S.frame < 4) rt_log("preview3d: %d parts in %d draws (%ux%u)", bp->actors, drawn, w, h);
+    if (S.frame < 4) rt_log("preview3d: %d parts in %d draws (%ux%u)%s", bp->actors, drawn, w, h,
+                            postponed ? ", more to decode" : "");
 }
