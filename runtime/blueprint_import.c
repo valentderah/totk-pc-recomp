@@ -285,10 +285,12 @@ typedef struct {
     uint64_t hit;      // the address found, 0 when none
     uint64_t nearest;  // the distance of the closest candidate so far
     uint64_t anchor;
+    int count;         // how many runs matched; more than one means the shape does not identify the array
 } PermCtx;
 
-// One readable range: every 4-byte-aligned run of 30 int32 that is a permutation of 0..29. The run closest to the anchor
-// wins, because the save block's arrays are neighbours.
+// One readable range: every 4-byte-aligned run of 30 int32 that is a permutation of 0..29. Every match is counted, not
+// just the closest one: a shape is not an identity, and picking the nearest of several is a guess. find_index_by_shape
+// turns a count above one into "not found" so the exact save-file path decides instead.
 static int perm_in_range(uint64_t at, uint64_t len, void *vctx) {
     PermCtx *c = vctx;
     if (len < (uint64_t)N * 4) return 0;
@@ -308,6 +310,7 @@ static int perm_in_range(uint64_t at, uint64_t len, void *vctx) {
         if (!ok) continue;
         const uint64_t here = at + o;
         const uint64_t dist = here > c->anchor ? here - c->anchor : c->anchor - here;
+        c->count++;
         if (!c->hit || dist < c->nearest) {
             c->hit = here;
             c->nearest = dist;
@@ -322,9 +325,12 @@ typedef struct {
     uint32_t mask;
     uint64_t nearest;
     uint64_t anchor;
+    int count;         // how many pairs matched; more than one means the shape does not identify the array
 } FavCtx;
 
-// One readable range: a {count, mask} pair with count == 30 and a mask of at most eight bits below 30.
+// One readable range: a {count, mask} pair with count == 30 and a mask of at most eight bits below 30. {30, 0} - the
+// shape of a save with no favourites - is common in unrelated memory, so every match is counted and a count above one is
+// refused rather than resolved to the nearest one.
 static int fav_in_range(uint64_t at, uint64_t len, void *vctx) {
     FavCtx *c = vctx;
     if (len < 8) return 0;
@@ -341,6 +347,7 @@ static int fav_in_range(uint64_t at, uint64_t len, void *vctx) {
         if (bits > 8) continue;                   // the game pins at most eight favourites
         const uint64_t here = at + o;
         const uint64_t dist = here > c->anchor ? here - c->anchor : c->anchor - here;
+        c->count++;
         if (!c->found || dist < c->nearest) {
             c->found = 1;
             c->mask = mask;
@@ -350,23 +357,48 @@ static int fav_in_range(uint64_t at, uint64_t len, void *vctx) {
     return 0;
 }
 
+// The Index array inside [lo, hi), or 0 when the shape does not identify exactly one. Two runs of 30 int32 that are each
+// a permutation of 0..29 say nothing about which one the page is drawing by, and writing the wrong one rotates an array
+// nothing reads while the page keeps its old order - a silent failed import. So an ambiguous match is refused and the
+// caller falls through to the save-file path, which matches the file's own ages and proves which array is in guest memory.
+static uint64_t index_by_shape_in(uint64_t lo, uint64_t hi) {
+    PermCtx c = {0, 0, lo, 0};
+    each_readable(lo, hi, perm_in_range, &c);
+    if (c.count > 1) {
+        rt_log("blueprint: %d runs of 30 ranks near %#llx, so the shape does not name one array; using the save file",
+               c.count, (unsigned long long)lo);
+        return 0;
+    }
+    return c.hit;
+}
+
+// The IsFavorite mask inside [lo, hi), or 0 when the shape does not identify exactly one. {30, 0} is the mask of a save
+// with no favourites and also the shape of plenty of unrelated pairs, so an ambiguous match must not be used: reading the
+// wrong mask would let an import evict a card the player starred. 0 sends the import down the path that keeps the history
+// order rather than spending an entry it cannot identify.
+static int fav_by_shape_in(uint64_t lo, uint64_t hi, uint32_t *out) {
+    if (!out) return 0;
+    FavCtx c = {0, 0, 0, lo, 0};
+    each_readable(lo, hi, fav_in_range, &c);
+    if (!c.found) return 0;
+    if (c.count > 1) {
+        rt_log("blueprint: %d {30, mask} pairs near %#llx, so the shape does not name one favourite mask; keeping the "
+               "history order", c.count, (unsigned long long)lo);
+        return 0;
+    }
+    *out = c.mask;
+    return 1;
+}
+
 static uint64_t find_index_by_shape(uint64_t anchor, uint64_t radius) {
     if (!anchor) return 0;
-    PermCtx c = {0, 0, anchor};
-    const uint64_t lo = anchor > radius ? anchor - radius : 0;
-    each_readable(lo, anchor + radius, perm_in_range, &c);
-    return c.hit;
+    return index_by_shape_in(anchor > radius ? anchor - radius : 0, anchor + radius);
 }
 
 static int find_fav_by_shape(uint64_t anchor, uint32_t *out) {
     if (!anchor || !out) return 0;
-    FavCtx c = {0, 0, 0, anchor};
     const uint64_t radius = 64u << 10;
-    const uint64_t lo = anchor > radius ? anchor - radius : 0;
-    each_readable(lo, anchor + radius, fav_in_range, &c);
-    if (!c.found) return 0;
-    *out = c.mask;
-    return 1;
+    return fav_by_shape_in(anchor > radius ? anchor - radius : 0, anchor + radius, out);
 }
 
 // The position the save's Index array calls 0 (the card drawn first), or -1 when it cannot be read.
@@ -682,3 +714,14 @@ const char *bp_import_text(int r) {
     }
     return "unknown import result";
 }
+
+#ifdef BP_IMPORT_TEST
+// The two shape scans, exposed for tests/blueprint_import_scan_test.py. They are static because nothing in the port calls
+// them from outside, but the rule they carry - a shape that matches more than once identifies nothing - is exactly what a
+// wrong match would write into, so it is worth pinning down without a running game. The test maps a scratch buffer as
+// guest memory through the stubs and drives these two directly.
+// They call the same two helpers the port does, so the test exercises the real decision and not a copy of it.
+uint64_t bp_test_find_index(uint64_t lo, uint64_t hi) { return index_by_shape_in(lo, hi); }
+
+int bp_test_find_fav(uint64_t lo, uint64_t hi, uint32_t *out) { return fav_by_shape_in(lo, hi, out); }
+#endif
