@@ -115,7 +115,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"OPTREF_GUARD", "performance"}, {"ABILITY_GUARD", "performance"}, {"REPORT_GUARD", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"ADDR_REPORT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
     {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_MERGE", "diagnostics"}, {"WB_EXACT", "diagnostics"},
-    {"MV_SURVEY", "diagnostics"},
+    {"MV_SURVEY", "diagnostics"}, {"PLUGIN_TRACE", "diagnostics"},
     {"GAMEPLAY_TWEAKS_ENABLED", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_ROTATE", "gameplay tweaks"},
     {"GAMEPLAY_ULTRAHAND_C_AXIS", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_DISTANCE", "gameplay tweaks"},
     {"GAMEPLAY_ITEM_WHEEL", "gameplay tweaks"}, {"GAMEPLAY_ITEM_AD", "gameplay tweaks"},
@@ -233,6 +233,7 @@ static const CfgMeta metas[] = {
     {"WB_FENCE_LIMIT", "65536", "0..1073741824", RESTART}, {"WB_MERGE", "1", "0|1", RESTART}, {"WB_EXACT", "1", "0|1", RESTART},
     {"PASS_CRUMBS", "", "0|1", RESTART},   // vk_crumbs.c pass marks; unset: VK_AMD_buffer_marker only
     {"ADDR_REPORT", "0", "0|1", RESTART},   // vk_device.c GPU address map for device faults
+    {"PLUGIN_TRACE", "0", "0|1", RESTART},   // plugin_init.c: the first call of each mod plugin hook entry
     {"INPUT_RECORD", "", NULL, RESTART},
 };
 
