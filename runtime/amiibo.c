@@ -5,6 +5,7 @@
 
 #include "amiibo.h"
 #include "host.h"
+#include "nfp.h"
 #include "platform/platform.h"
 
 static PlatMutex g_amiibo_lock = PLAT_MUTEX_INIT;
@@ -16,7 +17,9 @@ static AmiiboInfo g_info;
 
 static bool g_device_present = true;
 static bool g_detecting = false;
+static bool g_picker_requested;
 static bool g_tag_present = false;
+static bool g_tag_removed;
 static bool g_mounted = false;
 static bool g_auto_remove = true;
 static float g_auto_remove_delay_s = 2.5f;
@@ -25,14 +28,12 @@ static uint64_t g_tap_timestamp_ns = 0;
 static bool g_timer_active = false;
 
 static bool amiibo_validate_dump(const uint8_t *data, uint64_t size) {
-    if (size != AMIIBO_DUMP_SIZE) {
+    if (size != 532 && size != 540 && size != 572) {
         return false;
     }
 
-    // NTAG215 Capability Container (CC) at page 3 (offset 0x0C). An amiibo's is F1 10 FF EE, not the E1 of a plain
-    // NDEF tag (3dbrew, "Amiibo"); the CC is not encrypted, so encrypted dumps carry it too.
-    static const uint8_t amiibo_cc[4] = {0xF1, 0x10, 0xFF, 0xEE};
-    if (memcmp(data + 0x0C, amiibo_cc, sizeof amiibo_cc)) {
+    // Accept the 0xF1 header in standard amiibo dumps as well as the 0xE1 variant.
+    if (data[0x0C] != 0xE1 && data[0x0C] != 0xF1) {
         return false;
     }
 
@@ -91,7 +92,9 @@ void amiibo_init(void) {
     plat_mutex_lock(&g_amiibo_lock);
     g_device_present = true;
     g_detecting = false;
+    g_picker_requested = false;
     g_tag_present = false;
+    g_tag_removed = false;
     g_mounted = false;
     g_has_dump = false;
     g_timer_active = false;
@@ -120,19 +123,37 @@ static uint64_t g_detect_stop_ns;   // the last stop: the menu holds "searching"
 
 void amiibo_start_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
+    if (!g_detecting) {
+        if (!g_tag_present) g_picker_requested = true;
+        g_tag_removed = false;
+    }
     g_detecting = true;
     uint64_t n = ++g_detect_starts;
     if (n <= 3) rt_log("amiibo: start detection");
     else if (n % 200 == 0) rt_log("amiibo: detection started %llu times so far", (unsigned long long)n);
+    bool tapped = g_tag_present;
     plat_mutex_unlock(&g_amiibo_lock);
+    if (tapped) nfp_notify_tag(true);
 }
 
 void amiibo_stop_detection(void) {
     plat_mutex_lock(&g_amiibo_lock);
     if (g_detecting) g_detect_stop_ns = plat_now_ns();
     g_detecting = false;
+    // Preserve an unconsumed tap across a reader restart; a completed mounted scan is released.
+    if (g_mounted) g_tag_present = g_timer_active = false;
+    g_mounted = false;
+    g_tag_removed = false;
     if (g_detect_starts <= 3) rt_log("amiibo: stop detection");
     plat_mutex_unlock(&g_amiibo_lock);
+}
+
+bool amiibo_take_picker_request(void) {
+    plat_mutex_lock(&g_amiibo_lock);
+    bool requested = g_picker_requested;
+    g_picker_requested = false;
+    plat_mutex_unlock(&g_amiibo_lock);
+    return requested;
 }
 
 bool amiibo_is_detecting(void) {
@@ -182,6 +203,10 @@ AmiiboDeviceState amiibo_get_device_state(void) {
         plat_mutex_unlock(&g_amiibo_lock);
         return AMIIBO_DEV_STATE_TAG_FOUND;
     }
+    if (g_tag_removed) {
+        plat_mutex_unlock(&g_amiibo_lock);
+        return AMIIBO_DEV_STATE_TAG_REMOVED;
+    }
     if (g_detecting) {
         plat_mutex_unlock(&g_amiibo_lock);
         return AMIIBO_DEV_STATE_SEARCHING;
@@ -207,11 +232,29 @@ bool amiibo_load_file(const char *path) {
         rt_log("amiibo: failed to read file: %s", path);
         return false;
     }
-    if (size != AMIIBO_DUMP_SIZE) {
-        rt_log("amiibo: invalid dump size (%llu bytes, expected exactly %d): %s",
-               (unsigned long long)size, AMIIBO_DUMP_SIZE, path);
+    // Flipper .nfc files store the same NTAG pages as text. Require every payload page.
+    if (size > 16 && !memcmp(data, "Filetype: Flipper", 16)) {
+        uint8_t pages[AMIIBO_DUMP_SIZE] = {0}, seen[133] = {0};
+        const char *line = (const char *)data;
+        while (line && *line) {
+            unsigned page, a, b, c, d;
+            if (sscanf(line, "Page %u: %2x %2x %2x %2x", &page, &a, &b, &c, &d) == 5 && page < 135) {
+                pages[page * 4] = (uint8_t)a; pages[page * 4 + 1] = (uint8_t)b;
+                pages[page * 4 + 2] = (uint8_t)c; pages[page * 4 + 3] = (uint8_t)d;
+                if (page < 133) seen[page] = 1;
+            }
+            line = strchr(line, '\n');
+            if (line) ++line;
+        }
+        for (unsigned i = 0; i < sizeof seen; ++i) {
+            if (!seen[i]) { free(data); return false; }
+        }
+        uint8_t *decoded = malloc(sizeof pages);
+        if (!decoded) { free(data); return false; }
+        memcpy(decoded, pages, sizeof pages);
         free(data);
-        return false;
+        data = decoded;
+        size = sizeof pages;
     }
     if (!amiibo_validate_dump(data, size)) {
         rt_log("amiibo: dump failed NTAG215 structure sanity checks: %s", path);
@@ -220,7 +263,8 @@ bool amiibo_load_file(const char *path) {
     }
 
     plat_mutex_lock(&g_amiibo_lock);
-    memcpy(g_dump, data, AMIIBO_DUMP_SIZE);
+    memset(g_dump, 0, sizeof g_dump);
+    memcpy(g_dump, data, size < sizeof g_dump ? (size_t)size : sizeof g_dump);
     g_has_dump = true;
     parse_dump_info(path);
     plat_mutex_unlock(&g_amiibo_lock);
@@ -239,12 +283,15 @@ void amiibo_tap_tag(void) {
         return;
     }
     g_tag_present = true;
+    g_tag_removed = false;
+    g_mounted = false;
     g_tap_timestamp_ns = plat_now_ns();
     if (g_auto_remove) {
         g_timer_active = true;
     }
     rt_log("amiibo: tag tapped on reader ('%s')", g_info.filename);
     plat_mutex_unlock(&g_amiibo_lock);
+    nfp_notify_tag(true);
 }
 
 bool amiibo_scan_and_tap(const char *path) {
@@ -255,29 +302,36 @@ bool amiibo_scan_and_tap(const char *path) {
 
 void amiibo_remove_tag(void) {
     plat_mutex_lock(&g_amiibo_lock);
+    bool removed = g_tag_present || g_mounted;
     if (g_tag_present || g_mounted) {
         g_tag_present = false;
+        g_tag_removed = g_detecting;
         g_mounted = false;
         g_timer_active = false;
         rt_log("amiibo: tag removed from reader");
     }
     plat_mutex_unlock(&g_amiibo_lock);
+    if (removed) nfp_notify_tag(false);
 }
 
 void amiibo_tick(void) {
     plat_mutex_lock(&g_amiibo_lock);
+    bool removed = false;
     if (g_timer_active && g_tag_present) {
         uint64_t now = plat_now_ns();
         uint64_t diff = now > g_tap_timestamp_ns ? now - g_tap_timestamp_ns : 0;
         uint64_t limit_ns = (uint64_t)(g_auto_remove_delay_s * 1000000000.0f);
         if (diff >= limit_ns) {
             g_tag_present = false;
+            g_tag_removed = g_detecting;
             g_mounted = false;
             g_timer_active = false;
+            removed = true;
             rt_log("amiibo: auto-removed tag after %.1fs timeout", (double)g_auto_remove_delay_s);
         }
     }
     plat_mutex_unlock(&g_amiibo_lock);
+    if (removed) nfp_notify_tag(false);
 }
 
 void amiibo_set_auto_remove(bool enable) {
@@ -359,7 +413,7 @@ void amiibo_get_common_info(void *out_common_info) {
     out[0x00] = 0xE7; out[0x01] = 0x07; // 2023, u16 little-endian
     out[0x02] = 0x05; out[0x03] = 0x0C; // May 12
     // Write counter: 0x04..0x05
-    out[0x04] = 0x00; out[0x05] = 0x01;
+    out[0x04] = 0x01; out[0x05] = 0x00;
     // Version: 0x06
     out[0x06] = 0x02;
     // Application area size: 0x08..0x0B = 0xD8 (216 bytes)

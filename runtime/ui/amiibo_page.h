@@ -2,6 +2,7 @@
 #pragma once
 
 void tab_amiibo(float scale);
+bool amiibo_picker(bool opening);
 
 // Collect amiibo filenames for font glyph building (called from menu.cpp fonts_up)
 void amiibo_collect_filenames(void (*callback)(void *, const char *), void *ctx);

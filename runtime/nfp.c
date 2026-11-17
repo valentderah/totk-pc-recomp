@@ -8,25 +8,62 @@
 #include "ipc.h"
 #include "kernel.h"
 #include "nfp.h"
+#include "platform/platform.h"
 
 // Simulated NFC device handle: ID 1
 static const uint8_t g_device_handle[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };
 
-typedef struct {
+typedef struct NfpUserState {
+    struct NfpUserState *next;
     uint32_t activate_event;    // writable handle
     uint32_t deactivate_event;  // writable handle
     uint32_t avail_event;       // writable handle
 } NfpUserState;
 
+static PlatMutex event_lock = PLAT_MUTEX_INIT;
+static NfpUserState *users;
+static uint64_t system_events[2];
+
+void nfp_set_system_event(bool activate, uint64_t event) {
+    plat_mutex_lock(&event_lock);
+    system_events[activate ? 1 : 0] = event;
+    plat_mutex_unlock(&event_lock);
+}
+
+void nfp_notify_tag(bool present) {
+    plat_mutex_lock(&event_lock);
+    if (system_events[present ? 1 : 0]) kern_try_signal_system_event(system_events[present ? 1 : 0]);
+    for (NfpUserState *st = users; st; st = st->next)
+        kern_event_signal(present ? st->activate_event : st->deactivate_event);
+    plat_mutex_unlock(&event_lock);
+}
+
 static void nfp_user_close(void *p) {
     NfpUserState *st = p;
     if (st) {
+        plat_mutex_lock(&event_lock);
+        NfpUserState **link = &users;
+        while (*link && *link != st) link = &(*link)->next;
+        if (*link) *link = st->next;
         if (st->activate_event) kern_handle_close(st->activate_event);
         if (st->deactivate_event) kern_handle_close(st->deactivate_event);
         if (st->avail_event) kern_handle_close(st->avail_event);
+        plat_mutex_unlock(&event_lock);
         free(st);
     }
     rt_log("nfp: IUser session closed");
+}
+
+// Fixed-size NFP records use receive pointers; accept mapped buffers as well.
+static void *nfp_output(const IpcRequest *rq, IpcResponse *rs, uint64_t size) {
+    bool pointer = !(rq->nb && rq->b[0].size);
+    IpcBuffer b = pointer ? (rq->nc ? rq->c[0] : (IpcBuffer){0}) : rq->b[0];
+    if (!b.addr || b.size < size) {
+        rs->result = 0xCC01u; // Invalid address/buffer.
+        return NULL;
+    }
+    if (pointer) rs->xout[rs->nxout++] = (IpcBuffer){b.addr, size, b.index};
+    return ipc_guest(b.addr, size);
 }
 
 // Handler for nn::nfp::detail::IUser
@@ -49,8 +86,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
     case 2: {   // ListDevicesNfp() -> (s32 total_out, buffer<DeviceHandle, 0xa>)
         int32_t count = amiibo_is_device_present() ? 1 : 0;
         IPC_OUT(rs, count);
-        if (count > 0 && rq->nb > 0 && rq->b[0].size >= sizeof(g_device_handle)) {
-            void *dst = ipc_guest(rq->b[0].addr, sizeof(g_device_handle));
+        if (count > 0) {
+            void *dst = nfp_output(rq, rs, sizeof(g_device_handle));
+            if (!dst) return;
             memcpy(dst, g_device_handle, sizeof(g_device_handle));
         }
         rs->result = 0;
@@ -58,9 +96,6 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
     }
     case 3: {   // StartDetectionNfp(DeviceHandle)
         amiibo_start_detection();
-        if (amiibo_has_tag() && st && st->activate_event) {
-            kern_event_signal(st->activate_event);
-        }
         rs->result = 0;
         return;
     }
@@ -74,8 +109,7 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
             rs->result = 0x8073u;   // Device/Tag not found
             return;
         }
-        amiibo_mount();
-        rs->result = 0;
+        rs->result = amiibo_mount() ? 0 : 0x8073u;
         return;
     }
     case 6: {   // UnmountNfp(DeviceHandle)
@@ -113,10 +147,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
             rs->result = 0x8073u;
             return;
         }
-        if (rq->nb > 0 && rq->b[0].size >= 0x58) {
-            void *dst = ipc_guest(rq->b[0].addr, 0x58);
-            amiibo_get_tag_info(dst);
-        }
+        void *dst = nfp_output(rq, rs, 0x58);
+        if (!dst) return;
+        amiibo_get_tag_info(dst);
         rs->result = 0;
         return;
     }
@@ -125,10 +158,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
             rs->result = 0x927Fu;
             return;
         }
-        if (rq->nb > 0 && rq->b[0].size >= 0x100) {
-            void *dst = ipc_guest(rq->b[0].addr, 0x100);
-            amiibo_get_register_info(dst);
-        }
+        void *dst = nfp_output(rq, rs, 0x100);
+        if (!dst) return;
+        amiibo_get_register_info(dst);
         rs->result = 0;
         return;
     }
@@ -137,10 +169,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
             rs->result = 0x927Fu;
             return;
         }
-        if (rq->nb > 0 && rq->b[0].size >= 0x40) {
-            void *dst = ipc_guest(rq->b[0].addr, 0x40);
-            amiibo_get_common_info(dst);
-        }
+        void *dst = nfp_output(rq, rs, 0x40);
+        if (!dst) return;
+        amiibo_get_common_info(dst);
         rs->result = 0;
         return;
     }
@@ -149,10 +180,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
             rs->result = 0x927Fu;
             return;
         }
-        if (rq->nb > 0 && rq->b[0].size >= 0x40) {
-            void *dst = ipc_guest(rq->b[0].addr, 0x40);
-            amiibo_get_model_info(dst);
-        }
+        void *dst = nfp_output(rq, rs, 0x40);
+        if (!dst) return;
+        amiibo_get_model_info(dst);
         rs->result = 0;
         return;
     }
@@ -202,7 +232,9 @@ static void nfp_user_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
         return;
     }
     default:
-        ipc_unimplemented(s, rq);
+        // Optional NFC operations must report a failure to the SDK, never abort the host.
+        rs->result = IPC_R_UNKNOWN_COMMAND;
+        return;
     }
 }
 
@@ -215,8 +247,11 @@ void nfp_user_manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
         st->activate_event = kern_event_new();
         st->deactivate_event = kern_event_new();
         st->avail_event = kern_event_new();
-        // Signal availability immediately so game detects reader
-        kern_event_signal(st->avail_event);
+        plat_mutex_lock(&event_lock);
+        st->next = users;
+        users = st;
+        plat_mutex_unlock(&event_lock);
+        // The reader is already present in ListDevices; no availability change has occurred.
 
         uint32_t user_session = ipc_session_new("nfp:IUser", nfp_user_handler, st, nfp_user_close);
         rs->move[rs->nmove++] = user_session;

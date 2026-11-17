@@ -1,4 +1,4 @@
-// Amiibo loader and state management subsystem (540-byte NTAG215 binary dumps).
+// Amiibo loader and state management (532/540/572-byte NTAG215 dumps and Flipper NFC files).
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,6 +43,7 @@ bool amiibo_is_device_present(void);
 void amiibo_start_detection(void);
 void amiibo_stop_detection(void);
 bool amiibo_is_detecting(void);
+bool amiibo_take_picker_request(void);
 
 // Tag mounting
 bool amiibo_mount(void);
