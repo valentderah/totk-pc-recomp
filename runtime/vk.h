@@ -291,6 +291,7 @@ int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int 
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_mirror_seal(void);   // before vk_mem_shadow_sync: the copies the next vk_mem_mirror_prologue takes
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
