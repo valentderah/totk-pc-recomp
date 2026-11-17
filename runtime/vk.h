@@ -155,7 +155,8 @@ void vk_reflex_present_frame(uint64_t id);  // the present thread, before the bl
 int vk_has_reflex(void);
 // SMAA on the present (vk_smaa.c): with TOTK_ANTIALIASING = smaa, records SMAA of src's crop rectangle {x, y, w, h}
 // into an RGBA16F image of that size in GENERAL (*out, *out_fmt) and returns 1; 0 = nothing recorded. src is in GENERAL.
-int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], VkImage *out, VkFormat *out_fmt);
+// hdr: src is the linear HDR picture of the HDR10 present (values above 1): the edges are found on a perceptual copy.
+int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], int hdr, VkImage *out, VkFormat *out_fmt);
 void vk_smaa_release(void);   // before the device goes away
 // Colour adjustment on the present (vk_color.c): with TOTK_COLOR_* away from their defaults, records a pass that writes
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller

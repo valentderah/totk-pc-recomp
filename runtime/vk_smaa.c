@@ -13,12 +13,13 @@
 #include "shaders/smaa/SearchTex.h"
 #include "smaa_blend_spv.h"
 #include "smaa_edges_spv.h"
+#include "smaa_percept_spv.h"
 #include "smaa_weights_spv.h"
 
 #define COLOR_FMT VK_FORMAT_R16G16B16A16_SFLOAT
 #define MASK_FMT VK_FORMAT_R8G8B8A8_UNORM
 
-enum { COLOR, EDGES, WEIGHTS, RESULT, TARGETS };
+enum { COLOR, EDGES, WEIGHTS, RESULT, PERCEPT, TARGETS };   // PERCEPT: the HDR picture as the edge pass reads it
 
 typedef struct {
     VkImage img;
@@ -31,7 +32,7 @@ static struct {
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
-    VkPipeline edges, weights, blend;
+    VkPipeline edges, weights, blend, percept;
     VkSampler linear, point;
     Image target[TARGETS], area, search;
     VkBuffer staging;
@@ -128,7 +129,8 @@ static int init(VkCtx *c) {
         vkCreateSampler(c->device, &pi, NULL, &S.point) != VK_SUCCESS ||
         !(S.edges = make_pipeline(c, smaa_edges_spv, sizeof smaa_edges_spv)) ||
         !(S.weights = make_pipeline(c, smaa_weights_spv, sizeof smaa_weights_spv)) ||
-        !(S.blend = make_pipeline(c, smaa_blend_spv, sizeof smaa_blend_spv)) || !make_lookups(c)) {
+        !(S.blend = make_pipeline(c, smaa_blend_spv, sizeof smaa_blend_spv)) ||
+        !(S.percept = make_pipeline(c, smaa_percept_spv, sizeof smaa_percept_spv)) || !make_lookups(c)) {
         rt_log("vk: SMAA off: its resources could not be created");
         return 0;
     }
@@ -150,7 +152,8 @@ static int ensure_targets(VkCtx *c, uint32_t w, uint32_t h) {
     if (!make_image(c, &S.target[COLOR], COLOR_FMT, w, h, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT) ||
         !make_image(c, &S.target[EDGES], MASK_FMT, w, h, work) ||
         !make_image(c, &S.target[WEIGHTS], MASK_FMT, w, h, work) ||
-        !make_image(c, &S.target[RESULT], COLOR_FMT, w, h, work | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        !make_image(c, &S.target[RESULT], COLOR_FMT, w, h, work | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+        !make_image(c, &S.target[PERCEPT], MASK_FMT, w, h, work)) {
         free_targets(c);
         return 0;
     }
@@ -198,7 +201,8 @@ static void run_pass(VkCommandBuffer cb, VkPipeline p, const VkDescriptorImageIn
     vkCmdDispatch(cb, (S.w + 7) / 8, (S.h + 7) / 8, 1);
 }
 
-int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], VkImage *out, VkFormat *out_fmt) {
+int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int crop[4], int hdr, VkImage *out,
+                   VkFormat *out_fmt) {
     if (strcmp(cfg_value("TOTK_ANTIALIASING"), "smaa") || !src_fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!S.tried) init(c);
@@ -206,7 +210,7 @@ int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int 
     if (!S.ok || !ensure_targets(c, (uint32_t)cw, (uint32_t)ch)) return 0;
     if (!S.logged) {
         S.logged = 1;
-        rt_log("vk: SMAA on %dx%d (source format %d)", cw, ch, (int)src_fmt);
+        rt_log("vk: SMAA on %dx%d (source format %d%s)", cw, ch, (int)src_fmt, hdr ? ", HDR10: edges on a perceptual copy" : "");
     }
     if (!S.uploaded) {
         S.uploaded = 1;
@@ -231,7 +235,13 @@ int vk_smaa_record(VkCommandBuffer cb, VkImage src, VkFormat src_fmt, const int 
     barrier(cb, S.target[COLOR].img, G, G, XF, VK_ACCESS_2_TRANSFER_WRITE_BIT, CS, READ);
 
     VkDescriptorImageInfo color = {S.linear, S.target[COLOR].view, G};
-    run_pass(cb, S.edges, &color, 1, S.target[EDGES].view);
+    VkDescriptorImageInfo edge_in = color;
+    if (hdr) {   // linear light above 1.0: the edges are found on a perceptual copy, the blend still mixes the linear one
+        run_pass(cb, S.percept, &color, 1, S.target[PERCEPT].view);
+        barrier(cb, S.target[PERCEPT].img, G, G, CS, WRITE, CS, READ);
+        edge_in = (VkDescriptorImageInfo){S.linear, S.target[PERCEPT].view, G};
+    }
+    run_pass(cb, S.edges, &edge_in, 1, S.target[EDGES].view);
     barrier(cb, S.target[EDGES].img, G, G, CS, WRITE, CS, READ);
 
     VkDescriptorImageInfo weights_in[3] = {{S.linear, S.target[EDGES].view, G}, {S.linear, S.area.view, G},
@@ -257,6 +267,7 @@ void vk_smaa_release(void) {
     if (S.edges) vkDestroyPipeline(c->device, S.edges, NULL);
     if (S.weights) vkDestroyPipeline(c->device, S.weights, NULL);
     if (S.blend) vkDestroyPipeline(c->device, S.blend, NULL);
+    if (S.percept) vkDestroyPipeline(c->device, S.percept, NULL);
     if (S.linear) vkDestroySampler(c->device, S.linear, NULL);
     if (S.point) vkDestroySampler(c->device, S.point, NULL);
     if (S.layout) vkDestroyPipelineLayout(c->device, S.layout, NULL);

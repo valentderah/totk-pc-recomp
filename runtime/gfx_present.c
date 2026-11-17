@@ -856,8 +856,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     int rect[4] = {cx, cy, cw, ch};
-    VkImage smaa;   // SMAA (vk_smaa.c) on the game resolution picture; an HDR10 picture is not tonemapped yet
-    if (general && !g_sc_hdr && vk_smaa_record(cb, src, fmt, rect, &smaa, &fmt)) {
+    VkImage smaa;   // SMAA (vk_smaa.c) on the game resolution picture; an HDR10 picture is linear light, which it handles
+    if (general && vk_smaa_record(cb, src, fmt, rect, g_sc_hdr, &smaa, &fmt)) {
         src = smaa;
         w = cw;
         h = ch;
