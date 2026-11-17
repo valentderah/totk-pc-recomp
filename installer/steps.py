@@ -1356,23 +1356,17 @@ FSR_FILES = (   # name, size, SHA-256
 FSR_LICENSE = f'https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v{FSR_VERSION}/docs/license.md'
 
 
-def amd_radeon(host):
-    """An AMD GPU among the host check's Vulkan devices: FSR 4 runs on Radeon RX 6000 and later, FSR 3.1 on older
-    ones."""
-    return any('AMD' in d['name'].upper() or 'RADEON' in d['name'].upper() for d in (host or {}).get('devices', []))
-
-
 class Fsr(Step):
-    """With --fsr on Windows and an AMD GPU: AMD's FSR loader and upscaler next to totk.exe. Libraries the player put
-    there (other versions) are kept. A failed download warns and is tried again on the next run; the game runs
-    without them."""
+    """With --fsr on Windows: AMD's FSR loader and upscaler next to totk.exe. The SDK selects the version supported by
+    the GPU. Libraries the player put there (other versions) are kept. A failed download warns and is tried again on
+    the next run; the game runs without them."""
 
     id = 'fsr'
 
     def key(self, ctx):
         if not getattr(ctx.options, 'fsr', False):
-            return fingerprint('fsr-1', 'off')
-        return fingerprint('fsr-1', FSR_VERSION, *(sha for _, _, sha in FSR_FILES))
+            return fingerprint('fsr-2', 'off')
+        return fingerprint('fsr-2', FSR_VERSION, *(sha for _, _, sha in FSR_FILES))
 
     def current(self, ctx, record):
         if record.get('failed'):
@@ -1384,10 +1378,6 @@ class Fsr(Step):
             return {}
         if os.name != 'nt':
             return {'skipped': 'not_windows'}
-        if not amd_radeon(getattr(ctx, 'host', None)):
-            # The box is ticked by default, so most players without an AMD GPU never chose it: a log line, no warning
-            ctx.reporter.log('fsr: no AMD GPU among the Vulkan devices, nothing downloaded')
-            return {'skipped': 'no_amd'}
         rep = ctx.reporter
         present = [ctx.dest / name for name, _, _ in FSR_FILES if (ctx.dest / name).is_file()]
         if present:

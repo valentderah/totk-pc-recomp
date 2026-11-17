@@ -11,7 +11,7 @@ line, 3 cancelled (Ctrl+C or Ctrl+Break).
 --dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
 Windows with an NVIDIA RTX GPU (steps.py, Dlss). --fsr downloads AMD's FSR loader and upscaler
 (amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll) from AMD's FSR SDK repository into the install folder on
-Windows with an AMD GPU (steps.py, Fsr).
+Windows; the SDK determines which GPU devices and upscaler versions it supports (steps.py, Fsr).
 """
 import argparse
 import hashlib
