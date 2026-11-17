@@ -897,7 +897,7 @@ class DlssTest(unittest.TestCase):
 
 @unittest.skipUnless(steps.os.name == 'nt', 'FSR is Windows-only')
 class FsrTest(unittest.TestCase):
-    """The FSR step: off without --fsr, needs an AMD GPU, keeps a player's libraries, installs both files or none."""
+    """The FSR step: off without --fsr, Windows-only, keeps a player's libraries, installs both files or none."""
 
     NAMES = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll')
 
@@ -961,10 +961,23 @@ class FsrTest(unittest.TestCase):
         self.assertFalse((self.dest / self.NAMES[0]).exists())
         self.assertEqual(self.warnings(), ['warn.fsr_kept'])
 
-    def test_skipped_without_an_amd_gpu(self):
-        self.ctx.host = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
-        self.assertEqual(steps.Fsr().run(self.ctx), {'skipped': 'no_amd'})
-        self.assertEqual(self.warnings(), [])
+    def test_downloads_on_an_nvidia_gpu(self):
+        self.ctx.host = {'devices': [{'name': 'NVIDIA GeForce GTX 1050', 'api': [1, 3, 0], 'type': 2}]}
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.FSR_VERSION})
+        for name in self.NAMES:
+            self.assertEqual((self.dest / name).read_bytes(), (self.src / name).read_bytes())
+
+    def test_old_no_amd_skip_record_is_retried(self):
+        old_key = steps.fingerprint('fsr-1', steps.FSR_VERSION,
+                                    *(sha for _, _, sha in steps.FSR_FILES))
+        state = {'format': 1, 'release': 'old', 'inputs': {},
+                 'steps': {'fsr': {'key': old_key, 'release': 'old', 'skipped': 'no_amd'}}}
+        ctx = runner.Context(SimpleNamespace(release='new'), self.dest, self.ctx.temp, self.ctx.reporter,
+                             self.ctx.options, state=state)
+        ctx.steps = [steps.Fsr()]
+        ctx.plan()
+        self.assertTrue(ctx.runs['fsr'])
 
 
 if __name__ == '__main__':
