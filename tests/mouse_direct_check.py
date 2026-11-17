@@ -600,6 +600,11 @@ void gameplay_tweaks_apply(uint64_t f, int a, uint64_t *b, int32_t *lx, int32_t 
     (void)f; (void)a; (void)b; (void)lx; (void)ly; (void)rx; (void)ry;
 }
 int cfg_bool(const char *key) { (void)key; abort(); }
+int quicksave_on(void) { return 0; }
+void quicksave_keys(uint8_t *d, int act) { (void)d; (void)act; abort(); }
+void quicksave_request(int load) { (void)load; abort(); }
+int quicksave_poll(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)b;(void)lx;(void)ly;(void)rx;(void)ry; abort(); }
+int quicksave_busy(void) { return 0; }
 int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;abort(); }
 int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;abort(); }
 int menu_is_open(void) { abort(); }

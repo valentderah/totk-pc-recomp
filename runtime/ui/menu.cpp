@@ -838,6 +838,21 @@ static int key_action(const InputMap *m, int key) {
     return -1;
 }
 
+// "also <action>" when the bindings also use the key the setting names, else NULL; note holds the text
+static const char *key_taken(const char *setting, char *note, size_t size) {
+    const char *cur = cfg_value(setting);
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT; k++) {
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a < 0 || !input_action_name(a)) return nullptr;
+        snprintf(note, size, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a));
+        return note;
+    }
+    return nullptr;
+}
+
 // The walk key as the handful of keys a player is likely to pick. "none" rather than an empty value closes it: an
 // unset key falls back to the default in the settings table, the same as a fresh installation. totk.ini takes any name
 // input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
@@ -845,18 +860,20 @@ static int key_action(const InputMap *m, int key) {
 static void row_walk_key(void) {
     static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
     const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
-    const char *cur = cfg_value("TOTK_WALK_KEY");
     static char note[64];
-    const char *n = nullptr;
-    InputMap m;
-    input_map_snapshot(&m);
-    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
-        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
-        int a = key_action(&m, k);
-        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
-    }
     opt_choice_list("TOTK_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
-                    -1, n);
+                    -1, key_taken("TOTK_WALK_KEY", note, sizeof note));
+}
+
+// Quick save's two keys (quicksave.c), F6 and F7 by default as Half-Life has them: any key or mouse button, taken by
+// the bindings' capture window (binds_key_row); Delete leaves that one without a key. A key the bindings also use says
+// which action it presses: while quick save is on it no longer does.
+static void row_quicksave_keys(void) {
+    static char note[2][64];
+    binds_key_row("TOTK_QUICKSAVE_KEY", UI_MENU_QUICKSAVE_KEY, UI_MENU_QUICKSAVE_KEY_DESC,
+                  key_taken("TOTK_QUICKSAVE_KEY", note[0], sizeof note[0]));
+    binds_key_row("TOTK_QUICKLOAD_KEY", UI_MENU_QUICKLOAD_KEY, UI_MENU_QUICKSAVE_KEY_DESC,
+                  key_taken("TOTK_QUICKLOAD_KEY", note[1], sizeof note[1]));
 }
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
@@ -988,6 +1005,8 @@ static void tab_controls(float scale) {
     opt_toggle("TOTK_MAP_CLICK", UI_MENU_MAP_CLICK, UI_MENU_MAP_CLICK_DESC);
     opt_toggle("TOTK_DIALOGUE_CLICK", UI_MENU_DIALOGUE_CLICK, UI_MENU_DIALOGUE_CLICK_DESC);
     opt_toggle("TOTK_POINTER_IMAGE", UI_MENU_POINTER_IMAGE, UI_MENU_POINTER_IMAGE_DESC);
+    opt_toggle("TOTK_QUICKSAVE", UI_MENU_QUICKSAVE, UI_MENU_QUICKSAVE_DESC);
+    row_quicksave_keys();
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     rows_gameplay_tweaks();
@@ -1706,6 +1725,37 @@ static void perf_draw(const MenuTarget *t, float scale) {
     dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, 235), g_perf_text);
 }
 
+// ---- a toast: one short line of ui_text at the top centre of the picture, over the game, for a few seconds and fading
+// out in its last half second (quick save's "Game saved", quicksave.c). Any thread sets it; the overlay draws it.
+static std::atomic<int> g_toast_text{-1};
+static std::atomic<uint64_t> g_toast_until{0};
+extern "C" void menu_toast(int text, int ms) {
+    g_toast_until.store(plat_now_ns() + (uint64_t)(ms > 0 ? ms : 1) * 1000000ull, std::memory_order_relaxed);
+    g_toast_text.store(text, std::memory_order_release);
+}
+
+static bool toast_live(void) {
+    return g_toast_text.load(std::memory_order_acquire) >= 0 &&
+           plat_now_ns() < g_toast_until.load(std::memory_order_relaxed);
+}
+
+static void toast_draw(const MenuTarget *t, float scale) {
+    int id = g_toast_text.load(std::memory_order_acquire);
+    uint64_t now = plat_now_ns(), until = g_toast_until.load(std::memory_order_relaxed);
+    if (id < 0 || id >= UI_TEXT_COUNT || now >= until) return;
+    double left_ms = (until - now) / 1e6;
+    float a = left_ms < 500 ? (float)(left_ms / 500) : 1.0f;
+    const char *text = ui_text((UiTextId)id);
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *font = ImGui::GetFont();
+    float size = ImGui::GetFontSize() * 1.25f, pad = 10 * scale;
+    ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, text);
+    ImVec2 p((t->width - sz.x) / 2 - pad, 48 * scale);   // under the top edge, between the hearts and the corner
+    ImVec2 q(p.x + sz.x + 2 * pad, p.y + sz.y + 2 * pad);
+    dl->AddRectFilled(p, q, IM_COL32(0, 0, 0, (int)(160 * a)), 6 * scale);
+    dl->AddText(font, size, ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, (int)(240 * a)), text);
+}
+
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
@@ -1723,7 +1773,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
+        } else if (!g_perf_mode && !toast_live()) {
             return 0;
         }
     }
@@ -1775,6 +1825,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    toast_draw(t, scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;
