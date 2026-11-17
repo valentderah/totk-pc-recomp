@@ -861,7 +861,8 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     poll_merged(buttons, lx, ly, rx, ry);
     // While quick load drives the game's load menu the pointer leaves it alone and the game gets only its presses
     if (!g_block && !g_menu && !quicksave_busy()) menu_cursor_poll(buttons);
-    if (!g_block && !g_menu && quicksave_poll(buttons, lx, ly, rx, ry)) return;
+    // A quick load under way goes on while the settings menu or a text entry opens: the held picture ends with it
+    if ((quicksave_busy() || (!g_block && !g_menu)) && quicksave_poll(buttons, lx, ly, rx, ry)) return;
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
         menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);

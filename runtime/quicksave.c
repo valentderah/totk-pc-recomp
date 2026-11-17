@@ -91,8 +91,11 @@ int quicksave_on(void) {
     static int on;
     unsigned v = cfg_version();
     if (v == seen) return on;
-    int was = on;
-    seen = v, on = RT_V143 && cfg_bool("TOTK_QUICKSAVE");
+    int was = on, want = cfg_bool("TOTK_QUICKSAVE");
+    static int told;
+    seen = v, on = RT_V143 && want;
+    // The game's addresses below are 1.4.3's: on 1.1.0 and 1.2.1 the setting is refused once, and no call is made
+    if (want && !RT_V143 && !told) told = 1, rt_log("quicksave: game 1.4.3 only; quick save and quick load stay off");
     if (!on) return 0;
     int s = key_setting("TOTK_QUICKSAVE_KEY", "quicksave_key"), l = key_setting("TOTK_QUICKLOAD_KEY", "quickload_key");
     if (l == s && l != KEY_NONE) {
