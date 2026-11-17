@@ -121,12 +121,16 @@ of them.
    (a screen wider than that) the HUD stays within the middle 16:9 or 21:9 instead of the screen's corners. The default
    `--out` then is `build\<ver>\romfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
    (`21:9`) in `totk.ini` ([totk.ini.example](../totk.ini.example)).
+   Setup's Shapes step builds only the currently selected cap for the canonical shapes needed by connected displays
+   and `output_res`, together with the selected prompts. `full` generates no capped folders. After changing the HUD
+   width, use the Screen tab's layout preparation action or rerun setup before restarting the game. Lookup prefers
+   the selected cap at the exact or canonical size before falling back to a full-width layout.
 
    A build from source has no layouts for other shapes than 16:9. At an `output_res` such as 5120x1440 the game then
    draws the largest 16:9 size inside it (2560x1440) and the present adds bars, instead of a wide camera over a
    stretched HUD (`runtime/resolution.c`, `shape_fallback`). For the full shape make `romfs-patches-<w>x<h>` once per
    size: `make_romfs_patches.py --version <ver> --aspect <w>x<h> --out build\<ver>\romfs-patches-<w>x<h>` (the sizes
-   the installer makes are `ASPECT_SIZES` in `installer/steps.py`); `build_game.py` copies every `romfs-patches*`
+   the installer maps to are in `installer/screens.py`); `build_game.py` copies every `romfs-patches*`
    folder next to `totk.exe`.
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
@@ -221,7 +225,13 @@ Before a commit:
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
 files); a change to the settings passes `totk.exe --probe-cfg` and `python tests\settings_doc_check.py`, which fails
-when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md). A change to the mods' ExeFS patches
+when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md).
+HUD pane/animation and generator naming regressions run with Python 3.14+: `tests/hud_layout_test.py`.
+Set `HUD_TEST_ROMFS` to a verified extracted RomFS directory to include a real-archive comparison against the
+pre-port layout generator; all game-derived temporary data stays under `build/`.
+`python tests/romfs_shapes_check.py --cc <clang>` compiles the production folder-selection and preparation helpers
+to check canonical aliases, capped/full fallback, prompt arguments and generation deduplication without game files.
+A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
 table (no game files), and `totk.exe --probe-mods`. A change to the cheat VM or the cheat opcode tables

@@ -1223,8 +1223,8 @@ int romfs_shape_can_prepare(void) {
 // The folders a generator was started for in this process. The menu thread alone calls romfs_shape_prepare, so no
 // lock. The game picks its overlay at start, so a folder is not started twice before the next start, even when its
 // generator has ended: a second click, or the same size chosen again, starts no second generator writing into it.
-static char shape_started[8][160];
-static int shape_started_n;
+static char (*shape_started)[160];
+static int shape_started_n, shape_started_cap;
 
 static int shape_was_started(const char *folder) {
     for (int i = 0; i < shape_started_n; i++)
@@ -1237,9 +1237,15 @@ static int shape_was_started(const char *folder) {
 // thread one CreateProcess.
 static int shape_spawn(const char *const *argv, const char *dir, const char *folder) {
     if (shape_was_started(folder)) return 1;
+    if (shape_started_n == shape_started_cap) {
+        int cap = shape_started_cap ? shape_started_cap * 2 : 8;
+        void *grown = realloc(shape_started, (size_t)cap * sizeof *shape_started);
+        if (!grown) return 0;   // never start a writer whose folder cannot be remembered for deduplication
+        shape_started = grown;
+        shape_started_cap = cap;
+    }
     if (!plat_spawn(argv, dir)) return 0;
-    if (shape_started_n < (int)(sizeof shape_started / sizeof *shape_started))
-        snprintf(shape_started[shape_started_n++], sizeof *shape_started, "%s", folder);
+    snprintf(shape_started[shape_started_n++], sizeof *shape_started, "%s", folder);
     return 1;
 }
 

@@ -681,6 +681,92 @@ class ShapesTest(unittest.TestCase):
                                               str(self.dest / 'totk.ini')])
         self.assertNotIn('--binds', self.calls[0])
 
+    def test_selected_hud_only_for_needed_canonical_shapes(self):
+        screens.displays = lambda: [(5120, 1440), (3840, 1080), (2560, 1600)]
+        (self.dest / 'totk.ini').write_text('output_res = 5120x2160\nhud_width = 21:9\n')
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud21x9',
+                                             'romfs-patches-3840x1080', 'romfs-patches-3840x1080-hud21x9',
+                                             'romfs-patches-1280x800'])
+        caps = [c for c in self.calls if '--hud' in c]
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(caps[0][-4:], ['--aspect', '2560x1080', '--hud', '21:9'])
+        self.assertEqual(caps[1][-4:], ['--aspect', '3840x1080', '--hud', '21:9'])
+        self.assertTrue(step.current(self.ctx, record))
+        (self.dest / record['folders'][3] / 'manifest.tsv').unlink()
+        self.assertFalse(step.current(self.ctx, record))
+
+    def test_hud_key_and_cleanup_follow_selection(self):
+        screens.displays = lambda: [(2560, 1080)]
+        ini = self.dest / 'totk.ini'
+        ini.write_text('hud_width = full\n')
+        step = steps.Shapes()
+        full_key = step.key(self.ctx)
+        for name in ('romfs-patches-3840x1080-hud21x9', 'romfs-patches-pc-2560x1080-hud16x9',
+                     'romfs-patches-player-custom'):
+            (self.dest / name).mkdir()
+        ini.write_text('TOTK_HUD_WIDTH = 16:9\n')
+        self.assertNotEqual(step.key(self.ctx), full_key)
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud16x9'])
+        self.assertFalse((self.dest / 'romfs-patches-3840x1080-hud21x9').exists())
+        self.assertFalse((self.dest / 'romfs-patches-pc-2560x1080-hud16x9').exists())
+        self.assertTrue((self.dest / 'romfs-patches-player-custom').is_dir())
+        self.calls.clear()
+        ini.write_text('hud_width = full\n')
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080'])
+        self.assertTrue(all('--hud' not in c for c in self.calls))
+        self.assertFalse((self.dest / 'romfs-patches-2560x1080-hud16x9').exists())
+
+    def test_capped_pc_prompts_reuse_bindings(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\nbind_attack = key:f\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                             'romfs-patches-3840x1080-hud16x9',
+                                             'romfs-patches-pc-3840x1080-hud16x9'])
+        self.assertEqual(self.calls[-1][-6:], ['--hud', '16:9', '--reuse', str(self.dest / 'romfs-patches-pc'),
+                                               '--binds', str(self.dest / 'totk.ini')])
+        self.assertNotIn('--binds', self.calls[-2])
+
+    def test_hud_caps_ignore_equal_narrow_and_invalid_choices(self):
+        # Common '21:9' modes are wider than exact 21/9: a manually selected cap is meaningful.
+        self.assertEqual(steps.shape_hud('2560x1080', '21:9'), '21:9')
+        self.assertEqual(steps.shape_hud('3440x1440', '21:9'), '21:9')
+        self.assertIsNone(steps.shape_hud('2520x1080', '21:9'))
+        self.assertIsNone(steps.shape_hud('1280x800', '16:9'))
+        self.assertIsNone(steps.shape_hud('3840x1080', 'full'))
+        self.assertEqual(steps.shape_hud('3440x1440', '16:9'), '16:9')
+        (self.dest / 'totk.ini').write_text('hud_width = invalid\n')
+        self.assertEqual(steps.hud_width(self.dest), 'full')
+
+    def test_failed_capped_prompts_are_retried(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc/manifest.tsv').write_text('#\n')
+        successful = steps.run_tool
+
+        def fail_cap(ctx, step, script, args, **kwargs):
+            if '--prompts' in args and '--hud' in args:
+                return 7, self.dest / 'failed.log'
+            return successful(ctx, step, script, args, **kwargs)
+
+        steps.run_tool = fail_cap
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertTrue(record['failed'])
+        self.assertFalse(step.current(self.ctx, record))
+        steps.run_tool = successful
+        record = step.run(self.ctx)
+        self.assertFalse(record['failed'])
+        self.assertTrue(step.current(self.ctx, record))
+        self.assertIn('romfs-patches-pc-3840x1080-hud16x9', record['folders'])
+
     def test_pc_prompts_writes_only_the_16_9_folder(self):
         (self.dest / 'totk.ini').write_text('[input]\nbind_attack = key:f\n')
         self.assertEqual(steps.PcPrompts().run(self.ctx), {})

@@ -1243,7 +1243,8 @@ class Shapes(Step):
                            hud_width(ctx.dest), *sizes)
 
     def current(self, ctx, record):
-        return all((ctx.dest / name / 'manifest.tsv').is_file() for name in record.get('folders', []))
+        return not record.get('failed') and all((ctx.dest / name / 'manifest.tsv').is_file()
+                                               for name in record.get('folders', []))
 
     def run(self, ctx):
         layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
@@ -1286,7 +1287,7 @@ class Shapes(Step):
         rep.progress('shapes', 'layouts', len(sizes), len(sizes), 'shapes', force=True)
         if failed:
             rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
-        return {'folders': folders, 'sizes': sizes, 'style': style, 'hud': hud}
+        return {'folders': folders, 'sizes': sizes, 'style': style, 'hud': hud, 'failed': bool(failed)}
 
 
 # ---- 7. NVIDIA DLSS

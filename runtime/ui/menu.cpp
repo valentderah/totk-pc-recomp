@@ -549,17 +549,17 @@ static void row_output_res(void) {
     started = romfs_shape_prepare(w, h, want) ? 1 : -1;
 }
 
-// The HUD's width on a screen wider than 16:9 (hud_width, romfs.c hud_suffix): the choices that narrow the HUD at the
-// game resolution in the settings. 21:9 is offered on the 32:9 sizes (wider than 2.5), 16:9 on any size more than 1%
-// wider than 16:9. The row is hidden on a screen that is not wider
-// than that, where the setting does nothing (a value left in totk.ini stays as it is).
+// Offer only caps narrower than the canonical layout, using the same tolerance as romfs.c hud_suffix and Shapes.
+// This also keeps a selected 21:9 cap visible after changing to a slightly wider-than-21:9 game resolution.
 static void row_hud_width(void) {
-    int w = 0, h = 0;
-    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%dx%d", &w, &h) != 2 || h <= 0) return;
-    double aspect = (double)w / h;
-    if (aspect <= 16.0 / 9 * 1.01) return;
+    unsigned w = 0, h = 0, shape[2];
+    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u", &w, &h) != 2 || !h) return;
+    shape[0] = w, shape[1] = h;
+    cfg_shape_size(w, h, shape);
+    double aspect = (double)shape[0] / shape[1];
+    if (16.0 / 9 >= aspect * 0.99) return;
     const char *vals[3] = {"full", "21:9", "16:9"}, *names[3] = {menu_text(UI_MENU_HUD_WIDTH_FULL), "21:9", "16:9"};
-    int n = aspect > 2.5 ? 3 : 2;
+    int n = 21.0 / 9 < aspect * 0.99 ? 3 : 2;
     if (n == 2) vals[1] = vals[2], names[1] = names[2];
     opt_choice_list("TOTK_HUD_WIDTH", UI_MENU_HUD_WIDTH, vals, names, n, UI_MENU_HUD_WIDTH_DESC);
 }
