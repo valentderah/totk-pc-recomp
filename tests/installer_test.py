@@ -327,7 +327,7 @@ class LiftRunTest(unittest.TestCase):
         self.dest, temp = base / 'install', base / 'temp'
         self.dest.mkdir()
         temp.mkdir()
-        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools',
+        layout = SimpleNamespace(dev=True, recomp=ROOT / 'recomp', tools=ROOT / 'tools',
                                  patches=lambda version: base / 'patches-v143.txt')
         self.ctx = SimpleNamespace(dest=self.dest, temp=temp, layout=layout, keys={'lift': 'k'},
                                    state={'version': '1.4.3'}, reporter=Reporter(out=io.StringIO()))
@@ -478,7 +478,7 @@ class CompileLockedTest(unittest.TestCase):
         dest, temp = base / 'install', base / 'temp'
         dest.mkdir()
         temp.mkdir()
-        layout = SimpleNamespace(tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
+        layout = SimpleNamespace(dev=True, tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
                                  ninja=base / 'ninja', dlls=[], runtime_lib_for=lambda cpu: None,
                                  pgo=lambda version: None, expected=lambda version: base / 'expected.json')
         self.ctx = SimpleNamespace(dest=dest, temp=temp, layout=layout, state={'version': '1.4.3'},
@@ -714,6 +714,15 @@ class KitTest(unittest.TestCase):
             ctx.layout.python.with_name('pythonw.exe')).is_file() else 'python.exe')), '-c', steps.REBUILD_BOOT,
             'build-kit', '--root', 'build-kit', '--rebuild', '.'])
         self.assertFalse(any(str(self.dest) in a or str(self.setup) in a for a in cmd))
+
+    def test_the_kits_builds_are_portable(self):
+        ctx, _ = self.install()
+        ctx.temp, ctx.state = self.dest / 'build-cache' / 'work', {'version': '1.4.3'}
+        self.assertIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
+        ctx.layout = Layout(root=ROOT, dev=True, release='x', python=Path('python'), tools=Path('tools'),
+                            recomp=Path('recomp'), llvm=Path('llvm'), deps=None, runtime=Path('rt'),
+                            runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        self.assertNotIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
 
     def test_dev_mode_has_no_kit(self):
         ctx = self.ctx(SimpleNamespace(dev=True, release='x', root=ROOT))

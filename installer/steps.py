@@ -1191,7 +1191,9 @@ def build_args(ctx, gen):
             '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
-            '--profile', dest / 'profile']
+            '--profile', dest / 'profile',
+            # the build kit and the temp folder move with the install folder: Ninja's paths relative to the kit
+            *(['--portable'] if layouts.uses_kit(layout) else [])]
 
 
 class Compile(Step):

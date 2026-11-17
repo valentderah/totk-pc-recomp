@@ -81,7 +81,7 @@ ahead of time, so these patches are built into `totk.exe`:
 3. After the rebuild the mod switches on and off from the Mods tab like any other, without another rebuild.
 
 The rebuild runs from `build-kit` in the game folder, which the setup put there: the setup folder can be deleted
-and the game folder moved. The first rebuild after a move compiles the whole game once (several minutes). A game
+and the game folder moved. After a move, a game with a code plugin mod rebuilds once at its next start. A game
 installed by an older setup (no `build-kit` in its folder) still rebuilds from that setup folder until a newer
 setup runs once on it.
 `mods_rebuild = off` under `[mods]` in `totk.ini` turns the automatic rebuild off.

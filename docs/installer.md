@@ -142,11 +142,13 @@ cheats or ExeFS patch files the build lacks, `totk.exe` runs it at start and exi
 failed or cancelled rebuild offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the
 same files from starting it again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start
 at all leaves no `rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. A moved
-install folder keeps working, but its first rebuild compiles everything once: Ninja's records hold the old absolute
-paths of the generated C and of the compiler's own headers. On Linux the command starts the AppImage file itself
-(`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone once the setup exits; a moved or
-deleted AppImage means running a setup again. Installs set up by an AppImage before this change hold a command into that
-mount: running the new setup once on the install folder writes the new one.
+install folder keeps its incremental rebuild: the kit's builds run `tools/build_game.py --portable`, whose Ninja file
+and deps log name every path relative to the kit (3.5 s to rebuild after a move instead of a full compile). A build with
+a mod plugin names the plugin's file by its absolute path (`recomp/layout.py`), so after a move the game finds it gone
+and runs the rebuild once. On Linux the command starts the AppImage file itself (`$APPIMAGE --rebuild <install
+folder>`), because the AppImage's mounted folder is gone once the setup exits; a moved or deleted AppImage means running
+a setup again. Installs set up by an AppImage before this change hold a command into that mount: running the new setup
+once on the install folder writes the new one.
 
 ## Command line
 
