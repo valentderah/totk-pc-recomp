@@ -215,7 +215,8 @@ static void save_wait(void) {
         // The game can take the request and still hold the autosave back (a fight in the Depths did): quick save then
         // takes its request back, so the game does not save some time later on its own, and says so
         if (plat_now_ms() - save_started > SAVE_MS) {
-            if (req_flags) ST8(req_flags, LD8(req_flags) & ~1u);
+            // Atomic: the game's job threads set and read other bits of this byte at the same time
+            if (req_flags) __atomic_fetch_and((uint8_t *)(uintptr_t)req_flags, (uint8_t)~1u, __ATOMIC_SEQ_CST);
             saving = 0;
             say(UI_QS_NOT_NOW, "quicksave: not now",
                 req_flags ? "the game held the autosave back; the request is withdrawn" : "the game held its autosave back");
