@@ -795,12 +795,18 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = (dw - out[2]) / 2, out[1] = (dh - out[3]) / 2;
 }
 
+// Quick load (quicksave.c) holds the window on its last picture while it drives the game's load menu underneath:
+// no new frame is presented until gfx_present_hold(0), as while the window is minimized.
+static volatile int32_t g_hold;
+void gfx_present_hold(int on) { plat_xchg32(&g_hold, on != 0); }
+
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     flip_locked();
+    if (plat_cas32(&g_hold, 0, 0)) goto out;
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }
