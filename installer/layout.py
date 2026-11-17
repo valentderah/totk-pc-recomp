@@ -32,9 +32,9 @@ Dev mode, root = a repository checkout (no python/python.exe): build/py314-embed
 Python the release ships, with the same packages), else this Python; toolchain/llvm-mingw-*/ and toolchain/deps-mingw;
 runtime/ as the sources with build/install-rtlib/libtotkrt.a and libtotkrt-v2.a (tools/build_game.py --make-runtime-lib
 --out build/install-rtlib, once per --cpu); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/totk_xlate.exe; the shader list from
-refs/MacNativeGames; build/pgo/pgo-<v>.profdata when there is one; build/install-temp/<install name>-<hash>. Dev mode and
-the Linux release install no build kit: the repository, or the AppImage file, is what the rebuild runs. The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
-dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
+refs/MacNativeGames; build/pgo/pgo-<v>.profdata when there is one; build/install-temp/<install name>-<hash>. The
+version is VERSION with -dev and the commit: 0.1.0-dev+973c626. Dev mode and the Linux release install no build kit:
+the repository, or the AppImage file, is what the rebuild runs. On Linux, dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
 """
 import hashlib
 import os

@@ -44,14 +44,15 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, replaces `build-kit/` with its own files,
-rebuilds `totk.exe` and re-prepares the shaders. The setup is an installer and updater: nothing after the install
-needs its folder. An install made by a setup before the build kit kept its temp folder in that setup's folder
+rebuilds `totk.exe` and re-prepares the shaders. The setup is an installer and updater: nothing after the install needs
+its folder. An install made by a setup before the build kit kept its temp folder in that setup's folder
 (`<setup>/temp/<install name>-<hash>`, the setup `build-cache/rebuild.txt` named); the first newer setup moves it into
 `build-cache/work` when both are on one disk (on another it starts empty) and writes the new `rebuild.txt`. Until then
 the old `rebuild.txt` keeps using the old setup folder. A newer release that changes nothing game-derived skips the
-rebuild. The window starts with the last install folder and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
-`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
-stay empty. A reinstall or a switch to another game version starts filled in.
+rebuild. The window starts with the last install folder and the base, update, keys and firmware paths it ran with (paths
+only, never the keys file's contents), kept in `%LOCALAPPDATA%\TotK Recomp\setup.json`
+(`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist stay empty. A reinstall or a switch
+to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -74,11 +75,12 @@ loads the saves 1.4.3 wrote.
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
 4. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
 5. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into the temp folder,
-   `build-cache/work` in the install folder (`.setup-temp` on Linux, `--temp DIR` elsewhere). The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
-   (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
-   tools refuse costs those cheats or patches, not the install. The patch files' writes into main's data go to
-   `build-cache/exefs.data`, which the game stores into main at start; after the lift they are checked against the
-   bytes the lifted code read as constants (`<gen>/main/folded.txt`, its jump tables).
+   `build-cache/work` in the install folder (`.setup-temp` on Linux, `--temp DIR` elsewhere). The code cheats of the
+   mods' cheat files and the mods' ExeFS patch files become patch sets first (`tools/cheats.py`,
+   `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the tools refuse costs
+   those cheats or patches, not the install. The patch files' writes into main's data go to `build-cache/exefs.data`,
+   which the game stores into main at start; after the lift they are checked against the bytes the lifted code read as
+   constants (`<gen>/main/folded.txt`, its jump tables).
 6. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
@@ -122,29 +124,29 @@ A cancelled or failed setup resumes from the last finished step (`totk-install.j
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder, inside the install folder. The next lift lifts again only the chunks whose inputs
-changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices) and rewrites only
-those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds of lift
-(discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the whole lift)
-and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A cheat set added
-or removed before others in the patch file moves their set indices, so the chunks of their sites are lifted too. A
-change to `recomp/*.py` lifts everything.
+The generated C and the objects stay in the temp folder, inside the install folder. The next lift lifts again only the
+chunks whose inputs changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices)
+and rewrites only those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds
+of lift (discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the
+whole lift) and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A
+cheat set added or removed before others in the patch file moves their set indices, so the chunks of their sites are
+lifted too. A change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
 whatever the working folder), one argument per line. On Windows it names the build kit relative to the install folder
 (`build-kit\python\pythonw.exe`, `build-kit`, `--rebuild .`): `totk.exe` takes the program from its own folder and
-starts the command there, so no path of the setup or of the install folder is stored. When an enabled mod has code cheats or ExeFS patch files the build
-lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
-window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
-offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start at all leaves no
-`rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. A moved install folder
-keeps working, but its first rebuild compiles everything once: Ninja's records hold the old absolute paths of the
-generated C and of the compiler's own headers. On Linux the command
-starts the AppImage file itself (`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone
-once the setup exits; a moved or deleted AppImage means running a setup again. Installs set up by an AppImage before
-this change hold a command into that mount: running the new setup once on the install folder writes the new one.
+starts the command there, so no path of the setup or of the install folder is stored. When an enabled mod has code
+cheats or ExeFS patch files the build lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c`
+`rebuild_if_needed`); the window runs the setup on the folder at once and starts the game again when it succeeds. A
+failed or cancelled rebuild offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the
+same files from starting it again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start
+at all leaves no `rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. A moved
+install folder keeps working, but its first rebuild compiles everything once: Ninja's records hold the old absolute
+paths of the generated C and of the compiler's own headers. On Linux the command starts the AppImage file itself
+(`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone once the setup exits; a moved or
+deleted AppImage means running a setup again. Installs set up by an AppImage before this change hold a command into that
+mount: running the new setup once on the install folder writes the new one.
 
 ## Command line
 

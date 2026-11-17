@@ -14,8 +14,8 @@ screen shapes and the prompts style this player needs, installer/screens.py), to
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json, and on Windows build-kit/ (Kit): the release
 folder the steps after the kit step run from, and the game's rebuild with them.
 Temp folder (build-cache/work in the install folder on Windows, .setup-temp there on Linux, <temp>/<dest name>-<hash>
-with --temp or in a repository; installer/layout.py temp_for): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
-or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
+with --temp or in a repository; installer/layout.py temp_for): check/ (ExeFS of both inputs, the host check),
+unpacked/ (the NSP of an NSZ or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
 logs/: the next run lifts into the same gen/, where recomp/gen.py lifts again only the chunks whose inputs changed (its
 lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, and Ninja in build/ recompiles only
 those. A change of the mods' code cheats then costs a few seconds of lift and the chunks holding its sites, not a full
@@ -712,11 +712,15 @@ class Kit(Step):
             raise InstallError('kit.copy_failed', path=str(e.filename or new), detail=str(e)) from None
         # An open rebuild window, or a layout generator the game's settings menu started, holds files of the old kit:
         # then nothing is replaced, and the message asks to close the game and run the setup again
+        moved = False
         try:
             if kit.exists():
                 os.replace(kit, old)
+                moved = True
             os.replace(new, kit)
         except OSError:
+            if moved and not kit.exists():
+                os.replace(old, kit)   # the game keeps the kit it had
             raise InstallError('kit.in_use', path=str(kit)) from None
         try:
             remove(old)
