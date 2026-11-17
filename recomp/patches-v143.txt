@@ -1185,6 +1185,21 @@ set report   TOTK_REPORT_GUARD   1
 site report  main a22d8 2a010571 2a010571 37f80341            # orr w17, w11, w1, lsl #1; tbnz w1, #31, 0xa2340
 site report  main a2310 531f7821 530f7c24 531f7821 35000184   # lsr w4, w1, #15; lsl w1, w1, #1; cbnz w4, 0xa2340
 
+# Depth query results one frame older (TOTK_SYNC_AHEAD). A compute pass at the start of each frame samples the scene
+# depth for the world queries and writes their results, with the frame number of the request, into a 23232-byte
+# CPU-cached buffer that main+0x6e1220 invalidates and reads two frames later. It takes the results as this frame's
+# (bit 2 of obj+0x10) only when the number at buffer +0x58e4 is exactly the frame counter (obj+0x14) - 2. With
+# sync_ahead the game's frame wait covers the frame before, so on frames where the GPU runs behind the number read is
+# the counter - 3 (the frame after it has not come back yet) and the results were refused: in shrines the reflections
+# of the lamps on the floor went out on those frames, every other frame where the GPU was slow, which looked like
+# flicker at some camera angles. The set also accepts the counter - 3: d = counter - 2 - number, unsigned d <= 1.
+# Waiting for that frame when the buffer is invalidated (vk_memory.c vk_mem_shadow_read) also ends the flicker, but
+# gives back the frame rate sync_ahead brings (63 against 86 fps on a field macro at 4K).
+# w11 is loaded again on both paths at 0x6e1340 before any read; x8, the number's address, stays for 0x6e1420.
+set qstamp   TOTK_SYNC_AHEAD     0
+site qstamp  main 6e1320 6b0b015f 4b0b014b 7100057f   # cmp w10, w11 -> sub w11, w10, w11; cmp w11, #1
+site qstamp  main 6e1324 540000c1 540000c8            # b.ne 0x6e133c -> b.hi 0x6e133c
+
 # Function-entry hooks (FN_ENTER, runtime/cpu.h): only these functions check g_fnprof on entry, the others carry no
 # hook. main+0x585bd0 sets the render size (runtime/resolution.c SET_RENDER_SIZE): res_fn_hit takes the renderer from
 # the game's own call at start, so a DLSS mode can change while the game runs.
