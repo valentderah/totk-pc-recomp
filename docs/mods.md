@@ -114,6 +114,8 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
    mod's row says why, and the next start runs the rebuild.
 3. The plugin keeps what its start-up made (its memory, its tables), so its code works as on the Switch. The start
    costs about 50 ms per plugin; the game runs no differently without a plugin.
+4. Removing a plugin mod from the mods folder starts the rebuild at the next start, which builds the game without
+   it (half a minute on 12 cores with the lift cache). A plugin mod switched off on the Mods tab only stays off.
 
 The Mods tab order decides between a plugin and another mod's patch on the same instruction, as for code patches. A
 plugin site over one of the port's own patches turns that built-in patch off while the mod is on.
