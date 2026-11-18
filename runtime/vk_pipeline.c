@@ -3278,8 +3278,11 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
 // moves the rebuilt depth but not the volume. Such a draw, when the game sets no polygon offset for it, gets a depth
 // bias toward the viewer of VOLUME_BIAS_UNITS plus VOLUME_BIAS_SLOPE times its depth slope (one pixel of it), so a
 // surface the face lies on counts as inside, as the test's equal case means; a surface farther from the face than a
-// pixel of its slope is decided as before.
+// pixel of its slope is decided as before. TOTK_VOLUME_MASK_BIAS=0 (test) leaves such draws as the game sets them.
 int vk_pipeline_volume_bias(const VkPipeState *s) {
+    static int knob = -1;
+    if (knob < 0) knob = rt_knob("VOLUME_MASK_BIAS", "1");
+    if (!RT_KNOB_ON(knob)) return 0;
     const poly_st *pl = &s->poly;
     const ds_st *d = &s->ds;
     const blend_st *b = &s->blend[0];
