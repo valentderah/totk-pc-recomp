@@ -174,6 +174,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `dlaa_cam_jitter` (default `1`) | Game 1.4.3: `1` puts the jitter fed to DLSS into the game's camera (the projection's centre terms and the view-projection, where the game copies them into its camera blocks); `0` moves the viewport of the scene's draws instead, as on the other game versions. Needs `ubo_snapshot`. | With `0`, water seen at a low angle flickers with DLAA: the game's full-screen passes rebuild positions with a camera the scene was not drawn with; a test setting. | Caution |
 | `dlaa_jitter` (default `1`) | `0` turns off the camera jitter fed to DLSS. | DLSS gets no jitter between frames; a test setting. | Caution |
 | `dlaa_maskdebug` (default `0`) | `1` shows the reactive mask in place of the picture. | The frame shows a debug image while it is set. | Caution |
 | `dlaa_mv` (default `1`) | `0` sends zero motion vectors to DLSS. | DLSS sees no motion, so moving content can smear; a test setting. | Caution |

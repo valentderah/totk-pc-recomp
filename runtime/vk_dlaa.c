@@ -996,7 +996,7 @@ void vk_dlaa_game_present(void) { __atomic_add_fetch(&CJ.presents, 1, __ATOMIC_R
 
 // The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to.
 void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
-    if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode()) return;
+    if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode() || !dl_active()) return;
     float *m = (float *)(uintptr_t)dst;
     uint64_t blk = dst - (lr == CAMJ_P_LR ? 0x70 : 0x30);
     plat_mutex_lock(&CJ.lk);
