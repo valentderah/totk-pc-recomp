@@ -244,6 +244,12 @@ static char *lang(void) {
 }
 
 static void set_env(const char *name, const char *value) { plat_setenv(name, value); }   // NULL removes it
+// A live setting read through a cfg_version cache: the environment wins, and the cfg_set (empty = the default) moves
+// the version so the cache reads it again.
+static void set_live(const char *name, const char *value) {
+    set_env(name, value);
+    cfg_set(name, value ? value : "");
+}
 
 static void probe_oe(void) {
     char *keep_lang = cfg_get("TOTK_LANG") ? strdup(cfg_get("TOTK_LANG")) : NULL;
@@ -523,6 +529,26 @@ static void probe_time(void) {
 static int near3(const float *v, double x, double y, double z, double tol) {
     return fabs(v[0] - x) <= tol && fabs(v[1] - y) <= tol && fabs(v[2] - z) <= tol;
 }
+// A gyro sample: rate plus noise. Uniform noise of half-width amp from a fixed LCG, so every run reads the same.
+static void noisy(const double rate[3], double amp, uint32_t *seed, double out[3]) {
+    for (int i = 0; i < 3; i++) {
+        *seed = *seed * 1664525u + 1013904223u;
+        out[i] = rate[i] + amp * ((double)(*seed >> 8) / (1 << 24) * 2 - 1);
+    }
+}
+
+// Feed secs of samples at the sensor thread's 4 ms; returns the yaw (angle z, revolutions) the last state reads.
+static double feed_for(MotionFusion *m, const double acc[3], const double rate[3], double amp, uint32_t *seed,
+                       double secs, uint64_t *t) {
+    MotionState s;
+    double g[3];
+    for (int i = 0; i < (int)(secs * 250 + 0.5); i++) {
+        noisy(rate, amp, seed, g);
+        motion_feed(m, acc, g, *t += 4000000);
+    }
+    return motion_read(m, &s, 1, *t + 1000000) == 1 ? s.angle[2] : NAN;
+}
+
 static int at_rest(const MotionState *s) {
     return !s->attributes && !s->sampling && near3(s->acc, 0, 0, -1, 0) && near3(s->gyro, 0, 0, 0, 0) &&
            near3(s->dir, 1, 0, 0, 0) && near3(s->dir + 3, 0, 1, 0, 0) && near3(s->dir + 6, 0, 0, 1, 0);
@@ -670,6 +696,72 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     CHECK(before == 0 && upright_y && ms[0].dir[8] > 0.99,
           "fusion start and levelling: %d states before a reading, %d after (y up %d), z up %.3f after 1 s still",
           before, first, upright_y, (double)ms[0].dir[8]);
+
+    // Drift at rest (gyro_auto_bias). Table noise is +-0.006 rad/s, a hand's +-0.03; drift is the yaw rate a
+    // controller lying still reads, in rad/s, over the 10 s after the tracker had 10 s to learn.
+    char *keep_auto = cfg_get("TOTK_GYRO_AUTO_BIAS") ? strdup(cfg_get("TOTK_GYRO_AUTO_BIAS")) : NULL;
+    char *keep_cal = cfg_get("TOTK_GYRO_CALIBRATION") ? strdup(cfg_get("TOTK_GYRO_CALIBRATION")) : NULL;
+    set_live("TOTK_GYRO_CALIBRATION", "1");
+    const double drift_b[3] = {0.02, -0.03, 0.05}, rev = 2 * M_PI;
+    uint32_t seed = 1;
+    double drift_rate[2];
+    for (int on = 0; on < 2; on++) {
+        set_live("TOTK_GYRO_AUTO_BIAS", on ? "1" : "0");
+        MotionFusion *d = motion_new();
+        uint64_t td = t;
+        feed_for(d, down, drift_b, 0.006, &seed, 10, &td);
+        double y0 = feed_for(d, down, drift_b, 0.006, &seed, 0.004, &td);
+        drift_rate[on] = (feed_for(d, down, drift_b, 0.006, &seed, 10, &td) - y0) * rev / 10;
+    }
+    CHECK(fabs(drift_rate[0] - drift_b[2]) < 0.002 && fabs(drift_rate[1]) < 0.001,
+          "drift at rest: yaw %.5f rad/s with gyro_auto_bias off, %.5f on (bias %.3f)", drift_rate[0], drift_rate[1],
+          drift_b[2]);
+    // The #1267 case: calibrated, then the bias moved by 0.01 rad/s (the controller warmed up). The tracker takes the
+    // remainder on top of the calibrated bias, and a new calibration starts it over.
+    MotionFusion *c = motion_new();
+    uint64_t tc = t;
+    motion_calibrate_start(c, "probe pad", tc);
+    feed_for(c, down, drift_b, 0.006, &seed, 1.6, &tc);
+    int cal = motion_calib_poll(c, tc);
+    const double warm[3] = {drift_b[0], drift_b[1], drift_b[2] - 0.01};
+    double c0 = feed_for(c, down, warm, 0.006, &seed, 0.004, &tc);
+    double c_early = (feed_for(c, down, warm, 0.006, &seed, 0.5, &tc) - c0) * rev / 0.5;
+    feed_for(c, down, warm, 0.006, &seed, 10, &tc);
+    c0 = feed_for(c, down, warm, 0.006, &seed, 0.004, &tc);
+    double c_late = (feed_for(c, down, warm, 0.006, &seed, 10, &tc) - c0) * rev / 10;
+    CHECK(cal == MOTION_CALIB_DONE && fabs(c_early + 0.01) < 0.002 && fabs(c_late) < 0.001,
+          "drift after calibration: state %d, yaw %.5f rad/s right after, %.5f once learned", cal, c_early, c_late);
+    // In the hand: a slow aim, 0.05 rad/s (3 deg/s) of yaw with a hand's noise, for 10 s. Nothing is learned from it,
+    // so the full turn reaches the game.
+    MotionFusion *h = motion_new();
+    uint64_t th = t;
+    const double pan[3] = {0, 0, 0.05};
+    double h0 = feed_for(h, down, pan, 0.03, &seed, 0.004, &th);
+    double turned = (feed_for(h, down, pan, 0.03, &seed, 10, &th) - h0) * rev;
+    CHECK(fabs(turned - 0.5) < 0.01, "slow aim in the hand: %.4f rad of the 0.5 turned", turned);
+    // Levelling and drift together: the frame starts standing on the bottom edge, then the controller lies flat with
+    // a bias on every axis. The bias tilts the fused down by bias / gain (0.05 / 4 rad, 0.7 degrees) until it is
+    // learned; then the down is level, and yaw holds.
+    MotionFusion *l = motion_new();
+    uint64_t tl = t;
+    feed_for(l, standing, drift_b, 0.006, &seed, 0.004, &tl);
+    feed_for(l, down, drift_b, 0.006, &seed, 1, &tl);
+    motion_read(l, ms, 1, tl + 1000000);
+    double up_1s = ms[0].dir[8];
+    feed_for(l, down, drift_b, 0.006, &seed, 10, &tl);
+    double l0 = feed_for(l, down, drift_b, 0.006, &seed, 0.004, &tl);
+    double l_rate = (feed_for(l, down, drift_b, 0.006, &seed, 10, &tl) - l0) * rev / 10;
+    motion_read(l, ms, 1, tl + 1000000);
+    CHECK(up_1s > 0.99 && ms[0].dir[8] > 0.99999 && fabs(l_rate) < 0.001,
+          "levelling with drift: z up %.5f after 1 s, %.6f after 21 s, yaw %.5f rad/s", up_1s, (double)ms[0].dir[8],
+          l_rate);
+    printf("hid drift at rest: yaw %.5f rad/s off, %.5f on; after calibration %.5f, then %.5f; slow aim %.4f of 0.5 "
+           "rad; levelled z %.5f, yaw %.5f rad/s\n",
+           drift_rate[0], drift_rate[1], c_early, c_late, turned, up_1s, l_rate);
+    set_live("TOTK_GYRO_AUTO_BIAS", keep_auto);
+    set_live("TOTK_GYRO_CALIBRATION", keep_cal);
+    free(keep_auto);
+    free(keep_cal);
     printf("hid feedback: vibration handles %#x %#x, six-axis %#x, at rest when stopped; fusion quarter turn %.4f rev\n",
            vh[0], vh[1], sh[0], quarter);
 }

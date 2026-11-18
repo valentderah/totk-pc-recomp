@@ -149,6 +149,9 @@ int input_motion_calib_state(char *pad, size_t cap);
 int input_gyro_calibration_enabled(void);
 // The fusion's own read of the same switch (motion_fusion.c); input.c reaches it for the row's state.
 int motion_calibration_enabled(void);
+// The drift tracker's switch (gyro_auto_bias, live): the drift left after calibration, learned while the controller
+// lies still, is subtracted too.
+int motion_auto_bias_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);

@@ -380,6 +380,12 @@
 # gyro and an attempt in progress is dropped; the four keys below stay in the file, so turning it back on restores the
 # last calibration.
 # gyro_calibration = 1
+# Gyro drift at rest (1 = on): whenever the controller lies still (on a table, not held) for half a second, the game
+# learns the drift left in its gyro, after the calibration above if there is one, and subtracts it, as the Switch's
+# hid service does for its own controllers. It catches a bias that changes as the controller warms up and works
+# without a calibration. The log says "gyro drift at rest learned" once it has settled. A controller held in the hand
+# is not learned from, and there is no dead zone, so slow aiming is untouched. Off, nothing is learned or subtracted.
+# gyro_auto_bias = 1
 # The measured bias in rad/s and the controller it was measured from, written by the game when calibration finishes;
 # they are not meant to be typed. The bias applies only while gyro_bias_pad names the connected controller (its name,
 # plus a hash of its serial number when it reports one), so another controller starts with no bias. One controller's
