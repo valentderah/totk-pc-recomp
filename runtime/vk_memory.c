@@ -1303,6 +1303,65 @@ void vk_mem_shadow_fence(void) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// TOTK_SYNC_AHEAD, nvnMemoryPoolInvalidateMappedRange: the game is about to read [addr, addr+size) of what the GPU
+// writes into pool storage. While the guard is not done, a write into the range that is still pending can belong to a
+// value the game was told is done, and its bytes come back only with that value's fence (vk_gpu_written). A range the
+// game reads again and again (its depth queries and visibility maps: one buffer written every frame or every few)
+// then still holds the result of the write before, and the game gets that one, a sample late: what the switch trades
+// for the frame in flight. A range it has not read lately holds no such result. TotK reads single pixels back
+// (main+0x407ed8 on 1.4.3) through a 64-byte buffer per request, taken in turn from rings of 64 to 256 and read once,
+// right after the frame wait: read early, the pixel is 0 0 0 0 in a buffer never used, and the answer to another
+// request, about 27 s old, once the ring came round. In the Depths the zeros put Link in gloom where there is none. So
+// a range with a pending write that is not known waits for the guard here. Known: the game invalidated this very
+// range within the last SREAD_AGE fence values (about 30 frames), when it held a result or was waited for.
+#define SREAD_N 64
+#define SREAD_AGE 64
+typedef struct { uint64_t addr, size, at; } SRead;
+static SRead sread[SREAD_N];                  // shadow_lock: the ranges the game invalidated last, with the value issued then
+static uint64_t s_read_waits, s_read_ticks;   // shadow_lock: since the last log
+static uint64_t r_read_waits, r_read_ticks, r_read_max;   // shadow_lock: over the run (vk_mem_shadow_read_log)
+
+void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
+    if (!shadow_on || !size || !nvn_sync_ahead_guard()) return;
+    plat_mutex_lock(&shadow_lock);
+    uint64_t now = vk_sync_issued();
+    SRead *e = &sread[0];   // the range's entry, else the oldest
+    for (int i = 0; i < SREAD_N; i++) {
+        if (sread[i].addr == addr && sread[i].size == size) { e = &sread[i]; break; }
+        if (sread[i].at < e->at) e = &sread[i];
+    }
+    int known = e->addr == addr && e->size == size && e->at + SREAD_AGE >= now, pending = 0;
+    for (int i = 0; i < nspend && !pending; i++) pending = spend[i].lo < addr + size && spend[i].hi > addr;
+    uint64_t g = nvn_sync_ahead_guard(), wait = pending && !known && g > vk_sync_fence_done() ? g : 0;
+    // A pending write of a value the game was not told is done, in a range not known: the game reads ahead of its own
+    // wait and the range stays unknown.
+    if (known || !pending || wait) *e = (SRead){addr, size, now};
+    plat_mutex_unlock(&shadow_lock);
+    if (!wait) return;
+    uint64_t t0 = qpc();
+    {
+        NVN_BLOCKING();
+        vk_sync_fence_wait(wait, UINT64_MAX);
+    }
+    uint64_t dt = qpc() - t0;
+    plat_mutex_lock(&shadow_lock);
+    s_read_waits++, s_read_ticks += dt;
+    r_read_waits++, r_read_ticks += dt;
+    if (dt > r_read_max) r_read_max = dt;
+    plat_mutex_unlock(&shadow_lock);
+}
+
+// The run total of the waits above, once at exit, while frame-ahead is in effect: without TOTK_TRACE=perf the shadow
+// log lines come only at frames 600 and 1800.
+void vk_mem_shadow_read_log(void) {
+    static int32_t done;
+    if (!shadow_on || !nvn_sync_ahead_on() || plat_xchg32(&done, 1)) return;
+    plat_mutex_lock(&shadow_lock);
+    rt_log("mem: the game waited for a GPU write it reads %llu times, %.1f ms in all, longest %.2f ms",
+           (unsigned long long)r_read_waits, qpc_ms(r_read_ticks), qpc_ms(r_read_max));
+    plat_mutex_unlock(&shadow_lock);
+}
+
 int vk_mem_shadow_on(void) { return shadow_on; }
 
 void vk_mem_shadow_sync(uint64_t fence) {
@@ -1408,10 +1467,11 @@ static void shadow_log(uint64_t frame) {
            qpc_ms(s_ticks), nspend);
     if (defer_on || s_waits)   // only with TOTK_SYNC_AHEAD: the shadow log of everyone else stays as it was
         rt_log("mem: shadow deferred (%s): %llu pools, %.1f MiB in %llu copies; replay waited for a reader %llu times, "
-               "%.2f ms", defer_on ? "on" : "off", (unsigned long long)s_defer_pools, s_defer_bytes / 1048576.0,
-               (unsigned long long)s_defer_copies, (unsigned long long)s_waits, qpc_ms(s_wait_ticks));
+               "%.2f ms; the game waited for a GPU write it reads %llu times, %.2f ms", defer_on ? "on" : "off",
+               (unsigned long long)s_defer_pools, s_defer_bytes / 1048576.0, (unsigned long long)s_defer_copies,
+               (unsigned long long)s_waits, qpc_ms(s_wait_ticks), (unsigned long long)s_read_waits, qpc_ms(s_read_ticks));
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
-    s_defer_pools = s_defer_bytes = s_defer_copies = s_wait_ticks = s_waits = 0;
+    s_defer_pools = s_defer_bytes = s_defer_copies = s_wait_ticks = s_waits = s_read_waits = s_read_ticks = 0;
     plat_mutex_unlock(&shadow_lock);
 }
 

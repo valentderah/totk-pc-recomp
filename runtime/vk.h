@@ -304,6 +304,7 @@ void vk_mem_shadow_sync(uint64_t fence);   // fence: the value of the part about
 // vk_mem_mirror_prologue's copies, which read the shadow.
 int vk_mem_shadow_deferred(void);
 void vk_mem_shadow_prologue(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_shadow_read_log(void);   // at exit, with TOTK_SYNC_AHEAD: the run total of vk_mem_shadow_read's waits
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check

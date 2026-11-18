@@ -39,6 +39,10 @@ static int cfg_bool(const char *name) { assert(!strcmp(name, "TOTK_SYNC_AHEAD"))
 static int vk_mem_shadow_on(void) { return shadow; }
 static uint64_t nvn_fence_last(void) { return last; }
 static void rt_log(const char *format, ...) { (void)format; }
+// The patch table: set qstamp exists on 1.4.3 only and starts as TOTK_SYNC_AHEAD says (runtime/patches.c).
+static int qstamp_on;
+static int rt_patch_set(const char *name) { return !strcmp(name, "qstamp") && rt_game_version == 143 ? 20 : -1; }
+static void rt_patch_switch(int set, int on) { if (set == 20) qstamp_on = on; else assert(set == -1); }
 static void gfx_replay_wait_value(uint64_t value) { replay_value = value; replay_calls++; }
 static void vk_mem_shadow_fence(void) {
     assert(nvn_sync_ahead_guard() >= replay_value);
@@ -59,10 +63,12 @@ int main(int argc, char **argv) {
     uint64_t site = rt_game_version == 110 ? 0x7000b39aa4ull : rt_game_version == 121 ? 0x7000b23dfcull :
                     rt_game_version == 143 ? 0x70002db99cull : 0;
     assert(frame_wait_lr() == site);
+    qstamp_on = rt_game_version == 143 && enabled;
     last = 20; nvn_sync_ahead_present();
     last = 40; nvn_sync_ahead_present();
     assert(pa_fence[0] == (enabled && shadow && supported ? 40 : 0));
     assert(pa_fence[1] == (enabled && shadow && supported ? 20 : 0));
+    assert(qstamp_on == (rt_game_version == 143 && enabled && shadow));   // a refused switch leaves the game's check
     int relaxed_cases = 0, polls = 0, other_waits = 0;
     for (int i = 0; i < 100000; i++) {
         sync_t sync = {.fenced = random_word() % 2, .fence = random_word() % 65};

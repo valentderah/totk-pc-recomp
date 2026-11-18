@@ -44,6 +44,8 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 | frame counter wanders 50-60 | two 60 Hz clocks (vsync event and present acquire) drifting apart | whether both follow one display tick |
 | a 30 Hz thread runs at 27 Hz, slow cutscenes | host sleep overshoot: Windows waitable timers wake 0.3-0.5 ms late | `TOTK_TRACE=sched` sleep asked versus took |
 | 20 fps after a scheduler change | a yield back-off that starts too early | yield handling against the console's |
+| in the Depths Link takes gloom damage and wears the gloom haze while standing on clean ground, some runs only; only with `sync_ahead = 1` | the game read a GPU result of the frame it was told is done before the GPU wrote it: its one-pixel readbacks go through a buffer per request, which then holds zeros or an answer from the ring's last round (fixed: `vk_memory.c` `vk_mem_shadow_read` waits at the invalidate) | `sync_ahead = 0`; the exit line `mem: the game waited for a GPU write it reads` |
+| in shrines the lamps' reflections on the floor go out for single frames, every other frame at some camera angles; only with `sync_ahead = 1`, more with DLAA (the GPU runs further behind) | the game reads its depth query results two frames later and refuses them unless their frame number is exactly the counter - 2; with sync_ahead it is the counter - 3 on frames where the GPU is behind (fixed: patch set `qstamp` in `recomp/patches-v143.txt` also takes the counter - 3) | `sync_ahead = 0`; a `--capture` run with `TOTK_SYNC_AHEAD` on, counting one-frame drops in floor regions |
 | climbing or movement wrong only above some fps | game code that assumes a fixed step count per frame | compare at 30, 60 and the failing rate |
 
 ## Threads and crashes
