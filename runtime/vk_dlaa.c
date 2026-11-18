@@ -839,7 +839,8 @@ static struct Snap *mask_pass(VkCommandBuffer cb, VkImageView cv, uint32_t w, ui
 }
 
 // ---------------------------------------------------------------- jitter
-// The scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
+// On 1.4.3 the game's camera carries the jitter instead (below, "jitter in the game's camera"); on the other versions
+// the scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
 // sub-pixel Halton(2,3) offset, which shifts what they rasterise as a jittered projection would; full-screen passes
 // that shade by window position are unaffected. Jitter only follows a frame DLSS ran on: a jittered frame that DLSS
 // does not resolve shakes on screen, so a missed DLAA point stops the jitter for a second.
