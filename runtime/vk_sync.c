@@ -369,7 +369,9 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // (vk_sync_part, which the caller made the recorder idle for).
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
     // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
-    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    // made after the GPU finished the readers the game may think done, vk_memory.c). The mirror copies queued before it
+    // are the ones this prologue makes, as they read the shadow (vk_mem_mirror_seal).
+    vk_mem_mirror_seal();
     vk_mem_shadow_sync(fence);
     if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
