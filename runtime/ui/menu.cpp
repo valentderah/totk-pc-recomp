@@ -531,14 +531,17 @@ static int folders_tick(bool now) {
     unsigned v = cfg_version();
     if (v != g_folders.seen) {
         g_folders.seen = v;
-        const char *res = cfg_value("TOTK_OUTPUT_RES"), *layout = cfg_value("TOTK_PAD_LAYOUT");
+        const char *layout = cfg_value("TOTK_PAD_LAYOUT");
         const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+        // Without an output_res the display's shape: the default falls back to 1920x1080 while that shape lacks the
+        // prompts' folder, and the folders made for it bring the shape back at the next start (cfg_screen_size).
+        unsigned s[2] = {0, 0};
+        if (!cfg_screen_size(s) && sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u", &s[0], &s[1]) != 2) s[0] = s[1] = 0;
         char request[sizeof g_folders.request];
-        snprintf(request, sizeof request, "%s|%s|%s", res, cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
+        snprintf(request, sizeof request, "%ux%u|%s|%s", s[0], s[1], cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
         if (strcmp(request, g_folders.request)) {
             snprintf(g_folders.request, sizeof g_folders.request, "%s", request);
-            unsigned w = 0, h = 0;
-            if (sscanf(res, "%ux%u", &w, &h) != 2) w = h = 0;
+            unsigned w = s[0], h = s[1];
             g_folders.w = w, g_folders.h = h, g_folders.want = want;
             g_folders.missing = w && h ? romfs_folders_missing(w, h, want) : 0;
             g_folders.at = g_folders.missing && strcmp(request, g_folders.asked) && romfs_folders_can_prepare()

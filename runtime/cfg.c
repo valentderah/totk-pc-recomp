@@ -462,6 +462,13 @@ static void screen_default(void) {
                sh, screen_res);
 }
 
+int cfg_screen_size(unsigned out[2]) {
+    unsigned w = 0, h = 0;
+    if (raw_get(PREFIX "OUTPUT_RES") || !screen_res[0] || sscanf(screen_res, "%ux%u", &w, &h) != 2) return 0;
+    out[0] = w, out[1] = h;
+    return 1;
+}
+
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;

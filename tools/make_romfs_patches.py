@@ -77,11 +77,11 @@ left by a run that was stopped is removed by the next run for that folder once i
 """
 import argparse
 import compression.zstd as zstd
+import ctypes
+import glob
 import hashlib
 import importlib.util
 import json
-import ctypes
-import glob
 import os
 import re
 import shutil

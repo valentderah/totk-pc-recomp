@@ -1110,10 +1110,11 @@ static void overlay_init(void) {
     // A folder the settings in effect ask for and the install lacks (an older setup, a failed setup step, a display
     // of another shape): its generator starts in the background for the next start when the setup's tools are next to
     // the game (romfs_folders_prepare). The size is the one output_res asks for: without its shape's layout the game
-    // draws 16:9 this time (resolution.c shape_fallback). Nothing with TOTK_ROMFS_PATCHES set; a source build has no
-    // build-cache/rebuild.txt and keeps the lines above.
+    // draws 16:9 this time (resolution.c shape_fallback). Without an output_res it is the display's shape, which the
+    // default keeps only while that shape has the prompts' folder (cfg.c cfg_screen_size). Nothing with
+    // TOTK_ROMFS_PATCHES set; a source build has no build-cache/rebuild.txt and keeps the lines above.
     unsigned asked[2];
-    res_asked(asked);
+    if (!cfg_screen_size(asked)) res_asked(asked);
     romfs_folders_prepare(asked[0], asked[1], prompts_wanted);
     size_t prompts_end = noverlay;
     char plain[2100];   // romfs-patches, when it has a manifest
