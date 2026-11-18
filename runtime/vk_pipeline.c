@@ -3234,7 +3234,7 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
                       compare_op(d->sf_b));
     // NVN_POLYGON_OFFSET_ENABLE_* bit of the polygon mode in use: point 1, line 2, fill 4
     unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
-    vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) != 0);
+    vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) || vk_pipeline_volume_bias(s));
     vkCmdSetRasterizerDiscardEnable(cb, s->raster_discard != 0);
     vkCmdSetPrimitiveRestartEnable(cb, s->prim_restart != 0);
     // The vertex bindings the draw reads: those of its vertex input, set here or made into the pipeline from the same
@@ -3268,6 +3268,32 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     return streams;
 }
 
+// TotK marks the pixels inside its water volumes (seen at puddles) in a quarter-size mask: it draws a volume's front
+// faces with a LEQUAL depth test and no depth write, blending ONE/ONE with reverse subtract into one channel, against a
+// depth it rebuilt at that size from its linear depth. The volume's top face lies on the water surface, so the test
+// compares that surface with itself through two roundings and two sampling positions: on a puddle the face came out
+// up to 7 ulp in front of or behind the rebuilt depth, and up to about 0.6 of a pixel of its depth slope (64 ulp) behind
+// it. The camera's sub-millimetre idle motion moved that pattern every frame and the mask with it: the puddle's
+// reflection, which the mask turns on, flickered over a few hundred pixels a frame, and more with DLAA, whose jitter
+// moves the rebuilt depth but not the volume. Such a draw, when the game sets no polygon offset for it, gets a depth
+// bias toward the viewer of VOLUME_BIAS_UNITS plus VOLUME_BIAS_SLOPE times its depth slope (one pixel of it), so a
+// surface the face lies on counts as inside, as the test's equal case means; a surface farther from the face than a
+// pixel of its slope is decided as before. TOTK_VOLUME_MASK_BIAS=0 (test) leaves such draws as the game sets them.
+int vk_pipeline_volume_bias(const VkPipeState *s) {
+    static int knob = -1;
+    if (knob < 0) knob = rt_knob("VOLUME_MASK_BIAS", "1");
+    if (!RT_KNOB_ON(knob)) return 0;
+    const poly_st *pl = &s->poly;
+    const ds_st *d = &s->ds;
+    const blend_st *b = &s->blend[0];
+    unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
+    if (!d->dt || d->dw || (pl->offset_en >> mode & 1) || !(s->color.blend_en & 1) ||
+        b->eq_rgb != NVN_BLEND_EQUATION_REVERSE_SUB || b->src_rgb != NVN_BLEND_FUNC_ONE || b->dst_rgb != NVN_BLEND_FUNC_ONE)
+        return 0;
+    if (d->df == NVN_DEPTH_FUNC_LESS || d->df == NVN_DEPTH_FUNC_LEQUAL) return -1;
+    return d->df == NVN_DEPTH_FUNC_GREATER || d->df == NVN_DEPTH_FUNC_GEQUAL;
+}
+
 // The values vk_pipeline_set_dynamic records for a state, as the commands take them.
 typedef struct {
     VkCullModeFlags cull;
@@ -3296,7 +3322,7 @@ static void dyn_vals(const VkPipeState *s, DynVals *o) {
     o->sop[1][0] = stencil_op(d->fail_b), o->sop[1][1] = stencil_op(d->zpass_b), o->sop[1][2] = stencil_op(d->zfail_b);
     o->scmp[0] = compare_op(d->sf_f), o->scmp[1] = compare_op(d->sf_b);
     unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
-    o->bias = (pl->offset_en >> mode & 1) != 0;
+    o->bias = (pl->offset_en >> mode & 1) || vk_pipeline_volume_bias(s);
     o->discard = s->raster_discard != 0, o->restart = s->prim_restart != 0;
     o->clamp = s->depth_clamp != 0, o->a2c = s->ms.a2c != 0;
     o->poly = polygon_mode(pl->mode);

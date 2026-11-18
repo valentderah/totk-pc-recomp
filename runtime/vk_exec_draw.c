@@ -2784,8 +2784,11 @@ static VkViewport draw_viewport(VkExec *ex) {
     return v;
 }
 
-static void record_fixed(VkExec *ex) {
+// s: the draw's state. A volume mask draw records its own depth bias (vk_pipeline_volume_bias) in place of the game's.
+static void record_fixed(VkExec *ex, const VkPipeState *s) {
     VkCommandBuffer cb = ex->cb;
+    int vb = vk_pipeline_volume_bias(s);
+    if (vb != ex->volume_bias) ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS, ex->volume_bias = (int8_t)vb;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         VkViewport v = draw_viewport(ex);
         vkCmdSetViewportWithCount(cb, 1, &v);
@@ -2797,7 +2800,8 @@ static void record_fixed(VkExec *ex) {
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {
-        vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
+        if (vb) vkCmdSetDepthBias(cb, VOLUME_BIAS_UNITS * (float)vb, 0.0f, VOLUME_BIAS_SLOPE * (float)vb);
+        else vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_BLEND_CONST) {
@@ -3431,7 +3435,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     vk_mvsurvey_draw(ex);
     vk_mvprev_draw(ex);
     if (mo) plat_mutex_unlock(&mo_lock);
-    record_fixed(ex);
+    record_fixed(ex, sp);
     repeat_stats(ex, info);
     if (bim) bi_gt(ex, bgt), bi_gb(ex, bgb);
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
