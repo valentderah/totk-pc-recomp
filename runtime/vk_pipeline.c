@@ -3278,7 +3278,11 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
 // moves the rebuilt depth but not the volume. Such a draw, when the game sets no polygon offset for it, gets a depth
 // bias toward the viewer of VOLUME_BIAS_UNITS plus VOLUME_BIAS_SLOPE times its depth slope (one pixel of it), so a
 // surface the face lies on counts as inside, as the test's equal case means; a surface farther from the face than a
-// pixel of its slope is decided as before. TOTK_VOLUME_MASK_BIAS=0 (test) leaves such draws as the game sets them.
+// pixel of its slope is decided as before. Only tests whose equal case passes (LEQUAL, GEQUAL) get the bias, toward
+// passing. The same pass also draws state-alike draws with GREATER, whose equal case fails: the volume's back faces
+// into the same channel and, in towns and in rain, another shader's front faces into the red channel. Biasing those
+// toward passing would turn the game's tie the other way, so they are left as the game sets them.
+// TOTK_VOLUME_MASK_BIAS=0 (test) leaves every such draw as the game sets it.
 int vk_pipeline_volume_bias(const VkPipeState *s) {
     static int knob = -1;
     if (knob < 0) knob = rt_knob("VOLUME_MASK_BIAS", "1");
@@ -3290,8 +3294,7 @@ int vk_pipeline_volume_bias(const VkPipeState *s) {
     if (!d->dt || d->dw || (pl->offset_en >> mode & 1) || !(s->color.blend_en & 1) ||
         b->eq_rgb != NVN_BLEND_EQUATION_REVERSE_SUB || b->src_rgb != NVN_BLEND_FUNC_ONE || b->dst_rgb != NVN_BLEND_FUNC_ONE)
         return 0;
-    if (d->df == NVN_DEPTH_FUNC_LESS || d->df == NVN_DEPTH_FUNC_LEQUAL) return -1;
-    return d->df == NVN_DEPTH_FUNC_GREATER || d->df == NVN_DEPTH_FUNC_GEQUAL;
+    return d->df == NVN_DEPTH_FUNC_LEQUAL ? -1 : d->df == NVN_DEPTH_FUNC_GEQUAL;
 }
 
 // The values vk_pipeline_set_dynamic records for a state, as the commands take them.

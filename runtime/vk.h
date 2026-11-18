@@ -679,8 +679,9 @@ void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAn
 int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TEX_* (GfxShaderAnswers.tex_type)
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
 // The sign of the depth bias a volume mask draw gets (vk_pipeline.c, see there), -1 toward smaller depth, 1 toward
-// larger, 0 for any other draw. vk_pipeline_set_dynamic enables the bias for it; vk_exec_draw.c record_fixed sets the
-// values, VOLUME_BIAS_UNITS and VOLUME_BIAS_SLOPE times the sign.
+// larger, 0 for any other draw. vk_pipeline_set_dynamic enables the bias for it; vk_exec_draw.c prepare_draw decides it
+// where the draw's state changes and record_fixed sets the values, VOLUME_BIAS_UNITS and VOLUME_BIAS_SLOPE times the
+// sign.
 int vk_pipeline_volume_bias(const VkPipeState *s);
 #define VOLUME_BIAS_UNITS 16.0f
 #define VOLUME_BIAS_SLOPE 1.0f
