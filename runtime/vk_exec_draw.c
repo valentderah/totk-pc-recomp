@@ -2784,8 +2784,11 @@ static VkViewport draw_viewport(VkExec *ex) {
     return v;
 }
 
+// A volume mask draw records its own depth bias in place of the game's: ex->volume_bias, which prepare_draw sets from
+// vk_pipeline_volume_bias where the draw's dynamic state changes.
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
+    int vb = ex->volume_bias;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         VkViewport v = draw_viewport(ex);
         vkCmdSetViewportWithCount(cb, 1, &v);
@@ -2797,7 +2800,8 @@ static void record_fixed(VkExec *ex) {
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {
-        vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
+        if (vb) vkCmdSetDepthBias(cb, VOLUME_BIAS_UNITS * (float)vb, 0.0f, VOLUME_BIAS_SLOPE * (float)vb);
+        else vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_BLEND_CONST) {
@@ -3421,6 +3425,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         __atomic_fetch_add(&DD.calls, 1, __ATOMIC_RELAXED), __atomic_fetch_add(&DD.cmds, cmds, __ATOMIC_RELAXED);
         if (!cmds) __atomic_fetch_add(&DD.empty, 1, __ATOMIC_RELAXED);
         ex->recorded += cmds != 0;
+        // The volume bias follows the state alone, so it is decided here, once per state change, and a draw with the
+        // state recorded last keeps it. A new command buffer or a pipeline bind clears st_valid and comes here.
+        int vb = vk_pipeline_volume_bias(sp);
+        if (vb != ex->volume_bias) ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS, ex->volume_bias = (int8_t)vb;
         MX_CPY(&D->B.st, sp, sizeof *sp), D->B.st_valid = 1;
         if (ex->mark && ex->fr.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
