@@ -626,6 +626,13 @@ static void start(void) {
     const char *e = cfg_get("TOTK_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
     steam_reveal();
+    // SDL drops gamepad button presses and stick movements (and leaves the polled state unchanged) while its own
+    // window lacks keyboard focus (SDL_PrivateJoystickShouldIgnoreEvent in SDL_joystick.c; centring and releases
+    // pass). That applies where the window is SDL's (Linux); the Win32 window on Windows is not an SDL window. The
+    // game keeps running out of focus by default (TOTK_ASSUME_FOCUS, ov_system.c oe_set_focus), so the gamepad has to
+    // keep working there. With the setting off the game's main thread waits while unfocused and reads no input, so
+    // the hint can stay on for the whole run.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
