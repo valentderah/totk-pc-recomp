@@ -274,6 +274,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, calibrated",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Calibration failed",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "Controller moved: hold it still and try again",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Gyro drift learning at rest",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Learns the drift left in the gyro whenever the controller lies still on a "
+                                    "table, and subtracts it. For a bow aim that slowly slides even after "
+                                    "calibration. A controller held in the hand is not learned from. Experimental.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -872,6 +876,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, откалиброван",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Калибровка не удалась",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "Контроллер сдвинулся: держите его неподвижно и повторите",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Учёт дрейфа гироскопа в покое",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Измеряет остаточный дрейф гироскопа, пока контроллер лежит на столе, и вычитает "
+                                    "его. Для прицела лука, который медленно уплывает даже после калибровки. В руке "
+                                    "контроллер не измеряется. Экспериментально.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
     [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
@@ -1386,6 +1394,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, calibrado",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Falha na calibração",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "O controle se moveu: segure-o parado e tente de novo",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Aprender o desvio do giroscópio em repouso",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Mede o desvio que resta no giroscópio sempre que o controle fica parado sobre a "
+                                    "mesa e o subtrai. Para a mira do arco que desliza devagar mesmo após a "
+                                    "calibração. Na mão, o controle não é medido. Experimental.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Quão forte o controle vibra.",
     [UI_MENU_RUMBLE_CURVE] = "Curva da vibração",
@@ -2064,6 +2076,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s，已校准",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "校准失败",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "手柄移动了：请保持静止后重试",
+    [UI_MENU_GYRO_AUTO_BIAS] = "静止时学习陀螺仪漂移",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "手柄平放在桌上不动时测量陀螺仪的剩余漂移并将其减去。适用于校准后弓箭准星仍缓慢漂"
+                                    "移的情况。手持时不会测量。实验性功能。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄振动的强弱。",
     [UI_MENU_RUMBLE_CURVE] = "振动曲线",
