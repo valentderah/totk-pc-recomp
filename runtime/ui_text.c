@@ -522,6 +522,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                         "fog (shrines) no longer vanish or leave trails. Off: DLSS also processes "
                                         "these effects, as before. DLAA mode only; the upscaling DLSS modes always "
                                         "process them. Applies at once.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Fixed DLSS exposure",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS takes the brightness of the game's picture as it is instead of "
+                                         "estimating the exposure from each frame: in dark scenes (the Depths) large "
+                                         "fogged areas no longer turn darker or lighter for a frame while the camera "
+                                         "moves. Off: DLSS estimates the exposure itself, as before. Applies at once.",
     [UI_MENU_BIND_SKIP] = "Skip repeated binds",
     [UI_MENU_BIND_SKIP_DESC] = "Optimisation: skips bindings that did not change.",
     [UI_MENU_SHADER_MEMO] = "Shader memo", [UI_MENU_SHADER_MEMO_DESC] = "Optimisation: remembers shader lookups.",
@@ -1128,6 +1133,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                         "больше не пропадают и не оставляют шлейфов. Выкл.: DLSS обрабатывает и эти "
                                         "эффекты, как раньше. Только в режиме DLAA; режимы DLSS с повышением "
                                         "разрешения обрабатывают их всегда. Применяется сразу.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Фиксированная экспозиция DLSS",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS берёт яркость картинки игры как есть, а не оценивает экспозицию по "
+                                         "каждому кадру: в тёмных сценах (Глубины) большие участки в тумане больше не "
+                                         "темнеют и не светлеют на кадр при движении камеры. Выкл.: DLSS сам "
+                                         "оценивает экспозицию, как раньше. Применяется сразу.",
     [UI_MENU_BIND_SKIP] = "Пропуск повторных привязок",
     [UI_MENU_BIND_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся привязки.",
     [UI_MENU_SHADER_MEMO] = "Память шейдеров", [UI_MENU_SHADER_MEMO_DESC] = "Оптимизация: запоминает поиск шейдеров.",
@@ -1572,6 +1582,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                         "pequenas na névoa (santuários) não somem mais nem deixam rastros. Desligado:"
                                         " o DLSS também processa esses efeitos, como antes. Só no modo DLAA; os modos"
                                         " de DLSS que aumentam a resolução sempre os processam. Aplica-se na hora.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposição fixa do DLSS",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "O DLSS usa o brilho da imagem do jogo como ele é, em vez de estimar a "
+                                         "exposição a cada quadro: em cenas escuras (as Profundezas), grandes áreas com "
+                                         "névoa não ficam mais escuras ou claras por um quadro enquanto a câmera se "
+                                         "move. Desligado: o DLSS estima a exposição sozinho, como antes. Aplica-se na "
+                                         "hora.",
     [UI_MENU_BIND_SKIP] = "Pular bindings repetidos",
     [UI_MENU_BIND_SKIP_DESC] = "Otimização: pula bindings que não mudaram.",
     [UI_MENU_SHADER_MEMO] = "Memória de shaders", [UI_MENU_SHADER_MEMO_DESC] = "Otimização: lembra as buscas de shaders.",
@@ -2327,6 +2343,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，雾、灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS 时的"
                                         "绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：DLSS 也处理这些效果，与以"
                                         "前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用游戏画面的亮度，而不是逐帧自行估算曝光：在暗场景（地底）中，"
+                                         "镜头移动时大片雾中区域不再忽暗忽亮一帧。关闭：DLSS 自行估算曝光，与以前相同。立即生效。",
     [UI_MENU_BIND_SKIP] = "跳过重复绑定",
     [UI_MENU_BIND_SKIP_DESC] = "优化：跳过没有变化的绑定。",
     [UI_MENU_SHADER_MEMO] = "着色器查找缓存",
