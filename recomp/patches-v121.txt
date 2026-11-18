@@ -1181,19 +1181,31 @@ set ability  TOTK_ABILITY_GUARD  1
 site ability main 1622bf0 f9400115 94c424dc            # ldr x21, [x8] -> bl page+0xf60
 site ability main 1622bf4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)
 
-# Sound command lists above 200 fps (issue #337). The game thread hands its sound commands to the audio thread in
-# lists: 16 of them, of which 4 are always held (one being filled by the game thread, the others on the audio thread's
-# side), so at most 12 wait in the command ring. The game thread submits at most one list per update (main+0x9bd144,
-# when a free list is there), and the audio thread takes one per pass of its loop, one 5 ms audio frame: after a list
-# main+0x883780 goes on past the ring's check (b 0x883318). Above about 200 updates a second the ring stays full. A
-# guard in the game (main+0x9bcdc4, at the end of each update) counts the updates that find the ring of free lists
-# empty and exactly 12 lists in the command ring (0x9bce1c cmp w9, #0xc); the count goes back to 0 only when a free
-# list is there. At every multiple of 300 (10 s at 30 fps, 1.25 s at 240) it clears the sound command switch, the byte
-# at [[engine + 0x1a0] + 8] (main+0x2268bfc), and stops every active voice (main+0x226f29c). The switch is set to 1 only
-# by its constructor (main+0xf31ce8, from the engine's init main+0xf31530), so the game stays silent until it is
-# restarted. The site sends the audio thread back to the ring's check (0x8832e8, where the game's own 0x883c18 also
-# branches; x21, the engine, is not written between the check and the site), so it takes every queued list in the pass
-# and the ring does not stay full. Measured on 1.2.1 at fps_limit 240, same save and input script: sound in 5 of 118 s
-# with the set off, in 108 of 118 s with it on.
+# Sound command lists above 200 updates a second (issue #337). The game thread hands its sound commands to the audio
+# thread in lists: 16 of them, of which 4 are always held (one being filled by the game thread, the others on the audio
+# thread's side), so at most 12 wait in the command ring. The game thread submits at most one list per update
+# (main+0x9bd144, when a free list is there), and the audio thread takes one per pass of its loop, one 5 ms audio frame:
+# after a list main+0x883780 goes on past the ring's check (b 0x883318). Above about 200 updates a second the ring
+# fills. A guard in the game (main+0x9bcdc4, at the end of each update) counts the updates that find the ring of free
+# lists empty and exactly 12 lists in the command ring (0x9bce1c cmp w9, #0xc); the count goes back to 0 whenever a free
+# list is there (0x9bce00), which takes two audio frames between two updates: the game thread picks up one of the two
+# lists, the other is still free at the guard. At every multiple of 300 (10 s at 30 fps, 1.25 s at 240) the guard clears
+# the sound command switch, the byte at [[engine + 0x1a0] + 8] (main+0x2268bfc), and stops every active voice
+# (main+0x226f29c). The switch is set to 1 only by its constructor (main+0xf31ce8, from the engine's init
+# main+0xf31530), so the game stays silent until it is restarted. By this reading the guard fires only when the audio
+# frames come evenly, 5 ms apart, through 300 updates in a row at more than 200 a second: that is the mixer pacing its
+# render thread by its own timer (runtime/audio_mixer.c, audio_mixer_pace_ns), with audio = none or while a device takes
+# nothing. While a device paces the rendering the frames come in bursts after each device period: on Linux with
+# PipeWire's 1024-frame periods 76% of the frames were measured 4 ms after the one before (audren.c, gap_ns), two of
+# them fall between two updates several times a second, and the game kept its sound in every run. On Windows gap_ns is 0
+# and the frames of a burst are rendered back to back: read from the code, not measured here. A device with periods of
+# 240 frames or less was not tried and may pace as evenly as the timer. The count and the switch have not been read in a
+# run. The site sends the audio thread back to the ring's check (0x8832e8, where the game's own 0x883c18 also branches;
+# x21, the engine, is not written between the check and the site), so it takes every queued list in the pass and the
+# ring does not stay full. Measured on 1.2.1 at fps_limit 240 (Linux, PipeWire), same save and input script, seconds
+# with sound in the mix with the set off and on: without a device 6 of 119 and 111 of 119; with a device 111 of 119 and
+# 112 of 119; with the game's stream paused for 5 s from outside (pw-cli, not a real device stalling) while the game ran
+# at 240 fps 4 of 120 (silent from the pause on, also after the device resumed) and 113 of 119. A pause of 2 s silenced
+# the game with the set off in two runs of two, a pause of 1 s in none of one.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 883780 17fffee6 17fffeda   # b 0x883318 -> b 0x8832e8
