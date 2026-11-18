@@ -255,7 +255,9 @@ pad, so Steam's remapping applies and nothing is read twice, and when the virtua
 opens the real controller behind it for its gyro and accelerometer only (`motion_source`). The log then shows
 `input: motion from "<name>" (<vendor>:<product>), the controller behind Steam Input's virtual gamepad`. This covers the
 Steam Controller and the Steam Deck's built-in controls, which Steam Input cannot be turned off for, and other
-controllers Steam Input wraps. With `motion = 0` at start Steam's list stays in force.
+controllers Steam Input wraps. A controller Steam hid serves for buttons only while no other gamepad is there (Steam's
+virtual pad can come up after the game starts); once the virtual pad is up the buttons move to it. With `motion = 0`
+at start Steam's list stays in force.
 
 Steam switches the controller's gyro off while the game's layout binds nothing to it: the reports keep coming with the
 gyro at zero, and the game's request for it (SDL renews it every 3 s) does not win. The layout needs a gyro binding,
