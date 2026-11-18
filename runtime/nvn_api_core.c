@@ -475,7 +475,8 @@ NVN_API(nvnQueueFenceSync) {
 // the frame it presented last; on the Switch that work is long done by then, here it is still in the replay and on the
 // GPU (about 11 ms from the submit), and the wait sets the frame time. With the switch on, that wait, and only that
 // one, waits for the frame before it instead. What the game reads back of GPU results after the wait can then be a
-// frame old. The game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
+// frame old; a buffer that holds no older result is waited for when the game invalidates it (vk_memory.c
+// vk_mem_shadow_read). The game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
 // queued for the GPU or wait (nvn_sync_ahead_guard). The wait still lasts until the replay thread submitted the asked
 // value, so no copy of that value itself picks up those writes. pa_fence: the newest fence at the latest present and
 // the one before, present thread only for writes. pa_guard: the newest value the game was told is done early.
