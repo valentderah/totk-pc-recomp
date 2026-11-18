@@ -58,6 +58,7 @@
 static struct {
     int decided;
     unsigned ow, oh, sw, sh;   // output and scene
+    unsigned aw, ah;           // the output TOTK_OUTPUT_RES asks for, before shape_fallback
     int scene_set;             // the scene differs from the game's 5/6 of the output
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
@@ -161,14 +162,14 @@ static void shape_fallback(void) {
 static void decide(void) {
     if (R.decided) return;
     R.decided = 1;
-    R.ow = BASE_W;
-    R.oh = BASE_H;
+    R.ow = R.aw = BASE_W;
+    R.oh = R.ah = BASE_H;
     const char *o = cfg_value("TOTK_OUTPUT_RES");
     unsigned w = 0, h = 0;
     char tail;
     if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 1280 && h >= 720 && w <= 7680 && h <= 4320) {
-        R.ow = w & ~1u;
-        R.oh = h & ~1u;
+        R.ow = R.aw = w & ~1u;
+        R.oh = R.ah = h & ~1u;
         shape_fallback();
     } else {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
@@ -675,6 +676,11 @@ void res_dynres_live(void) {
 void res_wanted(unsigned out[2]) {
     decide();
     out[0] = R.ow, out[1] = R.oh;
+}
+
+void res_asked(unsigned out[2]) {
+    decide();
+    out[0] = R.aw, out[1] = R.ah;
 }
 
 // A TOTK_DLSS change while the game runs (vk_dlaa.c, at a present): the new scene size goes to the patch page, where

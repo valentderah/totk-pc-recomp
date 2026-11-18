@@ -26,6 +26,12 @@ int cfg_is_set(const char *name);
 // The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones), the
 // one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and for a shape without a UI layout.
 int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]);
+// The size output_res defaults to on this display (its shape, cfg.c screen_default) while the player set no
+// output_res, also when the default stays 1920x1080 because that shape lacks the prompts' folder. The generator the game
+// starts for missing folders (romfs.c romfs_folders_prepare) makes them for this size, so after a prompts change the
+// next start takes the display's shape again. 0 when the player set output_res, a device profile is in use or the
+// display is 16:9.
+int cfg_screen_size(unsigned out[2]);
 // The device profile in use, "deck" or "desktop" (TOTK_DEVICE_PROFILE, else what the machine is).
 const char *cfg_device_profile(void);
 // Writes the keys cfg_set changed since the last save into totk.ini next to totk.exe (cfg_save_to: the file at path).

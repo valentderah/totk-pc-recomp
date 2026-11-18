@@ -92,9 +92,23 @@ static const char *key_label(int k, char *buf, size_t n) {
     return buf;
 }
 
-// A gamepad button: the label the open pad has on a face button, else its place on the pad.
+// A gamepad button: the label the open pad has on a face button, else its place on the pad. A PlayStation pad (its
+// bottom button labelled Cross, DualSense and DualShock 4 alike) has its shoulder, stick and menu buttons named as
+// printed on it, the names the PlayStation prompts draw (tools/button_icons.py playstation_icons: Share for Minus).
 static const char *pad_label(int p) {
     if (p == PAD_NONE) return "";
+    if (input_pad_label(PAD_SOUTH) == PAD_LABEL_CROSS) {
+        switch (p) {
+        case PAD_L: return "L1";
+        case PAD_R: return "R1";
+        case PAD_ZL: return "L2";
+        case PAD_ZR: return "R2";
+        case PAD_LSTICK: return "L3";
+        case PAD_RSTICK: return "R3";
+        case PAD_START: return "Options";
+        case PAD_BACK: return "Share";
+        }
+    }
     switch (input_pad_label(p)) {
     case PAD_LABEL_A: return "A";
     case PAD_LABEL_B: return "B";

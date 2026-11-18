@@ -20,6 +20,7 @@ HARNESS = r'''
 #include <stdlib.h>
 #include <string.h>
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "shape_functions.h"
@@ -50,16 +51,26 @@ uint8_t *plat_file_read(const char *p,uint64_t *size) {
     uint8_t *b=calloc(1,*size+1); assert(b); assert(fread(b,1,*size,f)==*size); fclose(f); return b;
 }
 int plat_exe_path(char *out,size_t cap) { (void)out;(void)cap;abort(); }
+static int locked;
+void plat_mutex_lock(PlatMutex *m) { (void)m; assert(!locked); locked=1; }
+void plat_mutex_unlock(PlatMutex *m) { (void)m; assert(locked); locked=0; }
 void rt_fatal(const char *fmt,...) { (void)fmt;abort(); }
 void rt_log(const char *fmt,...) { (void)fmt; }
+static int spawn_fails;
 int plat_spawn(const char *const *args,const char *cwd) {
-    assert(cwd && *cwd); spawns++;
+    assert(cwd && *cwd && locked);
+    if (spawn_fails) return 0;
+    spawns++;
     int i; for (i=0;args[i];i++) { assert(i<23); snprintf(args_test[i],sizeof args_test[i],"%s",args[i]); }
     args_test[i][0]=0; return 1;
 }
 static const char *arg(const char *key) {
     for (int i=0;args_test[i][0];i++) if (!strcmp(args_test[i],key)) return args_test[i+1];
     return NULL;
+}
+static int has(const char *flag) {
+    for (int i=0;args_test[i][0];i++) if (!strcmp(args_test[i],flag)) return 1;
+    return 0;
 }
 static void output_ends(const char *suffix) {
     const char *p=arg("--out"); assert(p && strlen(p)>=strlen(suffix));
@@ -77,28 +88,51 @@ int main(int argc,char **argv) {
     assert(selected_shape(base,"romfs-patches",5120,1440,name,sizeof name,1));
     assert(!strcmp(name,"romfs-patches-3840x1080"));
     assert(!selected_shape(base,"romfs-patches",5120,1440,name,sizeof name,0));
-    assert(romfs_shape_missing(5120,1440,NULL));
-    override_test="0"; assert(!romfs_shape_missing(5120,1440,NULL)); override_test=NULL;
-    assert(!romfs_shape_missing(1920,1080,NULL));
+    assert(romfs_folders_missing(5120,1440,NULL)==ROMFS_NEED_LAYOUT);
+    override_test="0"; assert(!romfs_folders_missing(5120,1440,NULL)); override_test=NULL;
+    assert(!romfs_folders_missing(1920,1080,NULL));
+    assert(romfs_folders_missing(1920,1080,"romfs-patches-pc")==ROMFS_NEED_PROMPTS);
     snprintf(index_test,sizeof index_test,"%s/generation/romfs-index.bin",argv[1]);
     hud_test="16:9";
-    assert(romfs_shape_prepare(5120,2160,"romfs-patches-pc")); assert(spawns==2);
+    // Nothing missing: no generator, no log line
+    assert(!romfs_folders_prepare(1920,1080,"romfs-patches-xbox")); assert(spawns==0);
+    assert(romfs_folders_prepare(5120,2160,"romfs-patches-pc")); assert(spawns==2);
+    assert(has("--background"));
     assert(!strcmp(arg("--aspect"),"2560x1080")); assert(!strcmp(arg("--hud"),"16:9"));
     assert(!strcmp(arg("--version"),"v143")); assert(!strcmp(arg("--prompts"),"pc"));
     assert(arg("--reuse") && strstr(arg("--reuse"),"/romfs-patches-pc"));
-    assert(arg("--binds") && strstr(arg("--binds"),"/totk.ini")); assert(!args_test[18][0]); output_ends("romfs-patches-pc-2560x1080-hud16x9");
-    assert(romfs_shape_prepare(5120,2160,"romfs-patches-pc")); assert(spawns==2);
+    assert(arg("--binds") && strstr(arg("--binds"),"/totk.ini")); assert(!args_test[19][0]); output_ends("romfs-patches-pc-2560x1080-hud16x9");
+    assert(romfs_folders_prepare(5120,2160,"romfs-patches-pc")); assert(spawns==2);
     hud_test="full";
-    assert(romfs_shape_prepare(5120,2160,"romfs-patches-xbox")); assert(spawns==4);
+    assert(romfs_folders_prepare(5120,2160,"romfs-patches-xbox")); assert(spawns==4);
     assert(!strcmp(arg("--hud"),"full")); assert(!strcmp(arg("--prompts"),"xbox"));
     assert(arg("--reuse") && !arg("--binds")); output_ends("romfs-patches-xbox-2560x1080");
     hud_test="21:9";
-    assert(romfs_shape_prepare(5120,1440,"romfs-patches-xbox-label")); assert(spawns==6);
+    // The 16:9 xbox-label folder is missing too: it is made first (no --aspect), and the shaped one cannot link it
+    assert(romfs_folders_prepare(5120,1440,"romfs-patches-xbox-label")); assert(spawns==7);
     assert(!strcmp(arg("--hud"),"21:9")); assert(!strcmp(arg("--prompts"),"xbox-label"));
     assert(!arg("--reuse") && !arg("--binds")); output_ends("romfs-patches-xbox-label-3840x1080-hud21x9");
     // A cap wider than a tall canvas becomes full, never an invalid generator request.
-    assert(romfs_shape_prepare(1280,800,NULL)); assert(spawns==7);
+    assert(romfs_folders_prepare(1280,800,NULL)); assert(spawns==8);
     assert(!strcmp(arg("--hud"),"full")); output_ends("romfs-patches-1280x800");
+    // Missing 16:9 prompts at 16:9: only that folder, without --aspect or --hud; pc takes totk.ini's binds
+    hud_test="16:9";
+    snprintf(index_test,sizeof index_test,"%s/sixteen/romfs-index.bin",argv[1]);
+    assert(romfs_folders_prepare(1920,1080,"romfs-patches-pc")); assert(spawns==9);
+    assert(!strcmp(arg("--prompts"),"pc") && !arg("--aspect") && !arg("--hud") && !arg("--reuse"));
+    assert(arg("--binds") && has("--background")); output_ends("/romfs-patches-pc");
+    assert(romfs_folders_prepare(1920,1080,"romfs-patches-pc")); assert(spawns==9);   // once per process
+    assert(romfs_folders_prepare(2560,1440,"romfs-patches-playstation")); assert(spawns==10);
+    assert(!strcmp(arg("--prompts"),"playstation") && !arg("--binds")); output_ends("/romfs-patches-playstation");
+    // A generator that does not start is not remembered: the menu's retry starts it
+    spawn_fails=1;
+    assert(!romfs_folders_prepare(1920,1080,"romfs-patches-xbox")); assert(spawns==10);
+    spawn_fails=0;
+    assert(romfs_folders_prepare(1920,1080,"romfs-patches-xbox")); assert(spawns==11);
+    // Without the setup's tools nothing starts
+    snprintf(index_test,sizeof index_test,"%s/selection/romfs-index.bin",argv[1]);
+    assert(!romfs_folders_can_prepare() && !romfs_folders_prepare(1920,1080,"romfs-patches-xbox-label"));
+    assert(spawns==11);
     // Beyond the old eight-folder limit every new folder must still be remembered.
     const char *dummy[]={"python","script",NULL};
     for (int i=0;i<12;i++) {
@@ -120,9 +154,10 @@ def production_functions():
     source = (ROOT / 'runtime/romfs.c').read_text()
     names = ('need', 'hud_suffix', 'shaped_name', 'selected_shape', 'index_path', 'index_folder',
              'shaped_folder_ready', 'romfs_shaped_ready', 'romfs_shaped_prompts_ready', 'prepare_tools',
-             'romfs_shape_missing', 'shape_was_started', 'shape_spawn', 'romfs_shape_prepare')
-    state = re.findall(r'(?m)^static [^;\n]*\bshape_started[^;\n]*;', source)
-    assert len(state) == 2, 'update harness extraction for changed generation cache declarations'
+             'plain_folder_ready', 'romfs_folders_missing', 'romfs_folders_can_prepare', 'shape_was_started',
+             'shape_spawn', 'romfs_folders_prepare')
+    state = re.findall(r'(?m)^static [^;\n]*\bshape_(?:started|lock)[^;\n]*;', source)
+    assert len(state) == 3, 'update harness extraction for changed generation cache declarations'
     functions = []
     for name in names:
         match = re.search(r'(?m)^[^\n;{}]*\b' + name + r'\([^;{}]*?\)\s*\{', source)
@@ -153,13 +188,15 @@ def main():
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text('# synthetic\n')
         generation = folder / 'generation'
-        for name in ('build-cache', 'romfs', 'tools', 'romfs-patches-pc', 'romfs-patches-xbox'):
-            (generation / name).mkdir(parents=True, exist_ok=True)
-        for name in ('romfs/romfs.bin', 'tools/make_romfs_patches.py', 'fake-python', 'totk.ini',
-                     'romfs-patches-pc/manifest.tsv', 'romfs-patches-xbox/manifest.tsv'):
-            (generation / name).write_text('# synthetic\n')
-        (generation / 'build-cache/rebuild.txt').write_text(
-            f'{(generation / "fake-python").as_posix()}\n-c\nunused\n{generation.as_posix()}\n')
+        for install, prompts in ((folder / 'generation', ('romfs-patches-pc', 'romfs-patches-xbox')),
+                                 (folder / 'sixteen', ())):   # an older setup's install without the prompts' folders
+            for name in ('build-cache', 'romfs', 'tools', *prompts):
+                (install / name).mkdir(parents=True, exist_ok=True)
+            for name in ('romfs/romfs.bin', 'tools/make_romfs_patches.py', 'fake-python', 'totk.ini',
+                         *(f'{p}/manifest.tsv' for p in prompts)):
+                (install / name).write_text('# synthetic\n')
+            (install / 'build-cache/rebuild.txt').write_text(
+                f'{(install / "fake-python").as_posix()}\n-c\nunused\n{install.as_posix()}\n')
         (folder / 'shape_functions.h').write_text(production_functions())
         source = folder / 'harness.c'
         source.write_text(HARNESS)

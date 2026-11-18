@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input_map.h"
 #include "platform/platform.h"
 
 #define PREFIX "TOTK_"
@@ -177,7 +178,7 @@ static const CfgMeta metas[] = {
     {"GYRO_BIAS_X", "", NULL, RESTART}, {"GYRO_BIAS_Y", "", NULL, RESTART}, {"GYRO_BIAS_Z", "", NULL, RESTART},
     {"GYRO_BIAS_PAD", "", NULL, RESTART},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
-    {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
+    {"PROMPTS", "nintendo", "nintendo|xbox|playstation|pc", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
     {"MOUSE_MODE", "direct", "stick|direct", LIVE},
@@ -391,8 +392,8 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox and keyboard prompts need their folder for that size's shape too (romfs-patches-xbox-<w>x<h>, -xbox-label-,
-// -pc-, written by installer/steps.py Shapes for the style totk.ini selects and the connected displays' shapes): they
+// Xbox, PlayStation and keyboard prompts need their folder for that size's shape too (romfs-patches-<style>-<w>x<h>,
+// written by installer/steps.py Shapes for the style totk.ini selects and the connected displays' shapes): they
 // keep 1920x1080 when it is missing, as in a source build without make_romfs_patches.py --prompts <style> --aspect or
 // after a switch of prompts in the menu, where a default of another shape would trade the prompts the player chose for
 // the Switch ones.
@@ -422,22 +423,21 @@ int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
 }
 
 static char screen_res[16];   // set once by cfg_init, "" for none
-// romfs-patches-xbox-, romfs-patches-xbox-label- and romfs-patches-pc-<screen_res> have a manifest (set once by
-// cfg_init)
-static const char *const screen_folders[3] = {"romfs-patches-xbox", "romfs-patches-xbox-label", "romfs-patches-pc"};
-static int screen_prompts[3];
+// Which pad and keyboard prompts' folders have a manifest at screen_res's shape (<folder>-<screen_res>; set once by
+// cfg_init): the folders input_map.c input_prompts_folder names
+static const char *const screen_folders[5] = {"romfs-patches-xbox", "romfs-patches-xbox-label",
+                                              "romfs-patches-playstation", "romfs-patches-playstation-xbox",
+                                              "romfs-patches-pc"};
+static int screen_prompts[5];
 
-// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick and
-// input_prompts_folder: an unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is
-// "xbox_prompts"; the Xbox prompts take romfs-patches-xbox with the Nintendo pad layout (or "xbox_prompts") and
-// romfs-patches-xbox-label with any other.
+// Whether the prompts in effect have their folder at screen_res: the folder input_map.c input_prompts_pick and
+// input_prompts_folder pick at start. The game's own prompts need none.
 static int shape_keeps_prompts(void) {
-    const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
-    if (p && *p && !strcasecmp(p, "pc")) return screen_prompts[2];
-    int xbox = p && *p ? !strcasecmp(p, "xbox") : l && !strcasecmp(l, "xbox_prompts");
-    if (!xbox) return 1;
-    int by_position = l && (!strcasecmp(l, "nintendo") || !strcasecmp(l, "xbox_prompts"));
-    return screen_prompts[by_position ? 0 : 1];
+    const char *layout = raw_get(PREFIX "PAD_LAYOUT");
+    const char *want = input_prompts_folder(input_prompts_pick(raw_get(PREFIX "PROMPTS"), layout), layout);
+    for (int i = 0; want && i < 5; i++)
+        if (!strcmp(screen_folders[i], want)) return screen_prompts[i];
+    return 1;
 }
 
 static void screen_default(void) {
@@ -455,11 +455,18 @@ static void screen_default(void) {
     if (best < 0) best = fit;
     if (best < 0) return;
     snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 5; i++)
         screen_prompts[i] = romfs_shaped_prompts_ready(screen_folders[i], SHAPED[best][0], SHAPED[best][1]);
     if (!raw_get(PREFIX "OUTPUT_RES") && shape_keeps_prompts())
         rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
                sh, screen_res);
+}
+
+int cfg_screen_size(unsigned out[2]) {
+    unsigned w = 0, h = 0;
+    if (raw_get(PREFIX "OUTPUT_RES") || !screen_res[0] || sscanf(screen_res, "%ux%u", &w, &h) != 2) return 0;
+    out[0] = w, out[1] = h;
+    return 1;
 }
 
 const char *cfg_get(const char *name) {

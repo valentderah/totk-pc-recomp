@@ -70,7 +70,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "HUD width",
     [UI_MENU_HUD_WIDTH_DESC] = "On a screen wider than 16:9, how far apart the HUD's left and right sides are. Full puts "
                                "them at the screen's edges; 21:9 or 16:9 keeps the HUD within the middle of the screen "
-                               "of that shape. Prepare a missing layout in this tab or rerun setup, then restart.",
+                               "of that shape. A missing layout is made in the background and used after a restart.",
     [UI_MENU_HUD_WIDTH_FULL] = "Full screen",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
@@ -296,19 +296,23 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Which controller's buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, "
                              "RB, LT, RT, Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button "
                              "the layout above presses (with Nintendo (A right) the right button is labelled B, so the "
-                             "prompts for A show B). PC: the keys and mouse buttons of the keyboard's default layout "
-                             "(E, Shift, Space, left click...) and the mouse for the camera. The game reads its prompts "
-                             "at start, so they change after a restart. They are part of the game's files, so a button "
-                             "you remap in Controls keeps its old prompt on screen.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
+                             "prompts for A show B). PlayStation: the shapes on a PlayStation pad (○ × △ □, L1, R1, "
+                             "L2, R2, Options and Share), on the button the layout above presses. PC: the keys and "
+                             "mouse buttons of the keyboard's default layout (E, Shift, Space, left click...) and the "
+                             "mouse for the camera. The game reads its prompts at start, so they change after a "
+                             "restart. They are part of the game's files, so a button you remap in Controls keeps its "
+                             "old prompt on screen.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "off at this game resolution (no layout made for it)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "no layout made for this shape: run the setup again",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout being made in the background; used at the next start",
-    [UI_MENU_SHAPE_PREPARE] = "Prepare the layout for this screen",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Makes the interface layout and the chosen button prompts for this game resolution's shape in the background, with the setup's tools, as the setup does for the displays it saw. The game keeps running; it uses them from its next start.",
+    [UI_MENU_PROMPTS_PREPARING] = "prompt files being made in the background; used at the next start",
+    [UI_MENU_PREPARE_RETRY] = "Try again",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Starts the setup's tools again to make the missing interface layout or button prompt files in the background. The game keeps running; it uses them from its next start.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "the setup's tools did not start: run the setup again",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
@@ -678,7 +682,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "Ширина интерфейса",
     [UI_MENU_HUD_WIDTH_DESC] = "На экране шире 16:9: как далеко друг от друга левая и правая части интерфейса. "
                                "«Весь экран» ставит их у краёв экрана; 21:9 или 16:9 держит интерфейс в середине "
-                               "экрана такой формы. Подготовьте недостающую раскладку на этой вкладке или повторите установку, затем перезапустите игру.",
+                               "экрана такой формы. Недостающая раскладка создаётся в фоне и будет после перезапуска.",
     [UI_MENU_HUD_WIDTH_FULL] = "Весь экран",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
@@ -903,19 +907,23 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Кнопки какого контроллера показывают подсказки игры. Nintendo: как в самой игре. Xbox: "
                              "LB, RB, LT, RT, Menu, View и крестовина, а A, B, X и Y подписаны так же, как кнопка, "
                              "которую нажимает раскладка выше (в Nintendo (A справа) правая кнопка подписана B, и "
-                             "подсказки A показывают B). PC: клавиши и кнопки мыши стандартной раскладки клавиатуры "
-                             "(E, Shift, пробел, левый клик...) и мышь для камеры. Игра читает подсказки при запуске, "
-                             "так что они меняются после перезапуска. Подсказки записаны в файлах игры, поэтому у "
-                             "кнопки, переназначенной на вкладке управления, на экране остаётся прежняя подсказка.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
+                             "подсказки A показывают B). PlayStation: символы геймпада PlayStation (○ × △ □, L1, R1, "
+                             "L2, R2, Options и Share) на кнопке, которую нажимает раскладка выше. PC: клавиши и "
+                             "кнопки мыши стандартной раскладки клавиатуры (E, Shift, пробел, левый клик...) и мышь "
+                             "для камеры. Игра читает подсказки при запуске, так что они меняются после перезапуска. "
+                             "Подсказки записаны в файлах игры, поэтому у кнопки, переназначенной на вкладке "
+                             "управления, на экране остаётся прежняя подсказка.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при этом разрешении игры (для него нет раскладки)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "для этой формы нет раскладки: запустите установщик снова",
     [UI_MENU_OUTPUT_RES_PREPARING] = "раскладка создаётся в фоне; будет при следующем запуске",
-    [UI_MENU_SHAPE_PREPARE] = "Подготовить раскладку для этого экрана",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Создаёт в фоне раскладку интерфейса и выбранные подсказки кнопок для формы этого разрешения игры инструментами установщика, как установщик делает для мониторов, которые видел. Игра продолжает работать; раскладка будет со следующего запуска.",
+    [UI_MENU_PROMPTS_PREPARING] = "файлы подсказок создаются в фоне; будут при следующем запуске",
+    [UI_MENU_PREPARE_RETRY] = "Повторить",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Снова запускает инструменты установщика, чтобы создать в фоне недостающую раскладку интерфейса или файлы подсказок кнопок. Игра продолжает работать; они будут со следующего запуска.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "инструменты установщика не запустились: запустите установщик снова",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
@@ -1327,7 +1335,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "Largura do HUD",
     [UI_MENU_HUD_WIDTH_DESC] = "Em uma tela mais larga que 16:9: a distância entre os lados esquerdo e direito do HUD. "
                                "Tela cheia os coloca nas bordas da tela; 21:9 ou 16:9 mantém o HUD no meio da tela "
-                               "desse formato. Prepare o layout ausente nesta aba ou execute a instalação novamente e reinicie o jogo.",
+                               "desse formato. Um layout ausente é feito em segundo plano e usado depois de reiniciar o jogo.",
     [UI_MENU_HUD_WIDTH_FULL] = "Tela cheia",
     [UI_MENU_RENDER_SCALE] = "Escala da renderização 3D",
     [UI_MENU_RENDER_SCALE_DESC] = "Tamanho da cena 3D em relação à resolução do jogo; o FSR do jogo a amplia até esse "
@@ -1701,13 +1709,15 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Os botões de qual controle os ícones do jogo mostram. Nintendo: os do próprio jogo. "
                              "Xbox: LB, RB, LT, RT, Menu, Exibir e uma cruz direcional, e A, B, X e Y com a letra do "
                              "botão que o layout acima aperta (com Nintendo (A à direita) o botão da direita tem a "
-                             "letra B, então os ícones de A mostram B). PC: as teclas e os botões do mouse do layout "
-                             "padrão do teclado (E, Shift, Espaço, clique esquerdo...) e o mouse para a câmera. O jogo "
-                             "lê os ícones ao iniciar, então eles mudam depois de reiniciar. Eles fazem parte dos "
-                             "arquivos do jogo, então um botão remapeado em Controles continua com o ícone antigo na "
-                             "tela.",
+                             "letra B, então os ícones de A mostram B). PlayStation: os símbolos de um controle "
+                             "PlayStation (○ × △ □, L1, R1, L2, R2, Options e Share), no botão que o layout acima "
+                             "aperta. PC: as teclas e os botões do mouse do layout padrão do teclado (E, Shift, "
+                             "Espaço, clique esquerdo...) e o mouse para a câmera. O jogo lê os ícones ao iniciar, "
+                             "então eles mudam depois de reiniciar. Eles fazem parte dos arquivos do jogo, então um "
+                             "botão remapeado em Controles continua com o ícone antigo na tela.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "Câmera com o mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico (jogos 1.4.3 e 1.2.1; o 1.1.0 usa a emulação do analógico). Emulação do analógico: o mouse age como o analógico direito.",
@@ -1738,8 +1748,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados nesta resolução de jogo (sem layout feito para ela)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "sem layout feito para este formato: rode o instalador de novo",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout sendo feito em segundo plano; usado na próxima vez que o jogo abrir",
-    [UI_MENU_SHAPE_PREPARE] = "Preparar o layout para esta tela",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Faz em segundo plano o layout da interface e os botões escolhidos para o formato desta resolução de jogo, com as ferramentas do instalador, como o instalador faz para os monitores que viu. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
+    [UI_MENU_PROMPTS_PREPARING] = "arquivos dos ícones sendo feitos em segundo plano; usados na próxima vez que o jogo abrir",
+    [UI_MENU_PREPARE_RETRY] = "Tentar de novo",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Abre de novo as ferramentas do instalador para fazer em segundo plano o layout da interface ou os arquivos dos ícones que faltam. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "as ferramentas do instalador não abriram: rode o instalador de novo",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
@@ -1987,7 +1998,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "界面宽度",
     [UI_MENU_HUD_WIDTH_DESC] = "在比 16:9 更宽的屏幕上，界面左右两侧相距多远。"
                                "“整个屏幕”把它们放在屏幕边缘；21:9 或 16:9 则把界面保持在屏幕中间该比例的区域内。"
-                               "请在此选项卡准备缺少的布局，或重新运行安装程序，然后重启游戏。",
+                               "缺少的布局会在后台制作，重启游戏后生效。",
     [UI_MENU_HUD_WIDTH_FULL] = "整个屏幕",
     [UI_MENU_RENDER_SCALE] = "3D 渲染比例",
     [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的尺寸；"
@@ -2455,10 +2466,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS] = "按键提示",
     [UI_MENU_PROMPTS_DESC] = "游戏的按键提示显示哪种手柄的按键。Nintendo：游戏原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
-                             "B）。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
+                             "B）。PlayStation：PlayStation 手柄上的符号（○ × △ □、L1、R1、L2、R2、Options 和 Share），"
+                             "显示在上方布局所按下的按键上。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
                              "游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "鼠标视角",
     [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线（游戏 1.4.3 和 1.2.1；1.1.0 使用摇杆模拟）。摇杆模拟：鼠标相当于右摇杆。",
@@ -2489,8 +2502,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "此游戏分辨率下关闭（未为其制作布局）",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "未为此比例制作布局：请重新运行安装程序",
     [UI_MENU_OUTPUT_RES_PREPARING] = "布局正在后台制作；下次启动时使用",
-    [UI_MENU_SHAPE_PREPARE] = "为此屏幕准备布局",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "使用安装程序的工具，在后台为此游戏分辨率的比例制作界面布局和所选按键提示，与安装程序为其检测到的显示器所做的相同。游戏继续运行；下次启动时生效。",
+    [UI_MENU_PROMPTS_PREPARING] = "按键提示文件正在后台制作；下次启动时使用",
+    [UI_MENU_PREPARE_RETRY] = "重试",
+    [UI_MENU_PREPARE_RETRY_DESC] = "再次启动安装程序的工具，在后台制作缺少的界面布局或按键提示文件。游戏继续运行；下次启动时生效。",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "安装程序的工具未能启动：请重新运行安装程序",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",

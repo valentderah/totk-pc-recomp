@@ -635,6 +635,21 @@ class CleanupTest(unittest.TestCase):
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(lines[1:3], ['-c', steps.REBUILD_BOOT])
 
+    def test_removes_only_stale_part_folders(self):
+        # make_romfs_patches.py's unfinished folders: an hour-old one is a stopped run's, a fresh one a running one's
+        old, fresh = self.dest / 'romfs-patches-2560x1080.part-41', self.dest / 'romfs-patches-pc.part-stale-42'
+        for folder in (old, fresh):
+            (folder / 'UI').mkdir(parents=True)
+            (folder / 'UI' / 'a.zs').write_bytes(b'x')
+        (self.dest / 'romfs-patches-2560x1080').mkdir()
+        hour = steps.time.time() - steps.PART_STALE_S - 60
+        for path in (old, old / 'UI', old / 'UI' / 'a.zs'):
+            steps.os.utime(path, (hour, hour))
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.is_dir() and (self.dest / 'romfs-patches-2560x1080').is_dir())
+        self.assertIsNone(steps.SHAPED_FOLDER.match(old.name))   # the Shapes step's own clean-up leaves them
+
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
             p.unlink()
@@ -866,6 +881,24 @@ class ShapesTest(unittest.TestCase):
                                                              'pad_layout = nintendo\nprompts = xbox',
                                                              'pad_layout = xbox_prompts', 'prompts = nintendo')],
                          [None, 'pc', 'xbox-label', 'xbox', 'xbox', None])
+        self.assertEqual([screens.prompts_style(t) for t in ('prompts = playstation', 'prompts = PS',
+                                                             'pad_layout = nintendo\nprompts = playstation',
+                                                             'pad_layout = xbox\nprompts = playstation')],
+                         ['playstation-xbox', 'playstation-xbox', 'playstation', 'playstation-xbox'])
+
+    def test_playstation_shapes_replace_every_older_shaped_folder(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = auto\nprompts = playstation\n')
+        for old in ('romfs-patches-playstation-1280x800', 'romfs-patches-playstation-xbox-3440x1440-hud21x9',
+                    'romfs-patches-xbox-label-2560x1080', 'romfs-patches-playstation-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-playstation-xbox' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox',
+                          'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(self.calls[-1][self.calls[-1].index('--prompts') + 1], 'playstation-xbox')
 
     def test_wanted_from_displays_and_ini(self):
         (self.dest / 'totk.ini').write_text('[display]\noutput_res = 3000x2000\n[input]\nprompts = pc\n')

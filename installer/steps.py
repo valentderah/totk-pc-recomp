@@ -1303,14 +1303,15 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
-        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
-        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # The same with Xbox and PlayStation button icons in the prompts, for prompts = xbox and playstation
+        # (make_romfs_patches.py --prompts): romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label
+        # for xbox and auto, and romfs-patches-playstation / -playstation-xbox likewise (runtime/input_map.c
+        # input_prompts_folder). All are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
         # files are missing, so the setup warns once and goes on. The keyboard and mouse prompts are the PcPrompts
         # step's: they follow totk.ini's bindings.
         failed = None
-        for style in ('xbox', 'xbox-label'):
+        for style in screens.PAD_PROMPTS:
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
@@ -1407,7 +1408,30 @@ class PcPrompts(Step):
 
 # ---- 6b. screen shapes
 
-SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-xbox|-xbox-label|-pc)?-\d+x\d+(?:-hud(?:16|21)x9)?$')
+SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-(?:%s))?-\d+x\d+(?:-hud(?:16|21)x9)?$'
+                           % '|'.join(map(re.escape, screens.PROMPTS_STYLES)))
+# make_romfs_patches.py writes <folder>.part-<pid> and renames it to <folder> when it is complete. A run that was
+# stopped (the PC turned off under a generator the game started, runtime/romfs.c romfs_folders_prepare) leaves its
+# folder behind: one whose files did not change for PART_STALE_S is such a leftover, a younger one may belong to a
+# generator running now. SHAPED_FOLDER matches neither.
+PART_FOLDER = re.compile(r'^romfs-patches[\w.-]*\.part-[\w-]+$')
+PART_STALE_S = 3600
+
+
+def stale_parts(dest, now=None):
+    """The leftover .part folders of make_romfs_patches.py runs in dest."""
+    now = time.time() if now is None else now
+    found = []
+    for folder in dest.iterdir() if dest.is_dir() else ():
+        if not (folder.is_dir() and not folder.is_symlink() and PART_FOLDER.match(folder.name)):
+            continue
+        try:
+            newest = max([folder.stat().st_mtime] + [f.stat().st_mtime for f in folder.rglob('*')])
+        except OSError:
+            continue
+        if now - newest > PART_STALE_S:
+            found.append(folder)
+    return found
 
 
 def hud_width(dest):
@@ -1428,13 +1452,15 @@ def shape_hud(size, hud):
 
 
 class Shapes(Step):
-    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox or PC prompts
+    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox, PlayStation or
+    PC prompts
     in totk.ini, romfs-patches-<style>-<w>x<h> (that layout with those prompts), for the shapes this player needs:
     those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
     game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15
     sizes for every prompts style, 64 folders. The key holds the shapes, prompts style and selected HUD width, so a run after a
-    monitor or settings change (or its rebuild mode) writes only these again; the game's settings menu can also start
-    the generator for the shape in use (runtime/ui/menu.cpp row_output_res)."""
+    monitor or settings change (or its rebuild mode) writes only these again; the game also starts the generator for a
+    folder its settings need and the install lacks, at start and from its menu (runtime/romfs.c romfs_folders_prepare,
+    make_romfs_patches.py --background), whose unfinished .part folders the clean-up below leaves alone."""
 
     id = 'shapes'
 
@@ -1593,7 +1619,7 @@ class Cleanup(Step):
         ctx.state['lang'] = ctx.lang
         (dest / 'profile').mkdir(exist_ok=True)
         rep.progress('cleanup', 'temp', force=True)
-        for stale in dest.glob('update-merge-*'):
+        for stale in [*dest.glob('update-merge-*'), *stale_parts(dest)]:
             remove(stale)
         for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)

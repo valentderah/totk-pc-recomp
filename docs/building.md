@@ -122,10 +122,12 @@ of them.
    reason, and `--full-build` compiles everything.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
-   For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
-   they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
-   `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
+   For Xbox and PlayStation button prompts, run `make_romfs_patches.py` twice more for each, with `--prompts xbox`,
+   `--prompts xbox-label`, `--prompts playstation` and `--prompts playstation-xbox`: they write
+   `build\<ver>\romfs-patches-xbox`, `-xbox-label`, `-playstation` and `-playstation-xbox`
+   ([controls.md](controls.md), "Xbox and PlayStation button prompts"), which `build_game.py` copies next to `totk.exe`
+   like `romfs-patches`. `--prompts pc` writes `romfs-patches-pc`, the keyboard and mouse prompts
+   ([controls.md](controls.md), "PC button prompts").
    `--aspect <w>x<h>` writes the UI laid out for a game resolution of another shape; with `--hud 16:9` or `--hud 21:9`
    (a screen wider than that) the HUD stays within the middle 16:9 or 21:9 instead of the screen's corners. The default
    `--out` then is `build\<ver>\romfs-patches-<w>x<h>-hud16x9` (`-hud21x9`), which the game loads for `hud_width = 16:9`
@@ -239,7 +241,9 @@ HUD pane/animation and generator naming regressions run with Python 3.14+: `test
 Set `HUD_TEST_ROMFS` to a verified extracted RomFS directory to include a real-archive comparison against the
 pre-port layout generator; all game-derived temporary data stays under `build/`.
 `python tests/romfs_shapes_check.py --cc <clang>` compiles the production folder-selection and preparation helpers
-to check canonical aliases, capped/full fallback, prompt arguments and generation deduplication without game files.
+to check canonical aliases, capped/full fallback, prompt arguments, the missing 16:9 prompts and generation
+deduplication without game files. `tests/romfs_prompts_test.py` checks that two `--background` runs for one folder
+publish it once and that a folder with a manifest is kept.
 A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump

@@ -90,12 +90,14 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written three times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written five times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`). The prompt folders are optional: when one cannot be made, the setup warns and finishes.
+   and `auto`), `romfs-patches-playstation` and `romfs-patches-playstation-xbox` (PlayStation prompts for
+   `prompts = playstation`, the same split). The prompt folders are optional: when one cannot be made, the setup warns
+   and finishes.
    **PC prompts** (step `pc_prompts`): `romfs-patches-pc`, the keyboard and mouse prompts for `prompts = pc`, drawn
    from the `bind_` lines of `totk.ini` (`--binds`). Its key holds those lines, so a setup run after a change of the
-   bindings draws only these again. Optional like the Xbox prompts. All four 16:9 folders are always written, so a
+   bindings draws only these again. Optional like the Xbox prompts. All six 16:9 folders are always written, so a
    switch of the prompts style at 16:9 needs no setup run.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
@@ -108,9 +110,13 @@ loads the saves 1.4.3 wrote.
    `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
    closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
    same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
-   again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
-   game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
-   background for the next start.
+   again when the displays, the prompts or the patches change. At a game resolution whose shape has no folder the
+   game draws 16:9 with bars and starts the generator itself, in the background, for the next start: at start and
+   when the settings menu changes the resolution, the HUD width, the prompts or the pad layout
+   (`runtime/romfs.c`, `romfs_folders_prepare`, with the Python and tools that `build-cache/rebuild.txt` names; a
+   missing 16:9 prompts folder too). Those runs use `--background`: below-normal priority, and a folder that has a
+   manifest is never written into. Every `make_romfs_patches.py` run writes `<folder>.part-<pid>` and renames it into
+   place when complete; the clean-up step removes the `.part` folders of stopped runs once they are an hour old.
 9. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
