@@ -70,7 +70,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "HUD width",
     [UI_MENU_HUD_WIDTH_DESC] = "On a screen wider than 16:9, how far apart the HUD's left and right sides are. Full puts "
                                "them at the screen's edges; 21:9 or 16:9 keeps the HUD within the middle of the screen "
-                               "of that shape. Prepare a missing layout in this tab or rerun setup, then restart.",
+                               "of that shape. A missing layout is made in the background and used after a restart.",
     [UI_MENU_HUD_WIDTH_FULL] = "Full screen",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
@@ -310,8 +310,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "off at this game resolution (no layout made for it)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "no layout made for this shape: run the setup again",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout being made in the background; used at the next start",
-    [UI_MENU_SHAPE_PREPARE] = "Prepare the layout for this screen",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Makes the interface layout and the chosen button prompts for this game resolution's shape in the background, with the setup's tools, as the setup does for the displays it saw. The game keeps running; it uses them from its next start.",
+    [UI_MENU_PROMPTS_PREPARING] = "prompt files being made in the background; used at the next start",
+    [UI_MENU_PREPARE_RETRY] = "Try again",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Starts the setup's tools again to make the missing interface layout or button prompt files in the background. The game keeps running; it uses them from its next start.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "the setup's tools did not start: run the setup again",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
@@ -676,7 +677,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "Ширина интерфейса",
     [UI_MENU_HUD_WIDTH_DESC] = "На экране шире 16:9: как далеко друг от друга левая и правая части интерфейса. "
                                "«Весь экран» ставит их у краёв экрана; 21:9 или 16:9 держит интерфейс в середине "
-                               "экрана такой формы. Подготовьте недостающую раскладку на этой вкладке или повторите установку, затем перезапустите игру.",
+                               "экрана такой формы. Недостающая раскладка создаётся в фоне и будет после перезапуска.",
     [UI_MENU_HUD_WIDTH_FULL] = "Весь экран",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
@@ -915,8 +916,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при этом разрешении игры (для него нет раскладки)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "для этой формы нет раскладки: запустите установщик снова",
     [UI_MENU_OUTPUT_RES_PREPARING] = "раскладка создаётся в фоне; будет при следующем запуске",
-    [UI_MENU_SHAPE_PREPARE] = "Подготовить раскладку для этого экрана",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Создаёт в фоне раскладку интерфейса и выбранные подсказки кнопок для формы этого разрешения игры инструментами установщика, как установщик делает для мониторов, которые видел. Игра продолжает работать; раскладка будет со следующего запуска.",
+    [UI_MENU_PROMPTS_PREPARING] = "файлы подсказок создаются в фоне; будут при следующем запуске",
+    [UI_MENU_PREPARE_RETRY] = "Повторить",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Снова запускает инструменты установщика, чтобы создать в фоне недостающую раскладку интерфейса или файлы подсказок кнопок. Игра продолжает работать; они будут со следующего запуска.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "инструменты установщика не запустились: запустите установщик снова",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
@@ -1323,7 +1325,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "Largura do HUD",
     [UI_MENU_HUD_WIDTH_DESC] = "Em uma tela mais larga que 16:9: a distância entre os lados esquerdo e direito do HUD. "
                                "Tela cheia os coloca nas bordas da tela; 21:9 ou 16:9 mantém o HUD no meio da tela "
-                               "desse formato. Prepare o layout ausente nesta aba ou execute a instalação novamente e reinicie o jogo.",
+                               "desse formato. Um layout ausente é feito em segundo plano e usado depois de reiniciar o jogo.",
     [UI_MENU_HUD_WIDTH_FULL] = "Tela cheia",
     [UI_MENU_RENDER_SCALE] = "Escala da renderização 3D",
     [UI_MENU_RENDER_SCALE_DESC] = "Tamanho da cena 3D em relação à resolução do jogo; o FSR do jogo a amplia até esse "
@@ -1730,8 +1732,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados nesta resolução de jogo (sem layout feito para ela)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "sem layout feito para este formato: rode o instalador de novo",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout sendo feito em segundo plano; usado na próxima vez que o jogo abrir",
-    [UI_MENU_SHAPE_PREPARE] = "Preparar o layout para esta tela",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Faz em segundo plano o layout da interface e os botões escolhidos para o formato desta resolução de jogo, com as ferramentas do instalador, como o instalador faz para os monitores que viu. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
+    [UI_MENU_PROMPTS_PREPARING] = "arquivos dos ícones sendo feitos em segundo plano; usados na próxima vez que o jogo abrir",
+    [UI_MENU_PREPARE_RETRY] = "Tentar de novo",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Abre de novo as ferramentas do instalador para fazer em segundo plano o layout da interface ou os arquivos dos ícones que faltam. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "as ferramentas do instalador não abriram: rode o instalador de novo",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
@@ -1979,7 +1982,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HUD_WIDTH] = "界面宽度",
     [UI_MENU_HUD_WIDTH_DESC] = "在比 16:9 更宽的屏幕上，界面左右两侧相距多远。"
                                "“整个屏幕”把它们放在屏幕边缘；21:9 或 16:9 则把界面保持在屏幕中间该比例的区域内。"
-                               "请在此选项卡准备缺少的布局，或重新运行安装程序，然后重启游戏。",
+                               "缺少的布局会在后台制作，重启游戏后生效。",
     [UI_MENU_HUD_WIDTH_FULL] = "整个屏幕",
     [UI_MENU_RENDER_SCALE] = "3D 渲染比例",
     [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的尺寸；"
@@ -2480,8 +2483,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_OFF_SHAPE] = "此游戏分辨率下关闭（未为其制作布局）",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "未为此比例制作布局：请重新运行安装程序",
     [UI_MENU_OUTPUT_RES_PREPARING] = "布局正在后台制作；下次启动时使用",
-    [UI_MENU_SHAPE_PREPARE] = "为此屏幕准备布局",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "使用安装程序的工具，在后台为此游戏分辨率的比例制作界面布局和所选按键提示，与安装程序为其检测到的显示器所做的相同。游戏继续运行；下次启动时生效。",
+    [UI_MENU_PROMPTS_PREPARING] = "按键提示文件正在后台制作；下次启动时使用",
+    [UI_MENU_PREPARE_RETRY] = "重试",
+    [UI_MENU_PREPARE_RETRY_DESC] = "再次启动安装程序的工具，在后台制作缺少的界面布局或按键提示文件。游戏继续运行；下次启动时生效。",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "安装程序的工具未能启动：请重新运行安装程序",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",

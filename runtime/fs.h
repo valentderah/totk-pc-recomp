@@ -47,14 +47,19 @@ enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROM
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
 int romfs_prompts_ready(const char *folder);
-// 1 when w x h is of another shape whose selected HUD layout or prompts_folder's selected variant is missing.
-// NULL prompts_folder means the game's own prompts; a full-layout fallback does not satisfy a requested HUD cap.
-int romfs_shape_missing(unsigned w, unsigned h, const char *prompts_folder);
+// The folders a start at game resolution w x h with prompts_folder (input_prompts_folder; NULL for the game's own
+// prompts) and the selected HUD width needs and that have no manifest: ROMFS_NEED_PROMPTS, prompts_folder itself (16:9);
+// at another shape (res_wants_wide_overlay) ROMFS_NEED_LAYOUT, its romfs-patches-<w>x<h>[-hud..], and
+// ROMFS_NEED_SHAPED_PROMPTS, <prompts_folder>-<w>x<h>[-hud..]. A full-layout fallback does not satisfy a requested HUD
+// cap. 0 with TOTK_ROMFS_PATCHES set.
+enum { ROMFS_NEED_LAYOUT = 1, ROMFS_NEED_PROMPTS = 2, ROMFS_NEED_SHAPED_PROMPTS = 4 };
+int romfs_folders_missing(unsigned w, unsigned h, const char *prompts_folder);
 // 1 when build-cache/rebuild.txt names the setup's Python and tools/make_romfs_patches.py and both exist, with romfs/.
-int romfs_shape_can_prepare(void);
-// Starts the generator for w x h's shape and selected HUD width (including prompts_folder's variant when needed) as
-// child processes the game does not wait for; the next start loads the result. 1 when every one started.
-int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder);
+int romfs_folders_can_prepare(void);
+// Starts the generator for each folder romfs_folders_missing names, once per folder in this process, as child
+// processes the game does not wait for; the next start loads the result. 1 when every one runs, 0 when none was
+// missing, the tools are not there or one could not start.
+int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open

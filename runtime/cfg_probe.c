@@ -396,7 +396,7 @@ int probe_cfg(void) {
                   !romfs_shaped_prompts_ready("romfs-patches-pc", 5120, 2160),
               "shape: an older install's exact-size prompts folder serves that size only");
         cfg_set("TOTK_HUD_WIDTH", "16:9");
-        CHECK(romfs_shaped_ready(5120, 2160) && romfs_shape_missing(5120, 2160, NULL),
+        CHECK(romfs_shaped_ready(5120, 2160) && romfs_folders_missing(5120, 2160, NULL) == ROMFS_NEED_LAYOUT,
               "HUD: a full layout allows wide output but does not hide a missing selected cap");
         for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
             snprintf(f, sizeof f, "%s/%s", dir, capped[i]);
@@ -404,19 +404,39 @@ int probe_cfg(void) {
             snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
             plat_file_write(f, "#\n", 2);
         }
-        CHECK(!romfs_shape_missing(5120, 2160, "romfs-patches-xbox") &&
-                  romfs_shape_missing(5120, 2160, "romfs-patches-pc"),
+        CHECK(romfs_folders_missing(5120, 2160, "romfs-patches-xbox") == ROMFS_NEED_PROMPTS &&
+                  romfs_folders_missing(5120, 2160, "romfs-patches-pc") ==
+                      (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS),
               "HUD: canonical capped layouts serve aliases, including Xbox; missing PC prompts still need preparation");
         cfg_set("TOTK_HUD_WIDTH", "21:9");
-        CHECK(romfs_shape_missing(5120, 2160, NULL) && !romfs_shape_missing(5120, 1440, NULL),
+        CHECK(romfs_folders_missing(5120, 2160, NULL) && !romfs_folders_missing(5120, 1440, NULL),
               "HUD: a different cap needs a different folder; 5120x1440 uses the 3840x1080 shape");
         cfg_set("TOTK_HUD_WIDTH", "full");
         CHECK(!romfs_shaped_ready(5120, 1440), "HUD: switching to full does not reuse a capped-only layout");
         cfg_set("TOTK_HUD_WIDTH", "21:9");
-        CHECK(!romfs_shape_missing(1920, 1080, NULL), "HUD: 16:9 output ignores a wider cap");
+        CHECK(!romfs_folders_missing(1920, 1080, NULL), "HUD: 16:9 output ignores a wider cap");
+        // The 16:9 prompts' folder is needed at every shape (an older setup or a failed step left it out); at 16:9
+        // nothing shaped is
+        CHECK(romfs_folders_missing(1920, 1080, "romfs-patches-playstation") == ROMFS_NEED_PROMPTS &&
+                  romfs_folders_missing(2560, 1440, "romfs-patches-playstation") == ROMFS_NEED_PROMPTS,
+              "folders: missing 16:9 prompts are asked for at 16:9, without a shaped folder");
+        snprintf(f, sizeof f, "%s/romfs-patches-playstation", dir);
+        plat_file_mkdir_p(f);
+        snprintf(f, sizeof f, "%s/romfs-patches-playstation/manifest.tsv", dir);
+        plat_file_write(f, "#\n", 2);
+        CHECK(!romfs_folders_missing(1920, 1080, "romfs-patches-playstation") &&
+                  (romfs_folders_missing(5120, 2160, "romfs-patches-playstation") &
+                   (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS)) == ROMFS_NEED_SHAPED_PROMPTS,
+              "folders: present 16:9 prompts leave only the shaped folder to make");
+        plat_file_delete(f);
         plat_setenv("TOTK_ROMFS_PATCHES", "0");
-        CHECK(!romfs_shape_missing(5120, 2160, NULL), "HUD: explicit overlay overrides do not request generated layouts");
+        CHECK(!romfs_folders_missing(5120, 2160, NULL) && !romfs_folders_missing(1920, 1080, "romfs-patches-pc"),
+              "HUD: explicit overlay overrides do not request generated layouts or prompts");
         plat_setenv("TOTK_ROMFS_PATCHES", NULL);
+        // Without build-cache/rebuild.txt (a source build) nothing starts: the menu's notes keep "run the setup
+        // again" and the start spawns nothing (romfs.c overlay_init)
+        CHECK(!romfs_folders_can_prepare() && !romfs_folders_prepare(5120, 2160, "romfs-patches-pc"),
+              "folders: no setup's tools, no generator");
         cfg_set("TOTK_HUD_WIDTH", "full");
         for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
             snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);

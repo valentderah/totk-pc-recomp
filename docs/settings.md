@@ -18,7 +18,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
-| `hud_width` (default `full`) | `full` places the HUD at the screen's edges; `21:9` or `16:9` constrains it to that centered area on a wider game resolution. A cap that is not narrower than the screen, and 16:9 or taller output, keep the full layout. | Read at start. The Shapes installer step builds the selected cap only for needed screen shapes and button prompts. Changing it in the Screen tab may require preparing the layout there or rerunning setup before restarting. If a capped folder is missing the full layout loads with a log message. Explicit overlay overrides and player UI mods keep their precedence. | Safe |
+| `hud_width` (default `full`) | `full` places the HUD at the screen's edges; `21:9` or `16:9` constrains it to that centered area on a wider game resolution. A cap that is not narrower than the screen, and 16:9 or taller output, keep the full layout. | Read at start. The Shapes installer step builds the selected cap only for needed screen shapes and button prompts. After a change in the Screen tab an install makes a missing layout in the background; it loads at the next start. If a capped folder is missing the full layout loads with a log message. Explicit overlay overrides and player UI mods keep their precedence. | Safe |
 
 ## Diagnostics and logging
 

@@ -110,9 +110,13 @@ loads the saves 1.4.3 wrote.
    `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
    closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
    same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
-   again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
-   game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
-   background for the next start.
+   again when the displays, the prompts or the patches change. At a game resolution whose shape has no folder the
+   game draws 16:9 with bars and starts the generator itself, in the background, for the next start: at start and
+   when the settings menu changes the resolution, the HUD width, the prompts or the pad layout
+   (`runtime/romfs.c`, `romfs_folders_prepare`, with the Python and tools that `build-cache/rebuild.txt` names; a
+   missing 16:9 prompts folder too). Those runs use `--background`: below-normal priority, and a folder that has a
+   manifest is never written into. Every `make_romfs_patches.py` run writes `<folder>.part-<pid>` and renames it into
+   place when complete; the clean-up step removes the `.part` folders of stopped runs once they are an hour old.
 9. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship

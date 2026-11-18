@@ -241,7 +241,9 @@ HUD pane/animation and generator naming regressions run with Python 3.14+: `test
 Set `HUD_TEST_ROMFS` to a verified extracted RomFS directory to include a real-archive comparison against the
 pre-port layout generator; all game-derived temporary data stays under `build/`.
 `python tests/romfs_shapes_check.py --cc <clang>` compiles the production folder-selection and preparation helpers
-to check canonical aliases, capped/full fallback, prompt arguments and generation deduplication without game files.
+to check canonical aliases, capped/full fallback, prompt arguments, the missing 16:9 prompts and generation
+deduplication without game files. `tests/romfs_prompts_test.py` checks that two `--background` runs for one folder
+publish it once and that a folder with a manifest is kept.
 A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump

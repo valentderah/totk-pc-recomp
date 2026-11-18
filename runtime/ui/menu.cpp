@@ -499,6 +499,70 @@ static void row_window_size(void) {
     opt_choice_list("TOTK_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
+// ---- the folders the next start needs (romfs.c romfs_folders_missing): a game resolution of another shape needs its
+// layout's folder, and Xbox, PlayStation or PC prompts their folder, at that shape too. The setup writes them for the
+// displays it saw and the prompts totk.ini had then (installer/steps.py Prepare, PcPrompts, Shapes). When the
+// resolution, the HUD width, the prompts or the pad layout ask for one it lacks, the generator starts for the next
+// start (romfs_folders_prepare: child processes, the menu does not wait), once per request: a request stays the same
+// for SETTLE_NS first, so stepping through the sizes starts none for the ones passed. The notes under the resolution
+// and the prompts say so (row_output_res, prompts_note); when it could not start they say that and offer a retry. The
+// file checks run only when the request changes, after a settings change (cfg_version).
+enum { SETTLE_NS = 1500000000 };
+static struct {
+    unsigned seen;            // cfg_version of the last look at the settings
+    char request[160];        // output_res|hud_width|prompts folder in the settings
+    unsigned w, h;
+    const char *want;         // input_prompts_folder of the settings (a string literal), NULL for the game's own
+    int missing;              // ROMFS_NEED_* for request
+    uint64_t at;              // plat_now_ns from which request starts; 0 none waiting
+    char asked[160];          // the request started last
+    int started;              // for asked: 1 running, -1 failed to start
+} g_folders = {~0u, "", 0, 0, nullptr, 0, 0, "", 0};
+
+static void folders_start(void) {
+    g_folders.at = 0;
+    snprintf(g_folders.asked, sizeof g_folders.asked, "%s", g_folders.request);
+    g_folders.started = romfs_folders_prepare(g_folders.w, g_folders.h, g_folders.want) ? 1 : -1;
+}
+
+// On every frame the menu lays out (now: start a waiting request at once, as the menu closes). 1 while a request
+// waits.
+static int folders_tick(bool now) {
+    unsigned v = cfg_version();
+    if (v != g_folders.seen) {
+        g_folders.seen = v;
+        const char *res = cfg_value("TOTK_OUTPUT_RES"), *layout = cfg_value("TOTK_PAD_LAYOUT");
+        const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+        char request[sizeof g_folders.request];
+        snprintf(request, sizeof request, "%s|%s|%s", res, cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
+        if (strcmp(request, g_folders.request)) {
+            snprintf(g_folders.request, sizeof g_folders.request, "%s", request);
+            unsigned w = 0, h = 0;
+            if (sscanf(res, "%ux%u", &w, &h) != 2) w = h = 0;
+            g_folders.w = w, g_folders.h = h, g_folders.want = want;
+            g_folders.missing = w && h ? romfs_folders_missing(w, h, want) : 0;
+            g_folders.at = g_folders.missing && strcmp(request, g_folders.asked) && romfs_folders_can_prepare()
+                               ? plat_now_ns() + SETTLE_NS : 0;
+        }
+    }
+    if (!g_folders.at || (!now && plat_now_ns() < g_folders.at)) return g_folders.at != 0;
+    folders_start();
+    return 0;
+}
+
+// What happens to the folders of the request in the settings that need (a mask of ROMFS_NEED_*): 0 none missing or
+// no tools to make them, 1 being made (or about to start), -1 the generator did not start.
+static int folders_state(int need) {
+    if (!(g_folders.missing & need)) return 0;
+    if (g_folders.at) return 1;
+    return g_folders.started && !strcmp(g_folders.asked, g_folders.request) ? g_folders.started : 0;
+}
+
+// The retry under a row whose folders did not start.
+static void folders_retry(const char *id, int need) {
+    if (folders_state(need) < 0 && opt_button(id, UI_MENU_PREPARE_RETRY, UI_MENU_PREPARE_RETRY_DESC)) folders_start();
+}
+
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
 // 32:9 monitor sizes, the 16:10 screens of the Steam Deck, handhelds and laptops and the 3:2 screens of laptops and
 // tablets (Surface, Framework; the camera and the HUD follow
@@ -518,35 +582,18 @@ static void row_output_res(void) {
         snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
         names[i] = shown[i];
     }
-    // A size of another shape needs that shape's folders (romfs.c overlay_init): the layout, and with Xbox or PC
-    // prompts the prompts' one too. The setup writes them for the displays it saw (installer/steps.py Shapes); at a
-    // shape without them the game draws 16:9 with bars or keeps the Switch prompts, so the row says so and offers to
-    // start the generator for the next start (romfs_shape_prepare; a child process, the menu does not wait). The file
-    // checks run again only when a setting or the started generation changes.
-    static unsigned seen = ~0u;
-    static int missing, started;   // started: 0 not asked, 1 running, -1 failed to start
-    static char asked[128];
-    char request[128];
-    const char *now = cfg_value("TOTK_OUTPUT_RES");
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
-    snprintf(request, sizeof request, "%s|%s|%s", now, cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
-    if (seen != cfg_version()) {
-        seen = cfg_version();
-        unsigned w = 0, h = 0;
-        missing = sscanf(now, "%ux%u", &w, &h) == 2 && romfs_shape_missing(w, h, want);
-    }
-    int here = started && !strcmp(asked, request);   // resolution, selected HUD width and button prompts
-    const char *note = !missing ? nullptr
-                       : here   ? menu_text(started > 0 ? UI_MENU_OUTPUT_RES_PREPARING : UI_MENU_SHAPE_PREPARE_FAILED)
-                                : menu_text(UI_MENU_OUTPUT_RES_NO_LAYOUT);
+    // A size of another shape needs that shape's folders (romfs.c overlay_init): the layout, and with Xbox,
+    // PlayStation or PC prompts the prompts' one too. Without them the game draws 16:9 with bars or keeps the Switch
+    // prompts; folders_tick starts their generator, and the row says they are being made, or that the setup's tools
+    // are missing or did not start.
+    const int need = ROMFS_NEED_LAYOUT | ROMFS_NEED_SHAPED_PROMPTS;
+    int state = folders_state(need);
+    const char *note = !(g_folders.missing & need) ? nullptr
+                       : state > 0                 ? menu_text(UI_MENU_OUTPUT_RES_PREPARING)
+                       : state < 0                 ? menu_text(UI_MENU_SHAPE_PREPARE_FAILED)
+                                                   : menu_text(UI_MENU_OUTPUT_RES_NO_LAYOUT);
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC, -1, note);
-    if (!missing || here || !romfs_shape_can_prepare()) return;
-    if (!opt_button("##shape_prepare", UI_MENU_SHAPE_PREPARE, UI_MENU_SHAPE_PREPARE_DESC)) return;
-    unsigned w = 0, h = 0;
-    sscanf(now, "%ux%u", &w, &h);
-    snprintf(asked, sizeof asked, "%s", request);
-    started = romfs_shape_prepare(w, h, want) ? 1 : -1;
+    folders_retry("##shape_prepare", need);
 }
 
 // Offer only caps narrower than the canonical layout, using the same tolerance as romfs.c hud_suffix and Shapes.
@@ -895,10 +942,11 @@ static void row_quicksave_keys(void) {
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
 // layout, as a layout that puts A on the right button needs the face buttons named the other way round), but the game
-// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: "files
-// missing" when the setup did not write the one asked for, why it was left out at start (damaged, a game resolution
-// that is not 16:9, a RomFS mod with the same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then
-// *restart is set: a restart would bring the prompts asked for. NULL when they match.
+// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: when the
+// install lacks the one asked for (folders_tick looked), that it is being made in the background, or that it is
+// missing (no setup's tools) or could not be made; else why it was left out at start (damaged, a RomFS mod with the
+// same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then *restart is set: a restart would
+// bring the prompts asked for. NULL when they match.
 static const char *prompts_note(bool *restart) {
     *restart = false;
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
@@ -906,12 +954,15 @@ static const char *prompts_note(bool *restart) {
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
     // A game resolution of another shape needs a folder of its own for the prompts (<folder>-<w>x<h>, one per shape).
     // The setup writes it for the shapes of the displays it saw and the prompts totk.ini had then; at another shape
-    // the shape is the reason (row_output_res offers to make it), not a damaged install.
-    int off = romfs_prompts_off(want);
-    if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
-    switch (off) {
+    // the shape is the reason, not a damaged install.
+    int need = g_folders.missing & (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS), state = folders_state(need);
+    if (state > 0) return menu_text(UI_MENU_PROMPTS_PREPARING);
+    if (state < 0) return menu_text(UI_MENU_SHAPE_PREPARE_FAILED);
+    if (need & ROMFS_NEED_PROMPTS) return menu_text(UI_MENU_PROMPTS_MISSING);
+    if (need) return menu_text(UI_MENU_PROMPTS_OFF_SHAPE);
+    // ROMFS_PROMPTS_MISSING and _SHAPE: the folder the start lacked is there now, or the resolution needs another one
+    switch (romfs_prompts_off(want)) {
     case ROMFS_PROMPTS_FAILED: return menu_text(UI_MENU_PROMPTS_FAILED);
-    case ROMFS_PROMPTS_SHAPE: return menu_text(UI_MENU_PROMPTS_OFF_SHAPE);
     case ROMFS_PROMPTS_MODS: return menu_text(UI_MENU_PROMPTS_OFF_MODS);
     case ROMFS_PROMPTS_PATCHES: return menu_text(UI_MENU_PROMPTS_OFF_PATCHES);
     default: *restart = true; return menu_text(UI_MENU_PROMPTS_RESTART);
@@ -993,6 +1044,7 @@ static void tab_controls(float scale) {
     bool restart;
     const char *note = prompts_note(&restart);
     opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 4, UI_MENU_PROMPTS_DESC, note);
+    folders_retry("##prompts_prepare", ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS);
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_toggle("TOTK_GYRO_CALIBRATION", UI_MENU_GYRO_CALIBRATION, UI_MENU_GYRO_CALIBRATION_DESC);
@@ -1477,7 +1529,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::End();
 }
 
-static int g_save_pending;   // a changed setting still waits for its write to totk.ini (opt_save_tick)
+// a changed setting still waits for its write to totk.ini (opt_save_tick) or for its folders to start (folders_tick)
+static int g_save_pending;
 
 // ---- the performance overlay (TOTK_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers, in the style of SavageWindRecomp's perf_overlay_draw
@@ -1785,7 +1838,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
-        if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
+        // closed: the last change goes to totk.ini now, and the folders it needs start being made
+        if (g_save_pending) g_save_pending = opt_save_tick(1) | folders_tick(true);
         if (g_test.at && !g_test.opened && frame >= g_test.at) {
             g_test.opened = frame;
             g_test.page = 0;
@@ -1842,11 +1896,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    int folders_wait = open ? folders_tick(false) : 0;   // before the rows, whose notes it sets
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
     toast_draw(t, scale);
     ImGui::Render();
-    if (open) g_save_pending = opt_save_tick(0);
+    if (open) g_save_pending = opt_save_tick(0) | folders_wait;
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {
         static char path[512];   // this frame's image goes to a file; then the next tab, or the menu closes
