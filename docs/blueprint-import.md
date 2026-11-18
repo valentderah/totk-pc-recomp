@@ -14,6 +14,52 @@ Everything below was measured on a running game, on several save files, with the
 entry on the Autobuild screen. The **3D preview** of a build's parts — which decodes each part's real model through a
 GPL-2.0 decoder — is a separate change; it is described in `docs/blueprint-preview.md` and is not part of this one.
 
+## 0. Implementation map
+
+The feature is a pipeline of five layers, each a self-contained change with its own files and tests. Read top to
+bottom as a dependency tree: each layer consumes what the one above it produced. Sections 1-6 below describe each
+layer in full; [blueprint-preview.md](blueprint-preview.md) covers the 3D preview (layer 5) on its own.
+
+### 1. Input — the two file forms
+`runtime/blueprint_file.c` is the single entry point: it decides the form from the file's content and hands the blob to
+the parser either way.
+- **`.cai`** — the 6688-byte CAI blob itself, at the start of the file.
+- **`.txt`** — the same blob gzip-compressed and Base64-encoded inside one JSON member (`combinedActorInfoBase64`).
+
+### 2. Parse and validate
+- `runtime/blueprint_txt.c` + `runtime/blueprint_inflate.c`: a bounded scan for the member name → Base64 decode →
+  inflate with a hard size bound → gzip-trailer CRC32 and length check. A bare deflate stream is accepted too.
+- `runtime/blueprint_cai.c`: validates the `CmbAct` magic, version, both actor-count copies, every name, all matrix
+  floats and the bounding box **before anything is written**.
+
+### 3. Write into the save data the game holds
+`runtime/blueprint_import.c`. The loaded save lives in guest memory, which is host memory on this port
+(`runtime/memory.c`), so an import is a write into it.
+- The five parallel arrays (`CombinedActorInfo`, `Index`, `IsFavorite`, `CameraPos`, `CameraAt`) are located by scanning
+  the guest heap for the blob magic and by matching the live `Index` array against the save file's 30 distinct ages.
+- **`Index` decides display order, not the array order** — the fact that cost the most time to establish.
+- `bp_rotate_ages` evicts the oldest non-favorite entry and rotates the ages so the import is drawn first; then the
+  cached draft pictures are dropped so the already-open page redraws.
+
+### 4. The in-game entry point and picker
+- `runtime/blueprint_hint.cpp` draws the ⊕ entry onto the Autobuild screen's **own** guide bar (an ImGui overlay at the
+  bar's position; nothing of the game's archives is edited).
+- `runtime/blueprint_picker.c` + `runtime/ui/blueprint_picker.cpp`: the port's own file picker, driven by pointer,
+  D-pad / A / B, or keyboard.
+
+### 5. The 3D preview
+- `runtime/model_romfs.c` resolves each actor name to a real model in the player's own RomFS:
+  `Pack/Actor/<actor>.pack.zs` → ModelInfo BYML → `FmdbName` → `Model/<project>.<FmdbName>.bfres.mc` →
+  MCPK header + magicless zstd + `FMSH` (MeshCodec) → BFRES `FMDL`/`FSHP`/`FVTX`/`FSKL`.
+- `runtime/model_meshcodec.c` is the C door over [dt-12345/MeshCodec](https://github.com/dt-12345/MeshCodec) (GPL-2.0),
+  built **outside** the tree into `libmeshcodec.a`; a build without it falls back to each part's collision body
+  (`runtime/blueprint_shape.c`).
+- `runtime/ui/preview3d.cpp` renders the parts in one offscreen Vulkan pass with a real depth buffer.
+- Fused materials (余料建造) are placed by the weapon's `AttachmentParam` socket rule — `runtime/blueprint_attach.c`.
+
+Each layer's sources are the references in the table in section 12 and in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md); the file list for every layer is in section 8 below and in
+[blueprint-preview.md](blueprint-preview.md).
 ## 1. What the feature does
 
 While the game's **Autobuild screen** is open, its bottom guide bar shows one more hint — the ⊕ (Plus) button and the
@@ -402,4 +448,60 @@ Modified:
 - The blob is written before the `Index` rotation. Reversing that order lets the page render the new card order against
   the old blob, which shows up as a stale thumbnail on the open page.
 
+## 10. Controls
 
+**File picker**
+
+| Input | Action |
+|---|---|
+| ⊕ (Plus) on the Autobuild screen | Open the picker |
+| Left stick / D-pad | Move the focus through the list |
+| **R1** | Enter the focused folder |
+| **L1** | Go up one folder |
+| **L / R** (list focused) | Scroll a page |
+| A | Open the focused entry |
+| B | Up one folder, then cancel once there is none above |
+| Right click / B in the 3D view | Cancel |
+
+**3D preview view**
+
+| Input | Action |
+|---|---|
+| **Right stick** | Rotate the model (the build turns, not the camera) |
+| **ZR / ZL** (R2 / L2) | Zoom in / out, as a rate while held |
+| Mouse drag | Rotate, with inertia (three.js `OrbitControls` damping) |
+| Mouse wheel | Zoom, or scroll the list when the pointer is over it |
+
+> The zoom is remembered across files and saved to `totk.ini` as `blueprint_zoom`.
+
+## 11. AI involvement
+
+This branch was developed with **substantial AI assistance**. The feature was designed, researched, implemented, and
+debugged as a collaboration between the author and AI coding agents; the format research, the save-memory layout
+reverse-engineering, the boundary handling described in the design docs, and much of the code and documentation were
+produced with those agents' help. The author drove the work, made the design decisions, and reviewed and verified every
+change. Everything documented here is the result of that human-plus-AI process, not of either alone.
+
+That matters for the licence and for readers: the third-party references below are cited the same way regardless of
+which side of the collaboration first found them, and the analysis in this document and in
+[blueprint-preview.md](blueprint-preview.md) — including the "bounds these readers hold" review notes — is the record
+of what was learned along the way, not a claim of authorship.
+
+## 12. Which reference fed which layer
+
+Read for behaviour or format only; no code copied. Licences and pinned commits are in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+| Reference | Feeds implementation-map layer |
+|---|---|
+| McSpazzy/cai2json, cai2json-node | 2 — the `CmbAct` actor record and matrix layout |
+| McSpazzy/totk-gamedata | 3 — the five Autobuild draft arrays and their shapes |
+| dt-12345/MeshCodec | 5 — the `.bfres.mc` / `FMSH` decoder (linked outside the tree) |
+| dt-12345/totk_params | 5 — `AttachmentParam` / `ShapeParam` BYML parent-resolution rules |
+| KillzXGaming/Switch-Toolbox | 5 — BFRES rigid-skinning rule, Euler-vs-quaternion bone flag |
+| bfrespy, meshoptimizer | 5 — BFRES field offsets, index/vertex codec behaviour |
+| three.js OrbitControls | 5 — the preview's orbit and damping convention |
+| Blehditor | 5 — behaviour reference: palette, material, orbit, `fuseInfo` scale |
+
+**[HyruleWorks](https://www.hyruleworks.com)** supplied the real `.cai` files used as test and preview inputs
+(inputs only, never committed).
