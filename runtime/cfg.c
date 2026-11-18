@@ -170,7 +170,7 @@ static const CfgMeta metas[] = {
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"VOLUME_MUSIC", "100", "0..100", LIVE}, {"VOLUME_SFX", "100", "0..100", LIVE}, {"VOLUME_VOICE", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"AUDIO_DEVICE", "", NULL, LIVE},   // audio_mixer.c output_worker: a device name, empty for the system default
-    {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE}, {"GYRO_AUTO_BIAS", "1", "0|1", LIVE},
+    {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE}, {"GYRO_AUTO_BIAS", "0", "0|1", LIVE},
     {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
     // Written by the Calibrate gyro row (motion_fusion.c save_bias), not by hand; read by input.c pad_bias_select when a
     // controller connects and gyro_bias_pad names it.

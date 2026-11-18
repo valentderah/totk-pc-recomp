@@ -167,7 +167,8 @@ static void integrate(double R[3][3], const double gyro[3], const double acc[3],
     orthonormalize(R);
 }
 
-// The tracker's own switch (gyro_auto_bias, live, default 1). Off, nothing is learned or subtracted.
+// The tracker's own switch (gyro_auto_bias, live, default 0: subtracting a learned bias made aiming feel worse in
+// play, cause unknown). Off, nothing is learned or subtracted.
 int motion_auto_bias_enabled(void) {
     static int on = -1;
     static unsigned seen;
