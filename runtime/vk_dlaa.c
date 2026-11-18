@@ -957,12 +957,15 @@ static void next_jitter(uint32_t w, uint32_t ow) {
 // The replay reads the offset back from the snapshot of the scene camera's block (cam_offset, the snapshot is the block
 // as of the submit) for DLSS, the motion vectors and the per-object pass, which reproject with the camera unjittered;
 // after the DLSS point the snapshots of the jittered blocks are written back unjittered (cam_unjitter), so the effects
-// drawn over DLSS's picture stay unjittered as before. The game's own projections are symmetric (P[0][2] = P[1][2] = 0
-// in every block seen), which is what lets the offset be read back. TOTK_DLAA_CAM_JITTER=0 (test) moves the viewport
-// as on the other game versions.
+// drawn over DLSS's picture stay unjittered as before. A block's centre terms count as an offset only when they are one
+// this code gave that block (CJ.given): the game has off-centre projections of its own, such as the inventory's camera,
+// which draws Link right of the screen's centre with P[0][2] about -0.6, and read as a jitter that sent DLSS an offset
+// of 1152 pixels, smearing the world behind the inventory into horizontal streaks. TOTK_DLAA_CAM_JITTER=0 (test) moves
+// the viewport as on the other game versions.
 #define CAMJ_P_LR 0x70000e3688ull    // the return address of the projection's copy (rows 7-10)
 #define CAMJ_VP_LR 0x70000e36f4ull   // and of the view-projection's (rows 3-6)
 #define CAMJ_BLOCKS 16
+#define CAMJ_GIVEN 256               // offsets given lately, by block: about 40 frames' worth, the replay is a few behind
 #define UNJ_SLOTS 4096u              // 64-byte patches in flight (cam_unjitter, mv_pass): about 60 frames' worth
 
 static struct {
@@ -970,8 +973,8 @@ static struct {
     uint64_t presents, moved;        // the game's presents, and their count when the offset last moved on
     struct { uint64_t blk; float sx, sy; } cur[CAMJ_BLOCKS];   // this frame's blocks and the offset each projection took
     int ncur;
-    uint64_t blocks[CAMJ_BLOCKS];    // every block that took an offset (cam_unjitter)
-    int nblocks;
+    struct { uint64_t blk; float sx, sy; } given[CAMJ_GIVEN];  // each offset given and its block, a ring
+    uint32_t ngiven;
     uint32_t idx;                    // phases handed out
     float sx, sy;                    // this frame's offset, clip units (0: none)
     VkBuffer unj;                    // UNJ_SLOTS host-visible patches the replay copies from
@@ -1026,7 +1029,8 @@ void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
         }
         if (CJ.sx != 0.0f || CJ.sy != 0.0f) {
             m[2] -= CJ.sx, m[6] -= CJ.sy;
-            if (!in_list(CJ.blocks, CJ.nblocks, blk) && CJ.nblocks < CAMJ_BLOCKS) CJ.blocks[CJ.nblocks++] = blk;
+            uint32_t g = CJ.ngiven++ % CAMJ_GIVEN;
+            CJ.given[g].blk = blk, CJ.given[g].sx = CJ.sx, CJ.given[g].sy = CJ.sy;
             int i = 0;
             while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
             if (i < CAMJ_BLOCKS) CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
@@ -1042,14 +1046,22 @@ void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
 }
 
 // The offset a camera block took (clip units), from its snapshot, else from guest memory: a chunked replay's scan can
-// come before the snapshot, and the block holds this frame's bytes until the game's next frame.
+// come before the snapshot, and the block holds this frame's bytes until the game's next frame. Centre terms this code
+// did not give the block are the game's own and read as no offset.
 static int cam_offset(uint64_t blk, float *sx, float *sy) {
     *sx = *sy = 0.0f;
     if (!blk) return 0;
     const float *p = (const float *)vk_usnap_bytes(blk + 0x70, 32);
     if (!p) p = (const float *)(uintptr_t)(blk + 0x70);
-    *sx = -p[2], *sy = -p[6];
-    return *sx != 0.0f || *sy != 0.0f;
+    float x = -p[2], y = -p[6];
+    if (x == 0.0f && y == 0.0f) return 0;
+    int ours = 0;
+    plat_mutex_lock(&CJ.lk);
+    for (uint32_t i = 0, n = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; i < n && !ours; i++)
+        ours = CJ.given[i].blk == blk && CJ.given[i].sx == x && CJ.given[i].sy == y;
+    plat_mutex_unlock(&CJ.lk);
+    if (ours) *sx = x, *sy = y;
+    return ours;
 }
 
 // Records copies that write a block's view-projection rows 3-4 and projection rows 7-8 back without the offset (blk:
@@ -1093,10 +1105,13 @@ static void cam_unjitter(VkExec *ex) {
     if (!dup && nd < 32) done[nd++] = ex->cb;
     plat_mutex_unlock(&lk);
     if (dup) return;
-    uint64_t blocks[CAMJ_BLOCKS];
+    uint64_t blocks[CAMJ_BLOCKS];   // the blocks given an offset lately, newest first
+    int n = 0;
     plat_mutex_lock(&CJ.lk);
-    int n = CJ.nblocks;
-    memcpy(blocks, CJ.blocks, sizeof blocks);
+    for (uint32_t k = 0, m = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; k < m && n < CAMJ_BLOCKS; k++) {
+        uint64_t blk = CJ.given[(CJ.ngiven - 1 - k) % CAMJ_GIVEN].blk;
+        if (!in_list(blocks, n, blk)) blocks[n++] = blk;
+    }
     plat_mutex_unlock(&CJ.lk);
     int any = 0;
     for (int i = 0; i < n; i++) {
