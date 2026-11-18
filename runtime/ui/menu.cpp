@@ -1012,6 +1012,7 @@ static void tab_controls(float scale) {
         if (opt_button("##gyro_calib", UI_MENU_GYRO_CALIBRATE, UI_MENU_GYRO_CALIBRATE_DESC, status))
             input_motion_calibrate();
     }
+    opt_toggle("TOTK_GYRO_AUTO_BIAS", UI_MENU_GYRO_AUTO_BIAS, UI_MENU_GYRO_AUTO_BIAS_DESC);
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
