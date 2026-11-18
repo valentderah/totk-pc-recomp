@@ -304,6 +304,11 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# 1: DLSS takes the brightness of the game's picture as it is (exposure 1) instead of estimating the exposure from each
+# frame. In dark scenes (the Depths) the estimate moves with the camera, and large fogged areas turn darker or lighter
+# for a frame. 0, the default: DLSS estimates the exposure itself, as before. Every DLSS mode. Changes while the game
+# runs take effect at once.
+# dlss_fixed_exposure = 0
 # With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
 # as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
 # processes these effects too, as before (the default until the inventory preview, the scope and water edges are
