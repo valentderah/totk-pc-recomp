@@ -17,6 +17,7 @@
 void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size) {
     if (!p->mem || nvn_gpu_only((uintptr_t)p->mem) || off >= p->size || !size) return;
     if (size > p->size - off) size = p->size - off;
+    vk_mem_shadow_read((uintptr_t)p->mem + off, size);
     gfx_backend()->guest_read((uintptr_t)p->mem + off, size);
 }
 

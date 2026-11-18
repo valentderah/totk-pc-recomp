@@ -59,7 +59,7 @@
 # Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
 # game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
-# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
+# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back every frame after that wait, for example its depth queries, can be a frame old; a result it reads only once is waited for.
 # Works on 1.1.0, 1.2.1 and 1.4.3. Needs shadow storage (shadow below), which is on by default on Linux and
 # Wine and needs shadow = 1 on native Windows; without it the setting is ignored and the log says so.
 # sync_ahead = 0
@@ -304,6 +304,11 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# 1: DLSS takes the brightness of the game's picture as it is (exposure 1) instead of estimating the exposure from each
+# frame. In dark scenes (the Depths) the estimate moves with the camera, and large fogged areas turn darker or lighter
+# for a frame. 0, the default: DLSS estimates the exposure itself, as before. Every DLSS mode. Changes while the game
+# runs take effect at once.
+# dlss_fixed_exposure = 0
 # With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
 # as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
 # processes these effects too, as before (the default until the inventory preview, the scope and water edges are

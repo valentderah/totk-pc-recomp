@@ -291,6 +291,7 @@ int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int 
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_mirror_seal(void);   // before vk_mem_shadow_sync: the copies the next vk_mem_mirror_prologue takes
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
@@ -303,6 +304,7 @@ void vk_mem_shadow_sync(uint64_t fence);   // fence: the value of the part about
 // vk_mem_mirror_prologue's copies, which read the shadow.
 int vk_mem_shadow_deferred(void);
 void vk_mem_shadow_prologue(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_shadow_read_log(void);   // at exit, with TOTK_SYNC_AHEAD: the run total of vk_mem_shadow_read's waits
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
@@ -678,6 +680,13 @@ int vk_pipeline_vertex_input_dynamic(void);    // 1: vertex input is VK_EXT_vert
 void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAnswers *fs);
 int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TEX_* (GfxShaderAnswers.tex_type)
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
+// The sign of the depth bias a volume mask draw gets (vk_pipeline.c, see there), -1 toward smaller depth, 1 toward
+// larger, 0 for any other draw. vk_pipeline_set_dynamic enables the bias for it; vk_exec_draw.c prepare_draw decides it
+// where the draw's state changes and record_fixed sets the values, VOLUME_BIAS_UNITS and VOLUME_BIAS_SLOPE times the
+// sign.
+int vk_pipeline_volume_bias(const VkPipeState *s);
+#define VOLUME_BIAS_UNITS 16.0f
+#define VOLUME_BIAS_SLOPE 1.0f
 VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle list, line loop -> strip: the replay
                                                           // rewrites those draws; polygon -> fan
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type

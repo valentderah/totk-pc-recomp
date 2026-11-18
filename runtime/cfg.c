@@ -41,7 +41,7 @@ static const char *const known[] = {
     "BIND_INC", "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BARRIER_MERGE", "BLOCK_VIEWS_3D", "CLIMB_FIX", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DIALOGUE_CLICK", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_EFFECTS_AFTER", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DIALOGUE_CLICK", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_CAM_JITTER", "DLAA_EFFECTS_AFTER", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_FIXED_EXPOSURE", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "DYNAMIC_RES", "DYN_DELTA", "EXEFS", "FEEDBACK", "FIXED_RES_PATCH", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
     "FREEZE_IDLE", "FREE_CORES",
@@ -67,7 +67,7 @@ static const char *const known[] = {
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER", "SYNC_AHEAD",
     "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
+    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MASK_BIAS", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
@@ -85,7 +85,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
+    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLSS_FIXED_EXPOSURE", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
@@ -142,7 +142,7 @@ static const CfgMeta metas[] = {
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"DLSS_PRESET", "default", "default|k|j", LIVE}, {"DLAA_EFFECTS_AFTER", "0", "0|1", LIVE},
+    {"DLSS_PRESET", "default", "default|k|j", LIVE}, {"DLSS_FIXED_EXPOSURE", "0", "0|1", LIVE}, {"DLAA_EFFECTS_AFTER", "0", "0|1", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"MOVIE_ASPECT", "keep", "keep|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},

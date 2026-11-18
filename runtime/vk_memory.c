@@ -1000,7 +1000,7 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // skips the pending ranges in the CPU copy and copies them back whole, as before.
 // TOTK_SHADOW=1/0 (shadow in totk.ini) forces the mode on or off; the default is on for Linux and Wine.
 typedef struct { uint64_t lo, hi; uint8_t *base; int refs; } SRange;
-static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
+static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after mirror_lock and pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
 static SRange *spend;                             // shadow_lock: distinct GPU writes recorded and not copied back yet
@@ -1303,6 +1303,65 @@ void vk_mem_shadow_fence(void) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// TOTK_SYNC_AHEAD, nvnMemoryPoolInvalidateMappedRange: the game is about to read [addr, addr+size) of what the GPU
+// writes into pool storage. While the guard is not done, a write into the range that is still pending can belong to a
+// value the game was told is done, and its bytes come back only with that value's fence (vk_gpu_written). A range the
+// game reads again and again (its depth queries and visibility maps: one buffer written every frame or every few)
+// then still holds the result of the write before, and the game gets that one, a sample late: what the switch trades
+// for the frame in flight. A range it has not read lately holds no such result. TotK reads single pixels back
+// (main+0x407ed8 on 1.4.3) through a 64-byte buffer per request, taken in turn from rings of 64 to 256 and read once,
+// right after the frame wait: read early, the pixel is 0 0 0 0 in a buffer never used, and the answer to another
+// request, about 27 s old, once the ring came round. In the Depths the zeros put Link in gloom where there is none. So
+// a range with a pending write that is not known waits for the guard here. Known: the game invalidated this very
+// range within the last SREAD_AGE fence values (about 30 frames), when it held a result or was waited for.
+#define SREAD_N 64
+#define SREAD_AGE 64
+typedef struct { uint64_t addr, size, at; } SRead;
+static SRead sread[SREAD_N];                  // shadow_lock: the ranges the game invalidated last, with the value issued then
+static uint64_t s_read_waits, s_read_ticks;   // shadow_lock: since the last log
+static uint64_t r_read_waits, r_read_ticks, r_read_max;   // shadow_lock: over the run (vk_mem_shadow_read_log)
+
+void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
+    if (!shadow_on || !size || !nvn_sync_ahead_guard()) return;
+    plat_mutex_lock(&shadow_lock);
+    uint64_t now = vk_sync_issued();
+    SRead *e = &sread[0];   // the range's entry, else the oldest
+    for (int i = 0; i < SREAD_N; i++) {
+        if (sread[i].addr == addr && sread[i].size == size) { e = &sread[i]; break; }
+        if (sread[i].at < e->at) e = &sread[i];
+    }
+    int known = e->addr == addr && e->size == size && e->at + SREAD_AGE >= now, pending = 0;
+    for (int i = 0; i < nspend && !pending; i++) pending = spend[i].lo < addr + size && spend[i].hi > addr;
+    uint64_t g = nvn_sync_ahead_guard(), wait = pending && !known && g > vk_sync_fence_done() ? g : 0;
+    // A pending write of a value the game was not told is done, in a range not known: the game reads ahead of its own
+    // wait and the range stays unknown.
+    if (known || !pending || wait) *e = (SRead){addr, size, now};
+    plat_mutex_unlock(&shadow_lock);
+    if (!wait) return;
+    uint64_t t0 = qpc();
+    {
+        NVN_BLOCKING();
+        vk_sync_fence_wait(wait, UINT64_MAX);
+    }
+    uint64_t dt = qpc() - t0;
+    plat_mutex_lock(&shadow_lock);
+    s_read_waits++, s_read_ticks += dt;
+    r_read_waits++, r_read_ticks += dt;
+    if (dt > r_read_max) r_read_max = dt;
+    plat_mutex_unlock(&shadow_lock);
+}
+
+// The run total of the waits above, once at exit, while frame-ahead is in effect: without TOTK_TRACE=perf the shadow
+// log lines come only at frames 600 and 1800.
+void vk_mem_shadow_read_log(void) {
+    static int32_t done;
+    if (!shadow_on || !nvn_sync_ahead_on() || plat_xchg32(&done, 1)) return;
+    plat_mutex_lock(&shadow_lock);
+    rt_log("mem: the game waited for a GPU write it reads %llu times, %.1f ms in all, longest %.2f ms",
+           (unsigned long long)r_read_waits, qpc_ms(r_read_ticks), qpc_ms(r_read_max));
+    plat_mutex_unlock(&shadow_lock);
+}
+
 int vk_mem_shadow_on(void) { return shadow_on; }
 
 void vk_mem_shadow_sync(uint64_t fence) {
@@ -1408,10 +1467,11 @@ static void shadow_log(uint64_t frame) {
            qpc_ms(s_ticks), nspend);
     if (defer_on || s_waits)   // only with TOTK_SYNC_AHEAD: the shadow log of everyone else stays as it was
         rt_log("mem: shadow deferred (%s): %llu pools, %.1f MiB in %llu copies; replay waited for a reader %llu times, "
-               "%.2f ms", defer_on ? "on" : "off", (unsigned long long)s_defer_pools, s_defer_bytes / 1048576.0,
-               (unsigned long long)s_defer_copies, (unsigned long long)s_waits, qpc_ms(s_wait_ticks));
+               "%.2f ms; the game waited for a GPU write it reads %llu times, %.2f ms", defer_on ? "on" : "off",
+               (unsigned long long)s_defer_pools, s_defer_bytes / 1048576.0, (unsigned long long)s_defer_copies,
+               (unsigned long long)s_waits, qpc_ms(s_wait_ticks), (unsigned long long)s_read_waits, qpc_ms(s_read_ticks));
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
-    s_defer_pools = s_defer_bytes = s_defer_copies = s_wait_ticks = s_waits = 0;
+    s_defer_pools = s_defer_bytes = s_defer_copies = s_wait_ticks = s_waits = s_read_waits = s_read_ticks = 0;
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1576,13 +1636,15 @@ static uint32_t mepoch;                // replay: its write-watch snapshot epoch
 typedef struct { PoolRec *r; uint64_t off, size; } MRange;
 static MRange *pend, *wbl;             // replay: copies for the next prologue; GPU writes into mirrors this submission
 static int npend, cpend, nwbl, cwbl;
+static int pend_seal, snl_seal;        // mirror_lock: the copies the next prologue takes (vk_mem_mirror_seal)
 static VkBufferCopy *mregions;         // replay: vkCmdCopyBuffer regions
 static int cregions;
 static PlatMutex flush_lock = PLAT_MUTEX_INIT;
 static int flush_cap = FLUSH_RANGES;   // ranges a pool keeps; 1 with TOTK_FLUSH_SPAN=1
 // The first uses of a submission's mirrors, the copies they queue, the GPU writes noted and their snapshots (pend, wbl, snl, mrep): threads
 // recording chunks of one submission take it. A mirror synced in this submission is read without it (vk_mem_use): its
-// acc_sub is stored last. Before pool_lock, gen_lock and flush_lock.
+// acc_sub is stored last. Before pool_lock, shadow_lock (mirror_sync and mirror_create touch the shadow), gen_lock and
+// flush_lock.
 static PlatMutex mirror_lock = PLAT_MUTEX_INIT;
 
 typedef struct {
@@ -1640,8 +1702,9 @@ static void mirror_mode(int discrete) {
                "slower than mirror (the auto default on a discrete GPU); use memory = auto unless testing");
 }
 
-static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {
-    if (*n && (*a)[*n - 1].r == r && (*a)[*n - 1].off + (*a)[*n - 1].size == off) {
+// keep: the entries before it are sealed and do not grow.
+static void range_add(MRange **a, int *n, int *cap, int keep, PoolRec *r, uint64_t off, uint64_t size) {
+    if (*n > keep && (*a)[*n - 1].r == r && (*a)[*n - 1].off + (*a)[*n - 1].size == off) {
         (*a)[*n - 1].size += size;
         return;
     }
@@ -1762,7 +1825,8 @@ static void mirror_create(PoolRec *r) {
     mlist[at] = r;
     nm++;
     plat_mutex_unlock(&pool_lock);
-    range_add(&pend, &npend, &cpend, r, 0, n);
+    range_add(&pend, &npend, &cpend, pend_seal, r, 0, n);
+    if (r->smap) shadow_touch(r);   // the copy reads the shadow: see vk_mem_mirror_seal
     __atomic_store_n(&r->acc_sub, msub, __ATOMIC_RELEASE);
     __atomic_store_n(&r->mstate, MS_ON, __ATOMIC_RELEASE);
     mrep.first_n++, mrep.first_bytes += n;
@@ -1826,7 +1890,7 @@ static void mirror_sync(PoolRec *r) {
         if (!ch) continue;
         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since)
-                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT), mrep.page_bytes += 1ull << GEN_PAGE_SHIFT;
+                range_add(&pend, &npend, &cpend, pend_seal, r, x - lo, 1ull << GEN_PAGE_SHIFT), mrep.page_bytes += 1ull << GEN_PAGE_SHIFT;
     }
     r->mgen = gen_now;
     if (excl) plat_mutex_unlock(&gen_lock);
@@ -1843,7 +1907,7 @@ static void mirror_sync(PoolRec *r) {
         for (int i = 0; i < n; i++) {
             uint64_t a = fl[i].lo > lo ? fl[i].lo : lo, b = fl[i].hi < hi ? fl[i].hi : hi;
             if (a >= b) continue;
-            range_add(&pend, &npend, &cpend, r, a - lo, b - a);
+            range_add(&pend, &npend, &cpend, pend_seal, r, a - lo, b - a);
             mrep.flush_n++, mrep.flush_bytes += b - a;
             if ((rt_trace & RT_TRACE_PERF) && b - a >= 16u << 20)
                 rt_log("mem: mirror frame %llu: flush range %.1f MiB at +%.1f MiB of a %.1f MiB pool (%d ranges from %llu "
@@ -1851,6 +1915,7 @@ static void mirror_sync(PoolRec *r) {
                        (hi - lo) / 1048576.0, n, (unsigned long long)calls, sum / 1048576.0);
         }
     }
+    if (r->smap) shadow_touch(r);   // the copies read the shadow: see vk_mem_mirror_seal
     mrep.syncs++;
     mrep.sync_t += qpc() - t0;
     __atomic_store_n(&r->acc_sub, msub, __ATOMIC_RELEASE);
@@ -2029,12 +2094,12 @@ static int snap_add(PoolRec *r, uint64_t off, uint64_t size) {
 
 // Prologue: the snapshot copies of the ranges added since the last prologue.
 static void snap_copies(VkCommandBuffer cb) {
-    for (int i = snl_copied; i < nsnl; i++) {
+    for (int i = snl_copied; i < snl_seal; i++) {
         VkBufferCopy cp = {snl[i].off, snl[i].soff, snl[i].size};
         vkCmdCopyBuffer(cb, snl[i].r->mbuf, chunks[snl[i].chunk].buf, 1, &cp);
         mrep.snap_bytes += snl[i].size;
     }
-    snl_copied = nsnl;
+    snl_copied = snl_seal;
 }
 
 static int snap_cmp(const void *x, const void *y) {
@@ -2151,7 +2216,7 @@ static void gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }
-    range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
+    range_add(&wbl, &nwbl, &cwbl, 0, r, sp->offset, size);
     plat_mutex_unlock(&mirror_lock);
 }
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) { gpu_wrote(sp, size, 0); }
@@ -2252,7 +2317,7 @@ void vk_mem_mirror_begin(void) {
         return;
     }
     uint64_t t0 = qpc();
-    nsnl = snl_copied = nchunks = 0;   // the previous submission handed its chunks to snap_free
+    nsnl = snl_seal = snl_copied = nchunks = 0;   // the previous submission handed its chunks to snap_free
     uint32_t prev = msub;
     msub = msub + 1 ? msub + 1 : 1;
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
@@ -2284,30 +2349,45 @@ void vk_mem_mirror_begin(void) {
     mrep.presnap_t += qpc() - t0;
 }
 
+// With shadow storage a mirror copies from the shadow, which vk_mem_shadow_sync brings up to date only for the pools
+// touched before it runs; mirror_sync and mirror_create touch theirs after queuing the copies. In a chunked replay the
+// recording threads queue copies while the replay thread runs a part's prologue: a copy queued after that prologue's
+// shadow sync read the shadow before the CPU's write reached it (with TOTK_SHADOW_DEFER the write is a GPU copy of
+// the next prologue, so always), and the mirror, marked synced, kept the old bytes until the CPU wrote the page again.
+// In the Depths, terrain loaded with those pages stood as stretched slabs over the ground for the rest of the session.
+// So the prologue seals the queues before the shadow sync and copies only what was sealed; the rest waits for the next
+// prologue, whose shadow sync comes first.
+void vk_mem_mirror_seal(void) {
+    plat_mutex_lock(&mirror_lock);
+    pend_seal = npend, snl_seal = nsnl;
+    plat_mutex_unlock(&mirror_lock);
+}
+
 int vk_mem_mirror_pending(void) {
     plat_mutex_lock(&mirror_lock);
-    int n = npend || snl_copied < nsnl;
+    int n = pend_seal || snl_copied < snl_seal;
     plat_mutex_unlock(&mirror_lock);
     return n;
 }
 
 void vk_mem_mirror_prologue(VkCommandBuffer cb) {
     plat_mutex_lock(&mirror_lock);
-    if (!npend && snl_copied == nsnl) {
+    if (!pend_seal && snl_copied == snl_seal) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
-    if (snl_copied < nsnl) {   // the snapshots read what the uploads above wrote
-        if (npend) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+    copy_ranges(cb, pend, pend_seal, 1, &mrep.upload_bytes, &mrep.upload_copies);
+    if (snl_copied < snl_seal) {   // the snapshots read what the uploads above wrote
+        if (pend_seal) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                             VK_ACCESS_2_TRANSFER_READ_BIT);
         snap_copies(cb);
     }
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-    npend = 0;
+    memmove(pend, pend + pend_seal, sizeof *pend * (size_t)(npend - pend_seal));
+    npend -= pend_seal, pend_seal = 0;
     mrep.prologues++;
     plat_mutex_unlock(&mirror_lock);
 }
@@ -2410,7 +2490,7 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         int m = wb_merge_record(cb);
         if (!m) {   // no range list: copy them plainly
-            for (int i = 0; i < nsnl; i++) range_add(&wbl, &nwbl, &cwbl, snl[i].r, snl[i].off, snl[i].size);
+            for (int i = 0; i < nsnl; i++) range_add(&wbl, &nwbl, &cwbl, 0, snl[i].r, snl[i].off, snl[i].size);
         }
         rec += m + 1;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -3114,7 +3194,7 @@ void vk_mem_shutdown(void) {
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);
     pool_index.n = 0;
-    nm = npend = nwbl = nsnl = snl_copied = ndq = 0;   // mirrors went with their pools
+    nm = npend = pend_seal = nwbl = nsnl = snl_seal = snl_copied = ndq = 0;   // mirrors went with their pools
     plat_mutex_lock(&snap_pool_lock);
     for (int i = 0; i < nsnap_pool; i++) vmaDestroyBuffer(c->vma, snap_pool[i].buf, snap_pool[i].alloc);
     nsnap_pool = 0, snap_pool_bytes = 0;
