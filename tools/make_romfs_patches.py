@@ -66,15 +66,27 @@ lists them. The output is byte for byte the same as without it.
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-<style> with --prompts, -<w>x<h> with --aspect,
 and -hud<a>x<b> with --hud), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
+
+The files go into <out>.part-<pid> beside <out>, which is renamed to <out> once complete (publish), so a folder is
+never seen half written and two runs for one folder do not mix their files. Without --background an older <out> is
+removed first (the setup and a source build replace it). --background is the game's (runtime/romfs.c
+romfs_folders_prepare, for a folder the settings need and the install lacks): it runs at a lower priority, does
+nothing when <out> has a manifest at its start, and drops its own result when another run finished <out> first, so a
+folder a running game loaded (whose files totk.exe checks again on every open) is never written into. A .part folder
+left by a run that was stopped is removed by the next run for that folder once it is an hour old.
 """
 import argparse
 import compression.zstd as zstd
 import hashlib
 import importlib.util
 import json
+import ctypes
+import glob
 import os
 import re
+import shutil
 import struct
+import time
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -96,6 +108,8 @@ ap.add_argument('--binds', type=Path, help='--prompts pc: a totk.ini whose bind_
 ap.add_argument('--xbox-prompts', dest='prompts', action='store_const', const='xbox', help='the same as --prompts xbox')
 ap.add_argument('--reuse', type=Path,
                 help='an overlay folder made before: its files with the same contents are linked, not compressed again')
+ap.add_argument('--background', action='store_true',
+                help='started by the game: lower priority, and an <out> that has a manifest is kept, not replaced')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
 width = height = None
@@ -116,6 +130,54 @@ if not args.out:
     if args.aspect: name += '-' + args.aspect
     if args.hud != 'full': name += '-hud' + args.hud.replace(':', 'x')
     args.out = root / 'build' / args.version / name
+PART_STALE_S = 3600   # a .part folder untouched this long belongs to a run that was stopped
+
+
+def finished(folder):
+    return (folder / 'manifest.tsv').is_file()
+
+
+def newest_mtime(folder):
+    times = [folder.stat().st_mtime]
+    for path in folder.rglob('*'):
+        try:
+            times.append(path.stat().st_mtime)
+        except OSError:
+            pass
+    return max(times)
+
+
+def remove_stale_parts(out):
+    """Remove the <out>.part-* folders of runs that were stopped (none of their files changed for PART_STALE_S)."""
+    for part in out.parent.glob(glob.escape(out.name) + '.part-*'):
+        try:
+            if part.is_dir() and time.time() - newest_mtime(part) > PART_STALE_S:
+                shutil.rmtree(part, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def lower_priority():
+    """Below-normal priority, so the game that started this run keeps its cores."""
+    try:
+        if os.name == 'nt':
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x4000)   # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(10)
+    except (OSError, AttributeError):
+        pass
+
+
+if args.background:
+    if finished(args.out):   # another run made it since the game looked
+        print(json.dumps(dict(status='pass', kept=str(args.out))))
+        raise SystemExit(0)
+    lower_priority()
+args.out.parent.mkdir(parents=True, exist_ok=True)
+remove_stale_parts(args.out)
+part = args.out.with_name(f'{args.out.name}.part-{os.getpid()}')   # the files go here first (publish)
+shutil.rmtree(part, ignore_errors=True)
 index = json.loads((args.romfs / 'index.json').read_text())
 assert index['status'] == 'pass'
 files = {f['path']: f for f in index['files']}
@@ -514,30 +576,70 @@ def reusable(path, contents, dictionary):
     return data if same else None
 
 
-lines, reused = [], []
-for path, contents in outputs.items():
-    raw = originals[path]
-    dictionary = dictionaries.get(zstd.get_frame_info(raw).dictionary_id)
-    target = args.out / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Unlinked first: a file linked from another folder (--reuse) is not written through, which would break the other
-    # folder's manifest.
-    target.unlink(missing_ok=True)
-    data = reusable(path, contents, dictionary)
-    if data is not None:
-        try:   # a hard link takes no room; a volume without them gets a copy
-            os.link(args.reuse / path, target)
-        except OSError:
+def publish(part, out, sizes, keep_existing):
+    """Rename the complete folder part to out. Each file the manifest lists must be there with its size first: a
+    setup's clean-up that removed part's files under a running generator must not leave a manifest without them.
+    keep_existing (--background): an out that has a manifest by now stays and part is dropped; an out without one is
+    an unfinished folder of an older generator, which nothing loads. Without it out is replaced. Returns whether part
+    became out."""
+    for path, size in sizes.items():
+        assert (part / path).is_file() and (part / path).stat().st_size == size, f'{part / path} is missing or changed'
+    for attempt in range(3):
+        if keep_existing and finished(out):
+            shutil.rmtree(part, ignore_errors=True)
+            return False
+        if out.exists() and not keep_existing:
+            shutil.rmtree(out)
+        elif out.exists():
+            # Moved aside, never removed in place: another run may publish between the check and this rename, and a
+            # folder moved aside with a manifest goes back (a removed one could be the one a game just loaded).
+            stale = out.with_name(f'{out.name}.part-stale-{os.getpid()}')
+            try:
+                os.rename(out, stale)
+            except OSError:
+                pass
+            else:
+                if finished(stale):
+                    os.rename(stale, out)
+                    continue
+                shutil.rmtree(stale, ignore_errors=True)
+        try:
+            os.rename(part, out)
+            return True
+        except OSError:   # another run renamed its folder into place after the check: the next pass looks again
+            if attempt == 2:
+                raise
+    shutil.rmtree(part, ignore_errors=True)
+    return False
+
+
+lines, reused, sizes = [], [], {}
+try:
+    for path, contents in outputs.items():
+        raw = originals[path]
+        dictionary = dictionaries.get(zstd.get_frame_info(raw).dictionary_id)
+        target = part / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = reusable(path, contents, dictionary)
+        if data is not None:
+            try:   # a hard link takes no room; a volume without them gets a copy
+                os.link(args.reuse / path, target)
+            except OSError:
+                target.write_bytes(data)
+            reused.append(path)
+        else:
+            data = zstd.compress(contents, level=19, zstd_dict=dictionary)
+            assert zstd.decompress(data, zstd_dict=dictionary) == contents
+            assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
             target.write_bytes(data)
-        reused.append(path)
-    else:
-        data = zstd.compress(contents, level=19, zstd_dict=dictionary)
-        assert zstd.decompress(data, zstd_dict=dictionary) == contents
-        assert zstd.get_frame_info(data).dictionary_id == zstd.get_frame_info(raw).dictionary_id
-        target.write_bytes(data)
-    lines.append('\t'.join([path, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
-(args.out / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
+        sizes[path] = len(data)
+        lines.append('\t'.join([path, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
+    (part / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (tools/make_romfs_patches.py)\n'
                                        + ''.join(line + '\n' for line in lines))
+    published = publish(part, args.out, sizes, args.background)
+except BaseException:
+    shutil.rmtree(part, ignore_errors=True)
+    raise
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None,
-                      prompts=prompts, reused=reused)))
+                      prompts=prompts, reused=reused, **({} if published else {'kept': str(args.out)}))))

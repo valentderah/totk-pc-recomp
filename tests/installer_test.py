@@ -635,6 +635,21 @@ class CleanupTest(unittest.TestCase):
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(lines[1:3], ['-c', steps.REBUILD_BOOT])
 
+    def test_removes_only_stale_part_folders(self):
+        # make_romfs_patches.py's unfinished folders: an hour-old one is a stopped run's, a fresh one a running one's
+        old, fresh = self.dest / 'romfs-patches-2560x1080.part-41', self.dest / 'romfs-patches-pc.part-stale-42'
+        for folder in (old, fresh):
+            (folder / 'UI').mkdir(parents=True)
+            (folder / 'UI' / 'a.zs').write_bytes(b'x')
+        (self.dest / 'romfs-patches-2560x1080').mkdir()
+        hour = steps.time.time() - steps.PART_STALE_S - 60
+        for path in (old, old / 'UI', old / 'UI' / 'a.zs'):
+            steps.os.utime(path, (hour, hour))
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.is_dir() and (self.dest / 'romfs-patches-2560x1080').is_dir())
+        self.assertIsNone(steps.SHAPED_FOLDER.match(old.name))   # the Shapes step's own clean-up leaves them
+
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
             p.unlink()

@@ -1410,6 +1410,28 @@ class PcPrompts(Step):
 
 SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-(?:%s))?-\d+x\d+(?:-hud(?:16|21)x9)?$'
                            % '|'.join(map(re.escape, screens.PROMPTS_STYLES)))
+# make_romfs_patches.py writes <folder>.part-<pid> and renames it to <folder> when it is complete. A run that was
+# stopped (the PC turned off under a generator the game started, runtime/romfs.c romfs_folders_prepare) leaves its
+# folder behind: one whose files did not change for PART_STALE_S is such a leftover, a younger one may belong to a
+# generator running now. SHAPED_FOLDER matches neither.
+PART_FOLDER = re.compile(r'^romfs-patches[\w.-]*\.part-[\w-]+$')
+PART_STALE_S = 3600
+
+
+def stale_parts(dest, now=None):
+    """The leftover .part folders of make_romfs_patches.py runs in dest."""
+    now = time.time() if now is None else now
+    found = []
+    for folder in dest.iterdir() if dest.is_dir() else ():
+        if not (folder.is_dir() and not folder.is_symlink() and PART_FOLDER.match(folder.name)):
+            continue
+        try:
+            newest = max([folder.stat().st_mtime] + [f.stat().st_mtime for f in folder.rglob('*')])
+        except OSError:
+            continue
+        if now - newest > PART_STALE_S:
+            found.append(folder)
+    return found
 
 
 def hud_width(dest):
@@ -1436,8 +1458,9 @@ class Shapes(Step):
     those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
     game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15
     sizes for every prompts style, 64 folders. The key holds the shapes, prompts style and selected HUD width, so a run after a
-    monitor or settings change (or its rebuild mode) writes only these again; the game's settings menu can also start
-    the generator for the shape in use (runtime/ui/menu.cpp row_output_res)."""
+    monitor or settings change (or its rebuild mode) writes only these again; the game also starts the generator for a
+    folder its settings need and the install lacks, at start and from its menu (runtime/romfs.c romfs_folders_prepare,
+    make_romfs_patches.py --background), whose unfinished .part folders the clean-up below leaves alone."""
 
     id = 'shapes'
 
@@ -1596,7 +1619,7 @@ class Cleanup(Step):
         ctx.state['lang'] = ctx.lang
         (dest / 'profile').mkdir(exist_ok=True)
         rep.progress('cleanup', 'temp', force=True)
-        for stale in dest.glob('update-merge-*'):
+        for stale in [*dest.glob('update-merge-*'), *stale_parts(dest)]:
             remove(stale)
         for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)

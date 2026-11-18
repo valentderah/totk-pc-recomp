@@ -12,12 +12,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import random
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zlib
 from pathlib import Path
@@ -789,6 +791,56 @@ class PromptsTest(unittest.TestCase):
         self.assertNotEqual((source / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
         self.assertEqual({p: (self.base / 'reuse' / 'pc' / p).read_bytes() for p in manifest(pc)}, before)
 
+    def test_output_appears_whole_and_a_second_writer_keeps_it(self):
+        # The game starts --background runs for a folder it lacks (runtime/romfs.c romfs_folders_prepare): the menu and
+        # the start, or a restart while the last run goes on, can start two for one folder. Each writes its own
+        # <out>.part-<pid>; the first to finish renames it into place, the other drops its own.
+        romfs = self.romfs['v121']
+        want = (self.outs['v121', 'xbox'][0] / 'manifest.tsv').read_bytes()
+        base = self.base / 'publish'
+        out = base / 'romfs-patches-xbox'
+        base.mkdir()
+        command = [sys.executable, '-I', str(TOOL), '--version', 'v121', '--romfs', str(romfs.folder), '--out', str(out),
+                   '--prompts', 'xbox', '--background']
+        runs = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+        results = [(p.returncode, *out) for p in runs for out in [p.communicate()]]
+        for code, _, err in results:
+            self.assertEqual(code, 0, err)
+        summaries = [json.loads(o.strip().splitlines()[-1]) for _, o, _ in results]
+        self.assertEqual(sum('kept' not in s for s in summaries), 1, summaries)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), want)
+        self.assertEqual(sorted(p.name for p in base.iterdir()), ['romfs-patches-xbox'])
+        # Once it is there a --background run leaves it as it is (a running game checks its files on every open)
+        stamp = (out / 'manifest.tsv').stat().st_mtime_ns
+        proc = romfs.run(out, '--prompts', 'xbox', '--background')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout.strip().splitlines()[-1]), {'status': 'pass', 'kept': str(out)})
+        self.assertEqual((out / 'manifest.tsv').stat().st_mtime_ns, stamp)
+        # An unfinished folder without a manifest (an older generator's) is replaced; a stopped run's .part folder an
+        # hour old goes, a younger one (a run going on) stays
+        shutil.rmtree(out)
+        (out / 'UI').mkdir(parents=True)
+        (out / 'UI' / 'half.zs').write_bytes(b'half')
+        stale, young = base / 'romfs-patches-xbox.part-1', base / 'romfs-patches-xbox.part-2'
+        for folder in (stale, young):
+            folder.mkdir()
+            (folder / 'x').write_bytes(b'x')
+        hour = time.time() - 3700
+        for path in (stale / 'x', stale):
+            os.utime(path, (hour, hour))
+        proc = romfs.run(out, '--prompts', 'xbox', '--background')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('kept', json.loads(proc.stdout.strip().splitlines()[-1]))
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), want)
+        self.assertFalse((out / 'UI' / 'half.zs').exists())
+        self.assertEqual(sorted(p.name for p in base.iterdir()), ['romfs-patches-xbox', young.name])
+        # Without --background (the setup, a source build) the folder is replaced whole: no file of the old one stays
+        (out / 'extra.zs').write_bytes(b'old')
+        proc = romfs.run(out, '--prompts', 'xbox')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), want)
+        self.assertFalse((out / 'extra.zs').exists())
+
     def test_unrecognised_romfs_fails_before_writing(self):
         cases = {'no text fonts': (dict(text_fonts=False), icons.TEXT_FONTS[0]),
                  'no size entry': (dict(restbl_skips=(REGIONAL_FONT,)), 'has no entry in the resource size table'),
@@ -801,6 +853,7 @@ class PromptsTest(unittest.TestCase):
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(message, proc.stderr)
                 self.assertFalse(out.exists(), 'a failed run writes nothing')
+                self.assertEqual([p.name for p in out.parent.iterdir()], ['romfs'], 'and leaves no .part folder')
 
 
 if __name__ == '__main__':

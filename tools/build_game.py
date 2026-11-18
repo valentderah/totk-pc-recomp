@@ -314,8 +314,10 @@ def copy_romfs_patches(version, out):
     manifest, the same way when it differs: romfs-patches, romfs-patches-xbox, romfs-patches-xbox-label and
     romfs-patches-pc (the same with Xbox or keyboard and mouse button prompts, make_romfs_patches.py --prompts) and
     the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-<style>-<w>x<h> (make_romfs_patches.py
-    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
-    names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*') if p.is_dir())
+    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9. The <name>.part-<pid>
+    folders a make_romfs_patches.py run writes before it renames them into place are no overlay and stay behind."""
+    names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*')
+                   if p.is_dir() and '.part-' not in p.name)
     for name in names:
         src = ROOT / 'build' / version / name
         dst = out / name
