@@ -56,13 +56,16 @@ void nvn_guest_written(uint64_t addr, uint64_t size) {
 // memcpy of pool storage the GPU rendered into must copy what the GPU wrote: TotK moves its generated grass maps
 // between pools with memcpy. Copies below 1 KiB skip the check; the copy itself is memmove, as overlapping
 // arguments are undefined for memcpy anyway.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst);
 static void ov_memcpy(Cpu *c) {
     uint64_t dst = arg_x(c, 0), src = arg_x(c, 1), n = arg_x(c, 2);
     if (n >= 1024) gfx_backend()->guest_read(src, n);
     memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
+    if (n == 64) vk_dlaa_camera_copied(c->x[30], dst);   // TotK copies its camera matrices this way (vk_dlaa.c)
     ret_x(c, dst);
 }
 HOST_OVERRIDE("memcpy", ov_memcpy);
+__attribute__((weak)) void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) { (void)lr, (void)dst; }
 
 __attribute__((weak)) void nvn_submit_prepare(const uint64_t *handles, int n) { (void)handles, (void)n; }
 __attribute__((weak)) void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
