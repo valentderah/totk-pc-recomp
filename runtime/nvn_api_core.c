@@ -511,6 +511,9 @@ static int sync_ahead(void) {
                    "GPU as before");
             on = 0;
         }
+        // The depth query patch (set qstamp, patches-v143.txt) is switched by TOTK_SYNC_AHEAD too: a refused switch
+        // leaves the game's own frame number check, as with the switch off.
+        if (!on) rt_patch_switch(rt_patch_set("qstamp"), 0);
         if (on) rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it");
     }
     return on;
