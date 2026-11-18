@@ -1319,6 +1319,7 @@ void vk_mem_shadow_fence(void) {
 typedef struct { uint64_t addr, size, at; } SRead;
 static SRead sread[SREAD_N];                  // shadow_lock: the ranges the game invalidated last, with the value issued then
 static uint64_t s_read_waits, s_read_ticks;   // shadow_lock: since the last log
+static uint64_t r_read_waits, r_read_ticks, r_read_max;   // shadow_lock: over the run (vk_mem_shadow_read_log)
 
 void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     if (!shadow_on || !size || !nvn_sync_ahead_guard()) return;
@@ -1342,8 +1343,22 @@ void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
         NVN_BLOCKING();
         vk_sync_fence_wait(wait, UINT64_MAX);
     }
+    uint64_t dt = qpc() - t0;
     plat_mutex_lock(&shadow_lock);
-    s_read_waits++, s_read_ticks += qpc() - t0;
+    s_read_waits++, s_read_ticks += dt;
+    r_read_waits++, r_read_ticks += dt;
+    if (dt > r_read_max) r_read_max = dt;
+    plat_mutex_unlock(&shadow_lock);
+}
+
+// The run total of the waits above, once at exit, while frame-ahead is in effect: without TOTK_TRACE=perf the shadow
+// log lines come only at frames 600 and 1800.
+void vk_mem_shadow_read_log(void) {
+    static int32_t done;
+    if (!shadow_on || !nvn_sync_ahead_on() || plat_xchg32(&done, 1)) return;
+    plat_mutex_lock(&shadow_lock);
+    rt_log("mem: the game waited for a GPU write it reads %llu times, %.1f ms in all, longest %.2f ms",
+           (unsigned long long)r_read_waits, qpc_ms(r_read_ticks), qpc_ms(r_read_max));
     plat_mutex_unlock(&shadow_lock);
 }
 
