@@ -513,9 +513,6 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
     if meshcodec.is_file():
         libs = libs + [f'-L {cmd_path(out)}', '-l:libmeshcodec.a']
         define = ['-DTOTK_MESHCODEC']
-    # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
-    # the cached objects save the compile step on the next build.
-    cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',

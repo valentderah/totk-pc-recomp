@@ -75,3 +75,13 @@ int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) {
     (void)folder; (void)w; (void)h;
     return 0;
 }
+// Upstream's prompt-folder lookup: cfg.c asks which prompts folder the settings select.
+int input_prompts_pick(const char *prompts, const char *pad_layout) {
+    (void)prompts; (void)pad_layout;
+    return 0;
+}
+
+const char *input_prompts_folder(int prompts, const char *pad_layout) {
+    (void)prompts; (void)pad_layout;
+    return NULL;
+}
