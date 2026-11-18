@@ -951,6 +951,8 @@ static void next_jitter(uint32_t w, uint32_t ow) {
 // view-projection, rows 3-6, each a 64-byte memcpy, which ov_memcpy hands over): a perspective camera with the scene's
 // aspect, the main one and its half-size copy among them, gets the offset in its projection's centre terms and the same
 // in its view-projection, x_clip += sx w and y_clip += sy w. Its shadow cascades are orthographic and stay as they are.
+// The offset moves on at the first projection copied after each of the game's presents (vk_dlaa_game_present): the game
+// fills two sets of blocks in turn, one per frame, so a block written again is not a new frame.
 // The replay reads the offset back from the snapshot of the scene camera's block (cam_offset, the snapshot is the block
 // as of the submit) for DLSS, the motion vectors and the per-object pass, which reproject with the camera unjittered;
 // after the DLSS point the snapshots of the jittered blocks are written back unjittered (cam_unjitter), so the effects
@@ -964,8 +966,9 @@ static void next_jitter(uint32_t w, uint32_t ow) {
 
 static struct {
     PlatMutex lk;
-    uint64_t seen[CAMJ_BLOCKS];      // blocks whose projection was copied since the jitter last moved on
-    int nseen;
+    uint64_t presents, moved;        // the game's presents, and their count when the offset last moved on
+    struct { uint64_t blk; float sx, sy; } cur[CAMJ_BLOCKS];   // this frame's blocks and the offset each projection took
+    int ncur;
     uint64_t blocks[CAMJ_BLOCKS];    // every block that took an offset (cam_unjitter)
     int nblocks;
     uint32_t idx;                    // phases handed out
@@ -988,6 +991,8 @@ static int in_list(const uint64_t *l, int n, uint64_t a) {
     return 0;
 }
 
+void vk_dlaa_game_present(void) { __atomic_add_fetch(&CJ.presents, 1, __ATOMIC_RELEASE); }
+
 // The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to.
 void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
     if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode()) return;
@@ -1004,10 +1009,11 @@ void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
             plat_mutex_unlock(&CJ.lk);
             return;
         }
-        if (in_list(CJ.seen, CJ.nseen, blk)) {   // the game copies each camera once a frame: a block again is a new frame
+        uint64_t pf = __atomic_load_n(&CJ.presents, __ATOMIC_ACQUIRE);
+        if (pf != CJ.moved) {   // the first projection of a new frame
             static int nj = -1;
             if (nj < 0) nj = !rt_knob("DLAA_JITTER", "1");
-            CJ.nseen = 0, CJ.sx = CJ.sy = 0.0f;
+            CJ.moved = pf, CJ.ncur = 0, CJ.sx = CJ.sy = 0.0f;
             if (dl_active() && !__atomic_load_n(&D.hold, __ATOMIC_RELAXED) && !nj && s[0] && s[1]) {
                 double r = (double)o[0] / s[0];
                 uint32_t ph = (uint32_t)ceil(8.0 * r * r - 1e-6);
@@ -1017,14 +1023,19 @@ void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
                 CJ.sy = -2.0f * (halton(i, 3) - 0.5f) / (float)s[1];   // and down: NDC +y is the top row
             }
         }
-        if (CJ.nseen < CAMJ_BLOCKS) CJ.seen[CJ.nseen++] = blk;
         if (CJ.sx != 0.0f || CJ.sy != 0.0f) {
             m[2] -= CJ.sx, m[6] -= CJ.sy;
             if (!in_list(CJ.blocks, CJ.nblocks, blk) && CJ.nblocks < CAMJ_BLOCKS) CJ.blocks[CJ.nblocks++] = blk;
+            int i = 0;
+            while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
+            if (i < CAMJ_BLOCKS) CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
         }
-    } else if ((CJ.sx != 0.0f || CJ.sy != 0.0f) && in_list(CJ.seen, CJ.nseen, blk) &&
-               in_list(CJ.blocks, CJ.nblocks, blk)) {
-        for (int k = 0; k < 4; k++) m[k] += CJ.sx * m[12 + k], m[4 + k] += CJ.sy * m[12 + k];
+    } else {   // the view-projection takes the offset its block's projection took this frame
+        for (int i = 0; i < CJ.ncur; i++)
+            if (CJ.cur[i].blk == blk) {
+                for (int k = 0; k < 4; k++) m[k] += CJ.cur[i].sx * m[12 + k], m[4 + k] += CJ.cur[i].sy * m[12 + k];
+                break;
+            }
     }
     plat_mutex_unlock(&CJ.lk);
 }
