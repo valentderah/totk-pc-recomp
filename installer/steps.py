@@ -1200,7 +1200,10 @@ class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx),
+        # The release string too: build_game.py bakes the VERSION of the tools' folder into totk.exe (the menu's title
+        # line), and a release that leaves the lift and the runtime alone would otherwise keep the old exe and its
+        # old version.
+        return fingerprint('compile-4', ctx.keys['lift'], runtime_key(ctx), ctx.layout.release,
                            ctx.layout.pgo(game_version(ctx)) or 'no profile')
 
     def current(self, ctx, record):

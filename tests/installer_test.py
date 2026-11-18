@@ -464,6 +464,20 @@ class LiftRunTest(unittest.TestCase):
         self.assertIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
 
 
+class CompileKeyTest(unittest.TestCase):
+    """The compile key follows the release string: the exe carries the port version of the release that built it."""
+
+    def key(self, release):
+        layout = SimpleNamespace(release=release, pgo=lambda version: None)
+        ctx = SimpleNamespace(layout=layout, keys={'lift': 'L'}, state={'version': '1.4.3'})
+        with mock.patch.object(steps, 'runtime_key', return_value='R'):
+            return steps.Compile().key(ctx)
+
+    def test_new_release_compiles_again(self):
+        self.assertEqual(self.key('0.4.2+abc'), self.key('0.4.2+abc'))
+        self.assertNotEqual(self.key('0.4.2+abc'), self.key('0.4.3+def'))
+
+
 class CompileLockedTest(unittest.TestCase):
     """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
     temp build folder, an antivirus that quarantined it), which gets its own message instead of the plain failure."""
