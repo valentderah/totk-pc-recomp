@@ -1000,7 +1000,7 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // skips the pending ranges in the CPU copy and copies them back whole, as before.
 // TOTK_SHADOW=1/0 (shadow in totk.ini) forces the mode on or off; the default is on for Linux and Wine.
 typedef struct { uint64_t lo, hi; uint8_t *base; int refs; } SRange;
-static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
+static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after mirror_lock and pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
 static SRange *spend;                             // shadow_lock: distinct GPU writes recorded and not copied back yet
@@ -1583,7 +1583,8 @@ static PlatMutex flush_lock = PLAT_MUTEX_INIT;
 static int flush_cap = FLUSH_RANGES;   // ranges a pool keeps; 1 with TOTK_FLUSH_SPAN=1
 // The first uses of a submission's mirrors, the copies they queue, the GPU writes noted and their snapshots (pend, wbl, snl, mrep): threads
 // recording chunks of one submission take it. A mirror synced in this submission is read without it (vk_mem_use): its
-// acc_sub is stored last. Before pool_lock, gen_lock and flush_lock.
+// acc_sub is stored last. Before pool_lock, shadow_lock (mirror_sync and mirror_create touch the shadow), gen_lock and
+// flush_lock.
 static PlatMutex mirror_lock = PLAT_MUTEX_INIT;
 
 typedef struct {
