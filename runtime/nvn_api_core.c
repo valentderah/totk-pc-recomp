@@ -53,13 +53,19 @@ void nvn_guest_written(uint64_t addr, uint64_t size) {
     if (size) gfx_backend()->guest_written(addr, size);
 }
 
+// The camera jitter of 1.4.3 (vk_dlaa.c); a weak default like the hooks below.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off);
+__attribute__((weak)) void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off) { (void)lr, (void)dst, (void)off; }
+
 // memcpy of pool storage the GPU rendered into must copy what the GPU wrote: TotK moves its generated grass maps
 // between pools with memcpy. Copies below 1 KiB skip the check; the copy itself is memmove, as overlapping
-// arguments are undefined for memcpy anyway.
+// arguments are undefined for memcpy anyway. TotK 1.4.3 copies its camera matrices with 64-byte memcpys
+// (f_70000e31d4); x8 holds the member's offset in the block there (vk_dlaa.c vk_dlaa_camera_copied).
 static void ov_memcpy(Cpu *c) {
     uint64_t dst = arg_x(c, 0), src = arg_x(c, 1), n = arg_x(c, 2);
     if (n >= 1024) gfx_backend()->guest_read(src, n);
     memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
+    if (n == 64) vk_dlaa_camera_copied(c->x[30], dst, c->x[8]);
     ret_x(c, dst);
 }
 HOST_OVERRIDE("memcpy", ov_memcpy);

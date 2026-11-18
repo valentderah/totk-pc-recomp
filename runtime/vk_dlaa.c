@@ -466,6 +466,9 @@ static void times_begin(VkCommandBuffer cb) {
 }
 
 // ---------------------------------------------------------------- motion vectors
+static int cam_mode(void);   // the jitter in the game's camera (below, "jitter in the game's camera")
+static int cam_offset(uint64_t blk, float *sx, float *sy);
+static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off);
 // The camera's motion first (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the
 // replay's uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other,
 // and the compute pass reprojects every pixel's depth through the two (inv4 and mv_pass below). Then the per-object
@@ -579,8 +582,11 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     const float *cr = (const float *)vk_usnap_bytes(D.cam_addr + 48, 64);
     double cur_vp[16], m[16], ci[16];
     int have_m = 0;
+    float osx = 0.0f, osy = 0.0f;
+    if (cam_mode()) cam_offset(D.cam_addr, &osx, &osy);
     if (cr) {
         for (int i = 0; i < 16; i++) cur_vp[i] = cr[i];
+        for (int k = 0; k < 4; k++) cur_vp[k] -= osx * cr[12 + k], cur_vp[4 + k] -= osy * cr[12 + k];
         if (D.cam_prev_ok && inv4(cur_vp, ci)) {
             for (int r = 0; r < 4; r++)
                 for (int k = 0; k < 4; k++) {
@@ -595,6 +601,8 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     VkBufferCopy bc = {cam.offset, (VkDeviceSize)s * CAM_SLOT, CAM_BLOCK};
     vkCmdCopyBuffer(cb, cam.buffer, D.camb, 1, &bc);
     full_barrier(cb);
+    const float *cb_bytes = osx != 0.0f || osy != 0.0f ? (const float *)vk_usnap_bytes(D.cam_addr, 0xb0) : NULL;
+    if (cb_bytes && unj_put(cb, cb_bytes, osx, osy, D.camb, (VkDeviceSize)s * CAM_SLOT)) full_barrier(cb);
     D.cam_slot ^= 1, D.cam_prev_ok = cr != NULL;
     if (cr) memcpy(D.cam_prev, cur_vp, sizeof cur_vp);
     if (!had_prev || !have_m) {   // nothing to reproject into: zero motion, new history
@@ -670,7 +678,8 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]) {
     if (!dl_active() || !D.cam_prev_ok || !D.camb) return 0;
     *out = (VkDescriptorBufferInfo){D.camb, (VkDeviceSize)(D.cam_slot ^ 1) * CAM_SLOT, CAM_BLOCK};
-    jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
+    if (cam_mode()) jitter[0] = D.jit_used ? D.ux : 0.0f, jitter[1] = D.jit_used ? D.uy : 0.0f;
+    else jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
     return 1;
 }
 
@@ -830,7 +839,8 @@ static struct Snap *mask_pass(VkCommandBuffer cb, VkImageView cv, uint32_t w, ui
 }
 
 // ---------------------------------------------------------------- jitter
-// The scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
+// On 1.4.3 the game's camera carries the jitter instead (below, "jitter in the game's camera"); on the other versions
+// the scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
 // sub-pixel Halton(2,3) offset, which shifts what they rasterise as a jittered projection would; full-screen passes
 // that shade by window position are unaffected. Jitter only follows a frame DLSS ran on: a jittered frame that DLSS
 // does not resolve shakes on screen, so a missed DLAA point stops the jitter for a second.
@@ -849,6 +859,7 @@ static int ended_at(const VkExec *ex) {
 }
 
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
+    if (cam_mode()) return;   // the camera carries the jitter
     if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
     D.ux = D.jx, D.uy = D.jy;
@@ -861,8 +872,15 @@ static void note_camera(const VkExec *ex) {
     const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
     const VkExecTarget *z = &ex->depth;
     if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
+        (!D.jdepth || z->image == D.jdepth)) {
+        if (cam_mode() && b->addr != D.cam_addr) {
+            float sx, sy;
+            int j = cam_offset(b->addr, &sx, &sy);
+            D.ux = sx * (float)z->width * 0.5f, D.uy = -sy * (float)z->height * 0.5f;
+            __atomic_store_n(&D.jit_used, j, __ATOMIC_RELAXED);
+        }
         D.cam_addr = b->addr;
+    }
 }
 
 void vk_dlaa_draw(VkExec *ex) {
@@ -919,6 +937,204 @@ static void next_jitter(uint32_t w, uint32_t ow) {
     uint32_t i = D.jframe++ % phases + 1;
     D.jx = halton(i, 2) - 0.5f, D.jy = halton(i, 3) - 0.5f;
     D.jit_ok = !D.hold && !nj;
+}
+
+// ---------------------------------------------------------------- jitter in the game's camera (1.4.3)
+// Moving the viewport jitters what the scene draws rasterise, but not the camera the game reconstructs positions with:
+// its full-screen passes rebuild each pixel's view ray from the camera block (the half-size lighting's vertex shaders
+// read the projection's centre terms, P[0][2] and P[1][2], with its tangents) and its depth, so with the depth half a
+// pixel off they put a surface's points off the surface by half a pixel of its depth slope. On water seen at a low
+// angle that decides whether a screen-space reflection ray hits or misses, and whole patches of a pond flipped between
+// the trees' reflection and the sky's with the jitter's phase (a period of three frames), more than DLSS could resolve;
+// measured without DLSS with the same jitter, the pond's brightness swung 2.3-3.0 levels with the viewport moved and
+// 0.03-0.04 with the camera moved, the edges shimmering alike. So on 1.4.3 the jitter goes into the camera itself, where
+// the game copies its matrices into each camera's uniform block (f_70000e31d4: the projection, rows 7-10, then the
+// view-projection, rows 3-6, each a 64-byte memcpy, which ov_memcpy hands over): a perspective camera with the scene's
+// aspect, the main one and its half-size copy among them, gets the offset in its projection's centre terms and the same
+// in its view-projection, x_clip += sx w and y_clip += sy w. Its shadow cascades are orthographic and stay as they are.
+// The offset moves on at the first projection copied after each of the game's presents (vk_dlaa_game_present): the game
+// fills two sets of blocks in turn, one per frame, so a block written again is not a new frame.
+// The replay reads the offset back from the snapshot of the scene camera's block (cam_offset, the snapshot is the block
+// as of the submit) for DLSS, the motion vectors and the per-object pass, which reproject with the camera unjittered;
+// after the DLSS point the snapshots of the jittered blocks are written back unjittered (cam_unjitter), so the effects
+// drawn over DLSS's picture stay unjittered as before. A block's centre terms count as an offset only when they are one
+// this code gave that block (CJ.given): the game has off-centre projections of its own, such as the inventory's camera,
+// which draws Link right of the screen's centre with P[0][2] about -0.6, and read as a jitter that sent DLSS an offset
+// of 1152 pixels, smearing the world behind the inventory into horizontal streaks. TOTK_DLAA_CAM_JITTER=0 (test) moves
+// the viewport as on the other game versions.
+#define CAMJ_P_LR 0x70000e3688ull    // the return address of the projection's copy (rows 7-10)
+#define CAMJ_VP_LR 0x70000e36f4ull   // and of the view-projection's (rows 3-6)
+#define CAMJ_BLOCKS 16
+#define CAMJ_GIVEN 256               // offsets given lately, by block: about 40 frames' worth, the replay is a few behind
+#define UNJ_SLOTS 4096u              // 64-byte patches in flight (cam_unjitter, mv_pass): about 60 frames' worth
+
+static struct {
+    PlatMutex lk;
+    uint64_t presents, moved;        // the game's presents, and their count when the offset last moved on
+    struct { uint64_t blk; float sx, sy; } cur[CAMJ_BLOCKS];   // this frame's blocks and the offset each projection took
+    int ncur;
+    struct { uint64_t blk; float sx, sy; } given[CAMJ_GIVEN];  // each offset given and its block, a ring
+    uint32_t ngiven;
+    uint32_t idx;                    // phases handed out
+    float sx, sy;                    // this frame's offset, clip units (0: none)
+    VkBuffer unj;                    // UNJ_SLOTS host-visible patches the replay copies from
+    VmaAllocation unj_mem;
+    uint8_t *unj_map;
+    uint32_t unj_slot;
+} CJ = {.lk = PLAT_MUTEX_INIT};
+
+static int cam_mode(void) {
+    static int on = -1;
+    if (on < 0) on = rt_game_version == 143 && rt_knob("DLAA_CAM_JITTER", "1") && rt_knob("UBO_SNAPSHOT", "1");
+    return on;
+}
+
+static int in_list(const uint64_t *l, int n, uint64_t a) {
+    for (int i = 0; i < n; i++)
+        if (l[i] == a) return 1;
+    return 0;
+}
+
+void vk_dlaa_game_present(void) { __atomic_add_fetch(&CJ.presents, 1, __ATOMIC_RELEASE); }
+
+// The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to, off
+// the member's offset in the block. f_70000e31d4 takes each offset from the shader's layout of the block (x8 at both
+// copies, dst = the block's base + x8), so a block takes the offset only with its matrices where the rest of this
+// code reads and writes them, the projection at 0x70 and the view-projection at 0x30, as in the scene camera's block.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off) {
+    if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode() || !dl_active()) return;
+    if (lr == CAMJ_P_LR && off != 0x70) return;
+    float *m = (float *)(uintptr_t)dst;
+    uint64_t blk = dst - off;
+    plat_mutex_lock(&CJ.lk);
+    if (lr == CAMJ_P_LR) {
+        unsigned o[2], s[2];
+        res_sizes(o, s);
+        float asp = s[1] ? (float)s[0] / (float)s[1] : 0.0f;
+        // perspective (w = -z), symmetric, with the scene's aspect
+        if (m[14] != -1.0f || m[15] != 0.0f || m[2] != 0.0f || m[6] != 0.0f || !(m[0] > 0.0f) ||
+            fabsf(m[5] / m[0] - asp) > 0.01f * asp) {
+            plat_mutex_unlock(&CJ.lk);
+            return;
+        }
+        uint64_t pf = __atomic_load_n(&CJ.presents, __ATOMIC_ACQUIRE);
+        if (pf != CJ.moved) {   // the first projection of a new frame
+            static int nj = -1;
+            if (nj < 0) nj = !rt_knob("DLAA_JITTER", "1");
+            CJ.moved = pf, CJ.ncur = 0, CJ.sx = CJ.sy = 0.0f;
+            if (dl_active() && !__atomic_load_n(&D.hold, __ATOMIC_RELAXED) && !nj && s[0] && s[1]) {
+                double r = (double)o[0] / s[0];
+                uint32_t ph = (uint32_t)ceil(8.0 * r * r - 1e-6);
+                ph = ph < 16 ? 16 : ph > 72 ? 72 : ph;
+                uint32_t i = CJ.idx++ % ph + 1;
+                CJ.sx = 2.0f * (halton(i, 2) - 0.5f) / (float)s[0];    // content right by the offset in pixels
+                CJ.sy = -2.0f * (halton(i, 3) - 0.5f) / (float)s[1];   // and down: NDC +y is the top row
+            }
+        }
+        int i = 0;
+        while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
+        if ((CJ.sx != 0.0f || CJ.sy != 0.0f) && i < CAMJ_BLOCKS) {   // no room: no offset, its view-projection takes none
+            m[2] -= CJ.sx, m[6] -= CJ.sy;
+            CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
+        }
+    } else {   // the view-projection takes the offset its block's projection took this frame
+        for (int i = 0; i < CJ.ncur; i++)
+            if (CJ.cur[i].blk == blk) {
+                if (off != 0x30) {   // elsewhere in this block: the projection goes back to its centre terms of 0
+                    float *pm = (float *)(uintptr_t)(blk + 0x70);
+                    pm[2] += CJ.cur[i].sx, pm[6] += CJ.cur[i].sy;
+                    CJ.cur[i] = CJ.cur[--CJ.ncur];
+                    break;
+                }
+                for (int k = 0; k < 4; k++) m[k] += CJ.cur[i].sx * m[12 + k], m[4 + k] += CJ.cur[i].sy * m[12 + k];
+                // Given only now that both matrices carry it: a block whose view-projection did not take it is never
+                // read back as jittered, nor written back by cam_unjitter.
+                uint32_t g = CJ.ngiven++ % CAMJ_GIVEN;
+                CJ.given[g].blk = blk, CJ.given[g].sx = CJ.cur[i].sx, CJ.given[g].sy = CJ.cur[i].sy;
+                break;
+            }
+    }
+    plat_mutex_unlock(&CJ.lk);
+}
+
+// The offset a camera block took (clip units), from its snapshot, else from guest memory: a chunked replay's scan can
+// come before the snapshot, and the block holds this frame's bytes until the game's next frame. Centre terms this code
+// did not give the block are the game's own and read as no offset.
+static int cam_offset(uint64_t blk, float *sx, float *sy) {
+    *sx = *sy = 0.0f;
+    if (!blk) return 0;
+    const float *p = (const float *)vk_usnap_bytes(blk + 0x70, 32);
+    if (!p) p = (const float *)(uintptr_t)(blk + 0x70);
+    float x = -p[2], y = -p[6];
+    if (x == 0.0f && y == 0.0f) return 0;
+    int ours = 0;
+    plat_mutex_lock(&CJ.lk);
+    for (uint32_t i = 0, n = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; i < n && !ours; i++)
+        ours = CJ.given[i].blk == blk && CJ.given[i].sx == x && CJ.given[i].sy == y;
+    plat_mutex_unlock(&CJ.lk);
+    if (ours) *sx = x, *sy = y;
+    return ours;
+}
+
+// Records copies that write a block's view-projection rows 3-4 and projection rows 7-8 back without the offset (blk:
+// the block's bytes as the snapshot holds them) into buf at off, the block's place there. 0: no room.
+static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off) {
+    if (!CJ.unj) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = UNJ_SLOTS * 64u,
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                               VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo inf;
+        if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &CJ.unj, &CJ.unj_mem, &inf) != VK_SUCCESS) return CJ.unj = 0, 0;
+        CJ.unj_map = inf.pMappedData;
+    }
+    uint32_t sl = __atomic_fetch_add(&CJ.unj_slot, 1, __ATOMIC_RELAXED) % UNJ_SLOTS;
+    float v[16];
+    for (int k = 0; k < 4; k++) v[k] = blk[12 + k] - sx * blk[24 + k], v[4 + k] = blk[16 + k] - sy * blk[24 + k];
+    memcpy(v + 8, blk + 28, 32);
+    v[10] = 0.0f, v[14] = 0.0f;
+    memcpy(CJ.unj_map + (size_t)sl * 64, v, sizeof v);
+    vmaFlushAllocation(vk_ctx()->vma, CJ.unj_mem, (VkDeviceSize)sl * 64, 64);
+    VkBufferCopy r[2] = {{(VkDeviceSize)sl * 64, off + 0x30, 32}, {(VkDeviceSize)sl * 64 + 32, off + 0x70, 32}};
+    vkCmdCopyBuffer(cb, CJ.unj, buf, 2, r);
+    return 1;
+}
+
+// After the DLSS point, once in each command buffer of the frame: the snapshots of the blocks that took an offset are
+// written back without it, so the effects drawn over DLSS's picture use the camera unjittered, as before the move.
+static void cam_unjitter(VkExec *ex) {
+    if (!cam_mode() || !dl_active() || !ended_at(ex)) return;
+    static PlatMutex lk = PLAT_MUTEX_INIT;
+    static VkCommandBuffer done[32];
+    static int nd;
+    static uint64_t done_frame = UINT64_MAX;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    plat_mutex_lock(&lk);
+    if (f != done_frame) done_frame = f, nd = 0;
+    int dup = 0;
+    for (int i = 0; i < nd && !dup; i++) dup = done[i] == ex->cb;
+    if (!dup && nd < 32) done[nd++] = ex->cb;
+    plat_mutex_unlock(&lk);
+    if (dup) return;
+    uint64_t blocks[CAMJ_BLOCKS];   // the blocks given an offset lately, newest first
+    int n = 0;
+    plat_mutex_lock(&CJ.lk);
+    for (uint32_t k = 0, m = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; k < m && n < CAMJ_BLOCKS; k++) {
+        uint64_t blk = CJ.given[(CJ.ngiven - 1 - k) % CAMJ_GIVEN].blk;
+        if (!in_list(blocks, n, blk)) blocks[n++] = blk;
+    }
+    plat_mutex_unlock(&CJ.lk);
+    int any = 0;
+    for (int i = 0; i < n; i++) {
+        VkDescriptorBufferInfo bi;
+        float sx, sy;
+        const float *b = (const float *)vk_usnap_bytes(blocks[i], 0xb0);
+        if (!b || !cam_offset(blocks[i], &sx, &sy) || !vk_usnap_find(blocks[i], 0xb0, UINT32_MAX, 4, &bi)) continue;
+        if (!any) full_barrier(ex->cb);   // the scene's draws read the jittered rows until here
+        any |= unj_put(ex->cb, b, sx, sy, bi.buffer, bi.offset);
+    }
+    if (any) full_barrier(ex->cb), ex->recorded += 3;
 }
 
 // The DLSS model (TOTK_DLSS_PRESET, live): default takes NVIDIA's model per mode (evaluate: K for DLAA, Quality and
@@ -1090,6 +1306,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     next_jitter(w, ow);
+    cam_unjitter(ex);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu before the effects, %llu frames without the "
                "DLAA point, %llu with camera motion, %llu with the characters' mask, %llu without a camera, %llu jitter "
@@ -1309,6 +1526,7 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
 }
 
 void vk_dlaa_pass(VkExec *ex) {
+    cam_unjitter(ex);
     VkExecJob j;
     if (!ex->chunked && vk_dlaa_plan(ex, &j)) vk_dlaa_exec(ex, &j);
 }

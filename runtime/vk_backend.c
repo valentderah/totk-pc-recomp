@@ -345,6 +345,7 @@ void gfx_exit_log(void) {
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     static _Thread_local int pcore;   // the game's render thread: the one that presents
     if (!pcore) pcore = 1, perf_core_thread(PCORE_RENDER);
+    vk_dlaa_game_present();   // the camera jitter moves on with the game's frames (vk_dlaa.c)
     vk_sync_start();
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
