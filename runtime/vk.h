@@ -678,6 +678,12 @@ int vk_pipeline_vertex_input_dynamic(void);    // 1: vertex input is VK_EXT_vert
 void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAnswers *fs);
 int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TEX_* (GfxShaderAnswers.tex_type)
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
+// The sign of the depth bias a volume mask draw gets (vk_pipeline.c, see there), -1 toward smaller depth, 1 toward
+// larger, 0 for any other draw. vk_pipeline_set_dynamic enables the bias for it; vk_exec_draw.c record_fixed sets the
+// values, VOLUME_BIAS_UNITS and VOLUME_BIAS_SLOPE times the sign.
+int vk_pipeline_volume_bias(const VkPipeState *s);
+#define VOLUME_BIAS_UNITS 16.0f
+#define VOLUME_BIAS_SLOPE 1.0f
 VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle list, line loop -> strip: the replay
                                                           // rewrites those draws; polygon -> fan
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
