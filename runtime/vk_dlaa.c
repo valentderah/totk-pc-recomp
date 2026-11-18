@@ -997,11 +997,15 @@ static int in_list(const uint64_t *l, int n, uint64_t a) {
 
 void vk_dlaa_game_present(void) { __atomic_add_fetch(&CJ.presents, 1, __ATOMIC_RELEASE); }
 
-// The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to.
-void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
+// The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to, off
+// the member's offset in the block. f_70000e31d4 takes each offset from the shader's layout of the block (x8 at both
+// copies, dst = the block's base + x8), so a block takes the offset only with its matrices where the rest of this
+// code reads and writes them, the projection at 0x70 and the view-projection at 0x30, as in the scene camera's block.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off) {
     if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode() || !dl_active()) return;
+    if (lr == CAMJ_P_LR && off != 0x70) return;
     float *m = (float *)(uintptr_t)dst;
-    uint64_t blk = dst - (lr == CAMJ_P_LR ? 0x70 : 0x30);
+    uint64_t blk = dst - off;
     plat_mutex_lock(&CJ.lk);
     if (lr == CAMJ_P_LR) {
         unsigned o[2], s[2];
@@ -1027,18 +1031,26 @@ void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst) {
                 CJ.sy = -2.0f * (halton(i, 3) - 0.5f) / (float)s[1];   // and down: NDC +y is the top row
             }
         }
-        if (CJ.sx != 0.0f || CJ.sy != 0.0f) {
+        int i = 0;
+        while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
+        if ((CJ.sx != 0.0f || CJ.sy != 0.0f) && i < CAMJ_BLOCKS) {   // no room: no offset, its view-projection takes none
             m[2] -= CJ.sx, m[6] -= CJ.sy;
-            uint32_t g = CJ.ngiven++ % CAMJ_GIVEN;
-            CJ.given[g].blk = blk, CJ.given[g].sx = CJ.sx, CJ.given[g].sy = CJ.sy;
-            int i = 0;
-            while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
-            if (i < CAMJ_BLOCKS) CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
+            CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
         }
     } else {   // the view-projection takes the offset its block's projection took this frame
         for (int i = 0; i < CJ.ncur; i++)
             if (CJ.cur[i].blk == blk) {
+                if (off != 0x30) {   // elsewhere in this block: the projection goes back to its centre terms of 0
+                    float *pm = (float *)(uintptr_t)(blk + 0x70);
+                    pm[2] += CJ.cur[i].sx, pm[6] += CJ.cur[i].sy;
+                    CJ.cur[i] = CJ.cur[--CJ.ncur];
+                    break;
+                }
                 for (int k = 0; k < 4; k++) m[k] += CJ.cur[i].sx * m[12 + k], m[4 + k] += CJ.cur[i].sy * m[12 + k];
+                // Given only now that both matrices carry it: a block whose view-projection did not take it is never
+                // read back as jittered, nor written back by cam_unjitter.
+                uint32_t g = CJ.ngiven++ % CAMJ_GIVEN;
+                CJ.given[g].blk = blk, CJ.given[g].sx = CJ.cur[i].sx, CJ.given[g].sy = CJ.cur[i].sy;
                 break;
             }
     }

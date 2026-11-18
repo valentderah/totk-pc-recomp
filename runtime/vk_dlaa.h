@@ -43,7 +43,7 @@ int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth
                      uint32_t h);
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]);
 // nvn_api_core.c ov_memcpy, after a 64-byte copy on the game's thread: the camera jitter of 1.4.3 (vk_dlaa.c).
-void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst);
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off);
 void vk_dlaa_game_present(void);   // vk_backend.c, each of the game's presents, on its thread
 // vk_mvcheck.c (TOTK_MV_CHECK, test): mv_pass hands it the motion image after the camera pass and, after the object
 // pass, the motion image again and the scene light target it ran on; it measures how well the vectors fit the picture.
