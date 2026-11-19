@@ -412,8 +412,9 @@ void nvn_pins_stats(uint64_t *live, uint64_t *freed) {
 // copies per page), and the recording threads waited on it.
 // deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs; pin_v: those pins, in
 // record order, or NULL (then pin_refs walks the records); cap: bytes of the block from the large-block cache
-// (copy_block), 0 for a plain heap block
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, cap; const tex_t **pin_v; } copy_prefix;
+// (copy_block), 0 for a plain heap block; hw: the recording's command memory as the real driver counts it (set at
+// EndRecording), what CopyCommands of it adds to nvnCommandBufferGetCommandMemoryUsed (inline_recording)
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, cap, hw; const tex_t **pin_v; } copy_prefix;
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -573,11 +574,12 @@ uint64_t nvn_handle_bytes(uint64_t handle) {
 }
 
 // Marks a live copy used by submission now; its size from OP_BEGIN to OP_END inclusive.
-static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
+static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what, uint64_t *hw) {
     plat_mutex_lock_shared(&copy_lock);
     copy_prefix *pf = copy_find(handle);
     uint64_t bytes = 0;
     if (pf) __atomic_store_n(&pf->used_at, now, __ATOMIC_RELAXED), bytes = pf->bytes;
+    if (hw) *hw = pf ? pf->hw : 0;
     plat_mutex_unlock_shared(&copy_lock);
     if (!pf) rt_fatal("nvn: %s: command handle %#llx is not a live recording (released or never recorded)", what,
                       (unsigned long long)handle);
@@ -731,6 +733,9 @@ NVN_API(nvnCommandBufferAddCommandMemory) {
     const pool_t *p = arg_p(c, 1);
     o->cmd_base = (uintptr_t)(p ? p->mem : NULL) + (uintptr_t)arg_x(c, 2);
     o->game_size = arg_x(c, 3);
+    // Memory added while recording (the out-of-memory callback): hw_start moves with hw_used, so hw_used - hw_start
+    // stays the whole recording's size at EndRecording (unsigned wrap-around cancels out).
+    if (o->recording) o->hw_start -= o->hw_used;
     o->cmd_used = 0;
     o->hw_used = 0;
 }
@@ -781,6 +786,7 @@ NVN_API(nvnCommandBufferEndRecording) {
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
     o->ctl_used += CTL_PER_RECORDING;
+    ((copy_prefix *)copy - 1)->hw = o->hw_used - o->hw_start;   // BEGIN and END excluded; what a copy of it adds
     copy_add(lo, hi, copy);
     ret_x(c, (uintptr_t)copy);
 }
@@ -789,18 +795,26 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 
 // The called recording is copied into the caller at the call position: the game recycles command memory in small steps,
 // so a handle may be gone by the time the caller is submitted. Deferred binds stay deferred. A copy is OP_BEGIN, its
-// records and OP_END (flatten_recording checked them), so the records go over as one block; usage grows by the same
+// records and OP_END (flatten_recording checked them), so the records go over as one block; cmd_used grows by the same
 // bytes as record by record.
-static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
+// nvnCommandBufferGetCommandMemoryUsed grows as on the real driver: a call by nothing (the driver puts a call in
+// control memory) and a copy by the copied recording's hardware size (copy_prefix.hw), not by our record bytes. The
+// game measures small command sets it records and sizes renderer memory pools from them: MacNativeGames commit 6909dbb7
+// measured one recording with two uniform buffer binds and one CallCommands at 40 bytes on the original driver
+// (Ryujinx, 1.0.0) and 88 in their port, whose larger sizes doubled a renderer's pool and ran its private heap dry
+// (NULL write crash near Zora's Domain). 1.4.3 calls in recordings it queries every frame (copies were not seen).
+static void inline_recording(cmd_t *o, uint64_t handle, int call) {
+    const char *what = call ? "CallCommands" : "CopyCommands";
     if (!handle) rt_fatal("nvn: %s with a null handle", what);
-    uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
+    uint64_t hw = 0;
+    uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what, &hw);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
     cmd_reserve(o, body);
     memcpy(o->cur, (const uint8_t *)(uintptr_t)handle + 8, body);
     o->cur += body;
     o->cmd_used += body;
-    o->hw_used += body;
+    if (!call) o->hw_used += hw;
     o->last_rec = 0;
 }
 // void nvnCommandBuffer{Call,Copy}Commands(NVNcommandBuffer *cmd, int n, const NVNcommandHandle *handles)
@@ -808,13 +822,13 @@ NVN_API(nvnCommandBufferCallCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands");
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], 1);
 }
 NVN_API(nvnCommandBufferCopyCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands");
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], 0);
 }
 
 // ---------- CommandBuffer: commands with CPU-visible results (performed by the back end in GPU order)
@@ -1285,7 +1299,7 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
 
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
-    for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
+    for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands", NULL);
     for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
 }
 
