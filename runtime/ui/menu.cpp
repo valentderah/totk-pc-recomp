@@ -945,8 +945,10 @@ static void row_quicksave_keys(void) {
 }
 
 // The free camera combo and key (freecam.c): the trigger and shoulder pairs with a stick click, named as the open pad
-// labels its buttons, or none. totk.ini takes any combo of button positions, shown as written. Off on other game
-// versions.
+// labels its buttons, or none. totk.ini takes any combo of button positions, shown as written. The key is any key or
+// mouse button, taken by the bindings' capture window (binds_key_row) as quick save's are; Delete leaves it without
+// one. A key the bindings also use says which action it presses. The combo is off on other game versions; the key
+// row, which opt_disable_next does not grey, says so in its note.
 static void rows_freecam(void) {
     static const char *const combos[] = {"zl+zr+lstick", "zl+zr+rstick", "l+r+lstick", "l+r+rstick", "none"};
     static const int pads[][3] = {{PAD_ZL, PAD_ZR, PAD_LSTICK}, {PAD_ZL, PAD_ZR, PAD_RSTICK},
@@ -962,11 +964,10 @@ static void rows_freecam(void) {
     names[N - 1] = menu_text(UI_MENU_OFF);
     if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
     opt_choice_list("TOTK_FREECAM_PAD", UI_MENU_FREECAM_PAD, combos, names, N, UI_MENU_FREECAM_PAD_DESC);
-    // The free camera key: keys no default binding uses (none, the default, turns it off)
-    static const char *const keys[] = {"none", "f2", "f3", "f4", "f5", "f6", "f7", "f9"};
-    const char *key_names[] = {menu_text(UI_MENU_OFF), "F2", "F3", "F4", "F5", "F6", "F7", "F9"};
-    if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
-    opt_choice_list("TOTK_FREECAM_KEY", UI_MENU_FREECAM_KEY, keys, key_names, 8, UI_MENU_FREECAM_KEY_DESC);
+    static char note[64];
+    binds_key_row("TOTK_FREECAM_KEY", UI_MENU_FREECAM_KEY, UI_MENU_FREECAM_KEY_DESC,
+                  freecam_available() ? key_taken("TOTK_FREECAM_KEY", note, sizeof note)
+                                      : menu_text(UI_MENU_FREECAM_PAD_V143));
 }
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
