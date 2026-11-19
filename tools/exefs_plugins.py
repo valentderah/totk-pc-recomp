@@ -454,7 +454,7 @@ def plugin_files(mods):
 def emit(results, args):
     """--patches-out and --status from the checked plugins. results: one (module, its NSO file, its record or None,
     the record's directory, hooks, reasons) per plugin of the layout; no reasons: accepted."""
-    text = args.patches.read_text() if args.patches else ''
+    text = args.patches.read_text(encoding='utf-8') if args.patches else ''
     builtin = builtin_sites(text)
     status, sets = [], []
     files = {str(f.resolve()): (m, rel, f) for m, rel, f in plugin_files(args.mods)}
@@ -482,7 +482,7 @@ def emit(results, args):
                                                                                if over else ''))
     if sets:
         text += '\n# Mod plugins (tools/exefs_plugins.py)\n' + '\n'.join(line for s in sets for line in s) + '\n'
-    args.patches_out.write_text(text)
+    args.patches_out.write_text(text, encoding='utf-8')
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
 
