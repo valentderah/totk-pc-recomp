@@ -455,6 +455,10 @@ static void camera_input(Cpu *c) {
                 rt_log("mouse: direct camera input after the stick dead zone, clamp and exponent");
             }
         }
+    } else {
+        // Off the direct path (another mouse_mode, or a camera without a direct hook) no step follows a shake: a side
+        // left set would hold input.c's right stick at full tilt
+        __atomic_store_n(&shake_side, 0, __ATOMIC_RELAXED);
     }
     plat_mutex_lock(&sample_lock);
     MouseSample last = sample;
