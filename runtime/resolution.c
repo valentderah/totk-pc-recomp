@@ -593,6 +593,19 @@ static void res_grass_range(void) {
            pct);
 }
 
+// The UI's capture filters (the uireduce patch set, recomp/patches-v143.txt) reduce a capture of canvas pixels by a
+// level the layout chose for the 1080-line canvas, and blur the result with a kernel of fixed texels. On a taller
+// canvas page +96 adds log2(canvas height / 1080), rounded, to the level, so the blur runs at the size it has on the
+// console and the glow of a title keeps its width and brightness (a title's dissolve otherwise leaves pieces).
+static void res_ui_reduce(uint8_t *page) {
+    int set = rt_patch_set("uireduce");
+    int32_t n = (int32_t)lround(log2((double)R.oh / BASE_H));
+    if (set < 0 || n < 1) return;
+    memcpy(page + 96, &n, sizeof n);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: UI capture filters reduce %d more level%s", n, n == 1 ? "" : "s");
+}
+
 void res_init(void) {
     res_shadow_range();
     res_grass_range();
@@ -628,6 +641,7 @@ void res_init(void) {
     rt_patch_switch(output, output_on);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
+    if (output_on) res_ui_reduce(page);
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
     // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
     // patches-v143.txt, set aspect), so a 21:9 output shows more of the world at the sides instead of a stretched 16:9 view. The HUD's layouts

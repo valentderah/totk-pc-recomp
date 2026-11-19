@@ -13,6 +13,7 @@ set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
 set grass    TOTK_PATCH_GRASS    0
+set uireduce TOTK_PATCH_UI_REDUCE 0
 # Load-dependent quality (patches-v121.txt, set steady). The graphics settings setup (main+0x5868c4) inlines the
 # three getters 1.2.1 calls: the value 1.2.1 reads at
 # main+0xc7eb24 is the ldr w10, [x10, #0x38] at main+0x58692c, and the getters' slow paths (main+0x586bc8, 0x586c18,
@@ -1145,6 +1146,20 @@ site grass  main a38e94 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr
 site grass  main a38ef4 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
 site grass  main 2063454 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
 site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+
+# UI capture filters at a canvas above 1920x1080 (runtime/resolution.c res_ui_reduce switches the set on). A layout
+# effect such as the glowing shrine and region titles draws its panes into a capture texture of canvas pixels and runs
+# a filter list over it (main+0x1c0e20): a reduce filter shrinks the capture by 2^level (level at filter +0x148; 3 and
+# 4 run two passes, main+0x1c76a0 halves the size per level), a Gaussian blur (main+0x1c1310) blurs whatever size it
+# gets with a kernel of fixed texels, and the result is drawn into a glow texture sized in layout units. On the
+# console's 1920x1080 canvas a title's 950x176 capture reduces by 4 to 237x44, the glow texture's own size; at
+# 3840x2160 the 1900x352 capture reduces to 475x88, so the blur spans half as much of the text and the glow comes out
+# narrower and brighter, and the title's dissolve (a threshold on that glow) leaves pieces brighter than its last
+# threshold, which stay until the layout hides. Both sites add page +96 (log2 of the canvas over 1080, rounded) to the
+# level: the inlined apply in the filter loop and the out-of-line apply (the reduce filter's virtual, main+0x2831d14).
+# x9 is free at both; the cmp after each site sets the flags again.
+site uireduce main 1c0f94 b9414b03 @page:x9 b9406129 b9414b03 0b090063   # ldr w3, [x24, #0x148] -> + [page+96]
+site uireduce main 2831d24 b9414803 @page:x9 b9406129 b9414803 0b090063  # ldr w3, [x0, #0x148] -> + [page+96]
 
 
 # Optional reference with an invalid value (#1005). main+0x1bd0138 reads an optional reference at object +0x6b0 (null or
