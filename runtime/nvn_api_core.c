@@ -515,6 +515,16 @@ static int sync_ahead(void) {
         // leaves the game's own frame number check, as with the switch off.
         if (!on) rt_patch_switch(rt_patch_set("qstamp"), 0);
         if (on) rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it");
+        // Set gputime (recomp/patches-v121.txt, #1123) is for frame-ahead only. It is off at start
+        // (TOTK_GPU_TIME_PATCH) and goes on here while frame-ahead is in effect, unless TOTK_GPU_TIME_FIX is 0.
+        int gputime = rt_patch_set("gputime");
+        if (gputime >= 0) {
+            int fix = cfg_bool("TOTK_GPU_TIME_FIX");
+            rt_patch_switch(gputime, on && fix);
+            rt_log(!fix ? "nvn: gpu_time_fix: off (TOTK_GPU_TIME_FIX=0)"
+                   : on ? "nvn: gpu_time_fix: on with frame-ahead: the game's dynamic resolution reads 0 for its GPU time"
+                        : "nvn: gpu_time_fix: off, frame-ahead (sync_ahead) is not in effect");
+        }
     }
     return on;
 }

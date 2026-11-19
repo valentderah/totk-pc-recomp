@@ -134,6 +134,11 @@
 # fix_c0 = 1
 # New GPU memory pools start zero-filled, as Switch memory does.
 # fix_zero = 1
+# With sync_ahead = 1, the game's quality control reads 0 for its measured GPU time. With sync_ahead the scene went
+# soft for about half a second, again and again (#1123), most likely from a half-written measurement; with this on it
+# did not, in one still scene on Linux with an AMD GPU (games 1.2.1 and 1.4.3). Without sync_ahead it does nothing.
+# 0 = the game's own code. Games 1.2.1 and 1.4.3 only.
+# gpu_time_fix = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
 # skip push constants that did not change, bind only the vertex buffers a draw reads, compare and copy each draw's

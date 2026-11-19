@@ -1211,3 +1211,10 @@ hook main 585bd0
 # fps_limit 240, same save and input script: sound in 2 of 118 s with the set off, in 110 of 119 s with it on.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec
+
+# Measured GPU time in the dynamic resolution controller (issue #1123): as in patches-v121.txt. The controller
+# (main+0x584300) loads the reading at 0x584408 and takes the model's terms off it from 0x5844a4 on; the reader of the
+# timestamp pair is main+0xa1a50 (0xa1b8c subtracts). The site makes the controller read 0; the field +8 it keeps the
+# reading in (0x58441c) is then always 0. Switched on by the runtime while sync_ahead is in effect.
+set gputime  TOTK_GPU_TIME_PATCH 0
+site gputime main 584408 bd400d42 1e2703e2   # ldr s2, [x10, #0xc] -> fmov s2, wzr
