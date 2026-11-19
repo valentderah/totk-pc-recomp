@@ -7,6 +7,7 @@
 // raw-count angular deltas at its spherical-angle output instead. The aiming, scope, ability, horse and Purah Pad
 // cameras do the same at the angle each integrates from (camera_load). Ultrahand has a separate post-curve hook.
 // The other camera modes still take the mouse as stick, linear on both axes (mouse_stick_add).
+// A camera that runs none of these hooks gets the mouse as the right stick instead, through input.c (camera_unhooked).
 // The ordinary stick's result stays, so a controller still uses the game's own response.
 //
 // This is deliberately not a render-camera override: the game remains responsible for aiming, camera collision,
@@ -64,10 +65,20 @@ static int hand_active(uint64_t now) {
     return last && now - last < 150000000ull;
 }
 
+// Cameras no direct hook reaches. The hooks below (the free orbit's orbit_begin, every camera_load site, Ultrahand's
+// hand_input) mark each camera step they run in (step_hooked). A camera that runs none of them, such as Autobuild's
+// placement camera on games 1.4.3 and 1.2.1, reads its turn from input the hooks never see. After UNHOOKED_STEPS such
+// steps in a row the mouse leaves the direct path and acts as the right stick (input.c mouse_camera), as with
+// mouse_mode = stick, until a step runs a hook again.
+#define UNHOOKED_STEPS 2
+static volatile int32_t step_hooked, unhooked_steps;
+static void step_mark_hooked(void) { __atomic_store_n(&step_hooked, 1, __ATOMIC_RELAXED); }
+static int camera_unhooked(void) { return __atomic_load_n(&unhooked_steps, __ATOMIC_RELAXED) >= UNHOOKED_STEPS; }
+
 int input_direct_mouse_active(void) {
     uint64_t last = __atomic_load_n(&last_update, __ATOMIC_ACQUIRE);
     return direct_mode() && (__atomic_load_n(&accepts_mouse, __ATOMIC_RELAXED) || hand_active(plat_now_ns())) && last &&
-           plat_now_ns() - last < 150000000ull;
+           plat_now_ns() - last < 150000000ull && !camera_unhooked();
 }
 
 int input_direct_mouse_enabled(void) { return direct_mode(); }
@@ -373,7 +384,19 @@ static void camera_input(Cpu *c) {
     memcpy(&next.pad[1], &c->v[10], sizeof(float));
     if (flags & 2) next.pad[0] = -next.pad[0];
     if (flags & 4) next.pad[1] = -next.pad[1];
-    if (direct_mode()) {
+    // The step before this one ran no direct hook: count it (camera_unhooked)
+    int hooked = __atomic_exchange_n(&step_hooked, 0, __ATOMIC_RELAXED);
+    int unhooked = hooked ? 0 : __atomic_load_n(&unhooked_steps, __ATOMIC_RELAXED) + (camera_unhooked() ? 0 : 1);
+    if (direct_mode() && (unhooked >= UNHOOKED_STEPS) != camera_unhooked()) {
+        static int lines;
+        if (lines < 6) {
+            lines++;
+            rt_log(unhooked >= UNHOOKED_STEPS ? "mouse: the camera runs no direct hook; the mouse acts as the right stick"
+                                              : "mouse: the camera runs a direct hook again; the mouse turns it directly");
+        }
+    }
+    __atomic_store_n(&unhooked_steps, unhooked, __ATOMIC_RELAXED);
+    if (direct_mode() && !camera_unhooked()) {
         int32_t dx, dy;
         input_direct_mouse_sample(!input_direct_mouse_selector_active() && (accept || hand_active(plat_now_ns())), &dx, &dy);
         float sensitivity = (float)cfg_double("TOTK_MOUSE_SENS");
@@ -463,6 +486,7 @@ static void orbit_begin(Cpu *c) {
     __atomic_store_n(&cam_kind_at, plat_now_ns(), __ATOMIC_RELEASE);
     orbit.object = 0;
     uint64_t object = c->x[0];
+    step_mark_hooked();
     if (direct_mode()) {
         MouseSample m = sample_read();
         uint64_t input = guest_pointer(object + 0x20);
@@ -587,6 +611,7 @@ static void orbit_angles(Cpu *c) {
 static void hand_input(Cpu *c) {
     const MouseLayout *ml = mouse_layout();
     __atomic_store_n(&hand_update, plat_now_ns(), __ATOMIC_RELEASE);
+    step_mark_hooked();
     static _Thread_local uint64_t object, generation;
     if (direct_mode()) {
         MouseSample m = sample_read();
@@ -1039,6 +1064,7 @@ static void camera_load(Cpu *c) {
         rt_log("mouse: load hook called from main+%#llx, no such site", (unsigned long long)offset);
         abort();
     }
+    step_mark_hooked();
     int mapped = INPUT_CAM_UNCLASSIFIED;
     switch (s->mode) {
     case MODE_AIM:
