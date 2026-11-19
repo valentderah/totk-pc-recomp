@@ -12,8 +12,13 @@
 extern "C" {
 #include "input.h"
 #include "input_sdl.h"
+#include "ui/blueprint_picker.h"
 #include "ui/menu.h"
 }
+
+// The overlay takes the pointer and the keys when the settings menu is open, and also when the port's own
+// file picker is open on its own: that panel is drawn by the same overlay.
+static int overlay_takes_input(void) { return menu_is_open() || bp_picker_is_open(); }
 
 static ImGuiKey key_of(SDL_Scancode sc) {
     switch (sc) {
@@ -55,15 +60,15 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         }
         [[fallthrough]];
     case SDL_EVENT_KEY_UP:
-        if (!menu_is_open()) return;
+        if (!overlay_takes_input()) return;
         if (ImGuiKey k = key_of(e->key.scancode)) menu_event_key(k, e->type == SDL_EVENT_KEY_DOWN);
         return;
     case SDL_EVENT_MOUSE_MOTION:
-        if (menu_is_open()) menu_event_mouse_pos(e->motion.x * d, e->motion.y * d);
+        if (overlay_takes_input()) menu_event_mouse_pos(e->motion.x * d, e->motion.y * d);
         return;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        if (!menu_is_open()) return;
+        if (!overlay_takes_input()) return;
         int b = e->button.button == SDL_BUTTON_LEFT ? 0 : e->button.button == SDL_BUTTON_RIGHT ? 1
               : e->button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
         if (b < 0) return;
@@ -72,7 +77,7 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         return;
     }
     case SDL_EVENT_MOUSE_WHEEL:
-        if (menu_is_open()) menu_event_wheel(e->wheel.x, e->wheel.y);
+        if (overlay_takes_input()) menu_event_wheel(e->wheel.x, e->wheel.y);
         return;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
     case SDL_EVENT_WINDOW_FOCUS_LOST:

@@ -13,8 +13,13 @@
 extern "C" {
 #include "input.h"
 #include "input_win.h"
+#include "ui/blueprint_picker.h"
 #include "ui/menu.h"
 }
+
+// The overlay takes the pointer and the keys when the settings menu is open, and also when the port's own file picker is
+// open on its own: that panel is drawn by the same overlay, so it needs the same events, with the settings menu closed.
+static int overlay_takes_input(void) { return menu_is_open() || bp_picker_is_open(); }
 
 static ImGuiKey key_of(WPARAM vk) {
     switch (vk) {
@@ -60,16 +65,16 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
         [[fallthrough]];
     case WM_KEYUP:
     case WM_SYSKEYUP:
-        if (!menu_is_open()) return 0;
+        if (!overlay_takes_input()) return 0;
         if (ImGuiKey k = key_of(w)) menu_event_key(k, m == WM_KEYDOWN || m == WM_SYSKEYDOWN);
         return 0;   // F11 and the system keys keep working
     case WM_MOUSEMOVE:
-        if (menu_is_open()) menu_event_mouse_pos((float)GET_X_LPARAM(l), (float)GET_Y_LPARAM(l));
+        if (overlay_takes_input()) menu_event_mouse_pos((float)GET_X_LPARAM(l), (float)GET_Y_LPARAM(l));
         return 0;
     case WM_LBUTTONDOWN: case WM_LBUTTONUP:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP: {
-        if (!menu_is_open()) return 0;
+        if (!overlay_takes_input()) return 0;
         int b = m == WM_LBUTTONDOWN || m == WM_LBUTTONUP ? 0 : m == WM_RBUTTONDOWN || m == WM_RBUTTONUP ? 1 : 2;
         int down = m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN;
         menu_event_mouse_pos((float)GET_X_LPARAM(l), (float)GET_Y_LPARAM(l));
@@ -77,7 +82,7 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
         return 0;
     }
     case WM_MOUSEWHEEL:
-        if (menu_is_open()) menu_event_wheel(0, (float)GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA);
+        if (overlay_takes_input()) menu_event_wheel(0, (float)GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA);
         return 0;
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
