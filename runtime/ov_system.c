@@ -782,8 +782,8 @@ static void ov_user_difference(Cpu *c) {
 // first word is an sfnt tag and otherwise hands it to nn::fontll::ScalableFontEngineHelper::Decode, which knows only
 // a BFTTF header at the start and returns NULL for an encoded payload. The face then gets no name, SetFont fails, and
 // the text draws the previous face's glyphs with the failed face's metrics (the CJK ellipsis above the line; MNG
-// shared_font.c load decodes the same way since its pull request #2145). The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
-// Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
+// shared_font.c load decodes the same way since its pull request #2145). The load state is always Loaded: the game
+// spins until it is, so missing files stop with a named fatal at Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
 static const char *const font_files[SHARED_FONT_TYPES] = {
