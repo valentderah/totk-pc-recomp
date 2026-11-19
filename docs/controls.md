@@ -154,6 +154,12 @@ degrees a count as the camera does elsewhere. The follow range is read from the 
 once, the mouse is stick input there). The stick loads that only test for input keep the mouse in the stick. A step with mouse motion that no
 direct hook took is logged (`mouse: step N with mouse motion took the stick path`, the first 30, then one in 600, with
 the player's state), so the cameras still on stick input show in `logs/totk.log`.
+Some cameras run none of the direct hooks and read their turn from input the hooks never see: Autobuild's placement
+camera (games 1.4.3 and 1.2.1) turns by the right stick but, in direct mode, not by the mouse (issue #1300). After two
+camera steps in a row that ran no direct hook (none of the free orbit, the load sites above or Ultrahand's held-object
+input), the mouse acts as the right stick there, as with `mouse_mode = stick`, until a step runs a direct hook again
+(`mouse: the camera runs no direct hook; the mouse acts as the right stick` and `... runs a direct hook again` in the
+log, the first 6 changes; `camera_unhooked` in `runtime/mouse_direct.c`).
 Lock-on keeps pointing the camera at the target; the stick, and so the mouse, adds an offset around that direction,
 which the game limits and lets return: the mouse's degrees are the step's turn the game adds to the offset and judges
 the return by.
@@ -291,7 +297,7 @@ own (`gyro_bias_pad` ends in "(under Steam)").
 ```
 <frame> <button> [hold_frames]            # A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK; hold defaults to 4
 <frame> LSTICK|RSTICK <x> <y> [hold_frames]   # -32767..32767, up is +y
-<frame> MOUSE <dx> <dy>                  # direct-mode raw counts, once; down is +dy
+<frame> MOUSE <dx> <dy>                  # raw mouse counts, once; down is +dy
 @<ms> <button> [hold_ms]                  # timed on the world clock
 @<ms> LSTICK|RSTICK <x> <y> [hold_ms]
 @<ms> MOUSE <dx> <dy>
@@ -307,7 +313,10 @@ own (`gyro_bias_pad` ends in "(under Steam)").
 
 In direct mouse mode the recording also writes one `MOUSE` event per consumed raw displacement. These are one-shot
 displacements rather than held stick segments. They replay without cursor capture, including with `input = none`;
-the game must be accepting camera input when the event reaches its camera update.
+the game must be accepting camera input when the event reaches its camera update. Where the mouse acts as the right
+stick (`mouse_mode = stick`, a camera with no direct hook, the game not accepting camera input), a script's `MOUSE`
+lines move the right stick as the mouse would, also without cursor capture or with `input = none`, for 100 ms after
+each line (`mouse_camera` in `runtime/input.c`); spread a turn over lines a frame apart, as a real mouse moves.
 
 `TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry>` attaches an SDL virtual gamepad at start whose sticks rest at these raw SDL axis values (-32768 to 32767, down is +y), so a drifting or held stick can be tested without a controller: the values go through the gamepad mapping and `TOTK_STICK_DEADZONE` like a real pad's, and `TOTK_INPUT_RECORD` shows what reached the game.
 
