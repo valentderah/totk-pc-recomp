@@ -18,9 +18,17 @@
 // a view-space position toward
 // the sun (the G-buffer shaders compare dot(c4[44].xyz, pos) + c4[44].w with the cascade map). The scene colour images
 // get STORAGE usage when the setting is on (vk_texture.c create_tex).
+//
+// Only sunlit pixels are darkened. The composite reads a half-resolution lighting pass (eight targets at half the scene
+// size, the first RGBA8) whose first target's alpha is the sun's visibility: 1 in the sun, 0 in the shadow maps'
+// shadow and everywhere underground (found by comparing frame dumps of a sunny path and a cave). The march's darkening
+// is scaled by it, so a contact shadow takes away direct sunlight and leaves the ambient light and textures alone;
+// darkening the whole colour turned caves flat, where nearly every ray toward the sun meets the rock overhead. Without
+// that pass in the frame every pixel is darkened as before. TOTK_CONTACT_DEBUG=2 shows the visibility in grey.
 #include "vk.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -36,6 +44,7 @@ static struct {
     VkPipeline pipe;
     VkSampler sampler;
     VkExecTarget scene, depth;         // the last G-buffer's scene colour and linear depth
+    VkExecTarget sun;                  // this frame's half-resolution lighting target (is_lighting); no img: none seen
     int pending;                       // the composite into scene ran; the march waits for the next pass
     uint64_t c4;
 } C;
@@ -53,17 +62,19 @@ static int init(VkCtx *c) {
     C.tried = 1;
     vk_contact_strength();
     if (!C.strength) return 0;
-    const char *e = cfg_get("TOTK_CONTACT_DEBUG");   // 1: the frame shows the contact shadow factor in grey
-    C.debug = e && *e && strcmp(e, "0");
+    const char *e = cfg_get("TOTK_CONTACT_DEBUG");   // 1: the contact shadow factor in grey, 2: the sun visibility
+    C.debug = e ? atoi(e) : 0;
     C.push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
-    VkDescriptorSetLayoutBinding b[2] = {
+    VkDescriptorSetLayoutBinding b[3] = {
         {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
          .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+        {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
          .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
-                                           .bindingCount = 2, .pBindings = b};
+                                           .bindingCount = 3, .pBindings = b};
     VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 64};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
                                      .pSetLayouts = &C.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
@@ -91,7 +102,8 @@ static int init(VkCtx *c) {
         rt_log("vk: contact shadows off: their pipeline could not be created");
         return 0;
     }
-    rt_log("vk: contact shadows on, strength %d%%%s", C.strength, C.debug ? " (debug view)" : "");
+    rt_log("vk: contact shadows on, strength %d%%%s", C.strength,
+           C.debug == 2 ? " (debug view: sun visibility)" : C.debug ? " (debug view)" : "");
     return C.ok = 1;
 }
 
@@ -118,6 +130,13 @@ static void mem_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &d);
 }
 
+// The half-resolution lighting pass after the G-buffer: eight targets at half the scene's size, the first RGBA8.
+static int is_lighting(const VkExec *ex) {
+    const VkExecTarget *t = &ex->color[0];
+    return C.scene.image && ex->pass_ncolor == 8 && t->image && t->img && !t->level &&
+           t->format == VK_FORMAT_R8G8B8A8_UNORM && ex->pass_w * 2 == C.scene.width && ex->pass_h * 2 == C.scene.height;
+}
+
 // The lighting composite: the remembered scene colour as the only target, with a D16 depth of its size.
 static int is_composite(const VkExec *ex) {
     return C.scene.image && ex->pass_ncolor >= 1 && ex->color[0].image == C.scene.image && !ex->color[0].level &&
@@ -134,7 +153,11 @@ int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
         if (b->addr && b->size == 0x940) C.c4 = b->addr;
         if (is_gbuffer(ex, &scene, &depth)) {
             C.pending = 0;
-            C.scene = *scene, C.depth = *depth;
+            C.scene = *scene, C.depth = *depth, C.sun = (VkExecTarget){0};
+            return 0;
+        }
+        if (is_lighting(ex)) {
+            C.sun = ex->color[0];
             return 0;
         }
         if (is_composite(ex)) {
@@ -149,7 +172,7 @@ int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
     float px = u[7 * 4 + 0], py = u[8 * 4 + 1], zfar = u[14 * 4 + 1];
     if (!(ll > 1e-6f) || !(px > 0) || !(py > 0) || !(zfar > 1)) return 0;
     float w = (float)C.scene.width, h = (float)C.scene.height;
-    *j = (VkExecJob){.scene = C.scene, .depth = C.depth,
+    *j = (VkExecJob){.scene = C.scene, .depth = C.depth, .sun = C.sun,
                      .pc = {px, py, zfar, (float)C.strength / 100.0f,
                             lx / ll, ly / ll, lz / ll, 0.6f,
                             w, h, 1.0f / w, 1.0f / h,
@@ -165,6 +188,9 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
     VkImageView out = vk_exec_target_view(j->scene.img, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_IMAGE_VIEW_TYPE_2D,
                                           VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
     if (!in || !out) return;
+    VkImageView sun = j->sun.img ? vk_exec_target_view(j->sun.img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D,
+                                                       VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0)
+                                 : VK_NULL_HANDLE;
     // A full barrier that also takes the images in the feedback layout back to GENERAL (vk_exec.c barrier_to): the
     // G-buffer's linear depth and scene colour are such images once a draw sampled them in their own pass, and the march
     // binds them in GENERAL. A memory barrier alone left them in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT.
@@ -173,19 +199,24 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
     float pcv[16];
     memcpy(pcv, j->pc, sizeof pcv);
     pcv[12] = (float)C.debug;
+    pcv[13] = sun ? 1.0f : 0.0f;
     if (!C.logged) {
         C.logged = 1;
-        rt_log("vk: contact shadows on a %ux%u scene, sun toward %.3f %.3f %.3f (view space), far %g", j->scene.width, j->scene.height,
-               pcv[4], pcv[5], pcv[6], pcv[2]);
+        rt_log("vk: contact shadows on a %ux%u scene, sun toward %.3f %.3f %.3f (view space), far %g; %s", j->scene.width,
+               j->scene.height, pcv[4], pcv[5], pcv[6], pcv[2],
+               sun ? "sunlit pixels only" : "no sun visibility found: every pixel");
     }
-    VkDescriptorImageInfo ii = {C.sampler, in, VK_IMAGE_LAYOUT_GENERAL}, oi = {VK_NULL_HANDLE, out, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w[2] = {
+    VkDescriptorImageInfo ii = {C.sampler, in, VK_IMAGE_LAYOUT_GENERAL}, oi = {VK_NULL_HANDLE, out, VK_IMAGE_LAYOUT_GENERAL},
+                          si = {C.sampler, sun ? sun : in, VK_IMAGE_LAYOUT_GENERAL};   // not read without a sun view
+    VkWriteDescriptorSet w[3] = {
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii},
         {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &si}};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.pipe);
-    rec_push(C.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.layout, 0, 2, w);
+    rec_push(C.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.layout, 0, 3, w);
     vkCmdPushConstants(cb, C.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pcv, pcv);
     vkCmdDispatch(cb, (j->scene.width + 7) / 8, (j->scene.height + 7) / 8, 1);
     vk_texture_storage_written(j->scene.img);   // the march wrote the scene colour: a fence write-back snapshot made before is stale
