@@ -349,7 +349,7 @@ def main():
     args = ap.parse_args()
     sys.stdout.reconfigure(errors='replace')   # cheat names in a console without their characters
     m = Main(args.exefs / 'main')
-    text = args.patches.read_text()
+    text = args.patches.read_text(encoding='utf-8')
     files = cheat_files(args.mods, build_id(args.exefs / 'main'))
     cheats = [c for mod, f in files for c in parse(f.read_text(encoding='utf-8-sig', errors='replace'), mod)]
     sets, sites, status = [], [], []
@@ -357,7 +357,7 @@ def main():
         classify(m, c)
         if c.sites:
             name = f'cheat_{c.key.lower()}'
-            label = c.name.encode('ascii', 'replace').decode()   # recomp/patches.py reads the file as ASCII
+            label = c.name.encode('ascii', 'replace').decode()   # a comment only, kept ASCII like the mod labels
             sets.append(f'set {name} TOTK_CHEAT_{c.key} {1 if c.kind == "master" else 0}   # {label}')
             for a, repl in sorted(c.sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
@@ -367,7 +367,7 @@ def main():
         print(f'cheats: {c.kind:11} {c.name}' + (f' ({note})' if note else ''))
     if sets:
         text += ('\n# Cheats of the mods folder (tools/cheats.py)\n' + '\n'.join(sets) + '\n' + '\n'.join(sites) + '\n')
-    args.out.write_text(text)
+    args.out.write_text(text, encoding='utf-8')
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
     kinds = {}

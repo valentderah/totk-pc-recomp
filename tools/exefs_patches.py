@@ -319,7 +319,7 @@ def build(args):
     m = Main(args.exefs / 'main')
     md = MainData(m) if args.data else None
     bid = m.nso.build_id
-    text = args.patches.read_text()
+    text = args.patches.read_text(encoding='utf-8')
     builtin = builtin_sites(text)
     files = patch_files(args.mods)
     sets, sites, status, data_lines, kinds = [], [], [], [], {}
@@ -351,7 +351,7 @@ def build(args):
     if sets:
         text += ('\n# ExeFS patches of the mods folder (tools/exefs_patches.py)\n' + '\n'.join(sets) + '\n'
                  + '\n'.join(sites) + '\n')
-    args.out.write_text(text)
+    args.out.write_text(text, encoding='utf-8')
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
     if args.data:
