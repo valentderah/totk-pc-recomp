@@ -775,9 +775,14 @@ static void ov_user_difference(Cpu *c) {
 
 // ==== nn::pl shared fonts (shared_font.c). TotK asks for them only from its font loader, only with Simplified Chinese,
 // Korean or Traditional Chinese text, and only for type 0; tools/extract_fonts.py writes
-// them from the user's firmware. Each type is read on first use into guest-visible memory as the BFTTF file the pl
-// shared memory holds; Address is 8 bytes past the file start (after the BFTTF header) and Size the decoded font size,
-// as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
+// them from the user's firmware. Each type is read on first use into guest-visible memory laid out as the pl shared
+// memory holds it: the file's 8-byte BFTTF header as it is, then the font decoded to plain sfnt data. Address is 8
+// bytes past the file start (after the header) and Size the decoded font size, as in MNG. The firmware file keeps the
+// font XOR-encoded, and the game cannot read it that way: its font loader takes the data at Address as a font when the
+// first word is an sfnt tag and otherwise hands it to nn::fontll::ScalableFontEngineHelper::Decode, which knows only
+// a BFTTF header at the start and returns NULL for an encoded payload. The face then gets no name, SetFont fails, and
+// the text draws the previous face's glyphs with the failed face's metrics (the CJK ellipsis above the line; MNG
+// shared_font.c load decodes the same way since its pull request #2145). The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
 // Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
@@ -840,6 +845,11 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         fclose(f);
         uint64_t size = got == (size_t)len ? ov_bfttf_size(p, (uint64_t)len) : 0;
         if (!size) rt_fatal("nn::pl: shared font %s is not a BFTTF font", path);
+        // Decode the font in place; the words are big-endian, so byte i of each word takes key byte i.
+        uint32_t key = be32(p) ^ BFTTF_MAGIC;
+        for (int64_t i = 8; i < len; i++) p[i] ^= (uint8_t)(key >> (24 - 8 * (i & 3)));
+        if (memcmp(p + 8, "\0\1\0\0", 4) && memcmp(p + 8, "OTTO", 4))
+            rt_fatal("nn::pl: shared font %s is not an sfnt font after decoding", path);
         fonts.size[t] = size;
         __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
         rt_log("pl: shared font %lld (%s): %llu bytes from %s", (long long)t, font_type_name(t),
