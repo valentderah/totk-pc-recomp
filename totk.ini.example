@@ -33,6 +33,9 @@
 # audio = none and after the game's audio stream was paused for 2 s and for 5 s in test runs, not while a device plays.
 # 0 = the game's own code.
 # audio_drain_fix = 1
+# Game 1.4.3: the two launchers in Tenbez Shrine throw the stone ball into the other launcher's seat above 30 fps.
+# 0 = the game's own speed, tuned for 30 fps.
+# shutter_fix = 1
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.

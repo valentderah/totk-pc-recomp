@@ -1214,3 +1214,30 @@ hook main 585bd0
 # off (silent from the pause on) and 51 of 59 with it on; a pause of 2 s with the set off, 4 of 59.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec
+
+# Tenbez Shrine launchers (issue #1215). The two DgnObj_BoxShutter_4x4x4 that throw the stone ball across the room move
+# 3 m at Speed (1.0 m per 30 Hz frame, 30 m/s): their AI (AI/ShutterFence.root.ainb) advances the target by Speed *
+# frame ratio each frame and sets the kinematic body's velocity to reach it. The shorter the frame, the slower the ball
+# leaves. Measured on the flight's apex (the ball rests at y = -4.42): 6.33 at 30 fps, 6.11 at 45, 6.00 at 60, 5.79 at
+# 90, 5.61 at 120. Below about 6.1 the ball lands more and more often on the rim of the receiving launcher instead
+# of its seat, and the next shots juggle it there or knock it into the pit. The data suggest Nintendo tuned this by
+# hand for a 60 fps build ("Ounce", which looks like the Switch 2): in
+# the shrine's map both actors carry SpeedForOunce = 1.01 and shouldUseOunceSpeed, read by the node
+# QueryBlackboardGetF32FromActorForOunce (also in AI/ShutterFence_WithVibration.root.ainb of the
+# FldObj_RuinStoneWall_A_20/30_Shutter walls, where the flag is never set). The Switch build of the node ignores the
+# pair: its evaluation (main+0x25e557c) looks up the base key alone. With 1.01 the apex is 6.20 at 60 fps, but 5.96 at 90 and
+# 5.81 at 120, so the site scales by the frame instead. It is where the evaluation loads the value: when the node's
+# shouldUseOunceKey input (+0x58) is true, the value is multiplied by 1 + 0.065 * (1 - ratio)^2, ratio being the time
+# object's +0x38 (the frame in 30 Hz frames; [[main+0x3ad27c8] + 0xc8], the object the set bounce reads) clamped to
+# 0..1. That is 1.016 at 60 fps and 1.037 at 120, and exactly 1 at 30 fps and below. Measured apex with it: 6.25 at
+# 45 fps, 6.33 at 60, 6.23 at 90, 6.33 at 120, 6.35 at 144. Every other user of the node has the input false and gets
+# its value unchanged. x9, x10 and s1-s4 are free: after the site the function only moves x19 to x0, restores the
+# saved registers and tail-calls the output setter (main+0xb9b818), which reads x0 and s0. Its own switch,
+# shutter_fix (TOTK_SHUTTER_FIX); 0 runs the game's instruction.
+set shutter  TOTK_SHUTTER_FIX    1
+site shutter main 25e55d0 bc605900 bc605900 f9402ea9 927ef529 39400129 1e230123 b000a76a f943e54a f940654a bd403941 1e2e1002 1e213841 2f00e404 1e246821 1e227821 1e210821 5283d709 72a7b0a9 1e270124 1e240821 1e230821 1f010000
+#   ldr s0, [x8, w0, uxtw #2]; ldr x9, [x21, #0x58]; and x9, x9, #~3; ldrb w9, [x9]; ucvtf s3, w9 (the input, 0 or 1);
+#   adrp x10, main+0x3ad2000; ldr x10, [x10, #0x7c8]; ldr x10, [x10, #0xc8]; ldr s1, [x10, #0x38] (ratio);
+#   fmov s2, #1.0; fsub s1, s2, s1; movi d4, #0; fmaxnm s1, s1, s4; fminnm s1, s1, s2; fmul s1, s1, s1;
+#   mov w9, #0x1eb8; movk w9, #0x3d85, lsl #16; fmov s4, w9 (0.065); fmul s1, s1, s4; fmul s1, s1, s3;
+#   fmadd s0, s0, s1, s0
