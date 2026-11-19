@@ -1002,11 +1002,14 @@ static void probe_fonts(void) {
     CHECK(got == sizeof head && size && size + 8 == (uint64_t)len, "shared font 0: size %llu, file %lld bytes",
           (unsigned long long)size, (long long)len);
     const uint8_t *p = (const uint8_t *)(uintptr_t)addr;
-    CHECK(addr && !memcmp(p - 8, head, sizeof head) && ov_bfttf_size(p - 8, size + 8) == size,
-          "shared font 0: the address is not 8 bytes into the BFTTF file");
+    // The pl shared memory layout: the file's BFTTF header unchanged at Address - 8, the decoded sfnt font at Address.
+    CHECK(addr && !memcmp(p - 8, head, 8) && ov_bfttf_size(head, size + 8) == size,
+          "shared font 0: the address is not 8 bytes past the file's BFTTF header");
+    CHECK(!memcmp(p, "\0\1\0\0", 4) || !memcmp(p, "OTTO", 4),
+          "shared font 0: the data at the address is not plain sfnt: %02x %02x %02x %02x", p[0], p[1], p[2], p[3]);
     CHECK(CALL("pl.GetSharedFontAddress", 0) == addr, "shared font 0: the address changed");
-    printf("pl: shared font 0 (Standard) at %#llx, %llu bytes, BFTTF header checked (%s)\n", (unsigned long long)addr,
-           (unsigned long long)size, path);
+    printf("pl: shared font 0 (Standard) at %#llx, %llu bytes, BFTTF header and decoded sfnt checked (%s)\n",
+           (unsigned long long)addr, (unsigned long long)size, path);
 }
 
 // The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
