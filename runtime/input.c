@@ -271,7 +271,8 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
 
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_lock(&lock);
-    enabled = enabled && !g_block && !g_menu && !freecam_on();   // the free camera takes the mouse (freecam_gate)
+    // the moving free camera takes the mouse (freecam_gate)
+    enabled = enabled && !g_block && !g_menu && freecam_state() != FREECAM_MOVE;
     *dx = script_mouse[0]; *dy = script_mouse[1];
     script_mouse[0] = script_mouse[1] = 0;
     if (!enabled) { *dx = *dy = 0; }
@@ -854,12 +855,13 @@ static float trigger_unit(int16_t v) {   // 0..1 past a 5 % dead zone
 }
 
 // The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down (on the gamepad,
-// or pressed by an input script) the free camera switches once, and the buttons stay hidden from the game until all are
-// released; the free camera key switches it on its press. While the free camera is on it gets the input and the game
-// gets nothing, so Link stands still: the sticks (the keys' sticks merged into sl and sr), the trigger axes or else ZL
-// and ZR as buttons, a press of L or R as a speed click, and the mouse's motion, which input_direct_mouse_sample then
-// keeps from the game's camera. ZL, ZR, L and R are the merged Switch buttons, so the keys bound to them count. Off for
-// other updates and with the freecam patch set off. Under lock.
+// or pressed by an input script) the free camera steps once (off, move, lock), and the buttons stay hidden from the
+// game until all are released; the free camera key steps it on its press. While the free camera moves it gets the
+// input and the game gets nothing, so Link stands still: the sticks (the keys' sticks merged into sl and sr), the
+// trigger axes or else ZL and ZR as buttons, a press of L or R as a speed click, and the mouse's motion, which
+// input_direct_mouse_sample then keeps from the game's camera. ZL, ZR, L and R are the merged Switch buttons, so the
+// keys bound to them count. Locked, the game gets the input as it is (freecam.c: the game steers Link by the camera it
+// draws). Off for other updates and with the freecam patch set off. Under lock.
 static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     static int held, key_held, available = -1, shoulder[2];
     if (available < 0) available = freecam_available();
@@ -878,13 +880,13 @@ static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     else if (held) held = raw != 0;
     else if (raw == mask) {
         held = 1;
-        freecam_toggle();
+        freecam_cycle();
     }
     int key = available ? freecam_key() : KEY_NONE;
     int key_down = key != KEY_NONE && ikb_foreground() && ikb_down(key);
-    if (key_down && !key_held) freecam_toggle();
+    if (key_down && !key_held) freecam_cycle();
     key_held = key_down;
-    if (available && freecam_on()) {
+    if (available && freecam_state() == FREECAM_MOVE) {
         float lt = trigger_unit(trigger_seen[0]), rt = trigger_unit(trigger_seen[1]);
         if (*b >> B_ZL & 1) lt = 1;
         if (*b >> B_ZR & 1) rt = 1;
@@ -1035,7 +1037,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
-    freecam_gate(&b, sl, sr);   // TOTK_FREECAM_PAD switches the free camera, which then takes the pad (freecam.c)
+    freecam_gate(&b, sl, sr);   // TOTK_FREECAM_PAD steps the free camera, which takes the pad while moving (freecam.c)
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();

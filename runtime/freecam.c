@@ -21,12 +21,14 @@
 // the anchor is driven. When no driven component has been updated for LOST_NS (a load replaced them) the next one
 // away from the default anchors again; the free camera keeps its own position.
 //
-// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD or TOTK_FREECAM_KEY switches it (both none by default, so the
-// player opts in). While it is on the game gets no input; the left stick flies along the view and to the side, ZR and
-// ZL straight up and down, the right stick and the mouse turn, and each press of L or R halves or doubles the speed.
-// Keys work through their bindings: the keys' sticks, and the keys bound to ZL, ZR, L and R. Every driven component
-// steps the flight by the wall-clock time since the last step, so the speed is the same at any frame rate and game
-// speed.
+// Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD or TOTK_FREECAM_KEY steps it off, move, lock and off again
+// (both none by default, so the player opts in). While it moves the game gets no input; the left stick flies along the
+// view and to the side, ZR and ZL straight up and down, the right stick and the mouse turn, and each press of L or R
+// halves or doubles the speed. Keys work through their bindings: the keys' sticks, and the keys bound to ZL, ZR, L and
+// R. Every driven component steps the flight by the wall-clock time since the last step, so the speed is the same at
+// any frame rate and game speed. Locked, the view stays where the flight left it and the game gets its input back.
+// The game steers Link by the camera it draws, which takes the overrides, so Link walks where the stick points on
+// screen with the stick as it is.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,11 +58,11 @@ static PlatMutex pad_lock = PLAT_MUTEX_INIT;
 static FreecamPad pad_now;        // the last poll's input (input thread), under pad_lock
 static int speed_clicks;          // R presses minus L presses not yet applied (input thread adds, the hook takes)
 static double mouse_deg[2];       // under pad_lock: mouse turn not yet applied, degrees (right +, down +)
-// + 1 at every switch (input thread); odd while the free camera is on. One value, so the hook never sees a switch
-// without the state it switched to.
+// + 1 at every switch (input thread); modulo 3 the stage (FREECAM_OFF, _MOVE, _LOCK). One value, so the hook never
+// sees a switch without the stage it switched to.
 static unsigned generation;
 
-int freecam_on(void) { return __atomic_load_n(&generation, __ATOMIC_ACQUIRE) & 1; }
+int freecam_state(void) { return __atomic_load_n(&generation, __ATOMIC_ACQUIRE) % 3; }
 
 void freecam_pad(const FreecamPad *p) {
     plat_mutex_lock(&pad_lock);
@@ -88,16 +90,17 @@ enum {
 
 int freecam_available(void) { return rt_game_version == 143 && rt_patch_enabled(rt_patch_set("freecam")); }
 
-void freecam_toggle(void) {
+void freecam_cycle(void) {
     unsigned gen = __atomic_add_fetch(&generation, 1, __ATOMIC_ACQ_REL);
-    rt_log("freecam: %s", gen & 1 ? "on" : "off");
+    static const char *const names[] = {"off", "move", "lock"};
+    rt_log("freecam: %s", names[gen % 3]);
 }
 
 // Game thread only (the camera update runs on one thread). A component stays listed from its first drive until its
 // up offset is put back (the first update after the switch goes off) or, while off, until it has gone LOST_NS
 // without an update (freed by a load).
 static struct {
-    unsigned generation;
+    unsigned flight;                   // (generation + 2) / 3: the same from move through lock, new at the next move
     int started;                       // pos, yaw and pitch hold a pose
     double pos[3], yaw, pitch, speed;  // radians; yaw 0 looks along +Z, pitch > 0 up
     uint64_t last_step, anchor_seen;
@@ -220,10 +223,10 @@ static void freecam_hook(Cpu *c) {
     uint64_t cam = c->x[19];
     memcpy(&c->x[8], (const void *)(uintptr_t)(cam + OFF_LINK), sizeof c->x[8]);
     unsigned gen = __atomic_load_n(&generation, __ATOMIC_ACQUIRE);
-    int active = gen & 1;
-    if (!active && !fc.n) return;   // the common case: one load and two compares
-    if (gen != fc.generation) {     // a switch: a new flight starts at the game camera, at the start speed
-        fc.generation = gen;
+    int state = gen % 3, active = state != FREECAM_OFF;
+    if (!active && !fc.n) return;   // the common case: one load, a division and two compares
+    if ((gen + 2) / 3 != fc.flight) {   // a new flight starts at the game camera, at the start speed
+        fc.flight = (gen + 2) / 3;
         fc.started = 0, fc.anchored = 0, fc.speed = SPEED_START;
         plat_mutex_lock(&pad_lock);   // mouse motion from before the switch does not turn the new flight
         mouse_deg[0] = mouse_deg[1] = 0;
@@ -248,7 +251,7 @@ static void freecam_hook(Cpu *c) {
     if (i < 0 && (i = pick(cam, eye, target)) < 0) return;
     if (!fc.started) start(eye, target, now);
     fc.driven[i].seen = fc.anchor_seen = now;
-    step(now);
+    if (state == FREECAM_MOVE) step(now);   // locked, the view holds its pose
     drive(cam);
 }
 
@@ -257,5 +260,5 @@ __attribute__((constructor)) static void freecam_register(void) {
 }
 #else
 int freecam_available(void) { return 0; }
-void freecam_toggle(void) {}
+void freecam_cycle(void) {}
 #endif

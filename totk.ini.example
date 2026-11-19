@@ -480,15 +480,16 @@
 # reads as a partial tilt only.
 # walk_key = lshift
 # walk_scale = 0.51
-# Free camera (game 1.4.3): the gamepad combo that switches it, buttons by position joined with +, the pad: names of the
-# bind_ lines. While it is on the game gets no input and the view flies: the left stick along the view and sideways,
-# the triggers straight up and down, the right stick turns; each press of L halves the speed, of R doubles it
-# (docs/controls.md, "Free camera"). none turns the combo off. Default: none;
+# Free camera (game 1.4.3): the gamepad combo that steps it through move, lock and off, buttons by position joined with
+# +, the pad: names of the bind_ lines. While it moves the game gets no input and the view flies: the left stick along
+# the view and sideways, the triggers straight up and down, the right stick turns; each press of L halves the speed, of
+# R doubles it. Locked, the view stays and Link walks where the left stick points on screen (docs/controls.md, "Free
+# camera"). none turns the combo off. Default: none;
 # freecam_pad = zl+zr+lstick
 # A key that does the same, by its name in the bind_ lines; on the keyboard the keys bound to the sticks fly and turn,
 # the keys of ZR and ZL go up and down, those of R and L change the speed, and the mouse turns. none turns it off.
 # Default: none.
-# freecam_key = f6
+# freecam_key = f2
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick

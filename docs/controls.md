@@ -131,10 +131,15 @@ bind_Y = pad:north, key:mouse_l
 
 ## Free camera
 
-On game 1.4.3, a chosen gamepad combo or a key activates or deactivates the free camera. Neither is set by default: pick
-them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for example ZL+ZR+L3, LT+RT+L3 on an
-Xbox pad, and F6; `none` turns one off). An input script can press the combo as a gamepad would; the keys bound to its
-buttons do not. The world goes on, but the game gets no input while the free camera is on, so Link stands where he was.
+On game 1.4.3, a chosen gamepad combo or a key steps the free camera through three stages: move, lock, and off again.
+Neither is set by default: pick them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for
+example ZL+ZR+L3, LT+RT+L3 on an Xbox pad, and F2; `none` turns one off). An input script can press the combo as a
+gamepad would; the keys bound to its buttons do not. While the free camera moves, the world goes on but the game gets
+no input, so Link stands where he was.
+
+Locked, the view stays where the flight left it and the game gets its input back. Link walks where the left stick
+points on screen, as the game steers him by the camera it draws. The right stick and the mouse turn the game camera,
+which still follows Link unseen.
 
 | Gamepad | Keyboard and mouse (default bindings) | Free camera |
 |---|---|---|
@@ -151,7 +156,8 @@ follows the clock, so it is the same at any frame rate and game speed. The horiz
 How it works (`runtime/freecam.c`): the camera component update (main+0x628460) copies each component's eye, target
 and up into its sead camera. The site `freecam` (`recomp/patches-v143.txt`, main+0x6286d4) runs before that copy and
 writes the component's one-shot eye and target overrides (+0x180, +0x198), which the update takes in place of the pose
-and then clears, so the game camera's own state is never changed and resumes the frame the free camera ends. The up
+and then clears, so the game camera's own state is never changed and resumes the frame the free camera ends. Locked,
+the site keeps writing the overrides without moving them. The up
 vector is levelled through the component's up offset (+0x200), which is kept and put back. Of the three components a
 frame updates, the free camera drives the two that share the player camera's eye and leaves the one at the default pose
 (eye 0, 0, 10). After a load replaced the components it picks the new ones and keeps its position.
