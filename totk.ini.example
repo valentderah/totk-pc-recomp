@@ -276,8 +276,9 @@
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
 # contact_shadows = 0
 # Soft sun shadows (PCSS), percent of the default penumbra width (0 to 200; 0 = the game's own four-tap filter): sharp
-# where an object meets the ground and softer the further its shadow falls. Done in the translated shaders (translator
-# patch 0010), so the shader cache is rebuilt once after an update. Read at start.
+# where an object meets the ground and softer the further its shadow falls. The blur keeps its width on the ground
+# from one shadow cascade to the next, so it does not step up where a farther cascade begins. Done in the translated
+# shaders (translator patches 0010 and 0017), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
 # NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
