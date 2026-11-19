@@ -349,6 +349,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_QS_NONE] = "There is no quick save yet (the quick save key makes one)",
     [UI_QS_FAILED] = "Quick save failed: see totk.log",
     [UI_QS_LOAD_FAILED] = "Quick load failed: see totk.log",
+    [UI_MENU_MOUSE_MENU_ONLY] = "Mouse in the menus only",
+    [UI_MENU_MOUSE_MENU_ONLY_DESC] = "While a controller is connected the mouse no longer moves the camera, so a hand "
+                                     "resting on it cannot fight the controller. It still works in the game's menus, the "
+                                     "map, the Purah Pad's camera and dialogue boxes: move it there and it takes over. "
+                                     "Without a controller the mouse is unchanged.",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
     [UI_MENU_WALK_KEY] = "Walk key",
@@ -960,6 +965,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_QS_NONE] = "Быстрого сохранения ещё нет (его делает клавиша быстрого сохранения)",
     [UI_QS_FAILED] = "Быстрое сохранение не удалось: см. totk.log",
     [UI_QS_LOAD_FAILED] = "Быстрая загрузка не удалась: см. totk.log",
+    [UI_MENU_MOUSE_MENU_ONLY] = "Мышь только в меню",
+    [UI_MENU_MOUSE_MENU_ONLY_DESC] = "Пока подключён контроллер, мышь не поворачивает камеру, и лежащая на ней рука не "
+                                     "мешает контроллеру. В меню игры, на карте, в камере Пурры и в диалогах она "
+                                     "работает: сдвиньте её там, и она берёт управление. Без контроллера мышь не "
+                                     "меняется.",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
@@ -1441,6 +1451,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                     "agora\" e coloque a zona morta alguns por cento acima.",
     [UI_MENU_STICK_DEADZONE_NOW] = "analógico agora: %.0f %%",
     [UI_MENU_MOUSE_SENS] = "Sensibilidade da câmera no mouse",
+    [UI_MENU_MOUSE_MENU_ONLY] = "Mouse só nos menus",
+    [UI_MENU_MOUSE_MENU_ONLY_DESC] = "Com um controle conectado o mouse não gira mais a câmera, então uma mão apoiada "
+                                     "nele não briga com o controle. Ele continua funcionando nos menus do jogo, no "
+                                     "mapa, na câmera do Purah Pad e nas caixas de diálogo: mova-o ali e ele assume. "
+                                     "Sem um controle o mouse não muda.",
     [UI_MENU_MOUSE_SENS_DESC] = "Quão rápido o mouse gira a câmera.",
 
     [UI_BINDS_HELP] = "Selecione uma célula e aperte A ou Enter, depois a tecla, o botão do mouse ou o botão do "
@@ -2130,6 +2145,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                     "请调高此值：松开摇杆，查看“当前摇杆”，把死区设得比它高几个百分点。",
     [UI_MENU_STICK_DEADZONE_NOW] = "当前摇杆：%.0f %%",
     [UI_MENU_MOUSE_SENS] = "鼠标视角灵敏度",
+    [UI_MENU_MOUSE_MENU_ONLY] = "鼠标仅用于菜单",
+    [UI_MENU_MOUSE_MENU_ONLY_DESC] = "接入手柄后，鼠标不再转动视角，放在鼠标上的手也就不会和手柄抢操作。它在游戏菜单、地图、"
+                                     "普尔亚平板相机和对话框里仍然可用：在那里移动鼠标即可接管。没有手柄时鼠标不受影响。",
     [UI_MENU_MOUSE_SENS_DESC] = "鼠标转动视角的速度。",
 
     [UI_BINDS_HELP] = "选中一个格子后按 A 或 Enter，再按键、鼠标键或手柄按键。"
