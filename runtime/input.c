@@ -601,10 +601,16 @@ static void binds_refresh(void) {
 // (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
 // deflection go through the same mapping and dead zone as a real pad.
 // TOTK_TEST_PAD_RUMBLE_MS=<n>: the test gamepad has rumble and each write to it takes n ms (a slow Bluetooth HID write),
-// to show that input_rumble does not wait for it.
+// to show that input_rumble does not wait for it. Read with cfg_get, as TOTK_TEST_PAD is: a test variable has no row in
+// the settings table, and cfg_int stops the game on a name without one.
+static int test_pad_rumble_ms(void) {
+    const char *e = cfg_get("TOTK_TEST_PAD_RUMBLE_MS");
+    return e ? atoi(e) : 0;
+}
+
 static bool test_pad_rumble(void *userdata, Uint16 low, Uint16 high) {
     (void)userdata; (void)low; (void)high;
-    plat_wait_ns((uint64_t)cfg_int("TOTK_TEST_PAD_RUMBLE_MS") * 1000000ull);
+    plat_wait_ns((uint64_t)test_pad_rumble_ms() * 1000000ull);
     return true;
 }
 
@@ -623,7 +629,7 @@ static void test_pad_attach(void) {
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.name = "TotK test gamepad";
-    if (cfg_int("TOTK_TEST_PAD_RUMBLE_MS") > 0) d.Rumble = test_pad_rumble;
+    if (test_pad_rumble_ms() > 0) d.Rumble = test_pad_rumble;
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
     joy = id ? SDL_OpenJoystick(id) : NULL;
     if (!joy) {
