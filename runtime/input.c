@@ -4,7 +4,7 @@
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
+// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`, except the rumble writes (rumble_main).
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -37,6 +37,8 @@ int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED)
 int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground() && ikb_captured(); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
+static volatile int32_t rumble_ready;   // the open gamepad has rumble motors (what input_rumble returns)
+static void rumble_cancel(void);
 static int pad_rumble;               // the open gamepad has rumble motors
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
 static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
@@ -509,8 +511,12 @@ static void scan_pads(void) {
         else SDL_CloseGamepad(pad);
         pad = NULL;
         pad_hidden = 0;
+        plat_xchg32(&rumble_ready, 0);
+        rumble_cancel();
     }
     if (pad) {
+        plat_xchg32(&rumble_ready, 0);
+        rumble_cancel();
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
         motion_bias_reset(motion_global());
@@ -532,6 +538,7 @@ static void scan_pads(void) {
     if (!pad) return;
     pad_hidden = steam_hidden_n && steam_hidden_id(SDL_GetGamepadID(pad));
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    plat_xchg32(&rumble_ready, pad_rumble);
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     for (int i = 0; i < 4; i++) {
         SDL_GamepadButtonLabel lb = SDL_GetGamepadButtonLabel(pad, pad_sdl[PAD_SOUTH + i]);
@@ -593,6 +600,14 @@ static void binds_refresh(void) {
 // TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
 // (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
 // deflection go through the same mapping and dead zone as a real pad.
+// TOTK_TEST_PAD_RUMBLE_MS=<n>: the test gamepad has rumble and each write to it takes n ms (a slow Bluetooth HID write),
+// to show that input_rumble does not wait for it.
+static bool test_pad_rumble(void *userdata, Uint16 low, Uint16 high) {
+    (void)userdata; (void)low; (void)high;
+    plat_wait_ns((uint64_t)cfg_int("TOTK_TEST_PAD_RUMBLE_MS") * 1000000ull);
+    return true;
+}
+
 static void test_pad_attach(void) {
     static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
     const char *e = cfg_get("TOTK_TEST_PAD");
@@ -608,6 +623,7 @@ static void test_pad_attach(void) {
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.name = "TotK test gamepad";
+    if (cfg_int("TOTK_TEST_PAD_RUMBLE_MS") > 0) d.Rumble = test_pad_rumble;
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
     joy = id ? SDL_OpenJoystick(id) : NULL;
     if (!joy) {
@@ -1041,17 +1057,83 @@ int input_rumble_triggers_enabled(void) {
     return cfg_bool("TOTK_RUMBLE_TRIGGERS");
 }
 
-int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
-    int ok = 0;
-    static int triggers = -1;
-    static unsigned seen;
-    if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
+// The rumble worker. input_rumble only stores the newest request (rq) and wakes the worker; the worker sends it to the
+// gamepad. A Bluetooth HID write can block for tens of milliseconds, and the callers are the guest thread that runs
+// SendVibrationValue and every path that takes `lock`, so no SDL rumble call is made on them. Requests that pile up
+// while the worker is in a write are dropped except the newest (Savage Wind Recomp, commit a8ad674, does the same for
+// issue #730).
+//
+// The worker takes its own handle on the open gamepad under `lock` (SDL_OpenGamepad of an open pad's id returns the same
+// object with its reference count raised) and releases `lock` before the write, so a scan_pads close of `pad` meanwhile
+// only drops one reference and the object lives until the worker's SDL_CloseGamepad. SDL itself serialises the write
+// with its other joystick calls (SDL_RumbleJoystick runs under the joystick lock), so a poll or motion_main's
+// SDL_UpdateGamepads that lands inside a slow write still waits for it; the thread that sends rumble and the other
+// `lock` users that make no SDL gamepad call do not.
+typedef struct { uint16_t low, high; uint32_t ms; int pending; } RumbleReq;
+static PlatMutex rq_lock = PLAT_MUTEX_INIT;   // guards rq, rumble_stop and rumble_thread; taken after `lock`, never before it
+static PlatCond rq_cond = PLAT_COND_INIT;
+static RumbleReq rq;
+static int rumble_stop;
+static PlatThread *rumble_thread;
+
+static void rumble_write(uint16_t low, uint16_t high, uint32_t ms) {
+    SDL_Gamepad *g = NULL;
+    int triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble) {
-        ok = SDL_RumbleGamepad(pad, low, high, ms);
-        if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
-    }
+    if (state == 1 && pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
     plat_mutex_unlock(&lock);
+    if (!g) return;
+    SDL_RumbleGamepad(g, low, high, ms);
+    if (triggers) SDL_RumbleGamepadTriggers(g, high, high, ms);   // unsupported pads return false: ignored
+    SDL_CloseGamepad(g);
+}
+
+static void rumble_main(void *arg) {
+    (void)arg;
+    plat_mutex_lock(&rq_lock);
+    for (;;) {
+        while (!rq.pending && !rumble_stop) plat_cond_wait(&rq_cond, &rq_lock);
+        if (!rq.pending) break;
+        RumbleReq r = rq;
+        rq.pending = 0;
+        plat_mutex_unlock(&rq_lock);
+        rumble_write(r.low, r.high, r.ms);
+        plat_mutex_lock(&rq_lock);
+    }
+    plat_mutex_unlock(&rq_lock);
+}
+
+// Stops the motors and the worker at exit: a pad keeps its last request running for its duration otherwise.
+static void rumble_exit(void) {
+    plat_mutex_lock(&rq_lock);
+    PlatThread *t = rumble_thread;
+    rq = (RumbleReq){0, 0, 0, 1};
+    rumble_stop = 1;
+    plat_cond_signal(&rq_cond);
+    plat_mutex_unlock(&rq_lock);
+    if (t) plat_thread_join_ns(t, 300000000ull);   // a write stuck past this is left to the exit
+}
+
+// Drops the request that has not been sent yet (the gamepad it was for went away). A request in flight holds its own
+// handle and ends by itself. Under lock.
+static void rumble_cancel(void) {
+    plat_mutex_lock(&rq_lock);
+    rq.pending = 0;
+    plat_mutex_unlock(&rq_lock);
+}
+
+int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
+    int ok = __atomic_load_n(&rumble_ready, __ATOMIC_ACQUIRE);
+    if (!ok) return 0;
+    plat_mutex_lock(&rq_lock);
+    if (!rumble_thread && !rumble_stop) {
+        rumble_thread = plat_thread_new(rumble_main, NULL, "rumble");
+        if (!rumble_thread) rt_fatal("input: cannot start the rumble thread");
+        atexit(rumble_exit);
+    }
+    rq = (RumbleReq){low, high, ms, 1};
+    plat_cond_signal(&rq_cond);
+    plat_mutex_unlock(&rq_lock);
     return ok;
 }
 
