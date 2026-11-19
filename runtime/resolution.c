@@ -553,8 +553,16 @@ static void res_grass_range(void) {
 // level the layout chose for the 1080-line canvas, and blur the result with a kernel of fixed texels. On a taller
 // canvas page +96 adds log2(canvas height / 1080), rounded, to the level, so the blur runs at the size it has on the
 // console and the glow of a title keeps its width and brightness (a title's dissolve otherwise leaves pieces).
+// The uimask set sizes the capture a dissolve thresholds as the console does: page +100 holds canvas height / 1080,
+// the factor the capture draw divides such a capture's size by, so its text has the console's partly covered strokes.
 static void res_ui_reduce(uint8_t *page) {
-    int set = rt_patch_set("uireduce");
+    int set = rt_patch_set("uireduce"), mask = rt_patch_set("uimask");
+    float k = (float)R.oh / BASE_H;
+    if (mask >= 0 && k > 1.0f) {
+        memcpy(page + 100, &k, sizeof k);
+        rt_patch_switch(mask, 1);
+        rt_log("resolution: UI dissolve masks captured at 1/%g of the canvas", k);
+    }
     int32_t n = (int32_t)lround(log2((double)R.oh / BASE_H));
     if (set < 0 || n < 1) return;
     memcpy(page + 96, &n, sizeof n);
