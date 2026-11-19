@@ -52,6 +52,9 @@
 #define HAND_MAX 3.0f
 
 static int direct_mode(void) {
+    // With TOTK_MOUSE_MENU_ONLY and a gamepad connected the mouse is a menu device (input.c): no hook of this file takes
+    // anything from it, so the camera keeps the game's own response to the pad alone.
+    if (input_mouse_locked()) return 0;
     // cfg_value: unset is the settings table's default (direct), as the menu shows it
     return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
 }
