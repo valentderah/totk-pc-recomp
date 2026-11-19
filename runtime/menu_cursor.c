@@ -430,6 +430,8 @@ void menu_cursor_poll(uint64_t *buttons) {
     // With the gamepad as the last device the menus stay as they are on the console: no pointer, the capture kept.
     // Moving the mouse (or a key) makes keyboard and mouse the last device and the pointer comes.
     __atomic_store_n(&g_menu, f.screen && !gameplay_screen(nm) && !map, __ATOMIC_RELAXED);
+    // With the mouse locked to the menus (input.c: TOTK_MOUSE_MENU_ONLY and a gamepad connected) input_kbm_last answers for
+    // the mouse alone, which only takes a screen once it moved in one: the pad keeps the menus it opened until then.
     int menu = f.screen && !gameplay_screen(nm) && ikb_foreground() && input_kbm_last();
     if (menu) menu_seen = now;
     // A menu's focus gap (a tab switch, a popup opening: no focus box for a frame or two) keeps the pointer where it
