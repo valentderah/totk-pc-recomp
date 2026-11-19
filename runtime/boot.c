@@ -22,7 +22,7 @@
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "vk.h"
-#include "platform/platform.h"
+#include "gameplay_tweaks.h"
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.0 and 1.2.1 from this port's analysis of main;
@@ -101,8 +101,11 @@ static void cb_module_finis(Cpu *c) {
 // ---- checkpoints (host.h)
 static void stats_line(void) {
     RtStats s = rt_stats();
-    rt_logf("boot: passed (%llu SVCs, %llu threads, %llu host calls)\n", (unsigned long long)s.svcs,
-           (unsigned long long)s.threads, (unsigned long long)s.host_calls);
+    if (rt_trace & (RT_TRACE_HOSTCALL | RT_TRACE_HOSTCOUNT))   // counted only then (hostfn.c hostfn_entry)
+        rt_logf("boot: passed (%llu SVCs, %llu threads, %llu host calls)\n", (unsigned long long)s.svcs,
+                (unsigned long long)s.threads, (unsigned long long)s.host_calls);
+    else
+        rt_logf("boot: passed (%llu SVCs, %llu threads)\n", (unsigned long long)s.svcs, (unsigned long long)s.threads);
 }
 
 void rt_boot_event(const char *what, Cpu *c, const char *detail) {
@@ -347,6 +350,7 @@ void rt_boot(void) {
     rt_patches_init();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on
     frame_step_init();
+    gameplay_tweaks_init();
     res_init();
     cheats_init();   // after the patch sets: a cheat's set follows its setting
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);

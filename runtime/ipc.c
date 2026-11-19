@@ -783,6 +783,7 @@ int probe_ipc(void) {
         return 0;
     }
     ldr_load(rt_config()->exefs);
+    hostfn_count(1);   // the stats line reads the host-call count
     kern_run_on_guest_main(guest_main);
     probe_unknown_service();
     RtStats s = rt_stats();

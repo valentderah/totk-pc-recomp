@@ -75,7 +75,7 @@ A PR touching these needs stronger proof.
 | #519, #582 amiibo | rewritten by us | took the data-format fixes; left out the features and the Linux event rework |
 | #483 vs #585 | #585's mapping kept | #483's stick glyph mapping was rewritten unasked while #585 already had it right |
 | #528 rain | taken after a check | code review fine, merged only after a run on a rain save |
-| #767 | taken with our fix | the default was skipped with `prompts = xbox|pc` when those folders did not exist |
+| #767 | taken with our fix | the default was skipped with `prompts = xbox\|pc` when those folders did not exist |
 | #625 frame queue | taken, off by default | a new frame queue, one field run with it on |
 | #743 UB overlay | waiting | +25% in a Depths fight on an RTX 4080; needs review, fight runs x2 and shots on AMD |
 

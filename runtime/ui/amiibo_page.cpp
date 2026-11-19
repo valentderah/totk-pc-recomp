@@ -36,6 +36,8 @@ static int g_selected_entry = -1;
 // The last action: a catalog id and the file or folder it names, formatted when drawn (the menu language can change)
 static UiTextId g_status_id = UI_MENU_AMIIBO_READY;
 static std::string g_status_arg;
+// Flag to request font rebuild (set when amiibo directory is refreshed with new files)
+static bool g_font_rebuild_requested = false;
 
 static void set_status(UiTextId id, const std::string &arg = std::string()) {
     g_status_id = id;
@@ -124,6 +126,9 @@ static void refresh_dir(void) {
         if (a.is_dir != b.is_dir) return a.is_dir;
         return a.name < b.name;
     });
+    
+    // Request font rebuild to include any new filenames
+    amiibo_request_font_rebuild();
 }
 
 void tab_amiibo(float scale) {
@@ -302,4 +307,45 @@ void tab_amiibo(float scale) {
     ImGui::TextDisabled(menu_text(UI_MENU_AMIIBO_STATUS), status);
 
     ImGui::EndChild();
+}
+
+// Collect amiibo filenames for font glyph building (called from menu.cpp fonts_up)
+void amiibo_collect_filenames(void (*callback)(void *, const char *), void *ctx) {
+    std::error_code ec;
+    fs::path dir_path(g_current_dir);
+    
+    if (!fs::exists(dir_path, ec) || !fs::is_directory(dir_path, ec)) {
+        return;
+    }
+    
+    for (const auto &entry : fs::directory_iterator(dir_path, fs::directory_options::skip_permission_denied, ec)) {
+        if (ec) break;
+        std::error_code status_ec;
+        bool is_dir = entry.is_directory(status_ec);
+        if (status_ec || is_dir) continue;
+        
+        std::string ext = entry.path().extension().string();
+        if (!iequals(ext, ".bin") && !iequals(ext, ".nfc")) {
+            continue;
+        }
+        
+        std::string filename = entry.path().filename().string();
+        if (!filename.empty()) {
+            callback(ctx, filename.c_str());
+        }
+    }
+}
+
+// Request font atlas rebuild on next frame
+void amiibo_request_font_rebuild(void) {
+    g_font_rebuild_requested = true;
+}
+
+// Check and clear font rebuild request flag
+extern "C" bool amiibo_check_font_rebuild(void) {
+    if (g_font_rebuild_requested) {
+        g_font_rebuild_requested = false;
+        return true;
+    }
+    return false;
 }

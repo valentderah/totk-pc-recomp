@@ -18,6 +18,13 @@
 
 #include "platform.h"
 
+// Hybrid laptops: the drivers read these exports of the executable when it starts and run it on the dedicated GPU.
+// NVIDIA Optimus can otherwise hide its GPU from a program it put on the integrated one, whatever the Windows and NVIDIA
+// settings say; AMD switchable graphics read the second one. TOTK_GPU_INDEX still picks another GPU. Savage Wind Recomp
+// exports the same two (runtime/platform/windows.c).
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 _Static_assert(sizeof(PlatMutex) == sizeof(SRWLOCK), "PlatMutex holds an SRWLOCK");
 _Static_assert(sizeof(PlatCond) == sizeof(CONDITION_VARIABLE), "PlatCond holds a CONDITION_VARIABLE");
 
@@ -289,6 +296,98 @@ uint32_t plat_cpu_usable(void) {
     return plat_cpu_count();
 }
 
+// ---- performance cores of a hybrid CPU
+// An Intel CPU with P-cores and E-cores (a Core 5 210H: 4 P-cores with two threads each, 4 E-cores) runs a thread on an
+// E-core at about 60% of a P-core's speed, and the frame waits for its slowest critical thread. The few threads every
+// frame goes through ask for the P-cores (plat_thread_perf_core): their selected CPU sets are the logical processors
+// above the lowest efficiency class that the process affinity allows. A thread's CPU sets bind it like an affinity
+// mask, except that processors the system reserves for itself are left out instead of failing. Nothing is selected
+// on a CPU with one efficiency class, or when the affinity already leaves only P-cores or only E-cores. LAS Recomp
+// does the same for its game, render and vsync threads (runtime/platform/windows.c plat_thread_perf_core).
+// Nothing is selected either below PC_MIN_CORES physical P-cores (an i5-1235U or Core 3 100U has 2): the five bound
+// threads (perf_core_thread) and a spinning recorder would crowd two cores and their hyperthreads while the E-cores
+// stay idle, which can be slower than letting the scheduler place them.
+#define PC_MIN_CORES 4
+static ULONG *pc_ids;   // the CPU set ids of the allowed P-core logical processors; NULL: none selected
+static ULONG pc_n;
+
+int plat_perf_core_setup(char *why, size_t n) {
+    ULONG len = 0;
+    GetSystemCpuSetInformation(NULL, 0, &len, GetCurrentProcess(), 0);
+    uint8_t *buf = len ? malloc(len) : NULL;
+    if (!buf || !GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)buf, len, &len, GetCurrentProcess(), 0)) {
+        free(buf);
+        snprintf(why, n, "no CPU set information (error %lu)", GetLastError());
+        return 0;
+    }
+    // The process affinity mask covers its first processor group only: it filters on a single-group system.
+    DWORD_PTR proc = 0, sys = 0;
+    int filter = GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc;
+    int lo = 255, hi = -1, all = 0;
+    for (ULONG off = 0; off < len;) {
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            int ec = i->CpuSet.EfficiencyClass;
+            lo = ec < lo ? ec : lo, hi = ec > hi ? ec : hi, all++;
+        }
+        off += i->Size;
+    }
+    if (!all || hi <= lo) {
+        free(buf);
+        snprintf(why, n, "not a hybrid CPU (%d logical processors, one efficiency class)", all);
+        return 0;
+    }
+    ULONG *ids = calloc((size_t)all, sizeof *ids);
+    uint16_t *cores = calloc((size_t)all, sizeof *cores);   // group << 8 | core index of each allowed physical P-core
+    int np = 0, ne = 0, ok_p = 0, ok_e = 0, nc = 0;
+    for (ULONG off = 0; ids && cores && off < len;) {
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            int perf = i->CpuSet.EfficiencyClass > lo;
+            int allowed = !filter || (i->CpuSet.Group == 0 && i->CpuSet.LogicalProcessorIndex < 64 &&
+                                      (proc >> i->CpuSet.LogicalProcessorIndex) & 1);
+            perf ? np++ : ne++;
+            if (allowed) perf ? ok_p++ : ok_e++;
+            if (allowed && perf) {
+                ids[pc_n++] = i->CpuSet.Id;
+                uint16_t key = (uint16_t)(i->CpuSet.Group << 8 | i->CpuSet.CoreIndex);
+                int k = 0;
+                while (k < nc && cores[k] != key) k++;
+                if (k == nc) cores[nc++] = key;
+            }
+        }
+        off += i->Size;
+    }
+    int counted = ids && cores;
+    free(buf);
+    free(cores);
+    if (!counted || !ok_p || !ok_e) {
+        free(ids);
+        pc_n = 0;
+        snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors; the affinity allows %d + %d, so it decides",
+                 np, ne, ok_p, ok_e);
+        return 0;
+    }
+    if (nc < PC_MIN_CORES) {
+        free(ids);
+        pc_n = 0;
+        snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors on %d P-cores, fewer than %d", np, ne, nc,
+                 PC_MIN_CORES);
+        return 0;
+    }
+    pc_ids = ids;
+    snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors%s", np, ne,
+             ok_p != np || ok_e != ne ? " (affinity-limited)" : "");
+    return (int)pc_n;
+}
+
+int plat_thread_perf_core(void) {
+    if (!pc_ids) return -1;
+    return SetThreadSelectedCpuSets(GetCurrentThread(), pc_ids, pc_n) ? 1 : 0;
+}
+
 // PLAT_PRIO_* are the THREAD_PRIORITY_* values.
 void plat_thread_priority(int prio) { SetThreadPriority(GetCurrentThread(), prio); }
 void plat_thread_set_priority(PlatThread *t, int prio) { SetThreadPriority(t->h, prio); }
@@ -318,6 +417,17 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
 
 // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
 void plat_timer_1ms(void) { timeBeginPeriod(1); }
+
+// Windows 11 runs the threads of a process it deems in the background at EcoQoS (on the E-cores of a hybrid Intel CPU,
+// at a low clock) and ignores its timer resolution while its window is hidden. The game is always latency-bound, so it
+// opts out of both. Windows before 10 1709 does not know the class: 0.
+int plat_power_full(void) {
+    PROCESS_POWER_THROTTLING_STATE s = {
+        .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        .StateMask = 0};
+    return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) ? 1 : 0;
+}
 
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
 
@@ -626,8 +736,21 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+// The faulting thread's general registers, for the report to tie the faulting instruction to its operands.
+static void regs_of(const CONTEXT *x, PlatCrash *c) {
+    const DWORD64 r[16] = {x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi,
+                           x->R8,  x->R9,  x->R10, x->R11, x->R12, x->R13, x->R14, x->R15};
+    for (int i = 0; i < 16; i++) c->gpr[i] = r[i];
+    c->has_regs = 1;
+}
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep);
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Heap corruption is raised by the heap manager, which then ends the process itself: it never reaches the
+    // unhandled-exception filter, so it is reported from here, wherever the heap was called from.
+    if (code == 0xc0000374u) return crash_filter(ep);   // STATUS_HEAP_CORRUPTION
     const char *what = code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
                      : code == EXCEPTION_ILLEGAL_INSTRUCTION ? "illegal instruction"
                      : code == EXCEPTION_INT_DIVIDE_BY_ZERO ? "integer division by zero"
@@ -643,6 +766,7 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -780,6 +904,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
                    (uint32_t)code, rip, 0, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
         c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
     void *base = NULL;
     RtlPcToFileHeader((void *)rip, &base);
     uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
@@ -1657,6 +1782,12 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof pmc))
         *proc_mb = (double)(pmc.PrivateUsage >> 20);
+}
+
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    if (GlobalMemoryStatusEx(&ms)) *commit_room = ms.ullAvailPageFile, *phys_room = ms.ullAvailPhys;
 }
 
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {
