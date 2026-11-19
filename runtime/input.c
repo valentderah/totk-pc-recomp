@@ -364,6 +364,14 @@ static void walk_get(void) {
 static int mouse_selector;
 int input_direct_mouse_selector_active(void) { return __atomic_load_n(&mouse_selector, __ATOMIC_RELAXED) != 0; }
 
+// A script's MOUSE line within the last 100 ms (under `lock`): mouse_camera then makes a stick of it
+static uint64_t script_mouse_at;
+static int input_script_mouse_recent(void) {
+    uint64_t now = plat_now_ns();
+    if (script_mouse[0] || script_mouse[1]) script_mouse_at = now;
+    return script_mouse_at && now - script_mouse_at < 100000000ull;
+}
+
 // Selector 1 is a radial wheel, 2..4 are distinct horizontal quick lists; only a wheel retains a virtual cursor.
 // Under `lock`.
 static void mouse_camera(int32_t out[2], int selector) {
@@ -396,7 +404,10 @@ static void mouse_camera(int32_t out[2], int selector) {
         frame = ~0ull;
         return;   // the camera update takes the raw counts itself, once, outside the HID stick path
     }
-    if (!ikb_captured()) {
+    // A script's MOUSE lines move the stick as the mouse does, captured or not (in direct mode the camera hook takes
+    // them, input_direct_mouse_sample): for 100 ms after one the stick is the mouse's, as while captured
+    int scripted = input_script_mouse_recent();
+    if (!ikb_captured() && !scripted) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
         frame = ~0ull;
@@ -406,6 +417,9 @@ static void mouse_camera(int32_t out[2], int selector) {
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
             ikb_mouse_take(&dx, &dy);
+            if (!ikb_captured()) dx = dy = 0;
+            dx += script_mouse[0], dy += script_mouse[1];
+            script_mouse[0] = script_mouse[1] = 0;
             input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
             frame = fr;
             t0 = now;
@@ -906,6 +920,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
+    }
+    // Without the keyboard and mouse poll above (TOTK_INPUT=none in scripted runs, or the window in the background), a
+    // script's MOUSE lines still move the right stick wherever the mouse would (mouse_camera)
+    if (!(state > 0 && ikb_foreground()) && input_script_mouse_recent() && !input_direct_mouse_active()) {
+        int32_t k[2];
+        mouse_camera(k, 0);
+        pick(&sr[0], &sr[1], k[0], k[1]);
     }
     script_apply(&b, sl, sr);
     wheel_route(&b, sl, sr);
