@@ -770,6 +770,16 @@ static void probe_commands(void) {
     // adding the control memory again retires the recordings made in it
     CALL(nvnCommandBufferAddControlMemory, U(&cmd2), U(ctlmem2), 0x1000);
     CHECK(!nvn_handle_live(h2) && nvn_handle_live(h), "reusing control memory retires only the handles recorded in it");
+
+    // a buffer that only called a recording is not empty: the call takes control memory and no command memory
+    CALL(nvnCommandBufferAddCommandMemory, U(&cmd2), U(&pool), 0x34000, 0x4000);
+    CALL(nvnCommandBufferBeginRecording, U(&cmd2));
+    CALL(nvnCommandBufferCallCommands, U(&cmd2), 1, U(&h));
+    uint64_t used = CALL(nvnCommandBufferGetCommandMemoryUsed, U(&cmd2));
+    uint64_t ctl_used = CALL(nvnCommandBufferGetControlMemoryUsed, U(&cmd2));
+    CHECK(used == 0 && ctl_used > 0, "a call takes control memory only: command %llu, control %llu bytes",
+          (unsigned long long)used, (unsigned long long)ctl_used);
+    CALL(nvnCommandBufferEndRecording, U(&cmd2));
     CALL(nvnCommandBufferFinalize, U(&cmd2));
     probe_pins();
     n_objects += 5;

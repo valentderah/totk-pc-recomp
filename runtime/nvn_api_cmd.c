@@ -30,6 +30,7 @@
 #define MIN_COMMAND_SIZE 512                // NVN_DEVICE_INFO_COMMAND_BUFFER_MIN_COMMAND_SIZE (nvn_api_core.c devinfo)
 #define MIN_CONTROL_SIZE 256                // NVN_DEVICE_INFO_COMMAND_BUFFER_MIN_CONTROL_SIZE
 #define CTL_PER_RECORDING 64                // control memory one recording is reported to use
+#define CTL_PER_CALL 24                     // control memory one called handle is reported to use (CallCommands)
 #define COPY_PAGE_SHIFT 16                  // recording copy index granularity (release_copies)
 
 static cmd_t *cmd_of(const Cpu *c) { return arg_p(c, 0); }
@@ -798,7 +799,7 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 // records and OP_END (flatten_recording checked them), so the records go over as one block; cmd_used grows by the same
 // bytes as record by record.
 // nvnCommandBufferGetCommandMemoryUsed grows as on the real driver: a call by nothing (the driver puts a call in
-// control memory) and a copy by the copied recording's hardware size (copy_prefix.hw), not by our record bytes. The
+// control memory, nvnCommandBufferCallCommands) and a copy by the copied recording's hardware size (copy_prefix.hw), not by our record bytes. The
 // game measures small command sets it records and sizes renderer memory pools from them: MacNativeGames commit 6909dbb7
 // measured one recording with two uniform buffer binds and one CallCommands at 40 bytes on the original driver
 // (Ryujinx, 1.0.0) and 88 in their port, whose larger sizes doubled a renderer's pool and ran its private heap dry
@@ -818,11 +819,16 @@ static void inline_recording(cmd_t *o, uint64_t handle, int call) {
     o->last_rec = 0;
 }
 // void nvnCommandBuffer{Call,Copy}Commands(NVNcommandBuffer *cmd, int n, const NVNcommandHandle *handles)
+// A call takes control memory instead: the game's inline copy of the driver's call (1.4.3 main+0x2d33a4, in the
+// function that measures a renderer's command set) writes one 24-byte control entry per segment of the called handle,
+// after an 8-byte block header. The game reads a buffer whose command and control usage are both 0 as empty
+// (main+0x83f8c clears bit 0 of its flags), so a buffer that only called recordings must show control usage.
 NVN_API(nvnCommandBufferCallCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
     for (int i = 0; i < n; i++) inline_recording(o, h[i], 1);
+    if (n > 0) o->ctl_used += CTL_PER_CALL * (size_t)n;
 }
 NVN_API(nvnCommandBufferCopyCommands) {
     cmd_t *o = cmd_of(c);
