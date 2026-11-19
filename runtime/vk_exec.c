@@ -1046,8 +1046,11 @@ static void run_job(VkExec *ex) {
     if (j.kind != VK_JOB_CONTACT) {
         vk_dlaa_exec(ex, &j);
     } else {
-        // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
+        // The scan resolved the scene, its depth and the lighting target without creating entries (vk_texture_revive):
+        // their images now. A lighting target without one leaves the march darkening every pixel.
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
+        const VkTexImage *ui = j.sun.img ? vk_texture_get(j.sun.tex) : NULL;
+        j.sun.img = ui, j.sun.image = ui ? ui->image : VK_NULL_HANDLE;
         if (si && di) {
             j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
             vk_contact_exec(ex, &j);
