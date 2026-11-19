@@ -1205,9 +1205,12 @@ site qstamp  main 6e1324 540000c1 540000c8            # b.ne 0x6e133c -> b.hi 0x
 # the game's own call at start, so a DLSS mode can change while the game runs.
 hook main 585bd0
 
-# Sound command lists above 200 fps (issue #337): as in patches-v121.txt. The audio thread's check of the command ring
-# is main+0x148aec, which wants x8 = the engine (as 0x148ae0 loads it from [x19]); after a list the site goes back to
-# it instead of on to 0x148b14, with the two instructions the game itself has at 0x149700. Measured on 1.4.3 at
-# fps_limit 240, same save and input script: sound in 2 of 118 s with the set off, in 110 of 119 s with it on.
+# Sound command lists above 200 updates a second (issue #337): as in patches-v121.txt, which also says when the game's
+# guard fires. The audio thread's check of the command ring is main+0x148aec, which wants x8 = the engine (as 0x148ae0
+# loads it from [x19]); after a list the site goes back to it instead of on to 0x148b14, with the two instructions the
+# game itself has at 0x149700. Measured on 1.4.3 at fps_limit 240 (Linux, PipeWire), same save and input script, seconds
+# with sound in the mix: without a device 3 of 119 with the set off and 113 of 120 with it on; with a device 111 of 119
+# with the set off; with the game's stream paused for 5 s from outside at 240 fps, in 60 s runs, 3 of 59 with the set
+# off (silent from the pause on) and 51 of 59 with it on; a pause of 2 s with the set off, 4 of 59.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec

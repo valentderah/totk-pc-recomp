@@ -28,8 +28,10 @@
 # highfps_fix = 1
 # Climbing walls and ladders at full speed above 60 fps; 30 and 60 fps are unchanged. Needs realtime = 1.
 # climb_fix = 1
-# The game's audio thread takes every queued sound command list each 5 ms instead of one, so the queue does not fill
-# above 200 fps, where the game would switch its sound off for good. 0 = the game's own code.
+# The game's audio thread takes every queued sound command list each 5 ms instead of one, so the queue does not stay
+# full above 200 fps. With the queue full through 300 updates the game switches its sound off for good: measured with
+# audio = none and after the game's audio stream was paused for 2 s and for 5 s in test runs, not while a device plays.
+# 0 = the game's own code.
 # audio_drain_fix = 1
 
 [performance]
