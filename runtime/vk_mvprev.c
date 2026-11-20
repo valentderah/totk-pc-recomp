@@ -1,6 +1,7 @@
-// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLSS or FSR 3.1). The
-// banks kept start as c5, c7 and c14 and grow with the banks the per-object listing looks up (vk_exec_draw.c
-// mvobj_draw_ calls vk_mvprev_want with them); c7 and c5 are described here, the others follow the same two-copy rule.
+// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLSS or FSR 3.1, and
+// with frame generation unless TOTK_FG_OBJECTS=0). The banks kept start as c5, c7 and c14 and grow with the banks the
+// per-object listing looks up (vk_exec_draw.c mvobj_draw_ calls vk_mvprev_want with them); c7 and c5 are described here,
+// the others follow the same two-copy rule.
 // Every scene draw notes its blocks of those banks: which of an object's two copies was last frame's is told apart from
 // a neighbour object's copy only by knowing every block bound (noting only the listing's candidates turned a sixth of
 // the c7 "nearer" picks into "side" ones and doubled the copies mo_similar refuses). The banks the listing never looks
@@ -185,8 +186,8 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without an upscaler that reads the motion (DLSS with NGX up, or FSR 3.1) nothing reads last frame's blocks: P.on
-    // stays 0, no tables
+    // without an upscaler that reads the motion (DLSS with NGX up, or FSR 3.1) and without frame generation's object
+    // motion nothing reads last frame's blocks: P.on stays 0, no tables
     if (!vk_objmv_wanted()) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
@@ -200,7 +201,9 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && vk_upscaler_on();
+    // the upscaler while it runs, or frame generation while it follows the scene with its objects (it is off with
+    // either upscaler)
+    int on = P.knob && (vk_upscaler_on() || vk_fg_objects_on());
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));

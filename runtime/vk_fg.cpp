@@ -73,10 +73,11 @@ FfxErrorCode ffxSetFrameGenerationConfigToSwapchainVK(FfxFrameGenerationConfig c
 enum { R_OF_VECTOR, R_OF_SCD, R_DILATED_DEPTH, R_DILATED_MV = R_DILATED_DEPTH + 2, R_PREV_DEPTH = R_DILATED_MV + 2,
        R_COUNT = R_PREV_DEPTH + 2 };
 
-// What the contexts are made for; a change makes them again (all 32-bit fields: compared with memcmp)
+// What the contexts are made for; a change makes them again, but for the scene's size, which only has to fit
+// (vk_fg_prepare)
 typedef struct {
     uint32_t display_w, display_h;  // the window texture's (the interpolated frame's)
-    uint32_t render_w, render_h;    // the scene's (depth and motion vectors)
+    uint32_t render_w, render_h;    // the largest scene (depth and motion vectors): the output's, or a larger scene's
     VkFormat color_format;          // the window texture's bytes (its UNORM twin)
     uint32_t inverted, infinite;
 } FgConfig;
@@ -111,6 +112,7 @@ static struct {
     // this frame
     bool prepared, hl_ok, gen_ok, chain, reset;
     float near_m, far_m, fov_y, dt_ms;
+    uint32_t rw, rh;                // this frame's scene size (the SDK's renderSize), at most cfg.render_w x render_h
     VkFormat win_fmt;               // the window texture's format as last seen (UNORM twin)
     int k;                          // the pair of hudless/out images this frame writes
     VkImage gen_win;                // the window texture this frame's picture was generated against (vk_fg_generate)
@@ -127,7 +129,7 @@ static struct {
     uint64_t cpu_frame;             // ns this frame
     uint32_t *cpu_us;               // per frame with frame generation work, microseconds
     uint64_t ncpu;
-    uint64_t gens, resets, skipped, gens_logged;
+    uint64_t gens, resets, skipped, gens_logged, resized;   // resized: prepares at another scene size than the last
     uint64_t drain_ns, sdk_ns, split_frames;   // since the last summary: recorder drains, the SDK's own recording
     uint64_t drain_run, sdk_run, prep_ns, prep_run;   // prep: the prepare's share of sdk
 } g;
@@ -536,7 +538,17 @@ static VkFormat unorm_of(VkFormat f) {  // (the bytes as written: an sRGB image 
 extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     g.prepared = false;
     if (g.failed || !g.scratch_shared) return 0;
-    FgConfig want = {s->ow, s->oh, s->w, s->h, g.win_fmt, (uint32_t)s->inverted, (uint32_t)s->infinite};
+    // The game's dynamic resolution moves the scene between sizes (1600x896, 1432x808 and 1280x720 under a 1920x1080
+    // output, seen within seconds in the town) and each remake waits for the device to idle (89 ms measured). The
+    // contexts are made for a largest scene, the output's size (or a larger scene's, once one comes), and each frame
+    // passes its own size as the SDK's renderSize: the SDK sizes its own images by maxRenderSize, dispatches over
+    // renderSize and divides the motion vector scale by it, as its dynamic resolution path intends.
+    FgConfig want = {s->ow, s->oh, s->w > s->ow ? s->w : s->ow, s->h > s->oh ? s->h : s->oh, g.win_fmt,
+                     (uint32_t)s->inverted, (uint32_t)s->infinite};
+    if (g.live) {   // a scene the contexts hold keeps them; a larger one makes them for the largest of both
+        if (g.cfg.render_w > want.render_w) want.render_w = g.cfg.render_w;
+        if (g.cfg.render_h > want.render_h) want.render_h = g.cfg.render_h;
+    }
     if (!g.live || memcmp(&g.cfg, &want, sizeof want)) {
         // what the old contexts recorded is queued or submitted: every submission done before they go
         VkCtx *c = vk_ctx();
@@ -551,7 +563,7 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
             return 0;
         }
         g.chain = false;
-        rt_log("fg: contexts %llu made for a %ux%u output from a %ux%u scene, %s depth%s, window texture format %d",
+        rt_log("fg: contexts %llu made for a %ux%u output from scenes up to %ux%u, %s depth%s, window texture format %d",
                (unsigned long long)++g.made, want.display_w, want.display_h, want.render_w, want.render_h,
                want.inverted ? "inverted" : "standard", want.infinite ? " without a far plane" : "", (int)want.color_format);
     }
@@ -560,6 +572,10 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     g.last_prep_ns = now;
     g.dt_ms = dt > 0.0 && dt < 100.0 ? (float)dt : 16.67f;
     g.near_m = s->near_m, g.far_m = s->far_m, g.fov_y = s->fov_y;
+    // a frame at another scene size than the last: last frame's dilated depth and vectors are of the other size, and
+    // the interpolation starts over from this one
+    bool resized = s->w != g.rw || s->h != g.rh;
+    g.rw = s->w, g.rh = s->h;
     g.toggle ^= 1;
     FfxFrameInterpolationPrepareDescription pd = {};
     pd.commandList = ffxGetCommandListVK(cb);
@@ -595,7 +611,8 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
         g.failed = true;
         return 0;
     }
-    g.reset = s->reset || !g.chain;
+    g.reset = s->reset || !g.chain || resized;
+    g.resized += resized && g.chain;
     g.prepared = true;
     return 1;
 }
@@ -711,7 +728,7 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
         dd.flags = g.debug ? FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW : 0;
         dd.commandList = cl;
         dd.displaySize = {w, h};
-        dd.renderSize = {g.cfg.render_w, g.cfg.render_h};
+        dd.renderSize = {g.rw, g.rh};
         dd.currentBackBuffer = res(win, wf, w, h, false, L"FG_Color");
         dd.currentBackBuffer_HUDLess = hud_less;
         dd.output = res(out, VK_FORMAT_R8G8B8A8_UNORM, w, h, true, L"FG_Output");
@@ -749,7 +766,7 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
     g.gens++, g.resets += g.reset;
     if (g.gens == 1)
         rt_log("fg: first frame generated: %ux%u from a %ux%u scene (near %g m, far %g m, vertical field of view %.1f "
-               "degrees), window texture format %d", w, h, g.cfg.render_w, g.cfg.render_h, g.near_m, g.far_m,
+               "degrees), window texture format %d", w, h, g.rw, g.rh, g.near_m, g.far_m,
                g.fov_y * 57.29578f, (int)fmt);
     if (g.shot_w > 0 && !g.shot_at && frame_step_world_us() >= g.shot_w) g.shot_at = frame;
     if (g.shot_at && frame >= g.shot_at && frame < g.shot_at + 3) {
@@ -776,8 +793,9 @@ extern "C" void vk_fg_frame(void) {
     g.cpu_frame = 0;
     if (g.gens >= g.gens_logged + LOG_EVERY) {
         static uint64_t from;
-        rt_log("fg: %llu frames generated (%llu without history), %llu frames prepared without one", (unsigned long long)g.gens,
-               (unsigned long long)g.resets, (unsigned long long)g.skipped);
+        rt_log("fg: %llu frames generated (%llu without history, %llu of them at a new scene size), %llu frames prepared "
+               "without one", (unsigned long long)g.gens, (unsigned long long)g.resets, (unsigned long long)g.resized,
+               (unsigned long long)g.skipped);
         if (g.timed) times_log("last frames", g.gpu, g.timed);
         cpu_log("last frames", from);
         uint64_t n = g.ncpu - from ? g.ncpu - from : 1;
@@ -794,8 +812,9 @@ extern "C" void vk_fg_exit_log(void) {
     static int done;
     if (done || !g.ncpu) return;
     done = 1;
-    rt_log("fg: over the run %llu frames generated (%llu without history), %llu frames prepared without one",
-           (unsigned long long)g.gens, (unsigned long long)g.resets, (unsigned long long)g.skipped);
+    rt_log("fg: over the run %llu frames generated (%llu without history, %llu of them at a new scene size), %llu "
+           "frames prepared without one", (unsigned long long)g.gens, (unsigned long long)g.resets,
+           (unsigned long long)g.resized, (unsigned long long)g.skipped);
     if (g.timed_run) times_log("over the run", g.gpu_run, g.timed_run);
     cpu_log("over the run", 0);
     rt_log("fg cpu over the run: of it recorder drains %.3f ms, the SDK's recording %.3f ms (prepare %.3f ms) a frame "

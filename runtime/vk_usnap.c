@@ -43,10 +43,12 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with the per-object motion (vk_objmv_wanted: DLSS or FSR 3.1), the bytes of the regions the CPU
-                     // reads back many times (Reg.host) in host memory too, at the same offsets (vk_usnap_bytes): map
-                     // is often device memory through the BAR, written fast but read back at about a microsecond a
-                     // cache line. The other regions go into map alone, as without the motion.
+    uint8_t *cpu;    // with the per-object motion (vk_objmv_wanted: DLSS, FSR 3.1, or frame generation with its objects),
+                     // the bytes of the regions the CPU reads back many times (Reg.host) in host memory too, at the same
+                     // offsets (vk_usnap_bytes): map is often device memory through the BAR, written fast but read back
+                     // at about a microsecond a cache line. The other regions go into map alone, as without the motion.
+                     // Frame generation turns on and off live: a region's host flag says whether this submission wrote
+                     // its host copy, so a stale copy from an earlier submission is never read.
     uint64_t size;
 } Arena;
 
