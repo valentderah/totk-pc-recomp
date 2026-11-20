@@ -156,13 +156,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                  "grass in meadows further out instead of growing it in just in front of you; lower "
                                  "draws less of it. Takes effect at the next start.",
     [UI_MENU_DLAA] = "Upscalers",
-    [UI_MENU_DLAA_DESC] = "What smooths and scales the 3D scene. NVIDIA DLSS: NVIDIA RTX GPUs, " DLSS_FILE " next to " EXE_FILE
-                          ". AMD FSR 4: AMD Radeon RX 9000, 7000 and 6000 (other GPUs get FSR 3.1); AMD FSR 3: "
-                          "FSR 3.1 on any GPU AMD's library supports "
-                          "(Windows; amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to " EXE_FILE
-                          "); with it the game's FXAA and its dynamic resolution are off. Smoother edges and less "
-                          "shimmer; the HUD is not touched. The mode below sets the resolution it works from. Takes "
-                          "effect after a restart.",
+    [UI_MENU_DLAA_DESC] = "An upscaler for the 3D scene: smoother edges and less shimmer. The HUD is not touched. NVIDIA DLSS: NVIDIA RTX "
+                          "GPUs (" DLSS_FILE " next to " EXE_FILE "). AMD FSR 4: Radeon RX 9000, 7000 and 6000 GPUs. AMD FSR 3: most "
+                          "other GPUs (amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to " EXE_FILE "). With "
+                          "FSR, the game's FXAA and its dynamic "
+                          "resolution are off. The mode below sets the resolution it works from. Takes effect after a restart.",
     [UI_MENU_DLAA_OFF] = "Off",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
     [UI_MENU_DLAA_BACKEND_FSR3] = "AMD FSR 3",
@@ -779,12 +777,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                  "дальше и не вырастает прямо перед вами; ниже: травы меньше. Действует после "
                                  "перезапуска.",
     [UI_MENU_DLAA] = "Апскейлеры",
-    [UI_MENU_DLAA_DESC] = "Что сглаживает и масштабирует 3D-сцену. NVIDIA DLSS: видеокарты NVIDIA RTX, " DLSS_FILE " рядом с "
-                          EXE_FILE ". AMD FSR 4: AMD Radeon RX 9000, 7000 и 6000 (остальные получают FSR 3.1); AMD FSR 3: "
-                          "FSR 3.1 на любой видеокарте, которую поддерживает библиотека AMD (Windows; amd_fidelityfx_loader_vk.dll и "
-                          "amd_fidelityfx_upscaler_vk.dll рядом с "
-                          EXE_FILE "); с ним FXAA игры и её динамическое разрешение выключены. Ровнее края и меньше "
-                          "мерцания; интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он работает. "
+    [UI_MENU_DLAA_DESC] = "Апскейлер для 3D-сцены: ровнее края и меньше мерцания. Интерфейс не затрагивается. NVIDIA DLSS: видеокарты "
+                          "NVIDIA RTX (" DLSS_FILE " рядом с " EXE_FILE "). AMD FSR 4: видеокарты Radeon RX 9000, 7000 и 6000. "
+                          "AMD FSR 3: большинство других видеокарт (amd_fidelityfx_loader_vk.dll и "
+                          "amd_fidelityfx_upscaler_vk.dll рядом с " EXE_FILE "). С FSR "
+                          "FXAA игры и её динамическое разрешение выключены. Режим ниже задаёт разрешение, с которым он работает. "
                           "Действует после перезапуска.",
     [UI_MENU_DLAA_OFF] = "Выкл.",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
@@ -1846,14 +1843,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
     [UI_MENU_DLAA] = "Upscalers",
-    [UI_MENU_DLAA_DESC] = "O que suaviza e amplia a cena 3D. NVIDIA DLSS: placas NVIDIA RTX, nvngx_dlss.dll ao lado do "
-                          "totk.exe. AMD FSR 4: AMD Radeon RX 9000, 7000 e 6000 (as outras placas recebem o FSR 3.1); "
-                          "AMD FSR 3: FSR 3.1 em qualquer placa que a biblioteca da AMD suporta "
-                          "(Windows; amd_fidelityfx_loader_vk.dll e "
-                          "amd_fidelityfx_upscaler_vk.dll ao lado do "
-                          "totk.exe); com ele o FXAA do jogo e a resolução dinâmica ficam desligados. Bordas mais suaves "
-                          "e menos cintilação; o HUD não é afetado. O modo abaixo define a resolução de onde ele parte. "
-                          "Vale após reiniciar.",
+    [UI_MENU_DLAA_DESC] = "Upscaler para a cena 3D: bordas mais suaves e menos cintilação. O HUD não é afetado. NVIDIA DLSS: placas "
+                          "NVIDIA RTX (nvngx_dlss.dll ao lado do totk.exe). AMD FSR 4: placas Radeon RX 9000, 7000 e 6000. AMD FSR 3: "
+                          "a maioria das outras placas (amd_fidelityfx_loader_vk.dll e amd_fidelityfx_upscaler_vk.dll ao lado do "
+                          "totk.exe). Com o FSR, o FXAA do "
+                          "jogo e a resolução dinâmica ficam desligados. O modo abaixo define a resolução de onde ele parte. Vale "
+                          "após reiniciar.",
     [UI_MENU_DLAA_OFF] = "Desligado",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
     [UI_MENU_DLAA_BACKEND_FSR3] = "AMD FSR 3",
@@ -2594,10 +2589,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
     [UI_MENU_DLAA] = "超分辨率技术",
-    [UI_MENU_DLAA_DESC] = "平滑并放大 3D 场景的技术。NVIDIA DLSS：NVIDIA RTX 显卡，nvngx_dlss.dll 放在 totk.exe 旁。AMD FSR 4：AMD Radeon "
-                          "RX 9000、7000 和 6000 系列（其他显卡使用 FSR 3.1）；AMD FSR 3：AMD 库支持的任何显卡上的 FSR 3.1（Windows；amd_fidelityfx_loader_vk.dll 和 "
-                          "amd_fidelityfx_upscaler_vk.dll 放在 totk.exe 旁）；使用它时游戏的 FXAA 和动态分辨率关闭。边缘更平滑，"
-                          "闪烁更少；HUD 不受影响。下方的模式决定它的工作分辨率。重启后生效。",
+    [UI_MENU_DLAA_DESC] = "用于 3D 场景的超分辨率技术：边缘更平滑，闪烁更少。HUD 不受影响。NVIDIA DLSS：NVIDIA RTX 显卡（nvngx_dlss.dll "
+                          "放在 totk.exe 旁）。AMD FSR 4：Radeon RX 9000、7000 和 6000 系列显卡。AMD FSR 3：大多数其他显卡"
+                          "（amd_fidelityfx_loader_vk.dll 和 amd_fidelityfx_upscaler_vk.dll 放在 totk.exe 旁）。使用 FSR 时，游戏的 FXAA 和动态分辨率关闭。下方的模式决定它的工作分辨率。"
+                          "重启后生效。",
     [UI_MENU_DLAA_OFF] = "关",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
     [UI_MENU_DLAA_BACKEND_FSR3] = "AMD FSR 3",
