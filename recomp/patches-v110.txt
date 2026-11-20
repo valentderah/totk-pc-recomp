@@ -12,8 +12,10 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
-# Load-dependent quality (patches-v121.txt explains it): no sites found in this version yet, so the setting does nothing.
+# Load-dependent quality (patches-v121.txt explains it): keep the shipping FSR/FXAA reads, then skip the
+# per-scene load-dependent setters through the existing greater-than-8 path. Off by default; same set index.
 set steady   TOTK_LOD_STEADY     0
+site steady main cad324 b9400815 52800135    # ldr w21, [x0, #8] -> mov w21, #9 (b.gt 0xcad64c taken)
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 90e978 6b08015f 7100055f  # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
