@@ -555,8 +555,18 @@ static void res_grass_range(void) {
 // console and the glow of a title keeps its width and brightness (a title's dissolve otherwise leaves pieces).
 // The uimask set sizes the capture a dissolve thresholds as the console does: page +100 holds canvas height / 1080,
 // the factor the capture draw divides such a capture's size by, so its text has the console's partly covered strokes.
+// patch_ui_reduce = 0 or patch_ui_mask = 0 set by the player keeps that set off, for a comparison with the canvas-sized
+// captures of before. res_init switches both off first: the page words are 0 until this function writes them, and
+// uimask on with a 0 divisor would size the captures infinite.
+static int res_kept_off(const char *key) {
+    const char *v = cfg_get(key);
+    return v && !strcmp(v, "0");
+}
+
 static void res_ui_reduce(uint8_t *page) {
     int set = rt_patch_set("uireduce"), mask = rt_patch_set("uimask");
+    if (res_kept_off("TOTK_PATCH_UI_REDUCE")) set = -1;
+    if (res_kept_off("TOTK_PATCH_UI_MASK")) mask = -1;
     float k = (float)R.oh / BASE_H;
     if (mask >= 0 && k > 1.0f) {
         memcpy(page + 100, &k, sizeof k);
@@ -571,6 +581,8 @@ static void res_ui_reduce(uint8_t *page) {
 }
 
 void res_init(void) {
+    rt_patch_switch(rt_patch_set("uireduce"), 0);
+    rt_patch_switch(rt_patch_set("uimask"), 0);
     res_shadow_range();
     res_grass_range();
     if (!bigger()) {
