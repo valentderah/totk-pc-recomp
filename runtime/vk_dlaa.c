@@ -517,6 +517,7 @@ static void times_begin(VkCommandBuffer cb) {
 static int cam_mode(void);   // the jitter in the game's camera (below, "jitter in the game's camera")
 static int cam_offset(uint64_t blk, float *sx, float *sy);
 static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off);
+static int unj_rows(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off, int keep);
 // The camera's motion first (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the
 // replay's uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other,
 // and the compute pass reprojects every pixel's depth through the two (inv4 and mv_pass below). Then the per-object
@@ -715,7 +716,16 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     vk_mvcheck_camera(cb, e->mv, w, h, jx, jy);   // TOTK_MV_CHECK (test)
     // the characters' own motion over the camera's (vk_exec_draw.c, per-object motion)
     uint64_t c0 = T.on > 0 ? kern_now_ns() : 0;
+    // The motion draws rasterise this frame's position through the scene camera's snapshot, and their fragment shader
+    // takes the jitter back off (vk_mvobj_fs.h). By now cam_unjitter has written that snapshot back without the jitter
+    // (it runs from the scene's end, for the effects), so the draws landed a jitter away from the scene's depth and
+    // their vectors carried the jitter: TOTK_MV_CHECK measured the object part equal to this frame's jitter in every
+    // check on a still Link, which moved the upscaler's history of characters by up to a pixel each frame (shaking,
+    // softness). The jittered rows go back for these draws and come off again after them.
+    int rejit = cb_bytes && unj_rows(cb, cb_bytes, 0.0f, 0.0f, cam.buffer, cam.offset, 1);
+    if (rejit) full_barrier(cb);
     if (vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
+    if (rejit && unj_put(cb, cb_bytes, osx, osy, cam.buffer, cam.offset)) full_barrier(cb);
     if (T.on > 0) T.cpu_mv += kern_now_ns() - c0;
     times_mark(cb, T_OBJ);
     if (T.on > 0) T.used[T.slot] = 1;   // the DLSS marks follow in evaluate
@@ -1146,8 +1156,9 @@ static int cam_offset(uint64_t blk, float *sx, float *sy) {
 }
 
 // Records copies that write a block's view-projection rows 3-4 and projection rows 7-8 back without the offset (blk:
-// the block's bytes as the snapshot holds them) into buf at off, the block's place there. 0: no room.
-static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off) {
+// the block's bytes as the snapshot holds them) into buf at off, the block's place there. keep: the rows as they are,
+// with the offset (rejit). 0: no room.
+static int unj_rows(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off, int keep) {
     if (!CJ.unj) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = UNJ_SLOTS * 64u,
                                  .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
@@ -1162,12 +1173,17 @@ static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkB
     float v[16];
     for (int k = 0; k < 4; k++) v[k] = blk[12 + k] - sx * blk[24 + k], v[4 + k] = blk[16 + k] - sy * blk[24 + k];
     memcpy(v + 8, blk + 28, 32);
-    v[10] = 0.0f, v[14] = 0.0f;
+    if (keep) memcpy(v, blk + 12, 32);
+    else v[10] = 0.0f, v[14] = 0.0f;
     memcpy(CJ.unj_map + (size_t)sl * 64, v, sizeof v);
     vmaFlushAllocation(vk_ctx()->vma, CJ.unj_mem, (VkDeviceSize)sl * 64, 64);
     VkBufferCopy r[2] = {{(VkDeviceSize)sl * 64, off + 0x30, 32}, {(VkDeviceSize)sl * 64 + 32, off + 0x70, 32}};
     vkCmdCopyBuffer(cb, CJ.unj, buf, 2, r);
     return 1;
+}
+
+static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off) {
+    return unj_rows(cb, blk, sx, sy, buf, off, 0);
 }
 
 // After the DLSS point, once in each command buffer of the frame: the snapshots of the blocks that took an offset are
