@@ -1025,3 +1025,11 @@ spin sdk 23a590 23a5d8   # 19 instructions; loads
 spin sdk 23a658 23a6a0   # 19 instructions; loads
 spin sdk 23a7fc 23a918   # 19 instructions; loads
 spin sdk 3d3250 3d3270   # 9 instructions; loads
+
+# Free camera (runtime/freecam.c freecam_hook, page +0xf50). The component update at main+0xcdb628
+# reaches this link load before every eye/target/up copy and one-shot override path. The layout matches 1.4.3:
+# eye +0xe8, target +0x110, up +0x128, one-shot eye/target +0x180/+0x198, additive up +0x200.
+# x19 is the component; the prologue saves x30 and the epilogue restores it. Off runs only the original load.
+# Append the set to preserve every existing set index. See docs/patches-v110.md for the local CFG proof.
+set freecam  TOTK_FREECAM_PATCH  0
+site freecam main cdb6cc f9400e68 94e94a21   # ldr x8, [x19, #0x18] -> bl page+0xf50

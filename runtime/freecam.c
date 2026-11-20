@@ -1,4 +1,4 @@
-// Free camera for TotK 1.4.3: the view leaves Link and flies with the gamepad while the game goes on (docs/controls.md,
+// Free camera for TotK 1.1.0 and 1.4.3: the view leaves Link and flies with the gamepad while the game goes on (docs/controls.md,
 // "Free camera").
 //
 // The camera component update (main+0x628460, called with the component as x0 = x19 from main+0x627dc8, the camera
@@ -20,6 +20,10 @@
 // first component seen away from that default anchors the pick, and every component whose eye is within MATCH_M of
 // the anchor is driven. When no driven component has been updated for LOST_NS (a load replaced them) the next one
 // away from the default anchors again; the free camera keeps its own position.
+//
+// On 1.1.0 the same fields and override flow are read by main+0xcdb628; its link-load site is main+0xcdb6cc.
+// The actor getter main+0xe1c0c0 reads the component through actor +0x228, slot +0x270. The instruction/CFG proof
+// and checks are in docs/patches-v110.md; no version-dependent field offsets are needed.
 //
 // Input (runtime/input.c freecam_gate): TOTK_FREECAM_PAD or TOTK_FREECAM_KEY steps it off, move, lock and off again
 // (both none by default, so the player opts in). While it moves the game gets no input; the left stick flies along the
@@ -88,7 +92,9 @@ enum {
     SPAN = OFF_UP_OFFSET + 12 - OFF_EYE,   // the fields the hook reads and writes, from OFF_EYE
 };
 
-int freecam_available(void) { return rt_game_version == 143 && rt_patch_enabled(rt_patch_set("freecam")); }
+int freecam_available(void) {
+    return (rt_game_version == 110 || rt_game_version == 143) && rt_patch_enabled(rt_patch_set("freecam"));
+}
 
 void freecam_cycle(void) {
     unsigned gen = __atomic_add_fetch(&generation, 1, __ATOMIC_ACQ_REL);
@@ -256,7 +262,7 @@ static void freecam_hook(Cpu *c) {
 }
 
 __attribute__((constructor)) static void freecam_register(void) {
-    if (rt_game_version == 143) rt_register_host(HOST_FREECAM, freecam_hook);
+    if (rt_game_version == 110 || rt_game_version == 143) rt_register_host(HOST_FREECAM, freecam_hook);
 }
 #else
 int freecam_available(void) { return 0; }
