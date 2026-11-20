@@ -22,6 +22,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
+#include "host.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
@@ -246,6 +247,9 @@ static void window_settings_live(void) {
     static int started;
     static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
+    // Every present: Reflex follows the frame limit, and with fps_limit = display the window measures the monitor's
+    // rate after the swapchain is made, with no settings change to announce it. Unchanged, it returns at once.
+    if (started) reflex_apply_locked();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
@@ -306,8 +310,11 @@ static void reflex_apply_locked(void) {
     }
     int mode = reflex_mode_from_cfg();
     uint32_t min_us = 0;
-    int limit = cfg_int("TOTK_FPS_LIMIT");
-    if (limit > 0) min_us = (uint32_t)(1000000 / limit);
+    // The driver's sleep holds frames to the same rate as the pacer (frame_rate.c frame_step_limit_hz): the setting,
+    // the monitor's rate for fps_limit = display, 60 without the real-time step. cfg_int would read "display" as the
+    // setting's default, 60, and Reflex would hold a 144 Hz monitor to 60 fps.
+    double hz = frame_step_limit_hz();
+    if (hz > 0) min_us = (uint32_t)(1e6 / hz);
     if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
     g_reflex_mode = mode;
     g_reflex_min_us = min_us;
@@ -788,12 +795,18 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = (dw - out[2]) / 2, out[1] = (dh - out[3]) / 2;
 }
 
+// Quick load (quicksave.c) holds the window on its last picture while it drives the game's load menu underneath:
+// no new frame is presented until gfx_present_hold(0), as while the window is minimized.
+static volatile int32_t g_hold;
+void gfx_present_hold(int on) { plat_xchg32(&g_hold, on != 0); }
+
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     flip_locked();
+    if (plat_cas32(&g_hold, 0, 0)) goto out;
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }

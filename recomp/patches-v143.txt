@@ -1104,6 +1104,18 @@ site cascade main 6fabb8 52a83408 @page:x8 b9404108   # mov w8, #20.0  -> ldr w8
 site cascade main 6fac40 52a84408 @page:x8 b9404508   # mov w8, #40.0  -> ldr w8, [page+68]
 site cascade main 6facc8 52a85408 @page:x8 b9404908   # mov w8, #80.0  -> ldr w8, [page+72]
 site cascade main 6fad4c 52a86408 @page:x8 b9404d08   # mov w8, #160.0 -> ldr w8, [page+76]
+# The four sites above reach the cascades only through the copy of the parameters into the cascade boundaries
+# (main+0x5680ec, in the per-view update). The game's shadow controller sets bit 1 of the scene's depth shadow flags
+# when it starts (main+0xb74494), with that bit the per-view update skips the copy (main+0x567f6c), and the controller
+# writes the boundaries itself each frame in main+0x68318c: d[0] at main+0x683680, d[1..n-1] at main+0x6836ec and the
+# far d[n] at main+0x683740 (d = [cascade set + 0x308]). In Hyrule Field the four sites alone leave the cascades as
+# they are at 100 (issue #606 has the same on 1.2.1). These two multiply d[1..n] where the controller stores them, by
+# page +64 (20 m times shadow_range / 100) over 20; d[0], the first cascade's start, stays. The function computes the
+# boundaries from the controller's own fields and its arguments and reads neither the parameters nor d, so a boundary
+# is scaled once on either path. x25 (written at main+0x683704 before any read), x16, s18 and s19 are dead at the
+# sites.
+site cascade main 6836ec bd000711 @page:x25 bd404332 1e269013 1e331a52 1e320a32 bd000712   # str s17, [x24, #4] -> adrp x25, page; ldr s18, [x25, #64]; fmov s19, #20.0; fdiv s18, s18, s19; fmul s18, s17, s18; str s18, [x24, #4]
+site cascade main 683740 bc2ed9b0 @page:x16 bd404212 1e269013 1e331a52 1e320a12 bc2ed9b2   # str s16, [x13, w14, sxtw #2] -> the same through x16 with fmul s18, s16, s18; str s18, [x13, w14, sxtw #2]
 
 # Climbing (issues #35, #276, #1001): the climb controller's velocity step (main+0x1f49754, shared by wall and ladder
 # climbing, climb jumps and climb-overs) multiplies the requested velocity by a factor that makes up for a movement loss
@@ -1173,7 +1185,59 @@ set report   TOTK_REPORT_GUARD   1
 site report  main a22d8 2a010571 2a010571 37f80341            # orr w17, w11, w1, lsl #1; tbnz w1, #31, 0xa2340
 site report  main a2310 531f7821 530f7c24 531f7821 35000184   # lsr w4, w1, #15; lsl w1, w1, #1; cbnz w4, 0xa2340
 
+# Depth query results one frame older (TOTK_SYNC_AHEAD). A compute pass at the start of each frame samples the scene
+# depth for the world queries and writes their results, with the frame number of the request, into a 23232-byte
+# CPU-cached buffer that main+0x6e1220 invalidates and reads two frames later. It takes the results as this frame's
+# (bit 2 of obj+0x10) only when the number at buffer +0x58e4 is exactly the frame counter (obj+0x14) - 2. With
+# sync_ahead the game's frame wait covers the frame before, so on frames where the GPU runs behind the number read is
+# the counter - 3 (the frame after it has not come back yet) and the results were refused: in shrines the reflections
+# of the lamps on the floor went out on those frames, every other frame where the GPU was slow, which looked like
+# flicker at some camera angles. The set also accepts the counter - 3: d = counter - 2 - number, unsigned d <= 1.
+# Waiting for that frame when the buffer is invalidated (vk_memory.c vk_mem_shadow_read) also ends the flicker, but
+# gives back the frame rate sync_ahead brings (63 against 86 fps on a field macro at 4K).
+# w11 is loaded again on both paths at 0x6e1340 before any read; x8, the number's address, stays for 0x6e1420.
+set qstamp   TOTK_SYNC_AHEAD     0
+site qstamp  main 6e1320 6b0b015f 4b0b014b 7100057f   # cmp w10, w11 -> sub w11, w10, w11; cmp w11, #1
+site qstamp  main 6e1324 540000c1 540000c8            # b.ne 0x6e133c -> b.hi 0x6e133c
+
 # Function-entry hooks (FN_ENTER, runtime/cpu.h): only these functions check g_fnprof on entry, the others carry no
 # hook. main+0x585bd0 sets the render size (runtime/resolution.c SET_RENDER_SIZE): res_fn_hit takes the renderer from
 # the game's own call at start, so a DLSS mode can change while the game runs.
 hook main 585bd0
+
+# Sound command lists above 200 updates a second (issue #337): as in patches-v121.txt, which also says when the game's
+# guard fires. The audio thread's check of the command ring is main+0x148aec, which wants x8 = the engine (as 0x148ae0
+# loads it from [x19]); after a list the site goes back to it instead of on to 0x148b14, with the two instructions the
+# game itself has at 0x149700. Measured on 1.4.3 at fps_limit 240 (Linux, PipeWire), same save and input script, seconds
+# with sound in the mix: without a device 3 of 119 with the set off and 113 of 120 with it on; with a device 111 of 119
+# with the set off; with the game's stream paused for 5 s from outside at 240 fps, in 60 s runs, 3 of 59 with the set
+# off (silent from the pause on) and 51 of 59 with it on; a pause of 2 s with the set off, 4 of 59.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec
+
+# Tenbez Shrine launchers (issue #1215). The two DgnObj_BoxShutter_4x4x4 that throw the stone ball across the room move
+# 3 m at Speed (1.0 m per 30 Hz frame, 30 m/s): their AI (AI/ShutterFence.root.ainb) advances the target by Speed *
+# frame ratio each frame and sets the kinematic body's velocity to reach it. The shorter the frame, the slower the ball
+# leaves. Measured on the flight's apex (the ball rests at y = -4.42): 6.33 at 30 fps, 6.11 at 45, 6.00 at 60, 5.79 at
+# 90, 5.61 at 120. Below about 6.1 the ball lands more and more often on the rim of the receiving launcher instead
+# of its seat, and the next shots juggle it there or knock it into the pit. The data suggest Nintendo tuned this by
+# hand for a 60 fps build ("Ounce", which looks like the Switch 2): in
+# the shrine's map both actors carry SpeedForOunce = 1.01 and shouldUseOunceSpeed, read by the node
+# QueryBlackboardGetF32FromActorForOunce (also in AI/ShutterFence_WithVibration.root.ainb of the
+# FldObj_RuinStoneWall_A_20/30_Shutter walls, where the flag is never set). The Switch build of the node ignores the
+# pair: its evaluation (main+0x25e557c) looks up the base key alone. With 1.01 the apex is 6.20 at 60 fps, but 5.96 at 90 and
+# 5.81 at 120, so the site scales by the frame instead. It is where the evaluation loads the value: when the node's
+# shouldUseOunceKey input (+0x58) is true, the value is multiplied by 1 + 0.065 * (1 - ratio)^2, ratio being the time
+# object's +0x38 (the frame in 30 Hz frames; [[main+0x3ad27c8] + 0xc8], the object the set bounce reads) clamped to
+# 0..1. That is 1.016 at 60 fps and 1.037 at 120, and exactly 1 at 30 fps and below. Measured apex with it: 6.25 at
+# 45 fps, 6.33 at 60, 6.23 at 90, 6.33 at 120, 6.35 at 144. Every other user of the node has the input false and gets
+# its value unchanged. x9, x10 and s1-s4 are free: after the site the function only moves x19 to x0, restores the
+# saved registers and tail-calls the output setter (main+0xb9b818), which reads x0 and s0. Its own switch,
+# shutter_fix (TOTK_SHUTTER_FIX); 0 runs the game's instruction.
+set shutter  TOTK_SHUTTER_FIX    1
+site shutter main 25e55d0 bc605900 bc605900 f9402ea9 927ef529 39400129 1e230123 b000a76a f943e54a f940654a bd403941 1e2e1002 1e213841 2f00e404 1e246821 1e227821 1e210821 5283d709 72a7b0a9 1e270124 1e240821 1e230821 1f010000
+#   ldr s0, [x8, w0, uxtw #2]; ldr x9, [x21, #0x58]; and x9, x9, #~3; ldrb w9, [x9]; ucvtf s3, w9 (the input, 0 or 1);
+#   adrp x10, main+0x3ad2000; ldr x10, [x10, #0x7c8]; ldr x10, [x10, #0xc8]; ldr s1, [x10, #0x38] (ratio);
+#   fmov s2, #1.0; fsub s1, s2, s1; movi d4, #0; fmaxnm s1, s1, s4; fminnm s1, s1, s2; fmul s1, s1, s1;
+#   mov w9, #0x1eb8; movk w9, #0x3d85, lsl #16; fmov s4, w9 (0.065); fmul s1, s1, s4; fmul s1, s1, s3;
+#   fmadd s0, s0, s1, s0

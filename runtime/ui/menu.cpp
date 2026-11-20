@@ -501,6 +501,73 @@ static void row_window_size(void) {
     opt_choice_list("TOTK_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
+// ---- the folders the next start needs (romfs.c romfs_folders_missing): a game resolution of another shape needs its
+// layout's folder, and Xbox, PlayStation or PC prompts their folder, at that shape too. The setup writes them for the
+// displays it saw and the prompts totk.ini had then (installer/steps.py Prepare, PcPrompts, Shapes). When the
+// resolution, the HUD width, the prompts or the pad layout ask for one it lacks, the generator starts for the next
+// start (romfs_folders_prepare: child processes, the menu does not wait), once per request: a request stays the same
+// for SETTLE_NS first, so stepping through the sizes starts none for the ones passed. The notes under the resolution
+// and the prompts say so (row_output_res, prompts_note); when it could not start they say that and offer a retry. The
+// file checks run only when the request changes, after a settings change (cfg_version).
+enum { SETTLE_NS = 1500000000 };
+static struct {
+    unsigned seen;            // cfg_version of the last look at the settings
+    char request[160];        // output_res|hud_width|prompts folder in the settings
+    unsigned w, h;
+    const char *want;         // input_prompts_folder of the settings (a string literal), NULL for the game's own
+    int missing;              // ROMFS_NEED_* for request
+    uint64_t at;              // plat_now_ns from which request starts; 0 none waiting
+    char asked[160];          // the request started last
+    int started;              // for asked: 1 running, -1 failed to start
+} g_folders = {~0u, "", 0, 0, nullptr, 0, 0, "", 0};
+
+static void folders_start(void) {
+    g_folders.at = 0;
+    snprintf(g_folders.asked, sizeof g_folders.asked, "%s", g_folders.request);
+    g_folders.started = romfs_folders_prepare(g_folders.w, g_folders.h, g_folders.want) ? 1 : -1;
+}
+
+// On every frame the menu lays out (now: start a waiting request at once, as the menu closes). 1 while a request
+// waits.
+static int folders_tick(bool now) {
+    unsigned v = cfg_version();
+    if (v != g_folders.seen) {
+        g_folders.seen = v;
+        const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+        const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
+        // Without an output_res the display's shape: the default falls back to 1920x1080 while that shape lacks the
+        // prompts' folder, and the folders made for it bring the shape back at the next start (cfg_screen_size).
+        unsigned s[2] = {0, 0};
+        if (!cfg_screen_size(s) && sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u", &s[0], &s[1]) != 2) s[0] = s[1] = 0;
+        char request[sizeof g_folders.request];
+        snprintf(request, sizeof request, "%ux%u|%s|%s", s[0], s[1], cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
+        if (strcmp(request, g_folders.request)) {
+            snprintf(g_folders.request, sizeof g_folders.request, "%s", request);
+            unsigned w = s[0], h = s[1];
+            g_folders.w = w, g_folders.h = h, g_folders.want = want;
+            g_folders.missing = w && h ? romfs_folders_missing(w, h, want) : 0;
+            g_folders.at = g_folders.missing && strcmp(request, g_folders.asked) && romfs_folders_can_prepare()
+                               ? plat_now_ns() + SETTLE_NS : 0;
+        }
+    }
+    if (!g_folders.at || (!now && plat_now_ns() < g_folders.at)) return g_folders.at != 0;
+    folders_start();
+    return 0;
+}
+
+// What happens to the folders of the request in the settings that need (a mask of ROMFS_NEED_*): 0 none missing or
+// no tools to make them, 1 being made (or about to start), -1 the generator did not start.
+static int folders_state(int need) {
+    if (!(g_folders.missing & need)) return 0;
+    if (g_folders.at) return 1;
+    return g_folders.started && !strcmp(g_folders.asked, g_folders.request) ? g_folders.started : 0;
+}
+
+// The retry under a row whose folders did not start.
+static void folders_retry(const char *id, int need) {
+    if (folders_state(need) < 0 && opt_button(id, UI_MENU_PREPARE_RETRY, UI_MENU_PREPARE_RETRY_DESC)) folders_start();
+}
+
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
 // 32:9 monitor sizes, the 16:10 screens of the Steam Deck, handhelds and laptops and the 3:2 screens of laptops and
 // tablets (Surface, Framework; the camera and the HUD follow
@@ -520,35 +587,33 @@ static void row_output_res(void) {
         snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
         names[i] = shown[i];
     }
-    // A size of another shape needs that shape's folders (romfs.c overlay_init): the layout, and with Xbox or PC
-    // prompts the prompts' one too. The setup writes them for the displays it saw (installer/steps.py Shapes); at a
-    // shape without them the game draws 16:9 with bars or keeps the Switch prompts, so the row says so and offers to
-    // start the generator for the next start (romfs_shape_prepare; a child process, the menu does not wait). The file
-    // checks run again only when a setting or the started generation changes.
-    static unsigned seen = ~0u;
-    static int missing, started;   // started: 0 not asked, 1 running, -1 failed to start
-    static char asked[16];
-    const char *now = cfg_value("TOTK_OUTPUT_RES");
-    if (seen != cfg_version()) {
-        seen = cfg_version();
-        unsigned w = 0, h = 0;
-        const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-        const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
-        missing = sscanf(now, "%ux%u", &w, &h) == 2 && romfs_shape_missing(w, h, want);
-    }
-    int here = started && !strcmp(asked, now);   // the generation started for the value shown
-    const char *note = !missing ? nullptr
-                       : here   ? menu_text(started > 0 ? UI_MENU_OUTPUT_RES_PREPARING : UI_MENU_SHAPE_PREPARE_FAILED)
-                                : menu_text(UI_MENU_OUTPUT_RES_NO_LAYOUT);
+    // A size of another shape needs that shape's folders (romfs.c overlay_init): the layout, and with Xbox,
+    // PlayStation or PC prompts the prompts' one too. Without them the game draws 16:9 with bars or keeps the Switch
+    // prompts; folders_tick starts their generator, and the row says they are being made, or that the setup's tools
+    // are missing or did not start.
+    const int need = ROMFS_NEED_LAYOUT | ROMFS_NEED_SHAPED_PROMPTS;
+    int state = folders_state(need);
+    const char *note = !(g_folders.missing & need) ? nullptr
+                       : state > 0                 ? menu_text(UI_MENU_OUTPUT_RES_PREPARING)
+                       : state < 0                 ? menu_text(UI_MENU_SHAPE_PREPARE_FAILED)
+                                                   : menu_text(UI_MENU_OUTPUT_RES_NO_LAYOUT);
     opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC, -1, note);
-    if (!missing || here || !romfs_shape_can_prepare()) return;
-    if (!opt_button("##shape_prepare", UI_MENU_SHAPE_PREPARE, UI_MENU_SHAPE_PREPARE_DESC)) return;
-    unsigned w = 0, h = 0;
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    sscanf(now, "%ux%u", &w, &h);
-    snprintf(asked, sizeof asked, "%s", now);
-    started = romfs_shape_prepare(w, h, input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout))
-                  ? 1 : -1;
+    folders_retry("##shape_prepare", need);
+}
+
+// Offer only caps narrower than the canonical layout, using the same tolerance as romfs.c hud_suffix and Shapes.
+// This also keeps a selected 21:9 cap visible after changing to a slightly wider-than-21:9 game resolution.
+static void row_hud_width(void) {
+    unsigned w = 0, h = 0, shape[2];
+    if (sscanf(cfg_value("TOTK_OUTPUT_RES"), "%ux%u", &w, &h) != 2 || !h) return;
+    shape[0] = w, shape[1] = h;
+    cfg_shape_size(w, h, shape);
+    double aspect = (double)shape[0] / shape[1];
+    if (16.0 / 9 >= aspect * 0.99) return;
+    const char *vals[3] = {"full", "21:9", "16:9"}, *names[3] = {menu_text(UI_MENU_HUD_WIDTH_FULL), "21:9", "16:9"};
+    int n = 21.0 / 9 < aspect * 0.99 ? 3 : 2;
+    if (n == 2) vals[1] = vals[2], names[1] = names[2];
+    opt_choice_list("TOTK_HUD_WIDTH", UI_MENU_HUD_WIDTH, vals, names, n, UI_MENU_HUD_WIDTH_DESC);
 }
 
 static void row_render_scale(void) {
@@ -727,6 +792,7 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
+    row_hud_width();
     row_render_scale();
     opt_toggle("TOTK_DYNAMIC_RES", UI_MENU_DYNAMIC_RES, UI_MENU_DYNAMIC_RES_DESC);
     row_shadow_res();
@@ -758,6 +824,8 @@ static void tab_screen(float scale) {
     // FSR's sharpening, with the upscaler's rows: of the scene FSR anti-aliases (vk_dlaa.c evaluate) and of the picture
     // FSR 1 scales to the window (vk_fsr.c)
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
+    opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
     static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
@@ -862,6 +930,21 @@ static int key_action(const InputMap *m, int key) {
     return -1;
 }
 
+// "also <action>" when the bindings also use the key the setting names, else NULL; note holds the text
+static const char *key_taken(const char *setting, char *note, size_t size) {
+    const char *cur = cfg_value(setting);
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT; k++) {
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a < 0 || !input_action_name(a)) return nullptr;
+        snprintf(note, size, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a));
+        return note;
+    }
+    return nullptr;
+}
+
 // The walk key as the handful of keys a player is likely to pick. "none" rather than an empty value closes it: an
 // unset key falls back to the default in the settings table, the same as a fresh installation. totk.ini takes any name
 // input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
@@ -869,26 +952,29 @@ static int key_action(const InputMap *m, int key) {
 static void row_walk_key(void) {
     static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
     const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
-    const char *cur = cfg_value("TOTK_WALK_KEY");
     static char note[64];
-    const char *n = nullptr;
-    InputMap m;
-    input_map_snapshot(&m);
-    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
-        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
-        int a = key_action(&m, k);
-        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
-    }
     opt_choice_list("TOTK_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
-                    -1, n);
+                    -1, key_taken("TOTK_WALK_KEY", note, sizeof note));
+}
+
+// Quick save's two keys (quicksave.c), F6 and F7 by default as Half-Life has them: any key or mouse button, taken by
+// the bindings' capture window (binds_key_row); Delete leaves that one without a key. A key the bindings also use says
+// which action it presses: while quick save is on it no longer does.
+static void row_quicksave_keys(void) {
+    static char note[2][64];
+    binds_key_row("TOTK_QUICKSAVE_KEY", UI_MENU_QUICKSAVE_KEY, UI_MENU_QUICKSAVE_KEY_DESC,
+                  key_taken("TOTK_QUICKSAVE_KEY", note[0], sizeof note[0]));
+    binds_key_row("TOTK_QUICKLOAD_KEY", UI_MENU_QUICKLOAD_KEY, UI_MENU_QUICKSAVE_KEY_DESC,
+                  key_taken("TOTK_QUICKLOAD_KEY", note[1], sizeof note[1]));
 }
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad
 // layout, as a layout that puts A on the right button needs the face buttons named the other way round), but the game
-// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: "files
-// missing" when the setup did not write the one asked for, why it was left out at start (damaged, a game resolution
-// that is not 16:9, a RomFS mod with the same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then
-// *restart is set: a restart would bring the prompts asked for. NULL when they match.
+// reads its fonts and UI archive once at start (romfs.c overlay_init). While the folder in use differs: when the
+// install lacks the one asked for (folders_tick looked), that it is being made in the background, or that it is
+// missing (no setup's tools) or could not be made; else why it was left out at start (damaged, a RomFS mod with the
+// same files, TOTK_ROMFS_PATCHES), else "prompts change after restart", and only then *restart is set: a restart would
+// bring the prompts asked for. NULL when they match.
 static const char *prompts_note(bool *restart) {
     *restart = false;
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
@@ -896,12 +982,15 @@ static const char *prompts_note(bool *restart) {
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
     // A game resolution of another shape needs a folder of its own for the prompts (<folder>-<w>x<h>, one per shape).
     // The setup writes it for the shapes of the displays it saw and the prompts totk.ini had then; at another shape
-    // the shape is the reason (row_output_res offers to make it), not a damaged install.
-    int off = romfs_prompts_off(want);
-    if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
-    switch (off) {
+    // the shape is the reason, not a damaged install.
+    int need = g_folders.missing & (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS), state = folders_state(need);
+    if (state > 0) return menu_text(UI_MENU_PROMPTS_PREPARING);
+    if (state < 0) return menu_text(UI_MENU_SHAPE_PREPARE_FAILED);
+    if (need & ROMFS_NEED_PROMPTS) return menu_text(UI_MENU_PROMPTS_MISSING);
+    if (need) return menu_text(UI_MENU_PROMPTS_OFF_SHAPE);
+    // ROMFS_PROMPTS_MISSING and _SHAPE: the folder the start lacked is there now, or the resolution needs another one
+    switch (romfs_prompts_off(want)) {
     case ROMFS_PROMPTS_FAILED: return menu_text(UI_MENU_PROMPTS_FAILED);
-    case ROMFS_PROMPTS_SHAPE: return menu_text(UI_MENU_PROMPTS_OFF_SHAPE);
     case ROMFS_PROMPTS_MODS: return menu_text(UI_MENU_PROMPTS_OFF_MODS);
     case ROMFS_PROMPTS_PATCHES: return menu_text(UI_MENU_PROMPTS_OFF_PATCHES);
     default: *restart = true; return menu_text(UI_MENU_PROMPTS_RESTART);
@@ -978,10 +1067,12 @@ static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
     opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 3, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
-    static const UiTextId prompts[] = {UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_PC};
+    static const UiTextId prompts[] = {UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_PLAYSTATION,
+                                       UI_MENU_PROMPTS_PC};
     bool restart;
     const char *note = prompts_note(&restart);
-    opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 3, UI_MENU_PROMPTS_DESC, note);
+    opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 4, UI_MENU_PROMPTS_DESC, note);
+    folders_retry("##prompts_prepare", ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS);
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
     opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_toggle("TOTK_GYRO_CALIBRATION", UI_MENU_GYRO_CALIBRATION, UI_MENU_GYRO_CALIBRATION_DESC);
@@ -1002,6 +1093,7 @@ static void tab_controls(float scale) {
         if (opt_button("##gyro_calib", UI_MENU_GYRO_CALIBRATE, UI_MENU_GYRO_CALIBRATE_DESC, status))
             input_motion_calibrate();
     }
+    opt_toggle("TOTK_GYRO_AUTO_BIAS", UI_MENU_GYRO_AUTO_BIAS, UI_MENU_GYRO_AUTO_BIAS_DESC);
     opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
@@ -1012,6 +1104,8 @@ static void tab_controls(float scale) {
     opt_toggle("TOTK_MAP_CLICK", UI_MENU_MAP_CLICK, UI_MENU_MAP_CLICK_DESC);
     opt_toggle("TOTK_DIALOGUE_CLICK", UI_MENU_DIALOGUE_CLICK, UI_MENU_DIALOGUE_CLICK_DESC);
     opt_toggle("TOTK_POINTER_IMAGE", UI_MENU_POINTER_IMAGE, UI_MENU_POINTER_IMAGE_DESC);
+    opt_toggle("TOTK_QUICKSAVE", UI_MENU_QUICKSAVE, UI_MENU_QUICKSAVE_DESC);
+    row_quicksave_keys();
     row_walk_key();
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     rows_gameplay_tweaks();
@@ -1265,10 +1359,26 @@ static void tab_mods(float scale) {
     const char *after = mods_changed() ? menu_text(UI_MENU_AFTER_RESTART) : nullptr;
     for (int i = 0; i < n; i++) {
         const ModInfo *m = mods_at(i);
-        char id[32], desc[1536];
+        char id[32], desc[4096];
         snprintf(id, sizeof id, "##mod%d", i);
-        char over[512] = "", other[512] = "";
-        if (m->overridden) snprintf(over, sizeof over, menu_text(UI_MENU_MODS_OVERRIDDEN), m->overridden, m->overridden_by);
+        char over[2048] = "", other[512] = "";
+        // what it won or lost to another mod, files, data and code alike (the conflict table, as at start)
+        static const UiTextId lost[MOD_PARTS] = {UI_MENU_MODS_OVERRIDDEN, UI_MENU_MODS_DATA_OVERRIDDEN,
+                                                 UI_MENU_MODS_CODE_OVERRIDDEN},
+                              won[MOD_PARTS] = {UI_MENU_MODS_OVERRIDES_FILES, UI_MENU_MODS_OVERRIDES_DATA,
+                                                UI_MENU_MODS_OVERRIDES_CODE};
+        for (int c = 0; c < mods_conflict_count(); c++) {
+            const ModConflict *e = mods_conflict_at(c);
+            bool lose = e->loser == m->id;
+            if (!lose && e->winner != m->id) continue;
+            const ModInfo *them = mods_by_id(lose ? e->winner : e->loser);
+            if (!them) continue;
+            size_t at = strlen(over);
+            if (at) at += (size_t)snprintf(over + at, sizeof over - at, "\n\n");
+            if (at < sizeof over)
+                snprintf(over + at, sizeof over - at, menu_text(lose ? lost[e->part] : won[e->part]), e->count,
+                         them->name);
+        }
         if (m->other_version) snprintf(other, sizeof other, menu_text(UI_MENU_MODS_OTHER_VERSION), m->other_version);
         char cheat[256] = "";
         if (m->kind & MOD_CHEATS) {   // its cheats as read at start, or the file they come from
@@ -1278,14 +1388,33 @@ static void tab_mods(float scale) {
             if (count) snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS), count);
             else snprintf(cheat, sizeof cheat, menu_text(UI_MENU_MODS_CHEATS_FILE), cheats_file());
         }
-        char code[512] = "", problem[512] = "";
+        char code[512] = "", problem[768] = "", skipped[512] = "", left[512] = "", plugin[512] = "";
+        if (m->plugin_off[0])   // its plugin's start differed from the build (plugin_init.c)
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_OFF), m->plugin_off);
+        else if (m->plugin_hooks && m->problem == MOD_OK)
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_ON), m->plugin_hooks);
+        else if (m->plugin_note[0] && m->problem != MOD_PLUGIN)   // used without its code: the refusal stays visible
+            snprintf(plugin, sizeof plugin, menu_text(UI_MENU_MODS_PLUGIN_REFUSED), m->plugin_file, m->plugin_note);
+        if (m->code[0] && m->problem != MOD_PLUGIN)   // used without its code
+            snprintf(skipped, sizeof skipped, menu_text(UI_MENU_MODS_CODE_SKIPPED), m->code);
+        if (m->unsupported && m->problem != MOD_EXEFS_UNSUPPORTED)
+            snprintf(left, sizeof left, menu_text(UI_MENU_MODS_EXEFS_SKIPPED), m->unsupported, m->note);
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
         else if (m->nsets || m->ndata)
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
-        case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
+        case MOD_PLUGIN:
+            if (m->plugin_note[0]) {   // the build refused its plugin, and says why
+                int n = snprintf(problem, sizeof problem, menu_text(UI_MENU_MODS_PLUGIN_REFUSED), m->plugin_file,
+                                 m->plugin_note);
+                if (n >= 0 && n < (int)sizeof problem)
+                    snprintf(problem + n, sizeof problem - n, " %s", menu_text(UI_MENU_MODS_PLUGIN_STAYS_OFF));
+            } else {
+                snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK));
+            }
+            break;
         case MOD_EXEFS_LATER: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EXEFS_LATER)); break;
         case MOD_EXEFS_UNSUPPORTED:
             snprintf(problem, sizeof problem, menu_text(UI_MENU_MODS_EXEFS_UNSUPPORTED), m->note);
@@ -1295,7 +1424,8 @@ static void tab_mods(float scale) {
         default: break;
         }
         int k = snprintf(desc, sizeof desc, menu_text(UI_MENU_MODS_ROW_DESC), m->replaced, m->added);
-        const char *parts[] = {over, other, cheat, code, problem, menu_text(UI_MENU_MODS_MOVE_HINT)};
+        const char *parts[] = {over, other, cheat, code, plugin, skipped, left, problem,
+                               menu_text(UI_MENU_MODS_MOVE_HINT)};
         for (const char *part : parts)
             if (*part && k >= 0 && k < (int)sizeof desc) k += snprintf(desc + k, sizeof desc - k, "\n\n%s", part);
         const char *note = m->enabled && m->problem != MOD_OK ? menu_text(UI_MENU_MODS_UNUSED) : after;
@@ -1309,6 +1439,20 @@ static void tab_mods(float scale) {
             snprintf(id, sizeof id, "##mod%d", to);
             opt_focus_key(id);   // the cursor follows the mod
             opt_save_soon();
+            continue;   // m is the moved mod's neighbour now; its switch row comes next frame
+        }
+        // under a mod with code the port cannot run (a code module, an ExeFS patch file it cannot apply): its switch
+        // "use without its code"; mods_without_code = 1 holds it on for every mod
+        if (m->code[0] || m->unsupported) {
+            char nid[32], label[320];
+            snprintf(nid, sizeof nid, "##modnc%d", i);
+            snprintf(label, sizeof label, menu_text(UI_MENU_MODS_WITHOUT_CODE), m->name);
+            bool all = cfg_bool("TOTK_MODS_WITHOUT_CODE") != 0;
+            if (all) opt_disable_next(UI_MENU_MODS_WITHOUT_CODE_ALL);
+            if (opt_toggle_text(nid, label, menu_text(UI_MENU_MODS_WITHOUT_CODE_DESC), all || m->no_code) && !all) {
+                mods_set_no_code(i, !m->no_code);
+                opt_save_soon();
+            }
         }
     }
     bool rebuild =
@@ -1413,7 +1557,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::End();
 }
 
-static int g_save_pending;   // a changed setting still waits for its write to totk.ini (opt_save_tick)
+// a changed setting still waits for its write to totk.ini (opt_save_tick) or for its folders to start (folders_tick)
+static int g_save_pending;
 
 // ---- the performance overlay (TOTK_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers, in the style of SavageWindRecomp's perf_overlay_draw
@@ -1691,6 +1836,37 @@ static void perf_draw(const MenuTarget *t, float scale) {
     dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, 235), g_perf_text);
 }
 
+// ---- a toast: one short line of ui_text at the top centre of the picture, over the game, for a few seconds and fading
+// out in its last half second (quick save's "Game saved", quicksave.c). Any thread sets it; the overlay draws it.
+static std::atomic<int> g_toast_text{-1};
+static std::atomic<uint64_t> g_toast_until{0};
+extern "C" void menu_toast(int text, int ms) {
+    g_toast_until.store(plat_now_ns() + (uint64_t)(ms > 0 ? ms : 1) * 1000000ull, std::memory_order_relaxed);
+    g_toast_text.store(text, std::memory_order_release);
+}
+
+static bool toast_live(void) {
+    return g_toast_text.load(std::memory_order_acquire) >= 0 &&
+           plat_now_ns() < g_toast_until.load(std::memory_order_relaxed);
+}
+
+static void toast_draw(const MenuTarget *t, float scale) {
+    int id = g_toast_text.load(std::memory_order_acquire);
+    uint64_t now = plat_now_ns(), until = g_toast_until.load(std::memory_order_relaxed);
+    if (id < 0 || id >= UI_TEXT_COUNT || now >= until) return;
+    double left_ms = (until - now) / 1e6;
+    float a = left_ms < 500 ? (float)(left_ms / 500) : 1.0f;
+    const char *text = ui_text((UiTextId)id);
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *font = ImGui::GetFont();
+    float size = ImGui::GetFontSize() * 1.25f, pad = 10 * scale;
+    ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, text);
+    ImVec2 p((t->width - sz.x) / 2 - pad, 48 * scale);   // under the top edge, between the hearts and the corner
+    ImVec2 q(p.x + sz.x + 2 * pad, p.y + sz.y + 2 * pad);
+    dl->AddRectFilled(p, q, IM_COL32(0, 0, 0, (int)(160 * a)), 6 * scale);
+    dl->AddText(font, size, ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, (int)(240 * a)), text);
+}
+
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
@@ -1701,14 +1877,15 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
-        if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
+        // closed: the last change goes to totk.ini now, and the folders it needs start being made
+        if (g_save_pending) g_save_pending = opt_save_tick(1) | folders_tick(true);
         if (g_test.at && !g_test.opened && frame >= g_test.at) {
             g_test.opened = frame;
             g_test.page = 0;
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
+        } else if (!g_perf_mode && !toast_live()) {
             return 0;
         }
     }
@@ -1758,10 +1935,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    int folders_wait = open ? folders_tick(false) : 0;   // before the rows, whose notes it sets
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    toast_draw(t, scale);
     ImGui::Render();
-    if (open) g_save_pending = opt_save_tick(0);
+    if (open) g_save_pending = opt_save_tick(0) | folders_wait;
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {
         static char path[512];   // this frame's image goes to a file; then the next tab, or the menu closes

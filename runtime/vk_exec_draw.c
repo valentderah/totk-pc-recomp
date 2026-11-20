@@ -2784,8 +2784,11 @@ static VkViewport draw_viewport(VkExec *ex) {
     return v;
 }
 
+// A volume mask draw records its own depth bias in place of the game's: ex->volume_bias, which prepare_draw sets from
+// vk_pipeline_volume_bias where the draw's dynamic state changes.
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
+    int vb = ex->volume_bias;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         VkViewport v = draw_viewport(ex);
         vkCmdSetViewportWithCount(cb, 1, &v);
@@ -2797,7 +2800,8 @@ static void record_fixed(VkExec *ex) {
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {
-        vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
+        if (vb) vkCmdSetDepthBias(cb, VOLUME_BIAS_UNITS * (float)vb, 0.0f, VOLUME_BIAS_SLOPE * (float)vb);
+        else vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_BLEND_CONST) {
@@ -2990,6 +2994,44 @@ static int pipe_memo_on(void) {
     static int on = -1;
     if (on < 0) on = cfg_bool("TOTK_PIPE_MEMO");
     return on;
+}
+
+// barrier_merge (vk_exec.c barrier_merges). A shader that may write a storage buffer or image: a written SSBO (flags
+// bit 0) or any storage image. gfx_shader_resources only reads the shader's parsed arrays.
+static int shader_may_write_storage(const GfxShader *sh) {
+    const GfxShaderRes *r;
+    if (!sh) return 0;
+    if (gfx_shader_resources(sh, GFX_RES_IMG, &r)) return 1;
+    int n = gfx_shader_resources(sh, GFX_RES_SSBO, &r);
+    for (int i = 0; i < n; i++)
+        if (r[i].flags & 1) return 1;
+    return 0;
+}
+
+// barrier_merge: a draw in a pass that went on through a game Barrier whose reads the in-pass by-region barrier
+// (feedback_barrier: fragment shader sampling only, found by feedback_scan) would not order. Those are a storage image
+// of either stage (an imageLoad of a target) and a vertex shader texture that is an attachment of the pass. Such a draw
+// ends the pass, and the next one begins behind the full barrier, as the game's Barrier would have done. The vertex
+// scan is kept while the shader, the texture bindings and the pass stay the same, as feedback_scan's.
+static int merge_guard(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
+    const GfxShaderRes *res;
+    if (gfx_shader_resources(vs, GFX_RES_IMG, &res) || (fs && gfx_shader_resources(fs, GFX_RES_IMG, &res))) return 1;
+    int n = gfx_shader_resources(vs, GFX_RES_TEX, &res);
+    if (!n) return 0;
+    if (ex->bm_vs == vs && ex->bm_serial == ex->tex_serial && ex->bm_pass == ex->pass_serial) return (int)ex->bm_hit;
+    uint32_t m = 0;
+    vk_texture_lock();
+    for (int r = 0; r < n && !m; r++)
+        for (int k = 0; k < (res[r].count ? res[r].count : 1) && !m; k++) {
+            int slot = res[r].slot + k;
+            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_VS][slot] : 0;
+            if (!h) continue;
+            SubRange sr = sampled_sub(h);
+            m = attached_as(ex, &sr);
+        }
+    vk_texture_unlock();
+    ex->bm_vs = vs, ex->bm_serial = ex->tex_serial, ex->bm_pass = ex->pass_serial, ex->bm_hit = m != 0;
+    return m != 0;
 }
 
 // ---- incremental draw preparation (TOTK_BIND_INC)
@@ -3265,6 +3307,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (!vs || (has_fs && !fs)) return 0;
     if (vk_dlaa_skip_draw(ex, fs)) return 0;   // the game's FXAA off, or its scaling replaced by DLSS (vk_dlaa.c)
+    if (ex->pass_merged && merge_guard(ex, vs, fs)) {   // barrier_merge: the full barrier the merged Barrier skipped
+        vk_exec_pass_end(ex);
+        vk_exec_pass_begin(ex);
+        ex->fr.barrier_undone++;
+    }
     uint32_t fbl = feedback_prepare(ex, fs);
     uint8_t fb = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0)), dmw = (uint8_t)(nvn_depth_minus_w() != 0);
     // TOTK_BIND_INC: the pipeline memo's state is this draw's when pipe was not written since the memo's state was built
@@ -3378,6 +3425,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         __atomic_fetch_add(&DD.calls, 1, __ATOMIC_RELAXED), __atomic_fetch_add(&DD.cmds, cmds, __ATOMIC_RELAXED);
         if (!cmds) __atomic_fetch_add(&DD.empty, 1, __ATOMIC_RELAXED);
         ex->recorded += cmds != 0;
+        // The volume bias follows the state alone, so it is decided here, once per state change, and a draw with the
+        // state recorded last keeps it. A new command buffer or a pipeline bind clears st_valid and comes here.
+        int vb = vk_pipeline_volume_bias(sp);
+        if (vb != ex->volume_bias) ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS, ex->volume_bias = (int8_t)vb;
         MX_CPY(&D->B.st, sp, sizeof *sp), D->B.st_valid = 1;
         if (ex->mark && ex->fr.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
@@ -3400,6 +3451,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (vk_hdr_track) vk_hdr_draw(ex, info);
     vk_exec_oq_draw(ex);
     if (bim) bi_done(ex, info, sp, bgt, bgb, bsg);
+    // barrier_merge: noted last, in the pass the draw is recorded in (bind_resources may restart the pass, ub_written)
+    if (ex->bmerge && !ex->pass_storage && (shader_may_write_storage(vs) || shader_may_write_storage(fs))) ex->pass_storage = 1;
     return 1;
 }
 

@@ -291,6 +291,7 @@ int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int 
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_mirror_seal(void);   // before vk_mem_shadow_sync: the copies the next vk_mem_mirror_prologue takes
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
@@ -303,6 +304,7 @@ void vk_mem_shadow_sync(uint64_t fence);   // fence: the value of the part about
 // vk_mem_mirror_prologue's copies, which read the shadow.
 int vk_mem_shadow_deferred(void);
 void vk_mem_shadow_prologue(VkCommandBuffer cb, uint64_t fence);
+void vk_mem_shadow_read_log(void);   // at exit, with TOTK_SYNC_AHEAD: the run total of vk_mem_shadow_read's waits
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
@@ -373,6 +375,7 @@ VkResult vk_texture_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocati
 // (vk_texture.c UPLOAD_HELD_MAX) so the GPU starts on it and its buffers come back before the pools need new blocks.
 VkDeviceSize vk_upload_held(void);
 void vk_upload_pools_init(void);   // vk_device.c, after the allocator: the staging and scratch pools and their blocks
+void vk_defer_buffer_until(VkBuffer buf, VmaAllocation alloc, uint64_t tl);   // also not before the GPU reached value tl
 // ---- ASTC (vk_astc.c). TOTK_ASTC = auto | gpu | native | cpu | check; see vk_astc.c.
 enum { VK_ASTC_CPU, VK_ASTC_GPU, VK_ASTC_NATIVE, VK_ASTC_CHECK };
 int vk_astc_mode(void);                 // decided once per device (logged); VK_ASTC_CPU before vk_init
@@ -496,10 +499,16 @@ void vk_sampler_dlss_bias(float bias);           // texture LOD bias added for D
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
+void vk_texture_storage_written(const VkTexImage *img);        // the same without the texture lock held
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img);   // bytes ReadTexels spans; 0 for a bad region
 int vk_texture_small_dirty(void);                   // a small mirrored target holds GPU texels its storage lacks
 void vk_texture_write_back_small(uint64_t fence);   // writes those rendered by work up to fence back to storage
+// vk_sync_submit, after the replay recorded value fence into cb (no render pass open, cb the recorder's part): copies
+// the small targets that value rendered into staging so their write-back later needs no GPU wait (TOTK_WB_EAGER).
+// cb VK_NULL_HANDLE: the value recorded no part, the candidates for it are dropped.
+void vk_texture_eager_record(VkCommandBuffer cb, uint64_t fence);
+void vk_texture_eager_log(void);                     // once at exit: TOTK_WB_EAGER counts
 void vk_texture_debug(const VkTexImage *img, uint32_t *uploads, int *last_change, int *pages_written);   // vk_dump
 int vk_texture_slot_swz(int id, uint8_t swz[4]);    // vk_dump: swizzle of the descriptor in slot id
 int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,
@@ -671,6 +680,13 @@ int vk_pipeline_vertex_input_dynamic(void);    // 1: vertex input is VK_EXT_vert
 void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAnswers *fs);
 int vk_pipeline_tex_type(int nvn_target);      // NVN_TEXTURE_TARGET_* -> GFX_TEX_* (GfxShaderAnswers.tex_type)
 uint32_t vk_pipeline_target_wmask(const VkPipeState *s, int i);   // colour write mask of target i the pipeline uses
+// The sign of the depth bias a volume mask draw gets (vk_pipeline.c, see there), -1 toward smaller depth, 1 toward
+// larger, 0 for any other draw. vk_pipeline_set_dynamic enables the bias for it; vk_exec_draw.c prepare_draw decides it
+// where the draw's state changes and record_fixed sets the values, VOLUME_BIAS_UNITS and VOLUME_BIAS_SLOPE times the
+// sign.
+int vk_pipeline_volume_bias(const VkPipeState *s);
+#define VOLUME_BIAS_UNITS 16.0f
+#define VOLUME_BIAS_SLOPE 1.0f
 VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle list, line loop -> strip: the replay
                                                           // rewrites those draws; polygon -> fan
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type

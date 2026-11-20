@@ -34,6 +34,7 @@ typedef enum {
     UI_PERF_LINE_FPS,
     UI_MENU_GRAPHICS,         // group heading over the resolution rows
     UI_MENU_OUTPUT_RES, UI_MENU_OUTPUT_RES_DESC,
+    UI_MENU_HUD_WIDTH, UI_MENU_HUD_WIDTH_DESC, UI_MENU_HUD_WIDTH_FULL,
     UI_MENU_RENDER_SCALE, UI_MENU_RENDER_SCALE_DESC, UI_MENU_RENDER_SCALE_GAME,
     UI_MENU_DYNAMIC_RES, UI_MENU_DYNAMIC_RES_DESC,
     UI_MENU_UPSCALER, UI_MENU_UPSCALER_DESC, UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR,
@@ -85,13 +86,28 @@ typedef enum {
     UI_MENU_MODS_NONE,           // no mod folder yet: where to unpack one
     UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
     UI_MENU_MODS_ROW_DESC,       // printf: files it replaces, files it adds (as of this start)
-    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name
+    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name (the conflict table)
     UI_MENU_MODS_MOVE_HINT,
     UI_MENU_MODS_EMPTY, UI_MENU_MODS_SUBSDK, UI_MENU_MODS_EXEFS_LATER, UI_MENU_MODS_BAD_NAME,
     UI_MENU_MODS_EXEFS_UNSUPPORTED,  // printf: the file and why
     UI_MENU_MODS_EXEFS_OTHER,
     UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
     UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
+    UI_MENU_MODS_CODE_SKIPPED,       // printf: its code modules in exefs, which do not load (used without its code)
+    UI_MENU_MODS_PLUGIN_ON,          // printf: the hooks of its plugin (runtime/plugin_init.c) that run
+    UI_MENU_MODS_PLUGIN_REFUSED,     // printf: its plugin file, why the build refused it (English, from the tool)
+    UI_MENU_MODS_PLUGIN_STAYS_OFF,   // after UI_MENU_MODS_PLUGIN_REFUSED when the whole mod stays off
+    UI_MENU_MODS_PLUGIN_OFF,         // printf: why its plugin's start differed from the build (English)
+    UI_MENU_MODS_WITHOUT_CODE,       // printf: the mod's name; its switch "use without its code" (TOTK_MODS_NO_CODE)
+    UI_MENU_MODS_WITHOUT_CODE_DESC,
+    UI_MENU_MODS_WITHOUT_CODE_ALL,   // why that switch cannot be changed: TOTK_MODS_WITHOUT_CODE=1
+    UI_MENU_MODS_EXEFS_SKIPPED,      // printf: its ExeFS patch files left out (used without its code), the first's reason
+    // The conflict table (mods.h ModConflict), printf: the count, the other mod's name
+    UI_MENU_MODS_OVERRIDES_FILES,    // files it serves instead of a lower mod's (UI_MENU_MODS_OVERRIDDEN: the reverse)
+    UI_MENU_MODS_DATA_OVERRIDDEN,    // bytes of main's data a higher mod wrote over its own
+    UI_MENU_MODS_OVERRIDES_DATA,     // bytes of main's data it wrote over a lower mod's
+    UI_MENU_MODS_CODE_OVERRIDDEN,    // code sites where a higher mod's patch runs instead of its own
+    UI_MENU_MODS_OVERRIDES_CODE,     // code sites where its patch runs instead of a lower mod's
     UI_MENU_MODS_OTHER_VERSION,  // printf: files named for another game version, read only when asked for by name
     UI_MENU_MODS_UNUSED,         // under the switch of a mod the port cannot use
     UI_MENU_MODS_CHEATS,         // printf: its cheats as read at start
@@ -112,16 +128,19 @@ typedef enum {
     UI_MENU_GYRO_CALIBRATION, UI_MENU_GYRO_CALIBRATION_DESC,
     UI_MENU_GYRO_CALIBRATE, UI_MENU_GYRO_CALIBRATE_DESC, UI_MENU_GYRO_CALIBRATE_WAIT,
     UI_MENU_GYRO_CALIBRATED, UI_MENU_GYRO_CALIBRATE_FAILED, UI_MENU_GYRO_CALIBRATE_MOVED,
+    UI_MENU_GYRO_AUTO_BIAS, UI_MENU_GYRO_AUTO_BIAS_DESC,
     UI_MENU_RUMBLE_STRENGTH, UI_MENU_RUMBLE_STRENGTH_DESC,
     UI_MENU_RUMBLE_CURVE, UI_MENU_RUMBLE_CURVE_DESC,
     UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC,
     UI_MENU_PAD_LAYOUT, UI_MENU_PAD_LAYOUT_DESC, UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO,
     UI_MENU_PAD_LAYOUT_XBOX, UI_MENU_PAD_LAYOUT_IN_USE,
-    UI_MENU_PROMPTS, UI_MENU_PROMPTS_DESC, UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_PC,
+    UI_MENU_PROMPTS, UI_MENU_PROMPTS_DESC, UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_PLAYSTATION,
+    UI_MENU_PROMPTS_PC,
     // the notes under the prompts: their files are missing or damaged, they change after restart, or why they are off
     UI_MENU_PROMPTS_MISSING, UI_MENU_PROMPTS_FAILED, UI_MENU_PROMPTS_RESTART, UI_MENU_PROMPTS_OFF_SHAPE,
-    UI_MENU_OUTPUT_RES_NO_LAYOUT, UI_MENU_OUTPUT_RES_PREPARING, UI_MENU_SHAPE_PREPARE, UI_MENU_SHAPE_PREPARE_DESC,
-    UI_MENU_SHAPE_PREPARE_FAILED,
+    // the missing layout and prompts' folders, which the game makes in the background (ui/menu.cpp folders_tick)
+    UI_MENU_OUTPUT_RES_NO_LAYOUT, UI_MENU_OUTPUT_RES_PREPARING, UI_MENU_PROMPTS_PREPARING, UI_MENU_SHAPE_PREPARE_FAILED,
+    UI_MENU_PREPARE_RETRY, UI_MENU_PREPARE_RETRY_DESC,
     UI_MENU_PROMPTS_OFF_MODS, UI_MENU_PROMPTS_OFF_PATCHES,
     // "Restart now" under the prompts while they change after restart, and its confirmation (Cancel: UI_MENU_RESET_NO)
     UI_MENU_RESTART, UI_MENU_RESTART_DESC, UI_MENU_RESTART_CONFIRM, UI_MENU_RESTART_YES, UI_MENU_RESTART_SAVING,
@@ -132,6 +151,8 @@ typedef enum {
     UI_MENU_MAP_CLICK, UI_MENU_MAP_CLICK_DESC,
     UI_MENU_DIALOGUE_CLICK, UI_MENU_DIALOGUE_CLICK_DESC,
     UI_MENU_POINTER_IMAGE, UI_MENU_POINTER_IMAGE_DESC,
+    UI_MENU_QUICKSAVE, UI_MENU_QUICKSAVE_DESC, UI_MENU_QUICKSAVE_KEY, UI_MENU_QUICKLOAD_KEY, UI_MENU_QUICKSAVE_KEY_DESC,
+    UI_QS_SAVED, UI_QS_LOADING, UI_QS_NOT_NOW, UI_QS_NONE, UI_QS_FAILED, UI_QS_LOAD_FAILED,
     UI_MENU_MOUSE_SENS, UI_MENU_MOUSE_SENS_DESC,
     UI_MENU_WALK_KEY, UI_MENU_WALK_KEY_DESC, UI_MENU_WALK_KEY_TAKEN, UI_MENU_WALK_SCALE, UI_MENU_WALK_SCALE_DESC,
 
@@ -227,7 +248,8 @@ typedef enum {
     UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC,
     UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC,
     UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC,
-    UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC,
+    UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC, UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC,
+    UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC,
     UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC,
     UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC,
     UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC,

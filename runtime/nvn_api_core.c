@@ -53,13 +53,19 @@ void nvn_guest_written(uint64_t addr, uint64_t size) {
     if (size) gfx_backend()->guest_written(addr, size);
 }
 
+// The camera jitter of 1.4.3 (vk_dlaa.c); a weak default like the hooks below.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off);
+__attribute__((weak)) void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off) { (void)lr, (void)dst, (void)off; }
+
 // memcpy of pool storage the GPU rendered into must copy what the GPU wrote: TotK moves its generated grass maps
 // between pools with memcpy. Copies below 1 KiB skip the check; the copy itself is memmove, as overlapping
-// arguments are undefined for memcpy anyway.
+// arguments are undefined for memcpy anyway. TotK 1.4.3 copies its camera matrices with 64-byte memcpys
+// (f_70000e31d4); x8 holds the member's offset in the block there (vk_dlaa.c vk_dlaa_camera_copied).
 static void ov_memcpy(Cpu *c) {
     uint64_t dst = arg_x(c, 0), src = arg_x(c, 1), n = arg_x(c, 2);
     if (n >= 1024) gfx_backend()->guest_read(src, n);
     memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
+    if (n == 64) vk_dlaa_camera_copied(c->x[30], dst, c->x[8]);
     ret_x(c, dst);
 }
 HOST_OVERRIDE("memcpy", ov_memcpy);
@@ -475,15 +481,17 @@ NVN_API(nvnQueueFenceSync) {
 // the frame it presented last; on the Switch that work is long done by then, here it is still in the replay and on the
 // GPU (about 11 ms from the submit), and the wait sets the frame time. With the switch on, that wait, and only that
 // one, waits for the frame before it instead. What the game reads back of GPU results after the wait can then be a
-// frame old. The game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
+// frame old; a buffer that holds no older result is waited for when the game invalidates it (vk_memory.c
+// vk_mem_shadow_read). The game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
 // queued for the GPU or wait (nvn_sync_ahead_guard). The wait still lasts until the replay thread submitted the asked
 // value, so no copy of that value itself picks up those writes. pa_fence: the newest fence at the latest present and
 // the one before, present thread only for writes. pa_guard: the newest value the game was told is done early.
 static uint64_t pa_fence[2], pa_guard;
-// The return address of that wait. 1.2.1: 0x7000b23dfc. 1.4.3: 0x70002db99c, the second of the two nvnSyncWait calls
-// in f_70002db8ac; like on 1.2.1 its sync comes from a two-entry ring indexed per frame, and the first call waits on
-// one object's sync behind a mode check. 0: no site known, the switch stays off.
+// The return address of that wait. 1.1.0: 0x7000b39aa4, 1.2.1: 0x7000b23dfc, 1.4.3: 0x70002db99c. The second
+// nvnSyncWait in 1.1.0 f_7000b39a00 and 1.4.3 f_70002db8ac uses the per-frame sync, like on 1.2.1; the first
+// call waits on one object's sync behind a mode check. 0: no site known, the switch stays off.
 static uint64_t frame_wait_lr(void) {
+    if (rt_game_version == 110) return 0x7000b39aa4ull;
     return rt_game_version == 121 ? 0x7000b23dfcull : rt_game_version == 143 ? 0x70002db99cull : 0;
 }
 static int sync_ahead(void) {
@@ -503,6 +511,9 @@ static int sync_ahead(void) {
                    "GPU as before");
             on = 0;
         }
+        // The depth query patch (set qstamp, patches-v143.txt) is switched by TOTK_SYNC_AHEAD too: a refused switch
+        // leaves the game's own frame number check, as with the switch off.
+        if (!on) rt_patch_switch(rt_patch_set("qstamp"), 0);
         if (on) rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it");
     }
     return on;
@@ -513,6 +524,7 @@ void nvn_sync_ahead_present(void) {
     __atomic_store_n(&pa_fence[0], nvn_fence_last(), __ATOMIC_RELEASE);
 }
 uint64_t nvn_sync_ahead_guard(void) { return __atomic_load_n(&pa_guard, __ATOMIC_ACQUIRE); }
+int nvn_sync_ahead_on(void) { return sync_ahead(); }
 
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value

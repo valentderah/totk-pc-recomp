@@ -6,12 +6,17 @@
 // reports it: acceleration in G, angular velocity in revolutions per second, angle = the integrated revolutions per
 // axis, direction = the controller's three axes in a reference frame whose z is up. The orientation is integrated from
 // the gyro and, while the controller is not being accelerated (|a| within 15 % of 1 G), pulled toward the measured
-// gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; yaw has no reference and drifts with the
-// gyro's bias, so a bias measured with the controller at rest (the Calibrate gyro row, motion_calibrate_start) is
-// subtracted from every sample while gyro_calibration is on. The newest MOTION_RING samples are kept; reads are newest
-// first. A restart (StartSixAxisSensor) drops the samples before it: reads return nothing until the next sample, which
-// starts a fresh frame and angle; sampling numbers go on. The feeding thread writes, guest threads read, both under the
-// instance's SRW lock.
+// gravity (Mahony, gain 0.5/s: about 2 s), as the Switch's sensor fusion does; held still (|a| within 5 % of 1 G,
+// turning slower than STILL_RATE) the pull is STILL_GAIN, so a down the gyro got wrong while the controller moved is
+// right again before the next aim. The game splits the aim into pitch and yaw by the reported down: a wrong one turns a
+// tilt up or down into a turn to the side as well. Yaw has no reference and drifts with the gyro's bias, so a bias
+// measured with the controller at rest (the Calibrate gyro row, motion_calibrate_start) is subtracted from every sample
+// while gyro_calibration is on, and the drift left after it is learned while the controller lies still and subtracted
+// too while gyro_auto_bias is on (drift_track). The newest MOTION_RING samples are kept; reads are newest first. A
+// restart (StartSixAxisSensor) drops the samples before it: reads return nothing until the first sample with a reading
+// (|a| over 0.5 G: a sensor just switched on reads zero until its first report), which starts a fresh frame, levelled
+// by that reading, and a fresh angle; sampling numbers go on. The feeding thread writes, guest threads read, both under
+// the instance's SRW lock.
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +36,29 @@ enum { MOTION_RING = 64, CALIB_SETTLE = 125, CALIB_SAMPLES = 250 };
 // near 0.01-0.02 rad/s. A jolt that stays under the limit moves the mean by at most the limit times the square root of
 // the share of the second it lasts.
 #define CALIB_MAX_SPREAD 0.04
+#define STILL_GAIN 4.0          // 1/s: a wrong down is 2 % of itself after a second held still
+#define STILL_RATE 0.5          // rad/s, about 30 deg/s: a slow aim still counts as held still
+// The drift tracker (drift_track), after PR #380's estimator: a window of REST_WIN samples (256 ms) is still when every
+// axis of the gyro stays within REST_GYRO_PTP peak to peak and of the acceleration within REST_ACC_PTP, |a| is within
+// REST_GRAVITY of 1 G, and the window's mean rate is within DRIFT_FIRST_MAX (before the estimate settled) or
+// DRIFT_TRACK_MAX (after) of the estimate in use. A Pro Controller on a table reads 0.004-0.006 rad/s of noise and
+// passes; held in a hand, even steadily, it reads 0.013-0.025 rad/s and mostly does not, so the tracker learns from a
+// controller put down rather than from an aim held still. After REST_HOLD_S still the estimate moves toward the
+// window's mean with a time constant of DRIFT_TAU_FIRST until it has settled, then DRIFT_TAU: a bias changes only
+// slowly as the controller warms up, and a hand that slips past the gate shifts it little. No dead zone: a slow aim
+// keeps every bit of its rate.
+enum { REST_WIN = 64 };
+#define REST_GYRO_PTP 0.04      // rad/s, per axis over the window
+#define REST_ACC_PTP 0.03       // G, per axis over the window
+#define REST_GRAVITY 0.25       // G: controllers' accelerometers read 1 G only roughly
+#define REST_HOLD_S 0.5
+#define DRIFT_FIRST_MAX 0.1     // rad/s, 5.7 deg/s; a larger factory bias (one Pro: 0.14 on z) needs the calibration
+#define DRIFT_TRACK_MAX 0.05    // rad/s
+#define DRIFT_TAU_FIRST 0.25    // s
+#define DRIFT_TAU 30.0          // s
+#define DRIFT_SETTLE_S 1.5      // learning this long with the estimate within DRIFT_SETTLED of the window: settled
+#define DRIFT_SETTLED 0.01      // rad/s
+#define DRIFT_LIMIT 0.3         // rad/s per axis
 
 struct MotionFusion {
     PlatMutex lock;
@@ -49,6 +77,16 @@ struct MotionFusion {
     char calib_pad[128];   // the controller the attempt measures (input.c pad_identity), written with the bias
     int calib_result;      // MOTION_CALIB_NONE, _DONE, _FAILED or _MOVED: the outcome the row shows between attempts
     int persist;           // the gamepad's instance: a finished calibration is written to totk.ini
+    // The drift tracker: the estimate (rad/s, on top of gyro_bias when gyro_calibration is on), whether it settled,
+    // and the rest window it is learned from. The estimate belongs to the controller and to the bias it was learned
+    // against: kept through restarts, cleared with a new controller, a new calibration or a change of
+    // gyro_calibration (drift_clear).
+    double drift[3];
+    int drift_settled;
+    int drift_base;        // gyro_calibration the estimate was learned with, -1 none
+    double rest_s, learn_s;
+    double win_g[REST_WIN][3], win_a[REST_WIN][3];
+    int win_n, win_i;
 };
 
 MotionFusion *motion_new(void) {
@@ -56,6 +94,7 @@ MotionFusion *motion_new(void) {
     if (!m) rt_fatal("motion: out of memory");
     plat_mutex_init(&m->lock);
     m->restart = 1;
+    m->drift_base = -1;
     return m;
 }
 
@@ -89,11 +128,11 @@ static void orthonormalize(double R[3][3]) {
     for (int j = 0; j < 3; j++) R[0][j] /= n;
     cross3(R[2], R[0], R[1]);
 }
-// A fresh orientation: z up against the measured gravity, x as close to the controller's x as that allows.
+// A fresh orientation: z up against the measured gravity (|acc| over 0.5 G), x as close to the controller's x as that
+// allows.
 static void align_to(double R[3][3], const double acc[3]) {
-    double n = norm3(acc), up[3] = {0, 0, 1}, x[3] = {1, 0, 0};
-    if (n > 0.5)
-        for (int j = 0; j < 3; j++) up[j] = -acc[j] / n;
+    double n = norm3(acc), up[3], x[3] = {1, 0, 0};
+    for (int j = 0; j < 3; j++) up[j] = -acc[j] / n;
     if (fabs(up[0]) > 0.9) { x[0] = 0; x[1] = 1; }
     memcpy(R[2], up, sizeof up);
     memcpy(R[0], x, sizeof x);
@@ -103,7 +142,7 @@ static void align_to(double R[3][3], const double acc[3]) {
 static void integrate(double R[3][3], const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
     if (fabs(n - 1) < 0.15) {   // not being accelerated: turn the estimated down toward the measured one
-        const double kp = 0.5;
+        double kp = fabs(n - 1) < 0.05 && norm3(gyro) < STILL_RATE ? STILL_GAIN : 0.5;
         double measured[3] = {acc[0] / n, acc[1] / n, acc[2] / n}, estimated[3] = {-R[2][0], -R[2][1], -R[2][2]}, e[3];
         cross3(measured, estimated, e);
         for (int j = 0; j < 3; j++) w[j] += kp * e[j];
@@ -126,6 +165,80 @@ static void integrate(double R[3][3], const double gyro[3], const double acc[3],
         }
     memcpy(R, out, sizeof out);
     orthonormalize(R);
+}
+
+// The tracker's own switch (gyro_auto_bias, live, default 0: subtracting a learned bias made aiming feel worse in
+// play, cause unknown). Off, nothing is learned or subtracted.
+int motion_auto_bias_enabled(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) {
+        seen = v;
+        on = cfg_bool("TOTK_GYRO_AUTO_BIAS");
+    }
+    return on;
+}
+
+// m->lock held: forget the estimate and the rest window.
+static void drift_clear(MotionFusion *m) {
+    memset(m->drift, 0, sizeof m->drift);
+    m->drift_settled = 0;
+    m->drift_base = -1;
+    m->rest_s = m->learn_s = 0;
+    m->win_n = m->win_i = 0;
+}
+
+// Largest per-axis peak-to-peak of a full window.
+static double win_ptp(const double w[REST_WIN][3]) {
+    double worst = 0;
+    for (int i = 0; i < 3; i++) {
+        double lo = w[0][i], hi = w[0][i];
+        for (int j = 1; j < REST_WIN; j++) {
+            if (w[j][i] < lo) lo = w[j][i];
+            if (w[j][i] > hi) hi = w[j][i];
+        }
+        if (hi - lo > worst) worst = hi - lo;
+    }
+    return worst;
+}
+
+// m->lock held, one sample with a reading: gyro is the rate with the calibrated bias taken off when base is 1. Moves
+// m->drift toward the rate of a controller lying still. Returns 1 when the estimate settled with this sample.
+static int drift_track(MotionFusion *m, const double acc[3], const double gyro[3], int base, double dt) {
+    if (m->drift_base != base) {   // nothing learned yet, or learned against the other baseline: start over
+        drift_clear(m);
+        m->drift_base = base;
+    }
+    memcpy(m->win_g[m->win_i], gyro, sizeof m->win_g[0]);
+    memcpy(m->win_a[m->win_i], acc, sizeof m->win_a[0]);
+    m->win_i = (m->win_i + 1) % REST_WIN;
+    if (m->win_n < REST_WIN) m->win_n++;
+    if (m->win_n < REST_WIN) return 0;
+    double mean[3] = {0, 0, 0}, a[3] = {0, 0, 0}, dev = 0;
+    for (int j = 0; j < REST_WIN; j++)
+        for (int i = 0; i < 3; i++) mean[i] += m->win_g[j][i] / REST_WIN, a[i] += m->win_a[j][i] / REST_WIN;
+    for (int i = 0; i < 3; i++)
+        if (fabs(mean[i] - m->drift[i]) > dev) dev = fabs(mean[i] - m->drift[i]);
+    int still = fabs(norm3(a) - 1) < REST_GRAVITY && win_ptp(m->win_g) < REST_GYRO_PTP &&
+                win_ptp(m->win_a) < REST_ACC_PTP && dev < (m->drift_settled ? DRIFT_TRACK_MAX : DRIFT_FIRST_MAX);
+    if (!still) {
+        m->rest_s = 0;
+        if (!m->drift_settled) m->learn_s = 0;
+        return 0;
+    }
+    m->rest_s += dt;
+    if (m->rest_s < REST_HOLD_S) return 0;
+    double k = dt / (m->drift_settled ? DRIFT_TAU : DRIFT_TAU_FIRST);
+    for (int i = 0; i < 3; i++) {
+        m->drift[i] += k * (mean[i] - m->drift[i]);
+        if (m->drift[i] > DRIFT_LIMIT) m->drift[i] = DRIFT_LIMIT;
+        if (m->drift[i] < -DRIFT_LIMIT) m->drift[i] = -DRIFT_LIMIT;
+    }
+    m->learn_s += dt;
+    if (m->drift_settled || m->learn_s < DRIFT_SETTLE_S || dev >= DRIFT_SETTLED) return 0;
+    m->drift_settled = 1;
+    return 1;
 }
 
 // Write the calibrated bias to totk.ini. Called with m->lock released: cfg_set takes cfg.c's own lock and cfg_save
@@ -203,18 +316,24 @@ static int calib_sample(MotionFusion *m, const double g[3], double *spread) {
     m->bias_valid = 1;
     m->calib_result = MOTION_CALIB_DONE;
     m->restart = 1;   // the angle and direction start over from the new bias
+    drift_clear(m);   // what it learned was the old bias's remainder
     return 1;
 }
 
 void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3], uint64_t now) {
-    const int calib_on = motion_calibration_enabled();   // read before the lock: a settings change takes cfg.c's lock
-    double saved[3] = {0, 0, 0}, spread = 0;
+    // Read before the lock: a settings change takes cfg.c's lock.
+    const int calib_on = motion_calibration_enabled(), auto_on = motion_auto_bias_enabled();
+    double saved[3] = {0, 0, 0}, spread = 0, drift[3] = {0, 0, 0};
     char saved_pad[sizeof m->calib_pad] = "";
-    int ended = 0, timed_out = 0, samples = 0;
+    int ended = 0, timed_out = 0, samples = 0, settled = 0;
     uint64_t started = 0;
     plat_mutex_lock(&m->lock);
     double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
-    if (dt > 0.05) dt = 0.004;   // a gap (no controller, sensors were off): no integration across it
+    if (dt > 0.05) {   // a gap (no controller, sensors were off): no integration and no rest across it
+        dt = 0.004;
+        m->rest_s = 0;
+        m->win_n = m->win_i = 0;
+    }
     // Calibration: the player holds the controller still, so the raw gyro reads the bias. With the switch off an
     // attempt in progress is dropped.
     if (m->calibrating && !calib_on) {
@@ -237,6 +356,14 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3],
     // The bias applies only while the switch is on; with no bias measured it is zero and the gyro passes unchanged.
     double gyro[3];
     for (int i = 0; i < 3; i++) gyro[i] = gyro_raw[i] - (calib_on ? m->gyro_bias[i] : 0);
+    // A sample without a reading (a sensor just switched on reads zero) neither starts a frame nor counts as rest.
+    const int reading = norm3(acc) >= 0.5;
+    if (!auto_on) {
+        if (m->drift_base >= 0) drift_clear(m);
+    } else if (reading && (settled = drift_track(m, acc, gyro, calib_on, dt)))
+        memcpy(drift, m->drift, sizeof drift);
+    for (int i = 0; i < 3; i++) gyro[i] -= m->drift[i];   // zero while the switch is off
+    if (m->restart && !reading) goto unlock;   // no state yet; the logs below still run
     if (m->restart) {
         align_to(m->R, acc);
         memset(m->angle, 0, sizeof m->angle);
@@ -253,9 +380,13 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3],
         for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)m->R[j][i];   // direction i = controller axis i in the reference frame
     }
     m->produced++;
+unlock:
     // The logs run with the lock released: the log back end can be slow, and the menu thread holds this lock in
     // motion_calib_poll.
     plat_mutex_unlock(&m->lock);
+    if (settled)
+        rt_log("motion: gyro drift at rest learned: %.5f %.5f %.5f rad/s, taken off %s", drift[0], drift[1], drift[2],
+               calib_on ? "on top of the calibrated bias" : "the raw gyro");
     if (timed_out)
         rt_log("motion: gyro calibration timed out after %.1f s (%d samples): sensor data not arriving",
                (now - started) / 1e9, samples);
@@ -322,6 +453,7 @@ void motion_bias_load(MotionFusion *m) {
     memcpy(m->gyro_bias, bias, sizeof bias);
     m->bias_valid = 1;
     m->calib_result = MOTION_CALIB_DONE;
+    drift_clear(m);
     plat_mutex_unlock(&m->lock);
 }
 
@@ -335,6 +467,7 @@ void motion_bias_reset(MotionFusion *m) {
     m->calib_pad[0] = 0;
     m->calib_result = MOTION_CALIB_NONE;
     m->bias_valid = 0;
+    drift_clear(m);   // the drift belonged to that controller too
     plat_mutex_unlock(&m->lock);
 }
 

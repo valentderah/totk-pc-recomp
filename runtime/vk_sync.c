@@ -369,7 +369,9 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // (vk_sync_part, which the caller made the recorder idle for).
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
     // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
-    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    // made after the GPU finished the readers the game may think done, vk_memory.c). The mirror copies queued before it
+    // are the ones this prologue makes, as they read the shadow (vk_mem_mirror_seal).
+    vk_mem_mirror_seal();
     vk_mem_shadow_sync(fence);
     if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
@@ -461,6 +463,8 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     ts_begin(s->cb);
     int recorded = vk_exec_record(s->cb, handles, n, fence);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
+    // No render pass is open here (vk_exec_record ended it), and s->cb is the recorder's like the commands before it.
+    vk_texture_eager_record(recorded ? s->cb : VK_NULL_HANDLE, fence);
     if (recorded) ts_end(s->cb, fence);
     else ts_drop();
     // The recorder is done with the part: the end-of-submission crumb, then the end, by the recorder when it records.

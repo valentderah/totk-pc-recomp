@@ -754,7 +754,9 @@ def main(argv=None):
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild)
+    # resolved now: the game starts the build kit's rebuild with the install folder as '.' and the working folder
+    rebuild = args.rebuild.resolve() if args.rebuild else None
+    App(root, args.lang or windows_ui_language(), layout, rebuild=rebuild)
     root.mainloop()
     return 0
 

@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import ini, runner, screens, state, steps  # noqa: E402
 from installer.events import Reporter  # noqa: E402
+from installer import layout as layouts  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
 
@@ -326,7 +327,7 @@ class LiftRunTest(unittest.TestCase):
         self.dest, temp = base / 'install', base / 'temp'
         self.dest.mkdir()
         temp.mkdir()
-        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools',
+        layout = SimpleNamespace(dev=True, recomp=ROOT / 'recomp', tools=ROOT / 'tools',
                                  patches=lambda version: base / 'patches-v143.txt')
         self.ctx = SimpleNamespace(dest=self.dest, temp=temp, layout=layout, keys={'lift': 'k'},
                                    state={'version': '1.4.3'}, reporter=Reporter(out=io.StringIO()))
@@ -383,6 +384,99 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(self.outputs(), [False, False])
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
+    def plugin_setup(self, kind, more=()):
+        """A mod with an exlaunch plugin (SQ), and one more mod per (name, kind) of more; the fake service run writes
+        each plugin's status line of its kind."""
+        kinds = {'SQ': kind, **dict(more)}
+        for name in kinds:
+            (self.dest / 'mods' / name / 'exefs').mkdir(parents=True, exist_ok=True)
+            (self.dest / 'mods' / name / 'exefs' / 'subsdk9').write_bytes(b'NSO0' + name.encode())
+        plugin = self.dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9'
+        dll = self.dest.parent / 'release-bin' / 'SDL3.dll'
+        dll.parent.mkdir(exist_ok=True)
+        dll.write_bytes(b'MZ')
+        (self.ctx.temp / 'build').mkdir(parents=True, exist_ok=True)
+        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja', dlls=[dll],
+                                          deps=None, sysroot=None, runtime_lib_for=lambda cpu: None,
+                                          pgo=lambda version: None, expected=lambda version: 'expected.json')
+        saved = self.run_tool
+
+        def run_tool(ctx, step, script, args, parse=None, cwd=None):
+            code, log = saved(ctx, step, script, args, parse, cwd)
+            args = [str(a) for a in args]
+            if Path(script).name == 'exefs_plugins.py':
+                Path(args[args.index('--patches-out') + 1]).write_text('patches\n')
+                status = Path(args[args.index('--status') + 1])
+                status.parent.mkdir(parents=True, exist_ok=True)
+                lines = []
+                for name, k in kinds.items():
+                    h = 0x811C9DC5   # FNV-1a 32 of "<mod>/exefs/subsdk9", as tools/exefs_plugins.py keys it
+                    for b in f'{name}/exefs/subsdk9'.encode():
+                        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+                    lines.append(f'{h:08X}\t00000000\t{k}\t-\tnote\n')
+                status.write_text(''.join(lines))
+                return (1 if 'unsupported' in kinds.values() else 0), log
+            return code, log
+        steps.run_tool = run_tool
+        return plugin
+
+    def test_plugin_stage(self):
+        # the lift with the plugin, a totk.exe of it, the service run, then the lift with its hook sites
+        plugin = self.plugin_setup('plugin')
+        steps.Lift().run(self.ctx)
+        self.assertEqual([c[0] for c in self.calls], ['exefs_patches.py', 'gen.py', 'build_game.py',
+                                                      'exefs_plugins.py', 'gen.py', 'exefs_patches.py --folded'])
+        first, last = self.calls[1][1], self.calls[4][1]
+        self.assertEqual(first[first.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--patches') + 1], str(self.ctx.temp / 'patches-plugins.txt'))
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        # the service run's totk.exe finds its DLLs beside it
+        self.assertTrue((self.ctx.temp / 'build' / 'SDL3.dll').is_file())
+
+    def test_refused_plugin_is_not_lifted(self):
+        # a refused plugin: its status line stays (the Mods tab says why), the game is lifted without it
+        self.plugin_setup('unsupported')
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        self.assertNotIn('--plugins', last)
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_refused_plugin_stays_in_the_layout_of_a_built_one(self):
+        # one plugin built, one refused: the lift with the hook sites keeps both in the layout (the records hold the
+        # addresses of the service runs' layout); the refused one has no patch set, its status line says why
+        self.plugin_setup('plugin', [('ZZ', 'unsupported')])
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        mods = self.dest / 'mods'
+        self.assertEqual(last[last.index('--plugins') + 1],
+                         ','.join(str(mods / n / 'exefs' / 'subsdk9') for n in ('SQ', 'ZZ')))
+        self.assertIn('unsupported', steps.plugins_status(self.ctx).read_text())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_failed_plugin_build_warns(self):
+        self.plugin_setup('plugin')
+        self.fail = {'build_game.py'}
+        steps.Lift().run(self.ctx)
+        self.assertNotIn('--plugins', self.calls[-2][1])
+        self.assertFalse(steps.plugins_status(self.ctx).is_file())
+        self.assertIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+
+class CompileKeyTest(unittest.TestCase):
+    """The compile key follows the release string: the exe carries the port version of the release that built it."""
+
+    def key(self, release):
+        layout = SimpleNamespace(release=release, pgo=lambda version: None)
+        ctx = SimpleNamespace(layout=layout, keys={'lift': 'L'}, state={'version': '1.4.3'})
+        with mock.patch.object(steps, 'runtime_key', return_value='R'):
+            return steps.Compile().key(ctx)
+
+    def test_new_release_compiles_again(self):
+        self.assertEqual(self.key('0.4.2+abc'), self.key('0.4.2+abc'))
+        self.assertNotEqual(self.key('0.4.2+abc'), self.key('0.4.3+def'))
+
 
 class CompileLockedTest(unittest.TestCase):
     """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
@@ -398,7 +492,7 @@ class CompileLockedTest(unittest.TestCase):
         dest, temp = base / 'install', base / 'temp'
         dest.mkdir()
         temp.mkdir()
-        layout = SimpleNamespace(tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
+        layout = SimpleNamespace(dev=True, tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
                                  ninja=base / 'ninja', dlls=[], runtime_lib_for=lambda cpu: None,
                                  pgo=lambda version: None, expected=lambda version: base / 'expected.json')
         self.ctx = SimpleNamespace(dest=dest, temp=temp, layout=layout, state={'version': '1.4.3'},
@@ -541,6 +635,21 @@ class CleanupTest(unittest.TestCase):
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(lines[1:3], ['-c', steps.REBUILD_BOOT])
 
+    def test_removes_only_stale_part_folders(self):
+        # make_romfs_patches.py's unfinished folders: an hour-old one is a stopped run's, a fresh one a running one's
+        old, fresh = self.dest / 'romfs-patches-2560x1080.part-41', self.dest / 'romfs-patches-pc.part-stale-42'
+        for folder in (old, fresh):
+            (folder / 'UI').mkdir(parents=True)
+            (folder / 'UI' / 'a.zs').write_bytes(b'x')
+        (self.dest / 'romfs-patches-2560x1080').mkdir()
+        hour = steps.time.time() - steps.PART_STALE_S - 60
+        for path in (old, old / 'UI', old / 'UI' / 'a.zs'):
+            steps.os.utime(path, (hour, hour))
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.is_dir() and (self.dest / 'romfs-patches-2560x1080').is_dir())
+        self.assertIsNone(steps.SHAPED_FOLDER.match(old.name))   # the Shapes step's own clean-up leaves them
+
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
             p.unlink()
@@ -553,6 +662,137 @@ class CleanupTest(unittest.TestCase):
     def test_romfs_of_another_size_fails(self):
         (self.dest / 'romfs' / 'romfs.bin').write_bytes(b'short')
         self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+
+def fake_release(root, version='1.0+abc'):
+    """A folder release_layout reads as a release: VERSION, the Python file and one file per other kit item."""
+    for name in layouts.KIT_ITEMS:
+        if '.' in name or name == 'VERSION':
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(version + '\n' if name == 'VERSION' else name)
+        else:
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / 'f.txt').write_text(name)
+    layouts.release_python(root).parent.mkdir(parents=True, exist_ok=True)
+    layouts.release_python(root).write_bytes(b'')
+    (root / 'TotK-Setup.exe').write_bytes(b'launcher')
+    (root / 'installer' / '__pycache__').mkdir()
+    (root / 'installer' / '__pycache__' / 'x.pyc').write_bytes(b'')
+    return layouts.release_layout(root)
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'the build kit is Windows-only')
+class KitTest(unittest.TestCase):
+    """The build kit: the setup's release folder copied into the install folder, the later steps and the rebuild
+    command pointed at it, and an older setup's temp folder taken over."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.setup, self.dest = base / 'TotK-Setup', base / 'game'
+        self.dest.mkdir()
+        self.layout = fake_release(self.setup)
+        self.missing = mock.patch.object(Layout, 'missing', lambda self, cpu='v3': [])
+        self.missing.start()
+
+    def tearDown(self):
+        self.missing.stop()
+        self.tmp.cleanup()
+
+    def ctx(self, layout):
+        return SimpleNamespace(layout=layout, dest=self.dest, reporter=Reporter(out=io.StringIO()))
+
+    def install(self):
+        ctx = self.ctx(self.layout)
+        kit = steps.Kit()
+        self.assertFalse(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        return ctx, kit
+
+    def test_copies_the_release_and_the_next_steps_run_from_it(self):
+        ctx, kit = self.install()
+        folder = self.dest / 'build-kit'
+        self.assertEqual(ctx.layout.root, folder.resolve())
+        self.assertEqual(ctx.layout.release, '1.0+abc')
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(layouts.KIT_ITEMS))
+        self.assertFalse((folder / 'installer' / '__pycache__').exists())
+        self.assertFalse((self.dest / 'build-kit.new').exists() or (self.dest / 'build-kit.old').exists())
+        self.assertTrue(kit.current(self.ctx(self.layout), {}))
+
+    def test_the_kits_own_rebuild_keeps_it(self):
+        ctx, kit = self.install()
+        (self.dest / 'build-kit' / 'tools' / 'mark').write_text('kept')
+        self.assertTrue(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        self.assertEqual((self.dest / 'build-kit' / 'tools' / 'mark').read_text(), 'kept')
+
+    def test_a_newer_setup_replaces_the_kit(self):
+        self.install()
+        (self.dest / 'build-kit' / 'tools' / 'old-only').write_text('old')
+        self.layout = fake_release(Path(self.tmp.name) / 'TotK-Setup-2', '1.1+def')
+        ctx, _ = self.install()
+        self.assertEqual(ctx.layout.release, '1.1+def')
+        self.assertFalse((self.dest / 'build-kit' / 'tools' / 'old-only').exists())
+
+    def test_rebuild_command_is_relative_to_the_install_folder(self):
+        ctx, _ = self.install()
+        cmd = steps.rebuild_command(ctx)
+        self.assertEqual(cmd, [str(Path('build-kit', 'python', 'pythonw.exe' if (
+            ctx.layout.python.with_name('pythonw.exe')).is_file() else 'python.exe')), '-c', steps.REBUILD_BOOT,
+            'build-kit', '--root', 'build-kit', '--rebuild', '.'])
+        self.assertFalse(any(str(self.dest) in a or str(self.setup) in a for a in cmd))
+
+    def test_the_kits_builds_are_portable(self):
+        ctx, _ = self.install()
+        ctx.temp, ctx.state = self.dest / 'build-cache' / 'work', {'version': '1.4.3'}
+        self.assertIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
+        ctx.layout = Layout(root=ROOT, dev=True, release='x', python=Path('python'), tools=Path('tools'),
+                            recomp=Path('recomp'), llvm=Path('llvm'), deps=None, runtime=Path('rt'),
+                            runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        self.assertNotIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
+
+    def test_dev_mode_has_no_kit(self):
+        ctx = self.ctx(SimpleNamespace(dev=True, release='x', root=ROOT))
+        kit = steps.Kit()
+        self.assertTrue(kit.current(ctx, {}))
+        self.assertEqual(kit.run(ctx), {})
+        kit.settle(ctx)
+        self.assertFalse((self.dest / 'build-kit').exists())
+
+    def test_temp_folder_of_an_older_setup_moves_in(self):
+        old = layouts.temp_folder(self.setup / 'temp', self.dest)
+        (old / 'gen').mkdir(parents=True)
+        (old / 'gen' / '.install-key').write_text('k')
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'rebuild.txt').write_text(
+            '\n'.join(['py', '-c', 'boot', str(self.setup), '--root', str(self.setup), '--rebuild', str(self.dest)]))
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertEqual(temp, self.dest / 'build-cache' / 'work')
+        self.assertIn('moved', steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertEqual((temp / 'gen' / '.install-key').read_text(), 'k')
+        self.assertFalse(old.exists())
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))   # once: the new one exists now
+
+    def test_no_temp_folder_to_take_over(self):
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'rebuild.txt').write_text('build-kit\\python\\pythonw.exe\n-c\nboot\nbuild-kit\n')
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+
+
+class RuntimeKeyTest(unittest.TestCase):
+    def test_clangs_folder_is_not_in_the_key(self):
+        layout = SimpleNamespace(clang=Path('clang'), tools=Path('tools'), runtime=Path('rt'), deps=None, sysroot=None,
+                                 dlls=(), runtime_lib_for=lambda cpu: None)
+        keys = []
+        for where in ('C:/setup/llvm/bin', 'D:/game/build-kit/llvm/bin'):
+            out = f'clang version 23\nTarget: x86_64-w64-windows-gnu\nInstalledDir: {where}\nConfiguration file: {where}/x.cfg\n'
+            with mock.patch.object(steps.subprocess, 'run', return_value=SimpleNamespace(stdout=out)):
+                keys.append(steps.runtime_key(SimpleNamespace(layout=layout)))
+        self.assertEqual(keys[0], keys[1])
 
 
 class FreeSpaceTest(unittest.TestCase):
@@ -641,6 +881,24 @@ class ShapesTest(unittest.TestCase):
                                                              'pad_layout = nintendo\nprompts = xbox',
                                                              'pad_layout = xbox_prompts', 'prompts = nintendo')],
                          [None, 'pc', 'xbox-label', 'xbox', 'xbox', None])
+        self.assertEqual([screens.prompts_style(t) for t in ('prompts = playstation', 'prompts = PS',
+                                                             'pad_layout = nintendo\nprompts = playstation',
+                                                             'pad_layout = xbox\nprompts = playstation')],
+                         ['playstation-xbox', 'playstation-xbox', 'playstation', 'playstation-xbox'])
+
+    def test_playstation_shapes_replace_every_older_shaped_folder(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = auto\nprompts = playstation\n')
+        for old in ('romfs-patches-playstation-1280x800', 'romfs-patches-playstation-xbox-3440x1440-hud21x9',
+                    'romfs-patches-xbox-label-2560x1080', 'romfs-patches-playstation-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-playstation-xbox' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox',
+                          'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(self.calls[-1][self.calls[-1].index('--prompts') + 1], 'playstation-xbox')
 
     def test_wanted_from_displays_and_ini(self):
         (self.dest / 'totk.ini').write_text('[display]\noutput_res = 3000x2000\n[input]\nprompts = pc\n')
@@ -680,6 +938,108 @@ class ShapesTest(unittest.TestCase):
         self.assertEqual(self.calls[1][-4:], ['--reuse', str(self.dest / 'romfs-patches-pc'), '--binds',
                                               str(self.dest / 'totk.ini')])
         self.assertNotIn('--binds', self.calls[0])
+
+    def test_selected_hud_only_for_needed_canonical_shapes(self):
+        screens.displays = lambda: [(5120, 1440), (3840, 1080), (2560, 1600)]
+        (self.dest / 'totk.ini').write_text('output_res = 5120x2160\nhud_width = 21:9\n')
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud21x9',
+                                             'romfs-patches-3840x1080', 'romfs-patches-3840x1080-hud21x9',
+                                             'romfs-patches-1280x800'])
+        caps = [c for c in self.calls if '--hud' in c]
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(caps[0][-4:], ['--aspect', '2560x1080', '--hud', '21:9'])
+        self.assertEqual(caps[1][-4:], ['--aspect', '3840x1080', '--hud', '21:9'])
+        self.assertTrue(step.current(self.ctx, record))
+        (self.dest / record['folders'][3] / 'manifest.tsv').unlink()
+        self.assertFalse(step.current(self.ctx, record))
+
+    def test_hud_key_and_cleanup_follow_selection(self):
+        screens.displays = lambda: [(2560, 1080)]
+        ini = self.dest / 'totk.ini'
+        ini.write_text('hud_width = full\n')
+        step = steps.Shapes()
+        full_key = step.key(self.ctx)
+        for name in ('romfs-patches-3840x1080-hud21x9', 'romfs-patches-pc-2560x1080-hud16x9',
+                     'romfs-patches-player-custom'):
+            (self.dest / name).mkdir()
+        ini.write_text('TOTK_HUD_WIDTH = 16:9\n')
+        self.assertNotEqual(step.key(self.ctx), full_key)
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud16x9'])
+        self.assertFalse((self.dest / 'romfs-patches-3840x1080-hud21x9').exists())
+        self.assertFalse((self.dest / 'romfs-patches-pc-2560x1080-hud16x9').exists())
+        self.assertTrue((self.dest / 'romfs-patches-player-custom').is_dir())
+        self.calls.clear()
+        ini.write_text('hud_width = full\n')
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080'])
+        self.assertTrue(all('--hud' not in c for c in self.calls))
+        self.assertFalse((self.dest / 'romfs-patches-2560x1080-hud16x9').exists())
+
+    def test_full_hud_keeps_the_key_of_a_setup_before_hud_width(self):
+        # An install that writes no capped folder keeps the Shapes key it had, so its next setup run prepares nothing
+        screens.displays = lambda: [(2560, 1080), (2560, 1600)]
+        step = steps.Shapes()
+        sizes, style = step.wanted(self.ctx)
+        old = steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes)
+        self.assertEqual(step.key(self.ctx), old)
+        (self.dest / 'totk.ini').write_text('hud_width = full\n')
+        self.assertEqual(step.key(self.ctx), old)
+        # a cap no shape here is wider than writes nothing either
+        screens.displays = lambda: [(2560, 1600)]
+        del self.ctx.shapes_wanted
+        (self.dest / 'totk.ini').write_text('hud_width = 16:9\n')
+        sizes, style = step.wanted(self.ctx)
+        self.assertEqual(step.key(self.ctx), steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes))
+
+    def test_capped_pc_prompts_reuse_bindings(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\nbind_attack = key:f\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                             'romfs-patches-3840x1080-hud16x9',
+                                             'romfs-patches-pc-3840x1080-hud16x9'])
+        self.assertEqual(self.calls[-1][-6:], ['--hud', '16:9', '--reuse', str(self.dest / 'romfs-patches-pc'),
+                                               '--binds', str(self.dest / 'totk.ini')])
+        self.assertNotIn('--binds', self.calls[-2])
+
+    def test_hud_caps_ignore_equal_narrow_and_invalid_choices(self):
+        # Common '21:9' modes are wider than exact 21/9: a manually selected cap is meaningful.
+        self.assertEqual(steps.shape_hud('2560x1080', '21:9'), '21:9')
+        self.assertEqual(steps.shape_hud('3440x1440', '21:9'), '21:9')
+        self.assertIsNone(steps.shape_hud('2520x1080', '21:9'))
+        self.assertIsNone(steps.shape_hud('1280x800', '16:9'))
+        self.assertIsNone(steps.shape_hud('3840x1080', 'full'))
+        self.assertEqual(steps.shape_hud('3440x1440', '16:9'), '16:9')
+        (self.dest / 'totk.ini').write_text('hud_width = invalid\n')
+        self.assertEqual(steps.hud_width(self.dest), 'full')
+
+    def test_failed_capped_prompts_are_retried(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc/manifest.tsv').write_text('#\n')
+        successful = steps.run_tool
+
+        def fail_cap(ctx, step, script, args, **kwargs):
+            if '--prompts' in args and '--hud' in args:
+                return 7, self.dest / 'failed.log'
+            return successful(ctx, step, script, args, **kwargs)
+
+        steps.run_tool = fail_cap
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertTrue(record['failed'])
+        self.assertFalse(step.current(self.ctx, record))
+        steps.run_tool = successful
+        record = step.run(self.ctx)
+        self.assertFalse(record['failed'])
+        self.assertTrue(step.current(self.ctx, record))
+        self.assertIn('romfs-patches-pc-3840x1080-hud16x9', record['folders'])
 
     def test_pc_prompts_writes_only_the_16_9_folder(self):
         (self.dest / 'totk.ini').write_text('[input]\nbind_attack = key:f\n')
@@ -727,7 +1087,8 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup'])
+                         ['check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
+                          'fsr', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()

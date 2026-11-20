@@ -49,8 +49,12 @@ uint64_t nvn_new_serial(void);                             // next tex_t / prog_
 // that assumption too early.
 void nvn_sync_ahead_present(void);
 uint64_t nvn_sync_ahead_guard(void);
+int nvn_sync_ahead_on(void);   // 1 when the frame-ahead wait is in effect: TOTK_SYNC_AHEAD on and not refused (no shadow storage, no known wait site)
 int vk_mem_shadow_on(void);   // vk_memory.c: 1 with shadow storage on (valid once the Vulkan back end is up)
 void vk_mem_shadow_fence(void);   // vk_memory.c: returns once every shadow sync that read the old guard is done
+// vk_memory.c: the game is about to read [addr, addr+size) of pool storage; waits for a GPU write into it that the game
+// was told is done, unless the range still holds the result of the write before
+void vk_mem_shadow_read(uint64_t addr, uint64_t size);
 void gfx_replay_wait_value(uint64_t v);   // vk_backend.c: the replay thread submitted value v
 uint64_t nvn_fence_last(void);                             // fence value of the newest submit (0 before the first)
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
