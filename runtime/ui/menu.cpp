@@ -53,6 +53,8 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 int vk_exec_replay_workers(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+const char *vk_dlaa_name(void);   // vk_dlaa.h
+int vk_dlaa_fsr_on(void);         // vk_dlaa.h
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_port_version[];
@@ -729,6 +731,66 @@ static const char *present_note(void) {
     return note;
 }
 
+// The upscaler of the 3D scene, one row over two settings: dlaa (off or on) and dlaa_backend (NVIDIA DLSS, AMD FSR 4 or
+// AMD FSR 3). AMD ships FSR's Vulkan libraries for Windows only, so Linux has DLSS alone (vk_dlaa.c fsr_backend).
+#ifdef _WIN32
+enum { UPSCALER_CHOICES = 4 };
+#else
+enum { UPSCALER_CHOICES = 2 };
+#endif
+
+// The row's choice as the settings hold it: 0 off, 1 NVIDIA DLSS, 2 AMD FSR 4, 3 AMD FSR 3.
+static int upscaler_choice(void) {
+    const char *be = cfg_value("TOTK_DLAA_BACKEND");
+    if (!cfg_bool("TOTK_DLAA")) return 0;
+    if (UPSCALER_CHOICES > 3 && !strcmp(be, "fsr3")) return 3;
+    if (UPSCALER_CHOICES > 2 && !strcmp(be, "fsr")) return 2;
+    return 1;
+}
+
+static void row_upscalers(void) {
+    static const UiTextId ids[] = {UI_MENU_DLAA_OFF, UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR,
+                                   UI_MENU_DLAA_BACKEND_FSR3};
+    static const char *const backends[] = {"", "dlss", "fsr", "fsr3"};
+    const int n = UPSCALER_CHOICES;
+    int cur = upscaler_choice();
+    int step = opt_choice_step("TOTK_DLAA", UI_MENU_DLAA, menu_text(ids[cur]), cur == 0, UI_MENU_DLAA_DESC);
+    if (!step) return;
+    // A / click: the next value, round to the first; left / right stop at the ends (as opt_choice_list)
+    int nv = step == 2 ? (cur + 1) % n : cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;
+    if (nv == cur) return;
+    cfg_set("TOTK_DLAA", nv ? "1" : "0");
+    if (nv) cfg_set("TOTK_DLAA_BACKEND", backends[nv]);   // off keeps the upscaler chosen last
+    opt_save_soon();
+}
+
+// The upscaler's rows, in the Picture group: the upscaler, then the rows of the one chosen. Every upscaler takes the
+// mode (the scene's size), the characters' bias mask and the effects-after point (vk_dlaa.c, shared by both); the DLSS
+// model and its fixed exposure are DLSS's alone, the sharpening FSR's. The rows follow the setting, not the upscaler
+// running, which changes at the next start: the player sees the rows of what they picked.
+static void rows_upscaler(void) {
+    row_upscalers();
+    int up = upscaler_choice();
+    if (up) {
+        static const UiTextId mode[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
+                                        UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
+        opt_choice("TOTK_DLSS", UI_MENU_DLSS, mode, 5, UI_MENU_DLSS_DESC);
+    }
+    if (up == 1) {
+        static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
+        opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
+        opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
+    }
+    if (up >= 2)
+        opt_slider("TOTK_FSR_SHARPNESS", UI_MENU_FSR_SHARPNESS, 0, 100, UI_MENU_FSR_SHARPNESS_DESC, 5, "%.0f %%");
+    if (up) {
+        static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
+                                         UI_MENU_DLSS_CHARS_FULL};
+        opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
+        opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
+    }
+}
+
 // ---- the tabs
 // Colour adjustment (vk_color.c): a profile writes the four values (STS78721's presets, issue #136); moving one of them
 // makes the profile Custom.
@@ -791,19 +853,9 @@ static void tab_screen(float scale) {
     opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
-    opt_toggle("TOTK_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
-    static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
-                                    UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
-    opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
-    static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
-    opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
-    static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
-                                     UI_MENU_DLSS_CHARS_FULL};
-    opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
-    opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
-    opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
     static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
+    rows_upscaler();
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);
@@ -1651,16 +1703,26 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
-// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
-// in use.
+// The DLSS mode's name as the menu shows it, for the upscaler line.
+static UiTextId dlss_mode_text(const char *m) {
+    return !strcmp(m, "quality") ? UI_MENU_DLSS_QUALITY : !strcmp(m, "balanced") ? UI_MENU_DLSS_BALANCED
+         : !strcmp(m, "performance") ? UI_MENU_DLSS_PERFORMANCE : !strcmp(m, "ultra_performance") ? UI_MENU_DLSS_ULTRA
+         : UI_MENU_DLSS_DLAA;
+}
+
+// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), the
+// temporal upscaler that scales the scene (vk_dlaa.c, DLSS or FSR, with its mode), how the present scales the image to
+// the window (gfx_present.c, the last present), the frame limit and the presentation mode in use.
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
+    const char *up = vk_dlaa_name();
+    if (up) snprintf(v[6], sizeof v[6], "%s, %s", up, menu_text(dlss_mode_text(cfg_value("TOTK_DLSS"))));
+    else snprintf(v[6], sizeof v[6], "%s", menu_text(UI_MENU_OV_NONE));
     if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
@@ -1676,17 +1738,18 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
     snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
+    static const UiTextId labels[7] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_UPSCALER,
                                        UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    static const int order[7] = {0, 1, 2, 6, 3, 4, 5};   // the upscaler line after the scene it scales
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
-        perf_right(v[i], false);
+        perf_right(v[order[i]], !up && order[i] == 6);
     }
     ImGui::EndTable();
 }

@@ -37,8 +37,10 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import recent
+from . import screens
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+                       Process, amount, default_game_language, describe_event, fsr_default, parse_line,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -273,6 +275,12 @@ class App:
         self.bind_text(dlss, 'text', 'ui.dlss')
         dlss.pack(anchor='w', pady=(dpi.px(8), 0))
         self.label(f, 'ui.dlss_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
+        # ticked by default with an AMD display adapter only (guilogic.fsr_default); the player can tick it on any GPU
+        self.fsr_var = tk.BooleanVar(value=fsr_default(screens.windows_adapter_names()))
+        fsr = ttk.Checkbutton(f, variable=self.fsr_var)
+        self.bind_text(fsr, 'text', 'ui.fsr')
+        fsr.pack(anchor='w', pady=(dpi.px(8), 0))
+        self.label(f, 'ui.fsr_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
         self.update_hint = ttk.Label(f, wraplength=WRAP, justify='left')
         self.update_hint.pack(anchor='w', pady=(dpi.px(8), 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
@@ -344,7 +352,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -619,7 +627,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},

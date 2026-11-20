@@ -223,10 +223,12 @@
 # Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
 # by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
 # scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.1.0, 1.2.1 and 1.4.3. Changes in
-# the menu take effect at once.
+# the menu take effect at once. While AMD FSR is at work (dlaa = 1 with dlaa_backend = fsr or fsr3) the scene stays
+# at 100 % whatever this says.
 # dynamic_res = 1
-# Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
-# from 0 (off) to 100. Changes while the game runs take effect at once.
+# Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR 1's
+# sharpening from 0 (off) to 100 (the FSR upscaler of dlaa_backend has fsr_sharpness). Changes while the game runs take
+# effect at once.
 # upscaler = fsr
 # sharpness = 80
 # Picture shape when the window's shape differs from the game resolution's (a 16:9 picture in a 21:9 fullscreen
@@ -290,10 +292,19 @@
 # NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
 # Read at start.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
-# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
-# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
-# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
+# What dlaa runs: dlss (NVIDIA DLSS, above), fsr (AMD FSR 4 on Radeon RX 9000, 7000 and 6000 GPUs, FSR 3.1 on others)
+# or fsr3 (AMD FSR 3.1 on any GPU AMD's library supports). FSR runs on Windows, with amd_fidelityfx_loader_vk.dll and
+# amd_fidelityfx_upscaler_vk.dll from AMD's FSR SDK next to totk.exe, which the setup downloads. The dlss mode below
+# applies to all three; dlss_preset is DLSS's only. Read at start.
+# dlaa_backend = dlss
+# How much the AMD FSR upscaler (dlaa_backend = fsr or fsr3) sharpens the 3D scene it smooths, from 0 (off) to 100.
+# Changes while the game runs take effect at once.
+# fsr_sharpness = 80
+# What the upscaler (DLSS or FSR; the menu's Upscaler mode) works from: dlaa (the 3D scene at full size, Native in the
+# menu), quality, balanced, performance or ultra_performance (the scene at 67, 58, 50 or 33 % of the output, scaled up;
+# these replace render_scale and sharpen texture filtering to match). They apply only with dlaa = 1 and the upscaler's
+# library next to the executable; otherwise the scene follows render_scale. Changes while the game runs take effect at
+# once (1.4.3; 1.2.1 at the next start).
 # dlss = dlaa
 # The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
 # ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
@@ -322,8 +333,10 @@
 # NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
 # Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
 # reflex = off
-# The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
-# once.
+# The game's own FXAA after the post effects, which also sharpens; with DLAA on it is not needed. With dlaa_backend =
+# fsr and the scene as large as the game resolution it is always left out, and FSR sharpens instead (fsr_sharpness): the
+# game runs it on some frames only, which made the picture go soft and sharp in turns. Changes while the game runs take
+# effect at once.
 # fxaa = 1
 
 # HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with

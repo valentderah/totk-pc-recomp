@@ -72,12 +72,20 @@ static struct {
 // The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
 // next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
 // without that file DLSS never runs, and a DLSS mode would leave the game's plain scaling at 50..67 % of the output.
+// With dlaa_backend = fsr or fsr3 the modes scale through AMD's FSR instead (vk_ffx.c), which needs its loader and
+// upscaler DLLs next to totk.exe; on Linux the setting is ignored and DLSS is checked (vk_dlaa.c fsr_backend).
 static int dlss_dll(void) {
 #ifdef _WIN32
-    char exe[1024], path[1024 + 32];
+    char exe[1024], path[1024 + 48];
     if (!plat_exe_path(exe, sizeof exe)) return 1;
     char *last = plat_last_sep(exe);
     if (!last) return 1;
+    if (!strncmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr", 3)) {
+        snprintf(path, sizeof path, "%.*s/amd_fidelityfx_loader_vk.dll", (int)(last - exe), exe);
+        if (!plat_file_exists(path)) return 0;
+        snprintf(path, sizeof path, "%.*s/amd_fidelityfx_upscaler_vk.dll", (int)(last - exe), exe);
+        return plat_file_exists(path);
+    }
     snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
     return plat_file_exists(path);
 #else
@@ -128,8 +136,12 @@ static double dlss_share(const char *m) {
         if (!strcmp(m, dlss[i].name)) {
             if (dll < 0 && !(dll = dlss_dll())) {
 #ifdef _WIN32
-                rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
-                       "render_scale", m);
+                if (!strncmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr", 3))
+                    rt_log("resolution: FSR %s needs amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll "
+                           "next to totk.exe, which are missing: the scene follows render_scale", m);
+                else
+                    rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene "
+                           "follows render_scale", m);
 #else
                 rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
                        "scene follows render_scale", m);
@@ -658,19 +670,25 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+int vk_dlaa_fsr_on(void);   // vk_dlaa.h, which needs vk.h
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
-    if (dyn == shown) return;
-    shown = dyn;
+    // AMD FSR at work (vk_dlaa.h vk_dlaa_fsr_on) holds the scene at 100 % whatever dynamic_res says, as it leaves the
+    // game's FXAA out: FSR then always gets the scene size it was started for and keeps one history.
+    int fsr = vk_dlaa_fsr_on();
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
+    int state = dyn | fsr << 1;
+    if (state == shown) return;
+    shown = state;
     if (set < 0) {
         if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
         return;
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn ? "on: the game's own 100, 90 or 80 %" : fsr ? "off while AMD FSR is on: the scene stays at 100 %"
+                                                          : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
