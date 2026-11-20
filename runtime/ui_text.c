@@ -358,6 +358,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Walk scale",
     [UI_MENU_WALK_SCALE_DESC] = "The tilt the keyboard's sticks get while the walk key is held. Half is a walk, the "
                                 "full tilt a run.",
+    [UI_MENU_FREECAM] = "Free camera",
+    [UI_MENU_FREECAM_DESC] = "Lets a combo or a key below detach the view from Link and fly it. Off by default: "
+        "with it off the game's camera code runs as shipped. Takes effect after a restart. "
+        "Game version 1.4.3.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Turn on Free camera above, then restart",
     [UI_MENU_FREECAM_PAD] = "Free camera combo",
     [UI_MENU_FREECAM_PAD_DESC] = "Gamepad buttons pressed together that step the view through three stages: it leaves "
         "Link and flies, it stays where it was left while Link plays on, and it comes back. While it flies the game "
@@ -981,6 +986,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Сила шага",
     [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
                                 "отклонение — бег.",
+    [UI_MENU_FREECAM] = "Свободная камера",
+    [UI_MENU_FREECAM_DESC] = "Позволяет сочетанию или клавише ниже отделить камеру от Линка и летать ею. По "
+        "умолчанию выключена: тогда код камеры игры работает без изменений. Включается после "
+        "перезапуска. Версия игры 1.4.3.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Включите «Свободную камеру» выше и перезапустите игру",
     [UI_MENU_FREECAM_PAD] = "Сочетание свободной камеры",
     [UI_MENU_FREECAM_PAD_DESC] = "Кнопки геймпада, нажатые вместе, переключают камеру по трём режимам: она отделяется "
         "от Линка и летает, остаётся на месте, пока Линком снова можно управлять, и возвращается. Пока камера летает, "
@@ -1795,6 +1805,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Intensidade do andar",
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
+    [UI_MENU_FREECAM] = "Câmera livre",
+    [UI_MENU_FREECAM_DESC] = "Permite que uma combinação ou uma tecla abaixo solte a câmera do Link e a faça voar."
+        " Desligada por padrão: assim o código de câmera do jogo roda como foi lançado. Vale "
+        "depois de reiniciar. Versão 1.4.3 do jogo.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Ligue a Câmera livre acima e reinicie",
     [UI_MENU_FREECAM_PAD] = "Combinação da câmera livre",
     [UI_MENU_FREECAM_PAD_DESC] = "Botões do controle pressionados juntos que passam a câmera por três etapas: ela se "
         "solta do Link e voa, fica parada onde foi deixada enquanto o Link volta a ser controlado, e volta. Enquanto "
@@ -2556,6 +2571,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_KEY_TAKEN] = "同时为 %s",
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
+    [UI_MENU_FREECAM] = "自由镜头",
+    [UI_MENU_FREECAM_DESC] = "允许用下方的组合键或按键让镜头脱离林克自由飞行。默认关闭：关闭时游戏的镜头代码保持原样运行。重启后生效。仅限游戏版本 1.4.3。",
+    [UI_MENU_FREECAM_OFF_NOTE] = "请先打开上方的“自由镜头”，然后重启",
     [UI_MENU_FREECAM_PAD] = "自由镜头组合键",
     [UI_MENU_FREECAM_PAD_DESC] = "同时按下的手柄按键，让镜头依次切换三个阶段：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间游戏不接收输入：左摇杆沿视线方向和左右移动，扳机键上升和下降，右摇杆转动视角，每按一次 L 或 R 速度减半或加倍。镜头固定时，林克朝左摇杆在屏幕上指向的方向移动。游戏版本 1.4.3。",
     [UI_MENU_FREECAM_PAD_V143] = "仅限游戏版本 1.4.3",

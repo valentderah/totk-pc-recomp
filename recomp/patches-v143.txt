@@ -128,14 +128,6 @@ set fov      TOTK_FOV_PATCH      0
 site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
 site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
-# Free camera (runtime/freecam.c freecam_hook, page +0xf50). The camera component update (main+0x628460, the routine of
-# the first fov and aspect sites) copies the component's eye, target and up into its sead camera; every path to that
-# copy runs this load of the component's link first. The hook performs the load and, while the free camera is on,
-# writes the component's one-shot eye and target overrides (+0x180, +0x198). The function saves x30 in its prologue, so
-# the bl's link write is harmless.
-set freecam  TOTK_FREECAM_PATCH  1
-site freecam main 6286d4 f9400e68 94d2de1f   # ldr x8, [x19, #0x18]
-
 # The camera input update, after its stick dead zone, unit-radius clamp and StickExponent. The host callback
 # performs the displaced store and adds raw mouse counts to s9/s10 (runtime/mouse_direct.c camera_input).
 # Its address is page +0xfd0; the page is main+0x3adf000 on this verified build.
@@ -1249,3 +1241,13 @@ site shutter main 25e55d0 bc605900 bc605900 f9402ea9 927ef529 39400129 1e230123 
 #   fmov s2, #1.0; fsub s1, s2, s1; movi d4, #0; fmaxnm s1, s1, s4; fminnm s1, s1, s2; fmul s1, s1, s1;
 #   mov w9, #0x1eb8; movk w9, #0x3d85, lsl #16; fmov s4, w9 (0.065); fmul s1, s1, s4; fmul s1, s1, s3;
 #   fmadd s0, s0, s1, s0
+
+# Free camera (runtime/freecam.c freecam_hook, page +0xf50). The camera component update (main+0x628460, the routine of
+# the first fov and aspect sites) copies the component's eye, target and up into its sead camera; every path to that
+# copy runs this load of the component's link first. The hook performs the load and, while the free camera is on,
+# writes the component's one-shot eye and target overrides (+0x180, +0x198). The function saves x30 in its prologue, so
+# the bl's link write is harmless. Off by default (freecam_patch, the Free camera row of the Controls tab, read at start):
+# with it off the site runs the game's load and nothing else. It sits at the end of the table, so the sets before it
+# keep their numbers.
+set freecam  TOTK_FREECAM_PATCH  0
+site freecam main 6286d4 f9400e68 94d2de1f   # ldr x8, [x19, #0x18]

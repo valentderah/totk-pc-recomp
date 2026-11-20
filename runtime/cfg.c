@@ -99,7 +99,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"GYRO_BIAS_X", "input"}, {"GYRO_BIAS_Y", "input"}, {"GYRO_BIAS_Z", "input"}, {"GYRO_BIAS_PAD", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"QUICKSAVE", "input"}, {"QUICKSAVE_KEY", "input"}, {"QUICKLOAD_KEY", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"FREECAM_PAD", "input"}, {"FREECAM_KEY", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"QUICKSAVE", "input"}, {"QUICKSAVE_KEY", "input"}, {"QUICKLOAD_KEY", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"FREECAM_PATCH", "input"}, {"FREECAM_PAD", "input"}, {"FREECAM_KEY", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -190,7 +190,8 @@ static const CfgMeta metas[] = {
     {"QUICKSAVE", "0", "0|1", LIVE},        // quicksave.c: one key saves (an autosave), another loads it
     {"QUICKSAVE_KEY", "f6", NULL, LIVE}, {"QUICKLOAD_KEY", "f7", NULL, LIVE},   // Half-Life's keys; a key name or none
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
-    {"FREECAM_PAD", "none", NULL, LIVE}, {"FREECAM_KEY", "none", NULL, LIVE},
+    // freecam.c: the patch set of its hook (off: the game's camera code as shipped), then the combo and key that step it
+    {"FREECAM_PATCH", "0", "0|1", RESTART}, {"FREECAM_PAD", "none", NULL, LIVE}, {"FREECAM_KEY", "none", NULL, LIVE},
     // Gameplay Tweaks
     {"GAMEPLAY_TWEAKS_ENABLED", "0", "0|1", LIVE},
     {"GAMEPLAY_ULTRAHAND_ROTATE", "1", "0|1", LIVE}, {"GAMEPLAY_ULTRAHAND_C_AXIS", "1", "0|1", LIVE},

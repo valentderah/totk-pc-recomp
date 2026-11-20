@@ -944,12 +944,17 @@ static void row_quicksave_keys(void) {
                   key_taken("TOTK_QUICKLOAD_KEY", note[1], sizeof note[1]));
 }
 
-// The free camera combo and key (freecam.c): the trigger and shoulder pairs with a stick click, named as the open pad
-// labels its buttons, or none. totk.ini takes any combo of button positions, shown as written. The key is any key or
+// The free camera (freecam.c). Its switch is the patch set of the hook, read at start, so it is off by default and the
+// row says "after restart". Then the combo: the trigger and shoulder pairs with a stick click, named as the open pad
+// labels its buttons, or none; totk.ini takes any combo of button positions, shown as written. The key is any key or
 // mouse button, taken by the bindings' capture window (binds_key_row) as quick save's are; Delete leaves it without
-// one. A key the bindings also use says which action it presses. The combo is off on other game versions; the key
-// row, which opt_disable_next does not grey, says so in its note.
+// one. A key the bindings also use says which action it presses. On other game versions the switch and the combo are
+// greyed, and while the hook does not run (the switch off, or on but not yet restarted) the combo is greyed; the key
+// row, which opt_disable_next does not grey, says why in its note.
 static void rows_freecam(void) {
+    UiTextId why = rt_game_version != 143 ? UI_MENU_FREECAM_PAD_V143 : UI_MENU_FREECAM_OFF_NOTE;
+    if (rt_game_version != 143) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
+    opt_toggle("TOTK_FREECAM_PATCH", UI_MENU_FREECAM, UI_MENU_FREECAM_DESC);
     static const char *const combos[] = {"zl+zr+lstick", "zl+zr+rstick", "l+r+lstick", "l+r+rstick", "none"};
     static const int pads[][3] = {{PAD_ZL, PAD_ZR, PAD_LSTICK}, {PAD_ZL, PAD_ZR, PAD_RSTICK},
                                   {PAD_L, PAD_R, PAD_LSTICK}, {PAD_L, PAD_R, PAD_RSTICK}};
@@ -962,12 +967,12 @@ static void rows_freecam(void) {
         names[i] = shown[i];
     }
     names[N - 1] = menu_text(UI_MENU_OFF);
-    if (!freecam_available()) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
+    if (!freecam_available()) opt_disable_next(why);
     opt_choice_list("TOTK_FREECAM_PAD", UI_MENU_FREECAM_PAD, combos, names, N, UI_MENU_FREECAM_PAD_DESC);
     static char note[64];
     binds_key_row("TOTK_FREECAM_KEY", UI_MENU_FREECAM_KEY, UI_MENU_FREECAM_KEY_DESC,
                   freecam_available() ? key_taken("TOTK_FREECAM_KEY", note, sizeof note)
-                                      : menu_text(UI_MENU_FREECAM_PAD_V143));
+                                      : menu_text(why));
 }
 
 // The note under the prompts. The settings name a folder of prompts (input_prompts_folder: the prompts and the pad

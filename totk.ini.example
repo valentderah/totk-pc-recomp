@@ -486,8 +486,11 @@
 # reads as a partial tilt only.
 # walk_key = lshift
 # walk_scale = 0.51
-# Free camera (game 1.4.3): the gamepad combo that steps it through move, lock and off, buttons by position joined with
-# +, the pad: names of the bind_ lines. While it moves the game gets no input and the view flies: the left stick along
+# Free camera (game 1.4.3): 1 puts its hook in the game's camera update; 0, the default, runs the game's camera code
+# as shipped and the combo and key below do nothing. Read at start.
+# freecam_patch = 0
+# The gamepad combo that steps it through move, lock and off, buttons by position joined with +, the pad: names of the
+# bind_ lines. While it moves the game gets no input and the view flies: the left stick along
 # the view and sideways, the triggers straight up and down, the right stick turns; each press of L halves the speed, of
 # R doubles it. Locked, the view stays and Link walks where the left stick points on screen (docs/controls.md, "Free
 # camera"). none turns the combo off. Default: none;

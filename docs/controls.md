@@ -132,8 +132,9 @@ bind_Y = pad:north, key:mouse_l
 ## Free camera
 
 On game 1.4.3, a chosen gamepad combo or a key steps the free camera through three stages: move, lock, and off again.
-Neither is set by default: pick them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for
-example ZL+ZR+L3, LT+RT+L3 on an Xbox pad, and F2; `none` turns one off). An input script can press the combo as a
+It is off by default: turn on *Free camera* on the Controls tab (`freecam_patch = 1`) and restart. Then pick the
+combo or the key, neither set by default, with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab
+(for example ZL+ZR+L3, LT+RT+L3 on an Xbox pad, and F2; `none` turns one off). An input script can press the combo as a
 gamepad would; the keys bound to its buttons do not. While the free camera moves, the world goes on but the game gets
 no input, so Link stands where he was.
 
