@@ -549,7 +549,40 @@ static void res_grass_range(void) {
            pct);
 }
 
+// The UI's capture filters (the uireduce patch set, recomp/patches-v143.txt) reduce a capture of canvas pixels by a
+// level the layout chose for the 1080-line canvas, and blur the result with a kernel of fixed texels. On a taller
+// canvas page +96 adds log2(canvas height / 1080), rounded, to the level, so the blur runs at the size it has on the
+// console and the glow of a title keeps its width and brightness (a title's dissolve otherwise leaves pieces).
+// The uimask set sizes the capture a dissolve thresholds as the console does: page +100 holds canvas height / 1080,
+// the factor the capture draw divides such a capture's size by, so its text has the console's partly covered strokes.
+// patch_ui_reduce = 0 or patch_ui_mask = 0 set by the player keeps that set off, for a comparison with the canvas-sized
+// captures of before. res_init switches both off first: the page words are 0 until this function writes them, and
+// uimask on with a 0 divisor would size the captures infinite.
+static int res_kept_off(const char *key) {
+    const char *v = cfg_get(key);
+    return v && !strcmp(v, "0");
+}
+
+static void res_ui_reduce(uint8_t *page) {
+    int set = rt_patch_set("uireduce"), mask = rt_patch_set("uimask");
+    if (res_kept_off("TOTK_PATCH_UI_REDUCE")) set = -1;
+    if (res_kept_off("TOTK_PATCH_UI_MASK")) mask = -1;
+    float k = (float)R.oh / BASE_H;
+    if (mask >= 0 && k > 1.0f) {
+        memcpy(page + 100, &k, sizeof k);
+        rt_patch_switch(mask, 1);
+        rt_log("resolution: UI dissolve masks captured at 1/%g of the canvas", k);
+    }
+    int32_t n = (int32_t)lround(log2((double)R.oh / BASE_H));
+    if (set < 0 || n < 1) return;
+    memcpy(page + 96, &n, sizeof n);
+    rt_patch_switch(set, 1);
+    rt_log("resolution: UI capture filters reduce %d more level%s", n, n == 1 ? "" : "s");
+}
+
 void res_init(void) {
+    rt_patch_switch(rt_patch_set("uireduce"), 0);
+    rt_patch_switch(rt_patch_set("uimask"), 0);
     res_shadow_range();
     res_grass_range();
     if (!bigger()) {
@@ -584,6 +617,7 @@ void res_init(void) {
     rt_patch_switch(output, output_on);
     rt_patch_switch(scene, scene_on);
     R.on = 1;
+    if (output_on) res_ui_reduce(page);
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
     // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
     // patches-v143.txt, set aspect), so a 21:9 output shows more of the world at the sides instead of a stretched 16:9 view. The HUD's layouts
