@@ -23,6 +23,9 @@
 #include <sys/random.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -1934,6 +1937,95 @@ void plat_ipc_close(PlatIpc *p) {
     if (!p) return;
     close(p->fd);
     free(p);
+}
+
+// ---- local TCP (platform.h): the listener bound to 127.0.0.1
+struct PlatTcp { int fd; };
+
+static PlatTcp *tcp_wrap(int fd) {
+    PlatTcp *t = fd < 0 ? NULL : malloc(sizeof *t);
+    if (!t) {
+        if (fd >= 0) close(fd);
+        return NULL;
+    }
+    t->fd = fd;
+    return t;
+}
+
+PlatTcp *plat_tcp_listen_local(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return NULL;
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) || listen(fd, 4)) {
+        close(fd);
+        return NULL;
+    }
+    return tcp_wrap(fd);
+}
+
+PlatTcp *plat_tcp_accept(PlatTcp *l) {
+    struct pollfd pf = {.fd = l->fd, .events = POLLIN};
+    if (poll(&pf, 1, 0) != 1) return NULL;
+    int fd = accept4(l->fd, NULL, NULL, SOCK_CLOEXEC);
+    if (fd < 0) return NULL;
+    struct timeval tv = {1, 0};   // plat_tcp_send gives up on a peer that stopped reading
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    return tcp_wrap(fd);
+}
+
+PlatTcp *plat_tcp_connect_local(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return NULL;
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a)) {
+        close(fd);
+        return NULL;
+    }
+    return tcp_wrap(fd);
+}
+
+int plat_tcp_wait(PlatTcp *const *s, int n, int *ready, uint32_t ms) {
+    struct pollfd pf[16];
+    int idx[16], k = 0;
+    for (int i = 0; i < n && k < 16; i++)
+        if (s[i]) pf[k] = (struct pollfd){.fd = s[i]->fd, .events = POLLIN}, idx[k++] = i;
+    for (int i = 0; i < n; i++) ready[i] = 0;
+    int r = poll(pf, (nfds_t)k, (int)ms);
+    if (r < 0) return errno == EINTR ? 0 : -1;
+    for (int j = 0; j < k; j++) ready[idx[j]] = (pf[j].revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+    return r;
+}
+
+int plat_tcp_recv(PlatTcp *s, void *buf, size_t n) {
+    ssize_t got;
+    do got = recv(s->fd, buf, n, 0);
+    while (got < 0 && errno == EINTR);
+    return got > 0 ? (int)got : -1;   // 0 bytes: the peer closed the connection
+}
+
+int plat_tcp_send(PlatTcp *s, const void *buf, size_t n) {
+    const uint8_t *at = buf;
+    while (n) {
+        ssize_t put = send(s->fd, at, n, MSG_NOSIGNAL);
+        if (put <= 0) {
+            if (put < 0 && errno == EINTR) continue;
+            return 0;
+        }
+        at += put, n -= (size_t)put;
+    }
+    return 1;
+}
+
+void plat_tcp_close(PlatTcp *s) {
+    if (!s) return;
+    close(s->fd);
+    free(s);
 }
 
 

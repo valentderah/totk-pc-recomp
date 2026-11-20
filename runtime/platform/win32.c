@@ -2,6 +2,7 @@
 // SRW locks and condition variables.
 #include <io.h>
 #include <stdio.h>
+#include <winsock2.h>   // before windows.h, which would bring the old winsock.h
 #include <windows.h>
 #include <bcrypt.h>
 #include <pdh.h>
@@ -1914,6 +1915,115 @@ void plat_ipc_close(PlatIpc *p) {
     if (!p) return;
     CloseHandle(p->h);
     free(p);
+}
+
+
+// ---- local TCP (platform.h): Winsock, the listener bound to 127.0.0.1
+struct PlatTcp { SOCKET s; };
+
+static int wsa_ready(void) {
+    static volatile LONG state;   // 0 not tried, 1 up, 2 failed
+    if (!state) {
+        WSADATA d;
+        LONG want = WSAStartup(MAKEWORD(2, 2), &d) == 0 ? 1 : 2;
+        InterlockedCompareExchange(&state, want, 0);
+    }
+    return state == 1;
+}
+
+static PlatTcp *tcp_wrap(SOCKET s) {
+    PlatTcp *t = s == INVALID_SOCKET ? NULL : malloc(sizeof *t);
+    if (!t) {
+        if (s != INVALID_SOCKET) closesocket(s);
+        return NULL;
+    }
+    t->s = s;
+    return t;
+}
+
+PlatTcp *plat_tcp_listen_local(uint16_t port) {
+    if (!wsa_ready()) return NULL;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return NULL;
+    BOOL excl = TRUE;   // no other program can bind the same port beside this one
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&excl, sizeof excl);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(s, (struct sockaddr *)&a, sizeof a) || listen(s, 4)) {
+        closesocket(s);
+        return NULL;
+    }
+    return tcp_wrap(s);
+}
+
+PlatTcp *plat_tcp_accept(PlatTcp *l) {
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(l->s, &r);
+    struct timeval now = {0, 0};
+    if (select(0, &r, NULL, NULL, &now) != 1) return NULL;
+    SOCKET s = accept(l->s, NULL, NULL);
+    if (s == INVALID_SOCKET) return NULL;
+    DWORD ms = 1000;   // plat_tcp_send gives up on a peer that stopped reading
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&ms, sizeof ms);
+    return tcp_wrap(s);
+}
+
+PlatTcp *plat_tcp_connect_local(uint16_t port) {
+    if (!wsa_ready()) return NULL;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return NULL;
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(s, (struct sockaddr *)&a, sizeof a)) {
+        closesocket(s);
+        return NULL;
+    }
+    return tcp_wrap(s);
+}
+
+int plat_tcp_wait(PlatTcp *const *s, int n, int *ready, uint32_t ms) {
+    fd_set r;
+    FD_ZERO(&r);
+    int any = 0;
+    for (int i = 0; i < n; i++)
+        if (s[i] && any < FD_SETSIZE) {
+            FD_SET(s[i]->s, &r);
+            any++;
+        }
+    if (!any) {
+        Sleep(ms);
+        return 0;
+    }
+    struct timeval tv = {(long)(ms / 1000), (long)(ms % 1000) * 1000};
+    int k = select(0, &r, NULL, NULL, &tv);
+    for (int i = 0; i < n; i++) ready[i] = k > 0 && s[i] && FD_ISSET(s[i]->s, &r);
+    return k < 0 ? -1 : k;
+}
+
+int plat_tcp_recv(PlatTcp *s, void *buf, size_t n) {
+    int got = recv(s->s, buf, n > 65536 ? 65536 : (int)n, 0);
+    return got > 0 ? got : -1;   // 0 bytes: the peer closed the connection
+}
+
+int plat_tcp_send(PlatTcp *s, const void *buf, size_t n) {
+    const char *at = buf;
+    while (n) {
+        int put = send(s->s, at, n > 65536 ? 65536 : (int)n, 0);
+        if (put <= 0) return 0;
+        at += put, n -= (size_t)put;
+    }
+    return 1;
+}
+
+void plat_tcp_close(PlatTcp *s) {
+    if (!s) return;
+    closesocket(s->s);
+    free(s);
 }
 
 
