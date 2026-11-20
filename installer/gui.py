@@ -43,6 +43,8 @@ from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABE
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
+HEADING = '#303030'  # section titles, the details link and the update line: dark grey, no accent colour
+MUTED = '#6b6b6b'    # secondary text: the details and the footer notice
 # The window's pixels at 100%: Tk scales the fonts by itself (tk scaling), these through installer/dpi.py.
 PAD = dpi.px(14)      # padding of the window and its frames
 WRAP = dpi.px(620)    # wrap width of the long labels
@@ -107,6 +109,11 @@ class App:
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=dpi.px(8))
         style.configure('Err.TLabel', foreground='#c01c28')
         style.configure('Version.TLabel', foreground='#808080')
+        style.configure('Section.TLabel', foreground=HEADING, font=(self.ui_font, 10, 'bold'))
+        style.configure('Muted.TLabel', foreground=MUTED)
+        style.configure('Link.TLabel', foreground=HEADING)
+        style.configure('Status.TLabel', foreground=HEADING)
+        style.configure('Main.TButton', padding=(dpi.px(16), dpi.px(4)))   # Start: the native button, larger
 
         top = ttk.Frame(root, padding=(PAD, PAD, PAD, 0))
         top.pack(fill='x')
@@ -179,7 +186,7 @@ class App:
         code = self.selected_lang()
         self.retext()
         self.vars['lang'].set(self.lang_label(code))
-        self.fit()
+        self.fit(shrink=True)
 
     def lang_label(self, code):
         return self.cat('lang.' + code)
@@ -205,80 +212,116 @@ class App:
             f.pack_forget()
         self.frames[name].pack(fill='both', expand=True)
         self.screen = name
-        self.fit()
+        self.fit(shrink=True)
 
-    def fit(self):
-        """Size the window to its largest screen (an unpacked frame still reports the size its children ask for), so
-        a screen or language switch neither cuts text nor moves the buttons. The window only grows: opening the log
-        makes it taller, and a size the user dragged it to stays. Every text change that can add lines calls it again,
-        or pack takes the missing height from the button bars."""
+    def fit(self, shrink=False):
+        """Size the window: the width of the widest screen (an unpacked frame still reports the size its children ask
+        for), so a screen or language switch does not move the buttons sideways, and the height of the shown screen,
+        so no screen carries the empty band of a taller one. Every text change that can add lines calls it again, or
+        pack takes the missing height from the button bars. Without `shrink` the window only grows and a size the user
+        dragged it to stays; a screen or language switch and closing the details or the log shrink it to fit."""
         self.root.update_idletasks()
-        sizes = [(f.winfo_reqwidth(), f.winfo_reqheight()) for f in self.frames.values()]
+        widths = [f.winfo_reqwidth() for f in self.frames.values()]
+        shown = self.frames[self.screen] if self.screen else max(self.frames.values(), key=lambda f: f.winfo_reqheight())
         chrome = self.root.winfo_reqheight() - self.body.winfo_reqheight()   # the title row above the body
-        w = max(self.root.winfo_reqwidth(), max(s[0] for s in sizes) + 2 * PAD)
-        h = chrome + max(s[1] for s in sizes) + 2 * PAD
-        if (w, h) == self.fitted:   # refresh_run calls it on every poll: leave the window alone while nothing grew
+        w = max(self.root.winfo_reqwidth(), max(widths) + 2 * PAD)
+        h = chrome + shown.winfo_reqheight() + 2 * PAD
+        # refresh_run calls it on every poll: leave the window alone while nothing grew
+        if (w, h) == self.fitted and (not shrink or self.root.winfo_height() == h):
             return
         self.fitted = (w, h)
         self.root.minsize(w, h)
-        self.root.geometry(f'{max(w, self.root.winfo_width())}x{max(h, self.root.winfo_height())}')
+        self.root.geometry(f'{max(w, self.root.winfo_width())}x{h if shrink else max(h, self.root.winfo_height())}')
 
     def notice(self, parent):
         w = ttk.Label(parent, style='Notice.TLabel', wraplength=WRAP, justify='left')
         self.bind_text(w, 'text', 'ui.notice')
         return w
 
+    def section(self, grid, row, id, top):
+        """A section title across the form grid with a rule after it."""
+        head = ttk.Frame(grid)
+        head.grid(row=row, column=0, columnspan=3, sticky='ew', pady=(top, dpi.px(2)))
+        self.label(head, id, style='Section.TLabel').pack(side='left')
+        ttk.Separator(head).pack(side='left', fill='x', expand=True, padx=(dpi.px(8), 0), pady=(dpi.px(2), 0))
+
     def build_form(self):
         f = ttk.Frame(self.body)
         gap = dpi.px(4)   # between the form's rows
-        bar = ttk.Frame(f)   # packed first so pack shrinks the text above it, never the buttons
+        # The footer goes first so pack shrinks the text above it, never the button. The notice sits next to Start,
+        # where the player looks before the build begins, in quiet text instead of a banner over the form.
+        bar = ttk.Frame(f)
         bar.pack(side='bottom', fill='x', pady=(dpi.px(12), 0))
-        self.start_button = self.button(bar, 'ui.start', self.start)
-        self.start_button.pack(side='right')
+        self.start_button = self.button(bar, 'ui.start', self.start, style='Main.TButton')
+        self.start_button.pack(side='right', anchor='s')
+        self.label(bar, 'ui.notice', style='Muted.TLabel', wraplength=dpi.px(470),
+                   justify='left').pack(side='left', anchor='w', padx=(0, dpi.px(12)))
+        ttk.Separator(f).pack(side='bottom', fill='x', pady=(dpi.px(10), 0))
+        # The status lines sit on the footer: a window taller than the form leaves its spare height above them
+        self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
+        self.form_error.pack(side='bottom', anchor='w', pady=(dpi.px(4), 0))
+        self.update_hint = ttk.Label(f, style='Status.TLabel', wraplength=WRAP, justify='left')
+        self.update_hint.pack(side='bottom', anchor='w', pady=(dpi.px(8), 0))
         self.form_intro = self.label(f, 'ui.intro', wraplength=WRAP, justify='left')
-        self.form_intro.pack(anchor='w', pady=(0, dpi.px(8)))
-        self.notice(f).pack(fill='x', pady=(0, dpi.px(10)))
+        self.form_intro.pack(anchor='w', pady=(0, dpi.px(4)))
         grid = ttk.Frame(f)
         grid.pack(fill='x')
         grid.columnconfigure(1, weight=1)
+        self.section(grid, 0, 'ui.section_files', dpi.px(6))
         rows = (('base', 'ui.base', 'ui.pick_game'), ('update', 'ui.update', 'ui.pick_update'),
                 ('keys', 'ui.keys', 'ui.pick_keys'))
         self.form_rows = {}
-        for i, (name, label_id, pick_id) in enumerate(rows):
+        for i, (name, label_id, pick_id) in enumerate(rows, start=1):
             lab = self.label(grid, label_id)
-            lab.grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(10)))
+            lab.grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
             ttk.Entry(grid, textvariable=self.vars[name]).grid(row=i, column=1, sticky='ew', pady=gap)
             b = self.button(grid, 'ui.browse', lambda n=name, p=pick_id: self.pick_file(n, p))
             b.grid(row=i, column=2, padx=(dpi.px(8), 0))
             self.form_rows[name] = lab
-        i = len(rows)
-        self.label(grid, 'ui.firmware').grid(row=i, column=0, sticky='w', pady=gap)
+        i = len(rows) + 1
+        self.label(grid, 'ui.firmware').grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         ttk.Entry(grid, textvariable=self.vars['firmware']).grid(row=i, column=1, sticky='ew', pady=gap)
         self.button(grid, 'ui.browse', self.pick_firmware).grid(row=i, column=2, padx=(dpi.px(8), 0))
-        i += 1
-        self.label(grid, 'ui.game_language').grid(row=i, column=0, sticky='w', pady=gap)
+        self.section(grid, i + 1, 'ui.section_install', dpi.px(12))
+        i += 2
+        self.label(grid, 'ui.game_language').grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         self.lang_box = ttk.Combobox(grid, textvariable=self.vars['lang'], state='readonly', width=30)
         self.lang_box.grid(row=i, column=1, sticky='w', pady=gap)
         self.lang_touched = False
         self.lang_box.bind('<<ComboboxSelected>>', lambda _e: setattr(self, 'lang_touched', True))
         self.fill_languages()
-        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=gap)
+        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=gap)
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(dpi.px(8), 0))
-        self.label(f, 'ui.compressed_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.firmware_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        # On by default and named with its source and licence: the player sees what is downloaded and can untick it
+        # On by default and named with its source and licence: the player sees what is downloaded and can untick it.
+        # The source and licence line is the first one under More details.
         self.dlss_var = tk.BooleanVar(value=True)
         dlss = ttk.Checkbutton(f, variable=self.dlss_var)
         self.bind_text(dlss, 'text', 'ui.dlss')
-        dlss.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.dlss_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
-        self.update_hint = ttk.Label(f, wraplength=WRAP, justify='left')
-        self.update_hint.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
-        self.form_error.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.keys_private', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
+        dlss.pack(anchor='w', pady=(dpi.px(12), 0))
+        # The explanations stay out of the way until asked for: a link opens them under it
+        self.details_toggle = ttk.Label(f, style='Link.TLabel', cursor='hand2', takefocus=True)
+        self.bind_text(self.details_toggle, 'text', 'ui.more_details')
+        for seq in ('<Button-1>', '<Return>', '<space>'):
+            self.details_toggle.bind(seq, lambda _e: self.toggle_details())
+        self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
+        self.details = ttk.Frame(f)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
+        # the height its last child gave it
+        for id in ('ui.dlss_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help', 'ui.keys_private'):
+            self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
+                       justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
+        self.details_open = False
         return f
+
+    def toggle_details(self):
+        self.details_open = not self.details_open
+        if self.details_open:
+            self.details.pack(after=self.details_toggle, fill='x', padx=(dpi.px(16), 0))
+        else:
+            self.details.pack_forget()
+        self.bound = [b for b in self.bound if b[0] is not self.details_toggle]
+        self.bind_text(self.details_toggle, 'text', 'ui.fewer_details' if self.details_open else 'ui.more_details')
+        self.fit(shrink=not self.details_open)
 
     def build_run(self):
         f = ttk.Frame(self.body)
@@ -530,7 +573,7 @@ class App:
             self.log_frame.pack_forget()
         self.bound = [b for b in self.bound if b[0] is not self.log_toggle]
         self.bind_text(self.log_toggle, 'text', 'ui.hide_log' if self.log_open else 'ui.show_log')
-        self.fit()
+        self.fit(shrink=not self.log_open)
 
     def clear_log(self):
         self.log_entries = []
@@ -596,6 +639,7 @@ class App:
             self.open_button.state(['!disabled'])
         else:
             self.open_button.state(['disabled' if not Path(m.dest or '.').is_dir() else '!disabled'])
+        self.fit()   # an error text can be longer than the screen it replaces
 
     def start_game(self):
         """Starts the game of the install folder and closes the window."""
@@ -687,6 +731,9 @@ def selftest(layout, shots=None):
             app.start()   # missing files: shows the problems
             steps.append(app.form_error.cget('text'))
             shot(f'form-{tag}')
+            app.toggle_details()
+            shot(f'form-details-{tag}')
+            app.toggle_details()
             app.model = Model()
             app.clear_log()
             app.build_step_rows(app.model.steps)
