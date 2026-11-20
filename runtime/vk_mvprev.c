@@ -1,6 +1,6 @@
-// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA). The banks kept
-// start as c5, c7 and c14 and grow with what the vertex shader variants read (vk_mvprev_want); c7 and c5 are described
-// here, the others follow the same two-copy rule.
+// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA, and with frame
+// generation unless TOTK_FG_OBJECTS=0). The banks kept start as c5, c7 and c14 and grow with what the vertex shader
+// variants read (vk_mvprev_want); c7 and c5 are described here, the others follow the same two-copy rule.
 //
 // The scene's vertex shaders read an object's place from bank c7 (gsys_shape: one 3x4 matrix at the start of a
 // 0x100 block) and a skinned object's bones from c5 (gsys_skeleton: a run of 3x4 matrices), of this frame only. The
@@ -172,8 +172,9 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without DLSS (no NGX, no RTX GPU, dlaa = 0) nothing reads last frame's blocks: P.on stays 0, no tables
-    if (!vk_dlaa_available()) return;
+    // without DLSS (no NGX, no RTX GPU, dlaa = 0) and without frame generation's object motion nothing reads last
+    // frame's blocks: P.on stays 0, no tables
+    if (!vk_objmv_wanted()) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
@@ -186,7 +187,9 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && cfg_bool("TOTK_DLAA");
+    // DLSS: dlaa on (as before frame generation came); frame generation: while it follows the scene with its objects
+    // (it is off with DLSS)
+    int on = P.knob && ((vk_dlaa_available() && cfg_bool("TOTK_DLAA")) || vk_fg_objects_on());
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));

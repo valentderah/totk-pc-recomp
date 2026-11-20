@@ -360,7 +360,8 @@ def runtime_sources(skip=()):
     """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
     pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
-            'third_party/imgui/backends/*.cpp')
+            'third_party/imgui/backends/*.cpp', 'third_party/FidelityFX/sdk/src/shared/*.cpp', 'third_party/FidelityFX/sdk/src/backends/vk/*.cpp',
+            'third_party/FidelityFX/sdk/src/components/*/*.cpp')
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
@@ -485,7 +486,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
-    rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    ffx = RUNTIME / 'third_party' / 'FidelityFX'
+    ffx_inc = ' '.join(f'-I {cmd_path(d)}' for d in (ffx / 'sdk' / 'include', ffx / 'sdk' / 'src' / 'backends' / 'shared',
+                                                     ffx / 'spirv'))   # FidelityFX/host headers, ffx_shader_blobs.h, ffx_shaders_vk.h
+    rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui} {ffx_inc}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     lines = [
         '# Written by tools/build_game.py; do not edit.',
@@ -504,6 +508,14 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
         '',
         'rule cc_rt',
         '  command = $cc $rtflags -MD -MF $out.d -c $in -o $out',
+        '  deps = gcc',
+        '  depfile = $out.d',
+        '  description = CC $in',
+        '',
+        # AMD's FidelityFX SDK sources (runtime/third_party/FidelityFX/sdk/src): ffx_compat.h is force-included so they
+        # build with clang (what MSVC's headers bring in on their own, the _s string functions); -w: AMD's code is not ours to fix
+        'rule cc_ffx',
+        f'  command = $cc $rtflags -include ffx_compat.h -I {cmd_path(ffx)} -I {cmd_path(ffx / "sdk" / "src" / "shared")} -w -MD -MF $out.d -c $in -o $out',
         '  deps = gcc',
         '  depfile = $out.d',
         '  description = CC $in',
@@ -544,7 +556,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
             stamp_dep = (' | ' if not pgo else ' ') + ninja_path(stamp) if stamp else ''
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo}{stamp_dep}')
+            rule = 'cc_ffx' if src.is_relative_to(ffx / 'sdk') else 'cc_rt'
+            lines.append(f'build {ninja_path(o)}: {rule} {ninja_path(src)}{pgo}{stamp_dep}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]

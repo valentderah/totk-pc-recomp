@@ -37,9 +37,10 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
-                     // map is often device memory through the BAR, written fast but read back at about a microsecond a
-                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
+    uint8_t *cpu;    // with the per-object motion (vk_objmv_wanted: DLSS, or frame generation with its objects),
+                     // the same bytes in host memory for the CPU's reads (vk_usnap_bytes): map is often device memory
+                     // through the BAR, written fast but read back at about a microsecond a cache line. Without it
+                     // nothing reads them back in bulk, and the bytes go into map in one copy.
     uint64_t size;
 } Arena;
 
@@ -52,6 +53,7 @@ static struct {
     int on;                     // this submission has a snapshot
     uint64_t fence, gen;
     Arena *arena;
+    uint8_t *host;              // the arena's copy the CPU reads: cpu or map (vk_usnap_begin)
     Rng *col;                   // collected ranges
     int ncol, ccol;
     Reg *reg;                   // merged, sorted by lo, disjoint
@@ -289,10 +291,11 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
     uint8_t *dst = U.arena->map;
-    if (vk_dlaa_available()) {
+    if (vk_objmv_wanted()) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
         dst = U.arena->cpu;
     }
+    U.host = dst;   // frame generation turns on and off live: an arena's old host copy may be stale
     for (int i = 0; i < U.nreg; i++)
         memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
     if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
@@ -350,8 +353,8 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy where there is one (DLSS), else the device copy
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+// the copy vk_usnap_begin wrote this time: the host copy with the per-object motion, else the device copy
+static uint8_t *host_copy(void) { return U.host; }
 
 const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 
