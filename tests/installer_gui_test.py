@@ -183,7 +183,8 @@ class RunStatesTest(unittest.TestCase):
 
 
 class FsrDefaultTest(unittest.TestCase):
-    """Download AMD FSR is ticked at start with an AMD adapter only, and when no adapter could be listed."""
+    """Download AMD FSR is ticked at start with an AMD adapter only: not with other GPUs, nor when no adapter could be
+    listed."""
 
     def test_amd(self):
         self.assertTrue(fsr_default(['AMD Radeon RX 9060 XT']))
@@ -194,7 +195,7 @@ class FsrDefaultTest(unittest.TestCase):
         self.assertFalse(fsr_default(['Intel(R) Arc(TM) A770 Graphics', 'Microsoft Basic Render Driver']))
 
     def test_unknown(self):
-        self.assertTrue(fsr_default([]))
+        self.assertFalse(fsr_default([]))
 
 
 class FormTest(unittest.TestCase):
