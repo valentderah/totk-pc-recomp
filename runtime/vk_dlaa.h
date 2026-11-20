@@ -38,7 +38,7 @@ void vk_mvprev_draw(VkExec *ex);   // vk_mvprev.c: notes the scene draw's object
 // Per-object motion (vk_exec_draw.c): the moving scene draws are listed again during the replay with
 // their vertex shader's last-frame variant; vk_dlaa.c mv_pass records them over the camera motion into ex->cb (and
 // leaves every binding of the replay to be set again; draws whose camera block is not cam are left out).
-// vk_dlaa_prev_camera: last frame's camera block and this frame's jitter, 0 when there is no history.
+// vk_dlaa_prev_camera: last frame's camera block and the jitter the motion draws carry, 0 when there is no history.
 int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth, VkFormat depth_fmt, uint32_t w,
                      uint32_t h);
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]);

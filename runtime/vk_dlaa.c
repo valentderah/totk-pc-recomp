@@ -676,10 +676,13 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
 
 // Last frame's camera block for the per-object motion pass, recorded before this frame's mv_pass: that pass writes
 // this frame's into slot cam_slot and leaves the other slot, last frame's, as it is. 0: none (no history).
+// jitter: the offset the motion draws' window positions carry, which their fragment shader takes off. With the jitter
+// in the game's camera (1.4.3) none: the draws run after cam_unjitter (vk_dlaa_pass) has written the camera blocks
+// back without it, so they come out unjittered. Otherwise the viewport's, as for the scene's draws.
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]) {
     if (!dl_active() || !D.cam_prev_ok || !D.camb) return 0;
     *out = (VkDescriptorBufferInfo){D.camb, (VkDeviceSize)(D.cam_slot ^ 1) * CAM_SLOT, CAM_BLOCK};
-    if (cam_mode()) jitter[0] = D.jit_used ? D.ux : 0.0f, jitter[1] = D.jit_used ? D.uy : 0.0f;
+    if (cam_mode()) jitter[0] = jitter[1] = 0.0f;
     else jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
     return 1;
 }
