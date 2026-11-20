@@ -600,17 +600,18 @@ int menu_ui_focus_to(uint64_t node) {
     return 0;
 }
 
-// ---- Place titles (TOTK_TITLE_FADE, live, default 0): the small title's last pieces fade out as the large one's do.
-// Location_00 shows a place's name large (N_Large_00, top centre) or small (N_Small_00, bottom left: the game picks it
-// from GameData DungeonState, Clear or Enter). Its LocationIn animation dissolves either into pieces up to frame 210
-// and hides the layout at 229. For the large title it also fades the group N_TextLargeAnime_01 from 255 at frame 180
-// to 0 at 210 (Hermite keys, slopes 0 and -8.5 per frame), so the last pieces go out softly; the small title's group
-// N_TextSmallAnime_00 has no such track, so its last pieces vanish at once, and those still above the dissolve's end
-// threshold at frame 210 (0.8 for the Latin and Cyrillic languages, 1.05 for Japanese, Korean and Chinese,
-// RegionLanguageType) stay until the layout hides. The switch gives N_TextSmallAnime_00 the large group's curve,
-// 255 (t^3 - 2 t^2 + 1) with t = (frame - 180) / 30. The frame is read from P_CaptureStepSmall_01, whose alpha
-// LocationIn takes linearly from 255 at frame 150 to 0 at 210: t = 1 - 2 alpha / 255. The value is set at each present,
-// so the fade runs one game frame behind the animation. Switched off, the group gets back the layout's 255.
+// ---- Place titles (TOTK_TITLE_FADE, live, default 0): the bottom-left title's last pieces fade out as the top one's
+// do. Location_00 shows a place's title at the top centre (N_Large_00) or in the bottom left corner (N_Small_00, about
+// as large; the game picks it from GameData DungeonState, Clear or Enter). Its LocationIn animation dissolves either
+// into pieces up to frame 210 and hides the layout at 229. For the top title it also fades the group
+// N_TextLargeAnime_01 from 255 at frame 180 to 0 at 210 (Hermite keys, slopes 0 and -8.5 per frame), so the last
+// pieces go out softly; the bottom-left title's group N_TextSmallAnime_00 has no such track, so its last pieces vanish
+// at once, and those still above the dissolve's end threshold at frame 210 (0.8 for the Latin and Cyrillic
+// languages, 1.05 for Japanese, Korean and Chinese, RegionLanguageType) stay until the layout hides. The switch
+// gives N_TextSmallAnime_00 the top group's curve, 255 (t^3 - 2 t^2 + 1) with t = (frame - 180) / 30. The frame is
+// read from P_CaptureStepSmall_01, whose alpha LocationIn takes linearly from 255 at frame 150 to 0 at 210:
+// t = 1 - 2 alpha / 255. The value is set at each present, so the fade runs one game frame behind the animation.
+// Switched off, the group gets back the layout's 255.
 void menu_ui_title_fade(void) {
     static int wrote;   // the presenting thread only
     if (!RT_V143) return;
