@@ -3931,6 +3931,16 @@ static int mo_similar(const uint8_t *cur, const uint8_t *old, uint64_t n, int *c
     return 1;
 }
 
+// The banks mo_prev_block leaves at this frame's block (TOTK_MVPREV_SKIP, bit n: cn; default c9 and c11, see there).
+static uint32_t mo_skip(void) {
+    static long skip = -2;
+    if (skip == -2) {
+        const char *e = cfg_get("TOTK_MVPREV_SKIP");
+        skip = e && *e ? strtol(e, NULL, 16) : 1L << 9 | 1L << 11;
+    }
+    return (uint32_t)skip;
+}
+
 // Last frame's copy of a block, accepted when it is this frame's block a little changed (mo_similar,
 // which see): a block of another object the address rule found would make motion up. 1 and *out: found (the block itself
 // when it is unchanged, *changed 0); 0: none, the draw keeps this frame's block there.
@@ -3946,12 +3956,7 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
     // got 1-3 px of motion that flipped direction, three times the warp error of the camera's vectors. With c9 kept too,
     // the turning run is as good (object warp error 0.46 of the camera's). Why their copies are wrong is not known.
     // TOTK_MVPREV_SKIP=<hex bank mask> (test) replaces the default a00 (bit n: cn).
-    static long skip = -2;
-    if (skip == -2) {
-        const char *e = cfg_get("TOTK_MVPREV_SKIP");
-        skip = e && *e ? strtol(e, NULL, 16) : 1L << 9 | 1L << 11;
-    }
-    if (skip >> (index + 3) & 1) return 0;
+    if (mo_skip() >> (index + 3) & 1) return 0;
     uint64_t c0 = __builtin_ia32_rdtsc();
     int found = vk_mvprev_find(index, u->addr, u->size, &pa, &how);
     uint64_t c1 = __builtin_ia32_rdtsc();
@@ -4003,22 +4008,31 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
     // solid geometry only, which tests and writes the scene depth: effects, particles and screen quads write none, and
     // drawn again they would put their motion on the surfaces behind them (DLSS takes those from the surface)
     if (!D->B.st.ds.dt || !D->B.st.ds.dw) return;
-    // a vertex shader that reads a user bank besides the camera's (c4) may move on its own
-    const GfxShaderRes *ur;
-    int nu = gfx_shader_resources(D->B.st.vs, GFX_RES_UBO, &ur), reads = 0;
-    for (int i = 0; i < nu; i++) reads |= ur[i].slot >= 3 && ur[i].slot <= 16 && ur[i].slot != 4;
-    if (!reads) return;
+    // per vertex shader, kept: whether it reads a user bank besides the camera's (c4), so may move on its own; its
+    // variant (the translation of the same code and answers) with the banks the position depends on; whether the
+    // filters below take it (pass); and the binding indices whose last-frame blocks it looks up (look, bit n: index n =
+    // bank n + 3). The memo comes first: most scene draws are not candidates, and the shader's resource list was read for
+    // each of them.
+    static struct { const GfxShader *of, *vs; uint32_t banks, look; uint8_t reads, pass; } vmemo[4096];
+    const GfxShader *of = D->B.st.vs;
+    uint32_t vi = (uint32_t)((uintptr_t)of * 0x9E3779B97F4A7C15ull >> 52);
+    if (vmemo[vi].of == of && !vmemo[vi].reads) return;
+    if (vmemo[vi].of != of) {
+        const GfxShaderRes *ur;
+        int nu = gfx_shader_resources(of, GFX_RES_UBO, &ur), reads = 0;
+        for (int i = 0; i < nu; i++) reads |= ur[i].slot >= 3 && ur[i].slot <= 16 && ur[i].slot != 4;
+        if (!reads) {
+            vmemo[vi].of = of, vmemo[vi].vs = NULL, vmemo[vi].banks = vmemo[vi].look = 0, vmemo[vi].reads = 0;
+            return;
+        }
+    }
     MO.cand++;
     uint64_t tp = t0 ? kern_now_ns() : 0;
     if (t0) MO.ns_part[0] += tp - t0, MO.n_part[0]++;
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     if (MQ.frame != frame || MQ.fence != ex->fence || MQ.depth_fmt != z->format) mo_begin(ex, frame);
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
-    // the variant: the translation of the same code and answers, kept per shader once found; it names the banks the
-    // position depends on (0: none, the shader is skipped from then on)
-    static struct { const GfxShader *of, *vs; uint32_t banks; } vmemo[1024];
-    uint32_t vi = (uint32_t)((uintptr_t)D->B.st.vs * 0x9E3779B97F4A7C15ull >> 54);
-    if (vmemo[vi].of != D->B.st.vs) {
+    if (vmemo[vi].of != of) {
         int has, pending = 0;
         sf_mvprev = 1;
         const GfxShader *v = shader_for(ex, NVN_STAGE_VS, &has, &pending, 0);
@@ -4028,36 +4042,31 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
             return;
         }
         GfxShaderIo io[32];
-        uint32_t extra = gfx_shader_outputs(v, io) & ~gfx_shader_outputs(D->B.st.vs, io);
+        uint32_t extra = gfx_shader_outputs(v, io) & ~gfx_shader_outputs(of, io);
         uint32_t banks = extra ? gfx_shader_mvprev_banks(v) & 0x1fff8u : 0;
-        vmemo[vi].of = D->B.st.vs, vmemo[vi].vs = v, vmemo[vi].banks = banks;
-        vk_mvprev_want((banks & ~(1u << 4)) >> 3);   // binding index = bank - 3
+        // a position without the scene camera (c4) has a view of its own (c8 c9 c10 [c13]: its c8 is at a new address
+        // every frame, last frame's is never found): drawn again it would get this frame's view and no camera motion
+        // (TOTK_MV_CHECK while turning: 6.2 px end-point error against the camera vectors' 1.7)
+        static int noc4 = -1;
+        if (noc4 < 0) noc4 = rt_knob("MVOBJ_NOC4", "0");   // TOTK_MVOBJ_NOC4=1 (test): drawn again all the same
+        // only positions that read an object's own blocks: bones (c5), place (c7) or c6. The rest (terrain and grass:
+        // c14 c15 c16, with or without c9) measured no better than the camera's motion (TOTK_MV_CHECK, turning, those
+        // draws alone: object warp error 0.112 against the camera's 0.113, the object part 0.4 of what the picture
+        // shows) and were half the draws checked and listed. TOTK_MVOBJ_ALL=1 (test) takes them again.
+        static int all = -1;
+        if (all < 0) all = rt_knob("MVOBJ_ALL", "0");
+        int pass = banks & ~(1u << 4) && (banks >> 4 & 1 || noc4) && (all || banks & (1u << 5 | 1u << 6 | 1u << 7));
+        uint32_t look = pass ? (banks & ~(1u << 4) & ~mo_skip()) >> 3 : 0;   // binding index = bank - 3
+        vmemo[vi].of = of, vmemo[vi].vs = v, vmemo[vi].banks = banks, vmemo[vi].look = look;
+        vmemo[vi].reads = 1, vmemo[vi].pass = (uint8_t)pass;
+        vk_mvprev_want(look);
+    }
+    if (!vmemo[vi].pass) {
+        MO.no_out++;
+        return;
     }
     const GfxShader *vs = vmemo[vi].vs;
     uint32_t banks = vmemo[vi].banks;
-    if (!banks || !(banks & ~(1u << 4))) {
-        MO.no_out++;
-        return;
-    }
-    // a position without the scene camera (c4) has a view of its own (c8 c9 c10 [c13]: its c8 is at a new address every
-    // frame, last frame's is never found): drawn again it would get this frame's view and no camera motion
-    // (TOTK_MV_CHECK while turning: 6.2 px end-point error against the camera vectors' 1.7)
-    static int noc4 = -1;
-    if (noc4 < 0) noc4 = rt_knob("MVOBJ_NOC4", "0");   // TOTK_MVOBJ_NOC4=1 (test): drawn again all the same
-    if (!(banks >> 4 & 1) && !noc4) {
-        MO.no_out++;
-        return;
-    }
-    // only positions that read an object's own blocks: bones (c5), place (c7) or c6. The rest (terrain and grass: c14
-    // c15 c16, with or without c9) measured no better than the camera's motion (TOTK_MV_CHECK, turning, those draws
-    // alone: object warp error 0.112 against the camera's 0.113, the object part 0.4 of what the picture shows) and
-    // were half the draws checked and listed. TOTK_MVOBJ_ALL=1 (test) takes them again.
-    static int all = -1;
-    if (all < 0) all = rt_knob("MVOBJ_ALL", "0");
-    if (!all && !(banks & (1u << 5 | 1u << 6 | 1u << 7))) {
-        MO.no_out++;
-        return;
-    }
     // TOTK_MVOBJ_ONLY=<hex bank mask> (test): only draws whose position reads no bank outside the mask (bit n: cn)
     static long only = -2;
     if (only == -2) {

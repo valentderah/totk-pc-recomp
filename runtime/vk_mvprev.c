@@ -1,6 +1,11 @@
 // Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLSS or FSR 3.1). The
-// banks kept start as c5, c7 and c14 and grow with what the vertex shader variants read (vk_mvprev_want); c7 and c5 are
-// described here, the others follow the same two-copy rule.
+// banks kept start as c5, c7 and c14 and grow with the banks the per-object listing looks up (vk_exec_draw.c
+// mvobj_draw_ calls vk_mvprev_want with them); c7 and c5 are described here, the others follow the same two-copy rule.
+// Every scene draw notes its blocks of those banks: which of an object's two copies was last frame's is told apart from
+// a neighbour object's copy only by knowing every block bound (noting only the listing's candidates turned a sixth of
+// the c7 "nearer" picks into "side" ones and doubled the copies mo_similar refuses). The banks the listing never looks
+// up (c9 and c11, which it leaves at this frame's block, and the banks of shaders it does not draw again) are left out:
+// probing them for every scene draw, and copying their neighbours into the snapshot, bought nothing.
 //
 // The scene's vertex shaders read an object's place from bank c7 (gsys_shape: one 3x4 matrix at the start of a
 // 0x100 block) and a skinned object's bones from c5 (gsys_skeleton: a run of 3x4 matrices), of this frame only. The
@@ -135,8 +140,8 @@ static void mvprev_draw_(VkExec *ex) {
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT) return;
     int check = P.bytes[0] != NULL;   // TOTK_MVPREV_CHECK=1: the summary's checks (3.6 ms a frame)
-    for (int index = 0; index < BANKS; index++) {
-        if (!(P.mask >> index & 1)) continue;
+    for (uint32_t m = P.mask & ((1u << BANKS) - 1); m; m &= m - 1) {
+        int index = __builtin_ctz(m);
         const p_bind_buf *u = &ex->ubo[0][index];
         if (!u->addr || !u->size || u->addr == P.last[index]) continue;   // the next draws keep the block: noted already
         P.last[index] = u->addr;
