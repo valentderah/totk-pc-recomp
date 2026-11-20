@@ -85,6 +85,7 @@ static Seen *find(Seen *t, uint64_t addr, int index, int add) {
 
 int vk_mvprev_on(void) { return P.on > 0; }
 int vk_mvprev_checking(void) { return P.on > 0 && P.bytes[0]; }
+int vk_mvprev_kept(int index) { return P.on > 0 && index >= 0 && index < BANKS && P.mask >> index & 1; }
 
 void vk_mvprev_want(uint32_t index_mask) {
     static int fixed = -1;

@@ -43,15 +43,17 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
-    uint8_t *cpu;    // with the per-object motion (vk_objmv_wanted: DLSS or FSR 3.1), the same bytes in host memory for
-                     // the CPU's reads (vk_usnap_bytes): map is often device memory through the BAR, written fast but
-                     // read back at about a microsecond a cache line. Without it nothing reads them back, and the bytes
-                     // go into map in one copy.
+    uint8_t *cpu;    // with the per-object motion (vk_objmv_wanted: DLSS or FSR 3.1), the bytes of the regions the CPU
+                     // reads back many times (Reg.host) in host memory too, at the same offsets (vk_usnap_bytes): map
+                     // is often device memory through the BAR, written fast but read back at about a microsecond a
+                     // cache line. The other regions go into map alone, as without the motion.
     uint64_t size;
 } Arena;
 
-typedef struct { uint64_t lo, hi; } Rng;
-typedef struct { uint64_t lo, hi, off, drop_at; } Reg;   // drop_at: dropped from this position on; UINT64_MAX not
+// host: a vertex-stage binding of a bank the per-object motion compares (vk_mvprev_kept) or of the camera (c4), whose
+// bytes the CPU reads (vk_exec_draw.c mo_prev_block, vk_mvprev_find, vk_dlaa.c): its region also gets a host copy
+typedef struct { uint64_t lo, hi; uint32_t host; } Rng;
+typedef struct { uint64_t lo, hi, off, drop_at; uint32_t host; } Reg;   // drop_at: dropped from this position on; UINT64_MAX not
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 static struct {
@@ -66,7 +68,7 @@ static struct {
     Wrote *wr;                  // GPU writes of submissions not known to be complete
     int nwr, cwr;
     // since the last summary
-    uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
+    uint64_t subs, regions, bytes, hbytes, copy_ns, hits, drops, inflight, refused, off_subs;
 } U;
 
 static Arena *free_arenas;
@@ -147,6 +149,7 @@ static void collect(const op_hdr *h, int depth) {
                 // TOTK_MVPREV_CHECK: the vertex stage's object and bone blocks, also the game's other copy on either
                 // side, which still holds last frame's (vk_mvprev.c compares it with the last-frame copy)
                 uint64_t step = vk_mvprev_step(b->stage, b->index, b->size);
+                uint32_t host = b->stage == 0 && (b->index == 1 || vk_mvprev_kept(b->index));
                 // which neighbours lie in an imported pool, per block and vk_mem_gen: the same blocks are bound by
                 // many draws, and two resolves for each binding were a quarter of the snapshot's time
                 static struct { uint64_t addr, size, gen; int ok; } nc[1024];
@@ -169,7 +172,7 @@ static void collect(const op_hdr *h, int depth) {
                         ok |= 1 << (k + 1);
                     }
                     if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
-                    U.col[U.ncol++] = (Rng){at & ~(uint64_t)(ALIGN - 1), at + n};
+                    U.col[U.ncol++] = (Rng){at & ~(uint64_t)(ALIGN - 1), at + n, host};
                 }
                 if (step && !known) nc[ci].addr = b->addr, nc[ci].size = n, nc[ci].gen = gen, nc[ci].ok = ok;
             }
@@ -257,12 +260,12 @@ static int wr_hits(uint64_t lo, uint64_t hi) {   // wr_prune ran: disjoint, sort
 static void summary(void) {
     if (U.subs + U.off_subs < 3600) return;
     double s = U.subs ? (double)U.subs : 1.0;
-    rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
-           "%.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU writes, %.1f left out (GPU writes in "
-           "flight), %.1f refused (not an imported pool)",
+    rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied "
+           "(%.1f KiB of it into host memory too) in %.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU "
+           "writes, %.1f left out (GPU writes in flight), %.1f refused (not an imported pool)",
            (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
-           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s);
-    U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
+           U.hbytes / s / 1024.0, U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s);
+    U.subs = U.off_subs = U.regions = U.bytes = U.hbytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
 }
 
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
@@ -284,8 +287,11 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     uint64_t total = 0;
     for (int i = 0; i < U.ncol;) {
         uint64_t lo = U.col[i].lo, hi = U.col[i].hi;
-        for (i++; i < U.ncol && U.col[i].lo <= hi; i++)
+        uint32_t host = U.col[i].host;
+        for (i++; i < U.ncol && U.col[i].lo <= hi; i++) {
             if (U.col[i].hi > hi) hi = U.col[i].hi;
+            host |= U.col[i].host;
+        }
         VkMemSpan sp;
         if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC)) {
@@ -297,22 +303,30 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
             continue;
         }
         if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
-        U.reg[U.nreg++] = (Reg){lo, hi, total, UINT64_MAX};
+        U.reg[U.nreg++] = (Reg){lo, hi, total, UINT64_MAX, host};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
-    uint8_t *dst = U.arena->map;
+    uint8_t *map = U.arena->map, *cpu = NULL;
     if (vk_objmv_wanted()) {
         if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
-        dst = U.arena->cpu;
+        cpu = U.arena->cpu;
+    } else {
+        for (int i = 0; i < U.nreg; i++) U.reg[i].host = 0;   // nothing reads them back: the device copy alone
     }
-    for (int i = 0; i < U.nreg; i++)
-        memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
-    if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
+    // a host region into host memory first and from there into the device copy, so both hold the same bytes while
+    // the game writes guest memory on other threads
+    uint64_t hbytes = 0;
+    for (int i = 0; i < U.nreg; i++) {
+        const Reg *r = &U.reg[i];
+        uint64_t len = r->hi - r->lo;
+        if (r->host) memcpy(cpu + r->off, (const void *)(uintptr_t)r->lo, len), memcpy(map + r->off, cpu + r->off, len), hbytes += len;
+        else memcpy(map + r->off, (const void *)(uintptr_t)r->lo, len);
+    }
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
-    U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
+    U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.hbytes += hbytes, U.copy_ns += kern_now_ns() - t0;
 }
 
 void vk_usnap_end(uint64_t fence) {
@@ -349,7 +363,7 @@ int vk_usnap_prev(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     if (lo >= PV.nreg) return 0;
     const Reg *r = &PV.reg[lo];
     // a region a GPU write dropped held other bytes for the draws after it: left out, as vk_usnap_bytes does
-    if (r->drop_at != UINT64_MAX || addr < r->lo || addr + n > r->hi) return 0;
+    if (r->drop_at != UINT64_MAX || !r->host || addr < r->lo || addr + n > r->hi) return 0;
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){PV.arena->buf, off, n};
@@ -401,14 +415,14 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy where there is one (DLSS), else the device copy
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
-
-const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
-
+// the host copy of a host region, else the device copy (slow to read through the BAR, read rarely)
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
-    VkDescriptorBufferInfo bi;
-    return vk_usnap_find(addr, n, UINT32_MAX, 1, &bi) ? host_copy() + bi.offset : NULL;
+    if (!U.on || !n) return NULL;
+    int i = first_above(addr);
+    if (i >= U.nreg) return NULL;
+    const Reg *r = &U.reg[i];
+    if (__atomic_load_n(&r->drop_at, __ATOMIC_RELAXED) != UINT64_MAX || addr < r->lo || addr + n > r->hi) return NULL;
+    return (r->host && U.arena->cpu ? U.arena->cpu : U.arena->map) + r->off + (addr - r->lo);
 }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
