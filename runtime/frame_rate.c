@@ -160,6 +160,11 @@ uint64_t frame_step_cap_ns(void) {
     double hz = limit_hz ? limit_hz : gfx_window_refresh_hz();
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
+    // Frame generation (vk_backend.c present_pair) shows two pictures for each frame the game draws: the limit counts
+    // the pictures shown and the game draws half, 30 at least (Savage Wind's framepace_period_ns, PR #1089). Only
+    // while the last frame went out with a generated picture: a menu or a fade, which has none, keeps the whole limit.
+    // The real-time step follows the game's presents (frame_step_present), so it is the drawn frames' interval.
+    if (gfx_frame_gen_live()) hz = hz / 2 < LIMIT_MIN_HZ ? LIMIT_MIN_HZ : hz / 2;
     return (uint64_t)(1e9 / hz + 0.5);
 }
 

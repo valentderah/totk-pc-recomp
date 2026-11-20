@@ -11,12 +11,25 @@
 // the frame's display time from the pacer (nvn_api_obj.c), so present-to-present intervals stay even whatever the
 // replay took. The blit is already on the queue, so the wait blocks no submission.
 //
+// Frame generation (vk_fg.cpp, frame_gen = fsr3): a frame that comes with a generated picture (the one between the
+// last frame and this) is presented as a pair, both blits submitted at once (present_pair). The display shows a
+// picture when the GPU has drawn it, not when the CPU hands it over, and both pictures of a pair are drawn within a
+// millisecond of each other: spaced by the CPU clock alone they went on screen together and then left a gap (Savage
+// Wind on FIFO and G-SYNC). So each present waits on the timeline until the GPU is done: the generated picture once
+// the frame is drawn (and not before the pacer's display time), the game's half the smoothed interval between
+// generated pictures after it, as AMD's frame interpolation swapchain and Savage Wind's present_wait_turn do. The game
+// draws at half the frame limit meanwhile (frame_rate.c frame_step_cap_ns, gfx_frame_gen_live). The spacing is ported
+// from Savage Wind (https://github.com/Revivedx/SavageWindRecomp @ bf6146c14c37fee8781a601e5a544b93dff6d75e, MIT,
+// Copyright (c) 2026 Revivedx and the Savage Wind Recomp contributors, Copyright (c) 2026 Peiikai),
+// runtime/nvn/vulkan/device.c present_wait_turn.
+//
 // Asynchronous replay (TOTK_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
 // and nvnQueuePresentTexture only queue. Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
 // order; the replay thread runs the synchronous submit and present bodies in that order, so every value is signalled
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
 // replay thread handled present N-1. Calls that read or free GPU state that queued work may use drain the queue first
 // (replay_drain), each cause counted.
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +47,7 @@
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, pid; } PresentJob;   // pid: the frame's present ID (vk_reflex_frame)
+typedef struct { VkImage image, gen; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, pid; } PresentJob;   // pid: the frame's present ID (vk_reflex_frame); gen: its generated picture (vk_fg_present_gen)
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -46,6 +59,114 @@ static void wait_until(uint64_t at) {
     uint64_t now = kern_now_ns();
     if (at > now + 1500000) plat_wait_ns(at - now - 1000000);
     while (kern_now_ns() < at) plat_yield();
+}
+
+// ---- Frame generation's presents (present thread only)
+static volatile int32_t fg_live;   // the last frame went out with a generated picture before it (gfx_frame_gen_live)
+int gfx_frame_gen_live(void) { return __atomic_load_n(&fg_live, __ATOMIC_RELAXED); }
+
+// Present intervals in the world while frame generation is on, logged every FS_EVERY presents and over the run: all of them, from
+// a generated picture to the game's frame after it, and from the game's frame to the next generated picture.
+// Fixed-size histograms of 0.05 ms bins (bounded whatever the session's length).
+#define FS_BINS 2000
+#define FS_BIN_MS 0.05
+#define FS_EVERY 2400
+enum { FS_ALL, FS_GEN_REAL, FS_REAL_GEN, FS_N };
+typedef struct {
+    uint32_t hist[FS_N][FS_BINS];
+    double sum[FS_N], sq[FS_N];
+    uint64_t n[FS_N];
+    uint64_t pairs, alone, t0, t1;   // frames presented as a pair and alone, the window's first and last present
+    double gpu_wait, late;           // ms: waited for the GPU before the generated picture; the game's frame past its time
+} FgStats;
+static FgStats fs_win, fs_run;
+static uint64_t fs_last, fs_last_gen;   // the last present (0 after a gap) and the last generated one
+static double fs_iv;                    // ns between generated pictures, smoothed (factor 0.1, Savage Wind's)
+
+static void fs_add(FgStats *s, int k, double ms) {
+    unsigned b = ms <= 0 ? 0 : ms / FS_BIN_MS >= FS_BINS ? FS_BINS - 1 : (unsigned)(ms / FS_BIN_MS);
+    s->hist[k][b]++, s->sum[k] += ms, s->sq[k] += ms * ms, s->n[k]++;
+}
+
+static double fs_p99(const FgStats *s, int k) {
+    uint64_t want = s->n[k] - s->n[k] / 100, got = 0;
+    for (unsigned b = 0; b < FS_BINS; b++)
+        if ((got += s->hist[k][b]) >= want) return (b + 1) * FS_BIN_MS;
+    return FS_BINS * FS_BIN_MS;
+}
+
+static void fs_log(const FgStats *s, const char *what) {
+    if (!s->n[FS_ALL] || s->t1 <= s->t0) return;
+    double wall = (s->t1 - s->t0) / 1e9, m[FS_N], sd[FS_N];
+    for (int k = 0; k < FS_N; k++) {
+        m[k] = s->n[k] ? s->sum[k] / s->n[k] : 0;
+        double v = s->n[k] ? s->sq[k] / s->n[k] - m[k] * m[k] : 0;
+        sd[k] = v > 0 ? sqrt(v) : 0;
+    }
+    rt_log("fg present %s: %.1f fps shown, %.1f drawn (%llu frames as pairs, %llu alone) over %.1f s; intervals mean %.3f "
+           "sd %.3f p99 %.2f ms; generated to game's %.3f sd %.3f, game's to generated %.3f sd %.3f; waited for the GPU "
+           "%.3f ms a pair, game's frame late %.3f ms a pair (means)", what, (s->n[FS_ALL] + 1) / wall,
+           (s->pairs + s->alone) / wall, (unsigned long long)s->pairs, (unsigned long long)s->alone, wall, m[FS_ALL],
+           sd[FS_ALL], fs_p99(s, FS_ALL), m[FS_GEN_REAL], sd[FS_GEN_REAL], m[FS_REAL_GEN], sd[FS_REAL_GEN],
+           s->pairs ? s->gpu_wait / s->pairs : 0, s->pairs ? s->late / s->pairs : 0);
+}
+
+// A present at now of kind k (FS_GEN_REAL: the game's frame after a generated picture; FS_REAL_GEN: a generated
+// picture; FS_ALL: a frame alone)
+static void fs_present(uint64_t now, int k) {
+    if (!vk_fg_active()) return;
+    if (frame_step_world_us() <= 0) {   // (the title screen and the first load: not counted)
+        fs_last = 0;
+        return;
+    }
+    FgStats *both[2] = {&fs_win, &fs_run};
+    for (int i = 0; i < 2; i++) {
+        FgStats *s = both[i];
+        if (!s->t0) s->t0 = now;
+        if (fs_last && now - fs_last < 100000000ull) {   // (a gap: a load, a menu's hitch)
+            double ms = (now - fs_last) / 1e6;
+            fs_add(s, FS_ALL, ms);
+            if (k != FS_ALL) fs_add(s, k, ms);
+        }
+        s->t1 = now;
+        s->pairs += k == FS_GEN_REAL, s->alone += k == FS_ALL;
+    }
+    fs_last = now;
+    if (fs_win.n[FS_ALL] >= FS_EVERY) {
+        fs_log(&fs_win, "last presents");
+        memset(&fs_win, 0, sizeof fs_win);
+    }
+}
+
+static void gpu_wait(uint64_t value) {
+    VkCtx *c = vk_ctx();
+    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                              .pSemaphores = &c->timeline, .pValues = &value};
+    vkWaitSemaphores(c->device, &wi, 1000000000ull);   // (drawn; a second at most)
+}
+
+// The pair's two presents (both blits submitted): the generated picture once the GPU has drawn the frame (gpu: its
+// last submission's value) and the pacer's time has come, the game's frame once its blit is drawn (f) and half the
+// smoothed interval between generated pictures has passed.
+static void present_pair(const PresentJob *j, uint64_t gpu, uint64_t f) {
+    uint64_t t0 = kern_now_ns();
+    gpu_wait(gpu);
+    uint64_t t1 = kern_now_ns();
+    wait_until(j->at);
+    uint64_t now = kern_now_ns();
+    double dt = fs_last_gen ? (double)(now - fs_last_gen) : 0;
+    if (dt > 0 && dt < 1e8) fs_iv = fs_iv > 0 ? fs_iv + (dt - fs_iv) * 0.1 : dt;
+    fs_last_gen = now;
+    fs_present(now, FS_REAL_GEN);
+    vk_present_flip();
+    gpu_wait(f);
+    uint64_t at = now + (uint64_t)(fs_iv / 2);
+    if (fs_iv > 0) wait_until(at);
+    uint64_t t2 = kern_now_ns();
+    fs_present(t2, FS_GEN_REAL);
+    vk_present_flip();
+    fs_win.gpu_wait += (t1 - t0) / 1e6, fs_run.gpu_wait += (t1 - t0) / 1e6;
+    if (fs_iv > 0 && t2 > at) fs_win.late += (t2 - at) / 1e6, fs_run.late += (t2 - at) / 1e6;
 }
 
 static void present_main(void *arg) {
@@ -63,7 +184,10 @@ static void present_main(void *arg) {
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_reflex_present_frame(j.pid);   // the present of this blit, and the submission after it, are the frame's
         vk_reflex_submit_frame(j.pid);
-        vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        // the frame's last submission, its interpolation included: no submission goes out while busy
+        uint64_t drawn = j.gen ? vk_sync_issued() : 0;
+        int pair = j.gen && vk_present_blit_pair(j.gen, j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        if (!j.gen) vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
@@ -73,9 +197,15 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        wait_until(j.at);
+        if (pair) {
+            present_pair(&j, drawn, f);
+        } else {
+            wait_until(j.at);
+            fs_last_gen = 0;   // (the next generated picture starts the spacing anew)
+            fs_present(kern_now_ns(), FS_ALL);
+        }
         uint64_t t1 = kern_now_ns();
-        vk_present_flip();
+        if (!pair) vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
@@ -126,6 +256,9 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
                     .at = at_ns, .queued = queued, .value = value, .pid = pid};
     vk_hdr_present_source(img, &j.image, &j.format);   // TOTK_HDR: the float picture the game copied into it, same size
     vk_fg_present_swap(&j.image, &j.format);   // TOTK_FG_TEST (frame generation checks): another picture in its place
+    j.gen = vk_fg_present_gen(j.image);
+    if (__atomic_load_n(&fg_live, __ATOMIC_RELAXED) != (j.gen != VK_NULL_HANDLE))
+        __atomic_store_n(&fg_live, j.gen != VK_NULL_HANDLE, __ATOMIC_RELAXED);
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
@@ -341,6 +474,8 @@ void gfx_exit_log(void) {
     static int32_t done;
     rec_check_log();
     vk_fg_exit_log();
+    static int32_t fs_done;
+    if (!plat_xchg32(&fs_done, 1)) fs_log(&fs_run, "over the run");
     vk_texture_eager_log();
     vk_mem_shadow_read_log();
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);

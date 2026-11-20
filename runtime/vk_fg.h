@@ -73,6 +73,11 @@ void vk_fg_exit_log(void);   // vk_backend.c gfx_exit_log: the run's counts and 
 // vk_backend.c present_image (testing, TOTK_FG_TEST): 1 = the frame's generated picture, 2 = its picture before the
 // HUD in place of the window texture (*img, *fmt). 0: the present is left as it is.
 int vk_fg_present_swap(VkImage *img, VkFormat *fmt);
+// vk_backend.c present_image, after vk_dlaa_frame: the picture generated between the last frame and the one just
+// ended, when presented is the window texture it was generated against (RGBA8 holding the window texture's bytes,
+// GENERAL, its size), else VK_NULL_HANDLE (none made, a test swap, or another texture presented). It stays unwritten
+// until the replay of the frame after next: its blit is on the queue before the next frame's submissions.
+VkImage vk_fg_present_gen(VkImage presented);
 
 #ifdef __cplusplus
 }

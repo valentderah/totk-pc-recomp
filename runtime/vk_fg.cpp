@@ -19,7 +19,8 @@
 // 3. vk_fg_generate at the end of the submission that drew the window texture: the optical flow over the HUD-less
 //    picture, then the interpolation between the last frame and this one, with this frame's window texture as the
 //    picture with the HUD, into an RGBA8 image holding bytes as the window texture does (sRGB transfer function).
-// Presenting it is not done here (TOTK_FG_TEST shows it in place of the frame, for checks only).
+// The present (vk_backend.c present_pair) shows it before the frame, through vk_fg_present_gen (TOTK_FG_TEST shows it, or
+// the picture before the HUD, in place of the frame instead, for checks only).
 #include "vk_fg.h"
 
 #include <malloc.h>
@@ -110,7 +111,8 @@ static struct {
     float near_m, far_m, fov_y, dt_ms;
     VkFormat win_fmt;               // the window texture's format as last seen (UNORM twin)
     int k;                          // the pair of hudless/out images this frame writes
-    VkImage show_out, show_hl;      // the frame just ended (vk_fg_frame), for vk_fg_present_swap
+    VkImage gen_win;                // the window texture this frame's picture was generated against (vk_fg_generate)
+    VkImage show_out, show_hl, show_win;   // the frame just ended (vk_fg_frame), for vk_fg_present_swap / _gen
     // images
     uint32_t iw, ih;
     Img hl_srgb, hl[2], out[2];
@@ -723,6 +725,7 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
         return 0;
     }
     g.gen_ok = true;
+    g.gen_win = win;
     g.gens++, g.resets += g.reset;
     if (g.gens == 1)
         rt_log("fg: first frame generated: %ux%u from a %ux%u scene (near %g m, far %g m, vertical field of view %.1f "
@@ -745,6 +748,7 @@ extern "C" void vk_fg_frame(void) {
         if (!g.gen_ok) g.skipped++;
     }
     g.show_out = g.gen_ok ? g.out[g.k].img : VK_NULL_HANDLE;
+    g.show_win = g.gen_ok ? g.gen_win : VK_NULL_HANDLE;
     g.show_hl = g.hl_ok ? g.hl[g.k].img : VK_NULL_HANDLE;
     if (g.hl_ok) g.k ^= 1;
     g.chain = g.gen_ok;   // a frame without a generated picture breaks the chain: the next one starts over
@@ -777,6 +781,11 @@ extern "C" void vk_fg_exit_log(void) {
     rt_log("fg cpu over the run: of it recorder drains %.3f ms, the SDK's recording %.3f ms (prepare %.3f ms) a frame "
            "(means)", (g.drain_run + g.drain_ns) / 1e6 / g.ncpu, (g.sdk_run + g.sdk_ns) / 1e6 / g.ncpu,
            (g.prep_run + g.prep_ns) / 1e6 / g.ncpu);
+}
+
+extern "C" VkImage vk_fg_present_gen(VkImage presented) {
+    if (g.test || !g.show_out || presented != g.show_win) return VK_NULL_HANDLE;
+    return g.show_out;
 }
 
 extern "C" int vk_fg_present_swap(VkImage *img, VkFormat *fmt) {
