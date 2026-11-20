@@ -103,9 +103,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "Game",
     [UI_MENU_LOD_STEADY] = "Steady detail under load",
     [UI_MENU_LOD_STEADY_DESC] = "Skips the game's setup for lowering model and texture detail when the frame rate drops, as the emulator mod Disable LOD Quality Reduction does. Game versions 1.2.1 and 1.4.3. Leave it off on weak PCs: there this drop keeps the frame rate up.",
-    [UI_MENU_SHARPNESS] = "FSR sharpness",
-    [UI_MENU_SHARPNESS_DESC] = "How much AMD FSR sharpens: the 3D scene with the AMD FSR upscaler, and the picture FSR 1 scales to "
-                               "the window. 0 turns it off.",
+    [UI_MENU_SHARPNESS] = "FSR 1 sharpness",
+    [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR 1 scales the picture to the window; 0 turns it off.",
+    [UI_MENU_FSR_SHARPNESS] = "FSR sharpness",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "How much the AMD FSR upscaler sharpens the 3D scene it smooths; 0 turns it off. "
+                                   "Applies at once.",
     [UI_MENU_COLOR] = "Colour",
     [UI_MENU_COLOR_PRESET] = "Colour profile",
     [UI_MENU_COLOR_PRESET_DESC] = "Sets the four values below. Vivid: more contrast and saturation, shadows opened a "
@@ -177,11 +179,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "edges a little less smooth. Applies at once.",
     [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
     [UI_MENU_DLSS_CHARS_FULL] = "Full",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
-                          "they replace the 3D render scale. Takes effect at once.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
+    [UI_MENU_DLSS] = "Upscaler mode",
+    [UI_MENU_DLSS_DESC] = "Native draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
+                          "Performance draw it at 67, 58, 50 and 33 % and let the upscaler (DLSS or FSR) scale it up, "
+                          "which saves GPU time; they replace the 3D render scale. Takes effect at once.",
+    [UI_MENU_DLSS_DLAA] = "Native", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed. Off while AMD FSR is on.",
@@ -528,12 +530,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Fills the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of reading zeros.",
     [UI_MENU_FIX_ZERO] = "Zero new GPU memory",
     [UI_MENU_FIX_ZERO_DESC] = "New GPU memory pools start zero-filled, as Switch memory does.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Fog and particles after DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "With DLAA, fog, dust and other particles are drawn over the picture DLSS has"
-                                        " already smoothed, as the game draws them without DLSS: small particles in "
-                                        "fog (shrines) no longer vanish or leave trails. Off: DLSS also processes "
-                                        "these effects, as before. DLAA mode only; the upscaling DLSS modes always "
-                                        "process them. Applies at once.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Fog and particles after the upscaler",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "In the Native mode, fog, dust and other particles are drawn over the picture "
+                                        "the upscaler (DLSS or FSR) has already smoothed, as the game draws them "
+                                        "without it: small particles in fog (shrines) no longer vanish or leave "
+                                        "trails. Off: the upscaler also processes these effects, as before. The "
+                                        "upscaling modes always process them. Applies at once.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Fixed DLSS exposure",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS takes the brightness of the game's picture as it is instead of "
                                          "estimating the exposure from each frame: in dark scenes (the Depths) large "
@@ -723,9 +725,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "Игра",
     [UI_MENU_LOD_STEADY] = "Стабильная детализация под нагрузкой",
     [UI_MENU_LOD_STEADY_DESC] = "Пропускает настройку игры, снижающую детализацию моделей и текстур при падении частоты кадров, как эмуляторный мод Disable LOD Quality Reduction. Только для версий игры 1.2.1 и 1.4.3. На слабых ПК не включайте: там это снижение и держит частоту кадров.",
-    [UI_MENU_SHARPNESS] = "Резкость FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Насколько AMD FSR повышает резкость: 3D-сцены при апскейлере AMD FSR и картинки, которую "
-                               "FSR 1 растягивает под окно. 0 выключает.",
+    [UI_MENU_SHARPNESS] = "Резкость FSR 1",
+    [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR 1 под окно; 0 выключает его.",
+    [UI_MENU_FSR_SHARPNESS] = "Резкость FSR",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Насколько апскейлер AMD FSR повышает резкость сглаженной им 3D-сцены; 0 выключает. "
+                                   "Применяется сразу.",
     [UI_MENU_COLOR] = "Цвет",
     [UI_MENU_COLOR_PRESET] = "Цветовой профиль",
     [UI_MENU_COLOR_PRESET_DESC] = "Задаёт четыре значения ниже. «Яркий»: больше контраста и насыщенности, тени немного "
@@ -798,11 +802,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                 "гладкие края. Действует сразу.",
     [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
     [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
-    [UI_MENU_DLSS] = "Режим DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
-                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
-                          "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
+    [UI_MENU_DLSS] = "Режим апскейлера",
+    [UI_MENU_DLSS_DESC] = "«Родное» рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
+                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через апскейлер "
+                          "(DLSS или FSR), что экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует "
+                          "сразу.",
+    [UI_MENU_DLSS_DLAA] = "Родное", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно. Выключено, пока работает AMD FSR.",
@@ -1151,11 +1156,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
     [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Туман и частицы после DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "С DLAA туман, пыль и другие частицы рисуются поверх картинки, уже сглаженной"
-                                        " DLSS, как игра рисует их без DLSS: мелкие частицы в тумане (святилища) "
-                                        "больше не пропадают и не оставляют шлейфов. Выкл.: DLSS обрабатывает и эти "
-                                        "эффекты, как раньше. Только в режиме DLAA; режимы DLSS с повышением "
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Туман и частицы после апскейлера",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "В режиме «Родное» туман, пыль и другие частицы рисуются поверх картинки, уже "
+                                        "сглаженной апскейлером (DLSS или FSR), как игра рисует их без него: мелкие "
+                                        "частицы в тумане (святилища) больше не пропадают и не оставляют шлейфов. "
+                                        "Выкл.: апскейлер обрабатывает и эти эффекты, как раньше. Режимы с повышением "
                                         "разрешения обрабатывают их всегда. Применяется сразу.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Фиксированная экспозиция DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS берёт яркость картинки игры как есть, а не оценивает экспозицию по "
@@ -1372,9 +1377,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_DESC] = "Quando a resolução do jogo não é 16:9: manter o formato dos vídeos das cenas com "
                                   "barras pretas ou esticá-los sobre a imagem toda. Vale a partir do próximo vídeo.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Barras pretas", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Esticar",
-    [UI_MENU_SHARPNESS] = "Nitidez do FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Quanto o AMD FSR realça a nitidez: da cena 3D com o upscaler AMD FSR e da imagem que o FSR 1 "
-                               "amplia para a janela. 0 desliga.",
+    [UI_MENU_SHARPNESS] = "Nitidez do FSR 1",
+    [UI_MENU_SHARPNESS_DESC] = "Aumento de nitidez após o FSR 1 ampliar a imagem para a janela; 0 desliga.",
+    [UI_MENU_FSR_SHARPNESS] = "Nitidez do FSR",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Quanto o upscaler AMD FSR realça a nitidez da cena 3D que ele suaviza; 0 desliga. "
+                                   "Vale na hora.",
 
     [UI_MENU_FPS_LIMIT] = "Limite de quadros",
     [UI_MENU_FPS_LIMIT_DESC] = "O máximo de quadros por segundo que o jogo desenha. Acima de 60 é experimental e "
@@ -1601,12 +1608,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Preenche o banco de constantes c0 reservado ao driver (tamanhos de armazenamento, tamanho do dispatch, tamanho do ponto, instância base) em vez de ler zeros.",
     [UI_MENU_FIX_ZERO] = "Zerar memória nova da GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Novos pools de memória da GPU começam zerados, como a memória do Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Névoa e partículas após o DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Com DLAA, a névoa, a poeira e outras partículas são desenhadas sobre a "
-                                        "imagem já suavizada pelo DLSS, como o jogo as desenha sem DLSS: partículas "
-                                        "pequenas na névoa (santuários) não somem mais nem deixam rastros. Desligado:"
-                                        " o DLSS também processa esses efeitos, como antes. Só no modo DLAA; os modos"
-                                        " de DLSS que aumentam a resolução sempre os processam. Aplica-se na hora.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Névoa e partículas após o upscaler",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "No modo Nativo, a névoa, a poeira e outras partículas são desenhadas sobre a "
+                                        "imagem já suavizada pelo upscaler (DLSS ou FSR), como o jogo as desenha sem "
+                                        "ele: partículas pequenas na névoa (santuários) não somem mais nem deixam "
+                                        "rastros. Desligado: o upscaler também processa esses efeitos, como antes. Os "
+                                        "modos que aumentam a resolução sempre os processam. Aplica-se na hora.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposição fixa do DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "O DLSS usa o brilho da imagem do jogo como ele é, em vez de estimar a "
                                          "exposição a cada quadro: em cenas escuras (as Profundezas), grandes áreas com "
@@ -1850,11 +1857,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_OFF] = "Desligado",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
     [UI_MENU_DLAA_BACKEND_FSR3] = "AMD FSR 3",
-    [UI_MENU_DLSS] = "Modo do DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
-                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
-                          "GPU; eles substituem a escala 3D. Vale na hora.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (nativo)",
+    [UI_MENU_DLSS] = "Modo do upscaler",
+    [UI_MENU_DLSS_DESC] = "Nativo desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
+                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o upscaler (DLSS ou FSR) ampliá-la, o "
+                          "que poupa tempo da GPU; eles substituem a escala 3D. Vale na hora.",
+    [UI_MENU_DLSS_DLAA] = "Nativo",
     [UI_MENU_DLSS_QUALITY] = "Qualidade",
     [UI_MENU_DLSS_BALANCED] = "Equilibrado",
     [UI_MENU_DLSS_PERFORMANCE] = "Desempenho", [UI_MENU_DLSS_ULTRA] = "Ultra Desempenho",
@@ -2049,8 +2056,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
                           "支持游戏版本 1.1.0、1.2.1 和 1.4.3。",
-    [UI_MENU_SHARPNESS] = "FSR 锐度",
-    [UI_MENU_SHARPNESS_DESC] = "AMD FSR 的锐化强度：使用 AMD FSR 超分辨率时作用于 3D 场景，FSR 1 放大到窗口时作用于画面。0 为关闭。",
+    [UI_MENU_SHARPNESS] = "FSR 1 锐度",
+    [UI_MENU_SHARPNESS_DESC] = "FSR 1 放大到窗口后的锐化强度；0 为关闭。",
+    [UI_MENU_FSR_SHARPNESS] = "FSR 锐度",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "AMD FSR 超分辨率对其平滑的 3D 场景的锐化强度；0 为关闭。立即生效。",
     [UI_MENU_COLOR] = "色彩",
     [UI_MENU_COLOR_PRESET] = "色彩配置",
     [UI_MENU_COLOR_PRESET_DESC] = "同时设置下面四项。鲜艳：对比度和饱和度更高，暗部略微提亮（为 OLED 屏幕调校）。"
@@ -2374,10 +2383,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "基础实例），而不是读取零值。",
     [UI_MENU_FIX_ZERO] = "清零新的 GPU 内存",
     [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 内存池初始内容为零，与 Switch 内存一致。",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之后绘制雾和粒子",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，雾、灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS 时的"
-                                        "绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：DLSS 也处理这些效果，与以"
-                                        "前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "超分辨率之后绘制雾和粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "在原生模式下，雾、灰尘和其他粒子绘制在超分辨率技术（DLSS 或 "
+                                        "FSR）已平滑的画面之上，与游戏不用它时的绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：超分辨率技术也处理这些效果，与以前相同。提升分辨率的模式始终处理它们。立即生效。",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用游戏画面的亮度，而不是逐帧自行估算曝光：在暗场景（地底）中，"
                                          "镜头移动时大片雾中区域不再忽暗忽亮一帧。关闭：DLSS 自行估算曝光，与以前相同。立即生效。",
@@ -2593,9 +2601,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DLAA_OFF] = "关",
     [UI_MENU_DLAA_BACKEND_DLSS] = "NVIDIA DLSS", [UI_MENU_DLAA_BACKEND_FSR] = "AMD FSR 4",
     [UI_MENU_DLAA_BACKEND_FSR3] = "AMD FSR 3",
-    [UI_MENU_DLSS] = "DLSS 模式",
-    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
-    [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
+    [UI_MENU_DLSS] = "超分辨率模式",
+    [UI_MENU_DLSS_DESC] = "原生以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由超分辨率技术（DLSS 或 FSR）放大，以节省 GPU "
+                          "时间；它们会取代 3D 渲染比例。立即生效。",
+    [UI_MENU_DLSS_DLAA] = "原生",
     [UI_MENU_DLSS_QUALITY] = "质量",
     [UI_MENU_DLSS_BALANCED] = "平衡",
     [UI_MENU_DLSS_PERFORMANCE] = "性能",

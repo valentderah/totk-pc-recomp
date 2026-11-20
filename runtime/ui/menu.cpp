@@ -733,17 +733,27 @@ static const char *present_note(void) {
 
 // The upscaler of the 3D scene, one row over two settings: dlaa (off or on) and dlaa_backend (NVIDIA DLSS, AMD FSR 4 or
 // AMD FSR 3). AMD ships FSR's Vulkan libraries for Windows only, so Linux has DLSS alone (vk_dlaa.c fsr_backend).
+#ifdef _WIN32
+enum { UPSCALER_CHOICES = 4 };
+#else
+enum { UPSCALER_CHOICES = 2 };
+#endif
+
+// The row's choice as the settings hold it: 0 off, 1 NVIDIA DLSS, 2 AMD FSR 4, 3 AMD FSR 3.
+static int upscaler_choice(void) {
+    const char *be = cfg_value("TOTK_DLAA_BACKEND");
+    if (!cfg_bool("TOTK_DLAA")) return 0;
+    if (UPSCALER_CHOICES > 3 && !strcmp(be, "fsr3")) return 3;
+    if (UPSCALER_CHOICES > 2 && !strcmp(be, "fsr")) return 2;
+    return 1;
+}
+
 static void row_upscalers(void) {
     static const UiTextId ids[] = {UI_MENU_DLAA_OFF, UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR,
                                    UI_MENU_DLAA_BACKEND_FSR3};
     static const char *const backends[] = {"", "dlss", "fsr", "fsr3"};
-#ifdef _WIN32
-    const int n = 4;
-#else
-    const int n = 2;
-#endif
-    const char *be = cfg_value("TOTK_DLAA_BACKEND");
-    int cur = !cfg_bool("TOTK_DLAA") ? 0 : n > 3 && !strcmp(be, "fsr3") ? 3 : n > 2 && !strcmp(be, "fsr") ? 2 : 1;
+    const int n = UPSCALER_CHOICES;
+    int cur = upscaler_choice();
     int step = opt_choice_step("TOTK_DLAA", UI_MENU_DLAA, menu_text(ids[cur]), cur == 0, UI_MENU_DLAA_DESC);
     if (!step) return;
     // A / click: the next value, round to the first; left / right stop at the ends (as opt_choice_list)
@@ -752,6 +762,33 @@ static void row_upscalers(void) {
     cfg_set("TOTK_DLAA", nv ? "1" : "0");
     if (nv) cfg_set("TOTK_DLAA_BACKEND", backends[nv]);   // off keeps the upscaler chosen last
     opt_save_soon();
+}
+
+// The upscaler's rows, in the Picture group: the upscaler, then the rows of the one chosen. Every upscaler takes the
+// mode (the scene's size), the characters' bias mask and the effects-after point (vk_dlaa.c, shared by both); the DLSS
+// model and its fixed exposure are DLSS's alone, the sharpening FSR's. The rows follow the setting, not the upscaler
+// running, which changes at the next start: the player sees the rows of what they picked.
+static void rows_upscaler(void) {
+    row_upscalers();
+    int up = upscaler_choice();
+    if (up) {
+        static const UiTextId mode[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
+                                        UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
+        opt_choice("TOTK_DLSS", UI_MENU_DLSS, mode, 5, UI_MENU_DLSS_DESC);
+    }
+    if (up == 1) {
+        static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
+        opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
+        opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
+    }
+    if (up >= 2)
+        opt_slider("TOTK_FSR_SHARPNESS", UI_MENU_FSR_SHARPNESS, 0, 100, UI_MENU_FSR_SHARPNESS_DESC, 5, "%.0f %%");
+    if (up) {
+        static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
+                                         UI_MENU_DLSS_CHARS_FULL};
+        opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
+        opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
+    }
 }
 
 // ---- the tabs
@@ -801,6 +838,7 @@ static void tab_screen(float scale) {
     row_shadow_res();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     static const UiTextId movie_aspect[] = {UI_MENU_MOVIE_ASPECT_KEEP, UI_MENU_MOVIE_ASPECT_STRETCH};
@@ -815,22 +853,9 @@ static void tab_screen(float scale) {
     opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
-    row_upscalers();
-    static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
-                                    UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
-    opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
-    static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
-    opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
-    static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
-                                     UI_MENU_DLSS_CHARS_FULL};
-    opt_choice("TOTK_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
-    // FSR's sharpening, with the upscaler's rows: of the scene FSR anti-aliases (vk_dlaa.c evaluate) and of the picture
-    // FSR 1 scales to the window (vk_fsr.c)
-    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
-    opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
     static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
     opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
+    rows_upscaler();
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);

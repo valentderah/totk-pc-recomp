@@ -1336,9 +1336,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
             D.reset = 1;
         }
         if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
-        // FSR sharpens its own output (sharpness, the setting the FSR 1 present pass reads too): the game's sharpening
-        // is part of its FXAA pass, which FSR's frames go without (vk_dlaa_skip_draw).
-        int sharp = cfg_int("TOTK_SHARPNESS");
+        // FSR sharpens its own output (fsr_sharpness; the FSR 1 present pass has a sharpness of its own): the game's
+        // sharpening is part of its FXAA pass, which FSR's frames go without (vk_dlaa_skip_draw).
+        int sharp = cfg_int("TOTK_FSR_SHARPNESS");
         sharp = sharp < 0 ? 0 : sharp > 100 ? 100 : sharp;
         // The same bias mask DLSS would get, as FSR's reactive mask: how much to favour this frame's colour
         VkFfxDispatch fd = {.color = {t->image, t->format, w, h}, .depth = {z->image, z->format, w, h},
@@ -1841,7 +1841,7 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     if (fsr_in_place) {
         static int logged_fxaa, logged_copy;
         if (known && ex->depth.image) {
-            if (!logged_fxaa) logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its own picture (sharpness)", (unsigned long long)h);
+            if (!logged_fxaa) logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its own picture (fsr_sharpness)", (unsigned long long)h);
             return 1;
         }
         // the copy shader drawing the scene target onto itself: the frames below the first resolution tier
