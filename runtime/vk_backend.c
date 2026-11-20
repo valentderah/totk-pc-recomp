@@ -30,6 +30,7 @@
 #include "vk_exec.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_fg.h"
 
 #define WEAK __attribute__((weak))
 
@@ -124,6 +125,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
                     .at = at_ns, .queued = queued, .value = value, .pid = pid};
     vk_hdr_present_source(img, &j.image, &j.format);   // TOTK_HDR: the float picture the game copied into it, same size
+    vk_fg_present_swap(&j.image, &j.format);   // TOTK_FG_TEST (frame generation checks): another picture in its place
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
@@ -338,6 +340,7 @@ static void replay_log(uint64_t frame, int total) {
 void gfx_exit_log(void) {
     static int32_t done;
     rec_check_log();
+    vk_fg_exit_log();
     vk_texture_eager_log();
     vk_mem_shadow_read_log();
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);

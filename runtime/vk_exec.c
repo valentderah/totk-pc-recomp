@@ -1787,6 +1787,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         for (int i = 0; i < n; i++) walk(ex, nvn_op_first(handles[i]), 0, NULL);
     }
     vk_exec_pass_end(ex);
+    if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);   // frame generation after the frame's window texture (vk_dlaa.c)
     x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory

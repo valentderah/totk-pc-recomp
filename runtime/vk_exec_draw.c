@@ -3340,6 +3340,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (!ex->in_pass) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT | VK_EXEC_DIRTY_SCISSOR;
     vk_exec_pass_begin(ex);
+    if (vk_dlaa_fg_on) vk_dlaa_hud(ex);   // frame generation: the picture before the HUD's first draw (vk_dlaa.c)
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
     if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
