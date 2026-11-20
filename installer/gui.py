@@ -148,6 +148,10 @@ class App:
         self.ui_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
         self.mono_font = 'Consolas' if os.name == 'nt' else 'DejaVu Sans Mono'
         self.sun_valley = use_sun_valley(root, self.ui_font)
+        # A read-only combobox selects its text when a value is picked (ttk::combobox::SelectEntry), which draws the
+        # value as highlighted text; the pick clears that selection once ttk has made it
+        root.bind_class('TCombobox', '<<ComboboxSelected>>',
+                        lambda e: e.widget.after_idle(e.widget.selection_clear), add='+')
         style = ttk.Style(root)
         style.configure('Title.TLabel', font=(self.ui_font, 15, 'bold'))
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=dpi.px(8))
