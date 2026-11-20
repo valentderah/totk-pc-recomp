@@ -275,7 +275,6 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 // at: the copies dropped at or before it are not found (vk_usnap_drop_at); UINT32_MAX outside a chunked replay.
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t at, uint64_t align, VkDescriptorBufferInfo *out);
-const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy of [addr, addr+n) as of the submit, NULL: none
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 // The state scan of a chunked replay (vk_exec.c): the op that writes [addr, addr+n) is the at-th that may; the chunks
@@ -283,12 +282,20 @@ void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU wri
 void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at);
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
+// The replay drew into the scene depth (vk_mvprev.c): with the per-object motion, this submission's arena is kept as
+// the last-frame copy until the next scene submission's fence.
+void vk_usnap_scene(void);
+// [addr, addr+n) in the last scene submission's snapshot (last frame's blocks for the per-object motion): a descriptor
+// (offset a multiple of align) and its bytes in host memory; 0: not in it.
+int vk_usnap_prev(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out, const uint8_t **bytes);
 // vk_mvprev.c: last frame's copy of the scene's object (c7) and bone (c5) blocks, for per-object motion vectors.
 // vk_mvprev_step: the distance of the game's other copy of a vertex-stage block the snapshot also copies, 0: none.
 // vk_mvprev_find: last frame's block of that object (prev, its address; how, MVPREV_*), 0: none.
 enum { MVPREV_NONE, MVPREV_SELF, MVPREV_SIDE, MVPREV_NEARER };
 uint64_t vk_mvprev_step(int stage, int index, uint64_t size);
 int vk_mvprev_on(void);
+int vk_mvprev_checking(void);   // TOTK_MVPREV_CHECK on: the snapshot also copies the blocks' neighbours
+int vk_mvprev_kept(int index);  // a vertex-stage binding index whose blocks the per-object motion compares
 void vk_mvprev_want(uint32_t index_mask);   // also keep these binding indices' last-frame copies (bit n: index n)   // DLAA on and TOTK_DLAA_OBJMV not 0, as of the last present
 int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int *how);
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame

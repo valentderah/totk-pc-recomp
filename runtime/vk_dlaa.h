@@ -1,4 +1,5 @@
-// DLAA (vk_dlaa.c): NVIDIA DLSS at the scene's own size, behind TOTK_DLAA (totk.ini dlaa = 1).
+// DLAA (vk_dlaa.c): the scene upscaler, NVIDIA DLSS or AMD FSR 3.1 (vk_fsr3.cpp), behind scene_upscaler (dlaa = 1 without
+// it: DLSS).
 #pragma once
 #include "vk.h"
 
@@ -6,7 +7,7 @@
 // output renders 640 wide, smaller windows less.
 #define DLAA_SCENE_MIN_W 320u
 
-int vk_dlaa_wanted(void);   // the setting is on (the device may still lack DLSS)
+int vk_dlaa_wanted(void);   // DLSS is the scene upscaler picked at start (the device may still lack it)
 // vk_device.c: NGX's instance and device extensions join the lists (room for max names); vk_dlaa_init after the
 // device exists brings NGX up and checks that DLSS is available.
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max);
@@ -14,8 +15,9 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
 void vk_dlaa_init(void);
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
-// 1 when the per-object motion runs this frame: vk_dlaa_available, or frame generation following the scene with its
-// objects (vk_fg_objects_on: TOTK_FG_OBJECTS, default 1).
+// 1 when the per-object motion runs (DLSS's and FSR 3.1's half after vk_dlaa_init, frame generation's live): DLSS
+// with NGX up (vk_dlaa_available), FSR 3.1 picked as the scene upscaler, or frame generation following the scene with
+// its objects (vk_fg_objects_on: TOTK_FG_OBJECTS, default 1).
 int vk_objmv_wanted(void);
 int vk_fg_objects_on(void);
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the

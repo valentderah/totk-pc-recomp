@@ -153,10 +153,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "How far around the camera grass grows (the game's: 62.5 m). Higher keeps the "
                                  "grass in meadows further out instead of growing it in just in front of you; lower "
                                  "draws less of it. Takes effect at the next start.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
-                          "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
-                          "from. Takes effect after a restart.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
                                  "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
@@ -170,11 +166,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "edges a little less smooth. Applies at once.",
     [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
     [UI_MENU_DLSS_CHARS_FULL] = "Full",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
-                          "they replace the 3D render scale. Takes effect at once.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
+    [UI_MENU_DLSS] = "Upscaling mode",
+    [UI_MENU_DLSS_DESC] = "Native anti-aliases the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
+                          "Performance draw it at 67, 58, 50 and 33 % and let the upscaler (DLSS or FSR 3.1) scale it "
+                          "up, which saves GPU time; they replace the 3D render scale. Takes effect at once.",
+    [UI_MENU_DLSS_DLAA] = "Native", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
@@ -183,6 +179,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Off",
     [UI_MENU_REFLEX_ON] = "On",
     [UI_MENU_REFLEX_BOOST] = "On + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "3D scene upscaler",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "A temporal upscaler for the 3D scene: smoother edges and less shimmer, and in a mode below Native it draws "
+                                    "the scene smaller and scales it up, which saves GPU time. NVIDIA DLSS needs an NVIDIA "
+                                    "RTX GPU and " DLSS_FILE " next to " EXE_FILE "; AMD FSR 3.1 runs on any GPU. Off keeps "
+                                    "the game's own scaling and FXAA. The HUD is not touched; the upscaler and sharpness "
+                                    "above still fit the game image to the window. Takes effect after a restart.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Off", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: needs an NVIDIA RTX GPU",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: " DLSS_FILE " is missing",
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 sharpness",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Sharpening of the 3D scene after FSR 3.1; 0 turns it off.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -605,6 +613,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
+    [UI_MENU_OV_UPSCALER] = "3D upscaler",
     [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation", [UI_MENU_OV_SHOWN] = "Shown",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
@@ -788,10 +797,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "Как далеко вокруг камеры растёт трава (в игре 62,5 м). Выше: трава на лугах видна "
                                  "дальше и не вырастает прямо перед вами; ниже: травы меньше. Действует после "
                                  "перезапуска.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
-                          "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
-                          "работает. Действует после перезапуска.",
     [UI_MENU_DLSS_PRESET] = "Модель DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
                                  "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
@@ -805,11 +810,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                 "гладкие края. Действует сразу.",
     [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
     [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
-    [UI_MENU_DLSS] = "Режим DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
-                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
-                          "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
+    [UI_MENU_DLSS] = "Режим апскейлера",
+    [UI_MENU_DLSS_DESC] = "«Родное» сглаживает 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
+                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют апскейлером (DLSS "
+                          "или FSR 3.1), что экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует "
+                          "сразу.",
+    [UI_MENU_DLSS_DLAA] = "Родное", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
@@ -818,6 +824,19 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Выкл",
     [UI_MENU_REFLEX_ON] = "Вкл",
     [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
+    [UI_MENU_SCENE_UPSCALER] = "Апскейлер 3D-сцены",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Временной апскейлер для 3D-сцены: ровнее края и меньше мерцания, а в режимах ниже «Родного» он "
+                                    "рисует сцену меньше и увеличивает её, что экономит время видеокарты. NVIDIA DLSS "
+                                    "нужна видеокарта NVIDIA RTX и " DLSS_FILE " рядом с " EXE_FILE "; AMD FSR 3.1 "
+                                    "работает на любой видеокарте. «Выкл» оставляет собственное масштабирование игры и "
+                                    "FXAA. Интерфейс не затрагивается; масштабирование и резкость выше по-прежнему "
+                                    "подгоняют изображение игры под окно. Действует после перезапуска.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Выкл", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: нужна видеокарта NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: нет " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Резкость FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Повышение резкости 3D-сцены после FSR 3.1; 0 выключает его.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1244,6 +1263,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f МГц", [UI_MENU_OV_FMT_GB] = "%.1f ГБ", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f ГБ",
     [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
     [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
+    [UI_MENU_OV_UPSCALER] = "3D-апскейлер",
     [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров", [UI_MENU_OV_SHOWN] = "Показано",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
@@ -1699,6 +1719,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "jogo %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f por quadro",
     [UI_MENU_OV_WINDOW] = "Janela", [UI_MENU_OV_OUTPUT] = "Imagem do jogo", [UI_MENU_OV_SCENE] = "Cena 3D",
+    [UI_MENU_OV_UPSCALER] = "Upscaler 3D",
     [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação", [UI_MENU_OV_SHOWN] = "Exibidos",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
@@ -1887,15 +1908,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
-                          "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
-                          "onde ele parte. Vale após reiniciar.",
-    [UI_MENU_DLSS] = "Modo do DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
-                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
-                          "GPU; eles substituem a escala 3D. Vale na hora.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (nativo)",
+    [UI_MENU_DLSS] = "Modo de upscaling",
+    [UI_MENU_DLSS_DESC] = "Nativo suaviza a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
+                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o upscaler (DLSS ou FSR 3.1) ampliá-la, "
+                          "o que poupa tempo da GPU; eles substituem a escala 3D. Vale na hora.",
+    [UI_MENU_DLSS_DLAA] = "Nativo",
     [UI_MENU_DLSS_QUALITY] = "Qualidade",
     [UI_MENU_DLSS_BALANCED] = "Equilibrado",
     [UI_MENU_DLSS_PERFORMANCE] = "Desempenho", [UI_MENU_DLSS_ULTRA] = "Ultra Desempenho",
@@ -1920,6 +1937,19 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Desligado",
     [UI_MENU_REFLEX_ON] = "Ligado",
     [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "Upscaler da cena 3D",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Um upscaler temporal para a cena 3D: bordas mais suaves e menos cintilação, e nos modos abaixo do "
+                                    "Nativo ele desenha a cena menor e a amplia, o que poupa tempo da GPU. O NVIDIA DLSS "
+                                    "precisa de uma GPU NVIDIA RTX e do " DLSS_FILE " ao lado do " EXE_FILE "; o AMD FSR "
+                                    "3.1 roda em qualquer GPU. Desligado mantém a escala e o FXAA do próprio jogo. O HUD "
+                                    "não é afetado; o upscaler e a nitidez acima continuam ajustando a imagem do jogo à "
+                                    "janela. Vale após reiniciar.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Desligado", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: precisa de uma GPU NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: falta o " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Nitidez do FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Aumento de nitidez da cena 3D após o FSR 3.1; 0 desliga.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2504,6 +2534,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_WINDOW] = "窗口",
     [UI_MENU_OV_OUTPUT] = "游戏画面",
     [UI_MENU_OV_SCENE] = "3D 场景",
+    [UI_MENU_OV_UPSCALER] = "3D 超分",
     [UI_MENU_OV_SCALING] = "缩放",
     [UI_MENU_OV_LIMIT] = "帧率上限",
     [UI_MENU_OV_PRESENT] = "呈现模式",
@@ -2638,12 +2669,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
-                          "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
-    [UI_MENU_DLSS] = "DLSS 模式",
-    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
-    [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
+    [UI_MENU_DLSS] = "超分模式",
+    [UI_MENU_DLSS_DESC] = "原生以全分辨率对 3D 场景做抗锯齿。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由超分"
+                          "（DLSS 或 FSR 3.1）放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
+    [UI_MENU_DLSS_DLAA] = "原生",
     [UI_MENU_DLSS_QUALITY] = "质量",
     [UI_MENU_DLSS_BALANCED] = "平衡",
     [UI_MENU_DLSS_PERFORMANCE] = "性能",
@@ -2665,6 +2694,17 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "关",
     [UI_MENU_REFLEX_ON] = "开",
     [UI_MENU_REFLEX_BOOST] = "开 + 增强",
+    [UI_MENU_SCENE_UPSCALER] = "3D 场景超分",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "用于 3D 场景的时间性超分：边缘更平滑，闪烁更少；低于“原生”的模式会以更小的尺寸绘制场景再放大，以节省 GPU "
+                                    "时间。NVIDIA DLSS 需要 NVIDIA RTX 显卡，并将 " DLSS_FILE " 放在 " EXE_FILE " 旁；AMD "
+                                    "FSR 3.1 可在任何显卡上运行。“关”保留游戏自己的缩放和 FXAA。HUD 不受影响；上方的缩放"
+                                    "方式和锐度仍负责把游戏画面适配到窗口。重启后生效。",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "关", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS：需要 NVIDIA RTX 显卡",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS：缺少 " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 锐度",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "FSR 3.1 之后 3D 场景的锐化强度；0 为关闭。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"

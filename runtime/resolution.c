@@ -96,6 +96,19 @@ static int dlss_dll(void) {
 #endif
 }
 
+int res_dlss_dll(void) {
+    static int dll = -1;
+    if (dll < 0) dll = dlss_dll();
+    return dll;
+}
+
+// The engine picked at start can run, as far as is known before the device exists: DLSS needs its DLL (dlss_dll); FSR
+// 3.1 is built in (vk_fsr3.cpp). Off: nothing to run.
+static int upscaler_ready(void) {
+    int e = vk_upscaler_engine();
+    return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR3;
+}
+
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -118,15 +131,17 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// (the mode the menu still holds would shrink the scene for the plain upscaler) and where the engine picked at start
+// cannot run (upscaler_ready).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
-    static int dll = -1;
-    if (!cfg_bool("TOTK_DLAA")) return 0;
+    static int told;
+    if (!vk_upscaler_on()) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
+            int ready = upscaler_ready();
+            if (!ready && !told++) {
 #ifdef _WIN32
                 rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
                        "render_scale", m);
@@ -135,7 +150,7 @@ static double dlss_share(const char *m) {
                        "scene follows render_scale", m);
 #endif
             }
-            return dll ? dlss[i].k : 0;
+            return ready ? dlss[i].k : 0;
         }
     return 0;
 }
@@ -192,12 +207,13 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with the scene upscaler able to run (DLSS with
+    // its DLL there, or FSR 3.1 in the build)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
+    R.live = RT_V143 && vk_upscaler_on() && upscaler_ready();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
@@ -658,19 +674,29 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+// FSR 3.1 as the scene upscaler holds it at 100 % whatever dynamic_res says, as codexx-dev's pull request #1245 does
+// for its FSR: each tier is a scene of another size, so every step starts FSR's history again, and below 100 % the
+// game ends its frame another way (a frame log on 1.4.3: its copy shader scales the scene straight into the
+// output-sized target instead of the scaling FXAA draw), which #1245 measured as a picture that went soft and sharp in
+// turns at a 2560x1440 scene. A 1280x720 scene (1080p, quality) stayed at 100 % through a 70 s town run, so it gains
+// nothing there; the hold matters for the wide scenes the cost model steps down.
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
-    if (dyn == shown) return;
-    shown = dyn;
+    int fsr = vk_upscaler_on() && vk_upscaler_engine() == UPSCALER_FSR3;
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
+    int state = dyn | fsr << 1;
+    if (state == shown) return;
+    shown = state;
     if (set < 0) {
         if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
         return;
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn   ? "on: the game's own 100, 90 or 80 %"
+           : fsr ? "off while FSR 3.1 upscales the scene: the scene stays at 100 %"
+                 : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
