@@ -357,6 +357,11 @@
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
 # fxaa = 1
+# 1: a place's name shown small at the bottom left (a shrine or a cave you entered or cleared) fades out at the end of
+# its dissolve as the large name at the top does, so its last pieces go out softly instead of vanishing at once. The
+# port gives the small name the large one's fade curve; the game itself has none for it (also on the Switch). 0, the
+# default: as the game shows it. 1.4.3. Changes while the game runs take effect at once.
+# title_fade = 0
 
 # HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with
 # colour management; without it the picture stays SDR). The game's tonemap keeps highlights up to hdr_peak_nits (your

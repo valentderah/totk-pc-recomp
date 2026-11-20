@@ -316,6 +316,7 @@ int res_dlss_dll(void);                                    // the DLSS library i
 int res_ffx_dlls(void);                                    // AMD's two FSR 4 libraries are (Windows; 0 elsewhere)
 void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
 void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
+void menu_ui_title_fade(void);   // menu_cursor.c, at each present: the small place title's fade (TOTK_TITLE_FADE)
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)

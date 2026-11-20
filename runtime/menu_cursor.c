@@ -599,3 +599,47 @@ int menu_ui_focus_to(uint64_t node) {
     move_focus(&f, node);
     return 0;
 }
+
+// ---- Place titles (TOTK_TITLE_FADE, live, default 0): the small title's last pieces fade out as the large one's do.
+// Location_00 shows a place's name large (N_Large_00, top centre) or small (N_Small_00, bottom left: the game picks it
+// from GameData DungeonState, Clear or Enter). Its LocationIn animation dissolves either into pieces up to frame 210
+// and hides the layout at 229. For the large title it also fades the group N_TextLargeAnime_01 from 255 at frame 180
+// to 0 at 210 (Hermite keys, slopes 0 and -8.5 per frame), so the last pieces go out softly; the small title's group
+// N_TextSmallAnime_00 has no such track, so its last pieces vanish at once, and those still above the dissolve's end
+// threshold at frame 210 (0.8 for the Latin and Cyrillic languages, 1.05 for Japanese, Korean and Chinese,
+// RegionLanguageType) stay until the layout hides. The switch gives N_TextSmallAnime_00 the large group's curve,
+// 255 (t^3 - 2 t^2 + 1) with t = (frame - 180) / 30. The frame is read from P_CaptureStepSmall_01, whose alpha
+// LocationIn takes linearly from 255 at frame 150 to 0 at 210: t = 1 - 2 alpha / 255. The value is set at each present,
+// so the fade runs one game frame behind the animation. Switched off, the group gets back the layout's 255.
+void menu_ui_title_fade(void) {
+    static int wrote;   // the presenting thread only
+    if (!RT_V143) return;
+    int on = cfg_bool("TOTK_TITLE_FADE");
+    if (!on && !wrote) return;
+    main_range();
+    uint64_t sm = screen_mgr();
+    if (!sm) return;
+    int32_t n = (int32_t)rd32(sm + SM_COUNT);
+    uint64_t arr = rd64(sm + SM_SCREENS);
+    if (n <= 0 || n > 1024 || !ok_at(arr, 8ull * (uint64_t)n)) return;
+    for (int32_t i = 0; i < n; i++) {
+        uint64_t scr = rd64(arr + 8ull * (uint64_t)i);
+        if (!game_object(scr, SCR_REQUEST + 1)) continue;
+        char nm[48];
+        layout_name(scr, nm, sizeof nm);
+        if (strcmp(nm, "Location_00")) continue;
+        uint64_t lyt = rd64(scr + SCR_LAYOUT), root = ok_at(lyt, LYT_ROOT + 8) ? rd64(lyt + LYT_ROOT) : 0;
+        uint64_t small = pane_find(root, "N_Small_00", 0);
+        uint64_t step = pane_find(small, "P_CaptureStepSmall_01", 0);
+        uint64_t group = pane_find(small, "N_TextSmallAnime_00", 0);
+        if (!step || !group) continue;
+        uint8_t alpha = 255;
+        if (on) {
+            float t = 1.0f - 2.0f * (float)rd8(step + PANE_ALPHA) / 255.0f;
+            t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+            alpha = (uint8_t)(255.0f * (t * t * t - 2.0f * t * t + 1.0f) + 0.5f);
+        }
+        *(volatile uint8_t *)(uintptr_t)(group + PANE_ALPHA) = alpha;
+        wrote = on;
+    }
+}
