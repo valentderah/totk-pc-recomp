@@ -827,6 +827,8 @@ static void tab_screen(float scale) {
                                         UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
         opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
     }
+    if (!strcmp(engine, "fsr3"))   // FSR 3.1's own sharpening (vk_dlaa.c fsr_evaluate)
+        opt_slider("TOTK_FSR_SHARPNESS", UI_MENU_FSR3_SHARPNESS, 0, 100, UI_MENU_FSR3_SHARPNESS_DESC, 5, "%.0f %%");
     if (!strcmp(engine, "dlss")) {   // DLSS's model, its characters' mask and its other switches (FSR 3.1 has none)
         static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
         opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);

@@ -233,8 +233,10 @@ extern "C" int fsr3_dispatch(VkCommandBuffer cb, const Fsr3Frame *f) {
     dd.motionVectorScale = {1.0f, 1.0f};   // render pixels already
     dd.renderSize = {f->w, f->h};
     dd.upscaleSize = {f->ow, f->oh};
-    dd.enableSharpening = false;           // the present's RCAS (upscaler = fsr, sharpness) is the one sharpening pass
-    dd.sharpness = 0.0f;
+    // FSR's RCAS pass on its output (fsr_sharpness): the game's own sharpening is part of the scaling FXAA draw that
+    // FSR replaces, and the present's RCAS (upscaler = fsr, sharpness) only runs where it scales to the window
+    dd.enableSharpening = f->sharpness > 0.0f;
+    dd.sharpness = f->sharpness > 1.0f ? 1.0f : f->sharpness;
     dd.frameTimeDelta = f->dt_ms;
     dd.preExposure = 1.0f;
     dd.reset = f->reset != 0;

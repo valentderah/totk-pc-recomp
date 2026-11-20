@@ -22,6 +22,7 @@ typedef struct {
     float near_m, far_m, fov_y; // the camera's planes (m) and vertical field of view (radians)
     float dt_ms;                // time since the last upscaled frame
     int reset;                  // no usable history (a cut, a new size, the first frame)
+    float sharpness;            // FSR 3.1's own sharpening (RCAS) on its output, 0..1; 0 leaves the pass out
     uint64_t fence;             // the submission's timeline value (VkExec.fence)
 } Fsr3Frame;
 

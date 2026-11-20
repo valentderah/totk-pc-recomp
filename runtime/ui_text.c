@@ -189,6 +189,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: needs an NVIDIA RTX GPU",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: " DLSS_FILE " is missing",
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 sharpness",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Sharpening of the 3D scene after FSR 3.1; 0 turns it off.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -833,6 +835,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: нужна видеокарта NVIDIA RTX",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: нет " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Резкость FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Повышение резкости 3D-сцены после FSR 3.1; 0 выключает его.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1944,6 +1948,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: precisa de uma GPU NVIDIA RTX",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: falta o " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Nitidez do FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Aumento de nitidez da cena 3D após o FSR 3.1; 0 desliga.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2697,6 +2703,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS：需要 NVIDIA RTX 显卡",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS：缺少 " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 锐度",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "FSR 3.1 之后 3D 场景的锐化强度；0 为关闭。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"

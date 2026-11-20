@@ -674,19 +674,29 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+// FSR 3.1 as the scene upscaler holds it at 100 % whatever dynamic_res says, as codexx-dev's pull request #1245 does
+// for its FSR: each tier is a scene of another size, so every step starts FSR's history again, and below 100 % the
+// game ends its frame another way (a frame log on 1.4.3: its copy shader scales the scene straight into the
+// output-sized target instead of the scaling FXAA draw), which #1245 measured as a picture that went soft and sharp in
+// turns at a 2560x1440 scene. A 1280x720 scene (1080p, quality) stayed at 100 % through a 70 s town run, so it gains
+// nothing there; the hold matters for the wide scenes the cost model steps down.
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
-    if (dyn == shown) return;
-    shown = dyn;
+    int fsr = vk_upscaler_on() && vk_upscaler_engine() == UPSCALER_FSR3;
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
+    int state = dyn | fsr << 1;
+    if (state == shown) return;
+    shown = state;
     if (set < 0) {
         if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
         return;
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn   ? "on: the game's own 100, 90 or 80 %"
+           : fsr ? "off while FSR 3.1 upscales the scene: the scene stays at 100 %"
+                 : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
