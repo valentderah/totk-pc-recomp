@@ -66,13 +66,13 @@ const char *input_pad_name(int pad) { return pad > PAD_NONE && pad < PAD_COUNT ?
 
 void input_map_reset(void) { input_map = defaults; }
 
-static int key_id(const char *name) {
+int input_key_id(const char *name) {
     for (int k = KEY_A; k < KEY_COUNT; k++)
         if (key_names[k] && !strcasecmp(key_names[k], name)) return k;
     return KEY_NONE;
 }
 
-static int pad_id(const char *name) {
+int input_pad_id(const char *name) {
     for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
         if (!strcasecmp(pad_names[p], name)) return p;
     return PAD_NONE;
@@ -133,12 +133,12 @@ int input_map_bind(const char *button, const char *list) {
         int ok = 0;
         if (!strncasecmp(tok, "pad:", 4) && action < B_SL_LEFT) {
             const char *name = trim(tok + 4);
-            int p = pad_id(name);
+            int p = input_pad_id(name);
             if (!strcasecmp(name, "default")) pad_def = ok = 1;
             else if (p && np < INPUT_PAD_BINDING_MAX) pads[np++] = (uint8_t)p, ok = 1;
         } else if (!strncasecmp(tok, "key:", 4)) {
             const char *name = trim(tok + 4);
-            int k = key_id(name);
+            int k = input_key_id(name);
             if (!strcasecmp(name, "default")) key_def = ok = 1;
             else if (k && nk < INPUT_BINDING_MAX) keys[nk++] = (uint8_t)k, ok = 1;
         }

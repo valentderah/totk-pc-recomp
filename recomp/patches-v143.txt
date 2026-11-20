@@ -128,6 +128,14 @@ set fov      TOTK_FOV_PATCH      0
 site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
 site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
+# Free camera (runtime/freecam.c freecam_hook, page +0xf50). The camera component update (main+0x628460, the routine of
+# the first fov and aspect sites) copies the component's eye, target and up into its sead camera; every path to that
+# copy runs this load of the component's link first. The hook performs the load and, while the free camera is on,
+# writes the component's one-shot eye and target overrides (+0x180, +0x198). The function saves x30 in its prologue, so
+# the bl's link write is harmless.
+set freecam  TOTK_FREECAM_PATCH  1
+site freecam main 6286d4 f9400e68 94d2de1f   # ldr x8, [x19, #0x18]
+
 # The camera input update, after its stick dead zone, unit-radius clamp and StickExponent. The host callback
 # performs the displaced store and adds raw mouse counts to s9/s10 (runtime/mouse_direct.c camera_input).
 # Its address is page +0xfd0; the page is main+0x3adf000 on this verified build.

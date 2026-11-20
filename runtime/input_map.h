@@ -73,6 +73,8 @@ void input_map_reset(void);
 // stick directions the keys drive), then SHAKE. Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
 const char *input_action_name(int action);
 const char *input_key_name(int key);
+int input_key_id(const char *name);   // KEY_NONE for a name without a key
+int input_pad_id(const char *name);   // PAD_NONE for a name without a gamepad button
 const char *input_pad_name(int pad);
 // Replaces every binding of the action `button` (an action name) with `list`: comma separated "pad:<name>" and
 // "key:<name>" entries, "key:default" / "pad:default" for that part's defaults, or "none" for no input. A part the list

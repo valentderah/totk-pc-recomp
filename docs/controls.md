@@ -129,6 +129,39 @@ bind_X = pad:west, key:space
 bind_Y = pad:north, key:mouse_l
 ```
 
+## Free camera
+
+On game 1.4.3, a chosen gamepad combo or a key steps the free camera through three stages: move, lock, and off again.
+Neither is set by default: pick them with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab (for
+example ZL+ZR+L3, LT+RT+L3 on an Xbox pad, and F2; `none` turns one off). An input script can press the combo as a
+gamepad would; the keys bound to its buttons do not. While the free camera moves, the world goes on but the game gets
+no input, so Link stands where he was.
+
+Locked, the view stays where the flight left it and the game gets its input back. Link walks where the left stick
+points on screen, as the game steers him by the camera it draws. The right stick and the mouse turn the game camera,
+which still follows Link unseen.
+
+| Gamepad | Keyboard and mouse (default bindings) | Free camera |
+|---|---|---|
+| Left stick | W A S D | forward and back along the view, and sideways |
+| ZR / ZL (RT / LT) | X / Z | straight up / down; a trigger by how far it is pressed |
+| Right stick | mouse, arrow keys | turn (yaw and pitch; pitch stops 5 degrees short of straight up or down) |
+| R / L (RB / LB) | R / Q | each press doubles / halves the speed, 0.25 to 512 m/s |
+
+The keys are the ones bound to the left and right stick and to ZR, ZL, R and L (`bind_` lines), so remapped keys follow.
+The mouse turns the free camera at the game camera's rate (0.08 degrees a count at `mouse_sens = 1`) and the game's
+mouse camera gets none of it meanwhile. Each switch starts at the game camera's position and view at 8 m/s; the speed
+follows the clock, so it is the same at any frame rate and game speed. The horizon stays level.
+
+How it works (`runtime/freecam.c`): the camera component update (main+0x628460) copies each component's eye, target
+and up into its sead camera. The site `freecam` (`recomp/patches-v143.txt`, main+0x6286d4) runs before that copy and
+writes the component's one-shot eye and target overrides (+0x180, +0x198), which the update takes in place of the pose
+and then clears, so the game camera's own state is never changed and resumes the frame the free camera ends. Locked,
+the site keeps writing the overrides without moving them. The up
+vector is levelled through the component's up offset (+0x200), which is kept and put back. Of the three components a
+frame updates, the free camera drives the two that share the player camera's eye and leaves the one at the default pose
+(eye 0, 0, 10). After a load replaced the components it picks the new ones and keeps its position.
+
 ## Mouse camera
 
 `mouse_mode = direct` (the default) turns the camera by the raw mouse motion on games 1.4.3 and 1.2.1, through hooks in the game's camera code (`runtime/mouse_direct.c`, the `mouse_direct` sites of `recomp/patches-v143.txt` and `recomp/patches-v121.txt`). None of them changes a step of the gamepad alone. The free-orbit camera receives raw-count
