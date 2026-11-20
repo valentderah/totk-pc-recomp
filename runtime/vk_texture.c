@@ -2719,7 +2719,7 @@ void vk_sampler_register(int id, const samp_par *s) {
     unlock();
 }
 
-// DLSS upscaling (vk_sampler_dlss_bias): the scene's material textures, the filtered mipmapped ones that repeat, are
+// DLSS or FSR 3.1 upscaling (vk_sampler_dlss_bias): the scene's material textures, the filtered mipmapped ones that repeat, are
 // sampled for the output's resolution; clamped ones (post effects, LUTs, the UI) keep the game's bias.
 static float dlss_bias;
 

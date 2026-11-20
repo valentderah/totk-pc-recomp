@@ -1802,18 +1802,20 @@ void vk_dlaa_pass(VkExec *ex) {
 }
 
 // TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
-// texture bias that goes with it while DLSS runs.
+// texture bias that goes with it while the upscaler runs. DLSS takes NVIDIA's log2(scene / output); FSR 3.1 takes AMD's
+// log2(scene / output) - 1 (FidelityFX FSR 3 upscaler docs, "Mipmap biasing"), so -1 also in place. The bias follows
+// the mode and the upscaler going on or off; the engine is fixed for the run.
 static void dlss_mode(void) {
     static char mode[32];
-    static int bias_on = -1;
+    static float bias;   // what the material samplers have (vk_texture.c starts at 0)
     const char *m = cfg_value("TOTK_DLSS");
     if (strcmp(m, mode)) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
-        bias_on = -1;
     }
-    int b = dl_active();
-    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
+    float b = 0.0f;
+    if (dl_active()) b = res_dlss_lod_bias() - (vk_upscaler_engine() == UPSCALER_FSR3 ? 1.0f : 0.0f);
+    if (b != bias) bias = b, vk_sampler_dlss_bias(b);
 }
 
 
