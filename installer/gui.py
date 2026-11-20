@@ -28,6 +28,7 @@ dpi.enable()
 
 import tkinter as tk                       # noqa: E402  (after dpi.enable, see above)
 from tkinter import filedialog, messagebox, ttk   # noqa: E402
+from tkinter import font as tkfont                 # noqa: E402
 
 try:
     from PIL import ImageGrab   # only the screenshots of --selftest --shots need it; the release has no PIL
@@ -50,6 +51,8 @@ PAD = dpi.px(14)      # padding of the window and its frames
 WRAP = dpi.px(620)    # wrap width of the long labels
 
 RECENT_WAIT = 1.5   # seconds the window waits for the recorded paths
+# Sun Valley, the Windows 11 look for ttk (sv-ttk 2.6.1, MIT, unmodified; THIRD_PARTY_NOTICES.md)
+SUN_VALLEY = Path(__file__).resolve().parent / 'vendor' / 'sv_ttk' / 'sv.tcl'
 
 
 def load_recent(wait=RECENT_WAIT):
@@ -69,6 +72,46 @@ def fix_tcl_paths():
         for lib, var in (('tcl9.0', 'TCL_LIBRARY'), ('tk9.0', 'TK_LIBRARY')):
             if (tcl / lib).is_dir():
                 os.environ[var] = str(tcl / lib)
+
+
+def use_sun_valley(root, ui_font):
+    """Switch the window to the light Sun Valley theme; False leaves the platform theme when it does not load.
+
+    The theme sizes its fonts in pixels, which Tk does not scale with the display; they are turned into points (96 DPI
+    pixels * 0.75) so they grow with tk scaling like the rest of the window. Its Segoe UI Variable families exist on
+    Windows 11 only; elsewhere the fonts take `ui_font`, bold where the theme asked for Semibold. The theme's images
+    (check boxes, button and field borders) stay at their 100% pixel size.
+
+    sv.tcl answers <<ThemeChanged>> with configure_colors, whose tk_setPalette writes the theme's text and background
+    colour into every widget and into the option database, over the colours of our label styles (errors, notices,
+    muted text). The binding is dropped before the switch and the ttk half of configure_colors is done here."""
+    try:
+        root.tk.call('source', str(SUN_VALLEY))
+        root.bind_class('Tk', '<<ThemeChanged>>', '')
+        style = ttk.Style(root)
+        style.theme_use('sun-valley-light')
+        c = {k: root.tk.call('set', f'ttk::theme::sv_light::colors(-{k})') for k in ('fg', 'bg', 'disfg', 'selfg', 'selbg')}
+        style.configure('.', background=c['bg'], foreground=c['fg'], troughcolor=c['bg'], focuscolor=c['selbg'],
+                        selectbackground=c['selbg'], selectforeground=c['selfg'], insertwidth=1, insertcolor=c['fg'],
+                        fieldbackground=c['bg'], font='SunValleyBodyFont', borderwidth=0, relief='flat')
+        style.map('.', foreground=[('disabled', c['disfg'])])
+        root.configure(background=c['bg'])
+        for cls in ('TEntry', 'TCombobox'):   # config_entry_font sets this only on fields that exist at the switch
+            root.option_add(f'*{cls}.font', 'SunValleyBodyFont')
+    except (tk.TclError, OSError):
+        return False
+    families = set(root.tk.splitlist(root.tk.call('font', 'families')))
+    for name in root.tk.splitlist(root.tk.call('font', 'names')):
+        if not str(name).startswith('SunValley'):
+            continue
+        f = tkfont.nametofont(str(name), root=root)
+        size = int(f.cget('size'))
+        if size < 0:
+            f.configure(size=round(-size * 0.75))
+        family = f.cget('family')
+        if family not in families:
+            f.configure(family=ui_font, weight='bold' if 'Semibold' in family else 'normal')
+    return True
 
 
 class App:
@@ -104,6 +147,7 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.ui_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
         self.mono_font = 'Consolas' if os.name == 'nt' else 'DejaVu Sans Mono'
+        self.sun_valley = use_sun_valley(root, self.ui_font)
         style = ttk.Style(root)
         style.configure('Title.TLabel', font=(self.ui_font, 15, 'bold'))
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=dpi.px(8))

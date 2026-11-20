@@ -177,9 +177,11 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   resume and update are one rule; output kept from another release is re-hashed first.
 - Peak space on the install disk is about 36 GiB, not 22: the extraction copies both Program NCAs (16.3 GiB) next to
   the merged RomFS (15.9 GiB) before it deletes them. The check computes the exact figure.
-- Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form (game files and install
-  sections, the explanations under More details, the share notice next to Start), step list with progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
-  finish screen with Open folder. English, Russian, Brazilian Portuguese or Simplified Chinese, chosen from the Windows
+- Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form (game files and
+  install sections, the explanations under More details, the share notice next to Start) in the Sun Valley ttk theme
+  (`installer/vendor/sv_ttk/`, the platform theme when it does not load), step list with progress, space line,
+  collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit), finish screen with Open
+  folder. English, Russian, Brazilian Portuguese or Simplified Chinese, chosen from the Windows
   display language (zh-CN and zh-SG give Chinese; the Traditional Chinese regions give English), switchable in the
   window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans>.json`. A Chinese window still starts with
   English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
