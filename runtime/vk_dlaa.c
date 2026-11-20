@@ -12,9 +12,9 @@
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
 //
-// dlaa_backend = fsr (TOTK_DLAA_BACKEND, read at start) hands the same frame to AMD's FSR instead (vk_ffx.c): the
-// arming, the jitter, the motion vectors, the masks and the copy of the result below are shared, and only the call that
-// upscales differs (evaluate). NGX is then never loaded.
+// dlaa_backend = fsr or fsr3 (TOTK_DLAA_BACKEND, read at start) hands the same frame to AMD's FSR instead (vk_ffx.c):
+// the arming, the jitter, the motion vectors, the masks and the copy of the result below are shared, and only the call
+// that upscales differs (evaluate). NGX is then never loaded.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,13 +114,13 @@ int vk_dlaa_wanted(void) {
     return wanted;
 }
 
-// FSR instead of DLSS (TOTK_DLAA_BACKEND=fsr), fixed for the run like dlaa: the backend's extensions are chosen at
-// device creation. AMD ships FSR's Vulkan libraries for Windows only, so on Linux the setting is ignored (the menu has
-// no row for it) and DLAA stays with DLSS.
+// FSR instead of DLSS (TOTK_DLAA_BACKEND=fsr, FSR 4, or fsr3, FSR 3.1: vk_ffx_init picks the version), fixed for the
+// run like dlaa: the backend's extensions are chosen at device creation. AMD ships FSR's Vulkan libraries for Windows
+// only, so on Linux the setting is ignored (the menu has no row for it) and DLAA stays with DLSS.
 static int fsr_backend(void) {
     static int fsr = -1;
     if (fsr < 0) {
-        fsr = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
+        fsr = !strncmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr", 3);   // fsr or fsr3
 #ifndef _WIN32
         if (fsr && vk_dlaa_wanted())
             rt_log("dlaa: dlaa_backend = fsr runs on Windows only (AMD's FSR SDK has no Linux libraries): using DLSS");

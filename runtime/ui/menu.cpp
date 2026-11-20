@@ -731,23 +731,26 @@ static const char *present_note(void) {
     return note;
 }
 
-// The upscaler of the 3D scene, one row over two settings: dlaa (off or on) and dlaa_backend (NVIDIA DLSS or AMD FSR).
-// AMD ships FSR's Vulkan libraries for Windows only, so Linux has DLSS alone (vk_dlaa.c fsr_backend).
+// The upscaler of the 3D scene, one row over two settings: dlaa (off or on) and dlaa_backend (NVIDIA DLSS, AMD FSR 4 or
+// AMD FSR 3). AMD ships FSR's Vulkan libraries for Windows only, so Linux has DLSS alone (vk_dlaa.c fsr_backend).
 static void row_upscalers(void) {
-    static const UiTextId ids[] = {UI_MENU_DLAA_OFF, UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR};
+    static const UiTextId ids[] = {UI_MENU_DLAA_OFF, UI_MENU_DLAA_BACKEND_DLSS, UI_MENU_DLAA_BACKEND_FSR,
+                                   UI_MENU_DLAA_BACKEND_FSR3};
+    static const char *const backends[] = {"", "dlss", "fsr", "fsr3"};
 #ifdef _WIN32
-    const int n = 3;
+    const int n = 4;
 #else
     const int n = 2;
 #endif
-    int cur = !cfg_bool("TOTK_DLAA") ? 0 : n > 2 && !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr") ? 2 : 1;
+    const char *be = cfg_value("TOTK_DLAA_BACKEND");
+    int cur = !cfg_bool("TOTK_DLAA") ? 0 : n > 3 && !strcmp(be, "fsr3") ? 3 : n > 2 && !strcmp(be, "fsr") ? 2 : 1;
     int step = opt_choice_step("TOTK_DLAA", UI_MENU_DLAA, menu_text(ids[cur]), cur == 0, UI_MENU_DLAA_DESC);
     if (!step) return;
     // A / click: the next value, round to the first; left / right stop at the ends (as opt_choice_list)
     int nv = step == 2 ? (cur + 1) % n : cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;
     if (nv == cur) return;
     cfg_set("TOTK_DLAA", nv ? "1" : "0");
-    if (nv) cfg_set("TOTK_DLAA_BACKEND", nv == 2 ? "fsr" : "dlss");   // off keeps the upscaler chosen last
+    if (nv) cfg_set("TOTK_DLAA_BACKEND", backends[nv]);   // off keeps the upscaler chosen last
     opt_save_soon();
 }
 

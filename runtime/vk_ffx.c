@@ -4,8 +4,9 @@
 // code is compiled in, only the descriptor layouts of ffx_api_min.h.
 //
 // The upscaler DLL offers several versions (FSR 4.x, FSR 3.1.x) and decides by itself which ones a device can run:
-// vk_ffx_init lists them and pins the newest 4.x when there is one, else leaves the DLL's default (3.1 on GPUs without
-// FSR 4). Every context is created with that version (ffxOverrideVersion).
+// vk_ffx_init lists them and pins the newest 4.x when there is one (dlaa_backend = fsr), or the newest 3.x
+// (dlaa_backend = fsr3), else leaves the DLL's default (3.1 on GPUs without FSR 4). Every context is created with that
+// version (ffxOverrideVersion).
 //
 // What FSR gets is what DLSS gets (vk_dlaa.c evaluate): the R11G11B10F light target as linear HDR colour with automatic
 // exposure, the D32F scene depth, motion vectors at the render size in render pixels pointing from this frame's
@@ -58,7 +59,7 @@ static struct {
 
 int vk_ffx_wanted(void) {
     static int wanted = -1;
-    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA") && !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr");
+    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA") && !strncmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr", 3);
     return wanted;
 }
 
@@ -130,13 +131,16 @@ void vk_ffx_init(void) {
     }
     if (count > FFX_MAX_VERSIONS) count = FFX_MAX_VERSIONS;
     char list[256] = "";
+    // dlaa_backend = fsr takes the newest FSR 4 the DLL offers for this device, fsr3 the newest FSR 3 (3.1 in the SDK
+    // 2.4 libraries, on any GPU the DLL supports). Without one the DLL's default stays (FSR 3.1 on GPUs without FSR 4).
+    int want3 = !strcmp(cfg_value("TOTK_DLAA_BACKEND"), "fsr3");
     int best = -1, best_major = 0, best_minor = 0, best_patch = 0;
     for (uint64_t i = 0; i < count; i++) {
         const char *nm = names[i] ? names[i] : "?";
         size_t used = strlen(list);
         snprintf(list + used, sizeof list - used, "%s%s", i ? ", " : "", nm);
         int ma = 0, mi = 0, pa = 0;
-        if (sscanf(nm, "%d.%d.%d", &ma, &mi, &pa) < 1 || ma < 4) continue;
+        if (sscanf(nm, "%d.%d.%d", &ma, &mi, &pa) < 1 || (want3 ? ma != 3 : ma < 4)) continue;
         if (best < 0 || ma > best_major || (ma == best_major && (mi > best_minor || (mi == best_minor && pa > best_patch))))
             best = (int)i, best_major = ma, best_minor = mi, best_patch = pa;
     }
@@ -148,7 +152,7 @@ void vk_ffx_init(void) {
     }
     F.available = 1;
     rt_log("fsr: upscaler versions for this device: %s; using %s%s", list, F.version,
-           best >= 0 ? "" : " (FSR 4 is not offered for this GPU)");
+           best >= 0 ? "" : want3 ? " (FSR 3 is not offered for this GPU)" : " (FSR 4 is not offered for this GPU)");
 }
 
 int vk_ffx_available(void) { return vk_ffx_wanted() && F.available; }

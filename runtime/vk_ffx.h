@@ -4,7 +4,7 @@
 #pragma once
 #include "vk.h"
 
-int vk_ffx_wanted(void);   // dlaa and dlaa_backend = fsr at start (the device may still lack FSR)
+int vk_ffx_wanted(void);   // dlaa and dlaa_backend = fsr or fsr3 at start (the device may still lack FSR)
 // vk_device.c, while it builds the device: the extensions FSR's shaders use (cooperative matrix, 8-bit floats) join
 // the list when the device has them; their feature structures are chained there.
 void vk_ffx_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max);
