@@ -181,11 +181,12 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   install sections, the explanations under More details, the share notice next to Start) in the Sun Valley ttk theme
   (`installer/vendor/sv_ttk/`, the platform theme when it does not load), step list with progress, space line,
   collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit), finish screen with Open
-  folder. English, Russian, Brazilian Portuguese or Simplified Chinese, chosen from the Windows
-  display language (zh-CN and zh-SG give Chinese; the Traditional Chinese regions give English), switchable in the
-  window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans>.json`. A Chinese window still starts with
-  English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
-  from a firmware folder. A folder with
+  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese
+  or Korean (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
+  included, gives Simplified Chinese; pt-PT and languages without a catalog give English), switchable in the window;
+  every sentence is an id in `installer/text/<lang>.json`. The game language starts as the window's when the game has
+  it; a Chinese or Korean window still starts with English, because that game text needs the Switch shared fonts,
+  which the setup extracts only from a firmware folder. A folder with
   `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
   closes itself. The window is not stretched on a display whose scale is the system DPI: `installer/dpi.py` makes the
   process system DPI aware before Tk starts, Tk then draws the fonts at the display's scale and `dpi.px` sizes the
@@ -203,7 +204,7 @@ The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 ```
 TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console); the
                       rest is what the Kit step copies into the install folder's build-kit/
-installer/            the installer: steps, CLI, window, en/ru/zh-Hans text catalog
+installer/            the installer: steps, CLI, window, text catalogs (text/<lang>.json), Sun Valley theme (vendor/)
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
