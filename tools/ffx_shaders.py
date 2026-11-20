@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""FidelityFX frame interpolation and optical flow shaders -> one C header (runtime/vk_fg.cpp).
+"""FidelityFX frame interpolation, optical flow and FSR 3 upscaler shaders -> C headers (runtime/vk_fg.cpp,
+runtime/vk_fsr3.cpp).
 
-Ported from Savage Wind (https://github.com/Revivedx/SavageWindRecomp, MIT), tools/ffx_shaders.py, without its FSR 3
-upscaler effect.
+Ported from Savage Wind (https://github.com/Revivedx/SavageWindRecomp, MIT), tools/ffx_shaders.py.
 
 The SDK builds its shader "permutation" headers with FidelityFX_SC.exe (a Windows-only wrapper around glslang that
 also writes each shader's resource bindings). This does the same with glslangValidator and a small SPIR-V reader,
 for the permutations used here only: wave32, 32-bit floats, low-resolution motion vectors without jitter, and both
-depth directions (frame interpolation); SDR luma (optical flow). The backend (ffx_vk.cpp) takes each blob with its
+depth directions (frame interpolation); SDR luma (optical flow); HDR input (the scene's linear light before the
+bloom), low-resolution motion vectors without jitter, depth not inverted, the reference (not LUT) Lanczos and Savage
+Wind's Catmull-Rom history reprojection, in 32-bit and 16-bit floats (FSR 3 upscaler; its accumulate pass twice,
+without and with sharpening, FFX_FSR3UPSCALER_PASS_ACCUMULATE / _SHARPEN). The backend (ffx_vk.cpp) takes each blob with its
 bindings by name, as FidelityFX_SC writes them. The header is committed (AMD shader builds, no game data), so building
 totk.exe needs no shader compiler; run this after changing the GLSL or this script:
 
-    python tools/ffx_shaders.py [<output header>] [<glslangValidator>]
+    python tools/ffx_shaders.py [--effects fi,of | fu] [<output header>] [<glslangValidator>]
 
-The defaults are runtime/third_party/FidelityFX/spirv/ffx_shaders_vk.h and glslangValidator from MSYS2 UCRT64
-(C:/msys64/ucrt64/bin) or PATH; the Vulkan SDK's works too.
+--effects picks the header: fi,of (the default: frame interpolation and optical flow, spirv/ffx_shaders_vk.h) or fu
+(the FSR 3 upscaler, spirv/ffx_fsr3upscaler_vk.h), so that regenerating one does not rewrite the other's blobs. The
+other defaults are glslangValidator from MSYS2 UCRT64 (C:/msys64/ucrt64/bin) or PATH; the Vulkan SDK's works too.
 """
 import os
 import struct
@@ -41,6 +45,21 @@ FI_DEFS = ['-DFFX_FRAMEINTERPOLATION_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF=0',
            '-DFFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1',
            '-DFFX_FRAMEINTERPOLATION_OPTION_JITTER_MOTION_VECTORS=0']
 OF_DEFS = ['-DFFX_OPTICALFLOW_OPTION_HDR_COLOR_INPUT=0']
+FU_PASSES = [  # FfxFsr3UpscalerPass order: (shader, sharpening); None: no shader (the deprecated TCR pass)
+    ('prepare_inputs_pass', 0), ('luma_pyramid_pass', 0), ('shading_change_pyramid_pass', 0), ('shading_change_pass', 0),
+    ('prepare_reactivity_pass', 0), ('luma_instability_pass', 0), ('accumulate_pass', 0), ('accumulate_pass', 1),
+    ('rcas_pass', 0), ('debug_view_pass', 0), ('autogen_reactive_pass', 0), None]
+FU_DEFS = ['-DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF=0',
+           '-DFFX_FSR3UPSCALER_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF=0',
+           '-DFFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF=1',
+           '-DFFX_FSR3UPSCALER_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF=0',
+           '-DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2',
+           '-DFFX_FSR3UPSCALER_OPTION_REPROJECT_USE_LANCZOS_TYPE=2',
+           '-DFFX_FSR3UPSCALER_OPTION_REPROJECT_CATMULL_ROM_5=1',
+           '-DFFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=1',
+           '-DFFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS=1',
+           '-DFFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS=0',
+           '-DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=0']
 
 # SPIR-V opcodes / enums used below
 OP_NAME, OP_ENTRY, OP_CONSTANT, OP_DECORATE, OP_MEMBER_DECORATE = 5, 15, 43, 71, 72
@@ -134,8 +153,13 @@ def default_glslang():
 def main():
     args = sys.argv[1:]
     effects = {'fi', 'of'}
+    if '--effects' in args:
+        k = args.index('--effects')
+        effects = set(args[k + 1].split(','))
+        del args[k:k + 2]
     sdk = str(ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'sdk')
-    out = args[0] if args else str(ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'spirv' / 'ffx_shaders_vk.h')
+    spirv = ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'spirv'
+    out = args[0] if args else str(spirv / ('ffx_fsr3upscaler_vk.h' if effects == {'fu'} else 'ffx_shaders_vk.h'))
     glslang = args[1] if len(args) > 1 else default_glslang()
     gpu = os.path.join(sdk, 'include', 'FidelityFX', 'gpu')
     shaders = os.path.join(sdk, 'src', 'backends', 'vk', 'shaders')
@@ -150,6 +174,15 @@ def main():
         src = os.path.join(shaders, 'opticalflow', 'ffx_opticalflow_%s.glsl' % p)
         spv = compile_glsl(glslang, src, [gpu, os.path.join(gpu, 'opticalflow')], OF_DEFS)
         blobs.append(('of_%s' % p, spv, reflect(spv)))
+    for half in (0, 1) if 'fu' in effects else ():  # (16-bit floats where the SDK asks and the device has them)
+        for e in FU_PASSES:
+            if e is None:
+                continue
+            p, sharpen = e
+            src = os.path.join(shaders, 'fsr3upscaler', 'ffx_fsr3upscaler_%s.glsl' % p)
+            spv = compile_glsl(glslang, src, [gpu, os.path.join(gpu, 'fsr3upscaler')],
+                               FU_DEFS + ['-DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=%d' % sharpen], half)
+            blobs.append(('fu%d_%s_%d' % (half, p, sharpen), spv, reflect(spv)))
     L = ['// Generated by tools/ffx_shaders.py from the AMD FidelityFX SDK (MIT, see runtime/third_party/FidelityFX/LICENSE.txt).',
          '// Do not edit.', '#pragma once', '#include <stdint.h>', '']
     for cname, spv, refl in blobs:
@@ -190,6 +223,16 @@ def main():
         L.append('// [FfxOpticalflowPass]')
         L.append('static const FfxShaderBlob ffx_of_blobs[%d] = {' % len(OF_PASSES))
         L += [blob(c, r) for c, _, r in blobs if c.startswith('of_')]
+        L.append('};')
+    if 'fu' in effects:
+        L.append('// [16-bit floats][FfxFsr3UpscalerPass] (an empty blob: no shader)')
+        L.append('static const FfxShaderBlob ffx_fu_blobs[2][%d] = {' % len(FU_PASSES))
+        refl = {c: r for c, _, r in blobs}
+        for half in (0, 1):
+            L.append(' {')
+            L += ['    {},' if e is None else blob('fu%d_%s_%d' % ((half,) + e), refl['fu%d_%s_%d' % ((half,) + e)])
+                  for e in FU_PASSES]
+            L.append(' },')
         L.append('};')
     with open(out, 'w', newline='\n') as f:
         f.write('\n'.join(L) + '\n')

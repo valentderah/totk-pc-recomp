@@ -69,3 +69,15 @@ const char *cfg_value(const char *name);
 int cfg_int(const char *name);
 double cfg_double(const char *name);
 int cfg_bool(const char *name);
+// The 3D scene upscaler the settings name now: "off", "dlss" or "fsr3" (scene_upscaler; without it dlaa = 1 is "dlss").
+// The engine in use is the one named at start (vk_dlaa.c vk_upscaler_engine).
+const char *cfg_scene_upscaler(void);
+// vk_dlaa.c, the 3D scene upscaler (scene_upscaler): the engine picked at start (UPSCALER_*),
+// 1 while the settings still name it (the menu switches it off at once), the engine that is running (it
+// ran and has not failed; 0 none), and why an engine cannot run here (UPSCALER_MISSING_*, 0 it can).
+enum { UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3 };
+enum { UPSCALER_MISSING_GPU = 1, UPSCALER_MISSING_DLL };
+int vk_upscaler_engine(void);
+int vk_upscaler_on(void);
+int vk_upscaler_running(void);
+int vk_upscaler_missing(int engine);

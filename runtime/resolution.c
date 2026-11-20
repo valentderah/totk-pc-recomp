@@ -96,6 +96,19 @@ static int dlss_dll(void) {
 #endif
 }
 
+int res_dlss_dll(void) {
+    static int dll = -1;
+    if (dll < 0) dll = dlss_dll();
+    return dll;
+}
+
+// The engine picked at start can run, as far as is known before the device exists: DLSS needs its DLL (dlss_dll); FSR
+// 3.1 is built in (vk_fsr3.cpp). Off: nothing to run.
+static int upscaler_ready(void) {
+    int e = vk_upscaler_engine();
+    return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR3;
+}
+
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -118,15 +131,17 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// (the mode the menu still holds would shrink the scene for the plain upscaler) and where the engine picked at start
+// cannot run (upscaler_ready).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
-    static int dll = -1;
-    if (!cfg_bool("TOTK_DLAA")) return 0;
+    static int told;
+    if (!vk_upscaler_on()) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
+            int ready = upscaler_ready();
+            if (!ready && !told++) {
 #ifdef _WIN32
                 rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
                        "render_scale", m);
@@ -135,7 +150,7 @@ static double dlss_share(const char *m) {
                        "scene follows render_scale", m);
 #endif
             }
-            return dll ? dlss[i].k : 0;
+            return ready ? dlss[i].k : 0;
         }
     return 0;
 }
@@ -192,12 +207,13 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with the scene upscaler able to run (DLSS with
+    // its DLL there, or FSR 3.1 in the build)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
+    R.live = RT_V143 && vk_upscaler_on() && upscaler_ready();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);

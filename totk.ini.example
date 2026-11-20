@@ -22,8 +22,8 @@
 # frame_queue = 0
 # Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
 # the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS or HDR, and in menus and fades. Applies at
-# once.
+# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR 3.1 (scene_upscaler) or HDR, and in
+# menus and fades. Applies at once.
 # frame_gen = off
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
@@ -291,15 +291,22 @@
 # shaders (translator patches 0010 and 0017), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
-# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
-# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
-# Read at start.
+# The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
+# with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux
+# libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed) or fsr3 (AMD FSR
+# 3.1 from AMD's FidelityFX SDK, on any GPU). FSR 3.1 below native (dlss = quality and down) pays where the GPU limits
+# the frame rate: integrated GPUs, weak cards, 4K output; where the CPU limits it, its own GPU and CPU time make the game
+# slower. An engine that cannot run here leaves the game's own scaling in place. The HUD is drawn after it, at the
+# output size, and is not touched. The present's upscaler and sharpness below still scale the game image to the window.
+# Frame generation stays off with fsr3. Read at start. Without this line, dlaa = 1 (the older switch) means dlss.
+# scene_upscaler = off
+# The older DLSS switch, read only when scene_upscaler is not set: 1 is scene_upscaler = dlss.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
-# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
-# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
-# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
+# The upscaling mode of the scene upscaler, DLSS or FSR 3.1: dlaa (native: the 3D scene at full size, anti-aliased
+# only), quality, balanced, performance or ultra_performance (the scene at 67, 58, 50 or 33 % of the output, scaled up by
+# the upscaler; these replace render_scale and sharpen texture filtering to match). They apply only while a scene
+# upscaler runs; otherwise the scene follows render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1
+# at the next start).
 # dlss = dlaa
 # The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
 # ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving

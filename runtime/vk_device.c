@@ -13,6 +13,7 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "vk_fg.h"
+#include "vk_fsr3.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -484,6 +485,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_fg_release();
+    if (g_vk.device) fsr3_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
