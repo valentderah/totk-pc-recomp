@@ -1,0 +1,197 @@
+#version 460
+// Ray-traced ambient occlusion (runtime/vk_rt.c, TOTK_RT_TEST=1 with TOTK_RT_AO on; docs/raytracing.md). Two modes:
+//
+// mode 0, trace (half resolution, one thread per half-res pixel): the full-res pixel 2*p's world position from the
+// linear depth, its normal from the depth's slope, then pc.prm.z cosine-weighted rays of pc.prm.x metres against the
+// captured scene. A hit counts as occlusion fading with its distance (1 - t/r). The result is blended into the history
+// at the pixel's position last frame (the previous view-projection), when the depth there agrees; otherwise it starts
+// over. hist_out = (accumulated AO, linear view depth, frames accumulated, this frame's raw AO).
+//
+// mode 3, temporal (half resolution, after mode 0; phase 5): the history from mode 0 is clamped to the mean of this
+// frame's raw AO around the pixel (5x5, same depth) +- 1.5 standard deviations, so a shadow that moved away does not
+// trail (ghosting), then blended with the raw value over up to 24 frames. Mode 0 then leaves the reprojected history
+// unblended: hist_out = (history or this frame's AO, depth, frames so far (0 none), raw), and mode 3 reads that as
+// hist_in and writes the final history to hist_out (vk_rt.c swaps the buffers).
+//
+// mode 1, apply (full resolution): a 5x5 depth-aware blur of the half-res history around the pixel, then
+// view 0: the scene colour darkened by it (strength pc.prm.y); 6: the AO alone; 7: this frame's raw AO, no filtering.
+// A hit at distance t of the ray length r occludes 1 - (t/r)^2.
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D lin_depth;              // the game's linear depth: (view distance - near) / far
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;    // the lit scene colour
+layout(binding = 2, std430) readonly buffer HistIn { vec4 hist_in[]; };
+layout(binding = 3, std430) buffer HistOut { vec4 hist_out[]; };
+layout(set = 1, binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 4, std430) readonly buffer World { vec4 world[]; };   // the captured triangles (facing in w)
+// A candidate of the captured scene counts unless it is the back of a one-sided triangle (rt_unproject.comp's facing).
+// gtab: the first world triangle of each geometry of the mesh cache's cell BLASes (vk_rt.c)
+layout(binding = 5, std430) readonly buffer Gtab { uint gtab[]; };
+// Instance custom index: 0 the frame's captured scene (world[] from 0), 1 the test sphere, 2 + n a cell of the mesh
+// cache, whose geometry k starts at world triangle gtab[n + k].
+uint tri_index(int ci, int geom, int prim) { return (ci == 0 ? 0u : gtab[uint(ci - 2 + geom)]) + uint(prim); }
+#define PROCEED(q, dir) \
+    while (rayQueryProceedEXT(q)) { \
+        int ci_ = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false); \
+        uint ct_ = ci_ == 1 ? 0u : tri_index(ci_, rayQueryGetIntersectionGeometryIndexEXT(q, false), \
+                                             rayQueryGetIntersectionPrimitiveIndexEXT(q, false)); \
+        vec4 ca_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u], cb_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 1u], \
+             cc_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 2u]; \
+        if (ci_ == 1 || ca_.w > 1.5 || dot(cross(cb_.xyz - ca_.xyz, cc_.xyz - ca_.xyz), dir) < 0.0) \
+            rayQueryConfirmIntersectionEXT(q); \
+    }
+
+
+layout(push_constant) uniform Params {
+    vec4 proj;             // projection x scale, y scale, far plane, mode (0 trace, 1 apply)
+    vec4 iv0, iv1, iv2;    // inverse view rows: view space -> world
+    vec4 pv0, pv1, pv2, pv3;   // last frame's view-projection rows (clip = row . world)
+    vec4 prm;              // ray length (m), strength, rays per pixel, frame number
+    vec4 sz;               // width, height, half width, half height
+    vec4 flg;              // history valid, uv x sign, uv y sign, view (0 applied, 6 AO, 7 raw)
+    vec4 ext;              // farthest pixel given AO (m; it fades out over the last 30%), debug view brightness
+    layout(offset = 240) vec4 nr;   // x: the near plane (m); the linear depth is (view distance - near) / far
+} pc;
+
+vec3 view_pos(vec2 uv, float z) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+}
+vec3 to_world(vec3 p) { vec4 q = vec4(p, 1.0); return vec3(dot(pc.iv0, q), dot(pc.iv1, q), dot(pc.iv2, q)); }
+vec3 dir_world(vec3 d) { return vec3(dot(pc.iv0.xyz, d), dot(pc.iv1.xyz, d), dot(pc.iv2.xyz, d)); }
+
+float depth_at(ivec2 p) { return texelFetch(lin_depth, clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1), 0).x; }
+vec3 vpos(ivec2 p) { return view_pos((vec2(clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1)) + 0.5) / pc.sz.xy, (depth_at(p) * pc.proj.z + pc.nr.x)); }
+
+// The surface normal from the depth of the neighbours, on the side whose depth is closer (no smearing over edges).
+vec3 view_normal(ivec2 px, vec3 p) {
+    vec3 l = vpos(px - ivec2(1, 0)), r = vpos(px + ivec2(1, 0)), u = vpos(px - ivec2(0, 1)), d = vpos(px + ivec2(0, 1));
+    vec3 dx = abs(r.z - p.z) < abs(p.z - l.z) ? r - p : p - l;
+    vec3 dy = abs(d.z - p.z) < abs(p.z - u.z) ? d - p : p - u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, p) > 0.0 ? -n : n;   // facing the camera
+}
+
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+float rnd(inout uint s) { s = pcg(s); return float(s >> 8) * (1.0 / 16777216.0); }
+
+bool sky_depth(float d) { return d <= 0.0 || d >= 0.999; }
+
+void trace(ivec2 hp) {
+    uint hi = uint(hp.y) * uint(pc.sz.z) + uint(hp.x);
+    ivec2 px = hp * 2;
+    float d = depth_at(px);
+    if (sky_depth(d)) { hist_out[hi] = vec4(1.0, 0.0, 0.0, 1.0); return; }
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (z > pc.ext.x) { hist_out[hi] = vec4(1.0, z, 1.0, 1.0); return; }
+    vec3 pv = vpos(px), pw = to_world(pv), nw = normalize(dir_world(view_normal(px, pv)));
+    float r = pc.prm.x;
+    // a basis around the normal
+    vec3 t = normalize(abs(nw.y) < 0.99 ? cross(nw, vec3(0, 1, 0)) : cross(nw, vec3(1, 0, 0))), b = cross(nw, t);
+    // The start, off the surface by more than the rebuilt position's error: the depth is jittered by up to a pixel
+    // (DLAA), which on a surface seen at a grazing angle moves the point by the pixel's footprint over the cosine.
+    vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+    float fp = z * 2.0 / (pc.proj.y * pc.sz.y);   // one pixel's size at this depth (m)
+    float ndv = max(dot(nw, normalize(cam - pw)), 0.1);
+    vec3 o = pw + nw * (0.02 + 1.5 * fp / ndv);
+    uint seed = pcg(hi ^ pcg(uint(pc.prm.w) * 9781u + 1u));
+    int rays = int(pc.prm.z + 0.5);
+    float occ = 0.0;
+    for (int i = 0; i < rays; i++) {
+        float u1 = rnd(seed), u2 = rnd(seed);
+        float s = sqrt(u1), phi = 6.2831853 * u2;   // cosine-weighted over the hemisphere
+        vec3 dir = normalize(t * (s * cos(phi)) + b * (s * sin(phi)) + nw * sqrt(max(1.0 - u1, 0.0)));
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, o, 0.0, dir, r);
+        PROCEED(q, dir)
+        if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT)
+            { float f = rayQueryGetIntersectionTEXT(q, true) / r; occ += 1.0 - f * f; }
+    }
+    float ao = 1.0 - occ / float(max(rays, 1));
+    if (int(pc.flg.w + 0.5) == 8) {   // debug: one ray along the normal, its hit distance over the ray length (1: none)
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, o, 0.0, nw, r);
+        PROCEED(q, nw)
+        ao = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT ? rayQueryGetIntersectionTEXT(q, true) / r : 1.0;
+        hist_out[hi] = vec4(ao, z, 1.0, ao);
+        return;
+    }
+
+    // the history at this point last frame (blended in mode 3)
+    vec4 h = vec4(ao, z, 0.0, ao);
+    if (pc.flg.x > 0.5) {
+        vec4 c = vec4(dot(pc.pv0, vec4(pw, 1)), dot(pc.pv1, vec4(pw, 1)), dot(pc.pv2, vec4(pw, 1)), dot(pc.pv3, vec4(pw, 1)));
+        if (c.w > 0.01) {
+            vec2 uv = 0.5 + 0.5 * vec2(pc.flg.y, pc.flg.z) * c.xy / c.w;
+            ivec2 q = ivec2(floor(uv * pc.sz.zw));
+            if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, ivec2(pc.sz.zw)))) {
+                vec4 o4 = hist_in[uint(q.y) * uint(pc.sz.z) + uint(q.x)];
+                if (o4.y > 0.0 && abs(o4.y - c.w) < 0.03 * c.w + 0.05) h = vec4(o4.x, z, o4.z, ao);
+            }
+        }
+    }
+    hist_out[hi] = h;
+}
+
+void temporal(ivec2 p) {
+    ivec2 hs = ivec2(pc.sz.zw);
+    uint i = uint(p.y) * uint(pc.sz.z) + uint(p.x);
+    vec4 c = hist_in[i];
+    if (c.y <= 0.0 || c.z < 0.0) { hist_out[i] = c; return; }   // the sky
+    if (int(pc.flg.w + 0.5) == 8) { hist_out[i] = c; return; }   // debug view 8: as traced
+    float z = c.y, m1 = 0.0, m2 = 0.0, wsum = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            vec4 h = hist_in[uint(q.y) * uint(pc.sz.z) + uint(q.x)];
+            if (h.y <= 0.0 || abs(h.y - z) > 0.03 * z + 0.05) continue;
+            m1 += h.w, m2 += h.w * h.w, wsum += 1.0;
+        }
+    float mean = m1 / max(wsum, 1.0), sd = sqrt(max(m2 / max(wsum, 1.0) - mean * mean, 0.0));
+    if (c.z < 0.5) { hist_out[i] = vec4(mean, z, 1.0, c.w); return; }   // new: the neighbourhood's mean to start
+    float n = min(c.z + 1.0, 24.0);
+    float prev = clamp(c.x, mean - 1.5 * sd - 0.03, mean + 1.5 * sd + 0.03);
+    hist_out[i] = vec4(mix(prev, c.w, 1.0 / n), z, n, c.w);
+}
+
+void apply(ivec2 px) {
+    float d = depth_at(px);
+    if (sky_depth(d)) return;
+    float z = (d * pc.proj.z + pc.nr.x);
+    int view = int(pc.flg.w + 0.5);
+    ivec2 c = px / 2, hs = ivec2(pc.sz.zw);
+    float sum = 0.0, wsum = 0.0, raw = 1.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = c + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            vec4 h = hist_out[uint(q.y) * uint(pc.sz.z) + uint(q.x)];
+            if (h.y <= 0.0) continue;
+            if (x == 0 && y == 0) raw = h.w;
+            float w = exp(-float(x * x + y * y) / 4.5) * exp(-abs(h.y - z) / (0.03 * z + 0.02));
+            sum += h.x * w, wsum += w;
+        }
+    float ao = mix(wsum > 1e-4 ? sum / wsum : 1.0, 1.0, smoothstep(pc.ext.x * 0.7, pc.ext.x, z));
+    // the debug views at pc.ext.y: white at 1.0 is far over the game's exposure and the tonemap flattens it
+    if (view == 7 || view == 8) { imageStore(scene, px, vec4(vec3(raw * pc.ext.y), 1.0)); return; }
+    if (view == 6) { imageStore(scene, px, vec4(vec3(ao * pc.ext.y), 1.0)); return; }
+    vec4 col = imageLoad(scene, px);
+    imageStore(scene, px, vec4(col.rgb * mix(1.0, ao, pc.prm.y), col.a));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (pc.proj.w < 0.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) trace(p);
+    } else if (pc.proj.w > 2.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) temporal(p);
+    } else if (p.x < int(pc.sz.x) && p.y < int(pc.sz.y)) {
+        apply(p);
+    }
+}

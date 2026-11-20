@@ -1,0 +1,111 @@
+#version 460
+// Ray-traced AO injected into the game's own AO (runtime/vk_rt.c, TOTK_RT_AO_INJECT; docs/raytracing.md): the game's
+// SSAO chain (frame dump passes 139-143) leaves its result in colour target 0 of the half-resolution G-buffer pass
+// (the 8-target pass, 128), an RGBA8 image the composite samples in slot 16: B the wide screen-space AO, R a short-range
+// one. Before the composite, B gets the AO history's depth-aware 5x5 blur at the same half-resolution pixel, so the
+// game applies it where it applies its own.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 3, std430) readonly buffer Hist { vec4 hist[]; };   // (AO, linear view depth, frames, raw AO)
+layout(binding = 6, rgba8) uniform image2D aot;
+// phase 7: the GI's quarter-res history (rt_gi.comp, last frame's): [i] = (bounce, depth), [2n + i] = (sky visibility, ..)
+layout(binding = 2, std430) readonly buffer Gi { vec4 gi[]; };
+
+layout(push_constant) uniform Params {
+    vec4 sz;        // half width, half height, GI quarter width and height (0: no GI)
+    vec4 prm;       // strength, farthest pixel given AO (m), mode (1 replace, 2 multiply; probes: 3..6),
+                    // how much the GI's sky visibility dims the game's ambient (0..1)
+    vec4 proj;      // projection x scale, y scale, full width, full height
+    vec4 flg;       // uv x sign, uv y sign, gprev valid, unused
+    vec4 iv0, iv1, iv2;        // current frame inverse view rows: view space -> world
+    vec4 pv0, pv1, pv2, pv3;   // last frame's view-projection rows (clip = row . world)
+} pc;
+
+// The GI's sky visibility around half-res pixel p at depth z, reprojected into last frame's GI buffer (which was
+// rendered under pv0..pv3). Sampling without reprojection shifted the ambient-dimming halo 1 frame behind moving
+// railings, ropes, and window frames during camera rotation!
+float gi_vis(ivec2 p, float z) {
+    ivec2 qs = ivec2(pc.sz.zw);
+    uint n = uint(qs.x) * uint(qs.y);
+    vec2 gpos = vec2(p) * 0.5;
+    float rz = z;
+    if (pc.flg.z > 0.5 && pc.proj.x > 0.0 && pc.proj.y > 0.0) {
+        vec2 uv0 = (vec2(p) * 2.0 + 0.5) / pc.proj.zw;
+        vec2 ndc = uv0 * 2.0 - 1.0;
+        vec3 pv = vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+        vec4 q4 = vec4(pv, 1.0);
+        vec3 pw = vec3(dot(pc.iv0, q4), dot(pc.iv1, q4), dot(pc.iv2, q4));
+        vec4 cp = vec4(dot(pc.pv0, vec4(pw, 1.0)), dot(pc.pv1, vec4(pw, 1.0)), dot(pc.pv2, vec4(pw, 1.0)), dot(pc.pv3, vec4(pw, 1.0)));
+        if (cp.w <= 0.01) {
+            gpos = clamp(vec2(p) * 0.5, vec2(0.0), pc.sz.zw - 1.0);
+        } else {
+            // Clamp reprojected UV to the screen border instead of snapping straight to 1.0 (full unoccluded sky),
+            // otherwise panning/pitching the camera leaves a bright horizontal/vertical band along newly entered edges!
+            vec2 puv = clamp(0.5 + 0.5 * pc.flg.xy * cp.xy / cp.w, vec2(0.0), vec2(0.9999));
+            gpos = puv * pc.sz.zw;
+            rz = cp.w;
+        }
+    }
+    ivec2 c = ivec2(floor(gpos));
+    float sum = 0.0, wsum = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = c + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, qs))) continue;
+            uint k = uint(q.y) * uint(qs.x) + uint(q.x);
+            vec4 h = gi[k];
+            if (h.w <= 0.0) continue;
+            vec2 dd = (vec2(q) + 0.5) - gpos;
+            float w = exp(-dot(dd, dd) / 1.5) * exp(-abs(h.w - rz) / (0.04 * rz + 0.05));
+            sum += gi[2u * n + k].x * w, wsum += w;
+        }
+    // If the depth-aware reprojection missed (newly disoccluded thin edges behind railings/ropes), fall back to the
+    // nearest quarter-res sky visibility without a depth gate rather than returning 1.0 (full unoccluded sky), which
+    // otherwise created a bright white ghost outline trailing behind ropes, railings, and windows during camera turns.
+    if (wsum > 1e-3) return sum / wsum;
+    float s2 = 0.0, w2 = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = c + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, qs))) continue;
+            uint k = uint(q.y) * uint(qs.x) + uint(q.x);
+            if (gi[k].w <= 0.0) continue;
+            s2 += gi[2u * n + k].x, w2 += 1.0;
+        }
+    return w2 > 0.0 ? s2 / w2 : 1.0;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), hs = ivec2(pc.sz.xy);
+    if (any(greaterThanEqual(p, hs))) return;
+    int mode = int(pc.prm.z + 0.5);
+    vec4 g = imageLoad(aot, p);
+    if (mode >= 3) {
+        float v = (mode & 1) == 1 ? 0.0 : 1.0;
+        imageStore(aot, p, mode <= 4 ? vec4(g.rg, v, g.a) : vec4(v, g.gba));
+        return;
+    }
+    float z = hist[p.y * hs.x + p.x].y;
+    if (z <= 0.0) return;   // the sky: the game's value stays
+    float sum = 0.0, wsum = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            vec4 h = hist[q.y * hs.x + q.x];
+            if (h.y <= 0.0) continue;
+            float w = exp(-float(x * x + y * y) / 4.5) * exp(-abs(h.y - z) / (0.03 * z + 0.02));
+            sum += h.x * w, wsum += w;
+        }
+    float ao = mix(wsum > 1e-4 ? sum / wsum : 1.0, 1.0, smoothstep(pc.prm.y * 0.7, pc.prm.y, z));
+    // strength (prm.x) 0..1 blends from the game's AO to ours; above 1, ours raised to that power (darker)
+    ao = pow(ao, max(pc.prm.x, 1.0));
+    float s = min(pc.prm.x, 1.0);
+    float b = mode == 1 ? mix(g.b, ao, s) : g.b * mix(1.0, ao, s);
+    // the ambient rebalance: the sky light the game spreads everywhere, cut where the GI's rays found geometry (whose
+    // light the GI adds back as bounce)
+    // (negative: the split view 21, the left half only)
+    if (pc.sz.z > 0.5 && pc.prm.w != 0.0 && (pc.prm.w > 0.0 || p.x * 2 < hs.x))
+        b *= mix(1.0, gi_vis(p, z), abs(pc.prm.w));
+    imageStore(aot, p, vec4(g.rg, b, g.a));
+}

@@ -1,0 +1,17 @@
+#version 450
+// The night tone on the finished scene (vk_rt_tone_scene, called by vk_dlaa.c where the scene ends): the light target
+// after the transparents, fog and haze, before the bloom, tonemap and HUD. Multiplies in place by mix(1, gains, amount).
+// The AO's pipeline layout; only binding 1 is used.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;
+layout(push_constant) uniform P {
+    vec4 tone;    // rgb gains, amount
+    ivec4 size;   // width, height
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size.xy))) return;
+    vec4 c = imageLoad(scene, p);
+    imageStore(scene, p, vec4(c.rgb * mix(vec3(1.0), pc.tone.rgb, pc.tone.w), c.a));
+}

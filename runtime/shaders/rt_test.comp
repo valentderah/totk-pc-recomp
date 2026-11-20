@@ -1,0 +1,357 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+// Ray tracing phase 1 test pass (runtime/vk_rt.c, TOTK_RT_TEST=1; docs/raytracing.md). Runs where the contact shadows run:
+// after the lighting composite, on the game's scene colour. The scene is a test sphere in world space (one BLAS, one
+// TLAS instance). Each pixel's world position is rebuilt from the linear depth and the camera block's inverse view;
+// a primary ray to it draws the sphere where it is in front, and a ray toward the sun darkens the game's surfaces
+// where the sphere blocks the sun. view (opt): 0 shadow + sphere, 1 world grid, 2 normals from depth, 3 shadow mask.
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D lin_depth;              // the game's linear depth: (view distance - near) / far
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;    // the lit scene colour
+layout(set = 1, binding = 0) uniform accelerationStructureEXT tlas;   // a set of its own, written once
+layout(binding = 3, std430) buffer Probe { vec4 probe; };      // the world position under the probe pixel (vk_rt.c)
+// the triangles, for the hit normals: the captured scene's world corners (instance 0), the sphere's (instance 1)
+layout(binding = 4, std430) readonly buffer World { vec4 world[]; };
+layout(binding = 5, std430) readonly buffer SphV { float sph_v[]; };
+layout(binding = 6, std430) readonly buffer SphI { uint sph_i[]; };
+// A candidate of the captured scene counts unless it is the back of a one-sided triangle (rt_unproject.comp's facing).
+// gtab: the first world triangle of each geometry of the mesh cache's cell BLASes (vk_rt.c)
+layout(binding = 7, std430) readonly buffer Gtab { uint gtab[]; };
+// materials: the triangles' UVs, two vec4 each (rt_unproject.comp); 16 bytes when materials are off
+layout(binding = 8, std430) readonly buffer WAttr { vec4 wattr[]; };
+// the albedo textures (vk_rt.c MT): 2D, array, and each slot's generation (a texture word whose generation differs is stale)
+layout(set = 2, binding = 0) uniform sampler2D mtex[8192];
+layout(set = 2, binding = 1) uniform sampler2DArray mtexa[8192];
+layout(set = 2, binding = 2, std430) readonly buffer MGen { uint mgen[]; };
+// The materials' measured colours (vk_rt.c MT.cal; rt_gi.comp mode 13 sums, mode 14 updates). Per slot 32 uints: x 4096
+// the G-buffer albedo a (0-2), the raw texel t (3-5), t^2 (6-8), a t (9-11); the count (12); the generation + 1 the sums
+// are of (14), the generation + 1 measured (15); x 64 the lit colour (16-18) and the lit colour where it glows (is_light,
+// 19-21). Then per slot three vec4: (the fit's scale, the mean texel's red), (its offset, green): albedo = scale x
+// texel + offset; (the light it gives off, blue): where the albedo is black (shaded by the game elsewhere: far impostors,
+// effects) the lit colour the screen shows, else the glowing part's.
+// sval: per fragment shader id (mgen's second half per slot; 0 none) its materials' fit averaged (scale, w 1 once set;
+// offset; emission), which a material not measured yet takes
+// mrec (rt_gi.comp mode 13 -> rt_late.comp): a record a 4x4 block for the late measure (slot + 1, pixel and frame, the
+// diffuse colour S and the distance as halves)
+layout(set = 2, binding = 3, std430) readonly buffer MCal { uint msum[2u * 8192u * 64u]; vec4 sval[4096u * 6u]; uvec4 mrec[3u * 522240u]; uint mcache[524288u * 16u];
+                                                   vec4 mval[]; };
+// Instance custom index: 0 the frame's captured scene (world[] from 0), 1 the test sphere, 2 + n a cell of the mesh
+// cache, whose geometry k starts at world triangle gtab[n + k].
+uint tri_index(int ci, int geom, int prim) { return (ci == 0 ? 0u : gtab[uint(ci - 2 + geom)]) + uint(prim); }
+#define PROCEED(q, dir) \
+    while (rayQueryProceedEXT(q)) { \
+        int ci_ = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false); \
+        uint ct_ = ci_ == 1 ? 0u : tri_index(ci_, rayQueryGetIntersectionGeometryIndexEXT(q, false), \
+                                             rayQueryGetIntersectionPrimitiveIndexEXT(q, false)); \
+        vec4 ca_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u], cb_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 1u], \
+             cc_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 2u]; \
+        if ((ci_ == 1 || ca_.w > 1.5 || dot(cross(cb_.xyz - ca_.xyz, cc_.xyz - ca_.xyz), dir) < 0.0) && \
+            (ci_ == 1 || !alpha_cut(ct_, rayQueryGetIntersectionBarycentricsEXT(q, false), rayQueryGetIntersectionTEXT(q, false), dir))) \
+            rayQueryConfirmIntersectionEXT(q); \
+    }
+
+
+layout(push_constant) uniform Params {
+    vec4 proj;            // projection x scale, y scale, far plane, view mode
+    vec4 iv0, iv1, iv2;   // inverse view rows (camera block c4 rows 11-13): view space -> world
+    vec4 sun;             // view-space direction toward the sun (xyz), shadow strength (w)
+    vec4 size;            // width, height, sphere brightness, the near plane (m)
+    vec4 probe_px;        // the probe pixel (xy)
+} pc;
+
+vec3 view_pos(vec2 uv, float z) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+}
+vec3 to_world(vec3 p) { vec4 q = vec4(p, 1.0); return vec3(dot(pc.iv0, q), dot(pc.iv1, q), dot(pc.iv2, q)); }
+vec3 dir_world(vec3 d) { return vec3(dot(pc.iv0.xyz, d), dot(pc.iv1.xyz, d), dot(pc.iv2.xyz, d)); }
+
+vec3 vpos(ivec2 p) {
+    p = clamp(p, ivec2(0), ivec2(pc.size.xy) - 1);
+    return view_pos((vec2(p) + 0.5) / pc.size.xy, (texelFetch(lin_depth, p, 0).x * pc.proj.z + pc.size.w));
+}
+
+// The surface normal from the depth of the neighbours, on the side whose depth is closer (no smearing over edges).
+vec3 view_normal(ivec2 px, vec3 p) {
+    vec3 l = vpos(px - ivec2(1, 0)), r = vpos(px + ivec2(1, 0)), u = vpos(px - ivec2(0, 1)), d = vpos(px + ivec2(0, 1));
+    vec3 dx = abs(r.z - p.z) < abs(p.z - l.z) ? r - p : p - l;
+    vec3 dy = abs(d.z - p.z) < abs(p.z - u.z) ? d - p : p - u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, p) > 0.0 ? -n : n;   // facing the camera
+}
+
+vec3 sph_vert(uint i) { uint k = sph_i[i] * 3u; return vec3(sph_v[k], sph_v[k + 1u], sph_v[k + 2u]); }
+
+vec3 hit_normal(rayQueryEXT rq) {
+    vec3 v[3];
+    uint t = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+    int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+    if (ci != 1)
+        for (int k = 0; k < 3; k++)
+            v[k] = world[tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(rq, true), int(t)) * 3u + uint(k)].xyz;
+    else
+        for (int k = 0; k < 3; k++) v[k] = sph_vert(t * 3u + uint(k));
+    mat4x3 m = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+    vec3 a = m * vec4(v[0], 1), b = m * vec4(v[1], 1), c = m * vec4(v[2], 1);
+    return normalize(cross(b - a, c - a));
+}
+
+// ---- materials: a captured triangle's albedo (rt_test.comp and rt_gi.comp have the same code)
+// The raw material at a hit of triangle ct (barycentrics bc, t along rd): 0 none (no material, or its slot went since);
+// 1 a texel tx of the draw's texture at the mip of a one-pixel ray cone; 2 a flat material (tx 1); 3 a material whose
+// slot was freed since (its texture went: the game streamed a new one in) but still holds its last measure. k: its slot
+// (2D slots, then array ones). atest: the draw is alpha-tested.
+uint mat_raw(uint ct, vec2 bc, float t, vec3 rd, out vec4 tx, out uint k, out bool atest) {
+    tx = vec4(1.0), k = 0u, atest = false;
+    if (uint(wattr.length()) <= ct * 2u + 1u) return 0u;
+    vec4 a = wattr[ct * 2u], b = wattr[ct * 2u + 1u];
+    uint lz = floatBitsToUint(b.z), tw = floatBitsToUint(b.w), fl = lz >> 16;
+    atest = (fl & 4u) != 0u;
+    if ((fl & 9u) == 0u || (tw & 0x80000000u) == 0u) return 0u;
+    uint slot = tw & 0xffffu, arr = (tw >> 30) & 1u;
+    if (slot >= 8192u) return 0u;
+    k = arr * 8192u + slot;
+    if (mgen[k] != ((tw >> 16) & 0x3fffu)) return msum[k * 64u + 15u] == ((tw >> 16) & 0x3fffu) + 1u ? 3u : 0u;
+    if ((fl & 1u) == 0u) return 2u;
+    vec2 uv = a.xy * (1.0 - bc.x - bc.y) + a.zw * bc.x + b.xy * bc.y;
+    vec3 p0 = world[ct * 3u].xyz, p1 = world[ct * 3u + 1u].xyz, p2 = world[ct * 3u + 2u].xyz;
+    vec3 nc = cross(p1 - p0, p2 - p0);
+    float aw = length(nc);
+    vec3 n = nc / max(aw, 1e-20);
+    vec2 d1 = a.zw - a.xy, d2 = b.xy - a.xy;
+    float at = abs(d1.x * d2.y - d1.y * d2.x);
+    ivec2 ts = arr != 0u ? textureSize(mtexa[nonuniformEXT(slot)], 0).xy : textureSize(mtex[nonuniformEXT(slot)], 0);
+    float spread = 2.0 / (pc.proj.y * pc.size.y);   // a pixel's angle
+    float lod = 0.5 * log2(max(at * float(ts.x) * float(ts.y), 1e-20) / max(aw, 1e-20)) +
+                log2(max(t * spread, 1e-6) / max(abs(dot(n, rd)), 0.1));
+    tx = arr != 0u ? textureLod(mtexa[nonuniformEXT(slot)], vec3(uv, float(lz & 0xffffu)), lod)
+                   : textureLod(mtex[nonuniformEXT(slot)], uv, lod);
+    return 1u;
+}
+// slot k's colour measured on screen (rt_gi.comp mode 14 wrote it for its current generation)
+bool mat_measured(uint k) { return msum[k * 64u + 15u] == mgen[k] + 1u; }
+// The look: what the finished screen shows over the diffuse light the albedo gets (per channel; mode 14 from
+// vk_rt_tone_scene's late measure: the game's character shading, specular and reflections), 1 unknown. The albedo
+// times this is the colour a lit hit takes.
+// (the albedo times the look may pass 1, to LOOK_MAX: glassy, glowing or glossy surfaces the game shows brighter than a
+// white diffuse one)
+#define LOOK_MAX 4.0
+// The reflection: what the finished screen shows beyond the diffuse colour, as light a mirror ray brings in weighted by
+// Fresnel (mode 14's fit F = look S + spec R, per channel), 0 unknown. mat_albedo leaves it in g_spec.
+vec3 g_spec = vec3(0.0);
+vec3 mat_spec(uint k, uint sid) {
+    vec4 m = mval[k * 8u + 6u];
+    if (m.w > 0.5) return m.rgb;
+    if (sid != 0u && sid < 4096u && sval[sid * 6u + 4u].w > 0.5) return sval[sid * 6u + 4u].rgb;
+    return vec3(0.0);
+}
+vec3 mat_look(uint k, uint sid) {
+    vec4 m = mval[k * 8u + 3u];
+    if (m.w > 0.5) return m.rgb;
+    if (sid != 0u && sid < 4096u && sval[sid * 6u + 3u].w > 0.5) return sval[sid * 6u + 3u].rgb;
+    return vec3(1.0);
+}
+// The albedo at a hit: its material's measured fit, scale x texel + offset (rt_gi.comp mat_update), which is the texel
+// times a tint where the texture is the albedo, and falls back towards the material's mean colour where the texture
+// does not follow the screen (a texture that is not the albedo, or a UV that is not its UV); a flat material (tx 1) gets
+// its mean colour. A texture not measured yet: the texel as it is. false: no material, or a flat one not measured yet.
+// st (debug view 17): 1 texture unmeasured, 2 mostly the texture, 3 mostly the offset (the texture explains little),
+// 4 flat, 5 flat unmeasured, 6 not measured: its shader's average fit, 7 its texture went: the fit at the mean texel
+// em: the light it gives off (measured; 0 otherwise)
+bool mat_albedo(uint ct, vec2 bc, float t, vec3 rd, out vec3 alb, out int st, out vec3 em) {
+    vec4 tx;
+    uint k;
+    bool at;
+    uint r = mat_raw(ct, bc, t, rd, tx, k, at);
+    alb = vec3(0.0), st = 0, em = vec3(0.0), g_spec = vec3(0.0);
+    if (r == 0u) return false;
+    uint sid = mgen[16384u + k];
+    if (r == 3u) {
+        vec4 s0 = mval[k * 8u], s1 = mval[k * 8u + 1u], s2 = mval[k * 8u + 2u];
+        alb = clamp(clamp(s0.rgb * vec3(s0.w, s1.w, s2.w) + s1.rgb, 0.0, 1.0) * mat_look(k, sid), 0.0, LOOK_MAX), em = s2.rgb, st = 7;
+        g_spec = mat_spec(k, sid);
+        return true;
+    }
+    bool meas = mat_measured(k);
+    vec4 v0, v1;
+    if (meas) {
+        v0 = mval[k * 8u], v1 = mval[k * 8u + 1u], em = mval[k * 8u + 2u].rgb;
+    } else {   // not measured: its shader's average fit, or the texel as it is
+        if (sid == 0u || sid >= 4096u || sval[sid * 6u].w < 0.5) { alb = tx.rgb, st = r == 2u ? 5 : 1; return r == 1u; }
+        v0 = sval[sid * 6u], v1 = sval[sid * 6u + 1u], em = sval[sid * 6u + 2u].rgb;
+        alb = clamp(clamp(v0.rgb * tx.rgb + v1.rgb, 0.0, 1.0) * mat_look(k, sid), 0.0, LOOK_MAX), st = 6;
+        g_spec = mat_spec(k, sid);
+        return true;
+    }
+    alb = clamp(clamp(v0.rgb * tx.rgb + v1.rgb, 0.0, 1.0) * mat_look(k, sid), 0.0, LOOK_MAX);
+    g_spec = mat_spec(k, sid);
+    float mtl = dot(vec3(v0.w, v1.w, mval[k * 8u + 2u].w), vec3(0.2126, 0.7152, 0.0722));   // the mean texel's luminance
+    st = r == 2u ? 4 : dot(v0.rgb, vec3(1.0)) * mtl >= dot(max(v1.rgb, 0.0), vec3(1.0)) ? 2 : 3;
+    return true;
+}
+// an alpha-tested triangle's candidate hit where its albedo's alpha is below 0.5 (the shader discards there)
+bool alpha_cut(uint ct, vec2 bc, float t, vec3 rd) {
+    if (uint(wattr.length()) <= ct * 2u + 1u || ((floatBitsToUint(wattr[ct * 2u + 1u].z) >> 16) & 4u) == 0u) return false;
+    vec4 tx;
+    uint k;
+    bool at;
+    return mat_raw(ct, bc, t, rd, tx, k, at) == 1u && tx.a < 0.5;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(pc.size.x) || px.y >= int(pc.size.y)) return;
+    int mode = int(pc.proj.w + 0.5);
+    float d = texelFetch(lin_depth, px, 0).x;
+    bool sky = d <= 0.0 || d >= 0.999;
+    float z = (sky ? 0.999 : d) * pc.proj.z + pc.size.w;
+    vec3 pv = view_pos((vec2(px) + 0.5) / pc.size.xy, z);
+    vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w), pw = to_world(pv);
+    vec3 L = normalize(dir_world(pc.sun.xyz));
+    if (px == ivec2(pc.probe_px.xy)) probe = vec4(pw, sky ? 0.0 : 1.0);
+
+    vec3 rd = normalize(pw - cam);
+    // 4: the captured scene seen by primary rays (grey by facing the light, misses dark blue);
+    // 5: does the ray-traced scene match the depth buffer (green within 2%, red: the ray stops short, blue: it passes)
+    if (mode == 4 || mode == 5 || mode == 15 || mode == 16 || mode == 17) {
+        rayQueryEXT pq;
+        rayQueryInitializeEXT(pq, tlas, gl_RayFlagsNoneEXT, 0x01, cam, 0.01, rd, 20000.0);
+        PROCEED(pq, rd)
+        bool hit = rayQueryGetIntersectionTypeEXT(pq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+        vec3 c = vec3(0.02, 0.03, 0.08);
+        if (mode == 4 && hit) {
+            vec3 n = hit_normal(pq);
+            if (dot(n, rd) > 0.0) n = -n;
+            float t = rayQueryGetIntersectionTEXT(pq, true);
+            c = vec3(0.12 + 0.6 * max(dot(n, L), 0.0) + 0.25 * max(n.y, 0.0)) * mix(vec3(1.0), vec3(0.6, 0.7, 1.0), clamp(t / 300.0, 0.0, 1.0));
+        } else if (mode == 15 && hit) {
+            // 15: the hit's albedo UV (materials step 2): fract(u), fract(v) as red, green; blue the array layer (a
+            // colour a layer, dim for a 2D texture); dark magenta: no UV found for the draw; dark cyan: the test sphere
+            int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(pq, true);
+            vec3 n = hit_normal(pq);
+            if (dot(n, rd) > 0.0) n = -n;
+            float lit = 0.55 + 0.45 * max(dot(n, L), 0.0);
+            c = vec3(0.0, 0.25, 0.25);
+            if (ci != 1) {
+                uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(pq, true), rayQueryGetIntersectionPrimitiveIndexEXT(pq, true));
+                c = vec3(0.3, 0.0, 0.3);
+                if (uint(wattr.length()) > ct * 2u + 1u) {
+                    vec4 a = wattr[ct * 2u], b = wattr[ct * 2u + 1u];
+                    uint fl = floatBitsToUint(b.z) >> 16;
+                    if ((fl & 1u) != 0u) {
+                        vec2 bc = rayQueryGetIntersectionBarycentricsEXT(pq, true);
+                        vec2 uv = a.xy * (1.0 - bc.x - bc.y) + a.zw * bc.x + b.xy * bc.y;
+                        float lb = (fl & 2u) != 0u ? 0.3 + 0.7 * fract(float(floatBitsToUint(b.z) & 0xffffu) * 0.618034) : 0.1;
+                        c = vec3(fract(uv), lb);
+                    }
+                }
+            }
+            c *= lit;
+        } else if (mode == 16 && hit) {
+            // 16: the hit's albedo texture (materials step 3), unlit; dark magenta: no texture for its draw (or a stale
+            // one); dark cyan: the test sphere
+            int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(pq, true);
+            c = vec3(0.0, 0.25, 0.25);
+            if (ci != 1) {
+                uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(pq, true), rayQueryGetIntersectionPrimitiveIndexEXT(pq, true));
+                vec3 alb, em;
+                int st;
+                c = mat_albedo(ct, rayQueryGetIntersectionBarycentricsEXT(pq, true), rayQueryGetIntersectionTEXT(pq, true), rd, alb, st, em)
+                    ? alb : vec3(0.3, 0.0, 0.3);
+            }
+        } else if (mode == 17 && hit) {
+            // 17: the hit's material (materials, measured colours): red texture not measured yet, green mostly the
+            // texture x scale, blue mostly the offset (the texture explains little), cyan flat material, yellow flat not
+            // measured, orange not measured but its shader's fit, pink its texture went (the last fit's mean colour),
+            // dark magenta none;
+            // shaded a little by facing the camera
+            int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(pq, true);
+            c = vec3(0.0, 0.25, 0.25);
+            if (ci != 1) {
+                uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(pq, true), rayQueryGetIntersectionPrimitiveIndexEXT(pq, true));
+                vec3 alb, em;
+                int st;
+                mat_albedo(ct, rayQueryGetIntersectionBarycentricsEXT(pq, true), rayQueryGetIntersectionTEXT(pq, true), rd, alb, st, em);
+                c = st == 1 ? vec3(0.8, 0.1, 0.1) : st == 2 ? vec3(0.1, 0.7, 0.1) : st == 3 ? vec3(0.1, 0.2, 0.9)
+                  : st == 4 ? vec3(0.1, 0.7, 0.7) : st == 5 ? vec3(0.8, 0.8, 0.1) : st == 6 ? vec3(0.9, 0.5, 0.1)
+                  : st == 7 ? vec3(0.9, 0.5, 0.8) : vec3(0.3, 0.0, 0.3);
+                c *= 0.5 + 0.5 * abs(dot(hit_normal(pq), rd));
+            }
+        } else if (mode == 5) {
+            float t = hit ? rayQueryGetIntersectionTEXT(pq, true) : 1e9, ref = length(pw - cam);
+            // green within 3 cm + 0.2% of the distance; past that red (the scene nearer than the depth buffer says)
+            // or blue (farther), full at 50 cm
+            float e = t - ref, tol = 0.03 + 0.002 * ref, k = clamp((abs(e) - tol) / 0.5, 0.0, 1.0);
+            c = sky ? (hit ? vec3(1.0, 0.0, 1.0) : vec3(0.0)) : abs(e) < tol ? vec3(0.1, 0.8, 0.1)
+                : e < 0.0 ? mix(vec3(0.5, 0.45, 0.1), vec3(1.0, 0.0, 0.0), k) : mix(vec3(0.1, 0.45, 0.5), vec3(0.0, 0.1, 1.0), k);
+        }
+        imageStore(scene, px, vec4(c, 1.0));
+        return;
+    }
+    // Primary ray: the test sphere (mask 2) where it is in front of the game's surface
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0x02, cam, 0.01, rd, length(pw - cam));
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        vec3 n = hit_normal(rq);
+        if (dot(n, rd) > 0.0) n = -n;
+        float k = 0.15 + 0.85 * max(dot(n, L), 0.0);
+        imageStore(scene, px, vec4(vec3(1.0, 0.45, 0.2) * k * pc.size.z, 1.0));
+        return;
+    }
+    if (sky) {
+        if (mode != 0) imageStore(scene, px, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+    if (mode == 1) {   // 1 m grid lines on a colour that repeats every 16 m
+        vec3 f = abs(fract(pw + 0.5) - 0.5);
+        float w = 0.01 + z * 0.0015;
+        vec3 c = fract(pw / 16.0) * 0.6 + 0.2;
+        if (min(f.x, min(f.y, f.z)) < w) c = vec3(1.0);
+        imageStore(scene, px, vec4(c, 1.0));
+        return;
+    }
+    vec3 nw = normalize(dir_world(view_normal(px, pv)));
+    if (mode == 2) {
+        imageStore(scene, px, vec4(nw * 0.5 + 0.5, 1.0));
+        return;
+    }
+    // Shadow ray toward the sun; surfaces facing away are left as the game lit them
+    float occ = 0.0, occ_t = 0.0;
+    int occ_ci = 0;
+    bool occ_two = false;
+    if (dot(nw, L) > 0.0) {
+        rayQueryEXT sq;
+        // view 3: the nearest caster (its distance is shown), else the first found
+        rayQueryInitializeEXT(sq, tlas, mode == 3 ? gl_RayFlagsNoneEXT : gl_RayFlagsTerminateOnFirstHitEXT, 0xff,
+                              pw + nw * (0.02 + z * 0.002), 0.0, L, 500.0);
+        PROCEED(sq, L)
+        occ = rayQueryGetIntersectionTypeEXT(sq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+        if (occ > 0.0) {
+            occ_t = rayQueryGetIntersectionTEXT(sq, true);
+            occ_ci = rayQueryGetIntersectionInstanceCustomIndexEXT(sq, true);
+            if (occ_ci != 1)
+                occ_two = world[tri_index(occ_ci, rayQueryGetIntersectionGeometryIndexEXT(sq, true),
+                                          rayQueryGetIntersectionPrimitiveIndexEXT(sq, true)) * 3u].w > 1.5;
+        }
+    }
+    if (mode == 3) {
+        // lit: white; shadowed: by the caster's distance, red < 0.5 m, yellow < 5 m, cyan < 50 m, blue beyond;
+        // dimmer when the caster is a cached mesh (not this frame's capture), magenta-tinted when it is two-sided
+        vec3 c = vec3(1.0);
+        if (occ > 0.0) {
+            c = occ_t < 0.5 ? vec3(1.0, 0.1, 0.1) : occ_t < 5.0 ? vec3(1.0, 0.9, 0.1) : occ_t < 50.0 ? vec3(0.1, 0.9, 0.9)
+                                                                                                       : vec3(0.15, 0.25, 1.0);
+            if (occ_ci >= 2) c *= 0.55;
+            if (occ_two) c = mix(c, vec3(1.0, 0.0, 1.0), 0.4);
+            if (pc.sun.w < 0.0) c = fract((pw + nw * (0.02 + z * 0.002) + L * occ_t) / 16.0) * 0.6 + 0.2;   // debug: the caster's place, view 1's colours
+        }
+        imageStore(scene, px, vec4(c, 1.0));
+        return;
+    }
+    if (occ == 0.0) return;
+    vec4 c = imageLoad(scene, px);
+    imageStore(scene, px, vec4(c.rgb * (1.0 - pc.sun.w), c.a));
+}

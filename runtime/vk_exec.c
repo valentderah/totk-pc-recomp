@@ -318,7 +318,7 @@ static int bc_target(const tex_t *t, const view_t *v, int has_v, const VkTexImag
     return 1;
 }
 
-enum { HOLD_TEX, HOLD_DLSS, HOLD_WRITES, HOLD_N };
+enum { HOLD_TEX, HOLD_DLSS, HOLD_WRITES, HOLD_RT, HOLD_N };
 static void scan_hold(int why);
 
 // scan: the state scan's resolution, which creates nothing and leaves out a texture without an image yet.
@@ -1040,7 +1040,8 @@ static void chunks_wait(int k);
 static void run_job(VkExec *ex) {
     uint32_t turn = ex->job_i;
     VkExecJob j = ex->jobs[ex->job_i++];
-    if (j.kind == VK_JOB_DLSS) chunks_wait(j.chunk);
+    // the ray tracing test (vk_rt.c) builds its scene from what the G-buffer draws of the chunks before it captured
+    if (j.kind == VK_JOB_DLSS || (j.kind == VK_JOB_CONTACT && vk_rt_on())) chunks_wait(j.chunk);
     while (__atomic_load_n(&job_turn, __ATOMIC_ACQUIRE) != turn) plat_yield();
     vk_exec_pass_end(ex);
     if (j.kind != VK_JOB_CONTACT) {
@@ -1554,6 +1555,9 @@ static void scan_job(VkExecJob *j, const op_hdr *h) {
     if (SC.njobs < MAX_JOBS) SC.jobs[SC.njobs] = *j, SC.jobs[SC.njobs++].op = h;
     else if (!full++) rt_log("vk_exec: more than %d planned records in a submission: the others are left out", MAX_JOBS);
     if (j->kind == VK_JOB_DLSS) scan_hold(HOLD_DLSS);   // the chunks after it read DLSS's output (vk_dlaa_swap_img)
+    // the ray tracing pass (vk_rt.c) takes the frame's captured G-buffer geometry: a G-buffer draw of a later chunk
+    // must not reserve its range before the pass counts them
+    if (j->kind == VK_JOB_CONTACT && vk_rt_on()) scan_hold(HOLD_RT);
 }
 
 // What vk_contact_pass_begin (pass) and vk_contact_flush do in the sequential replay, in replay order. A pass of the
@@ -1807,8 +1811,9 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
                    SC.prep_ns / k, SC.scan_ns / k, SC.start0_ns / k, SC.first_ns / k, SC.last_ns / k, SC.rec_ns / k,
                    SC.rec_max_ns / 1e6, SC.mirror_ns / k, SC.usnap_ns / k, SC.ready_ns / k);
             rt_log("perf: chunked replay: chunks held per submission: %.2f for a new texture, %.2f for DLSS, %.2f for "
-                   "unknown storage writes", SC.held[HOLD_TEX] / (double)SC.chunked, SC.held[HOLD_DLSS] / (double)SC.chunked,
-                   SC.held[HOLD_WRITES] / (double)SC.chunked);
+                   "unknown storage writes, %.2f for ray tracing", SC.held[HOLD_TEX] / (double)SC.chunked,
+                   SC.held[HOLD_DLSS] / (double)SC.chunked, SC.held[HOLD_WRITES] / (double)SC.chunked,
+                   SC.held[HOLD_RT] / (double)SC.chunked);
             rt_log("perf: chunked replay: %llu chunks waited for the chunks before them to make a texture (%.3f ms in all)",
                    (unsigned long long)__atomic_exchange_n(&SC.settles, 0, __ATOMIC_RELAXED),
                    __atomic_exchange_n(&SC.settle_ns, 0, __ATOMIC_RELAXED) / 1e6);

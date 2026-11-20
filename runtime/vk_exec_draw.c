@@ -1004,6 +1004,7 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 }
 
 void vk_exec_image_gone(VkImage image) {
+    vk_rt_image_gone(image);   // its albedo slots in the ray tracer's table
     vk_exec_bc_gone(image);
     vk_hdr_image_gone(image);
     if (!views_by_image.klen) return;
@@ -2716,6 +2717,17 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
                     if (img) h = slot >= 0 && slot < 32 ? ex->img[st][slot] : 0;
                     else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
                     BI_CUR(k);
+                    // the ray-traced sun shadow a lighting shader was patched to read (gfx_shader.c patch_rt_shadow);
+                    // until it exists, a blank texture (weight 0: the game's own shadow)
+                    if (!img && (r->flags & GFX_RES_RT_SHADOW) && vk_rt_shadow_desc(&o[k].image, ex->pass_w, ex->pass_h)) {
+                        {   // debug: the camera this lighting pass draws with (its fragment c4, as the composite's)
+                            const p_bind_buf *cb4 = &ex->ubo[1][1];
+                            const float *blk = cb4->addr && cb4->size == 0x940 ? (const float *)vk_usnap_bytes(cb4->addr, 0x940) : NULL;
+                            vk_rt_note_shadow_use(ex->pass_w, ex->pass_h, blk);
+                        }
+                        o[k].w[2] = (uint32_t)o[k].image.imageLayout;
+                        continue;
+                    }
                     tex_info(ex, r, h, img, r->separate, &o[k].image, &locked);
                     o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
                 }
@@ -3327,6 +3339,230 @@ static void bi_done(VkExec *ex, const VkPipeInfo *info, const VkPipeState *s, co
 }
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
+// Ray tracing geometry version 1 (vk_rt.c, TOTK_RT_TEST): a G-buffer draw of triangles binds the transform feedback
+// variant of its pipeline (vk_pipeline_xfb, NULL while it is built) and op_draw / op_draw_idx capture its corners.
+// The G-buffer: six or more colour targets (its two passes have 6 and 8; the half-resolution lighting's light volumes
+// have 3) and a D32 depth, at least 640 wide; draws of 6 vertices or fewer (full-screen passes) are left out. rt_xfb: the draw prepare_draw just made bound it.
+static _Thread_local int rt_xfb;   // 1 a G-buffer draw, 2 a shadow cascade's
+static void fs_dump(const VkExec *ex, const VkPipeState *s, uint32_t count);   // TOTK_RT_DUMPFS (debug)
+static void alb_note(const VkPipeState *s, uint32_t count);                    // TOTK_RT_ALBEDO_LOG (debug)
+
+// Materials (vk_rt.c dmat, docs/raytracing.md, materials step 2): how the unprojection reads a G-buffer draw's albedo UV and array
+// layer from its captured attributes (vk_pipeline.c spirv_xfb, buffer 1: the UV varying at 0, the layer's at 16 when it
+// is another varying). Word 0: bits 0-3 / 4-7 the u / v components; 8-9 the layer: 0 none, 1 the constant in word 1
+// (read from the fragment stage's constant buffer now), 2 a varying component (10-11; in the second vec4 when bit 23)
+// whose bit field at 12-16 of 17-22 bits it is (0 bits: the value rounded); bit 24 alpha-tested (the fragment shader
+// can discard); bit 31 found. 0: no UV. Word 2: the albedo
+// texture's word in the ray tracer's bindless table (vk_rt_mat_tex; 0 none), looked up and registered under the
+// texture lock, which the image's drop (vk_exec_image_gone) holds too.
+// Words 3 and 4 (docs/raytracing.md, materials step 6): a draw whose fragment shader has a program records its varyings
+// (vk_prog_ext): word 3 the slots a corner (0 none), word 4 the UV's slot | the layer's << 4 | 0x100 (the UV and layer
+// come with them, not from buffer 1).
+static _Thread_local uint32_t rt_matw[5];
+static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out,
+                     int *locked);
+static void tex_lock(int *locked);
+// A draw whose albedo texture or UV is not found gets a flat material (words 0, 1 zero): its shader's, the colour the
+// G-buffer shows for it measured by the GI (rt_gi.comp mode 13).
+static void rt_mat_words0(VkExec *ex, const VkPipeState *s);
+// Step 6: the program's record (vk_rt_prog_note): its textures registered in the bindless table and its uniforms read
+// now, once a frame per material.
+static void rt_mat_words(VkExec *ex, const VkPipeState *s) {
+    rt_mat_words0(ex, s);
+    rt_matw[3] = rt_matw[4] = 0;
+    if (!rt_matw[2] || !vk_rt_programs()) return;
+    uint8_t locs[12];
+    int us, ls, n = vk_prog_ext(s->vs, s->fs, locs, &us, &ls);
+    if (!n) return;
+    rt_matw[3] = (uint32_t)n;
+    if (rt_matw[0] >> 31) rt_matw[4] = (uint32_t)(us < 0 ? 0 : us) | (uint32_t)(ls < 0 ? 0 : ls) << 4 | 0x100u;
+    if (!vk_rt_prog_due(rt_matw[2])) return;
+    const GfxProg *p = gfx_shader_prog(s->fs);
+    uint32_t tw[8] = {0}, uni[GFX_PROG_UNI] = {0};
+    const GfxShaderRes *tres, *ures;
+    int nt = gfx_shader_resources(s->fs, GFX_RES_TEX, &tres), nu = gfx_shader_resources(s->fs, GFX_RES_UBO, &ures);
+    int locked = 0;
+    tex_lock(&locked);
+    for (int i = 0; i < p->ntex && i < 8; i++) {
+        if (p->tex_res[i] < 0 || p->tex_res[i] >= nt) continue;
+        const GfxShaderRes *r = &tres[p->tex_res[i]];
+        uint64_t h = r->slot >= 0 && r->slot < 128 ? ex->tex[NVN_STAGE_FS][r->slot] : 0;
+        if (!h) continue;
+        VkDescriptorImageInfo ii;
+        memset(&ii, 0, sizeof ii);
+        tex_info(ex, r, h, 0, r->separate, &ii, &locked);
+        const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+        if (img && !img->gone && img->samples <= 1 && ii.imageView)
+            tw[i] = vk_rt_mat_tex(img->image, ii.imageView, p->tex_arr[i], s->fs);
+    }
+    vk_texture_unlock();
+    for (int i = 0; i < p->nuni; i++) {
+        if (p->uni_res[i] < 0 || p->uni_res[i] >= nu) continue;
+        int slot = ures[p->uni_res[i]].slot;
+        uint32_t off = (p->uni_key[i] & 0xfff) * 4;
+        if (slot == 1 && ex->prog) {   // c1: the shader's compiler constants, after its code (ubo_info)
+            const uint8_t *ctl, *code;
+            uint32_t len, c1;
+            if (find_stage(ex->draw, ex->prog, NVN_STAGE_FS, &ctl, &code, &len)) {
+                memcpy(&c1, ctl + 0x700, 4);
+                if (c1 < len && (uint64_t)c1 + off + 4 <= len) memcpy(&uni[i], code + c1 + off, 4);
+            }
+            continue;
+        }
+        if (slot < 3 || slot - 3 >= 18) continue;
+        const p_bind_buf *b = &ex->ubo[NVN_STAGE_FS][slot - 3];
+        const uint8_t *v = b->addr && b->size >= (uint64_t)off + 4 ? vk_usnap_bytes(b->addr + off, 4) : NULL;
+        if (v) memcpy(&uni[i], v, 4);
+    }
+    vk_rt_prog_note(rt_matw[2], s->fs, tw, uni);
+}
+static void rt_mat_words0(VkExec *ex, const VkPipeState *s) {
+    rt_matw[0] = rt_matw[1] = rt_matw[2] = 0;
+    if (!vk_rt_materials() || !s->fs || !s->vs) return;
+    const GfxAlbedo *a = gfx_shader_albedo(s->fs);
+    if (a->kind != GFX_ALB_2D && a->kind != GFX_ALB_ARRAY) goto flat;
+    GfxShaderIo io[32];
+    uint32_t om = gfx_shader_outputs(s->vs, io);
+    if (a->uv_loc >= 32 || !(om >> a->uv_loc & 1)) goto flat;
+    uint32_t m = a->uv_comp | 1u << 31 | (a->discard ? 1u << 24 : 0), l = 0;
+    if (a->kind == GFX_ALB_ARRAY && a->layer_loc == 0xff) {
+        if (a->layer_cbuf >= 3 && a->layer_cbuf - 3 < 18) {
+            const p_bind_buf *b = &ex->ubo[NVN_STAGE_FS][a->layer_cbuf - 3];
+            const uint8_t *v = b->addr && b->size >= (uint64_t)a->layer_off + 4 ? vk_usnap_bytes(b->addr + a->layer_off, 4) : NULL;
+            if (v) {
+                float f;
+                memcpy(&f, v, 4);
+                f = f > 0 ? f : 0;   // the shader's clamp(uint(max(roundEven(c), 0)), 0, 65535)
+                l = f >= 65535.0f ? 65535u : (uint32_t)(f + 0.5f);
+                m |= 1u << 8;
+            }
+        }
+    } else if (a->kind == GFX_ALB_ARRAY && a->layer_loc < 32 && om >> a->layer_loc & 1) {
+        m |= 2u << 8 | (uint32_t)(a->layer_comp & 3) << 10 | (uint32_t)(a->layer_shift & 31) << 12 |
+             (uint32_t)(a->layer_bits & 63) << 17 | (a->layer_loc != a->uv_loc ? 1u << 23 : 0);
+    }
+    const GfxShaderRes *res;
+    int nres = gfx_shader_resources(s->fs, GFX_RES_TEX, &res);
+    if (a->tex_res < 0 || a->tex_res >= nres) goto flat;
+    const GfxShaderRes *r = &res[a->tex_res];
+    uint64_t h = r->slot >= 0 && r->slot < 128 ? ex->tex[NVN_STAGE_FS][r->slot] : 0;
+    if (!h) goto flat;
+    int locked = 0;
+    tex_lock(&locked);
+    VkDescriptorImageInfo ii;
+    VkImage image = VK_NULL_HANDLE;
+    tex_info(ex, r, h, 0, r->separate, &ii, &locked);
+    const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+    if (img && !img->gone && img->samples <= 1) image = img->image;
+    if (image) rt_matw[2] = vk_rt_mat_tex(image, ii.imageView, a->kind == GFX_ALB_ARRAY, s->fs);
+    vk_texture_unlock();
+    if (rt_matw[2]) { rt_matw[0] = m, rt_matw[1] = l; return; }
+flat:
+    rt_matw[0] = rt_matw[1] = 0;
+    rt_matw[2] = vk_rt_mat_flat(s->fs);
+}
+
+// The transform feedback variant of pipeline p (state s), remembered per thread by p: the pipeline key alone takes a
+// lock and hashes about 600 bytes, which for 2,000 G-buffer draws a frame cost the render thread milliseconds.
+// A variant that failed is remembered too (x NULL, done 1). gen: vk_pipeline_xfb_gen when it was remembered.
+static VkPipeline rt_xfb_pipe(VkPipeline p, const VkPipeState *s) {
+    static _Thread_local struct { VkPipeline p, x; uint32_t gen, done; } memo[2048];
+    uint32_t i = (uint32_t)(((uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull) >> 53), gen = vk_pipeline_xfb_gen();
+    if (memo[i].p == p && memo[i].done && memo[i].gen == gen) return memo[i].x;
+    int failed = 0;
+    VkPipeline x = vk_pipeline_xfb(s, &failed);
+    if (x || failed) memo[i].p = p, memo[i].x = x, memo[i].gen = gen, memo[i].done = 1;
+    return x;
+}
+
+// Draws that leave the depth buffer alone are left out: the rain drawn in the G-buffer pass is a shell around the
+// camera the depth buffer sees through. 2: a draw of the sun's shadow cascades (no colour target, a square depth
+// target of 1024 or more; docs/raytracing.md), captured only to be cached (vk_rt.c, TOTK_RT_SHADOW).
+static int rt_capture_draw(const VkExec *ex, const VkPipeState *s, int prim, int32_t count) {
+    if (!s->ds.dw) return 0;
+    if (prim != NVN_DRAW_PRIMITIVE_TRIANGLES && prim != NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP &&
+        prim != NVN_DRAW_PRIMITIVE_TRIANGLE_FAN)
+        return 0;
+    if (!ex->pass_noatt && ex->pass_ncolor == 0 && ex->depth.image && ex->pass_w == ex->pass_h && ex->pass_w >= 1024 &&
+        count > 6 && count != 0x7fffffff)
+        return vk_rt_shadow_capturing() ? 2 : 0;
+    if (count <= 6 || count == 0x7fffffff || ex->pass_noatt || ex->pass_ncolor < 6 || ex->pass_w < 640 ||
+        ex->depth.format != VK_FORMAT_D32_SFLOAT)
+        return 0;
+    static int minc = -1;   // TOTK_RT_MINCOLOR (debug): the fewest colour targets a captured pass has (6)
+    if (minc < 0) { const char *e = cfg_get("TOTK_RT_MINCOLOR"); minc = e && *e ? atoi(e) : 6; }
+    if (ex->pass_ncolor < minc) return 0;
+    static int dbg = -1;   // TOTK_RT_DUMPGEOM: each captured vertex shader's state once, to match the dump's tags
+    if (dbg < 0) { const char *e = cfg_get("TOTK_RT_DUMPGEOM"); dbg = e && *e && strcmp(e, "0"); }
+    if (dbg) {
+        static uint16_t seen[1024];
+        static int nseen;
+        uint16_t v = (uint16_t)(uintptr_t)s->vs;
+        int k = 0;
+        while (k < nseen && seen[k] != v) k++;
+        if (k == nseen && nseen < 1024) {
+            seen[nseen++] = v;
+            rt_log("vk: ray tracing capture: vs %04x pass %ux%u nc %d: depth test %d write %d func %d, stencil %d, channel mask "
+                   "%08x, blend %02x, cull %d, a2c %d, fs %s", v, ex->pass_w, ex->pass_h, ex->pass_ncolor, (int)s->ds.dt,
+                   (int)s->ds.dw, (int)s->ds.df, (int)s->ds.st, s->chmask.mask, (unsigned)s->color.blend_en, (int)s->poly.cull,
+                   (int)s->ms.a2c, s->fs ? "yes" : "no");
+        }
+    }
+    static int camlog = -1;   // TOTK_RT_CAMLOG=1 (debug): per vertex shader once, its camera block against the pass's
+    if (camlog < 0) { const char *e = cfg_get("TOTK_RT_CAMLOG"); camlog = e && *e == '1'; }
+    if (camlog) {
+        static uint16_t cseen[1024];
+        static int ncseen;
+        static PlatMutex cl = PLAT_MUTEX_INIT;
+        uint16_t v = (uint16_t)(uintptr_t)s->vs;
+        plat_mutex_lock(&cl);
+        int k = 0;
+        while (k < ncseen && cseen[k] != v) k++;
+        int fresh = k == ncseen && ncseen < 1024;
+        if (fresh) cseen[ncseen++] = v;
+        plat_mutex_unlock(&cl);
+        if (fresh) {
+            const p_bind_buf *fc = &ex->ubo[NVN_STAGE_FS][1];
+            const float *fb = fc->addr && fc->size == 0x940 ? (const float *)vk_usnap_bytes(fc->addr, 0x940) : NULL;
+            char buf[512];
+            int o = 0;
+            for (int j = 0; j < 18 && o < 440; j++) {
+                const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][j];
+                if (!u->addr || !u->size) continue;
+                o += snprintf(buf + o, sizeof buf - o, " [%d] %u", j, (unsigned)u->size);
+                if (u->size == 0x940) {
+                    const float *vb = (const float *)vk_usnap_bytes(u->addr, 0x940);
+                    float d = -1;
+                    if (vb && fb) { d = 0; for (int i = 12; i < 28; i++) d = fmaxf(d, fabsf(vb[i] - fb[i])); }
+                    o += snprintf(buf + o, sizeof buf - o, "%s rows3-6 diff %g", u->addr == fc->addr ? " same block" : " other block", (double)d);
+                }
+            }
+            rt_log("vk: ray tracing capture camera: vs %04x, pass c4 %s; vs blocks:%s", v, fb ? "found" : "none", buf);
+        }
+    }
+    return vk_rt_capturing();
+}
+
+// The corners transform feedback writes for n vertices drawn inst times (strips and fans: at most)
+static uint32_t rt_xfb_verts(int prim, uint32_t n, uint32_t inst) {
+    uint64_t t = prim == NVN_DRAW_PRIMITIVE_TRIANGLES ? n / 3 : n > 2 ? n - 2 : 0;
+    t *= inst;
+    return t * 3 > 0xffffffffull ? 0 : (uint32_t)(t * 3);
+}
+
+// the pass a capture came from (TOTK_RT_DUMPGEOM): width, height, colour targets, first colour format, the draw's vertex shader
+static uint64_t rt_tag(const VkExec *ex) {
+    return (uint64_t)(ex->pass_w & 0xffff) | (uint64_t)(ex->pass_h & 0xffff) << 16 | (uint64_t)(ex->pass_ncolor & 0xf) << 32 |
+           (uint64_t)(ex->color[0].format & 0xfff) << 36 | ((uint64_t)(uintptr_t)ex->draw->B.st.vs & 0xffff) << 48;
+}
+
+// The draw's facing for the ray tracer (vk_rt_xfb_begin's flags)
+static uint32_t rt_face(const VkExec *ex) {
+    const poly_st *p = &ex->draw->B.st.poly;
+    uint32_t cull = p->cull & 3;
+    return (p->front == NVN_FRONT_FACE_CW ? 1u : 0u) | (cull == 1 ? 2u : 0u) | (cull == 0 || cull == 3 ? 4u : 0u);
+}
+
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkExecDraw *D = ex->draw;
     if (ex->render_disabled) return 0;
@@ -3496,7 +3732,12 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (pending) return 0;   // a background worker is building it: the draw is skipped until it is ready
     if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
-    bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    int rk = rt_capture_draw(ex, &s, prim, count);
+    if (rk == 1) fs_dump(ex, &s, (uint32_t)count), alb_note(&s, (uint32_t)count);
+    VkPipeline px = rk ? rt_xfb_pipe(p, &s) : VK_NULL_HANDLE;
+    rt_xfb = px != VK_NULL_HANDLE ? rk : 0;
+    if (rt_xfb == 1) rt_mat_words(ex, &s);
+    bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, px ? px : p);
     // On a generation hit the state recorded last is the memo's when st_pm says so (both were the last draw's).
     int st_same = D->B.st_valid && (pg_take && D->B.st_pm ? 1 : MX_EQ(&D->B.st, sp, sizeof *sp));
     if (pg_hit && pg == 2 && D->B.st_valid && D->B.st_pm && !st_same)
@@ -4345,12 +4586,453 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
     ex->recorded++;
 }
 
+// ---- TOTK_RT_SURVEY=1 (test; docs/raytracing.md): what the game draws, for the ray tracing plan. Logging only.
+// Every draw is counted under its pass signature (colour target count, first colour format, depth format, size, layers)
+// and, in the G-buffer and in depth-only passes, under the uniform banks its vertex shader reads (bit n: cn), with
+// whether its fragment shader can discard (cut-out materials). Meshes are told apart by index buffer, index count, base
+// vertex and vertex shader: how many a frame draws, and how many of those were never seen before. A summary every 300
+// frames: "rt survey: ...".
+typedef struct { uint32_t nc, cf, df, w, h, layers; uint64_t draws, tris, inst_draws, instances, ind; } RsPass;
+typedef struct { uint32_t mask; uint64_t draws, tris, kill_draws, kill_tris, inst_draws, instances, ind; } RsBank;
+static struct {
+    int on;
+    uint64_t frame0, frame;
+    RsPass p[96];
+    RsBank b[2][64];                 // 0: G-buffer, 1: depth-only passes
+    uint64_t (*mesh)[2];             // key, the frame last drawn
+    uint64_t mesh_draws[2], mesh_first[2], mesh_new[2], mesh_tris_new[2];   // per kind: draws, first of the frame, never seen
+    uint64_t biggest[2];
+} RS = {.on = -1};
+#define RS_MESH (1u << 18)
+
+static int rs_fs_kills(const GfxShader *fs) {
+    static struct { const GfxShader *s; int kill; } memo[1024];
+    if (!fs) return 0;
+    uint32_t i = (uint32_t)((uintptr_t)fs * 0x9E3779B97F4A7C15ull >> 54);
+    if (memo[i].s == fs) return memo[i].kill;
+    uint64_t words;
+    const uint32_t *w = gfx_shader_spirv(fs, &words);
+    int kill = 0;
+    for (uint64_t k = 5; w && k < words;) {
+        uint32_t op = w[k] & 0xffff, len = w[k] >> 16;
+        if (op == 252 || op == 4416) { kill = 1; break; }   // OpKill, OpTerminateInvocation
+        if (!len) break;
+        k += len;
+    }
+    memo[i].s = fs, memo[i].kill = kill;
+    return kill;
+}
+
+static void rs_summary(uint64_t frames) {
+    double f = (double)frames;
+    rt_log("rt survey: %llu frames; passes by triangles a frame (colour targets, first colour format, depth format, size, layers):",
+           (unsigned long long)frames);
+    for (int n = 0; n < 14; n++) {
+        int best = -1;
+        for (int i = 0; i < 96; i++)
+            if (RS.p[i].draws && (best < 0 || RS.p[i].tris + RS.p[i].ind * 1000 > RS.p[best].tris + RS.p[best].ind * 1000)) best = i;
+        if (best < 0) break;
+        RsPass *q = &RS.p[best];
+        rt_log("rt survey:   pass %uc fmt %u depth %u %ux%u x%u: %.1f draws, %.0f tris, %.1f instanced draws (%.0f instances), %.1f indirect",
+               q->nc, q->cf, q->df, q->w, q->h, q->layers, q->draws / f, q->tris / f, q->inst_draws / f, q->instances / f, q->ind / f);
+        q->draws = 0;
+    }
+    static const char *kind[2] = {"G-buffer", "depth-only"};
+    for (int k = 0; k < 2; k++) {
+        rt_log("rt survey: %s draws by the banks the vertex shader reads:", kind[k]);
+        for (int i = 0; i < 64; i++) {
+            RsBank *q = &RS.b[k][i];
+            if (!q->draws) continue;
+            rt_log("rt survey:   %s banks %05x: %.1f draws, %.0f tris; cut-out %.1f draws, %.0f tris; instanced %.1f draws (%.0f instances); %.1f indirect",
+                   kind[k], q->mask, q->draws / f, q->tris / f, q->kill_draws / f, q->kill_tris / f, q->inst_draws / f,
+                   q->instances / f, q->ind / f);
+        }
+        rt_log("rt survey: %s meshes: %.1f draws a frame, %.1f distinct a frame, %.2f never seen before a frame (%.0f tris); largest draw %llu tris",
+               kind[k], RS.mesh_draws[k] / f, RS.mesh_first[k] / f, RS.mesh_new[k] / f, RS.mesh_tris_new[k] / f,
+               (unsigned long long)RS.biggest[k]);
+    }
+    memset(RS.p, 0, sizeof RS.p), memset(RS.b, 0, sizeof RS.b);
+    memset(RS.mesh_draws, 0, sizeof RS.mesh_draws), memset(RS.mesh_first, 0, sizeof RS.mesh_first);
+    memset(RS.mesh_new, 0, sizeof RS.mesh_new), memset(RS.mesh_tris_new, 0, sizeof RS.mesh_tris_new);
+    memset(RS.biggest, 0, sizeof RS.biggest);
+}
+
+// ---- ray tracing geometry v2 survey (TOTK_RT_STAB=1, with the capture on): is a captured draw the same draw next
+// frame? Its identity: vertex shader, primitive, count, instances, first vertex, index buffer, base vertex, the vertex
+// buffers and the contents (TOTK_RT_STAB=2: the addresses) of the uniform blocks its vertex stage reads (c4, the
+// camera, left out); per block c3-c16 a hash of its contents. Every 300 frames: the triangles of draws whose identity was also drawn last frame, how many
+// of those had every block unchanged, and per block the share whose contents changed.
+typedef struct { uint64_t id, frame, h[14]; } RtStab;
+static RtStab *rtst;
+static struct { uint64_t frame0, tris, same, still, reads[14], ch[14], why[5], mb[14]; } RTS;
+// the misses' cause, by the shader, primitive and count alone: none such last frame, drawn more than once last frame,
+// index buffer or first vertex, vertex buffers, a block's contents (mb: which)
+typedef struct { uint64_t id, frame, n, nprev, ib, vb, h[14], pib, pvb, ph[14]; } RtStabM;
+static RtStabM *rtsm;
+
+static uint64_t rt_block_hash(uint64_t addr, uint64_t size, uint64_t frame) {
+    static struct { uint64_t frame, addr, size, h; } memo[4096];
+    uint32_t i = (uint32_t)((addr ^ size << 40) * 0x9E3779B97F4A7C15ull >> 52);
+    if (memo[i].frame == frame && memo[i].addr == addr && memo[i].size == size) return memo[i].h;
+    uint64_t n = size < LIM.ubo_max ? size : LIM.ubo_max, h = 0xcbf29ce484222325ull;
+    const uint8_t *p = n ? vk_usnap_bytes(addr, n) : NULL;
+    if (!p) h = 1;
+    else
+        for (uint64_t k = 0; k + 8 <= n; k += 8) {
+            uint64_t w;
+            memcpy(&w, p + k, 8);
+            h = (h ^ w) * 0x100000001b3ull;
+        }
+    memo[i].frame = frame, memo[i].addr = addr, memo[i].size = size, memo[i].h = h;
+    return h;
+}
+
+static void rt_stab(VkExec *ex, int prim, uint32_t count, uint32_t inst, uint32_t first, uint64_t ibuf, int32_t base) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_RT_STAB"); on = e && *e ? atoi(e) : 0; }
+    if (!on) return;
+    if (!rtst && (!(rtst = calloc(65536, sizeof *rtst)) || !(rtsm = calloc(65536, sizeof *rtsm)))) { on = 0; return; }
+    if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
+    static long skip = -1;
+    if (skip < 0) { const char *e = cfg_get("TOTK_RT_STAB_SKIP"); skip = e && *e ? strtol(e, NULL, 16) : 0; }
+    int addr_id = on == 2;   // TOTK_RT_STAB=2: the blocks by address (1: by contents)
+    VkExecDraw *D = ex->draw;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (!RTS.frame0) RTS.frame0 = frame;
+    uint64_t tris = (prim == NVN_DRAW_PRIMITIVE_TRIANGLES ? count / 3 : count > 2 ? count - 2 : 0) * (uint64_t)inst;
+    uint64_t id = 0xcbf29ce484222325ull, v[7] = {(uint64_t)(uintptr_t)D->B.st.vs, (uint64_t)prim, count, inst, first, ibuf,
+                                                 (uint64_t)(int64_t)base};
+    for (int k = 0; k < 7; k++) id = (id ^ v[k]) * 0x100000001b3ull;
+    for (int k = 0; k < 16; k++) id = (id ^ ex->vbuf[k].address) * 0x100000001b3ull;
+    const GfxShaderRes *ur;
+    int nu = gfx_shader_resources(D->B.st.vs, GFX_RES_UBO, &ur);
+    uint32_t mask = 0;
+    for (int i = 0; i < nu; i++)
+        if (ur[i].slot >= 3 && ur[i].slot <= 16 && ur[i].slot != 4) mask |= 1u << (ur[i].slot - 3);
+    uint64_t h[14] = {0};
+    for (int b = 0; b < 14; b++) {
+        if (!(mask >> b & 1)) continue;
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][b];
+        h[b] = rt_block_hash(u->addr, u->size, frame);
+        if (skip >> (b + 3) & 1) continue;   // TOTK_RT_STAB_SKIP=<hex bank mask>: blocks left out of the identity
+        id = (id ^ (addr_id ? u->addr ^ u->size << 48 : h[b] + (uint64_t)b)) * 0x100000001b3ull;
+    }
+    static int diff = -1;   // TOTK_RT_STAB_DIFF=1: for one draw reading c9 and one reading c14, the words that change
+    if (diff < 0) diff = rt_knob("RT_STAB_DIFF", "0");
+    if (diff && frame - RTS.frame0 > 100) {
+        static struct { uint64_t id, frame; int logged; uint8_t b[4096]; uint32_t n; } dw[2];
+        for (int q = 0; q < 2; q++) {
+            int bank = q ? 14 : 9;
+            if (!(mask >> (bank - 3) & 1) || dw[q].logged >= 3) continue;
+            const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][bank - 3];
+            uint32_t nb = (uint32_t)(u->size < 4096 ? u->size : 4096);
+            const uint8_t *p = nb ? vk_usnap_bytes(u->addr, nb) : NULL;
+            if (!p) continue;
+            if (!dw[q].id) dw[q].id = id;
+            if (dw[q].id != id) continue;
+            if (dw[q].frame + 1 == frame && dw[q].n == nb) {
+                char line[1024];
+                int n = 0, c = 0;
+                for (uint32_t k = 0; k + 4 <= nb && n < 900; k += 4) {
+                    float o, w;
+                    memcpy(&o, dw[q].b + k, 4), memcpy(&w, p + k, 4);
+                    if (memcmp(dw[q].b + k, p + k, 4)) c++, n += snprintf(line + n, sizeof line - (size_t)n, " [%u] %g->%g", k / 4, o, w);
+                }
+                rt_log("rt stab diff: c%d (%u bytes) of a draw of %u corners: %d words changed:%s", bank, nb, count, c, c ? line : "");
+                dw[q].logged++;
+            }
+            memcpy(dw[q].b, p, nb), dw[q].n = nb, dw[q].frame = frame;
+        }
+    }
+    RtStab *e = NULL;
+    for (uint32_t k = 0, i = (uint32_t)(id * 0xff51afd7ed558ccdull >> 48); k < 16; k++) {
+        RtStab *q = &rtst[(i + k) & 65535];
+        if (q->id == id || q->frame + 2 < frame) { e = q; break; }
+    }
+    RTS.tris += tris;
+    {   // the cause of a miss
+        uint64_t mid = 0xcbf29ce484222325ull, ibh = (ibuf * 31 + first) * 31 + (uint64_t)(int64_t)base, vbh = 0;
+        for (int k = 0; k < 4; k++) mid = (mid ^ v[k]) * 0x100000001b3ull;
+        for (int k = 0; k < 16; k++) vbh = (vbh ^ ex->vbuf[k].address) * 0x100000001b3ull;
+        RtStabM *m = &rtsm[(uint32_t)(mid * 0xff51afd7ed558ccdull >> 48)];
+        if (m->id != mid) memset(m, 0, sizeof *m), m->id = mid;
+        if (m->frame != frame) {
+            m->nprev = m->frame + 1 == frame ? m->n : 0, m->pib = m->ib, m->pvb = m->vb, memcpy(m->ph, m->h, sizeof m->h);
+            m->frame = frame, m->n = 0;
+        }
+        int hit = e && e->id == id && e->frame + 1 == frame, twice = e && e->id == id && e->frame == frame;
+        if (!hit && !twice) {
+            int w = !m->nprev ? 0 : m->nprev > 1 ? 1 : m->pib != ibh ? 2 : m->pvb != vbh ? 3 : 4;
+            RTS.why[w] += tris;
+            if (w == 4)
+                for (int b = 0; b < 14; b++)
+                    if (m->ph[b] != h[b]) RTS.mb[b] += tris;
+        }
+        if (!m->n++) m->ib = ibh, m->vb = vbh, memcpy(m->h, h, sizeof h);
+    }
+    if (e && e->id == id && e->frame == frame) return;   // drawn twice this frame
+    if (e && e->id == id && e->frame + 1 == frame) {
+        RTS.same += tris;
+        int still = 1;
+        for (int b = 0; b < 14; b++)
+            if (mask >> b & 1) {
+                RTS.reads[b] += tris;
+                if (e->h[b] != h[b]) RTS.ch[b] += tris, still = 0;
+            }
+        if (still) RTS.still += tris;
+    }
+    if (e) e->id = id, e->frame = frame, memcpy(e->h, h, sizeof h);
+    if (frame - RTS.frame0 >= 300) {
+        double t = RTS.tris ? (double)RTS.tris : 1, s = RTS.same ? (double)RTS.same : 1;
+        char line[512];
+        int n = 0;
+        for (int b = 0; b < 14; b++)
+            if (RTS.reads[b] && n < 400)
+                n += snprintf(line + n, sizeof line - (size_t)n, " c%d %.0f%%/%.0f%%", b + 3, 100.0 * RTS.reads[b] / s,
+                              100.0 * RTS.ch[b] / (double)RTS.reads[b]);
+        char mbl[256];
+        int mn = 0;
+        mbl[0] = 0;
+        for (int b = 0; b < 14; b++)
+            if (RTS.mb[b] && mn < 200) mn += snprintf(mbl + mn, sizeof mbl - (size_t)mn, " c%d %.1f%%", b + 3, 100.0 * RTS.mb[b] / t);
+        rt_log("rt stab: %.0f tris a frame captured; same identity as last frame %.1f%%, all blocks unchanged %.1f%% of "
+               "those; blocks (read by / changed):%s; misses: new %.1f%%, mesh drawn several times %.1f%%, index/first %.1f%%, "
+               "vertex buffers %.1f%%, blocks %.1f%% (%s)", t / (double)(frame - RTS.frame0), 100.0 * RTS.same / t,
+               100.0 * RTS.still / s, n ? line : " none", 100.0 * RTS.why[0] / t, 100.0 * RTS.why[1] / t,
+               100.0 * RTS.why[2] / t, 100.0 * RTS.why[3] / t, 100.0 * RTS.why[4] / t, mbl);
+        memset(&RTS, 0, sizeof RTS);
+        RTS.frame0 = frame;
+    }
+}
+
+// A captured draw's identity for the ray tracing mesh cache (vk_rt.c): its vertex shader, primitive, count, first vertex,
+// index buffer, base vertex, facing (rt_face), vertex buffers and the contents of the uniform blocks its vertex stage
+// reads, except the camera (c4), the environment (c9: time of day and colours) and the scene (c14), which change every
+// frame for every draw that reads them (TOTK_RT_STAB in the Kakariko inn) without placing it. 0, not cached: an
+// instanced draw (its places are not in its blocks) or a block not in the snapshot.
+// rt_mesh_id also leaves the draw's geometry key here (vk_exec_geo_key): its primitive, count, first vertex, index
+// buffer and base vertex (not indexed: its first vertex buffer), without the shader, blocks and vertex streams, so a shadow cascade's draw of a mesh (a
+// depth-only vertex shader) finds the G-buffer's draw of the same mesh (vk_rt.c: kept while the cascades draw it).
+static _Thread_local uint64_t rt_gk;
+uint64_t vk_exec_geo_key(void) { return rt_gk; }
+static uint64_t rt_mesh_id(VkExec *ex, int prim, uint32_t count, uint32_t inst, uint32_t first, uint64_t ibuf, int32_t base,
+                           uint32_t face) {
+    rt_gk = 0;
+    if (inst != 1) return 0;
+    {
+        uint64_t g = 0x84222325cbf29ce4ull, w[5] = {(uint64_t)prim, count, first, ibuf, (uint64_t)(int64_t)base};
+        for (int k = 0; k < 5; k++) g = (g ^ w[k]) * 0x100000001b3ull;
+        // an indexed draw: its index range alone (the cascades bind their own position-only vertex streams); else the
+        // first vertex buffer
+        if (!ibuf) g = (g ^ ex->vbuf[0].address) * 0x100000001b3ull;
+        rt_gk = g | 1;
+    }
+    if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
+    VkExecDraw *D = ex->draw;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    uint64_t id = 0xcbf29ce484222325ull, v[7] = {(uint64_t)(uintptr_t)D->B.st.vs, (uint64_t)prim, count, first, ibuf,
+                                                 (uint64_t)(int64_t)base, face};
+    for (int k = 0; k < 7; k++) id = (id ^ v[k]) * 0x100000001b3ull;
+    for (int k = 0; k < 16; k++) id = (id ^ ex->vbuf[k].address) * 0x100000001b3ull;
+    const GfxShaderRes *ur;
+    int nu = gfx_shader_resources(D->B.st.vs, GFX_RES_UBO, &ur);
+    for (int i = 0; i < nu; i++) {
+        int b = ur[i].slot;
+        if (b < 3 || b > 16 || b == 4 || b == 9 || b == 14) continue;
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][b - 3];
+        uint64_t h = rt_block_hash(u->addr, u->size, frame);
+        if (h == 1) return 0;
+        id = (id ^ (h + (uint64_t)b)) * 0x100000001b3ull;
+    }
+    return id | 1;
+}
+
+// A shadow cascade draw's camera (vk_rt_xfb_begin's scam): rows 3-6 of its vertex stage's c4, the cascade's
+// view-projection (docs/raytracing.md). NULL: a G-buffer draw, or no camera block (then not captured: rt_scam_ok).
+static _Thread_local float rt_scam_rows[16];
+static _Thread_local int rt_scam_ok;
+static const void *rt_scam(VkExec *ex) {
+    rt_scam_ok = 1;
+    if (rt_xfb != 2) return NULL;
+    rt_scam_ok = 0;
+    const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][4 - 3];
+    if (u->size < 112) return NULL;
+    const uint8_t *p = vk_usnap_bytes(u->addr, 112);
+    if (!p) return NULL;
+    memcpy(rt_scam_rows, p + 48, sizeof rt_scam_rows);
+    rt_scam_ok = 1;
+    return rt_scam_rows;
+}
+
+// TOTK_RT_DUMPFS=1 (debug, docs/raytracing.md, materials step 1): each G-buffer draw's fragment shader once, to
+// logs/fsdump/: <fs key>.fs.spv, the vertex shader's .vs.spv and a .txt with its textures (binding, slot, type, array),
+// the pass's colour target formats, and at exit the draws and vertices drawn with it.
+typedef struct { const GfxShader *fs, *vs; uint64_t draws, verts; } FsDump;
+static FsDump fsd[2048];
+static int fsd_n, fsd_on = -1;
+static PlatMutex fsd_lock = PLAT_MUTEX_INIT;
+static void fsd_hex(const uint8_t *k, char *o) { for (int i = 0; i < 16; i++) sprintf(o + 2 * i, "%02x", k[i]); }
+static void fsd_counts(void) {
+    plat_file_mkdir_p("logs/fsdump");
+    FILE *f = fopen("logs/fsdump/counts.txt", "w");
+    if (!f) return;
+    for (int i = 0; i < fsd_n; i++) {
+        char h[33];
+        fsd_hex(gfx_shader_key(fsd[i].fs), h);
+        fprintf(f, "%s %llu %llu\n", h, (unsigned long long)fsd[i].draws, (unsigned long long)fsd[i].verts);
+    }
+    fclose(f);
+}
+// TOTK_RT_ALBEDO_LOG=1: what share of the G-buffer draws (and their vertices) gfx_shader_albedo finds a texture and
+// UV for, by outcome, logged every 50,000 draws; "uv written" counts found UVs whose vertex shader writes that
+// Location (the varyings the capture would record).
+static void alb_note(const VkPipeState *s, uint32_t count) {
+    static int on = -1;
+    static volatile int64_t draws[GFX_ALB_KINDS], verts[GFX_ALB_KINDS], n, uvw_d, uvm_d, vlay_d, vlay_v;
+    if (on < 0) { const char *e = cfg_get("TOTK_RT_ALBEDO_LOG"); on = e && *e == '1'; }
+    if (!on || !s->fs) return;
+    const GfxAlbedo *a = gfx_shader_albedo(s->fs);
+    int k = a->kind < GFX_ALB_KINDS ? a->kind : GFX_ALB_FAILED;
+    __atomic_add_fetch(&draws[k], 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&verts[k], count, __ATOMIC_RELAXED);
+    if (k == GFX_ALB_2D || k == GFX_ALB_ARRAY) {
+        GfxShaderIo io[32];
+        uint32_t om = s->vs ? gfx_shader_outputs(s->vs, io) : 0;
+        if (om >> a->uv_loc & 1 && (a->layer_loc == 0xff || om >> a->layer_loc & 1)) __atomic_add_fetch(&uvw_d, 1, __ATOMIC_RELAXED);
+        if (a->layer_loc != 0xff) __atomic_add_fetch(&vlay_d, 1, __ATOMIC_RELAXED), __atomic_add_fetch(&vlay_v, count, __ATOMIC_RELAXED);
+        if (a->uv_math) __atomic_add_fetch(&uvm_d, 1, __ATOMIC_RELAXED);
+    }
+    if (__atomic_add_fetch(&n, 1, __ATOMIC_RELAXED) % 50000) return;
+    static const char *const names[GFX_ALB_KINDS] = {"unknown", "2d", "array", "no output", "no sample", "nested",
+                                                     "no varying", "uv math", "layer unknown", "other type", "failed"};
+    double tv = 0, td = 0;
+    for (int i = 0; i < GFX_ALB_KINDS; i++) tv += (double)verts[i], td += (double)draws[i];
+    char line[1024];
+    int o = snprintf(line, sizeof line, "vk: albedo sources of %.0f G-buffer draws (draws%% / vertices%%):", td);
+    for (int i = 0; i < GFX_ALB_KINDS && o < (int)sizeof line - 64; i++)
+        if (draws[i]) o += snprintf(line + o, sizeof line - o, " %s %.1f/%.1f", names[i], 100.0 * draws[i] / td,
+                                    100.0 * verts[i] / (tv > 0 ? tv : 1));
+    double found = (double)(draws[GFX_ALB_2D] + draws[GFX_ALB_ARRAY]);
+    rt_log("%s; of those found, uv (and layer) written by the vertex shader %.1f%%, uv with arithmetic %.1f%%, array layer "
+           "from a varying %.1f/%.1f", line, 100.0 * uvw_d / (found > 0 ? found : 1), 100.0 * uvm_d / (found > 0 ? found : 1),
+           100.0 * vlay_d / (td > 0 ? td : 1), 100.0 * vlay_v / (tv > 0 ? tv : 1));
+}
+
+static void fs_dump(const VkExec *ex, const VkPipeState *s, uint32_t count) {
+    if (fsd_on < 0) { const char *e = cfg_get("TOTK_RT_DUMPFS"); fsd_on = e && *e == '1'; }
+    if (!fsd_on || !s->fs) return;
+    plat_mutex_lock(&fsd_lock);
+    int k = 0;
+    while (k < fsd_n && fsd[k].fs != s->fs) k++;
+    if (k == fsd_n && fsd_n < 2048) {
+        fsd[fsd_n++] = (FsDump){s->fs, s->vs, 0, 0};
+        plat_file_mkdir_p("logs/fsdump");
+        char h[33], path[256];
+        fsd_hex(gfx_shader_key(s->fs), h);
+        for (int st = 0; st < 2; st++) {
+            const GfxShader *g = st ? s->vs : s->fs;
+            uint64_t nw = 0;
+            const uint32_t *w = g ? gfx_shader_spirv(g, &nw) : NULL;
+            snprintf(path, sizeof path, "logs/fsdump/%s.%s.spv", h, st ? "vs" : "fs");
+            FILE *f = w ? fopen(path, "wb") : NULL;
+            if (f) fwrite(w, 4, nw, f), fclose(f);
+        }
+        snprintf(path, sizeof path, "logs/fsdump/%s.txt", h);
+        FILE *f = fopen(path, "w");
+        if (f) {
+            const GfxShaderRes *r;
+            int n = gfx_shader_resources(s->fs, GFX_RES_TEX, &r);
+            for (int i = 0; i < n; i++)
+                fprintf(f, "tex binding %u slot %d type 0x%x array %u separate %u cbuf %d handle 0x%x\n", r[i].binding, r[i].slot,
+                        r[i].type, r[i].count, r[i].separate, r[i].cbuf_slot, r[i].handle);
+            for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) fprintf(f, "color %u format %d\n", i, (int)ex->color[i].format);
+            fclose(f);
+        }
+    }
+    if (k < fsd_n) {
+        fsd[k].draws++, fsd[k].verts += count;
+        static uint32_t calls;
+        if (++calls % 20000 == 0) fsd_counts();
+    }
+    plat_mutex_unlock(&fsd_lock);
+}
+
+// prim, count: as drawn (count 0 with ind: an indirect draw, its size unknown here); ibuf, base: the mesh's identity
+static void rs_draw(VkExec *ex, int prim, uint32_t count, uint32_t instances, int ind, uint64_t ibuf, int32_t base) {
+    if (RS.on < 0) {
+        RS.on = rt_knob("RT_SURVEY", "0");
+        if (RS.on && !(RS.mesh = calloc(RS_MESH, sizeof *RS.mesh))) RS.on = 0;
+    }
+    if (!RS.on) return;
+    VkExecDraw *D = ex->draw;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (!RS.frame0) RS.frame0 = frame;
+    if (frame - RS.frame0 >= 300) rs_summary(frame - RS.frame0), RS.frame0 = frame;
+    RS.frame = frame;
+    uint64_t tris = prim == NVN_DRAW_PRIMITIVE_TRIANGLES ? count / 3
+                  : prim == NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP || prim == NVN_DRAW_PRIMITIVE_TRIANGLE_FAN ? (count > 2 ? count - 2 : 0)
+                  : prim == NVN_DRAW_PRIMITIVE_QUADS ? count / 2 : 0;
+    tris *= instances;
+    uint32_t nc = ex->pass_noatt ? 0 : ex->pass_ncolor, cf = nc ? (uint32_t)ex->color[0].format : 0;
+    uint32_t df = ex->depth.image ? (uint32_t)ex->depth.format : 0;
+    for (int i = 0; i < 96; i++) {
+        RsPass *q = &RS.p[i];
+        if (q->draws && (q->nc != nc || q->cf != cf || q->df != df || q->w != ex->pass_w || q->h != ex->pass_h || q->layers != ex->pass_layers))
+            continue;
+        if (!q->draws) *q = (RsPass){.nc = nc, .cf = cf, .df = df, .w = ex->pass_w, .h = ex->pass_h, .layers = ex->pass_layers};
+        q->draws++, q->tris += tris, q->ind += (uint64_t)ind;
+        if (instances > 1) q->inst_draws++, q->instances += instances;
+        break;
+    }
+    // the G-buffer (vk_contact.c is_gbuffer without the storage usage) and depth-only passes
+    int kind = -1;
+    if (!ex->pass_noatt && ex->pass_w >= 640 && ex->depth.format == VK_FORMAT_D32_SFLOAT) {
+        int sc = 0, ld = 0;
+        for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
+            sc |= ex->color[i].format == VK_FORMAT_B10G11R11_UFLOAT_PACK32, ld |= ex->color[i].format == VK_FORMAT_R32_SFLOAT;
+        if ((sc && ld) || ex->pass_ncolor >= 3) kind = 0;   // 1.4.3 fills it in two passes: 6 targets, then 8
+    }
+    if (kind < 0 && !nc && ex->depth.image) kind = 1;
+    if (kind < 0 || !D->B.st_valid || !D->B.st.vs) return;
+    const GfxShaderRes *ur;
+    int nu = gfx_shader_resources(D->B.st.vs, GFX_RES_UBO, &ur);
+    uint32_t mask = 0;
+    for (int i = 0; i < nu; i++)
+        if (ur[i].slot >= 0 && ur[i].slot < 20) mask |= 1u << ur[i].slot;
+    int kill = rs_fs_kills(D->B.st.fs);
+    for (int i = 0; i < 64; i++) {
+        RsBank *q = &RS.b[kind][i];
+        if (q->draws && q->mask != mask) continue;
+        q->mask = mask, q->draws++, q->tris += tris, q->ind += (uint64_t)ind;
+        if (kill) q->kill_draws++, q->kill_tris += tris;
+        if (instances > 1) q->inst_draws++, q->instances += instances;
+        break;
+    }
+    if (tris > RS.biggest[kind]) RS.biggest[kind] = tris;
+    uint64_t key = (ibuf * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)count << 32) ^ (uint64_t)(uint32_t)base * 0xC2B2AE3D27D4EB4Full ^
+                   (uint64_t)(uintptr_t)D->B.st.vs ^ (uint64_t)kind << 63;
+    if (!key) key = 1;
+    RS.mesh_draws[kind]++;
+    for (uint32_t h = (uint32_t)(key >> 40), n = 0; n < 64; n++) {
+        uint64_t *e = RS.mesh[(h + n) & (RS_MESH - 1)];
+        if (e[0] == key) {
+            if (e[1] != frame) RS.mesh_first[kind]++, e[1] = frame;
+            break;
+        }
+        if (!e[0]) {
+            e[0] = key, e[1] = frame, RS.mesh_first[kind]++, RS.mesh_new[kind]++, RS.mesh_tris_new[kind] += tris;
+            break;
+        }
+    }
+}
+
 static void op_draw(VkExec *ex, const p_draw *d) {
     VkExecDraw *D = ex->draw;
     D->c0_binst = (uint32_t)d->base_instance;
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     ex->fr.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
+    rs_draw(ex, d->prim, n, inst, 0, 0, (int32_t)first);
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -4371,7 +5053,12 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         free(ix);
         vkCmdDrawIndexed(ex->cb, n + 1, inst, 0, 0, (uint32_t)d->base_instance);
     } else {
+        const void *sc = rt_xfb ? rt_scam(ex) : NULL;
+        int cap = rt_xfb && rt_scam_ok && vk_rt_xfb_begin(ex->cb, rt_xfb_verts(d->prim, n, inst), rt_tag(ex), rt_face(ex),
+                                                          rt_mesh_id(ex, d->prim, n, inst, first, 0, 0, rt_face(ex)), sc,
+                                                          rt_xfb == 1 ? rt_matw : NULL);
         vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
+        if (cap) vk_rt_xfb_end(ex->cb), rt_stab(ex, d->prim, n, inst, first, 0, 0);
     }
     ex->recorded++;
 }
@@ -4404,6 +5091,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     ex->fr.draws++;
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
+    rs_draw(ex, d->prim, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->ibuf, d->base_vertex);
     VkMemSpan sp;
     if (!vk_mem_resolve(d->ibuf, bytes, &sp)) return warn_once(W_INDEX, "index buffer %#llx is not backed: draws with it are skipped", (unsigned long long)d->ibuf);
     if (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE) {   // no uint8 index type here: widen (host-readable backing only)
@@ -4427,8 +5115,17 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
+    uint32_t ninst = d->instances > 0 ? (uint32_t)d->instances : 1;
+    const void *sc = rt_xfb ? rt_scam(ex) : NULL;
+    int cap = rt_xfb && rt_scam_ok &&
+              vk_rt_xfb_begin(ex->cb, rt_xfb_verts(d->prim, (uint32_t)d->count, ninst), rt_tag(ex), rt_face(ex),
+                              rt_mesh_id(ex, d->prim, (uint32_t)d->count, ninst, 0, d->ibuf, d->base_vertex, rt_face(ex)), sc,
+                              rt_xfb == 1 ? rt_matw : NULL);
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
+    if (cap)
+        vk_rt_xfb_end(ex->cb), rt_stab(ex, d->prim, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0,
+                                       d->ibuf, d->base_vertex);
     ex->recorded++;
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
 }
@@ -4448,6 +5145,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         return warn_once(W_INDEX, "index buffer %#llx is not backed or not aligned: indirect draws skipped", (unsigned long long)d->ibuf);
     if (!prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
     ex->fr.draws++;
+    rs_draw(ex, d->prim, 0, 1, 1, d->ibuf, 0);
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);

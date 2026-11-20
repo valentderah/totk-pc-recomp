@@ -1350,6 +1350,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
+    // the ray-traced night tone after the fog and haze, before DLSS and the bloom read the scene (vk_rt.c)
+    vk_rt_tone_scene(cb, t->img, t->format, t->level, t->base_layer, w, h);
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
         for (size_t i = 0; i < DLSS_SIZES; i++)
             if (D.sizes[i].mv) free_size(&D.sizes[i]);

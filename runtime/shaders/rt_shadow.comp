@@ -1,0 +1,240 @@
+#version 460
+// Ray-traced sun shadows (runtime/vk_rt.c, TOTK_RT_SHADOWS=1; docs/raytracing.md). Half resolution, one thread per
+// half-res pixel, run before the game's half-resolution lighting pass, whose shadow lookups read the result
+// (gfx_shader.c patch_rt_shadow). Three modes:
+//
+// mode 0, trace: the full-res pixel 2*p's world position from the linear depth, its normal from the depth's slope.
+// Two rays toward the light (pc.prm.xyz, world space): one toward a random point of the sun's disc (radius tan
+// pc.ext.z), whose hits make a penumbra that is sharp at contact and widens with the distance to the caster, and one
+// in a wider cone (pc.ext.w times the disc) that says whether solid geometry is anywhere near the path to the sun.
+// Each is 1 (lit, nothing hit) or 0. The history at the pixel's position last frame is reprojected as in rt_ao.comp.
+// hist_out[i] = (V history, linear view depth, frames, V raw), hist_out[n + i] = (wide history, wide raw, 0, 0).
+//
+// mode 3, temporal: both histories clamped to their 5x5 neighbourhood's mean +- 1 sd + 0.03 (same depth), then
+// blended with the raw values over up to 4 frames (shadows of moving things must not trail).
+//
+// mode 4, resolve: a 5x5 depth-aware blur of both, written to the shadow image read by the lighting:
+// R = sun visibility (1 lit), G = how much to keep the shadow map's darker value (1 where no solid geometry is near
+// the path: a shadow there comes from what the scene does not hold, foliage and cut-outs, or from beyond its radius),
+// B = weight (1 ray traced, 0 the game's own shadow: the sky, and a fade over the last 30% of pc.ext.x metres).
+// The lighting computes mix(map, mix(V, min(V, map), G), B) for each of its cascade compares.
+//
+// mode 5, patch (the frame's second lighting pass): more G-buffer draws came after the first; the pixels whose depth
+// no longer matches the history's (the first pass's) get one sample of both rays written straight to the image.
+#extension GL_EXT_ray_query : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D lin_depth;              // the game's linear depth: (view distance - near) / far
+layout(binding = 2, std430) readonly buffer HistIn { vec4 hist_in[]; };
+layout(binding = 3, std430) buffer HistOut { vec4 hist_out[]; };
+layout(set = 1, binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 4, std430) readonly buffer World { vec4 world[]; };   // the captured triangles (facing in w)
+layout(binding = 5, std430) readonly buffer Gtab { uint gtab[]; };
+layout(binding = 6, rgba8) uniform writeonly image2D shadow_img;   // the result the lighting reads (half resolution)
+uint tri_index(int ci, int geom, int prim) { return (ci == 0 ? 0u : gtab[uint(ci - 2 + geom)]) + uint(prim); }
+#define PROCEED(q, dir) \
+    while (rayQueryProceedEXT(q)) { \
+        rayQueryConfirmIntersectionEXT(q); \
+    }
+
+layout(push_constant) uniform Params {
+    vec4 proj;             // projection x scale, y scale, far plane, mode (0 trace, 3 temporal, 4 resolve)
+    vec4 iv0, iv1, iv2;    // inverse view rows: view space -> world
+    vec4 pv0, pv1, pv2, pv3;   // last frame's view-projection rows (clip = row . world)
+    vec4 prm;              // toward the light (world, unit), frame number
+    vec4 sz;               // width, height, half width, half height
+    vec4 flg;              // history valid, uv x sign, uv y sign, view (9 ours alone, 10 G, 11 the game's, 12/13 split)
+    vec4 ext;              // farthest pixel ray traced (m; fades over the last 30%), ray length (m), tan of the sun's
+                           // radius, wide cone factor
+    layout(offset = 240) vec4 nr;   // x: the near plane (m); the linear depth is (view distance - near) / far
+} pc;
+
+vec3 view_pos(vec2 uv, float z) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+}
+vec3 to_world(vec3 p) { vec4 q = vec4(p, 1.0); return vec3(dot(pc.iv0, q), dot(pc.iv1, q), dot(pc.iv2, q)); }
+vec3 dir_world(vec3 d) { return vec3(dot(pc.iv0.xyz, d), dot(pc.iv1.xyz, d), dot(pc.iv2.xyz, d)); }
+
+float depth_at(ivec2 p) { return texelFetch(lin_depth, clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1), 0).x; }
+vec3 vpos(ivec2 p) { return view_pos((vec2(clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1)) + 0.5) / pc.sz.xy, (depth_at(p) * pc.proj.z + pc.nr.x)); }
+
+vec3 view_normal(ivec2 px, vec3 p) {
+    vec3 l = vpos(px - ivec2(1, 0)), r = vpos(px + ivec2(1, 0)), u = vpos(px - ivec2(0, 1)), d = vpos(px + ivec2(0, 1));
+    vec3 dx = abs(r.z - p.z) < abs(p.z - l.z) ? r - p : p - l;
+    vec3 dy = abs(d.z - p.z) < abs(p.z - u.z) ? d - p : p - u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, p) > 0.0 ? -n : n;
+}
+
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+float rnd(inout uint s) { s = pcg(s); return float(s >> 8) * (1.0 / 16777216.0); }
+
+bool sky_depth(float d) { return d <= 0.0 || d >= 0.999; }
+
+// 1 when a ray from o along dir reaches t without a hit (any hit decides: the traversal stops at the first one it
+// accepts, not the nearest)
+float vis(vec3 o, vec3 dir, float t) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, o, 0.0, dir, t);
+    PROCEED(q, dir)
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+}
+
+// a direction within the cone of tangent radius r around L, from two uniform numbers
+vec3 cone_dir(vec3 L, vec3 t, vec3 b, float r, float u1, float u2) {
+    float s = r * sqrt(u1), phi = 6.2831853 * u2;
+    return normalize(L + t * (s * cos(phi)) + b * (s * sin(phi)));
+}
+
+// one sample of the sun ray and the wide ray from the pixel px at linear view depth z: (V, wide)
+// dv, dw: trace the sun ray / the wide ray (else -1 for it)
+vec2 rays(ivec2 px, float z, uint hi, bool dv, bool dw) {
+    vec3 pv = vpos(px), pw = to_world(pv), nw = normalize(dir_world(view_normal(px, pv)));
+    vec3 L = normalize(pc.prm.xyz);
+    if (dot(nw, L) <= -0.2) return vec2(0.0);   // facing away (with a margin for the game's own normals)
+    vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+    float fp = z * 2.0 / (pc.proj.y * pc.sz.y);
+    float ndv = max(dot(nw, normalize(cam - pw)), 0.1);
+    // capped at 4 pixel sizes: 1.5 / ndv grew to ~15 cm at grazing views, and rays that started that high above the
+    // floor missed the lower legs (Link's feet had no shadow attached)
+    vec3 o = pw + nw * (0.02 + min(1.5 * fp / ndv, 4.0 * fp)) + L * 0.02;
+    vec3 t = normalize(abs(L.y) < 0.99 ? cross(L, vec3(0, 1, 0)) : cross(L, vec3(1, 0, 0))), b = cross(L, t);
+    uint seed = pcg(hi ^ pcg(uint(pc.prm.w) * 9781u + 7u));
+    float u1 = rnd(seed), u2 = rnd(seed), u3 = rnd(seed), u4 = rnd(seed);
+    return vec2(dv ? vis(o, cone_dir(L, t, b, pc.ext.z, u1, u2), pc.ext.y) : -1.0,
+                dw ? vis(o, cone_dir(L, t, b, pc.ext.z * pc.ext.w, u3, u4), pc.ext.y) : -1.0);
+}
+
+void trace(ivec2 hp) {
+    uint n = uint(pc.sz.z) * uint(pc.sz.w), hi = uint(hp.y) * uint(pc.sz.z) + uint(hp.x);
+    ivec2 px = hp * 2;
+    float d = depth_at(px);
+    if (sky_depth(d)) { hist_out[hi] = vec4(1.0, 0.0, 0.0, 1.0); hist_out[n + hi] = vec4(1.0); return; }
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (z > pc.ext.x) { hist_out[hi] = vec4(1.0, z, 1.0, 1.0); hist_out[n + hi] = vec4(1.0); return; }
+    vec3 pw = to_world(vpos(px));
+    // the history at this point last frame: (V, frames) and the wide one; hv.y < 0 when there is none
+    vec2 hv = vec2(0.0, -1.0);
+    float hwide = 1.0;
+    if (pc.flg.x > 0.5) {
+        vec4 c = vec4(dot(pc.pv0, vec4(pw, 1)), dot(pc.pv1, vec4(pw, 1)), dot(pc.pv2, vec4(pw, 1)), dot(pc.pv3, vec4(pw, 1)));
+        if (c.w > 0.01) {
+            vec2 uv = 0.5 + 0.5 * vec2(pc.flg.y, pc.flg.z) * c.xy / c.w;
+            ivec2 q = ivec2(floor(uv * pc.sz.zw));
+            if (all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, ivec2(pc.sz.zw)))) {
+                uint qi = uint(q.y) * uint(pc.sz.z) + uint(q.x);
+                vec4 o4 = hist_in[qi];
+                if (o4.y > 0.0 && abs(o4.y - c.w) < 0.03 * c.w + 0.05) hv = vec2(o4.x, o4.z), hwide = hist_in[n + qi].x;
+            }
+        }
+    }
+    // rate 2 (TOTK_RT_SHADOW_RATE): with a history, the sun ray on a checkerboard that alternates each frame and the wide
+    // ray on one pixel in four; an untraced value repeats the history (the temporal pass then keeps it)
+    int rate = int(pc.flg.w + 0.5) / 16 % 4, fr = int(pc.prm.w);
+    bool fresh = hv.y < 0.0 || rate < 2;
+    bool dv = fresh || ((hp.x + hp.y + fr) & 1) == 0, dw = fresh || ((hp.x + 2 * hp.y + fr) & 3) == 0;
+    vec2 r = rays(px, z, hi, dv, dw);
+    float v = dv ? r.x : hv.x, vw = dw ? r.y : hwide;
+    vec4 h = hv.y < 0.0 ? vec4(v, z, 0.0, v) : vec4(hv.x, z, hv.y, v);
+    vec4 hw = vec4(hv.y < 0.0 ? vw : hwide, vw, 0.0, 0.0);
+    hist_out[hi] = h;
+    hist_out[n + hi] = hw;
+}
+
+void temporal(ivec2 p) {
+    ivec2 hs = ivec2(pc.sz.zw);
+    uint n = uint(pc.sz.z) * uint(pc.sz.w), i = uint(p.y) * uint(pc.sz.z) + uint(p.x);
+    vec4 c = hist_in[i], cw = hist_in[n + i];
+    if (c.y <= 0.0) { hist_out[i] = c; hist_out[n + i] = cw; return; }   // the sky
+    float z = c.y, m1 = 0.0, m2 = 0.0, w1 = 0.0, w2 = 0.0, wsum = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            uint qi = uint(q.y) * uint(pc.sz.z) + uint(q.x);
+            vec4 h = hist_in[qi];
+            if (h.y <= 0.0 || abs(h.y - z) > 0.03 * z + 0.05) continue;
+            float r = hist_in[n + qi].y;
+            m1 += h.w, m2 += h.w * h.w, w1 += r, w2 += r * r, wsum += 1.0;
+        }
+    float k = 1.0 / max(wsum, 1.0);
+    float mean = m1 * k, sd = sqrt(max(m2 * k - mean * mean, 0.0));
+    float meanw = w1 * k, sdw = sqrt(max(w2 * k - meanw * meanw, 0.0));
+    if (c.z < 0.5) { hist_out[i] = vec4(mean, z, 1.0, c.w); hist_out[n + i] = vec4(meanw, cw.y, 0.0, 0.0); return; }
+    // up to 4 frames, clamped to mean +- 1 sd: with 16 and 1.5 sd the shadows of moving things trailed (the user saw
+    // them smear and lag); the resolve's 5x5 blur keeps the penumbra smooth
+    float f = 1.0 / min(c.z + 1.0, 4.0);
+    float prev = clamp(c.x, mean - sd - 0.03, mean + sd + 0.03);
+    float prevw = clamp(cw.x, meanw - sdw - 0.03, meanw + sdw + 0.03);
+    hist_out[i] = vec4(mix(prev, c.w, f), z, min(c.z + 1.0, 4.0), c.w);
+    hist_out[n + i] = vec4(mix(prevw, cw.y, f), cw.y, 0.0, 0.0);
+}
+
+void store(ivec2 p, float v, float keep, float wt);
+
+void resolve(ivec2 p) {
+    ivec2 hs = ivec2(pc.sz.zw);
+    uint n = uint(pc.sz.z) * uint(pc.sz.w);
+    vec4 c = hist_out[uint(p.y) * uint(pc.sz.z) + uint(p.x)];
+    if (c.y <= 0.0) { imageStore(shadow_img, p, vec4(1.0, 1.0, 0.0, 1.0)); return; }   // the sky: the game's own
+    float z = c.y, sum = 0.0, sumw = 0.0, wsum = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            uint qi = uint(q.y) * uint(pc.sz.z) + uint(q.x);
+            vec4 h = hist_out[qi];
+            if (h.y <= 0.0) continue;
+            float w = exp(-float(x * x + y * y) / 3.0) * exp(-abs(h.y - z) / (0.02 * z + 0.02));
+            sum += h.x * w, sumw += hist_out[n + qi].x * w, wsum += w;
+        }
+    float v = wsum > 1e-4 ? sum / wsum : c.x, vw = wsum > 1e-4 ? sumw / wsum : 1.0;
+    store(p, v, smoothstep(0.8, 1.0, vw), 1.0 - smoothstep(pc.ext.x * 0.7, pc.ext.x, z));
+}
+
+void retrace(ivec2 hp) {
+    uint hi = uint(hp.y) * uint(pc.sz.z) + uint(hp.x);
+    ivec2 px = hp * 2;
+    float d = depth_at(px), zh = hist_out[hi].y;
+    if (sky_depth(d)) { if (zh > 0.0) imageStore(shadow_img, hp, vec4(1.0, 1.0, 0.0, 1.0)); return; }
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (zh > 0.0 && abs(zh - z) < 0.01 * z + 0.02) return;   // the surface the first pass traced
+    if (z > pc.ext.x) { imageStore(shadow_img, hp, vec4(1.0, 1.0, 0.0, 1.0)); return; }
+    // no history or filter here: 4 sun samples (the wide ray once) so the penumbra does not flicker on what moves
+    vec2 r = rays(px, z, hi ^ 0x9e3779b9u, true, true);
+    float v = r.x;
+    for (uint k = 1u; k < 4u; k++) v += rays(px, z, (hi * 4u + k) ^ 0x632be5abu, true, false).x;
+    store(hp, v * 0.25, smoothstep(0.8, 1.0, r.y), 1.0 - smoothstep(pc.ext.x * 0.7, pc.ext.x, z));
+}
+
+void store(ivec2 p, float v, float keep, float wt) {
+    ivec2 hs = ivec2(pc.sz.zw);
+    int view = int(pc.flg.w + 0.5) % 16;
+    wt *= float((int(pc.flg.w + 0.5) / 64) % 128) / 100.0;   // the strength: 0 the game's shadow, 1 ours
+    if ((int(pc.flg.w + 0.5) / 8192) % 2 == 1) keep = 0.0;   // TOTK_RT_SHADOW_ONLY=1: never the shadow map where traced
+    // TOTK_RT_SHADOW_LIT=1 (debug): every pixel the lighting reads lit and ours: a shadow still on the screen is not
+    // from the lighting's patched compares
+    if (int(pc.flg.w + 0.5) >= 16384) { imageStore(shadow_img, p, vec4(1.0, 0.0, 1.0, 1.0)); return; }
+    if (view == 9) { imageStore(shadow_img, p, vec4(v, 0.0, 1.0, 1.0)); return; }       // ours alone, everywhere
+    if (view == 10) { imageStore(shadow_img, p, vec4(keep, 0.0, 1.0, 1.0)); return; }   // G as the shadow
+    if (view == 11) { imageStore(shadow_img, p, vec4(1.0, 1.0, 0.0, 1.0)); return; }    // the game's shadow map alone
+    // 14: ours and the game's in turns of 64 passes (the same camera in both: an A/B test from one run)
+    if (view == 14 && (int(pc.prm.w) / 64) % 2 == 1) { imageStore(shadow_img, p, vec4(1.0, 1.0, 0.0, 1.0)); return; }
+    // split screen in one frame: 12 ours on the left half, the game's on the right; 13 the other way round
+    if ((view == 12 && p.x >= hs.x / 2) || (view == 13 && p.x < hs.x / 2)) { imageStore(shadow_img, p, vec4(1.0, 1.0, 0.0, 1.0)); return; }
+    imageStore(shadow_img, p, vec4(v, keep, wt, 1.0));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.sz.z) || p.y >= int(pc.sz.w)) return;
+    if (pc.proj.w < 0.5) trace(p);
+    else if (pc.proj.w < 3.5) temporal(p);
+    else if (pc.proj.w < 4.5) resolve(p);
+    else retrace(p);
+}

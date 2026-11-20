@@ -87,6 +87,10 @@ struct GfxShader {
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
     uint32_t mvprev_banks;                                 // .res.json "mvprev_banks" (patch 0015), 0 none
+    GfxAlbedo albedo;                                      // gfx_shader_albedo, once albedo_done is 1
+    volatile int32_t albedo_done;
+    GfxProg prog;                                          // gfx_shader_prog, once prog_done is 1
+    volatile int32_t prog_done;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -841,6 +845,176 @@ out:
     free(cc);
 }
 
+// Ray-traced sun shadows (vk_rt.c, TOTK_RT_SHADOWS=1; docs/raytracing.md). The game's deferred lighting shaders, fragment
+// shaders that write 4 or more colour targets and sample a 2D-array depth texture (the sun's four cascades), take the
+// sun shadow as a few explicit-LOD depth compares on it (OpImageSampleDrefExplicitLod; translator patch 0010 turns
+// each into a PCSS lookup when TOTK_PCSS is on, which this sees as more compares). Each compare's result r becomes
+//     mix(r, mix(V, min(V, r), G), B),   (V, G, B) = texelFetch(rt_shadow, ivec2(gl_FragCoord.xy)).rgb
+// from a combined image sampler added at a new binding of the shader's set. Its resource entry has the flag
+// GFX_RES_RT_SHADOW and no slot; the replay binds vk_rt.c's shadow image there (vk_exec_draw.c): V the ray-traced
+// sun visibility, G how far to keep the shadow map's darker value, B the weight (0: the game's own result).
+// gl_FragCoord is declared when the shader lacks it. Applied to the SPIR-V after it is loaded: the cache is untouched.
+enum { OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_TYPE_IMAGE = 25, OP_TYPE_SAMPLED_IMAGE = 27, OP_CONSTANT = 43,
+       OP_FUNCTION = 54, OP_LOAD = 61, OP_VECTOR_SHUFFLE = 79, OP_COMPOSITE_EXTRACT = 81, OP_IMAGE_FETCH = 95,
+       OP_IMAGE = 100, OP_CONVERT_F_TO_S = 110, OP_SAMPLE_DREF_EXPLICIT = 90, OP_DECORATE_ID = 332,
+       DEC_BINDING = 33, DEC_SET = 34, BI_FRAG_COORD = 15, SC_UNIFORM_CONSTANT = 0, GLSL_FMIN = 37, GLSL_FMIX = 46,
+       IO_LOD = 2 };
+
+static void patch_rt_shadow(GfxShader *s) {
+    static int on = -1;
+    static volatile int32_t n_logged;
+    if (on < 0) on = vk_rt_shadow_patch_wanted();
+    uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    // 3 outputs: the game's quarter-res lighting pass (frame dump pass 91, 480x270; vk_rt.c binds a quarter-res copy)
+    if (!on || n < 5 || s->stage != GFX_STAGE_FS || __builtin_popcount(s->out_mask) < 3) return;
+    uint32_t bound = w[3] < (1u << 20) ? w[3] : (1u << 20);
+    uint32_t *pointee = calloc(bound, sizeof *pointee), *simg_of = calloc(bound, sizeof *simg_of);
+    uint8_t *arr_depth = calloc(bound, 1), *shadow_load = calloc(bound, 1);
+    uint32_t *o = NULL;
+    if (!pointee || !simg_of || !arr_depth || !shadow_load) goto out;
+    // ids found in the module; 0 = absent
+    uint32_t f32 = 0, i32 = 0, v2f = 0, v4f = 0, v2i = 0, c0 = 0, glsl = 0, img2d = 0, simg2d = 0, puc = 0, pin = 0,
+             fc = 0, shadow_var = 0, set = 0, has_set = 0;
+    uint64_t dec_at = 0, fn_at = 0;
+    for (uint64_t i = 5; i < n;) {   // types, pointers, variables and decorations, before the first function
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_FUNCTION) { fn_at = i; break; }
+        if ((op >= OP_DECORATE && op <= 75) || op == OP_DECORATE_ID) dec_at = i + len;
+        if (op == OP_EXT_INST_IMPORT && len >= 3 && !strncmp((const char *)(a + 1), "GLSL.std.450", (len - 2) * 4)) glsl = a[0];
+        else if (op == OP_TYPE_FLOAT && len == 3 && a[1] == 32) f32 = a[0];
+        else if (op == OP_TYPE_INT && len == 4 && a[1] == 32 && a[2] == 1) i32 = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && f32 && a[1] == f32 && a[2] == 2) v2f = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && f32 && a[1] == f32 && a[2] == 4) v4f = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && i32 && a[1] == i32 && a[2] == 2) v2i = a[0];
+        else if (op == OP_CONSTANT && len == 4 && i32 && a[0] == i32 && a[2] == 0) c0 = a[1];
+        else if (op == OP_TYPE_IMAGE && len >= 9 && a[0] < bound) {
+            if (a[2] == 1 && a[3] == 1 && a[4] == 1) arr_depth[a[0]] = 1;   // 2D, depth, arrayed: the cascades
+            if (len == 9 && a[1] == f32 && a[2] == 1 && !a[3] && !a[4] && !a[5] && a[6] == 1 && !a[7]) img2d = a[0];
+        } else if (op == OP_TYPE_SAMPLED_IMAGE && len == 3 && a[0] < bound) {
+            simg_of[a[0]] = a[1] + 1;
+            if (img2d && a[1] == img2d) simg2d = a[0];
+        } else if (op == OP_TYPE_POINTER && len == 4 && a[0] < bound) {
+            pointee[a[0]] = a[2];
+            if (a[1] == SC_INPUT && v4f && a[2] == v4f) pin = a[0];
+            if (a[1] == SC_UNIFORM_CONSTANT && simg2d && a[2] == simg2d) puc = a[0];
+        } else if (op == OP_VARIABLE && len >= 4 && a[2] == SC_UNIFORM_CONSTANT && a[0] < bound) {
+            uint32_t st = pointee[a[0]];
+            if (st < bound && simg_of[st] && simg_of[st] - 1 < bound && arr_depth[simg_of[st] - 1]) shadow_var = a[1];
+        } else if (op == OP_DECORATE && len >= 4 && a[1] == DEC_BUILTIN && a[2] == BI_FRAG_COORD) {
+            fc = a[0];
+        } else if (op == OP_DECORATE && len == 4 && a[1] == DEC_SET && !has_set) {
+            set = a[2], has_set = 1;   // the shader's set (the translator puts everything in one)
+        }
+        i += len;
+    }
+    if (!f32 || !i32 || !v4f || !glsl || !fn_at || !dec_at || !shadow_var) goto out;
+    int found = 0;   // the compares on loads of the cascades
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_LOAD && len >= 4 && a[2] == shadow_var && a[1] < bound) shadow_load[a[1]] = 1;
+        if (op == OP_SAMPLE_DREF_EXPLICIT && len >= 6 && a[0] == f32 && a[2] < bound && shadow_load[a[2]]) found++;
+        i += len;
+    }
+    if (!found) goto out;
+    {   // TOTK_RT_LIGHT_SPV_DUMP=<dir> (debug): the original SPIR-V of each lighting shader patched, for offline study
+        static volatile int32_t n_dump;
+        const char *dd = cfg_get("TOTK_RT_LIGHT_SPV_DUMP");
+        if (dd && *dd) {
+            char fn[512];
+            snprintf(fn, sizeof fn, "%s/light_%02d_%d.spv", dd, (int)plat_inc32(&n_dump), found);
+            FILE *df = fopen(fn, "wb");
+            if (df) fwrite(w, 4, (size_t)n, df), fclose(df);
+        }
+    }
+    uint32_t binding = 1;   // one past the highest binding the shader uses (0 is the support buffer)
+    for (int kd = 0; kd < GFX_RES_KINDS; kd++)
+        for (int r = 0; r < s->nres[kd]; r++) {
+            uint32_t e = s->res[kd][r].binding + (s->res[kd][r].count ? s->res[kd][r].count : 1);
+            if (e > binding) binding = e;
+        }
+    GfxShaderRes *nr = realloc(s->res[GFX_RES_TEX], (size_t)(s->nres[GFX_RES_TEX] + 1) * sizeof *nr);
+    if (!nr) goto out;
+    s->res[GFX_RES_TEX] = nr;
+    o = malloc((n + 64 + (uint64_t)found * 72) * sizeof *o);
+    if (!o) goto out;
+    uint32_t next = w[3], var = next++;
+    uint32_t new_v2f = 0, new_v2i = 0, new_c0 = 0, new_img = 0, new_simg = 0, new_puc = 0, new_pin = 0, new_fc = 0;
+    if (!v2f) v2f = new_v2f = next++;
+    if (!v2i) v2i = new_v2i = next++;
+    if (!c0) c0 = new_c0 = next++;
+    if (!img2d) img2d = new_img = next++;
+    if (!simg2d) simg2d = new_simg = next++;
+    if (!puc) puc = new_puc = next++;
+    if (!fc) {
+        fc = new_fc = next++;
+        if (!pin) pin = new_pin = next++;
+    }
+    uint64_t k = 0;
+    for (uint64_t i = 0; i < 5; i++) o[k++] = w[i];
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (i == dec_at) {
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_SET, o[k++] = set;
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_BINDING, o[k++] = binding;
+            if (new_fc) o[k++] = 4u << 16 | OP_DECORATE, o[k++] = fc, o[k++] = DEC_BUILTIN, o[k++] = BI_FRAG_COORD;
+        }
+        if (i == fn_at) {
+            if (new_v2f) o[k++] = 4u << 16 | OP_TYPE_VECTOR, o[k++] = v2f, o[k++] = f32, o[k++] = 2;
+            if (new_v2i) o[k++] = 4u << 16 | OP_TYPE_VECTOR, o[k++] = v2i, o[k++] = i32, o[k++] = 2;
+            if (new_c0) o[k++] = 4u << 16 | OP_CONSTANT, o[k++] = i32, o[k++] = c0, o[k++] = 0;
+            if (new_img)
+                o[k++] = 9u << 16 | OP_TYPE_IMAGE, o[k++] = img2d, o[k++] = f32, o[k++] = 1, o[k++] = 0, o[k++] = 0,
+                o[k++] = 0, o[k++] = 1, o[k++] = 0;
+            if (new_simg) o[k++] = 3u << 16 | OP_TYPE_SAMPLED_IMAGE, o[k++] = simg2d, o[k++] = img2d;
+            if (new_puc) o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = puc, o[k++] = SC_UNIFORM_CONSTANT, o[k++] = simg2d;
+            o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = puc, o[k++] = var, o[k++] = SC_UNIFORM_CONSTANT;
+            if (new_pin) o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = pin, o[k++] = SC_INPUT, o[k++] = v4f;
+            if (new_fc) o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = pin, o[k++] = fc, o[k++] = SC_INPUT;
+        }
+        if (op == OP_ENTRY_POINT && new_fc) {   // the interface lists the new input (SPIR-V 1.3: inputs and outputs)
+            o[k++] = (len + 1) << 16 | op;
+            for (uint32_t j = 1; j < len; j++) o[k++] = w[i + j];
+            o[k++] = fc;
+        } else if (i > fn_at && op == OP_SAMPLE_DREF_EXPLICIT && len >= 6 && a[0] == f32 && a[2] < bound && shadow_load[a[2]]) {
+            uint32_t r = a[1], rn = next++, fcv = next++, fxy = next++, ic = next++, si = next++, im = next++, t = next++,
+                     V = next++, G = next++, B = next++, mn = next++, x = next++;
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+            o[k - len + 2] = rn;   // the compare gets a new id; its old one becomes the mixed result, so its uses stay
+            o[k++] = 4u << 16 | OP_LOAD, o[k++] = v4f, o[k++] = fcv, o[k++] = fc;
+            o[k++] = 7u << 16 | OP_VECTOR_SHUFFLE, o[k++] = v2f, o[k++] = fxy, o[k++] = fcv, o[k++] = fcv, o[k++] = 0, o[k++] = 1;
+            o[k++] = 4u << 16 | OP_CONVERT_F_TO_S, o[k++] = v2i, o[k++] = ic, o[k++] = fxy;
+            o[k++] = 4u << 16 | OP_LOAD, o[k++] = simg2d, o[k++] = si, o[k++] = var;
+            o[k++] = 4u << 16 | OP_IMAGE, o[k++] = img2d, o[k++] = im, o[k++] = si;
+            o[k++] = 7u << 16 | OP_IMAGE_FETCH, o[k++] = v4f, o[k++] = t, o[k++] = im, o[k++] = ic, o[k++] = IO_LOD, o[k++] = c0;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = V, o[k++] = t, o[k++] = 0;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = G, o[k++] = t, o[k++] = 1;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = B, o[k++] = t, o[k++] = 2;
+            o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = mn, o[k++] = glsl, o[k++] = GLSL_FMIN, o[k++] = V, o[k++] = rn;
+            o[k++] = 8u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = x, o[k++] = glsl, o[k++] = GLSL_FMIX, o[k++] = V, o[k++] = mn, o[k++] = G;
+            o[k++] = 8u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = r, o[k++] = glsl, o[k++] = GLSL_FMIX, o[k++] = rn, o[k++] = x, o[k++] = B;
+        } else {
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        }
+        i += len;
+    }
+    o[3] = next;
+    free(s->spirv);
+    s->spirv = o, s->words = k, o = NULL;
+    nr[s->nres[GFX_RES_TEX]++] = (GfxShaderRes){.set = 0, .binding = (uint16_t)binding, .slot = -1, .type = 3,
+                                                 .flags = GFX_RES_RT_SHADOW, .cbuf_slot = -1, .count = 1};
+    if (plat_inc32(&n_logged) <= 20)
+        rt_log("gfx_shader: a lighting shader's %d sun shadow compares read the ray-traced shadow (binding %u%s)", found,
+               binding, new_fc ? ", gl_FragCoord added" : "");
+out:
+    free(pointee), free(simg_of), free(arr_depth), free(shadow_load), free(o);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
@@ -855,6 +1029,7 @@ static void reflect(GfxShader *s) {
     }
     reflect_spirv(s);
     patch_txd_transpose(s);
+    patch_rt_shadow(s);
 }
 
 // ---- use masks (see the cache key at the top)
@@ -1725,6 +1900,81 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
 }
 
 int gfx_shader_stage(const GfxShader *s) { return s->stage; }
+
+const GfxAlbedo *gfx_shader_albedo(const GfxShader *s) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    GfxShader *m = (GfxShader *)s;
+    if (__atomic_load_n(&m->albedo_done, __ATOMIC_ACQUIRE)) return &m->albedo;
+    plat_mutex_lock(&lock);
+    if (!m->albedo_done) {
+        GfxAlbedo a;
+        if (s->stage == GFX_STAGE_FS) gfx_albedo_analyse(s->spirv, s->words, 1, &a);
+        else memset(&a, 0, sizeof a), a.kind = GFX_ALB_FAILED, a.layer_loc = 0xff;
+        a.tex_res = a.layer_cbuf = -1;
+        a.discard = 0;
+        for (uint64_t i = 5; s->stage == GFX_STAGE_FS && i < s->words;) {
+            uint32_t op = s->spirv[i] & 0xffff, len = s->spirv[i] >> 16;
+            if (!len) break;
+            if (op == 252 || op == 4416 || op == 5380) { a.discard = 1; break; }
+            i += len;
+        }
+        for (int i = 0; i < s->nres[GFX_RES_TEX]; i++)
+            if (s->res[GFX_RES_TEX][i].binding == a.tex_binding) a.tex_res = (int8_t)i;
+        for (int i = 0; a.kind == GFX_ALB_ARRAY && a.layer_loc == 0xff && i < s->nres[GFX_RES_UBO]; i++)
+            if (s->res[GFX_RES_UBO][i].binding == a.layer_binding) a.layer_cbuf = (int8_t)s->res[GFX_RES_UBO][i].slot;
+        if ((a.kind == GFX_ALB_2D || a.kind == GFX_ALB_ARRAY) && a.tex_res < 0) a.kind = GFX_ALB_FAILED;
+        if (a.kind == GFX_ALB_ARRAY && a.layer_loc == 0xff && a.layer_cbuf < 0) a.kind = GFX_ALB_LAYER_UNKNOWN;
+        m->albedo = a;
+        __atomic_store_n(&m->albedo_done, 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&lock);
+    return &m->albedo;
+}
+
+// The program of a fragment shader (gfx_prog.c): compiled once; textures and uniform blocks mapped to the shader's
+// resources. Wanted (its varyings captured at the draws) where one texture and a tint cannot hold the material:
+// TOTK_RT_PROG 1 (default) a glow from a texture, or three samples or more; 2 every program; 0 none.
+const GfxProg *gfx_shader_prog(const GfxShader *s) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    GfxShader *m = (GfxShader *)s;
+    if (__atomic_load_n(&m->prog_done, __ATOMIC_ACQUIRE)) return &m->prog;
+    plat_mutex_lock(&lock);
+    if (!m->prog_done) {
+        GfxProg *p = &m->prog;
+        extern int gfx_prog_no_peephole;
+        const char *np = cfg_get("TOTK_RT_PROG_NOPEEP");   // (debug) the compiler's peephole off
+        gfx_prog_no_peephole = np && *np == '1';
+        extern int gfx_prog_no_preload;
+        const char *npr = cfg_get("TOTK_RT_PROG_NOPRE");   // (debug) varyings and uniforms by instructions
+        gfx_prog_no_preload = npr && *npr == '1';
+        if (s->stage == GFX_STAGE_FS) gfx_prog_compile(s->spirv, s->words, p);
+        else memset(p, 0, sizeof *p), p->status = GFX_PROG_NOT_FS;
+        for (int i = 0; p->status == GFX_PROG_OK && i < p->ntex; i++) {
+            p->tex_res[i] = -1;
+            for (int r = 0; r < s->nres[GFX_RES_TEX]; r++)
+                if (s->res[GFX_RES_TEX][r].binding == p->tex_bind[i]) p->tex_res[i] = (int8_t)r;
+            if (p->tex_res[i] < 0) p->status = GFX_PROG_RESOURCE;
+        }
+        for (int i = 0; p->status == GFX_PROG_OK && i < p->nuni; i++) {
+            p->uni_res[i] = -1;
+            for (int r = 0; r < s->nres[GFX_RES_UBO]; r++)
+                if (s->res[GFX_RES_UBO][r].binding == (int)(p->uni_key[i] >> 12)) p->uni_res[i] = (int8_t)r;
+            if (p->uni_res[i] < 0) p->status = GFX_PROG_RESOURCE;
+        }
+        if (p->status == GFX_PROG_OK) {
+            const char *e = cfg_get("TOTK_RT_PROG");
+            int mode = e && *e ? atoi(e) : 1;
+            const GfxAlbedo *al = gfx_shader_albedo(s);
+            int need_alb = !al || (al->kind != GFX_ALB_2D && al->kind != GFX_ALB_ARRAY) || al->uv_math;
+            if (mode == 2 || (mode == 1 && ((p->flags & GFX_PROG_GLOW && p->nsmp) || p->nsmp >= 3 || (need_alb && p->nsmp >= 1))) ||
+                (mode == 3 && p->flags & GFX_PROG_GLOW && p->nsmp))   // 3: (test) glowing materials alone
+                p->flags |= GFX_PROG_WANTED;
+        }
+        __atomic_store_n(&m->prog_done, 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&lock);
+    return &m->prog;
+}
 
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
     if (kind < 0 || kind >= GFX_RES_KINDS) return 0;
