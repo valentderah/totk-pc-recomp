@@ -131,7 +131,7 @@ bind_Y = pad:north, key:mouse_l
 
 ## Free camera
 
-On game 1.4.3, a chosen gamepad combo or a key steps the free camera through three stages: move, lock, and off again.
+On games 1.1.0 and 1.4.3, a chosen gamepad combo or a key steps the free camera through three stages: move, lock, and off again.
 It is off by default: turn on *Free camera* on the Controls tab (`freecam_patch = 1`) and restart. Then pick the
 combo or the key, neither set by default, with `freecam_pad` and `freecam_key` in `totk.ini` or on the Controls tab
 (for example ZL+ZR+L3, LT+RT+L3 on an Xbox pad, and F2; `none` turns one off). An input script can press the combo as a
@@ -162,6 +162,9 @@ the site keeps writing the overrides without moving them. The up
 vector is levelled through the component's up offset (+0x200), which is kept and put back. Of the three components a
 frame updates, the free camera drives the two that share the player camera's eye and leaves the one at the default pose
 (eye 0, 0, 10). After a load replaced the components it picks the new ones and keeps its position.
+The corresponding 1.1.0 update is main+0xcdb628, with its site at main+0xcdb6cc in `recomp/patches-v110.txt`;
+its field offsets are the same. The component-count observation above is from 1.4.3; 1.1.0 world-camera selection
+still needs gameplay acceptance. See [the 1.1.0 proof and tests](patches-v110.md#free-camera).
 
 ## Mouse camera
 
