@@ -411,8 +411,10 @@ static void ap_init(void) {
                 if (f < lo) lo = f;
                 if (f > hi) hi = f;
             }
+        // Store-exclusive commits must not be parked while they own the global odd epoch (cpu.c).
         const uintptr_t host[] = {(uintptr_t)kern_ap_stub, (uintptr_t)kern_checkpoint, (uintptr_t)rt_svc,
-                                  (uintptr_t)rt_dispatch, (uintptr_t)rt_call};
+                                  (uintptr_t)rt_dispatch, (uintptr_t)rt_call, (uintptr_t)stx8, (uintptr_t)stx16,
+                                  (uintptr_t)stx32, (uintptr_t)stx64, (uintptr_t)stxp128};
         int bad = !n || lo >= hi;
         for (unsigned i = 0; i < sizeof host / sizeof *host; i++) bad |= host[i] >= lo && host[i] <= hi;
         if (bad) {

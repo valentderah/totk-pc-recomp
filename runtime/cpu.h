@@ -18,7 +18,7 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
     uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
-    uint64_t _pad0;          // 344
+    uint64_t excl_epoch;     // 344: stable version saved by the exclusive load
     float fp_th_s[4];        // 352: FP result check threshold, every lane (rt_fpcr_threshold, runtime/simd_fp.h FOKT)
     double fp_th_d[2];       // 368
     __uint128_t fp_arg[3];   // 384: operands of a vector FP op handed to its slow path (runtime/simd_fp.h FN(vredo))
@@ -33,7 +33,14 @@ _Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
 _Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
 _Static_assert(offsetof(Cpu, fp_th_s) == 352 && offsetof(Cpu, fp_th_d) == 368, "fp_th");
 _Static_assert(offsetof(Cpu, fp_arg) == 384, "fp_arg");
+_Static_assert(offsetof(Cpu, excl_addr) == 296, "excl_addr");
+_Static_assert(offsetof(Cpu, excl_val) == 304, "excl_val");
+_Static_assert(offsetof(Cpu, thread) == 312, "thread");
+_Static_assert(offsetof(Cpu, excl_val_hi) == 336, "excl_val_hi");
+_Static_assert(offsetof(Cpu, excl_epoch) == 344, "excl_epoch");
 _Static_assert(offsetof(Cpu, v) == 512, "v");
+_Static_assert(sizeof(Cpu) == 1024, "Cpu size");
+_Static_assert(_Alignof(Cpu) == 16, "Cpu alignment");
 
 typedef void (*GuestFn)(Cpu *);
 
@@ -111,21 +118,48 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define ST32(a, v) (*(u32u *)(uintptr_t)(a) = (uint32_t)(v))
 #define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
-// ---- exclusive monitor (emulated with compare-and-swap)
+// ---- exclusive monitor (exclusive stores share one commit epoch)
+// Even epochs are stable; odd epochs own the short data-CAS commit window. A successful store invalidates
+// every older reservation, including same-value stores and stores at unrelated addresses. This only tracks
+// STX/STXP: ordinary stores, STL, LSE and runtime writes still bypass it, so it is not a full ARM monitor.
+// The 64-bit epoch wraps after 2^63 successful commits; it must never be reset while CPUs hold reservations.
+extern uint64_t g_excl_epoch;
+
+static inline uint64_t excl_read_begin(void) {
+    uint64_t epoch;
+    do { epoch = __atomic_load_n(&g_excl_epoch, __ATOMIC_ACQUIRE); } while (epoch & 1);
+    return epoch;
+}
+static inline int excl_read_valid(uint64_t epoch) {
+    // Keep the atomic data load before the validation load, including on weakly ordered hosts.
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_excl_epoch, __ATOMIC_ACQUIRE) == epoch;
+}
+static inline int excl_write_begin(uint64_t epoch) {
+    // Validate the saved version and claim it in one operation, before touching the data.
+    return __atomic_compare_exchange_n(&g_excl_epoch, &epoch, epoch + 1, 0,
+                                       __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+}
+static inline uint32_t excl_write_end(uint64_t epoch, int stored) {
+    // A failed data CAS wrote nothing: release the gate without invalidating other reservations.
+    __atomic_store_n(&g_excl_epoch, epoch + (stored ? 2 : 0), __ATOMIC_RELEASE);
+    return !stored;
+}
+
 #define EXCL(N, T)                                                                         \
     static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
-        T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
+        uint64_t epoch;                                                                    \
+        T v;                                                                               \
+        do {                                                                               \
+            epoch = excl_read_begin();                                                     \
+            v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                       \
+        } while (!excl_read_valid(epoch));                                                 \
         c->excl_addr = a;                                                                  \
         c->excl_val = v;                                                                   \
+        c->excl_epoch = epoch;                                                             \
         return v;                                                                          \
     }                                                                                      \
-    static inline uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v) {                        \
-        if (c->excl_addr != a) return 1;                                                   \
-        c->excl_addr = ~0ull;                                                              \
-        T expected = (T)c->excl_val;                                                       \
-        return !__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,         \
-                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);           \
-    }                                                                                      \
+    uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v);                                      \
     static inline uint64_t lda##N(uint64_t a) {                                            \
         return __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                       \
     }                                                                                      \
@@ -140,20 +174,19 @@ EXCL(64, uint64_t)
 // Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v2 has CX16).
 // A pair of two W registers is a 64-bit exclusive and uses ldx64/stx64.
 static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
-    __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
+    uint64_t epoch;
+    __uint128_t v;
+    do {
+        epoch = excl_read_begin();
+        v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
+    } while (!excl_read_valid(epoch));
     c->excl_addr = a;
     c->excl_val = (uint64_t)v;
     c->excl_val_hi = (uint64_t)(v >> 64);
+    c->excl_epoch = epoch;
     return v;
 }
-static inline uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
-    if (c->excl_addr != a) return 1;
-    c->excl_addr = ~0ull;
-    __uint128_t expected = ((__uint128_t)c->excl_val_hi << 64) | c->excl_val;
-    __uint128_t v = ((__uint128_t)hi << 64) | lo;
-    return !__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
-                                        __ATOMIC_SEQ_CST);
-}
+uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi);
 
 // ---- LSE atomics (ARMv8.1; the A57 lacks them, the SDK carries them behind a CPU feature check).
 // Add, clear, xor, set and swap map to __atomic builtins in the lifter; min/max need a CAS loop. Return the old value.
