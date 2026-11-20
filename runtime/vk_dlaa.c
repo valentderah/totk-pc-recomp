@@ -312,7 +312,7 @@ static struct {
                                  // generation ran (vk_dlaa_sub_end)
     VkExecTarget hud_t, win;     // the output-sized target the scene is scaled into; the window texture
     float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
-    int fg_mv_ok;                // the frame's camera motion is in the motion image (fg_motion)
+    int fg_mv_ok;                // the frame's motion is in the motion image (fg_motion)
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 #define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
@@ -323,6 +323,23 @@ static int dl_active(void) { return N.available && !D.failed && D.on; }
 // The scene is followed (its G-buffer, light target, end and camera): for DLSS, or with DLSS off for frame generation.
 static int track(void) { return dl_active() || D.fg; }
 int vk_dlaa_fg_on;               // D.fg for vk_exec_draw.c's per-draw test (vk_dlaa_hud)
+
+// TOTK_FG_OBJECTS (default 1, read once): frame generation's motion image gets the per-object pass over the camera's,
+// as DLSS's does. The camera follows Link, so with the camera's motion alone his pixels carry the world's motion and
+// the interpolation drew him twice (a soft second outline) and left a trail where he had been. 0 keeps the camera's
+// motion alone (stage 2's vectors), for comparisons.
+static int fg_objects(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("FG_OBJECTS", "1");
+    return on;
+}
+
+int vk_fg_objects_on(void) { return D.fg && fg_objects(); }
+
+// The per-object motion's gates (vk_mvprev.c's tables, vk_usnap.c's host copy, vk_exec_draw.c's lock): DLSS once NGX
+// came up with it, exactly as vk_dlaa_available, or frame generation following the scene with its objects. Frame
+// generation is off with DLSS, so the second term is 0 whenever DLSS runs.
+int vk_objmv_wanted(void) { return vk_dlaa_available() || vk_fg_objects_on(); }
 
 static void dl_fail(const char *what, NgxResult r) {
     rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
@@ -597,8 +614,8 @@ static int inv4(const double m[16], double o[16]) {
 
 // The pass, recorded through the recorder like the replay's own commands. 0: no camera this frame (the vectors stay
 // zero and DLSS starts a new history). objects: the per-object pass and the TOTK_MV_CHECK hooks after the camera's
-// (DLSS only). bias > 0 with this frame's G-buffer classes (D.ids) also writes e->mask, the
-// bias mask (dlaa_mv.comp); *masked says whether it did.
+// (DLSS, and frame generation unless TOTK_FG_OBJECTS=0). bias > 0 with this frame's G-buffer classes (D.ids) also
+// writes e->mask, the bias mask (dlaa_mv.comp); *masked says whether it did.
 static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked, int objects) {
     *masked = 0;
     VkCommandBuffer cb = ex->cb;
@@ -713,7 +730,7 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
 // Last frame's camera block for the per-object motion pass, recorded before this frame's mv_pass: that pass writes
 // this frame's into slot cam_slot and leaves the other slot, last frame's, as it is. 0: none (no history).
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]) {
-    if (!dl_active() || !D.cam_prev_ok || !D.camb) return 0;
+    if (!track() || !D.cam_prev_ok || !D.camb) return 0;   // DLSS, or frame generation (no jitter: D.jit_* stay 0)
     *out = (VkDescriptorBufferInfo){D.camb, (VkDeviceSize)(D.cam_slot ^ 1) * CAM_SLOT, CAM_BLOCK};
     if (cam_mode()) jitter[0] = D.jit_used ? D.ux : 0.0f, jitter[1] = D.jit_used ? D.uy : 0.0f;
     else jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
@@ -1570,11 +1587,10 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
 
 // ---------------------------------------------------------------- frame generation (vk_fg.cpp), DLSS off
 // The scene is followed as for DLSS (vk_dlaa_plan: armed on the light target, ended at the bloom chain's first pass),
-// without the jitter, the per-object motion, the reactive mask or NGX. Three points of the frame, in the sequential
-// replay:
-// 1. The scene's end (fg_motion, the VK_JOB_DLSS point): the camera motion vectors at the scene's size (mv_pass with
-//    the camera alone; Savage Wind's fg_mv.frag does the same reprojection, as dlaa_mv.comp already did here) and the
-//    SDK's prepare, which reads them with the scene depth while that still holds the scene.
+// without the jitter, the reactive mask or NGX. Three points of the frame, in the sequential replay:
+// 1. The scene's end (fg_motion, the VK_JOB_DLSS point): the motion vectors at the scene's size (mv_pass: the camera's
+//    reprojection, as Savage Wind's fg_mv.frag does, then the per-object pass over it unless TOTK_FG_OBJECTS=0) and
+//    the SDK's prepare, which reads them with the scene depth while that still holds the scene.
 // 2. The picture before the HUD (vk_dlaa_hud, before a draw): measured in a frame dump of 1.4.3 (PR #1089, a 1920x1080
 //    scene and output), after the bloom chain the game draws its bloom composite and FXAA into the light target with
 //    the scene depth attached; then the HUD, in passes on the light target alone without depth, with the HUD's own
@@ -1618,7 +1634,7 @@ static void fg_motion(VkExec *ex) {
     const float *cam = D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
     int cut = cam ? vk_fg_camera(cam, nvn_depth_minus_w(), D.cam_dr, &s) : 1;
     vk_fg_mark(cb, FG_T_MV0);
-    int masked = 0, have = cam && mv_pass(ex, e, zv, 0.0f, 0.0f, 0.0f, &masked, 0);
+    int masked = 0, have = cam && mv_pass(ex, e, zv, 0.0f, 0.0f, 0.0f, &masked, fg_objects());
     if (!have) {   // no camera or no last frame: zero motion, and the SDK starts over
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
