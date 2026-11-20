@@ -15,8 +15,10 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
+| freecam | 1 | Reuse the existing free-camera hook with the proven 1.1.0 component layout; `TOTK_FREECAM_PATCH` defaults off. |
+| steady | 1 | Skip the load-dependent quality setters through their shipping greater-than-8 path; `TOTK_LOD_STEADY` defaults off. |
 
-The table has 16 sets and 54 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
+The table has 17 sets and 56 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
@@ -65,3 +67,70 @@ python tests/patches_v110_highfps_check.py --exefs <local ExeFS directory>
 ```
 
 The test lifts both sets and runs them against Unicorn on and off, at 30, 60, 120 and 240 Hz and slower steps, with zero and tiny deltas, adjacent ULPs around 0.5 and at each compare threshold, and all 16 NZCV values (3240 cases). It compares all general and full 128-bit SIMD registers, SP, NZCV and the whole scratch memory: only s0/s1 (climb), x1/s12 (gears) and the exact save slots may change. It also compiles [patches.c](../runtime/patches.c) with frame_step_init for the nine combinations of the three switches. With `--exefs` it checks every original word, the shipping constants, the d12 save, the vtable entry and the three compares with their branch targets. These are instruction and switch contracts; climbing and the shrine gears still need checks in the game.
+
+## Free camera
+
+The `freecam` set adds one site at main+0xcdb6cc to the existing hook in
+[runtime/freecam.c](../runtime/freecam.c). It is appended as set 16: all previous set indices stay unchanged.
+The runtime and Controls tab permit exactly 1.1.0 and 1.4.3; 1.2.1 and unknown versions remain unavailable.
+`freecam_patch = 0` (the default) runs the original load with no host call. No new setting or camera algorithm is added.
+
+Local 1.1.0 main has build ID `d5ad6ac71ef53e3e52417c1b81dbc9b4142aa3b3`. Its EH bounds are
+main+0xcdb628..0xcdc5d4. The original site is `ldr x8, [x19, #0x18]`; its replacement calls page +0xf50.
+The function sets x19 from x0 at +0xcdb654 and saves/restores x29/x30 at +0xcdb630/+0xcdc010,
+using stack +0x80. Its only reachable return is +0xcdc018. All 1003 reachable CFG instructions have resolved
+local branch edges. Removing the site makes all eye/target/up reads and both override cold blocks unreachable.
+This is a pre-copy hook, not the later FOV load. The caller at +0xe123b8 obtains the component through
++0xe1c0c0: actor +0x228, slot +0x270.
+
+The component fields match the existing hook: eye +0xe8, target +0x110 (three doubles each), up +0x128
+(three floats), one-shot eye/target +0x180/+0x198 and additive up +0x200. Reads at +0xcdb6d0, +0xcdb734,
++0xcdb764 and +0xcdb7a0, and override clear blocks +0xcdc250/+0xcdc264 establish those contracts.
+The host changes only x8 and those override fields; its retained up offset is restored on exit.
+
+```sh
+python tests/patches_v110_freecam_check.py
+python tests/patches_v110_freecam_check.py --cflags=-march=x86-64-v2
+python tests/patches_v110_freecam_check.py --exefs <local ExeFS directory>
+```
+
+The original load has 32 native/Unicorn comparisons with all GPRs, full SIMD, SP, all 16 NZCV states and memory.
+The native fixture compiles the real runtime, patch switch implementation and a synthetic function emitted by
+the actual generator. It checks registration and default/off/on settings on versions 100, 110, 121, 143 and 144;
+the emitted BL and restored link register; Off/Move/Lock/Off; shared/default/distant components; zero and
+one-nanosecond deltas; hitch clamping; lost-anchor replacement; complete Cpu preservation and exact write domains.
+It models the game consuming the one-shot overrides; it does not claim to execute a game function.
+The 110 registration assertion fails against the original 1.4.3-only runtime and passes after the version gate changes.
+With ExeFS, the test also checks every original site/spin, EH bounds, CFG dominance, actor getter and five
+window hashes stored in the test (addresses/hashes only, no extracted instruction arrays).
+
+World camera selection, real controller/keyboard input suppression, mouse turning, load transitions and visual
+acceptance remain gameplay checks. No game was run for these instruction/host tests.
+
+## Load-dependent quality
+
+The existing `steady` set (index 8, `lod_steady = 0` by default) now has one site at main+0xcad324.
+It replaces `ldr w21, [x0, #8]` with `mov w21, #9`, as its 1.2.1 counterpart does. The function still reads
+the FSR/FXAA bytes at component +0x15c/+0x15d. The compare at +0xcad344 and `b.gt` at +0xcad34c
+then skip the list at +0x120 and its three virtual setters (+0xcad5b0/+0xcad5e0/+0xcad610) to the existing
+epilogue +0xcad64c. That path restores w21 through x21 at +0xcad654 before returning at +0xcad66c.
+No runtime or renderer path changes; disabling the set retains the original load.
+
+The complete EH-bounded window +0xcad2bc..+0xcad68c has SHA-256
+`a59eb2dfecdb409fdb56c1687a851e5afe51fed7214e343a51162f497467c3de`.
+[patches_v110_check.py](../tests/patches_v110_check.py) verifies it and the list/setter/epilogue anchors, and
+compares the site on/off for shipping values 0, 8, 9 and 0xffffffff. The native freecam fixture also verifies
+steady default/off/on gating and the unchanged set index. Scene quality and performance need gameplay checks.
+
+## Shutter fix investigation
+
+The 1.4.3 `shutter` replacement is not copied into 1.1.0. It depends on the node
+`QueryBlackboardGetF32FromActorForOunce` and its `shouldUseOunceKey` input at +0x58.
+The local 1.1.0 main contains the ordinary `QueryBlackboardGetF32FromActor`, not that node or the Ounce strings.
+The actual 1.1.0 `AI/ShutterFence.root.ainb` in `Pack/AI.Global.Product.110.pack.zs` also uses the ordinary node
+and has none of `ForOunce`, `shouldUseOunceKey`, `SpeedForOunce` or `shouldUseOunceSpeed`. Its SHA-256 is
+`71c845152cd12fbba99ed00e7507706d4bc117021c67134cf4367ec901b29b56`.
+The launcher actor pack contains the ShutterFence AI/blackboard and Speed but no Ounce input.
+Applying the new formula to every ordinary blackboard float lookup would affect unrelated actors.
+Whether the 1.1.0 shrine has the same high-frame-rate launch defect remains untested; a version-specific actor
+and speed gate must be established before implementing a fix.

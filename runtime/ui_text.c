@@ -374,20 +374,20 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FREECAM] = "Free camera",
     [UI_MENU_FREECAM_DESC] = "Lets a combo or a key below detach the view from Link and fly it. Off by default: "
         "with it off the game's camera code runs as shipped. Takes effect after a restart. "
-        "Game version 1.4.3.",
+        "Game versions 1.1.0 and 1.4.3.",
     [UI_MENU_FREECAM_OFF_NOTE] = "Turn on Free camera above, then restart",
     [UI_MENU_FREECAM_PAD] = "Free camera combo",
     [UI_MENU_FREECAM_PAD_DESC] = "Gamepad buttons pressed together that step the view through three stages: it leaves "
         "Link and flies, it stays where it was left while Link plays on, and it comes back. While it flies the game "
         "gets no input: the left stick flies along the view and sideways, the triggers up and down, the right stick "
         "turns, and each press of L or R halves or doubles the speed. Locked, Link walks where the left stick points "
-        "on screen. Game version 1.4.3.",
-    [UI_MENU_FREECAM_PAD_V143] = "Game version 1.4.3 only",
+        "on screen. Game versions 1.1.0 and 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Game versions 1.1.0 and 1.4.3 only",
     [UI_MENU_FREECAM_KEY] = "Free camera key",
     [UI_MENU_FREECAM_KEY_DESC] = "A key that steps the view through the same stages: it leaves Link and flies, it "
         "stays while Link plays on, and it comes back. While it flies: W A S D fly along the view and sideways, the "
         "keys bound to ZR and ZL (X and Z by default) up and down, the mouse and the arrow keys turn, and the keys "
-        "bound to L and R (Q and R) halve or double the speed. Game version 1.4.3.",
+        "bound to L and R (Q and R) halve or double the speed. Game versions 1.1.0 and 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Mouse wheel controls for Ultrahand rotation and distance, item and weapon switching, and smooth map zoom.",
@@ -1018,20 +1018,20 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FREECAM] = "Свободная камера",
     [UI_MENU_FREECAM_DESC] = "Позволяет сочетанию или клавише ниже отделить камеру от Линка и летать ею. По "
         "умолчанию выключена: тогда код камеры игры работает без изменений. Включается после "
-        "перезапуска. Версия игры 1.4.3.",
+        "перезапуска. Версия игры 1.1.0 / 1.4.3.",
     [UI_MENU_FREECAM_OFF_NOTE] = "Включите «Свободную камеру» выше и перезапустите игру",
     [UI_MENU_FREECAM_PAD] = "Сочетание свободной камеры",
     [UI_MENU_FREECAM_PAD_DESC] = "Кнопки геймпада, нажатые вместе, переключают камеру по трём режимам: она отделяется "
         "от Линка и летает, остаётся на месте, пока Линком снова можно управлять, и возвращается. Пока камера летает, "
         "игра не получает ввод: левый стик ведёт камеру вдоль взгляда и вбок, курки — вверх и вниз, правый стик "
         "поворачивает, а каждое нажатие L или R уменьшает или увеличивает скорость вдвое. Когда камера закреплена, "
-        "Линк идёт туда, куда левый стик указывает на экране. Версия игры 1.4.3.",
-    [UI_MENU_FREECAM_PAD_V143] = "Только для версии игры 1.4.3",
+        "Линк идёт туда, куда левый стик указывает на экране. Версия игры 1.1.0 / 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Только для версии игры 1.1.0 / 1.4.3",
     [UI_MENU_FREECAM_KEY] = "Клавиша свободной камеры",
     [UI_MENU_FREECAM_KEY_DESC] = "Клавиша, которая переключает те же режимы: камера отделяется от Линка и летает, "
         "остаётся на месте, пока Линком снова можно управлять, и возвращается. Пока она летает: W A S D ведут камеру "
         "вдоль взгляда и вбок, клавиши ZR и ZL (по умолчанию X и Z) — вверх и вниз, мышь и стрелки поворачивают, а "
-        "клавиши L и R (Q и R) уменьшают или увеличивают скорость вдвое. Версия игры 1.4.3.",
+        "клавиши L и R (Q и R) уменьшают или увеличивают скорость вдвое. Версия игры 1.1.0 / 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Геймплей",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Настройки геймплея",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Управление колесом мыши: вращение и дистанция предметов в Ультраруке, выбор оружия и предметов, плавный зум карты.",
@@ -1844,20 +1844,20 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FREECAM] = "Câmera livre",
     [UI_MENU_FREECAM_DESC] = "Permite que uma combinação ou uma tecla abaixo solte a câmera do Link e a faça voar."
         " Desligada por padrão: assim o código de câmera do jogo roda como foi lançado. Vale "
-        "depois de reiniciar. Versão 1.4.3 do jogo.",
+        "depois de reiniciar. Versão 1.1.0 / 1.4.3 do jogo.",
     [UI_MENU_FREECAM_OFF_NOTE] = "Ligue a Câmera livre acima e reinicie",
     [UI_MENU_FREECAM_PAD] = "Combinação da câmera livre",
     [UI_MENU_FREECAM_PAD_DESC] = "Botões do controle pressionados juntos que passam a câmera por três etapas: ela se "
         "solta do Link e voa, fica parada onde foi deixada enquanto o Link volta a ser controlado, e volta. Enquanto "
         "ela voa o jogo não recebe comandos: o analógico esquerdo voa na direção da visão e para os lados, os gatilhos "
         "sobem e descem, o analógico direito gira, e cada toque em L ou R reduz a velocidade à metade ou a dobra. Com "
-        "a câmera parada, o Link anda para onde o analógico esquerdo aponta na tela. Versão do jogo 1.4.3.",
-    [UI_MENU_FREECAM_PAD_V143] = "Só na versão 1.4.3 do jogo",
+        "a câmera parada, o Link anda para onde o analógico esquerdo aponta na tela. Versão do jogo 1.1.0 / 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Só na versão 1.1.0 / 1.4.3 do jogo",
     [UI_MENU_FREECAM_KEY] = "Tecla da câmera livre",
     [UI_MENU_FREECAM_KEY_DESC] = "Uma tecla que passa a câmera pelas mesmas etapas: ela se solta do Link e voa, fica "
         "parada enquanto o Link volta a ser controlado, e volta. Enquanto ela voa: W A S D voam na direção da visão e "
         "para os lados, as teclas de ZR e ZL (X e Z por padrão) sobem e descem, o mouse e as setas giram, e as teclas "
-        "de L e R (Q e R) reduzem a velocidade à metade ou a dobram. Versão do jogo 1.4.3.",
+        "de L e R (Q e R) reduzem a velocidade à metade ou a dobram. Versão do jogo 1.1.0 / 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Controles com a roda do mouse para rotação e distância na Ultramão, seleção de armas e itens, e zoom suave no mapa.",
@@ -2622,13 +2622,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
     [UI_MENU_FREECAM] = "自由镜头",
-    [UI_MENU_FREECAM_DESC] = "允许用下方的组合键或按键让镜头脱离林克自由飞行。默认关闭：关闭时游戏的镜头代码保持原样运行。重启后生效。仅限游戏版本 1.4.3。",
+    [UI_MENU_FREECAM_DESC] = "允许用下方的组合键或按键让镜头脱离林克自由飞行。默认关闭：关闭时游戏的镜头代码保持原样运行。重启后生效。仅限游戏版本 1.1.0 / 1.4.3。",
     [UI_MENU_FREECAM_OFF_NOTE] = "请先打开上方的“自由镜头”，然后重启",
     [UI_MENU_FREECAM_PAD] = "自由镜头组合键",
-    [UI_MENU_FREECAM_PAD_DESC] = "同时按下的手柄按键，让镜头依次切换三个阶段：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间游戏不接收输入：左摇杆沿视线方向和左右移动，扳机键上升和下降，右摇杆转动视角，每按一次 L 或 R 速度减半或加倍。镜头固定时，林克朝左摇杆在屏幕上指向的方向移动。游戏版本 1.4.3。",
-    [UI_MENU_FREECAM_PAD_V143] = "仅限游戏版本 1.4.3",
+    [UI_MENU_FREECAM_PAD_DESC] = "同时按下的手柄按键，让镜头依次切换三个阶段：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间游戏不接收输入：左摇杆沿视线方向和左右移动，扳机键上升和下降，右摇杆转动视角，每按一次 L 或 R 速度减半或加倍。镜头固定时，林克朝左摇杆在屏幕上指向的方向移动。游戏版本 1.1.0 / 1.4.3。",
+    [UI_MENU_FREECAM_PAD_V143] = "仅限游戏版本 1.1.0 / 1.4.3",
     [UI_MENU_FREECAM_KEY] = "自由镜头键",
-    [UI_MENU_FREECAM_KEY_DESC] = "让镜头依次切换相同阶段的按键：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间：W A S D 沿视线方向和左右移动，ZR 和 ZL 对应的按键（默认 X 和 Z）上升和下降，鼠标和方向键转动视角，L 和 R 对应的按键（默认 Q 和 R）让速度减半或加倍。游戏版本 1.4.3。",
+    [UI_MENU_FREECAM_KEY_DESC] = "让镜头依次切换相同阶段的按键：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间：W A S D 沿视线方向和左右移动，ZR 和 ZL 对应的按键（默认 X 和 Z）上升和下降，鼠标和方向键转动视角，L 和 R 对应的按键（默认 Q 和 R）让速度减半或加倍。游戏版本 1.1.0 / 1.4.3。",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "游戏操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "启用操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "使用鼠标滚轮控制究极手物体旋转与距离、武器与道具切换以及地图平滑缩放。",

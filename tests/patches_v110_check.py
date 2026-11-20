@@ -4,6 +4,7 @@ python tests/patches_v110_check.py --exefs <local ExeFS> [--cflags=-march=x86-64
 Uses the differential harness, Clang (CC) and Unicorn. Extracted bytes and generated C stay in build/.
 """
 import argparse
+import hashlib
 import math
 import struct
 import sys
@@ -31,6 +32,7 @@ SITES = [
     ('shadow', 0xd0760c, 11, 'shadow'),
     *[('cascade', a, 8, 'cascade') for a in (0x1157fb8, 0x1158040, 0x11580c8, 0x115814c)],
     ('fixres', 0xce9280, 9, 'fixed'),
+    ('steady', 0xcad324, 21, 'steady'),
 ]
 
 
@@ -56,6 +58,22 @@ def main():
         for name, at, _ in mods:
             mod = Module(name, args.exefs / name, at)
             patches.check(table, mod, name)
+        main_mod = Module('main', args.exefs / 'main', base)
+        assert hashlib.sha256(main_mod.image[0xcad2bc:0xcad68c]).hexdigest() == (
+            'a59eb2dfecdb409fdb56c1687a851e5afe51fed7214e343a51162f497467c3de')
+        starts = set(main_mod.eh_frame_functions())
+        assert base + 0xcad2bc in starts and base + 0xcad68c in starts
+        from common import dis
+        assert dis(main_mod.word(base + 0xcad344)) == 'cmp w21, #8'
+        branch = main_mod.lift(base + 0xcad34c)
+        assert branch.kind == 'bcond' and branch.target == base + 0xcad64c
+        assert dis(main_mod.word(base + 0xcad350)) == 'ldr x8, [x19, #0x128]'
+        assert dis(main_mod.word(base + 0xcad354)) == 'add x25, x19, #0x120'
+        assert all(main_mod.lift(base + off).kind == 'blr' for off in (0xcad5b0, 0xcad5e0, 0xcad610))
+        assert dis(main_mod.word(base + 0xcad654)) == 'ldp x22, x21, [sp, #0x60]'
+        assert all(main_mod.lift(base + off).kind == 'op' for off in range(0xcad64c, 0xcad66c, 4))
+        assert main_mod.lift(base + 0xcad66c).kind == 'ret'
+        print('v110: steady complete-function hash, list/setter path and direct epilogue passed')
         print(f'v110: all {sum(len(s) for s in table.sites.values())} sites and '
               f'{sum(len(s) for s in table.spins.values())} spin back-edges match local ExeFS')
     by_name = {name: i for i, (name, _, _) in enumerate(table.sets)}
@@ -87,6 +105,8 @@ def main():
         struct.pack_into('<f', initial, 0x2000 + off, value)
     struct.pack_into('<Q', initial, 0x2000, BUF + 0x3000)
     struct.pack_into('<f', initial, 0x3008, 0.5)
+    for i, value in enumerate((0, 8, 9, 0xffffffff)):
+        struct.pack_into('<I', initial, 0x5008 + 16 * i, value)
     with tempfile.TemporaryDirectory(prefix='patch-v110-', dir=build) as temp:
         work = Path(temp)
         exe = build_harness(work, bodies, 2, args.cflags)
@@ -109,6 +129,8 @@ def main():
                             x[i] = BUF + 0x2000
                         if kind == 'fixed':
                             x[23] = 0xabcdef0000000000 | int.from_bytes(struct.pack('<f', ratio), 'little')
+                        if kind == 'steady':
+                            x[0] = BUF + 0x5000 + 16 * (0, 0x7fffffff, 0x80000000, 0xffffffff).index(offset)
                         x[25], x[30] = offset, enabled
                         v = [(0x123456789abcdef << 32) | int.from_bytes(struct.pack('<f', 2.0), 'little')] * 32
                         v[1] = int.from_bytes(struct.pack('<f', 4.0), 'little')
@@ -134,14 +156,19 @@ def main():
                                 assert ex[target] == struct.unpack_from('<I', page, slot)[0]
                             elif kind == 'fixed':
                                 assert ex[target] == 0x3f800000
+                            elif kind == 'steady':
+                                assert ex[target] == 9
                             # The stack save must preserve the complete x10, not just its lower word.
                             if name in ('aspect', 'fov'):
                                 assert ex[10] == x[10]
                         elif kind == 'fixed':
                             assert ex[target] == x[23] & 0xffffffff
-                        allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed') else {9} if kind == 'map' else set()
+                        elif kind == 'steady':
+                            at = x[0] - BUF + 8
+                            assert ex[target] == int.from_bytes(mem[at:at + 4], 'little')
+                        allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed', 'steady') else {9} if kind == 'map' else set()
                         # Integer destinations do not authorize writes to the same-numbered SIMD register.
-                        allowed_v = set() if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed') else {0, 1} if kind == 'map' else {target}
+                        allowed_v = set() if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed', 'steady') else {0, 1} if kind == 'map' else {target}
                         if enabled and kind in ('map', 'aim', 'gyro'):
                             allowed_v |= {16}
                             if kind == 'map':
