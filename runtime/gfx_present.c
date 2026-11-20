@@ -152,6 +152,7 @@ static uint32_t g_flip_idx[2];
 static int g_flip_gen[2];          // that blit shows a generated picture: its present carries no present ID
 static volatile int64_t g_shown;   // presents queued since the start (gfx_presents_shown)
 static int g_overlay_on;           // the pair's generated picture laid the menu out: the game's frame draws it again
+static int g_fg_images = -1;       // the swapchain was built with frame generation's extra image (build_swapchain)
 
 // ---- TOTK_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
@@ -266,6 +267,8 @@ static void window_settings_live(void) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
     }
+    // frame_gen switched in the menu: the swapchain is built again with its image count
+    if (started && g_fg_images >= 0 && (vk_fg_engine() != VK_FG_OFF) != g_fg_images) plat_xchg32(&g_dirty, 1);
     if (started) gfx_window_apply_settings();
     reflex_apply_locked();
     started = 1;
@@ -557,7 +560,7 @@ static int build_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; found = 1; }
     // Frame generation's pair holds two images acquired at once (the generated picture's blit waits while the game's
     // frame is blitted): one image more, while frame_gen names a generator
-    int fg_images = vk_fg_engine() != VK_FG_OFF;
+    int fg_images = g_fg_images = vk_fg_engine() != VK_FG_OFF;
     uint32_t count = caps.minImageCount + 1 + (fg_images ? 1u : 0u);
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;

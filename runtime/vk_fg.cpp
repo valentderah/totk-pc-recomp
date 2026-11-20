@@ -252,17 +252,29 @@ static int knob_int(const char *key) {
 }
 
 extern "C" VkFgEngine vk_fg_engine(void) {
-    static int e = -1;
-    if (e < 0) {
-        const char *v = cfg_value("TOTK_FRAME_GEN");
-        e = !strcmp(v, "fsr3") ? VK_FG_FSR3 : VK_FG_OFF;
-        if (e == VK_FG_OFF && strcmp(v, "off")) rt_log("fg: frame_gen = %s is not off or fsr3: off", v);
+    static volatile int e = VK_FG_OFF;
+    static volatile unsigned seen;   // the cfg_version read, + 1 (0: never)
+    unsigned v = cfg_version();
+    if (__atomic_load_n(&seen, __ATOMIC_ACQUIRE) != v + 1) {
+        const char *s = cfg_value("TOTK_FRAME_GEN");
+        int n = !strcmp(s, "fsr3") ? VK_FG_FSR3 : VK_FG_OFF;
+        static char said[16];
+        if (strncmp(said, s, sizeof said - 1)) {
+            snprintf(said, sizeof said, "%s", s);
+            if (n == VK_FG_OFF && strcmp(s, "off")) rt_log("fg: frame_gen = %s is not off or fsr3: off", s);
+            else if (seen) rt_log("fg: frame_gen = %s", s);
+        }
+        e = n;
+        __atomic_store_n(&seen, v + 1, __ATOMIC_RELEASE);
     }
     return (VkFgEngine)e;
 }
 
-extern "C" void vk_fg_init(void) {
-    if (vk_fg_engine() != VK_FG_FSR3) return;
+// The settings and the contexts, once: at start with frame_gen = fsr3, else at the first frame after the menu turns it
+// on (vk_fg_wanted).
+static bool started;
+static void start(void) {
+    started = true;
     VkCtx *c = vk_ctx();
     if (!c) return;
     // The first contexts at the output size from the settings; vk_fg_prepare makes them again for the real scene
@@ -301,11 +313,17 @@ extern "C" void vk_fg_init(void) {
            g.debug ? "; TOTK_FG_DEBUG: the SDK's debug view" : "");
 }
 
-extern "C" int vk_fg_active(void) { return g.live; }
+extern "C" void vk_fg_init(void) {
+    if (vk_fg_engine() == VK_FG_FSR3) start();
+}
+
+extern "C" int vk_fg_active(void) { return g.live && vk_fg_engine() != VK_FG_OFF; }
 
 extern "C" void vk_fg_menu(int open) { __atomic_store_n(&g.menu, open, __ATOMIC_RELAXED); }
 
 extern "C" int vk_fg_wanted(int dlss) {
+    if (vk_fg_engine() != VK_FG_FSR3) return 0;
+    if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
     if (!g.live || g.failed) return 0;
     // the inputs are this frame's, recorded in replay order: one frame in flight more or chunks recording side by
     // side are not handled yet

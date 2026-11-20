@@ -161,7 +161,7 @@ static const CfgMeta metas[] = {
     {"PCSS", "0", "0..200", RESTART},
     // Game
     {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE}, {"FRAME_QUEUE", "0", "0|1", LIVE},
-    {"FRAME_GEN", "off", "off|fsr3", RESTART},   // the generator; vk_fg.cpp vk_fg_engine maps it
+    {"FRAME_GEN", "off", "off|fsr3", LIVE},   // the generator; vk_fg.cpp vk_fg_engine maps it
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"MODS_REBUILD", "auto", "auto|off", RESTART},
     {"MODS_WITHOUT_CODE", "0", "0|1", RESTART},   // 1: a mod is used without the code module it cannot run (mods.c)

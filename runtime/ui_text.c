@@ -61,6 +61,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps drawn, %.0f shown",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
@@ -193,6 +194,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Frame queue",
     [UI_MENU_FRAME_QUEUE_DESC] = "The game starts a frame while the previous one waits for its turn on screen: far fewer "
                                  "dropped frames at the limit, up to one frame more input delay. Applies at once.",
+    [UI_MENU_FRAME_GEN] = "Frame generation", [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "A generated picture between each two the game draws: twice the pictures on screen, the "
+                               "game at half the frame limit and the controls about half a frame later. For displays "
+                               "of 120 Hz and more. Not with DLSS or HDR. Applies at once.",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
@@ -600,7 +605,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
-    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation", [UI_MENU_OV_SHOWN] = "Shown",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -690,6 +695,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f к/с отрисовано, %.0f показано",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
@@ -822,6 +828,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Очередь кадров",
     [UI_MENU_FRAME_QUEUE_DESC] = "Игра начинает кадр, пока предыдущий ждёт показа: намного меньше пропущенных кадров на "
                                  "лимите, задержка ввода больше не более чем на кадр. Применяется сразу.",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров", [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Сгенерированный кадр между каждыми двумя, что рисует игра: на экране вдвое больше "
+                               "кадров, игра идёт на половине лимита, управление отвечает примерно на полкадра позже. "
+                               "Для мониторов от 120 Гц. Не работает с DLSS и HDR. Применяется сразу.",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
@@ -1234,7 +1244,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f МГц", [UI_MENU_OV_FMT_GB] = "%.1f ГБ", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f ГБ",
     [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
     [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
-    [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров",
+    [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров", [UI_MENU_OV_SHOWN] = "Показано",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
@@ -1360,6 +1370,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "renderização. F10 alterna os modos.",
     [UI_MENU_PERF_OFF] = "Desligado", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Completo",
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps desenhados, %.0f exibidos",
     [UI_MENU_GRAPHICS] = "Imagem",
     [UI_MENU_OUTPUT_RES] = "Resolução do jogo",
     [UI_MENU_OUTPUT_RES_DESC] = "O tamanho em que o jogo desenha a imagem e a interface. Acima de 1920 x 1080 o jogo "
@@ -1407,6 +1418,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Fila de quadros",
     [UI_MENU_FRAME_QUEUE_DESC] = "O jogo começa um quadro enquanto o anterior espera a vez de aparecer: muito menos quadros "
                                  "perdidos no limite, com até um quadro a mais de atraso na entrada. Vale na hora.",
+    [UI_MENU_FRAME_GEN] = "Geração de quadros", [UI_MENU_FRAME_GEN_OFF] = "Desligado", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha: o dobro de quadros na tela, o "
+                               "jogo na metade do limite e os controles cerca de meio quadro mais tarde. Para telas de "
+                               "120 Hz ou mais. Não funciona com DLSS nem HDR. Vale na hora.",
     [UI_MENU_REALTIME] = "Velocidade do jogo pelo relógio",
     [UI_MENU_REALTIME_DESC] = "Avança o jogo pelo tempo real, para que um quadro lento não deixe o jogo mais lento.",
     [UI_MENU_CLOTH_REALTIME] = "Tecidos pelo relógio",
@@ -1684,7 +1699,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "jogo %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f por quadro",
     [UI_MENU_OV_WINDOW] = "Janela", [UI_MENU_OV_OUTPUT] = "Imagem do jogo", [UI_MENU_OV_SCENE] = "Cena 3D",
-    [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação",
+    [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação", [UI_MENU_OV_SHOWN] = "Exibidos",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -2039,6 +2054,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_FULL] = "完整",
 
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "绘制 %.0f fps，显示 %.0f",
 
     [UI_MENU_GRAPHICS] = "画面",
     [UI_MENU_OUTPUT_RES] = "游戏分辨率",
@@ -2108,6 +2124,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY_HZ] = "显示器刷新率（%.0f Hz）",
     [UI_MENU_FRAME_QUEUE] = "帧队列",
     [UI_MENU_FRAME_QUEUE_DESC] = "前一帧等待显示时游戏就开始绘制下一帧：在帧率上限下掉帧大幅减少，输入延迟最多增加一帧。立即生效。",
+    [UI_MENU_FRAME_GEN] = "帧生成", [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成画面：屏幕上的帧数翻倍，游戏以帧率上限的一半运行，操作响应约晚半帧。适合 120 Hz 及以上的显示器。不能与 DLSS 或 HDR 同时使用。立即生效。",
     [UI_MENU_REALTIME] = "游戏速度跟随时钟",
     [UI_MENU_REALTIME_DESC] = "按真实时间推进游戏，帧率低时游戏速度也不会变慢。",
     [UI_MENU_CLOTH_REALTIME] = "布料跟随时钟",
@@ -2489,6 +2507,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALING] = "缩放",
     [UI_MENU_OV_LIMIT] = "帧率上限",
     [UI_MENU_OV_PRESENT] = "呈现模式",
+    [UI_MENU_OV_SHOWN] = "显示帧率",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u",
     [UI_MENU_OV_FMT_SCENE] = "%ux%u，%.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，锐度 %d%%",
