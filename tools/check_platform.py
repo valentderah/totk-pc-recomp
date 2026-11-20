@@ -14,7 +14,12 @@ import sys
 from pathlib import Path
 
 # Per-file allowlist of shared files that still use Win32, with the reason. Empty: every shared file is portable.
-ALLOWED = {}
+ALLOWED = {
+    # DLAA's NGX loader keeps three #ifdef _WIN32 blocks in a file both hosts compile (LoadLibrary of _nvngx.dll,
+    # GetModuleFileNameW and MAX_PATH); it landed that way in #534. Safe today because every use is guarded, and
+    # it goes away when the loader moves under runtime/platform/.
+    'vk_dlaa.c': "DLAA's Windows NGX loading, guarded but not under runtime/platform/",
+}
 
 INCLUDE = re.compile(r'^\s*#\s*include\s*[<"](windows|winsock2|ws2tcpip|synchapi|memoryapi|processthreadsapi|'
                      r'fileapi|handleapi|libloaderapi|winbase|winnt)\.h[>"]', re.M)
