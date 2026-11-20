@@ -14,6 +14,12 @@
 //   A chunked replay (vk_exec.c) records the ops out of order: its scan drops at the position of the op
 //   (vk_usnap_drop_at, scan_writes for the shaders' stores), and a chunk finds a copy only at a position before that.
 // - The arena goes back to a free list once the submission's fence is done (completion thread).
+// - With the per-object motion, a scene submission's arena (vk_usnap_scene: the replay drew into the scene depth) is
+//   kept past its fence as the last-frame copy (PV): the next scene submission's motion draws bind last frame's blocks
+//   from it (vk_usnap_prev). It goes back to the free list at the fence of the submission that replaces or drops it,
+//   which is the submission whose motion draws read it (or a later one): its lists are recorded and run within that
+//   submission (vk_exec_draw.c vk_mvobj_execute drops a list of another fence), and the GPU finishes a submission's
+//   work, and every earlier one's, before its fence. One arena held beyond those in flight, whatever the session length.
 // The design follows MacNativeGames' TOTK_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
@@ -64,6 +70,13 @@ static struct {
 } U;
 
 static Arena *free_arenas;
+// the last scene submission's arena and regions (vk_usnap_prev); its regions' drop_at final
+static struct {
+    Arena *arena;
+    Reg *reg;
+    int nreg, creg;
+} PV;
+static int scene;   // vk_usnap_scene since the last vk_usnap_begin
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
 static PlatMutex drop_lock = PLAT_MUTEX_INIT;   // threads recording chunks of one submission drop concurrently
 
@@ -131,8 +144,8 @@ static void collect(const op_hdr *h, int depth) {
             const p_bind_buf *b = a;
             if (b->addr && b->size) {
                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
-                // the vertex stage's object and bone blocks: also the game's other copy on either side, which still
-                // holds last frame's (vk_mvprev.c)
+                // TOTK_MVPREV_CHECK: the vertex stage's object and bone blocks, also the game's other copy on either
+                // side, which still holds last frame's (vk_mvprev.c compares it with the last-frame copy)
                 uint64_t step = vk_mvprev_step(b->stage, b->index, b->size);
                 // which neighbours lie in an imported pool, per block and vk_mem_gen: the same blocks are bound by
                 // many draws, and two resolves for each binding were a quarter of the snapshot's time
@@ -303,8 +316,45 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
 }
 
 void vk_usnap_end(uint64_t fence) {
-    if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
+    int keep = __atomic_load_n(&scene, __ATOMIC_RELAXED) && U.arena && U.arena->cpu;
+    // a scene submission replaces the last-frame copy (or drops it, without a snapshot of its own); so does the motion
+    // going off, which no longer reads it
+    if (PV.arena && (__atomic_load_n(&scene, __ATOMIC_RELAXED) || !vk_mvprev_on()))
+        vk_completion_add(fence, arena_done, PV.arena), PV.arena = NULL, PV.nreg = 0;
+    if (keep) {
+        Reg *r = PV.reg;
+        int c = PV.creg;
+        PV.arena = U.arena, PV.reg = U.reg, PV.nreg = U.nreg, PV.creg = U.creg;
+        U.reg = r, U.creg = c, U.nreg = 0;
+    } else if (U.arena) {
+        vk_completion_add(fence, arena_done, U.arena);
+    }
+    U.arena = NULL;
+    __atomic_store_n(&scene, 0, __ATOMIC_RELAXED);
     U.on = 0, U.gen++;
+}
+
+void vk_usnap_scene(void) {
+    if (!__atomic_load_n(&scene, __ATOMIC_RELAXED)) __atomic_store_n(&scene, 1, __ATOMIC_RELAXED);
+}
+
+int vk_usnap_prev(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out, const uint8_t **bytes) {
+    if (!PV.arena || !n) return 0;
+    int lo = 0, hi = PV.nreg;
+    while (lo < hi) {   // first region whose end is above addr
+        int m = (lo + hi) / 2;
+        if (PV.reg[m].hi <= addr) lo = m + 1;
+        else hi = m;
+    }
+    if (lo >= PV.nreg) return 0;
+    const Reg *r = &PV.reg[lo];
+    // a region a GPU write dropped held other bytes for the draws after it: left out, as vk_usnap_bytes does
+    if (r->drop_at != UINT64_MAX || addr < r->lo || addr + n > r->hi) return 0;
+    uint64_t off = r->off + (addr - r->lo);
+    if (off % align) return 0;
+    *out = (VkDescriptorBufferInfo){PV.arena->buf, off, n};
+    *bytes = PV.arena->cpu + off;
+    return 1;
 }
 
 // First region whose end is above a.
@@ -364,6 +414,7 @@ const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
     plat_mutex_lock(&free_lock);
+    if (PV.arena) PV.arena->next = free_arenas, free_arenas = PV.arena, PV.arena = NULL;
     for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a->cpu), free(a);
     free_arenas = NULL;
     plat_mutex_unlock(&free_lock);

@@ -3575,6 +3575,7 @@ static struct {
     uint64_t no_out, storage, no_fs;   // variant without the extra output, with storage resources; no fs
     uint64_t other_cam;          // listed draws left out: their camera block is not the scene camera
     uint64_t lk[14][5];          // last-frame lookups per binding index: none, self, side, nearer, refused (another object)
+    uint64_t pv_cmp, pv_diff;    // TOTK_MVPREV_CHECK: last-frame copies compared with this snapshot's neighbour, differing
     uint64_t e_draws, e_pipe, e_dyn, e_push, e_pushw, e_sets, e_vb, e_setw, e_setreuse;   // emitted commands (summary)
 } MO;
 
@@ -3962,13 +3963,19 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
     uint64_t c1 = __builtin_ia32_rdtsc();
     MO.cyc[0] += c1 - c0, MO.ncyc++, MO.big += n;
     if (index >= 0 && index < 14) MO.lk[index][found ? how : MVPREV_NONE]++;
-    if (!found || !vk_usnap_find(pa, n, UINT32_MAX, LIM.ubo_align, out)) return 0;
-    if (how == MVPREV_SELF) return 1;   // bound at the same address last frame: not written again
-    const uint8_t *map = vk_usnap_map(), *cur = vk_usnap_bytes(u->addr, n);
+    if (!found) return 0;
+    // bound at the same address last frame: not written again, this frame's copy
+    if (how == MVPREV_SELF) return vk_usnap_find(pa, n, UINT32_MAX, LIM.ubo_align, out);
+    const uint8_t *old, *cur;   // last frame's from last frame's snapshot (vk_usnap_prev), this frame's
+    if (!vk_usnap_prev(pa, n, LIM.ubo_align, out, &old)) return 0;
+    if (vk_mvprev_checking()) {   // the neighbour copy the snapshot took before last frame's was kept: the same bytes?
+        const uint8_t *nb = vk_usnap_bytes(pa, n);
+        if (nb) MO.pv_cmp++, MO.pv_diff += memcmp(nb, old, n) != 0;
+    }
+    cur = vk_usnap_bytes(u->addr, n);
     uint64_t c2 = __builtin_ia32_rdtsc();
     MO.cyc[1] += c2 - c1;
     if (!cur) return 0;
-    const uint8_t *old = map + out->offset;
     static long trust = -2;   // TOTK_MVPREV_TRUST=<hex bank mask> (test): the copy found is taken without the check
     if (trust == -2) {
         const char *e = cfg_get("TOTK_MVPREV_TRUST");
@@ -4248,6 +4255,9 @@ int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth
                               (unsigned long long)MO.lk[i][1], (unsigned long long)MO.lk[i][2],
                               (unsigned long long)MO.lk[i][3], (unsigned long long)MO.lk[i][4]);
         if (o) rt_log("vk_exec: per-object motion last-frame lookups (none/self/side/nearer/refused):%s", l);
+        if (MO.pv_cmp)
+            rt_log("vk_exec: per-object motion last-frame copies against the neighbour copies: %llu compared, %llu differ",
+                   (unsigned long long)MO.pv_cmp, (unsigned long long)MO.pv_diff);
     }
     if (frames % 60 == 0 && MO.ran)
         rt_log("vk_exec: per-object motion recorded a frame: %.0f draws, %.0f pipeline binds, %.0f dynamic states, %.0f "
