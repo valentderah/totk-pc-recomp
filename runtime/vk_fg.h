@@ -14,8 +14,12 @@
 extern "C" {
 #endif
 
-// vk_device.c, after the device exists: with TOTK_FRAME_GEN=1 (totk.ini frame_gen = 1) makes the shared backend, the
-// optical flow and the frame interpolation contexts and logs one line; otherwise does nothing.
+// The frame generator frame_gen names (TOTK_FRAME_GEN, read at start): off, or AMD FSR 3 on the FidelityFX SDK. The
+// one place that reads the string; an unknown value is off.
+typedef enum { VK_FG_OFF, VK_FG_FSR3 } VkFgEngine;
+VkFgEngine vk_fg_engine(void);
+// vk_device.c, after the device exists: with frame_gen = fsr3 makes the shared backend, the optical flow and the
+// frame interpolation contexts and logs one line; otherwise does nothing.
 void vk_fg_init(void);
 // 1 while the contexts exist.
 int vk_fg_active(void);

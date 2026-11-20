@@ -1,4 +1,4 @@
-// AMD FSR 3 frame generation (frame_gen = 1): the FidelityFX SDK 1.1.4's frame interpolation and optical flow
+// AMD FSR 3 frame generation (frame_gen = fsr3): the FidelityFX SDK 1.1.4's frame interpolation and optical flow
 // (third_party/FidelityFX, MIT) on its Vulkan backend, driven directly instead of through the SDK's frame
 // interpolation swapchain (Windows only, and it would own the present).
 //
@@ -249,8 +249,18 @@ static int knob_int(const char *key) {
     return v && *v ? atoi(v) : 0;
 }
 
+extern "C" VkFgEngine vk_fg_engine(void) {
+    static int e = -1;
+    if (e < 0) {
+        const char *v = cfg_value("TOTK_FRAME_GEN");
+        e = !strcmp(v, "fsr3") ? VK_FG_FSR3 : VK_FG_OFF;
+        if (e == VK_FG_OFF && strcmp(v, "off")) rt_log("fg: frame_gen = %s is not off or fsr3: off", v);
+    }
+    return (VkFgEngine)e;
+}
+
 extern "C" void vk_fg_init(void) {
-    if (!cfg_bool("TOTK_FRAME_GEN")) return;
+    if (vk_fg_engine() != VK_FG_FSR3) return;
     VkCtx *c = vk_ctx();
     if (!c) return;
     // The first contexts at the output size from the settings; vk_fg_prepare makes them again for the real scene
