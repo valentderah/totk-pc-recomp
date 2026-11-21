@@ -10,6 +10,7 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 
 | Symptom | Usual causes | First check |
 |---|---|---|
+| with `contact_shadows` on, dark contact shadows on cave walls, from a sun that cannot reach them; they blink | the game's sun visibility (the half-resolution lighting target's alpha) is 1 in some caves (the Rauru Settlement Ruins well); the march now also reads the game's enclosure cube and stays off under rock overhead, and the cube is skipped in some frames (fixed: `vk_contact.c` is_enclosure, a cube up to 30 frames old serves) | `TOTK_CONTACT_DEBUG=2` (sun visibility, black underground) and `=3` (overhead cover in red; magenta: no cube in the frame) |
 | magenta, brown or stale textures; caves or sky wrong | the CPU filled the texture and the GPU never got the upload (no flush on the console) | frame dump: the texture's upload count and mirror state in `passes.txt` |
 | rain shows only its splashes on the ground, no falling drops; waterfall splashes and mist blink | a GPU write-back copies a whole range over particle records the CPU spawned in it (`vk_memory.c`: the write-back merge, and with `shadow = 1` the shadow's pending ranges) | a run with `TOTK_WB_MERGE=0` or `TOTK_SHADOW=0` against one without |
 | effects that never happen: cut grass stays up, fire does not spread | the CPU reads a GPU-rendered texture that was never written back | which texture the game reads after its fence; write-back of that target |

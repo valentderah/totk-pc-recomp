@@ -1051,6 +1051,8 @@ static void run_job(VkExec *ex) {
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
         const VkTexImage *ui = j.sun.img ? vk_texture_get(j.sun.tex) : NULL;
         j.sun.img = ui, j.sun.image = ui ? ui->image : VK_NULL_HANDLE;
+        const VkTexImage *ei = j.encl.img ? vk_texture_get(j.encl.tex) : NULL;   // the enclosure cube likewise
+        j.encl.img = ei, j.encl.image = ei ? ei->image : VK_NULL_HANDLE;
         if (si && di) {
             j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
             vk_contact_exec(ex, &j);
