@@ -692,12 +692,13 @@ static void read_settings(void) {
     R.read = 1;
 }
 
-// vk_device.c: the ray tracing extensions are enabled whenever the device has them (not only when ray tracing is on at
-// start), so the menu can switch it on in play; TOTK_RT_DEVICE=0 leaves them out (ray tracing then cannot be used)
+// vk_device.c: the ray tracing extensions are enabled only when a ray tracing setting is on at start, so players who
+// leave it off get the device, the render targets and the shaders as before; TOTK_RT_DEVICE=1 enables them anyway,
+// so the menu can switch ray tracing on in play
 int vk_rt_wanted(void) {
     read_settings();
     const char *e = cfg_get("TOTK_RT_DEVICE");
-    return R.wanted || !(e && *e == '0');
+    return R.wanted || (e && *e == '1');
 }
 
 // Ray tracing can run on this device (the extensions are on): render targets it writes get storage usage up front

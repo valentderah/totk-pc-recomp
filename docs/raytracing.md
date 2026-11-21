@@ -168,6 +168,7 @@ The full overlay (`perf_overlay = full`) shows "RT scene build (GPU)" and "RT tr
 | `TOTK_RT_LIVE_SET="<s>:KEY=V,...;..."` | sets those settings (TOTK_ prefixed, never saved) that many seconds after start, as the menu would, to test live switching |
 | `TOTK_RT_LIGHT_SKIP=<abs>,<rel>` | how far short of a local light its shadow ray stops (default `0.25,0.08`) |
 | `TOTK_RT_LIGHT_DEBUG=<n>` | local light shadows: 1 only the blocked light is drawn, 2 none, 5 traced but not applied |
+| `TOTK_RT_DEVICE=1` | enables the ray tracing extensions at start with every `rt_*` off, so the menu can switch ray tracing on in play |
 | `TOTK_RT_SURVEY=1` | logs what the game draws per pass (no capture) |
 
 Every other `TOTK_RT_*` read in `vk_rt.c` is a tuning or debug knob documented at the line that reads it.
