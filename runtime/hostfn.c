@@ -2,9 +2,9 @@
 // Host functions at synthetic guest addresses: the HOST_OVERRIDE / HOST_OBSERVER
 // linker tables, the registry behind them, and the calls between host and guest (rt_call, rt_original).
 //
-// Every registered function dispatches through hostfn_entry, which counts the call, traces the first one
-// (TOTK_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
-// table; guest threads start after that, so lookups need no lock.
+// Every registered function dispatches through hostfn_entry, which counts the call (only while hostfn_count is on or
+// under TOTK_TRACE=host), traces the first one (TOTK_TRACE=host) and tail-calls the real function. The registry is
+// fixed by hostfn_seal, which builds the dispatch table; guest threads start after that, so lookups need no lock.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +46,8 @@ static int sealed;
 
 // The call count (hostfn_calls): one counter per calling thread, each on its own cache line, written only by that
 // thread. A locked add on a per-function counter beside the read-mostly slot fields made the game threads share and
-// bounce those lines on every host call (1.4.3 town: about 1% of the game threads' time in hostfn_entry).
+// bounce those lines on every host call (1.4.3 town: about 1% of the game threads' time in hostfn_entry). Only the
+// probes and TOTK_TRACE=host read it, so a game run does not count: hostfn_entry tests one rt_trace word for both.
 #define MAX_COUNTERS 4096
 typedef struct { _Alignas(64) uint64_t n; } Counter;
 static Counter counters[MAX_COUNTERS];
@@ -157,18 +158,28 @@ __attribute__((noinline)) static void hostfn_blocking(Cpu *c, GuestFn fn) {
     kern_core_back(&away);
 }
 
-static void hostfn_entry(Cpu *c) {
-    uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
-    if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
-    Slot *s = &slots[i];
+void hostfn_count(int on) {
+    if (on) __atomic_fetch_or(&rt_trace, RT_TRACE_HOSTCOUNT, __ATOMIC_RELAXED);
+    else __atomic_fetch_and(&rt_trace, ~(unsigned)RT_TRACE_HOSTCOUNT, __ATOMIC_RELAXED);
+}
+
+// The counted path of hostfn_entry: the call count, and under TOTK_TRACE=host the first call of each function.
+__attribute__((noinline, cold)) static void hostfn_watch(Cpu *c, Slot *s) {
     uint64_t *k = thread_calls;
     if (__builtin_expect(!k, 0)) k = counter_new();
     if (__builtin_expect(k == &shared_calls, 0)) __atomic_fetch_add(k, 1, __ATOMIC_RELAXED);
     else __atomic_store_n(k, *k + 1, __ATOMIC_RELAXED);
-    if (__builtin_expect(rt_trace & RT_TRACE_HOSTCALL, 0) && !__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) {
+    if ((rt_trace & RT_TRACE_HOSTCALL) && !__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) {
         char lr[96];
         rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
     }
+}
+
+static void hostfn_entry(Cpu *c) {
+    uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
+    if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
+    Slot *s = &slots[i];
+    if (__builtin_expect(rt_trace & (RT_TRACE_HOSTCALL | RT_TRACE_HOSTCOUNT), 0)) hostfn_watch(c, s);
     if (s->blocking) {
         hostfn_blocking(c, s->fn);
         return;

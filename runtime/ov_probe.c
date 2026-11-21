@@ -596,8 +596,8 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     MotionFusion *m = motion_new();
     uint64_t t = 1000000000ull;
     const double down[3] = {0, 0, -1}, still[3] = {0, 0, 0}, turn[3] = {0, 0, M_PI / 2};
-    motion_feed(m, down, still, t, t);
-    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000, t);
+    motion_feed(m, down, still, t);
+    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000);
     MotionState ms[16];
     int n = motion_read(m, ms, 16, t + 1000000);
     CHECK(n == 16 && ms[0].sampling == 251 && ms[15].sampling == 236 && ms[0].attributes == 1 &&
@@ -609,15 +609,52 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
     CHECK(motion_read(m, ms, 16, t + 300000000ull) == 0, "fusion states 300 ms after the last sample");
     // StartSixAxisSensor again in the middle of the turn (the bow drawn again): the states from before it are gone, and
     // the first one after it starts a fresh angle in a fresh frame; sampling numbers go on.
-    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000, t);
+    for (int i = 0; i < 250; i++) motion_feed(m, down, turn, t += 4000000);
     motion_restart(m);
     int same = motion_read(m, ms, 16, t + 1000000);
-    motion_feed(m, down, turn, t += 4000000, t);
+    motion_feed(m, down, turn, t += 4000000);
     int next = motion_read(m, ms, 16, t + 1000000);
     CHECK(same == 0 && next == 1 && ms[0].sampling == 502 && fabs(ms[0].angle[2]) < 0.002 &&
           near3(ms[0].dir, 1, 0, 0, 0.01),
           "fusion restart: %d states in the frame of the Start, %d after one sample (sampling %lld, angle %.4f rev)", same,
           next, (long long)ms[0].sampling, (double)ms[0].angle[2]);
+    // Gyro bias calibration on the private instance (not written to totk.ini): a large steady bias with resting noise
+    // is measured and then subtracted, so a resting controller reads no rotation and its yaw holds; samples that swing
+    // (the controller moved) are rejected and leave the measured bias in effect; an attempt without samples times out.
+    const double bias[3] = {-0.031, -0.011, -0.141};
+    double g[3];
+    motion_calibrate_start(m, "probe pad", t);
+    for (int i = 0; i < 375; i++) {
+        for (int j = 0; j < 3; j++) g[j] = bias[j] + (i & 1 ? 0.01 : -0.01);
+        motion_feed(m, down, g, t += 4000000);
+    }
+    int done = motion_calib_poll(m, t);
+    for (int i = 0; i < 250; i++) motion_feed(m, down, bias, t += 4000000);
+    motion_read(m, ms, 1, t + 1000000);
+    CHECK(done == MOTION_CALIB_DONE && near3(ms[0].gyro, 0, 0, 0, 1e-4) && fabs(ms[0].angle[2]) < 1e-3 &&
+          near3(ms[0].dir, 1, 0, 0, 0.001),
+          "calibration: state %d, resting gyro %.5f %.5f %.5f rev/s, yaw %.5f rev after 1 s", done,
+          (double)ms[0].gyro[0], (double)ms[0].gyro[1], (double)ms[0].gyro[2], (double)ms[0].angle[2]);
+    motion_calibrate_start(m, "probe pad", t);
+    for (int i = 0; i < 375; i++) {
+        for (int j = 0; j < 3; j++) g[j] = bias[j] + (j == 0 && (i & 1) ? 0.2 : 0);
+        motion_feed(m, down, g, t += 4000000);
+    }
+    int moved = motion_calib_poll(m, t);
+    motion_feed(m, down, bias, t += 4000000);
+    motion_read(m, ms, 1, t + 1000000);
+    CHECK(moved == MOTION_CALIB_MOVED && near3(ms[0].gyro, 0, 0, 0, 1e-4),
+          "calibration of a moving controller: state %d, resting gyro %.5f %.5f %.5f rev/s", moved,
+          (double)ms[0].gyro[0], (double)ms[0].gyro[1], (double)ms[0].gyro[2]);
+    motion_bias_reset(m);
+    motion_calibrate_start(m, "probe pad", t);
+    int waiting = motion_calib_poll(m, t + 1000000000ull), failed = motion_calib_poll(m, t + 6000000000ull);
+    motion_feed(m, down, bias, t += 4000000);
+    motion_read(m, ms, 1, t + 1000000);
+    CHECK(waiting == MOTION_CALIB_COLLECTING && failed == MOTION_CALIB_FAILED &&
+          fabs(ms[0].gyro[2] - bias[2] / (2 * M_PI)) < 1e-6,
+          "calibration without samples: state %d after 1 s, %d after 6 s; after a reset the raw gyro passes", waiting,
+          failed);
     printf("hid feedback: vibration handles %#x %#x, six-axis %#x, at rest when stopped; fusion quarter turn %.4f rev\n",
            vh[0], vh[1], sh[0], quarter);
 }

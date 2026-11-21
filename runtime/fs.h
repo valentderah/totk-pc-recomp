@@ -47,6 +47,14 @@ enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROM
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
 int romfs_prompts_ready(const char *folder);
+// 1 when the game resolution w x h is of another shape whose folders are missing: the UI layout, or that of
+// prompts_folder (a prompts' folder that is there at 16:9; NULL for the game's own prompts). romfs.c shaped_name.
+int romfs_shape_missing(unsigned w, unsigned h, const char *prompts_folder);
+// 1 when build-cache/rebuild.txt names the setup's Python and tools/make_romfs_patches.py and both exist, with romfs/.
+int romfs_shape_can_prepare(void);
+// Starts the generator for w x h's shape (its layout, and prompts_folder's when that is there at 16:9 and lacks it) as
+// child processes the game does not wait for; the next start loads the result. 1 when every one started.
+int romfs_shape_prepare(unsigned w, unsigned h, const char *prompts_folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open

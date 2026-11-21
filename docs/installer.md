@@ -72,29 +72,47 @@ loads the saves 1.4.3 wrote.
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written three times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). The three prompt folders are
-   optional: when one cannot be made, the setup warns and finishes.
+   and `auto`). The prompt folders are optional: when one cannot be made, the setup warns and finishes.
+   **PC prompts** (step `pc_prompts`): `romfs-patches-pc`, the keyboard and mouse prompts for `prompts = pc`, drawn
+   from the `bind_` lines of `totk.ini` (`--binds`). Its key holds those lines, so a setup run after a change of the
+   bindings draws only these again. Optional like the Xbox prompts. All four 16:9 folders are always written, so a
+   switch of the prompts style at 16:9 needs no setup run.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+7. **Shapes**: the UI laid out for each screen shape this player needs, `romfs-patches-<w>x<h>`
+   (`--aspect`), and with Xbox or PC prompts in `totk.ini` that layout with those prompts too,
+   `romfs-patches-<style>-<w>x<h>` (`--prompts <style> --aspect --reuse romfs-patches-<style>`, which hard-links every
+   file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
+   `xrandr`, else the DRM connectors), of the `output_res` the game defaults to on each, and of the `totk.ini`
+   `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
+   closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
+   same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
+   again when the displays, the prompts or the patches change; at a game resolution whose shape has no folder the
+   game draws 16:9 with bars, and the settings menu marks such sizes and can write the shape's folders in the
+   background for the next start.
+8. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+9. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
-Ninja recompiles only those: a new or edited code cheat costs the lift (under a minute on 24 cores, a few minutes on 4)
-and a few dozen chunks, not a full compile, and the shaders stay prepared.
+The generated C and the objects stay in the temp folder. The next lift lifts again only the chunks whose inputs
+changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices) and rewrites only
+those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds of lift
+(discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the whole lift)
+and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A cheat set added
+or removed before others in the patch file moves their set indices, so the chunks of their sites are lifted too. A
+change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
@@ -102,8 +120,12 @@ whatever the working folder), one argument per line. When an enabled mod has cod
 lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
 window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
 offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
-needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
+again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start at all leaves no
+`rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. The rebuild needs the
+release folder the setup ran from: a moved or deleted release folder means running a setup again. On Linux the command
+starts the AppImage file itself (`$APPIMAGE --rebuild <install folder>`), because the AppImage's mounted folder is gone
+once the setup exits; a moved or deleted AppImage means running a setup again. Installs set up by an AppImage before
+this change hold a command into that mount: running the new setup once on the install folder writes the new one.
 
 ## Command line
 
@@ -157,7 +179,7 @@ runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated 
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
 data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
-                      update's code and the runtime libraries compile with (building.md, "Profile-guided build")
+                      update's code and the runtime libraries compile with (pgo.md)
 THIRD_PARTY_NOTICES.md
 totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```

@@ -24,7 +24,8 @@ void rt_vlogf(const char *fmt, va_list ap);
 void rt_log_raw(const char *p, size_t n);
 const char *rt_log_path(void);                  // the log file, NULL when this run writes none
 enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
-       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
+       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+       RT_TRACE_HOSTCOUNT = 512 };   // no TOTK_TRACE name of its own: hostfn_count switches it (host.h)
 extern unsigned rt_trace;                       // from TOTK_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
 // prof_win.c: TOTK_PROFILE=<path> sampling profiler; TOTK_TRACE=perf frame timing (waits of the render thread)
 // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
@@ -36,6 +37,10 @@ void perf_end(int kind, uint64_t t0);           // counts render-thread time onl
 void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
 void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
 void perf_main_thread(void);                    // the calling thread is the guest main thread (TOTK_PROFILE_MAIN)
+// The calling thread is one every frame goes through: on a hybrid CPU it prefers the P-cores (main.c, TOTK_PCORE);
+// the first thread of each role logs it.
+enum { PCORE_MAIN, PCORE_RENDER, PCORE_REPLAY, PCORE_RECORDER, PCORE_PRESENT, PCORE_N };
+void perf_core_thread(int role);
 // Events per 60-frame window: graphics pipelines finished by the background workers, draws skipped while pending,
 // first texture uploads and re-uploads after CPU writes, draws skipped while a shader translates in the background,
 // draws that waited for their pending pipeline and got it, draws into a target the previous frame did not render that
@@ -116,7 +121,9 @@ void hostfn_add_override(const char *name, GuestFn fn);    // an override outsid
 const char *hostfn_name(uint64_t addr);                    // name registered at a synthetic address, NULL if none
 void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                            // linked module); idempotent; registration ends here
-uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
+uint64_t hostfn_calls(void);                               // host-function calls counted so far, all threads: only
+                                                           // while hostfn_count is on or under TOTK_TRACE=host
+void hostfn_count(int on);                                 // count host-function calls (probes); off by default
 void hostfn_report(void);                                  // call count per host function to stderr, busiest first
 int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
 const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
@@ -170,6 +177,23 @@ void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse afte
 int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be read without a fault: inside a loaded
                                                            // module or the committed heap answered from the layout,
                                                            // anything else by plat_mem_readable (an OS query)
+
+// ---- short out-of-memory spells (oom.c)
+enum { RT_OOM_COMMIT, RT_OOM_STAGING, RT_OOM_IMAGE, RT_OOM_CHUNK, RT_OOM_SITES };
+extern volatile int32_t rt_oom_req;                        // set by rt_oom_request; vk_texture_new_submit takes it
+void rt_oom_request(void);                                 // asks the Vulkan back end to give memory back at its next
+                                                           // submit (released textures, headroom blocks); any thread,
+                                                           // any lock held
+int rt_oom_wait(const char *what, uint64_t bytes, int (*retry)(void *arg), void *arg);
+                                                           // after a failed allocation: requests a release, then calls
+                                                           // retry every 10 ms for up to 30 s; 1 once retry returned 1,
+                                                           // 0 after the wait (the caller ends the game). Logs the
+                                                           // first 8 with the commit numbers
+void *rt_realloc_wait(void *old, size_t n, const char *what);   // realloc, NULL only after rt_oom_wait gave up
+int rt_oom_forced(int site);                               // 1: fail this attempt at site (TOTK_TEST_OOM=<site>:<n>,
+                                                           // sites commit, staging, image, chunk; or rt_oom_force)
+void rt_oom_force(int site, int n);                        // probes: fail the next n attempts at site
+int rt_oom_forced_left(int site);                          // forced failures still to come at site
 
 // ---- modules (loader.c)
 typedef struct {
@@ -258,6 +282,8 @@ int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, 
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
 void cam_pack_served(void);                                // romfs.c serves the multiplied pack
 // ---- game resolution (resolution.c): TOTK_OUTPUT_RES, TOTK_RENDER_SCALE
+uint64_t res_grass_heap_extra_kib(void);                   // TOTK_GRASS_RANGE: added to the HeapDef grass heap; 0 = none
+uint64_t res_grass_heap_extra_bytes(void);                 // the same, added to the application pool, 2 MiB steps
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
 uint64_t res_tex_heap_extra_bytes(void);                   // TOTK_TEX_HEAP_EXTRA_MB: added to the application pool and
@@ -280,8 +306,11 @@ int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 int romfs_shaped_ready(unsigned w, unsigned h);            // romfs-patches-<w>x<h> has a manifest (romfs.c; works
                                                            // before fs_init)
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h);   // the same for <folder>-<w>x<h>, a
+                                                           // prompts' folder (romfs-patches-xbox, -xbox-label, -pc)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
+void res_dynres_live(void);                                // TOTK_DYNAMIC_RES to the game (set fixres); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets

@@ -100,7 +100,7 @@ of them.
    objects before it links: any AVX, BMI or other instruction above x86-64-v2 outside a function listed there as
    dispatched by a runtime CPU check stops the build.
 
-   `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
+   `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step. A later lift into the same `--out` lifts again only the chunks whose inputs changed (`<mod>/lift_cache.json`, see the top of `recomp/gen.py`); `--no-cache`, or `TOTK_LIFT_CACHE=0` (which the installer's lift step honours too), lifts every chunk.
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
    A compiler cache in front of clang shortens it further: with `SCCACHE` set to an sccache executable, `build_game.py`
@@ -160,30 +160,9 @@ folder. The folder holds code and data derived from your game: for your own mach
 
 ### Profile-guided build
 
-`build_game.py --pgo <file>.profdata` compiles the generated code at -O2 with an execution profile, and the runtime
-with it too: hot paths laid out straight, hot calls inlined, code that never ran compiled for size. On 1.4.3 the fight
-bench ran 12-15% faster per frame and a fight outside the training about 6%. The installer builds with
-`data/pgo-<ver>.profdata` of the release when the update has one, else at -O1.
-
-A profile only fits the generated C it was trained on: functions are matched by name and control-flow hash, so a
-function whose C changes loses its counts without a warning. Retrain after a lifter or generator change, from a clean
-`recomp/`. The instrumented build needs llvm-mingw, as MSYS2's clang has no profile runtime:
-
-```powershell
-$llvm = "toolchain\llvm-mingw-<date>\llvm-mingw-<date>-ucrt-x86_64"
-.venv\Scripts\python tools\build_game.py --version v143 --out build\v143-pgogen --toolchain $llvm --pgo gen
-```
-
-Play `build\v143-pgogen\totk.exe` through varied scenes (fights, towns, riding, building, the Depths, menus) for 20-30
-minutes; it is slower than a normal build. It writes `build\v143-pgogen\pgo\*.profraw` every minute and at exit.
-Scripted runs from saves (`tools/run_game.py`) add to the same file. Then:
-
-```powershell
-.venv\Scripts\python tools\pgo.py merge build\v143-pgogen --version v143
-```
-
-writes `build\pgo\pgo-v143.profdata` and its record (`.json`: the `recomp/` tree it fits). `make_release.py` ships every
-profile of `build\pgo` in `data\` and warns when a record names another `recomp/` tree than the one released.
+`build_game.py --pgo <file>.profdata` compiles the generated code and the runtime at -O2 with an execution
+profile, 6-12% shorter frames. Which build uses which profile, when to retrain, where and how to train and how to
+measure a new profile: [pgo.md](pgo.md).
 
 ## Linux (in progress)
 
@@ -221,7 +200,7 @@ re-protecting imported memory invalidates the driver's userptr buffer on every s
 amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
 host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
 writes come back at its fence. In play that costs about 0.2 ms a frame and doubles the memory of those pools (about
-1.1 GB). `TOTK_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
+1.1 GB). `shadow = 1` in `totk.ini` (or `TOTK_SHADOW=1`) turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
 well: the shadow copies are chosen for the measured cost above, not for a missing extension.
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
@@ -241,7 +220,14 @@ files); a change to the settings passes `totk.exe --probe-cfg` and `python tests
 when a setting is described neither in `totk.ini.example` nor in [settings.md](settings.md). A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump
-table (no game files), and `totk.exe --probe-mods`.
+table (no game files), and `totk.exe --probe-mods`. A change to the cheat VM or the cheat opcode tables
+(`runtime/cheats.c`, `tools/cheats.py`) passes `.venv\Scripts\python tests\cheats_vm_check.py`, which runs both on
+cheats of its own with clang from PATH (`--cc` names another). A change to what a generated chunk depends on, or to
+the lift cache of `recomp/gen.py` (`<mod>/lift_cache.json`), passes `.venv\Scripts\python tests\lift_cache_test.py`,
+which lifts a module it makes itself with and without the cache and compares the output (no game files); a new input
+of the chunk text goes into `chunk_key` with a case there. On game files, a lift with the cache into a used output
+folder and a `--no-cache` lift into an empty one give the same files apart from `manifest.json` and
+`lift_cache.json`.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:

@@ -919,6 +919,7 @@ int probe_nvn(void) {
     if (child && *child) return run_as_child(child);
     // The probe checks the null back end whatever TOTK_GPU says; the choice is made once, at the first object call.
     ((RtConfig *)rt_config())->gpu = "null";
+    rt_fpcr_threshold(&cpu);   // the FP result check threshold of a fresh Cpu (cpu.h): a zeroed one is wrong, not slow
     nvn_procs_register();
     hostfn_seal();
     kern_run_on_guest_main(probe_main);

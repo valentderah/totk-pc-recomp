@@ -62,6 +62,15 @@ uint64_t perf_begin(void) { return kern_now_ns(); }
 void perf_replay_thread(void) { prof_replay_tid = plat_thread_id(); }
 void perf_main_thread(void) { prof_main_tid = plat_thread_id(); }
 
+void perf_core_thread(int role) {
+    static const char *const names[] = {"game main", "game render", "vk replay", "vk recorder", "vk present"};
+    static int32_t said;
+    int r = plat_thread_perf_core();
+    if (r < 0 || role < 0 || role >= PCORE_N) return;
+    if (__atomic_fetch_or(&said, 1 << role, __ATOMIC_RELAXED) & (1 << role)) return;
+    rt_log("power: the %s thread %s the P-cores", names[role], r ? "prefers" : "could not select");
+}
+
 void perf_end(int kind, uint64_t t0) {
     if (!t0) return;
     uint32_t tid = plat_thread_id();

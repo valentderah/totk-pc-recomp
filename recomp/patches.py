@@ -1,12 +1,14 @@
 """Code patch table for the generator: guest instructions replaced in the lifted C, switchable at run time.
 
 Lifted code cannot be byte-patched when the game runs, so a patch is applied when the C is generated. A patch file
-(gen.py --patches) has two kinds of lines; `#` starts a comment, fields are separated by whitespace:
+(gen.py --patches) has these kinds of lines; `#` starts a comment, fields are separated by whitespace:
 
   set  <name> <env> <default>               a patch set: a run-time switch <env>=0/1, <default> when it is unset
   site <set> <module> <address> <original> <replacement> [<replacement> ...]
 
   spin <module> <head> <back-edge> [<back-edge> ...]
+
+  hook <module> <function> [<function> ...]
 
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
 the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
@@ -29,6 +31,11 @@ A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
 <head>) is lifted as `rt_spin_gate(c, <head>); goto <head>`, which keeps every register and only adds time
 (runtime/kernel.c kern_spin_gate).
+
+A `hook` line names guest functions (module offsets of function starts; gen.py stops on any other address) whose
+entry the runtime watches: their lifted C starts with FN_ENTER (runtime/cpu.h), a load of g_fnprof and a predicted
+branch to fnprof_hit while the runtime sets it. A table with hook lines puts FN_ENTER into these functions only; a table
+without any keeps it in every function, as does gen.py --fn-enter-all (a whole-game function-entry profile).
 """
 from pathlib import Path
 
@@ -49,13 +56,22 @@ def adrp(pc, target, rd):
 
 class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: [(set index, [word | ('page', reg)], original)]}} (the
-    alternatives of a site in file order); page."""
+    alternatives of a site in file order); page. What the generated C takes from here (for_module, spins_for, hooks_for)
+    is in the lift cache's key (recomp/gen.py chunk_key); a new kind of line the Emitter reads must go there too."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
+        self.hooks = hooks or {}   # {module: {function offset}}; empty: FN_ENTER in every function
+
+    def hooks_for(self, name, base):
+        """The absolute addresses of the module's hooked functions, or None when the table has no hook line at all
+        (FN_ENTER in every function)."""
+        if not self.hooks:
+            return None
+        return {base + o for o in self.hooks.get(name, ())}
 
     def spins_for(self, name, base):
         """{absolute back-edge address: absolute head address}."""
@@ -73,7 +89,7 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins = [], {}, {}, {}
+    sets, index, sites, spins, hooks = [], {}, {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
         f = raw.split('#', 1)[0].split()
@@ -112,6 +128,10 @@ def load(path, mods):
                 if b in mod:
                     raise PatchError(f'{where}: {f[1]}+{b:#x} is a back-edge twice')
                 mod[b] = head
+        elif f[0] == 'hook' and len(f) >= 3:
+            if f[1] not in bases:
+                raise PatchError(f'{where}: module {f[1]} not in the layout')
+            hooks.setdefault(f[1], set()).update(int(o, 16) for o in f[2:])
         else:
             raise PatchError(f'{where}: cannot parse {raw!r}')
     base, size = bases['main'][0], bases['main'][1]
@@ -119,7 +139,7 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins)
+    return Table(sets, sites, page, spins, hooks)
 
 
 def check(table, mod, name):

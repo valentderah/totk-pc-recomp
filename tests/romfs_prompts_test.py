@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import random
+import shutil
 import struct
 import subprocess
 import sys
@@ -299,7 +300,7 @@ LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600),
 # The other characters the PC prompts' keys show (button_icons.PC_LABELS of the defaults): a block with a counter, each
 # its own size.
 LETTERS_2.update({ord(ch): (560, lambda pen, i=i: [rect(pen, 60, 0, 300 + 10 * i, 700), rect(pen, 120, 100, 240, 600, True)])
-                  for i, ch in enumerate('ACDEFMQSW1234⇧G')})
+                  for i, ch in enumerate('ACDEFGHIMQSW1234')})
 PC_PANES = {'A': 'E', 'B': '↑', 'X': '▬', 'Y': 'L'}   # the diamond's letters with the default keys
 
 
@@ -527,7 +528,12 @@ class PromptsTest(unittest.TestCase):
                 drawn = font(sarc_files(romfs.read(out, DEFAULT_FONT))['scft/External.bfotf'])
                 advances = icons.font_advances(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
                 pc = icons.pc_icons(icons.text_glyphs(romfs.text_fonts), advances)
+                text = icons.pc_icons(icons.text_glyphs(romfs.text_fonts), advances, icons.pc_binds(text=True))
                 self.assertIn(0xE05E, pc)   # the left stick's W A S D
+                # In the font Y is T (PC_TEXT_KEYS); the button guide's Y image below stays the left mouse button
+                otf = unbfotf(sarc_files(romfs.contents[DEFAULT_FONT])['scft/External.bfotf'])
+                t = TTFont(io.BytesIO(icons.redraw_font(otf, {0xE043: text[0xE043]})))
+                self.assertEqual(glyph(drawn, 0xE043)[0], glyph(t, 0xE043)[0])
                 for cp in range(0xE040, 0xE069):
                     outline, advance = glyph(drawn, cp)
                     if cp in pc:
@@ -564,6 +570,16 @@ class PromptsTest(unittest.TestCase):
         self.assertEqual({b: panes[f'T_{b}_00'] for b in PC_PANES}, {**PC_PANES, 'A': 'F'})
         self.assertEqual(icons.pc_binds(ini.read_text(encoding='utf-8')), {**icons.PC_BINDS, 'A': 'f'})
 
+    def test_pc_text_prompts_show_y_as_its_first_key_that_is_not_a_mouse_button(self):
+        def y(line=None, text=True):
+            return icons.pc_binds(f'[input]\n{line}\n' if line else None, text=text)['Y']
+        self.assertEqual((y(), y(text=False)), ('t', 'mouse_l'))
+        self.assertEqual(y('bind_Y = pad:north, key:mouse_l, key:h'), 'h')
+        self.assertEqual(y('bind_Y = key:g, key:mouse_l'), 'g')
+        self.assertEqual(y('bind_Y = key:mouse_l'), 'mouse_l')   # no key besides the mouse: the mouse button
+        self.assertEqual(y('bind_Y = key:default'), 't')
+        self.assertEqual(y('bind_Y = key:h, key:mouse_l', text=False), 'h')
+
     def test_same_input_same_output_and_the_older_flag(self):
         romfs = self.romfs['v121']
         for flags in (('--prompts', 'xbox'), ('--xbox-prompts',)):
@@ -571,6 +587,34 @@ class PromptsTest(unittest.TestCase):
             proc = romfs.run(out, *flags)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual((out / 'manifest.tsv').read_bytes(), (self.outs['v121', 'xbox'][0] / 'manifest.tsv').read_bytes())
+
+    def test_reuse_links_the_files_that_match_and_writes_the_same_overlay(self):
+        romfs = self.romfs['v143']
+        pc, pc_summary = self.outs['v143', 'pc']
+        source = self.base / 'reuse' / 'source'   # a copy, so the class's folder is never linked or rewritten
+        shutil.copytree(pc, source)
+        out = self.base / 'reuse' / 'pc'
+        proc = romfs.run(out, '--prompts', 'pc', '--reuse', str(source))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        self.assertEqual(sorted(json.loads(proc.stdout.strip().splitlines()[-1])['reused']), sorted(manifest(pc)))
+        self.assertEqual(pc_summary['reused'], [])
+        # From the Xbox prompts only what both share is taken; the rest is made, and the overlay is the same.
+        xbox = self.outs['v143', 'xbox'][0]
+        out = self.base / 'reuse' / 'from-xbox'
+        proc = romfs.run(out, '--prompts', 'pc', '--reuse', str(xbox))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((out / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        shared = {p for p, row in manifest(pc).items() if manifest(xbox).get(p) == row}
+        self.assertEqual(set(json.loads(proc.stdout.strip().splitlines()[-1])['reused']), shared)
+        # A new run into the source folder replaces its files instead of writing through the links.
+        before = {p: (self.base / 'reuse' / 'pc' / p).read_bytes() for p in manifest(pc)}
+        ini = self.base / 'reuse' / 'totk.ini'
+        ini.write_text('[input]\nbind_A = key:F\n', encoding='utf-8')
+        proc = romfs.run(source, '--prompts', 'pc', '--binds', str(ini))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotEqual((source / 'manifest.tsv').read_bytes(), (pc / 'manifest.tsv').read_bytes())
+        self.assertEqual({p: (self.base / 'reuse' / 'pc' / p).read_bytes() for p in manifest(pc)}, before)
 
     def test_unrecognised_romfs_fails_before_writing(self):
         cases = {'no text fonts': (dict(text_fonts=False), icons.TEXT_FONTS[0]),
