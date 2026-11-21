@@ -346,10 +346,13 @@ int cfg_load(const char *path) {
 // Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck).
 // Measured: the chunked replay on 4 threads (vk_exec.c, chunked_on). The Deck's 4 cores and 8 threads are the limit
 // in the world, with the render thread busy for the whole frame; 4 recording threads cut the replay by about a third
-// (Lookout Landing, 60 cap: 15-17 to 11 ms a frame) at the same power.
+// (Lookout Landing, 60 cap: 15-17 to 11 ms a frame) at the same power. In 16 chunks, not 2 per thread, the chunks'
+// uneven recording times even out over the 4 threads: at a 60 cap 48 to 53 fps at Lookout Landing and 49 to 52 in
+// Hyrule Field; at the 40 cap the Temple of Time's frames over 33 ms fall from 2% to 0.1% at the same power. The GPU
+// time grows by under 1%.
 static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
-    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"}, {"REPLAY_WORKERS", "4"},
+    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"}, {"REPLAY_WORKERS", "4"}, {"REPLAY_CHUNKS", "16"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck
 
